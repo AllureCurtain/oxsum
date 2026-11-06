@@ -31,6 +31,7 @@ mod experiments;
 mod keys;
 mod log;
 mod merchants;
+pub(crate) mod operations;
 mod org;
 mod report_links;
 pub(crate) mod requests;
@@ -143,6 +144,8 @@ pub fn router(state: AppState) -> Router {
         .route("/budget", get(usage::budget))
         .route("/billing-records", get(usage::billing_records))
         .route("/requests", get(requests::requests))
+        .route("/operations", get(operations::operations))
+        .route("/operations/{operation_id}", get(operations::operation))
         .route(
             "/org/usage-reports",
             get(usage_reports::list).post(usage_reports::mint),

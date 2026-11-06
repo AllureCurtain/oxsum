@@ -4527,6 +4527,119 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/operations": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * The organization's durable operations, newest first (issue
+         * @description One row per billable turn — the durable parent that outlives the
+         *     request: a gateway call or task submit writes it before the hold
+         *     binds, the serving worker holds it under a lease, and the settlement
+         *     (or the sweeper, when the lease lapses) closes it. The lifecycle is
+         *     `created` → `leased` → `running` → one of `succeeded`, `failed`,
+         *     `cancelled`, `timed_out`; `holdKey` names the `open_holds` watch row
+         *     the operation binds while it is open. A session lists every operation
+         *     in its organization; a consumption key lists only the operations its
+         *     own credential admitted — the same record scope `GET /api/v1/requests`
+         *     keeps.
+         */
+        get: {
+            parameters: {
+                query?: {
+                    /** @description only operations in this lifecycle state */
+                    state?: "created" | "leased" | "running" | "succeeded" | "failed" | "cancelled" | "timed_out";
+                    /** @description rows per page */
+                    limit?: number;
+                    /** @description An earlier answer's `nextCursor`, echoed verbatim. */
+                    cursor?: string;
+                };
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description One page of operations, newest first */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            data: components["schemas"]["OperationListPage"];
+                        };
+                    };
+                };
+                400: components["responses"]["Error"];
+                401: components["responses"]["Error"];
+                500: components["responses"]["Error"];
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/operations/{operationId}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * One operation with its upstream attempts
+         * @description The operation plus every `request_attempts` row it made — the
+         *     failover audit: which channel each try went to, how it ended, and the
+         *     usage the winning attempt reported. A session reads any operation in
+         *     its organization; a consumption key reads only one its own credential
+         *     admitted — a foreign id answers 404, because an operation's existence
+         *     is not an oracle for another key.
+         */
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    operationId: string;
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description The operation and its attempts */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            data: components["schemas"]["RequestOperation"] & {
+                                attempts: components["schemas"]["OperationAttempt"][];
+                            };
+                        };
+                    };
+                };
+                401: components["responses"]["Error"];
+                404: components["responses"]["Error"];
+                500: components["responses"]["Error"];
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/org/usage-reports": {
         parameters: {
             query?: never;
@@ -8187,6 +8300,64 @@ export interface paths {
                                 /** @description The cursor the next page asks with; absent at the log's start. */
                                 nextCursor?: string;
                             };
+                        };
+                    };
+                };
+                400: components["responses"]["Error"];
+                401: components["responses"]["Error"];
+                500: components["responses"]["Error"];
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/admin/operations": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Every organization's durable operations (issue
+         * @description The operator's read of the same `request_operations` the member
+         *     endpoint serves: one row per billable turn across every organization,
+         *     newest first. Where a member's read is locked to their own
+         *     organization, this one reads all of them and narrows with
+         *     `organizationId` — the SRE query "show me every operation stuck
+         *     `running` past its lease" runs here.
+         */
+        get: {
+            parameters: {
+                query?: {
+                    /** @description only this organization's operations; omit for every organization */
+                    organizationId?: string;
+                    /** @description only operations in this lifecycle state */
+                    state?: "created" | "leased" | "running" | "succeeded" | "failed" | "cancelled" | "timed_out";
+                    /** @description rows per page */
+                    limit?: number;
+                    /** @description An earlier answer's `nextCursor`, echoed verbatim. */
+                    cursor?: string;
+                };
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description One page of operations, newest first */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            data: components["schemas"]["OperationListPage"];
                         };
                     };
                 };
@@ -13609,6 +13780,94 @@ export interface components {
              * @description when the row was written — just after the turn settled
              */
             createdAt: string;
+        };
+        /** @description One billable turn's durable record (issue #601): the parent row every gateway call and task submit writes before the hold binds, leased to the serving worker while it is open and closed by the settlement — or by the sweeper, which claims a lapsed lease and ends the operation `timed_out` with `chargedMinor` 0. Read by `GET /api/v1/operations` (org-scoped), `GET /api/v1/operations/{operationId}` (with attempts) and `GET /api/v1/admin/operations` (all organizations). */
+        RequestOperation: {
+            /**
+             * Format: uuid
+             * @description the operation's id — the gateway turn's request id, or the task's `taskId`
+             */
+            operationId: string;
+            /**
+             * Format: uuid
+             * @description the organization the turn billed; present on the admin read, elided on the member read
+             */
+            organizationId?: string;
+            /**
+             * Format: uuid
+             * @description the consumption key that admitted the turn; absent when none did
+             */
+            keyId?: string;
+            /** @description which surface admitted it — `chat`, `responses`, `messages`, `embeddings`, `rerank`, or `task:{kind}` */
+            surface: string;
+            /**
+             * Format: int64
+             * @description the upper bound frozen when the turn started, in minor units
+             */
+            boundMinor: number;
+            /** @description the `open_holds` watch row this operation binds (`req-<id>:hold`); absent until the hold lands */
+            holdKey?: string;
+            /**
+             * @description the lifecycle: `created` → `leased` → `running` while the worker owns it, then a terminal state — `succeeded` when usage settled, `failed` on an upstream or admission failure, `cancelled` when the caller walked away, `timed_out` when the sweeper recovered a lapsed lease
+             * @enum {string}
+             */
+            state: "created" | "leased" | "running" | "succeeded" | "failed" | "cancelled" | "timed_out";
+            /**
+             * Format: int64
+             * @description what the settlement charged, in minor units; absent until the operation is terminal
+             */
+            chargedMinor?: number;
+            /** @description the settlement kind or terminal cause — `usage`, `estimated`, `swept`, `released`, … */
+            outcomeKind?: string;
+            /** @description the model the turn asked for */
+            model: string;
+            /** @description the channel that answered; absent until one did */
+            channel?: string;
+            /**
+             * Format: date-time
+             * @description when the operation was admitted
+             */
+            createdAt: string;
+            /**
+             * Format: date-time
+             * @description when the operation went terminal; absent while it is open
+             */
+            completedAt?: string;
+        };
+        /** @description One upstream try inside an operation (issue #601): a failover or fallback makes several — one `answered` attempt carries the usage the settlement charged, the `refused`/`unreachable` ones are the audit of what was tried first. */
+        OperationAttempt: {
+            /** Format: uuid */
+            attemptId: string;
+            /** @description the channel this try went to */
+            channel: string;
+            /**
+             * Format: uuid
+             * @description the upstream credential the try spent
+             */
+            credentialId?: string;
+            /** @description the upstream's own response id (`chatcmpl-…`, the task id), when the answer carried one */
+            externalId?: string;
+            /**
+             * @description how the try ended — `answered` is the one the settlement bills
+             * @enum {string}
+             */
+            status: "started" | "answered" | "refused" | "unreachable";
+            /** @description the usage the upstream reported, verbatim; present on the winning `answered` attempt */
+            usageJson?: Record<string, never>;
+            /** @description why the try failed, on a `refused`/`unreachable` one */
+            error?: string;
+            /** Format: date-time */
+            startedAt: string;
+            /**
+             * Format: date-time
+             * @description absent while the try is still in flight
+             */
+            completedAt?: string;
+        };
+        OperationListPage: {
+            operations: components["schemas"]["RequestOperation"][];
+            /** @description The cursor the next page asks with; absent at the list's start. */
+            nextCursor?: string;
         };
         EstimatePriceRequest: {
             model: string;
