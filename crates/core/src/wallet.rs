@@ -2084,6 +2084,71 @@ impl Wallet {
         }
     }
 
+    /// The typed zero-cost usage receipt (issue #603, D05): the settlement
+    /// record a turn with no wallet hold still needs — a fully
+    /// entitlement-funded call that served with zero wallet funds.
+    ///
+    /// Shaped like the refusal marker and the day/statement anchors: a 1-minor
+    /// balanced `Equity:Adjustments` debit/credit in the settled layer, so the
+    /// entry is metadata, not money — no pool moves, no pending reservation, no
+    /// revenue. The idempotency key is [`settlement_key_for`] of `hold_key`,
+    /// the same figure a wallet-hold settlement derives, so a replayed receipt
+    /// and a raced settlement of the same turn cannot both land. The
+    /// description is the ordinary [`crate::Settlement::description`] record —
+    /// `charged: 0`, the `subscription` block naming what the entitlement
+    /// paid — so a bill proves the turn ran, what it used, and that the wallet
+    /// was never asked.
+    ///
+    /// `actor` and `correlation` are the turn's attribution — the key id and
+    /// the mandate id it ran under — carried onto the receipt the way a hold's
+    /// settlement carries them, so the key's request history stays complete
+    /// even though no money moved.
+    ///
+    /// # Errors
+    ///
+    /// [`WalletError::Conflict`] when the derived key is already taken — the
+    /// turn settled, or a different entry claimed it.
+    /// [`WalletError::DaySealed`] when the day's anchor already closed it.
+    /// Storage failures surface as [`WalletError`].
+    pub async fn usage_receipt(
+        &self,
+        hold_key: &str,
+        description: &str,
+        actor: Option<&str>,
+        correlation: Option<&str>,
+        on: Date,
+    ) -> Result<Receipt, WalletError> {
+        idem(hold_key)?;
+        if self.day_is_anchored(on).await? {
+            return Err(WalletError::DaySealed);
+        }
+        let settle_key = settlement_key_for(hold_key);
+        // The marker amount is immaterial — 1 minor like the other anchors —
+        // and balanced on one account: the entry is the receipt, not a charge.
+        let minor = Credits::from_minor(1);
+        let mut draft =
+            Entry::<Draft, SCALE>::new(entry_id_for(&settle_key), idem(&settle_key)?, on)
+                .with_description(description_of(description)?)
+                .debit(self.adjustments, minor, currency())
+                .credit(self.adjustments, minor, currency());
+        if actor.is_some() || correlation.is_some() {
+            let mut provenance = Provenance::none();
+            if let Some(actor) = actor {
+                provenance = provenance.with_actor(actor).map_err(invalid)?;
+            }
+            if let Some(correlation) = correlation {
+                provenance = provenance.with_correlation(correlation).map_err(invalid)?;
+            }
+            draft = draft.with_provenance(provenance);
+        }
+        match self.append(draft).await {
+            Err(WalletError::Conflict(_)) => {
+                Err(WalletError::Conflict("hold already settled".into()))
+            }
+            other => other,
+        }
+    }
+
     /// The settlement record a hold's settlement committed, when it did: how a
     /// replayed settlement answers the original outcome — the settlement entry
     /// id derives from the hold's key, so the read is one probe (issue #172).

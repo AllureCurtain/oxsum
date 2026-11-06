@@ -700,6 +700,32 @@ impl Db {
         }
     }
 
+    /// Whether the organization still has open operations created at or
+    /// before `before` — the watermark a day-close waits on (issue #603, D05):
+    /// an operation still `created`/`leased`/`running` can still settle a day
+    /// leaf, so the anchor pass defers the organization's day rather than seal
+    /// a map the settle path may still change.
+    ///
+    /// # Errors
+    ///
+    /// Storage failures surface as [`WalletError`].
+    pub async fn operations_open_before(
+        &self,
+        organization_id: Uuid,
+        before: OffsetDateTime,
+    ) -> Result<i64, WalletError> {
+        sqlx::query_scalar(
+            "SELECT count(*)::bigint FROM oxsum.request_operations \
+             WHERE organization_id = $1 AND created_at <= $2 \
+               AND state IN ('created','leased','running')",
+        )
+        .bind(organization_id)
+        .bind(before)
+        .fetch_one(self.pool())
+        .await
+        .map_err(Into::into)
+    }
+
     /// The sweeper's working set: open operations whose lease lapsed, plus a
     /// `created` row whose hold never bound and whose admission is older than
     /// the lease — the window where the process died between writing the

@@ -39,6 +39,7 @@ use crate::gateway::error::{CHARGED_MINOR, FREEZE_MINOR, GatewayError, REQUEST_I
 use crate::gateway::relay::{Charge, Turn};
 use crate::gateway::request::{GatewayRequest, Surface};
 use crate::today;
+use crate::today_at;
 
 /// How long the connection to upstream may take to establish.
 ///
@@ -1012,6 +1013,51 @@ async fn run(
     // rows do later — the snapshot the settlement description writes
     // (issue #158).
     let texts: Vec<&str> = request.texts.iter().map(String::as_str).collect();
+    // The customer sale terms this turn prices under (issue #600, wired by
+    // #603): when a sale book's schedule names this customer and model, the
+    // resolved `SalePriceSnapshot` *replaces* the wholesale channel catalog —
+    // the customer charge itemizes its `terms.price`, its `discount_percent`
+    // is the customer's whole deal, and its digest is what the settlement's
+    // `sale` block commits. `resolve_sale_price` is deliberately
+    // `NotFound`-tolerant: most deployments run wholesale only, and a
+    // business without a schedule for this pair resolves nothing, which is
+    // the wholesale path itself rather than an error.
+    let sale = match state
+        .db
+        .resolve_sale_price(
+            access.business_id,
+            organization.id,
+            &request.model,
+            today_at(),
+        )
+        .await
+    {
+        Ok(snapshot) => {
+            let canonical = oxsum_core::canonical_sale_snapshot(&snapshot).map_err(|error| {
+                tracing::error!(%error, "canonicalizing the resolved sale snapshot failed");
+                GatewayError::upstream(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "the resolved sale terms are unreadable".to_owned(),
+                    None,
+                )
+            })?;
+            let digest = oxsum_core::sale_snapshot_hash(&canonical).to_hex();
+            Some(relay::SalePricing {
+                price: snapshot.terms.price.price().clone(),
+                discount_percent: snapshot.terms.discount_percent,
+                digest,
+            })
+        }
+        Err(WalletError::NotFound(_)) => None,
+        Err(error) => return Err(error.into()),
+    };
+    // A sale-priced turn may not fall back across models: the snapshot binds
+    // the served name's terms, and a different model's rates are a different
+    // deal — D04's "otherwise refuses that hop". Same-model failover still
+    // works: the chain narrows to the requested model's routes only.
+    if sale.is_some() && model_routes.len() > 1 {
+        model_routes.truncate(1);
+    }
     // The freeze is the conservative bound across every route a failover could
     // land on: the dearest candidate's upper bound, and `max_tokens` forwards
     // at the tightest ceiling so no route can bill what its own price would
@@ -1021,25 +1067,49 @@ async fn run(
     // failover may land on a fallback's dearest route, so the freeze reserves
     // the dearest serving across the whole chain and `max_tokens` forwards at
     // the tightest output ceiling any route could bill under (issue #500).
-    let freeze = model_routes
-        .iter()
-        .flat_map(|routes| routes.ordered.iter())
-        .map(|serving| match request.counted_input {
-            Some(count) => serving.price.estimate_minor(
-                count,
-                request.max_tokens,
-                request.attribution.service_tier.as_deref(),
-            ),
-            None => serving.price.freeze_minor(
-                &texts,
-                request.max_tokens,
-                request.attribution.service_tier.as_deref(),
-            ),
-        })
-        .collect::<Result<Vec<i64>, _>>()?
-        .into_iter()
-        .max()
-        .unwrap_or(0);
+    // On a sale-priced turn the reserved figure comes from the sale's own
+    // rates — the chain is already narrowed to its model.
+    let freeze = if let Some(sale) = &sale {
+        model_routes[0]
+            .ordered
+            .iter()
+            .map(|_| match request.counted_input {
+                Some(count) => sale.price.estimate_minor(
+                    count,
+                    request.max_tokens,
+                    request.attribution.service_tier.as_deref(),
+                ),
+                None => sale.price.freeze_minor(
+                    &texts,
+                    request.max_tokens,
+                    request.attribution.service_tier.as_deref(),
+                ),
+            })
+            .collect::<Result<Vec<i64>, _>>()?
+            .into_iter()
+            .max()
+            .unwrap_or(0)
+    } else {
+        model_routes
+            .iter()
+            .flat_map(|routes| routes.ordered.iter())
+            .map(|serving| match request.counted_input {
+                Some(count) => serving.price.estimate_minor(
+                    count,
+                    request.max_tokens,
+                    request.attribution.service_tier.as_deref(),
+                ),
+                None => serving.price.freeze_minor(
+                    &texts,
+                    request.max_tokens,
+                    request.attribution.service_tier.as_deref(),
+                ),
+            })
+            .collect::<Result<Vec<i64>, _>>()?
+            .into_iter()
+            .max()
+            .unwrap_or(0)
+    };
     let output_bound = model_routes
         .iter()
         .flat_map(|routes| routes.ordered.iter())
@@ -1276,6 +1346,10 @@ async fn run(
                 mandate: &mandate,
                 routes: &routes,
                 discount_percent,
+                // A sale-priced turn's stored answer recomputes under its
+                // deal's terms, so the digest binds the snapshot's identity
+                // (issue #603): two deals never share a cached body.
+                sale_digest: sale.as_ref().map(|s| s.digest.as_str()),
             };
             oxsum_core::response_cache_digest(secret, &context)
                 .ok()
@@ -1301,6 +1375,7 @@ async fn run(
             adapter,
             discount_percent,
             mandate,
+            sale.clone(),
             turn_span,
             surface,
             guardrails.clone(),
@@ -1424,22 +1499,27 @@ async fn run(
         }
     };
     let wallet_minor = freeze - subscription.drawn_minor;
-    if let Err(error) = wallet
-        .hold_for_key(
-            key,
-            Some(request.model.as_str()),
-            &hold_key,
-            &description,
-            // A hold of zero would be refused by the ledger — a fully
-            // subscription-covered turn takes a 1-minor wallet hold instead,
-            // so the turn still carries a ledger hold for the settlement to
-            // land on and the sweeper to watch. The difference is repaid in
-            // the settlement: the wallet is charged only `charged - drawn`.
-            wallet_minor.max(1),
-            today(),
-            mandate.as_ref(),
-        )
-        .await
+    // A fully entitlement-funded turn takes no wallet hold (issue #603, D05):
+    // the subscription draw and the durable operation row are its whole
+    // reservation — a fabricated 1-minor hold would refuse a turn the plan
+    // already pays for when the wallet is empty, which A13 forbids. The
+    // settlement writes the typed zero-cost receipt instead of a
+    // release-and-charge, and the sweeper recovers it through the operation's
+    // lease like any other turn — the watch row still lists it so a crashed
+    // worker's turn is visible.
+    let wallet_held = wallet_minor > 0;
+    if wallet_held
+        && let Err(error) = wallet
+            .hold_for_key(
+                key,
+                Some(request.model.as_str()),
+                &hold_key,
+                &description,
+                wallet_minor,
+                today(),
+                mandate.as_ref(),
+            )
+            .await
     {
         // The hold was refused, so there is nothing for the sweeper to watch.
         if let Err(clear) = state.db.clear_open_hold(&hold_key).await {
@@ -1497,6 +1577,8 @@ async fn run(
         turn_span,
         mandate,
         subscription,
+        sale,
+        wallet_held,
         organization.id,
         guardrails.clone(),
         operation_ctx,
@@ -2100,6 +2182,7 @@ async fn serve_cache_hit(
     adapter: &'static dyn oxsum_core::UsageAdapter,
     discount_percent: Option<i64>,
     mandate: Option<oxsum_core::PresentedMandate>,
+    sale: Option<relay::SalePricing>,
     turn_span: tracing::Span,
     surface: Surface,
     response_guardrails: Vec<Arc<dyn oxsum_core::Guardrail>>,
@@ -2110,10 +2193,16 @@ async fn serve_cache_hit(
 ) -> Result<Response, GatewayError> {
     let wallet = state.tenants.get(&organization.tenant_id).await?;
     let hold_key = format!("req-{request_id}:hold");
-    // The reservation is the stored usage priced under the channel's live
-    // book — the most the hit can cost. `total_minor` ignores the discount:
-    // a discounted charge lands under it, which is what a bound is for.
-    let freeze = primary.price.itemize(&hit.usage, true)?.total_minor()?;
+    // The reservation is the stored usage priced under the terms the turn
+    // runs on — the resolved sale snapshot's rates when a sale book priced
+    // this admission (issue #603), the channel's live book otherwise — the
+    // most the hit can cost. `total_minor` ignores the discount: a discounted
+    // charge lands under it, which is what a bound is for.
+    let freeze = sale
+        .as_ref()
+        .map_or(&primary.price, |s| &s.price)
+        .itemize(&hit.usage, true)?
+        .total_minor()?;
     let description = hold_description(request_id, &request.model, freeze)?;
     // A cache hit is a billable turn like any other (issue #601): it writes
     // its operation row under the same scoped fingerprint, so a replayed
@@ -2199,17 +2288,22 @@ async fn serve_cache_hit(
         }
     };
     let wallet_minor = freeze - subscription.drawn_minor;
-    if let Err(error) = wallet
-        .hold_for_key(
-            key,
-            Some(request.model.as_str()),
-            &hold_key,
-            &description,
-            wallet_minor.max(1),
-            today(),
-            mandate.as_ref(),
-        )
-        .await
+    // A hit the entitlement fully covers takes no wallet hold either (issue
+    // #603): like the fresh-turn path, the draw and the operation row are the
+    // reservation, and the settle writes the zero-cost receipt.
+    let wallet_held = wallet_minor > 0;
+    if wallet_held
+        && let Err(error) = wallet
+            .hold_for_key(
+                key,
+                Some(request.model.as_str()),
+                &hold_key,
+                &description,
+                wallet_minor,
+                today(),
+                mandate.as_ref(),
+            )
+            .await
     {
         if let Err(clear) = state.db.clear_open_hold(&hold_key).await {
             tracing::error!(%clear, "clearing a refused cache hold's watch row failed");
@@ -2256,6 +2350,8 @@ async fn serve_cache_hit(
         turn_span,
         mandate,
         subscription,
+        sale,
+        wallet_held,
         organization.id,
         response_guardrails.clone(),
         operation_ctx,

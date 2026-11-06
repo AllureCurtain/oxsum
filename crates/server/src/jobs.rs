@@ -366,6 +366,7 @@ async fn run_one(
                 anchors = report.anchors,
                 skipped = report.skipped,
                 without_usage = report.without_usage,
+                deferred = report.deferred,
                 "the usage-anchor pass closed the previous day"
             );
         }
