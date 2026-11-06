@@ -1083,7 +1083,9 @@ impl Plan {
                         // report when it gave one, the estimate block the
                         // degraded path priced instead — so the attempt's
                         // `usage_json` is the same figure the bill proves.
-                        let usage_json = answered.then(|| serde_json::to_value(&usage).ok()).flatten();
+                        let usage_json = answered
+                            .then(|| serde_json::to_value(&usage).ok())
+                            .flatten();
                         if let Err(error) = self
                             .db
                             .complete_attempt(
