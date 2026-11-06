@@ -51,8 +51,8 @@ scalar_on() { run psql -U "$PGUSER" -d "$1" -tAc "$2" | tr -d '[:space:]'; }
 DUMP="$INPUT"
 expected_sha=""
 if [[ "$INPUT" == *.manifest.json ]]; then
-    DUMP="$(grep -oE '"artifact": *"[^"]+"' "$INPUT" | cut -d'"' -f4)"
-    expected_sha="$(grep -oE '"sha256": *"[^"]+"' "$INPUT" | cut -d'"' -f4)"
+    DUMP="$(grep -oE '"artifact": *"[^"]+"' "$INPUT" | cut -d'"' -f4 || true)"
+    expected_sha="$(grep -oE '"sha256": *"[^"]+"' "$INPUT" | cut -d'"' -f4 || true)"
     if [ ! -f "$DUMP" ]; then
         echo "manifest names $DUMP, which is not here — copy the dump beside the manifest" >&2
         exit 1

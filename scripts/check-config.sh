@@ -42,9 +42,11 @@ known_names() {
 
 KNOWN="$(known_names)"
 
-# Lines that are set (not commented) in .env.
+# Lines that are set (not commented) in .env — an `export KEY=` spelling
+# counts the same as a bare `KEY=`.
 set_names() {
     grep -vE '^[[:space:]]*(#|$)' "$ENV_FILE" \
+        | sed -E 's/^[[:space:]]*export[[:space:]]+//' \
         | grep -oE '^[A-Za-z_][A-Za-z0-9_]*=' | tr -d '=' | sort -u
 }
 
@@ -60,8 +62,8 @@ done < <(set_names)
 
 # The variables a boot cannot proceed without. DATABASE_URL itself is
 # compose-built from POSTGRES_* on the deploy profiles, so either spells it.
-if ! grep -qE '^[[:space:]]*DATABASE_URL=' "$ENV_FILE" \
-   && ! { grep -qE '^[[:space:]]*POSTGRES_PASSWORD=' "$ENV_FILE"; }; then
+if ! grep -qE '^[[:space:]]*(export[[:space:]]+)?DATABASE_URL=' "$ENV_FILE" \
+   && ! { grep -qE '^[[:space:]]*(export[[:space:]]+)?POSTGRES_PASSWORD=' "$ENV_FILE"; }; then
     fail "no DATABASE_URL and no POSTGRES_PASSWORD: the deployment has no database to point at"
 else
     ok "a database is configured"
@@ -69,7 +71,7 @@ fi
 
 # Obvious contradictions the server also refuses — checked here so the message
 # names the file, not just the variable.
-val() { grep -oE "^[[:space:]]*$1=.*" "$ENV_FILE" | tail -n1 | cut -d= -f2- | tr -d '"'"'"'[:space:]'; }
+val() { grep -oE "^[[:space:]]*(export[[:space:]]+)?$1=.*" "$ENV_FILE" | tail -n1 | cut -d= -f2- | tr -d '"'"'"'[:space:]' || true; }
 
 demo="$(val OXSUM_DEMO_SEED)"
 case "$demo" in

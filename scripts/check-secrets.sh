@@ -66,10 +66,12 @@ secret_vars=(
 )
 
 while IFS= read -r line; do
-    # Only KEY=value lines, skipping comments.
+    # Only KEY=value lines, skipping comments — `export KEY=` spells it too.
     case "$line" in
         ''|'#'*) continue ;;
     esac
+    line="${line#export }"
+    line="${line#export	}"
     name="${line%%=*}"
     value="${line#*=}"
     # Trim surrounding whitespace and matching quotes.
@@ -93,8 +95,8 @@ done < "$ENV_FILE"
 # --- required set ----------------------------------------------------------
 # DATABASE_URL (or the POSTGRES_* trio the compose files build it from) is the
 # one variable no deployment can boot without.
-if ! grep -qE '^[[:space:]]*DATABASE_URL=' "$ENV_FILE" \
-   && ! grep -qE '^[[:space:]]*POSTGRES_PASSWORD=' "$ENV_FILE"; then
+if ! grep -qE '^[[:space:]]*(export[[:space:]]+)?DATABASE_URL=' "$ENV_FILE" \
+   && ! grep -qE '^[[:space:]]*(export[[:space:]]+)?POSTGRES_PASSWORD=' "$ENV_FILE"; then
     fail "neither DATABASE_URL nor POSTGRES_PASSWORD is set — the deployment has no database"
 fi
 
