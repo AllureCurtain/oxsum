@@ -1,0 +1,83 @@
+# Publish-only release path (issue #619): build the release image and push it
+# to GHCR, with no deployment side effects — no SSH, no server touched. This
+# is the half of deploy.yml an operator (or a gate, or a release rehearsal)
+# can run by itself: `gh workflow run release.yml` publishes the tags and
+# stops there.
+#
+# `deploy.yml` calls this through `workflow_call` and adds its deploy job on
+# top, so the "publish" half exists exactly once. Manual only — neither
+# trigger fires on a push, and a test can never reach this workflow.
+
+name: Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      image_tag:
+        description: 'Extra tag to publish beside latest and sha-<sha> (e.g. v0.2.0)'
+        required: false
+  workflow_call:
+    inputs:
+      image_tag:
+        description: 'Extra tag to publish beside latest and sha-<sha>'
+        required: false
+        type: string
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build-and-push:
+    name: build and push the release image
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    permissions:
+      contents: read
+      packages: write
+    outputs:
+      image_tag: ${{ steps.tags.outputs.image_tag }}
+    steps:
+      - uses: actions/checkout@v7
+      # Same disk pressure as the other compile jobs: the release build is big.
+      - name: Free disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
+          sudo docker image prune --all --force
+          df -h
+      - uses: docker/setup-buildx-action@v4
+      - uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      # The tag list for this run: `latest`, `sha-<sha>` (the concrete tag a
+      # deploy pulls and a rollback names) and the operator's extra tag when
+      # one was passed — build-push-action reads `tags` as a newline list.
+      - name: Resolve the tags
+        id: tags
+        run: |
+          {
+            echo "ghcr.io/allurecurtain/oxsum:latest"
+            echo "ghcr.io/allurecurtain/oxsum:sha-${{ github.sha }}"
+            if [ -n "${{ inputs.image_tag }}" ]; then
+              echo "ghcr.io/allurecurtain/oxsum:${{ inputs.image_tag }}"
+            fi
+          } > tags.txt
+          cat tags.txt
+          echo "image_tag=sha-${{ github.sha }}" >> "$GITHUB_OUTPUT"
+          echo "tag_list=$(paste -sd, tags.txt)" >> "$GITHUB_OUTPUT"
+      - name: Build and push
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: ./Dockerfile
+          push: true
+          # The build names its commit for GET /api/v1/version — .git is in
+          # the action's checkout but not the Docker context, so it travels
+          # as a build arg (crates/server/build.rs forwards it).
+          build-args: |
+            GIT_SHA=${{ github.sha }}
+          tags: ${{ steps.tags.outputs.tag_list }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max

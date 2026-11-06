@@ -70,6 +70,11 @@ jobs:
         with:
           context: .
           file: ./Dockerfile
+          # The build names its commit for GET /api/v1/version (issue #619) —
+          # .git is in the checkout but not the Docker context, so it travels
+          # as a build arg crates/server/build.rs forwards.
+          build-args: |
+            GIT_SHA=${{ github.sha }}
           # The image is only ever smoke-tested here, never published: `load` puts it
           # in the runner's own daemon for the steps below.
           load: true
@@ -157,6 +162,11 @@ jobs:
           # The wallet is up and its schema migrated: the server migrates before it
           # starts serving, and refuses to boot at all if the database is unreachable.
           expect_status /healthz 200
+          # Readiness and the deployment's own identity (issue #619): /readyz is
+          # the probe a compose healthcheck gates on, /api/v1/version the
+          # name-tag an upgrade verifies.
+          expect_status /readyz 200
+          expect_body /api/v1/version '"schemaVersion"' 'the running schema version'
 
           # The dashboard is the React bundle the frontend stage embeds (issue
           # #234): the shell names a hashed entry bundle, and both must be served
