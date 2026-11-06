@@ -1,10 +1,18 @@
 openapi: 3.1.0
 info:
   title: oxsum API
-  version: 0.112.0
+  version: 0.113.0
   x-consumption-cache: Response cache v2 binds the exact complete request, concrete endpoint and semantic headers, customer/key permissions, selected experiment/mandate, alias targets, and every admitted route's price, destination, settings and credential configuration. A primary route without an available credential cannot serve a cache hit. Text case and whitespace are significant; old digests miss. Legacy excludeSystem is accepted but ignored.
   description: |
     Common conventions (auth, idempotency, error format, money units) are documented in docs/api.md.
+
+    0.113.0 adds payment orders and durable fulfillment: `/api/v1/orders` pins
+    immutable purpose-scoped terms and a server-rated conversion before the
+    provider call — `amountMinor`/`rate` are never request fields — `paid` is
+    established only by the signed merchant webhook, a paid-but-mismatched event
+    parks in `needsAttention`, and `GET /{id}/fulfillment` reads the honest
+    paid-unfulfilled mid-state the recovery sweep drains.
+    `GET /api/v1/business/payment-reconciliation` reports paid against fulfilled.
 
     0.112.0 binds resolved customer sale terms into bill evidence: a v14 settlement
     may commit a `sale` snapshot digest, the proof bundle carries a `sale` link to
@@ -4829,6 +4837,116 @@ paths:
         "409": { $ref: "#/components/responses/Error" }
         "500": { $ref: "#/components/responses/Error" }
         "503": { $ref: "#/components/responses/Error" }
+  /api/v1/orders:
+    post:
+      summary: Create a payment order
+      description: The customer pins an immutable order in the display currency it was quoted. The server rates the conversion to ledger credits at the organization's effective display rate — `amountMinor`/`rate` are not request fields, so a client-supplied figure is a schema rejection, not a negotiated term. The expected payment and the order terms commit before the provider is called; the provider idempotency key is the order's durable local UUID, so a replayed `idempotencyKey` returns the standing order and its original checkout rather than a second charge. `purpose` fixes the one fulfillment arm the order may take — `walletTopup`, `bundle`, `planPeriod` or `invoiceRepayment`. The answer is a checkout to complete, never a paid order — `paid` is established only by the signed provider webhook.
+      security: [{ sessionCookie: [], apiKey: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/OrderCreateRequest" }
+      responses:
+        "200":
+          description: The pinned order and its provider checkout handles
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data: { $ref: "#/components/schemas/OrderCheckout" }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "409": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
+        "503": { $ref: "#/components/responses/Error" }
+    get:
+      summary: List the caller's payment orders
+      description: The customer organization's own orders, paged by cursor. An order of another organization is never listed.
+      security: [{ sessionCookie: [], apiKey: [] }]
+      parameters:
+        - { name: after, in: query, schema: { type: string, format: uuid } }
+        - { name: limit, in: query, schema: { type: integer, minimum: 1, maximum: 100, default: 50 } }
+      responses:
+        "200":
+          description: The caller's order page
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data: { $ref: "#/components/schemas/PaymentOrderPage" }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
+  /api/v1/orders/{orderId}:
+    get:
+      summary: Read one payment order
+      description: One order the caller's organization owns; another organization's order is a not-found. Status is the lifecycle state the signed webhook established — it can never be `paid` from this read surface.
+      security: [{ sessionCookie: [], apiKey: [] }]
+      parameters:
+        - { name: orderId, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        "200":
+          description: The order
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data: { $ref: "#/components/schemas/PaymentOrder" }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
+  /api/v1/orders/{orderId}/fulfillment:
+    get:
+      summary: Read an order's fulfillment status
+      description: The order's lifecycle state plus its fulfillment record once it lands. `paid` but unfulfilled is the honest mid-state the recovery sweep drains; the record names exactly what the purpose's grant produced.
+      security: [{ sessionCookie: [], apiKey: [] }]
+      parameters:
+        - { name: orderId, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        "200":
+          description: The order state and its fulfillment record
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data: { $ref: "#/components/schemas/OrderFulfillment" }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
+  /api/v1/business/payment-reconciliation:
+    get:
+      summary: Reconcile paid orders against fulfillment
+      description: Current business staff with report-read capability; a personal session, never a machine credential. Counts per order lifecycle state plus the paid-but-unfulfilled order ids the recovery sweep owes — the discrepancy between `paid` and `fulfilled` is the sweep's backlog, and `needsAttention` is the paid-but-mismatched set a human resolves, never an auto-credit.
+      security: [{ sessionCookie: [] }]
+      responses:
+        "200":
+          description: The order reconciliation report
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data: { $ref: "#/components/schemas/PaymentReconciliation" }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
   /api/v1/business/sale-books:
     get:
       summary: List customer sale books
@@ -11345,104 +11463,93 @@ components:
       properties:
         events: { type: array, items: { $ref: "#/components/schemas/MerchantEvent" } }
         nextCursor: { type: [string, "null"], format: uuid }
-    MerchantRail:
+    OrderPurpose:
       type: string
-      enum: [hyperswitch, stripe, airwallex]
-    MerchantMode:
-      type: string
-      enum: [test, live]
-    MerchantVersionInput:
+      enum: [walletTopup, bundle, planPeriod, invoiceRepayment]
+      description: The one fulfillment arm the order may take. `walletTopup` credits wallet cash only; `bundle` posts purchased credit plus a separate promo lot; `planPeriod` activates quota only; `invoiceRepayment` repays a drawn receivable only. No purpose both grants quota and wallet cash.
+    OrderCreateRequest:
       type: object
       additionalProperties: false
-      required: [apiUrl, apiKey, webhookSecret]
-      description: Complete configuration for one immutable version. Hyperswitch requires publishableKey and sdkUrl; Airwallex requires clientId and checkoutUrl. Fields belonging only to another rail are rejected. API destination rules are shared with provider connections; browser SDK/checkout URLs must be public HTTPS URLs without user info, query or fragment. Secrets are encrypted together and never returned.
-      properties:
-        apiUrl: { type: string, format: uri }
-        apiKey: { type: string, minLength: 8, maxLength: 8192, writeOnly: true }
-        webhookSecret: { type: string, minLength: 8, maxLength: 8192, writeOnly: true }
-        clientId: { type: [string, "null"], minLength: 1, maxLength: 200, writeOnly: true }
-        publishableKey: { type: [string, "null"], minLength: 1, maxLength: 200 }
-        sdkUrl: { type: [string, "null"], format: uri }
-        checkoutUrl: { type: [string, "null"], format: uri }
-        destinationPolicy: { $ref: "#/components/schemas/ProviderDestinationPolicy" }
-    MerchantCreateRequest:
-      type: object
-      additionalProperties: false
-      required: [idempotencyKey, reason, name, rail, mode, accountId, config]
+      required: [idempotencyKey, rail, purpose, displayAmountMinor, displayCurrency]
+      description: The quoted display terms. The ledger amount is never client input — the server derives it from `displayAmountMinor` at the rate it owns, so a client-supplied `amountMinor` or `rate` is a schema rejection.
       properties:
         idempotencyKey: { type: string, minLength: 1, maxLength: 200 }
-        reason: { type: string, minLength: 1, maxLength: 500 }
-        name: { type: string, minLength: 1, maxLength: 80, pattern: "^[a-z0-9]+(-[a-z0-9]+)*$" }
         rail: { $ref: "#/components/schemas/MerchantRail" }
-        mode: { $ref: "#/components/schemas/MerchantMode" }
-        accountId: { type: string, minLength: 1, maxLength: 200, description: Stable provider merchant/account identifier; unique per business, rail and mode. }
-        config: { $ref: "#/components/schemas/MerchantVersionInput" }
-    MerchantVersionRequest:
+        purpose:
+          type: string
+          enum: [walletTopup, bundle, planPeriod, invoiceRepayment]
+        displayAmountMinor: { type: integer, format: int64, minimum: 1, description: the fiat minor amount the provider will charge }
+        displayCurrency: { type: string, pattern: "^[A-Z]{3}$" }
+        purposeRef: { type: [string, "null"], format: uuid, description: the plan a `planPeriod` activates or the receivable an `invoiceRepayment` settles }
+        promoMinor: { type: [integer, "null"], format: int64, minimum: 0, description: a `bundle` order's promo lot in credit-minor }
+    PaymentOrder:
       type: object
-      additionalProperties: false
-      required: [idempotencyKey, reason, config]
+      required: [orderId, merchantId, merchantVersionId, organizationId, purpose, amountMinor, currency, displayCurrency, displayAmountMinor, rateMantissa, rateScale, purposeRef, promoMinor, providerPaymentId, status, createdAt, paidAt]
       properties:
-        idempotencyKey: { type: string, minLength: 1, maxLength: 200 }
-        reason: { type: string, minLength: 1, maxLength: 500 }
-        config: { $ref: "#/components/schemas/MerchantVersionInput" }
-    MerchantStatusRequest:
-      type: object
-      additionalProperties: false
-      required: [idempotencyKey, reason, enabled]
-      properties:
-        idempotencyKey: { type: string, minLength: 1, maxLength: 200 }
-        reason: { type: string, minLength: 1, maxLength: 500 }
-        enabled: { type: boolean }
-    MerchantMutationResult:
-      type: object
-      required: [id, merchantId, versionId, revision, enabled]
-      properties:
-        id: { type: string, format: uuid }
+        orderId: { type: string, format: uuid }
         merchantId: { type: string, format: uuid }
-        versionId: { type: string, format: uuid }
-        revision: { type: integer, format: int64, minimum: 1 }
-        enabled: { type: boolean }
-    MerchantVersion:
+        merchantVersionId: { type: string, format: uuid }
+        organizationId: { type: string, format: uuid }
+        purpose: { $ref: "#/components/schemas/OrderPurpose" }
+        amountMinor: { type: integer, format: int64, description: ledger credit-minor the fulfillment books, frozen at create }
+        currency: { type: string, description: the ledger credit code }
+        displayCurrency: { type: string }
+        displayAmountMinor: { type: integer, format: int64, description: the fiat amount the provider charged }
+        rateMantissa: { type: integer, format: int64, description: the pinned conversion numerator }
+        rateScale: { type: integer, description: the pinned conversion denominator exponent }
+        purposeRef: { type: [string, "null"], format: uuid }
+        promoMinor: { type: integer, format: int64 }
+        providerPaymentId: { type: [string, "null"] }
+        status: { type: string, enum: [created, provider_pending, paid, fulfilled, expired, failed, needs_attention] }
+        createdAt: { type: string, format: date-time }
+        paidAt: { type: [string, "null"], format: date-time }
+    PaymentOrderPage:
       type: object
-      required: [id, merchantId, revision, apiUrl, publishableKey, sdkUrl, checkoutUrl, destinationPolicy, source, validationStatus, createdAt]
+      required: [orders, nextCursor]
       properties:
-        id: { type: string, format: uuid }
-        merchantId: { type: string, format: uuid }
-        revision: { type: integer, format: int64, minimum: 1 }
-        apiUrl: { type: string, format: uri }
+        orders: { type: array, items: { $ref: "#/components/schemas/PaymentOrder" } }
+        nextCursor: { type: [string, "null"], format: uuid }
+    OrderCheckout:
+      type: object
+      required: [order, providerPaymentId, clientSecret, checkoutUrl, publishableKey, sdkUrl]
+      description: The pinned order plus the provider checkout handles the browser completes payment against — a checkout to complete, never a paid order.
+      properties:
+        order: { $ref: "#/components/schemas/PaymentOrder" }
+        providerPaymentId: { type: [string, "null"] }
+        clientSecret: { type: [string, "null"] }
+        checkoutUrl: { type: [string, "null"], format: uri }
         publishableKey: { type: [string, "null"] }
         sdkUrl: { type: [string, "null"], format: uri }
-        checkoutUrl: { type: [string, "null"], format: uri }
-        destinationPolicy: { $ref: "#/components/schemas/ProviderDestinationPolicy" }
-        source: { type: string, enum: [owner, environment] }
-        validationStatus: { type: string, enum: [locallyValidated], description: Shape and destination syntax validated; external credentials and payments remain uncertified. }
-        createdAt: { type: string, format: date-time }
-    Merchant:
+    PaymentFulfillment:
       type: object
-      required: [id, businessId, name, rail, mode, accountId, connector, supportStatus, enabled, currentVersion]
+      required: [fulfillmentId, orderId, purpose, purposePayload, outboxId, fulfilledAt]
       properties:
-        id: { type: string, format: uuid }
-        businessId: { type: string, format: uuid }
-        name: { type: string }
-        rail: { $ref: "#/components/schemas/MerchantRail" }
-        mode: { $ref: "#/components/schemas/MerchantMode" }
-        accountId: { type: string }
-        connector: { type: string, enum: [stripe, direct] }
-        supportStatus: { type: string, enum: [primary, compatibility] }
-        enabled: { type: boolean }
-        currentVersion: { $ref: "#/components/schemas/MerchantVersion" }
-    MerchantPage:
+        fulfillmentId: { type: string, format: uuid }
+        orderId: { type: string, format: uuid }
+        purpose: { $ref: "#/components/schemas/OrderPurpose" }
+        purposePayload: { type: object, description: what the purpose's grant produced — the wallet entry, activated subscription or repaid receivable }
+        outboxId: { type: [string, "null"], format: uuid }
+        fulfilledAt: { type: string, format: date-time }
+    OrderFulfillment:
       type: object
-      required: [merchants, nextCursor]
+      required: [orderId, status, paidAt, fulfillment]
       properties:
-        merchants: { type: array, items: { $ref: "#/components/schemas/Merchant" } }
-        nextCursor: { type: [string, "null"], format: uuid }
-    MerchantVersionPage:
+        orderId: { type: string, format: uuid }
+        status: { type: string }
+        paidAt: { type: [string, "null"], format: date-time }
+        fulfillment: { anyOf: [{ $ref: "#/components/schemas/PaymentFulfillment" }, { type: "null" }] }
+    PaymentReconciliation:
       type: object
-      required: [versions, nextCursor]
+      required: [created, providerPending, paid, fulfilled, expired, failed, needsAttention, paidUnfulfilled]
       properties:
-        versions: { type: array, items: { $ref: "#/components/schemas/MerchantVersion" } }
-        nextCursor: { type: [integer, "null"], format: int64 }
+        created: { type: integer, format: int64 }
+        providerPending: { type: integer, format: int64 }
+        paid: { type: integer, format: int64 }
+        fulfilled: { type: integer, format: int64 }
+        expired: { type: integer, format: int64 }
+        failed: { type: integer, format: int64 }
+        needsAttention: { type: integer, format: int64 }
+        paidUnfulfilled: { type: array, items: { type: string, format: uuid }, description: the paid orders the recovery sweep still owes a fulfillment }
     ProviderMutationResult:
       type: object
       required: [id, resourceId, version]

@@ -5904,6 +5904,116 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/webhooks/merchants/{merchantId}/versions/{versionId}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Accept a signed event for an immutable merchant configuration
+         * @description Trusted path coordinates select the merchant and signing version before the raw body is verified. The payload cannot select a signing secret. Authenticated events are durably scoped by merchant and event ID across rotations. Reusing an ID with different signed content conflicts. Recognized payment events must match the pinned payment/customer/provider account/mode/amount/currency exactly before acceptance; unknown local payments remain pending for recovery. Receipt does not itself grant wallet credit or entitlement. Authenticated rejected and unsupported events are acknowledged without any financial effect.
+         */
+        post: {
+            parameters: {
+                query?: never;
+                header?: {
+                    /** @description Hyperswitch HMAC-SHA512 over exact request bytes. */
+                    "X-Webhook-Signature-512"?: string;
+                    /** @description Stripe timestamped signature; five-minute freshness window. */
+                    "Stripe-Signature"?: string;
+                    /** @description Airwallex Unix milliseconds; five-minute freshness window. */
+                    "x-timestamp"?: string;
+                    /** @description Airwallex HMAC-SHA256 over timestamp plus exact request bytes. */
+                    "x-signature"?: string;
+                };
+                path: {
+                    merchantId: string;
+                    versionId: string;
+                };
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": Record<string, never>;
+                };
+            };
+            responses: {
+                /** @description Authenticated event durably received or replayed; not a promise of fulfillment. */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content?: never;
+                };
+                400: components["responses"]["Error"];
+                401: components["responses"]["Error"];
+                404: components["responses"]["Error"];
+                409: components["responses"]["Error"];
+                500: components["responses"]["Error"];
+                503: components["responses"]["Error"];
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/business/merchants/{merchantId}/events": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Inspect redacted durable merchant intake
+         * @description Current business report-read capability. Ordered by immutable receipt UUID. Only normalized coordinates, state and rejection reason are returned; no raw provider payload or secret. Pending events are retained for reconciliation instead of discarded.
+         */
+        get: {
+            parameters: {
+                query?: {
+                    after?: string;
+                    limit?: number;
+                };
+                header?: never;
+                path: {
+                    merchantId: string;
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Redacted event page */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            data: components["schemas"]["MerchantEventPage"];
+                        };
+                    };
+                };
+                400: components["responses"]["Error"];
+                401: components["responses"]["Error"];
+                403: components["responses"]["Error"];
+                404: components["responses"]["Error"];
+                500: components["responses"]["Error"];
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/business/merchants": {
         parameters: {
             query?: never;
@@ -6130,6 +6240,230 @@ export interface paths {
                 503: components["responses"]["Error"];
             };
         };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/orders": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List the caller's payment orders
+         * @description The customer organization's own orders, paged by cursor. An order of another organization is never listed.
+         */
+        get: {
+            parameters: {
+                query?: {
+                    after?: string;
+                    limit?: number;
+                };
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description The caller's order page */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            data: components["schemas"]["PaymentOrderPage"];
+                        };
+                    };
+                };
+                400: components["responses"]["Error"];
+                401: components["responses"]["Error"];
+                403: components["responses"]["Error"];
+                500: components["responses"]["Error"];
+            };
+        };
+        put?: never;
+        /**
+         * Create a payment order
+         * @description The customer pins an immutable order in the display currency it was quoted. The server rates the conversion to ledger credits at the organization's effective display rate — `amountMinor`/`rate` are not request fields, so a client-supplied figure is a schema rejection, not a negotiated term. The expected payment and the order terms commit before the provider is called; the provider idempotency key is the order's durable local UUID, so a replayed `idempotencyKey` returns the standing order and its original checkout rather than a second charge. `purpose` fixes the one fulfillment arm the order may take — `walletTopup`, `bundle`, `planPeriod` or `invoiceRepayment`. The answer is a checkout to complete, never a paid order — `paid` is established only by the signed provider webhook.
+         */
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": components["schemas"]["OrderCreateRequest"];
+                };
+            };
+            responses: {
+                /** @description The pinned order and its provider checkout handles */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            data: components["schemas"]["OrderCheckout"];
+                        };
+                    };
+                };
+                400: components["responses"]["Error"];
+                401: components["responses"]["Error"];
+                403: components["responses"]["Error"];
+                409: components["responses"]["Error"];
+                500: components["responses"]["Error"];
+                503: components["responses"]["Error"];
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/orders/{orderId}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Read one payment order
+         * @description One order the caller's organization owns; another organization's order is a not-found. Status is the lifecycle state the signed webhook established — it can never be `paid` from this read surface.
+         */
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    orderId: string;
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description The order */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            data: components["schemas"]["PaymentOrder"];
+                        };
+                    };
+                };
+                400: components["responses"]["Error"];
+                401: components["responses"]["Error"];
+                403: components["responses"]["Error"];
+                404: components["responses"]["Error"];
+                500: components["responses"]["Error"];
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/orders/{orderId}/fulfillment": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Read an order's fulfillment status
+         * @description The order's lifecycle state plus its fulfillment record once it lands. `paid` but unfulfilled is the honest mid-state the recovery sweep drains; the record names exactly what the purpose's grant produced.
+         */
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    orderId: string;
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description The order state and its fulfillment record */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            data: components["schemas"]["OrderFulfillment"];
+                        };
+                    };
+                };
+                400: components["responses"]["Error"];
+                401: components["responses"]["Error"];
+                403: components["responses"]["Error"];
+                404: components["responses"]["Error"];
+                500: components["responses"]["Error"];
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/business/payment-reconciliation": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Reconcile paid orders against fulfillment
+         * @description Current business staff with report-read capability; a personal session, never a machine credential. Counts per order lifecycle state plus the paid-but-unfulfilled order ids the recovery sweep owes — the discrepancy between `paid` and `fulfilled` is the sweep's backlog, and `needsAttention` is the paid-but-mismatched set a human resolves, never an auto-credit.
+         */
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description The order reconciliation report */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            data: components["schemas"]["PaymentReconciliation"];
+                        };
+                    };
+                };
+                400: components["responses"]["Error"];
+                401: components["responses"]["Error"];
+                403: components["responses"]["Error"];
+                500: components["responses"]["Error"];
+            };
+        };
+        put?: never;
+        post?: never;
         delete?: never;
         options?: never;
         head?: never;
@@ -14665,6 +14999,152 @@ export interface components {
              * @description the settlement ledger entry's id — derivable as `entry_id_for(settlement_key_for(holdKey))`
              */
             settlementId?: string;
+        };
+        MerchantEvent: {
+            /** Format: uuid */
+            id: string;
+            /** Format: uuid */
+            merchantId: string;
+            /** Format: uuid */
+            versionId: string;
+            eventId: string;
+            /** @enum {string} */
+            kind: "succeeded" | "failed" | "expired" | "refundSucceeded" | "refundFailed" | "dispute" | "unsupported";
+            /** Format: uuid */
+            paymentId: string | null;
+            /** @enum {string} */
+            state: "pending" | "accepted" | "applied" | "rejected" | "ignored";
+            reason: string | null;
+        };
+        MerchantEventPage: {
+            events: components["schemas"]["MerchantEvent"][];
+            /** Format: uuid */
+            nextCursor: string | null;
+        };
+        /**
+         * @description The one fulfillment arm the order may take. `walletTopup` credits wallet cash only; `bundle` posts purchased credit plus a separate promo lot; `planPeriod` activates quota only; `invoiceRepayment` repays a drawn receivable only. No purpose both grants quota and wallet cash.
+         * @enum {string}
+         */
+        OrderPurpose: "walletTopup" | "bundle" | "planPeriod" | "invoiceRepayment";
+        /** @description The quoted display terms. The ledger amount is never client input — the server derives it from `displayAmountMinor` at the rate it owns, so a client-supplied `amountMinor` or `rate` is a schema rejection. */
+        OrderCreateRequest: {
+            idempotencyKey: string;
+            rail: components["schemas"]["MerchantRail"];
+            /** @enum {string} */
+            purpose: "walletTopup" | "bundle" | "planPeriod" | "invoiceRepayment";
+            /**
+             * Format: int64
+             * @description the fiat minor amount the provider will charge
+             */
+            displayAmountMinor: number;
+            displayCurrency: string;
+            /**
+             * Format: uuid
+             * @description the plan a `planPeriod` activates or the receivable an `invoiceRepayment` settles
+             */
+            purposeRef?: string | null;
+            /**
+             * Format: int64
+             * @description a `bundle` order's promo lot in credit-minor
+             */
+            promoMinor?: number | null;
+        };
+        PaymentOrder: {
+            /** Format: uuid */
+            orderId: string;
+            /** Format: uuid */
+            merchantId: string;
+            /** Format: uuid */
+            merchantVersionId: string;
+            /** Format: uuid */
+            organizationId: string;
+            purpose: components["schemas"]["OrderPurpose"];
+            /**
+             * Format: int64
+             * @description ledger credit-minor the fulfillment books
+             */
+            amountMinor: number;
+            /** @description the ledger credit code */
+            currency: string;
+            displayCurrency: string;
+            /**
+             * Format: int64
+             * @description the fiat amount the provider charged
+             */
+            displayAmountMinor: number;
+            /**
+             * Format: int64
+             * @description the pinned conversion numerator
+             */
+            rateMantissa: number;
+            /** @description the pinned conversion denominator exponent */
+            rateScale: number;
+            /** Format: uuid */
+            purposeRef: string | null;
+            /** Format: int64 */
+            promoMinor: number;
+            providerPaymentId: string | null;
+            /** @enum {string} */
+            status: "created" | "provider_pending" | "paid" | "fulfilled" | "expired" | "failed" | "needs_attention";
+            /** Format: date-time */
+            createdAt: string;
+            /** Format: date-time */
+            paidAt: string | null;
+        };
+        PaymentOrderPage: {
+            orders: components["schemas"]["PaymentOrder"][];
+            /** Format: uuid */
+            nextCursor: string | null;
+        };
+        /** @description The pinned order plus the provider checkout handles the browser completes payment against — a checkout to complete, never a paid order. */
+        OrderCheckout: {
+            order: components["schemas"]["PaymentOrder"];
+            providerPaymentId: string | null;
+            clientSecret: string | null;
+            /** Format: uri */
+            checkoutUrl: string | null;
+            publishableKey: string | null;
+            /** Format: uri */
+            sdkUrl: string | null;
+        };
+        PaymentFulfillment: {
+            /** Format: uuid */
+            fulfillmentId: string;
+            /** Format: uuid */
+            orderId: string;
+            purpose: components["schemas"]["OrderPurpose"];
+            /** @description what the purpose's grant produced — the wallet entry */
+            purposePayload: Record<string, never>;
+            /** Format: uuid */
+            outboxId: string | null;
+            /** Format: date-time */
+            fulfilledAt: string;
+        };
+        OrderFulfillment: {
+            /** Format: uuid */
+            orderId: string;
+            status: string;
+            /** Format: date-time */
+            paidAt: string | null;
+            fulfillment: components["schemas"]["PaymentFulfillment"] | null;
+        };
+        PaymentReconciliation: {
+            /** Format: int64 */
+            created: number;
+            /** Format: int64 */
+            providerPending: number;
+            /** Format: int64 */
+            paid: number;
+            /** Format: int64 */
+            fulfilled: number;
+            /** Format: int64 */
+            expired: number;
+            /** Format: int64 */
+            failed: number;
+            /** Format: int64 */
+            needsAttention: number;
+            /** @description the paid orders the recovery sweep still owes a fulfillment */
+            paidUnfulfilled: string[];
         };
         ProviderMutationResult: {
             /** Format: uuid */
