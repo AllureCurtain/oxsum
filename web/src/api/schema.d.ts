@@ -5820,6 +5820,238 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/business/merchants": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List business merchant settings
+         * @description Current business staff with report-read capability. Account identity, test/live mode, immutable current version and checkout enablement are explicit. Hyperswitch with Stripe is the primary rail; direct Stripe and Airwallex are compatibility rails. Saves validate locally and do not certify credentials or make provider calls.
+         */
+        get: {
+            parameters: {
+                query?: {
+                    after?: string;
+                    limit?: number;
+                };
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Authorized merchant result; no credential or ciphertext fields */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            data: components["schemas"]["MerchantPage"];
+                        };
+                    };
+                };
+                400: components["responses"]["Error"];
+                401: components["responses"]["Error"];
+                403: components["responses"]["Error"];
+                404: components["responses"]["Error"];
+                409: components["responses"]["Error"];
+                500: components["responses"]["Error"];
+                503: components["responses"]["Error"];
+            };
+        };
+        put?: never;
+        /**
+         * Create an encrypted merchant configuration
+         * @description Current business owner only. Creates a disabled merchant and its first immutable version. Account identity, rail, mode and name cannot change; credential rotation appends a version. Mutation, replay receipt and redacted audit commit atomically.
+         */
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": components["schemas"]["MerchantCreateRequest"];
+                };
+            };
+            responses: {
+                /** @description Authorized merchant result; no credential or ciphertext fields */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            data: components["schemas"]["MerchantMutationResult"];
+                        };
+                    };
+                };
+                400: components["responses"]["Error"];
+                401: components["responses"]["Error"];
+                403: components["responses"]["Error"];
+                404: components["responses"]["Error"];
+                409: components["responses"]["Error"];
+                500: components["responses"]["Error"];
+                503: components["responses"]["Error"];
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/business/merchants/{merchantId}/versions": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List immutable merchant versions
+         * @description Current business staff with report-read capability. Versions remain available for pinned orders and historical callback verification after rotation or checkout disablement. No secrets or ciphertexts are returned.
+         */
+        get: {
+            parameters: {
+                query?: {
+                    after?: number;
+                    limit?: number;
+                };
+                header?: never;
+                path: {
+                    merchantId: string;
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Authorized merchant result; no credential or ciphertext fields */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            data: components["schemas"]["MerchantVersionPage"];
+                        };
+                    };
+                };
+                400: components["responses"]["Error"];
+                401: components["responses"]["Error"];
+                403: components["responses"]["Error"];
+                404: components["responses"]["Error"];
+                409: components["responses"]["Error"];
+                500: components["responses"]["Error"];
+                503: components["responses"]["Error"];
+            };
+        };
+        put?: never;
+        /**
+         * Rotate a merchant configuration
+         * @description Current business owner only. Appends a complete immutable version and selects it for future checkouts; existing references retain their original version. All credentials must be resupplied. Keeps the merchant current checkout enablement. Exact retry returns its original version even after a later rotation.
+         */
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    merchantId: string;
+                };
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": components["schemas"]["MerchantVersionRequest"];
+                };
+            };
+            responses: {
+                /** @description Authorized merchant result; no credential or ciphertext fields */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            data: components["schemas"]["MerchantMutationResult"];
+                        };
+                    };
+                };
+                400: components["responses"]["Error"];
+                401: components["responses"]["Error"];
+                403: components["responses"]["Error"];
+                404: components["responses"]["Error"];
+                409: components["responses"]["Error"];
+                500: components["responses"]["Error"];
+                503: components["responses"]["Error"];
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/business/merchants/{merchantId}/status": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Set merchant checkout enablement
+         * @description Current business owner only. Disabling refuses future checkouts without invalidating pinned versions or historical callbacks. This is configuration enablement; it does not certify provider credentials or activate customer checkout before T15/T16.
+         */
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    merchantId: string;
+                };
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": components["schemas"]["MerchantStatusRequest"];
+                };
+            };
+            responses: {
+                /** @description Authorized merchant result; no credential or ciphertext fields */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            data: components["schemas"]["MerchantMutationResult"];
+                        };
+                    };
+                };
+                400: components["responses"]["Error"];
+                401: components["responses"]["Error"];
+                403: components["responses"]["Error"];
+                404: components["responses"]["Error"];
+                409: components["responses"]["Error"];
+                500: components["responses"]["Error"];
+                503: components["responses"]["Error"];
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/business/sale-books": {
         parameters: {
             query?: never;
@@ -12199,6 +12431,106 @@ export interface components {
             createdAt: string;
             /** @description one entry per model, at its current version */
             models: components["schemas"]["ModelPrice"][];
+        };
+        /** @enum {string} */
+        MerchantRail: "hyperswitch" | "stripe" | "airwallex";
+        /** @enum {string} */
+        MerchantMode: "test" | "live";
+        /** @description Complete configuration for one immutable version. Hyperswitch requires publishableKey and sdkUrl; Airwallex requires clientId and checkoutUrl. Fields belonging only to another rail are rejected. API destination rules are shared with provider connections; browser SDK/checkout URLs must be public HTTPS URLs without user info, query or fragment. Secrets are encrypted together and never returned. */
+        MerchantVersionInput: {
+            /** Format: uri */
+            apiUrl: string;
+            apiKey: string;
+            webhookSecret: string;
+            clientId?: string | null;
+            publishableKey?: string | null;
+            /** Format: uri */
+            sdkUrl?: string | null;
+            /** Format: uri */
+            checkoutUrl?: string | null;
+            destinationPolicy?: components["schemas"]["ProviderDestinationPolicy"];
+        };
+        MerchantCreateRequest: {
+            idempotencyKey: string;
+            reason: string;
+            name: string;
+            rail: components["schemas"]["MerchantRail"];
+            mode: components["schemas"]["MerchantMode"];
+            /** @description Stable provider merchant/account identifier; unique per business */
+            accountId: string;
+            config: components["schemas"]["MerchantVersionInput"];
+        };
+        MerchantVersionRequest: {
+            idempotencyKey: string;
+            reason: string;
+            config: components["schemas"]["MerchantVersionInput"];
+        };
+        MerchantStatusRequest: {
+            idempotencyKey: string;
+            reason: string;
+            enabled: boolean;
+        };
+        MerchantMutationResult: {
+            /** Format: uuid */
+            id: string;
+            /** Format: uuid */
+            merchantId: string;
+            /** Format: uuid */
+            versionId: string;
+            /** Format: int64 */
+            revision: number;
+            enabled: boolean;
+        };
+        MerchantVersion: {
+            /** Format: uuid */
+            id: string;
+            /** Format: uuid */
+            merchantId: string;
+            /** Format: int64 */
+            revision: number;
+            /** Format: uri */
+            apiUrl: string;
+            publishableKey: string | null;
+            /** Format: uri */
+            sdkUrl: string | null;
+            /** Format: uri */
+            checkoutUrl: string | null;
+            destinationPolicy: components["schemas"]["ProviderDestinationPolicy"];
+            /** @enum {string} */
+            source: "owner" | "environment";
+            /**
+             * @description Shape and destination syntax validated; external credentials and payments remain uncertified.
+             * @enum {string}
+             */
+            validationStatus: "locallyValidated";
+            /** Format: date-time */
+            createdAt: string;
+        };
+        Merchant: {
+            /** Format: uuid */
+            id: string;
+            /** Format: uuid */
+            businessId: string;
+            name: string;
+            rail: components["schemas"]["MerchantRail"];
+            mode: components["schemas"]["MerchantMode"];
+            accountId: string;
+            /** @enum {string} */
+            connector: "stripe" | "direct";
+            /** @enum {string} */
+            supportStatus: "primary" | "compatibility";
+            enabled: boolean;
+            currentVersion: components["schemas"]["MerchantVersion"];
+        };
+        MerchantPage: {
+            merchants: components["schemas"]["Merchant"][];
+            /** Format: uuid */
+            nextCursor: string | null;
+        };
+        MerchantVersionPage: {
+            versions: components["schemas"]["MerchantVersion"][];
+            /** Format: int64 */
+            nextCursor: number | null;
         };
         /** @description Customer rates only. Optional cache/reasoning rates fall back to their base input/output rate. No supplier cost fields. */
         SalePriceSet: {
