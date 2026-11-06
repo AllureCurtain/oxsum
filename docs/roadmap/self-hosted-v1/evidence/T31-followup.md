@@ -83,3 +83,16 @@ destination policy admitted all of them, which is the behaviour the earlier
 runs could not reach. GitHub `git push` needed the local HTTP proxy pinned
 (`http://127.0.0.1:7897`) because git does not read `scutil`; `gh` and
 `curl` pick the system proxy up themselves.
+
+## Gate outcome (resolved after this document's first commit)
+
+The candidate-gate story begun in `T31-partial.md` §1 closed green: dispatch
+`42240437323` on `930794c` ran all ten jobs to `success` and produced the
+`candidate-bundle` artifact — the first end-to-end clean run on a real SHA.
+Three dispatches each surfaced one latent defect and each was fixed in its
+own PR before the next attempt: `wasm-bindgen` release-asset 404 (#677,
+crates.io install), missing `sccache-action` before the compile step plus a
+missing `build-verify-wasm.sh` ahead of `npm pack` (#679), and a
+`${{ needs.resolve.outputs.sha }}` typo the earlier failures had hidden
+(#681). The gate now does what T29 designed it to do on an arbitrary main
+commit.
