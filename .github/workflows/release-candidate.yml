@@ -174,9 +174,11 @@ jobs:
         run: |
           version="$(sed -n '/name = "wasm-bindgen"/{n;s/.*version = "\(.*\)"/\1/p;q}' Cargo.lock)"
           echo "wasm-bindgen $version"
-          curl -fsSL "https://github.com/rustwasm/wasm-bindgen/releases/download/v${version}/wasm-bindgen-${version}-x86_64-unknown-linux-musl.tar.gz" \
-            | sudo tar -xz --strip-components=1 -C /usr/local/bin \
-                "wasm-bindgen-${version}-x86_64-unknown-linux-musl/wasm-bindgen"
+          # crates.io is the durable source: the GitHub release asset for an old
+          # wasm-bindgen can disappear (0.2.129's did when the repo moved to
+          # wasm-bindgen/wasm-bindgen), while `cargo install --locked` builds
+          # the exact lockfile version from a source that cannot be deleted.
+          cargo install wasm-bindgen-cli --version "$version" --locked --root /usr/local
       - run: bash scripts/build-verify-wasm.sh
       - uses: actions/upload-artifact@v7
         with:
@@ -233,9 +235,11 @@ jobs:
       - name: Install wasm-bindgen-cli at the lockfile's version
         run: |
           version="$(sed -n '/name = "wasm-bindgen"/{n;s/.*version = "\(.*\)"/\1/p;q}' Cargo.lock)"
-          curl -fsSL "https://github.com/rustwasm/wasm-bindgen/releases/download/v${version}/wasm-bindgen-${version}-x86_64-unknown-linux-musl.tar.gz" \
-            | sudo tar -xz --strip-components=1 -C /usr/local/bin \
-                "wasm-bindgen-${version}-x86_64-unknown-linux-musl/wasm-bindgen"
+          # crates.io is the durable source: the GitHub release asset for an old
+          # wasm-bindgen can disappear (0.2.129's did when the repo moved to
+          # wasm-bindgen/wasm-bindgen), while `cargo install --locked` builds
+          # the exact lockfile version from a source that cannot be deleted.
+          cargo install wasm-bindgen-cli --version "$version" --locked --root /usr/local
       - name: Pack the tarball and run the clean consumer
         run: bash scripts/check-verify-consumer.sh
       - name: Keep the exact tarball the consumer verified
@@ -294,9 +298,11 @@ jobs:
       - name: Install wasm-bindgen-cli at the lockfile's version
         run: |
           version="$(sed -n '/name = "wasm-bindgen"/{n;s/.*version = "\(.*\)"/\1/p;q}' Cargo.lock)"
-          curl -fsSL "https://github.com/rustwasm/wasm-bindgen/releases/download/v${version}/wasm-bindgen-${version}-x86_64-unknown-linux-musl.tar.gz" \
-            | sudo tar -xz --strip-components=1 -C /usr/local/bin \
-                "wasm-bindgen-${version}-x86_64-unknown-linux-musl/wasm-bindgen"
+          # crates.io is the durable source: the GitHub release asset for an old
+          # wasm-bindgen can disappear (0.2.129's did when the repo moved to
+          # wasm-bindgen/wasm-bindgen), while `cargo install --locked` builds
+          # the exact lockfile version from a source that cannot be deleted.
+          cargo install wasm-bindgen-cli --version "$version" --locked --root /usr/local
       - run: rustup target add wasm32-unknown-unknown
       - run: bash scripts/verify-examples.sh
 
