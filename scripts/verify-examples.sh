@@ -117,7 +117,13 @@ run() {
 
 # The consumption walkthrough: invite → redeem → top up → gateway → usage →
 # evidence. It needs the packed SDK; build and pack it the way the consumer
-# check does.
+# check does. The tarball ships the wasm module out of `web/verify-sdk/wasm/`,
+# so `build-verify-wasm.sh` must run first — a pack against the committed
+# placeholders fails the wasm-present check the SDK's own packing asserts.
+echo
+echo "== Building the wasm module =="
+bash scripts/build-verify-wasm.sh
+
 echo
 echo "== Packing verify-oxsum-bill =="
 if [ ! -d web/verify-sdk/node_modules ]; then
