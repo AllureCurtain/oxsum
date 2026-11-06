@@ -706,8 +706,11 @@ balance: quota spends never move a ledger account — they run the period's
 counter against the quota the plan carried when the binding was made (a plan
 edit later does not re-meter a binding already running). While a subscription
 is `active`, every gateway request draws from it first, up to the freeze, and
-the wallet holds only the remainder; on a plan with no `quotaMinor` at all the
-subscription admits every draw in full and the wallet never sees that traffic.
+the wallet holds only the remainder — a request the quota covers in full takes
+no wallet hold at all, so a zero-balance organization on a working plan still
+serves and its bill carries a zero-cost receipt in place of a charge (issue
+#602); on a plan with no `quotaMinor` at all the subscription admits every
+draw in full and the wallet never sees that traffic.
 `GET /api/v1/org/subscription` answers the live binding (`consumedMinor`
 against the snapshotted `quotaMinor`, the `currentPeriodEnd` it rolls at, and
 whether it may overflow), or `data: null` while none is bound.

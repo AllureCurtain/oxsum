@@ -169,6 +169,26 @@ impl Db {
         Ok(())
     }
 
+    /// [`clear_open_hold`](Self::clear_open_hold) inside the caller's
+    /// transaction (issue #602): a settled hold's watch row dies with the
+    /// settlement, never outliving it by a commit — a rolled-back settle keeps
+    /// the row watched so the sweeper still owns the recovery.
+    ///
+    /// # Errors
+    ///
+    /// Storage failures surface as [`WalletError`].
+    pub async fn clear_open_hold_in(
+        &self,
+        tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+        hold_key: &str,
+    ) -> Result<(), WalletError> {
+        sqlx::query("DELETE FROM oxsum.open_holds WHERE hold_key = $1")
+            .bind(hold_key)
+            .execute(&mut **tx)
+            .await?;
+        Ok(())
+    }
+
     /// Records one failed sweep attempt against a watched hold: bumps
     /// `sweep_attempts`, stores the error and, the first time the count reaches
     /// [`DEAD_AFTER_SWEEP_ATTEMPTS`], sets `dead_at` — the dead-letter marker.
