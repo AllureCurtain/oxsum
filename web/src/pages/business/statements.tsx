@@ -1,0 +1,278 @@
+import { useState } from "react";
+import { useTranslation } from "react-i18next";
+import { FileText, Receipt } from "lucide-react";
+import {
+  useBusiness,
+  useBusinessJournals,
+  useBusinessStatements,
+  useCapability,
+  useDisplay,
+  useReleaseStatement,
+  useVoidJournal,
+} from "../../api/hooks";
+import {
+  Banner,
+  Button,
+  Card,
+  Cr,
+  EmptyRows,
+  Kpi,
+  TableShell,
+  Td,
+} from "../../components/ui";
+import { AuditAction, DetailGrid, Field2, stateBadge } from "./biz";
+
+// ---------------------------------------------------------------------------
+// /app/business#business/statements + #business/receivables — the plan-fee
+// receivables (T21) and invoice journals (T20). A statement detail resolves
+// through `release-review` (extendGrace/void); a journal voids under a reason.
+// Receivables buckets issued|past_due statements by days-past-due.
+// ---------------------------------------------------------------------------
+
+function StatementRows() {
+  const { t } = useTranslation();
+  const display = useDisplay();
+  const statements = useBusinessStatements({});
+  const release = useReleaseStatement();
+  const canWrite = useCapability(useBusiness().data, "fundsWrite");
+  const [expanded, setExpanded] = useState<string | null>(null);
+
+  return (
+    <Card title={t("biz.statements.listTitle")}>
+      {statements.isError ? (
+        <Banner tone="error">{t("biz.loadError")}</Banner>
+      ) : (
+        <TableShell
+          head={[
+            t("biz.statements.colId"),
+            t("biz.statements.colOrg"),
+            t("biz.statements.colPeriod"),
+            t("common.status"),
+            { label: t("common.total"), align: "right" },
+            { label: t("biz.statements.colOwed"), align: "right" },
+            t("biz.statements.colDue"),
+            "",
+          ]}
+          loading={statements.isLoading ? 5 : 0}
+        >
+          {!statements.isLoading &&
+            (statements.data?.statements ?? []).map((s) => (
+              <>
+                <tr key={s.statementId} className="cursor-pointer" onClick={() => setExpanded(expanded === s.statementId ? null : s.statementId)}>
+                  <Td mono truncate>{s.statementId.slice(0, 8)}</Td>
+                  <Td mono truncate>{s.organizationId.slice(0, 8)}</Td>
+                  <Td mono>{s.periodIndex ?? "—"}</Td>
+                  <td>{stateBadge(s.state)}</td>
+                  <Td mono align="right"><Cr minor={s.totalMinor} currency={display} /></Td>
+                  <Td mono align="right"><Cr minor={s.totalMinor - s.paidMinor} currency={display} /></Td>
+                  <Td mono>{s.dueAt?.slice(0, 10) ?? "—"}</Td>
+                  <td className="text-right">
+                    {canWrite && s.state === "pastDue" ? (
+                      <AuditAction
+                        trigger={<Button tone="ghost">{t("biz.statements.extendGrace")}</Button>}
+                        title={t("biz.statements.graceTitle")}
+                        description={t("biz.statements.graceExplain")}
+                        confirmLabel={t("biz.statements.extendGrace")}
+                        reasonLabel={t("biz.reason")}
+                        isPending={release.isPending}
+                        error={release.error}
+                        onConfirm={(reason, key) =>
+                          release.mutate({ statementId: s.statementId, idempotencyKey: key, action: "extendGrace", reason })
+                        }
+                      />
+                    ) : null}
+                    {canWrite && (s.state === "issued" || s.state === "pastDue") ? (
+                      <AuditAction
+                        trigger={<Button tone="danger">{t("biz.statements.void")}</Button>}
+                        title={t("biz.statements.voidTitle")}
+                        description={t("biz.statements.voidExplain")}
+                        confirmLabel={t("biz.statements.void")}
+                        tone="danger"
+                        reasonLabel={t("biz.reason")}
+                        isPending={release.isPending}
+                        error={release.error}
+                        onConfirm={(reason, key) =>
+                          release.mutate({ statementId: s.statementId, idempotencyKey: key, action: "void", reason })
+                        }
+                      />
+                    ) : null}
+                  </td>
+                </tr>
+                {expanded === s.statementId ? (
+                  <tr key={`${s.statementId}-d`}>
+                    <td colSpan={8} className="bg-canvas-inset">
+                      <DetailGrid>
+                        <Field2 label={t("biz.statements.issued")}>{s.issuedAt?.slice(0, 10) ?? "—"}</Field2>
+                        <Field2 label={t("biz.statements.paidAt")}>{s.paidAt?.slice(0, 10) ?? "—"}</Field2>
+                        <Field2 label={t("biz.statements.pastDueAt")}>{s.pastDueAt?.slice(0, 10) ?? "—"}</Field2>
+                        <Field2 label={t("biz.statements.journal")}>
+                          <span className="mono text-xs">{s.journalId?.slice(0, 8) ?? "—"}</span>
+                        </Field2>
+                        {s.voidReason ? <Field2 label={t("biz.statements.voidReason")}>{s.voidReason}</Field2> : null}
+                      </DetailGrid>
+                    </td>
+                  </tr>
+                ) : null}
+              </>
+            ))}
+          {!statements.isLoading && (statements.data?.statements.length ?? 0) === 0 ? (
+            <EmptyRows colSpan={8} icon={<FileText />}>
+              {t("biz.statements.empty")}
+            </EmptyRows>
+          ) : null}
+        </TableShell>
+      )}
+    </Card>
+  );
+}
+
+function JournalRows() {
+  const { t } = useTranslation();
+  const display = useDisplay();
+  const journals = useBusinessJournals({});
+  const voidJournal = useVoidJournal();
+  const canWrite = useCapability(useBusiness().data, "fundsWrite");
+
+  return (
+    <Card title={t("biz.journals.listTitle")}>
+      {journals.isError ? (
+        <Banner tone="error">{t("biz.loadError")}</Banner>
+      ) : (
+        <TableShell
+          density="compact"
+          head={[
+            t("biz.journals.colId"),
+            t("biz.journals.colOrg"),
+            t("common.status"),
+            { label: t("common.total"), align: "right" },
+            { label: t("biz.journals.colSettled"), align: "right" },
+            { label: t("biz.journals.colDisputed"), align: "right" },
+            "",
+          ]}
+          loading={journals.isLoading ? 4 : 0}
+        >
+          {!journals.isLoading &&
+            (journals.data?.journals ?? []).map((j) => (
+              <tr key={j.journalId}>
+                <Td mono truncate>{j.journalId.slice(0, 8)}</Td>
+                <Td mono truncate>{j.organizationId.slice(0, 8)}</Td>
+                <td>{stateBadge(j.state)}</td>
+                <Td mono align="right"><Cr minor={j.totalMinor} currency={display} /></Td>
+                <Td mono align="right"><Cr minor={j.settledMinor} currency={display} /></Td>
+                <Td mono align="right"><Cr minor={j.disputedMinor} currency={display} /></Td>
+                <td className="text-right">
+                  {canWrite && j.state === "posted" ? (
+                    <AuditAction
+                      trigger={<Button tone="danger">{t("biz.journals.void")}</Button>}
+                      title={t("biz.journals.voidTitle")}
+                      description={t("biz.journals.voidExplain")}
+                      confirmLabel={t("biz.journals.void")}
+                      tone="danger"
+                      reasonLabel={t("biz.reason")}
+                      isPending={voidJournal.isPending}
+                      error={voidJournal.error}
+                      onConfirm={(reason, key) =>
+                        voidJournal.mutate({ journalId: j.journalId, idempotencyKey: key, reason })
+                      }
+                    />
+                  ) : null}
+                </td>
+              </tr>
+            ))}
+          {!journals.isLoading && (journals.data?.journals.length ?? 0) === 0 ? (
+            <EmptyRows colSpan={7}>{t("biz.journals.empty")}</EmptyRows>
+          ) : null}
+        </TableShell>
+      )}
+    </Card>
+  );
+}
+
+export function BusinessStatements() {
+  const { t } = useTranslation();
+  return (
+    <div className="flex flex-col gap-6">
+      <h2 className="text-xl font-bold">{t("biz.statements.title")}</h2>
+      <StatementRows />
+      <JournalRows />
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// receivables — aging of the open receivable: `issued`/`pastDue` statements
+// bucketed by days past `dueAt`, plus the outstanding total. Derived from the
+// same business statements read; no separate endpoint needed.
+// ---------------------------------------------------------------------------
+
+export function BusinessReceivables() {
+  const { t } = useTranslation();
+  const display = useDisplay();
+  const statements = useBusinessStatements({});
+  const open = (statements.data?.statements ?? []).filter(
+    (s) => s.state === "issued" || s.state === "pastDue",
+  );
+  const now = Date.now();
+  const bucket = (s: { dueAt: string | null; totalMinor: number; paidMinor: number }) => {
+    if (!s.dueAt) return 0;
+    return Math.floor((now - Date.parse(s.dueAt)) / 86_400_000);
+  };
+  const buckets = [
+    { label: t("biz.receivables.current"), rows: open.filter((s) => bucket(s) <= 0) },
+    { label: t("biz.receivables.d30"), rows: open.filter((s) => bucket(s) > 0 && bucket(s) <= 30) },
+    { label: t("biz.receivables.d60"), rows: open.filter((s) => bucket(s) > 30 && bucket(s) <= 60) },
+    { label: t("biz.receivables.d90"), rows: open.filter((s) => bucket(s) > 60) },
+  ];
+  const total = open.reduce((acc, s) => acc + (s.totalMinor - s.paidMinor), 0);
+
+  return (
+    <div className="flex flex-col gap-6">
+      <h2 className="text-xl font-bold">{t("biz.receivables.title")}</h2>
+      <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+        {buckets.map((b) => (
+          <Kpi
+            key={b.label}
+            label={b.label}
+            icon={<Receipt />}
+            value={<Cr minor={b.rows.reduce((a, s) => a + (s.totalMinor - s.paidMinor), 0)} currency={display} />}
+            hint={t("biz.receivables.count", { count: b.rows.length })}
+          />
+        ))}
+      </div>
+      <Card title={t("biz.receivables.openTitle")} actions={<span className="text-sm font-semibold tabular-nums"><Cr minor={total} currency={display} /></span>}>
+        {statements.isError ? (
+          <Banner tone="error">{t("biz.loadError")}</Banner>
+        ) : (
+          <TableShell
+            head={[
+              t("biz.statements.colId"),
+              t("biz.statements.colOrg"),
+              t("common.status"),
+              { label: t("biz.receivables.colOwed"), align: "right" },
+              { label: t("biz.receivables.colDaysPast"), align: "right" },
+              t("biz.statements.colDue"),
+            ]}
+            loading={statements.isLoading ? 5 : 0}
+          >
+            {!statements.isLoading &&
+              open.map((s) => (
+                <tr key={s.statementId}>
+                  <Td mono truncate>{s.statementId.slice(0, 8)}</Td>
+                  <Td mono truncate>{s.organizationId.slice(0, 8)}</Td>
+                  <td>{stateBadge(s.state)}</td>
+                  <Td mono align="right"><Cr minor={s.totalMinor - s.paidMinor} currency={display} /></Td>
+                  <Td mono align="right">{Math.max(0, bucket(s))}</Td>
+                  <Td mono>{s.dueAt?.slice(0, 10) ?? "—"}</Td>
+                </tr>
+              ))}
+            {!statements.isLoading && open.length === 0 ? (
+              <EmptyRows colSpan={6} icon={<Receipt />}>
+                {t("biz.receivables.empty")}
+              </EmptyRows>
+            ) : null}
+          </TableShell>
+        )}
+      </Card>
+    </div>
+  );
+}
