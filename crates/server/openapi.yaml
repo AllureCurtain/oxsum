@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: oxsum API
-  version: 0.109.0
+  version: 0.110.0
   x-consumption-cache: Cached responses are bound to the exact consumption key as well as customer, channel, model and prompt. Pre-upgrade cache digests are misses.
   description: |
     Common conventions (auth, idempotency, error format, money units) are documented in docs/api.md.
@@ -4552,6 +4552,140 @@ paths:
         "403": { $ref: "#/components/responses/Error" }
         "404": { $ref: "#/components/responses/Error" }
         "409": { $ref: "#/components/responses/Error" }
+  /api/v1/business/merchants:
+    get:
+      summary: List business merchant settings
+      description: Current business staff with report-read capability. Account identity, test/live mode, immutable current version and checkout enablement are explicit. Hyperswitch with Stripe is the primary rail; direct Stripe and Airwallex are compatibility rails. Saves validate locally and do not certify credentials or make provider calls.
+      security: [{ sessionCookie: [] }]
+      parameters:
+        - { name: after, in: query, schema: { type: string, format: uuid } }
+        - { name: limit, in: query, schema: { type: integer, minimum: 1, maximum: 100, default: 50 } }
+      responses:
+        "200":
+          description: Authorized merchant result; no credential or ciphertext fields
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data: { $ref: "#/components/schemas/MerchantPage" }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "409": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
+        "503": { $ref: "#/components/responses/Error" }
+    post:
+      summary: Create an encrypted merchant configuration
+      description: Current business owner only. Creates a disabled merchant and its first immutable version. Account identity, rail, mode and name cannot change; credential rotation appends a version. Mutation, replay receipt and redacted audit commit atomically.
+      security: [{ sessionCookie: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/MerchantCreateRequest" }
+      responses:
+        "200":
+          description: Authorized merchant result; no credential or ciphertext fields
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data: { $ref: "#/components/schemas/MerchantMutationResult" }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "409": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
+        "503": { $ref: "#/components/responses/Error" }
+  /api/v1/business/merchants/{merchantId}/versions:
+    get:
+      summary: List immutable merchant versions
+      description: Current business staff with report-read capability. Versions remain available for pinned orders and historical callback verification after rotation or checkout disablement. No secrets or ciphertexts are returned.
+      security: [{ sessionCookie: [] }]
+      parameters:
+        - { name: merchantId, in: path, required: true, schema: { type: string, format: uuid } }
+        - { name: after, in: query, schema: { type: integer, format: int64, minimum: 0 } }
+        - { name: limit, in: query, schema: { type: integer, minimum: 1, maximum: 100, default: 50 } }
+      responses:
+        "200":
+          description: Authorized merchant result; no credential or ciphertext fields
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data: { $ref: "#/components/schemas/MerchantVersionPage" }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "409": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
+        "503": { $ref: "#/components/responses/Error" }
+    post:
+      summary: Rotate a merchant configuration
+      description: Current business owner only. Appends a complete immutable version and selects it for future checkouts; existing references retain their original version. All credentials must be resupplied. Keeps the merchant current checkout enablement. Exact retry returns its original version even after a later rotation.
+      security: [{ sessionCookie: [] }]
+      parameters:
+        - { name: merchantId, in: path, required: true, schema: { type: string, format: uuid } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/MerchantVersionRequest" }
+      responses:
+        "200":
+          description: Authorized merchant result; no credential or ciphertext fields
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data: { $ref: "#/components/schemas/MerchantMutationResult" }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "409": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
+        "503": { $ref: "#/components/responses/Error" }
+  /api/v1/business/merchants/{merchantId}/status:
+    post:
+      summary: Set merchant checkout enablement
+      description: Current business owner only. Disabling refuses future checkouts without invalidating pinned versions or historical callbacks. This is configuration enablement; it does not certify provider credentials or activate customer checkout before T15/T16.
+      security: [{ sessionCookie: [] }]
+      parameters:
+        - { name: merchantId, in: path, required: true, schema: { type: string, format: uuid } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/MerchantStatusRequest" }
+      responses:
+        "200":
+          description: Authorized merchant result; no credential or ciphertext fields
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data: { $ref: "#/components/schemas/MerchantMutationResult" }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "409": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
+        "503": { $ref: "#/components/responses/Error" }
   /api/v1/business/channels:
     get:
       summary: List business provider channels
@@ -10508,6 +10642,104 @@ components:
           description: "`usage` when the declared usage priced inside the freeze, `capped` when it priced above and the freeze was charged, `released` when the hold was let go at zero"
         priceVersion: { type: integer, minimum: 1, description: the price version the usage priced at — the hold's pin on `settle`/`release`, the latest on a one-shot }
         settlementId: { type: string, format: uuid, description: the settlement ledger entry's id — derivable as `entry_id_for(settlement_key_for(holdKey))` }
+    MerchantRail:
+      type: string
+      enum: [hyperswitch, stripe, airwallex]
+    MerchantMode:
+      type: string
+      enum: [test, live]
+    MerchantVersionInput:
+      type: object
+      additionalProperties: false
+      required: [apiUrl, apiKey, webhookSecret]
+      description: Complete configuration for one immutable version. Hyperswitch requires publishableKey and sdkUrl; Airwallex requires clientId and checkoutUrl. Fields belonging only to another rail are rejected. API destination rules are shared with provider connections; browser SDK/checkout URLs must be public HTTPS URLs without user info, query or fragment. Secrets are encrypted together and never returned.
+      properties:
+        apiUrl: { type: string, format: uri }
+        apiKey: { type: string, minLength: 8, maxLength: 8192, writeOnly: true }
+        webhookSecret: { type: string, minLength: 8, maxLength: 8192, writeOnly: true }
+        clientId: { type: [string, "null"], minLength: 1, maxLength: 200, writeOnly: true }
+        publishableKey: { type: [string, "null"], minLength: 1, maxLength: 200 }
+        sdkUrl: { type: [string, "null"], format: uri }
+        checkoutUrl: { type: [string, "null"], format: uri }
+        destinationPolicy: { $ref: "#/components/schemas/ProviderDestinationPolicy" }
+    MerchantCreateRequest:
+      type: object
+      additionalProperties: false
+      required: [idempotencyKey, reason, name, rail, mode, accountId, config]
+      properties:
+        idempotencyKey: { type: string, minLength: 1, maxLength: 200 }
+        reason: { type: string, minLength: 1, maxLength: 500 }
+        name: { type: string, minLength: 1, maxLength: 80, pattern: "^[a-z0-9]+(-[a-z0-9]+)*$" }
+        rail: { $ref: "#/components/schemas/MerchantRail" }
+        mode: { $ref: "#/components/schemas/MerchantMode" }
+        accountId: { type: string, minLength: 1, maxLength: 200, description: Stable provider merchant/account identifier; unique per business, rail and mode. }
+        config: { $ref: "#/components/schemas/MerchantVersionInput" }
+    MerchantVersionRequest:
+      type: object
+      additionalProperties: false
+      required: [idempotencyKey, reason, config]
+      properties:
+        idempotencyKey: { type: string, minLength: 1, maxLength: 200 }
+        reason: { type: string, minLength: 1, maxLength: 500 }
+        config: { $ref: "#/components/schemas/MerchantVersionInput" }
+    MerchantStatusRequest:
+      type: object
+      additionalProperties: false
+      required: [idempotencyKey, reason, enabled]
+      properties:
+        idempotencyKey: { type: string, minLength: 1, maxLength: 200 }
+        reason: { type: string, minLength: 1, maxLength: 500 }
+        enabled: { type: boolean }
+    MerchantMutationResult:
+      type: object
+      required: [id, merchantId, versionId, revision, enabled]
+      properties:
+        id: { type: string, format: uuid }
+        merchantId: { type: string, format: uuid }
+        versionId: { type: string, format: uuid }
+        revision: { type: integer, format: int64, minimum: 1 }
+        enabled: { type: boolean }
+    MerchantVersion:
+      type: object
+      required: [id, merchantId, revision, apiUrl, publishableKey, sdkUrl, checkoutUrl, destinationPolicy, source, validationStatus, createdAt]
+      properties:
+        id: { type: string, format: uuid }
+        merchantId: { type: string, format: uuid }
+        revision: { type: integer, format: int64, minimum: 1 }
+        apiUrl: { type: string, format: uri }
+        publishableKey: { type: [string, "null"] }
+        sdkUrl: { type: [string, "null"], format: uri }
+        checkoutUrl: { type: [string, "null"], format: uri }
+        destinationPolicy: { $ref: "#/components/schemas/ProviderDestinationPolicy" }
+        source: { type: string, enum: [owner, environment] }
+        validationStatus: { type: string, enum: [locallyValidated], description: Shape and destination syntax validated; external credentials and payments remain uncertified. }
+        createdAt: { type: string, format: date-time }
+    Merchant:
+      type: object
+      required: [id, businessId, name, rail, mode, accountId, connector, supportStatus, enabled, currentVersion]
+      properties:
+        id: { type: string, format: uuid }
+        businessId: { type: string, format: uuid }
+        name: { type: string }
+        rail: { $ref: "#/components/schemas/MerchantRail" }
+        mode: { $ref: "#/components/schemas/MerchantMode" }
+        accountId: { type: string }
+        connector: { type: string, enum: [stripe, direct] }
+        supportStatus: { type: string, enum: [primary, compatibility] }
+        enabled: { type: boolean }
+        currentVersion: { $ref: "#/components/schemas/MerchantVersion" }
+    MerchantPage:
+      type: object
+      required: [merchants, nextCursor]
+      properties:
+        merchants: { type: array, items: { $ref: "#/components/schemas/Merchant" } }
+        nextCursor: { type: [string, "null"], format: uuid }
+    MerchantVersionPage:
+      type: object
+      required: [versions, nextCursor]
+      properties:
+        versions: { type: array, items: { $ref: "#/components/schemas/MerchantVersion" } }
+        nextCursor: { type: [integer, "null"], format: int64 }
     ProviderMutationResult:
       type: object
       required: [id, resourceId, version]
