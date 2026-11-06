@@ -117,7 +117,7 @@ async fn ownership_upgrade_preserves_history_and_maps_new_customers_without_staf
             .unwrap();
     }
     sqlx::query("INSERT INTO oxsum.subscription_plans (plan_id,name,quota_minor,reset_period) VALUES ($1,'legacy',100,'monthly')").bind(Uuid::new_v4()).execute(db.pool()).await.unwrap();
-    // The pre-0088 usage_records shape: `cost_basis` is a column the upgrade
+    // The pre-0089 usage_records shape: `cost_basis` is a column the upgrade
     // adds, so the historical fixture writes the row under the column set the
     // old schema actually had — leaving `cost_basis` NULL, exactly as a real
     // pre-column row reads after the migration lands.

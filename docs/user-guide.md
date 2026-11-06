@@ -430,6 +430,23 @@ mismatch is held for review rather than applied, and a replayed or out-of-order
 delivery never credits twice. A rail without the bootstrap keeps its ordinary
 unscoped behavior.
 
+The order form (issue #606) pins what the payment buys before any provider call:
+`POST /api/v1/orders` takes the quoted `displayAmountMinor`/`displayCurrency`,
+the `purpose` — `walletTopup`, `bundle`, `planPeriod` or `invoiceRepayment` — and
+the `idempotencyKey` that anchors it, and answers the provider checkout to
+complete (`{order, providerPaymentId, clientSecret, checkoutUrl, publishableKey,
+sdkUrl}`). The ledger amount is the server's own rated conversion at the
+organization's display rate, so it is never a field you send. Repeating the call
+with the same key answers the standing order and the same checkout rather than
+charging again; paying on the provider's page and returning does not itself mark
+the order paid — only the provider's signed webhook does, and the fulfillment
+that credits the wallet, activates the plan or repays the receivable lands right
+after, or on the recovery sweep if the process stopped in between. A paid event
+whose amount disagrees with what the order pinned is held for the business to
+review, never credited. `GET /api/v1/orders` lists your orders and
+`GET /api/v1/orders/{orderId}/fulfillment` shows the state and what the
+fulfillment granted.
+
 On a deployment running the real rail (`OXSUM_X402_FACILITATOR_*` — an x402-rs
 facilitator sidecar verifies the authorization on-chain, settles it, and the
 chain transaction hash lands on the deposit row) or pinning a stand-in payer key
@@ -735,6 +752,43 @@ without a `stripePriceId` are bound by the operator only. The bill still
 verifies: a settled turn's record names the `subscriptionId` and `periodId`
 its draw ran under beside `drawnMinor`/`chargedMinor`, so what the period paid
 is provable, not just claimed.
+
+## Paid plans (sold catalogue)
+
+Purpose: buy the plan a business actually sells — a priced entitlement with a
+real lifecycle, not an operator-bound quota.
+
+A business publishes its catalogue as immutable versions
+(`GET /api/v1/business/plans` for staff; `POST` mints a new version, never
+rewrites a sold one). `GET /api/v1/plans` is the on-sale read any credential
+may make: each entry is one version's terms — `priceMinor`, `quotaMinor` per
+period, `periodKind` (`calendarMonth` ends at the next UTC month boundary;
+`anniversary` rolls on the activation date's day-of-month, clamped into
+shorter months — a January 31 plan renews February 28, then March 31), and
+`overageEnabled`, the opt-in that lets an exhausted period draw past quota
+against the wallet.
+
+Buying is a two-step the business staff drives:
+
+1. `PUT /api/v1/business/customers/{organizationId}/plan` with
+   `{"planVersionId"}` binds you — `pendingPayment` for a priced plan, active
+   immediately for a free one bound with `{"complimentaryGrant": "<uuid>"}`.
+2. Pay through a `planPeriod` order (`POST /api/v1/orders` with
+   `purpose: "planPeriod"` and `purposeRef` = your `customerPlanId`): once the
+   signed webhook marks it paid and fulfillment lands, period 0 activates and
+   your plan turns `active`. `GET /api/v1/org/plan` shows the state plus every
+   period you have authorized — each carrying its bounds and what authorized
+   it (`paymentOrder` or `complimentary`).
+
+A period only ever exists because its authorization does — the rollover timer
+can never open an unpaid one. When the boundary passes without a paid
+renewal the plan goes `pastDue`: the ended period's unspent remainder still
+serves your requests, but no new quota issues until a renewal order
+fulfills — and that period chains off the previous end, so a late renewal
+does not skip the gap. `POST /api/v1/org/plan/cancel` marks
+`cancelAtPeriodEnd` — the paid period still serves to its end, then the plan
+closes without renewing. `POST /api/v1/org/plan/change` books a swap to
+another version at the next boundary; there is no mid-period pro-rating.
 
 ## Webhooks
 

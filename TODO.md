@@ -38,11 +38,11 @@ The accepted contract and evidence live in [docs/roadmap/self-hosted-v1](docs/ro
 - [ ] [#605](https://github.com/AllureCurtain/oxsum/issues/605) — Merchant settings and scoped event intake (T14): in progress; configuration #648 and scoped intake #649 both required.
 - [ ] [#648](https://github.com/AllureCurtain/oxsum/issues/648) — Versioned encrypted merchant configuration (T14.a): PR #650; focused checks passed, independent review and broad CI pending.
 - [ ] [#649](https://github.com/AllureCurtain/oxsum/issues/649) — Scoped merchant events and payment expectations (T14.b): in progress on this worktree — durable `merchant_payment_bindings`/`merchant_event_inbox` intake, path-selected signature verification, idempotent legacy-deposit adapter, environment bootstrap; focused nextest suites green.
-- [ ] [#606](https://github.com/AllureCurtain/oxsum/issues/606) — Payment orders and durable fulfillment (T15): pending.
+- [ ] [#606](https://github.com/AllureCurtain/oxsum/issues/606) — Payment orders and durable fulfillment (T15): in progress on this worktree — `payment_orders`/`payment_fulfillments`/`payment_outbox`, server-rated conversion, purpose-scoped fulfillment, recovery sweep; focused nextest suites green.
 - [ ] [#607](https://github.com/AllureCurtain/oxsum/issues/607) — Customer checkout and purchased funding (T16): pending.
 - [ ] [#608](https://github.com/AllureCurtain/oxsum/issues/608) — Corrections, partial refunds and disputes (T17): pending.
 - [ ] [#609](https://github.com/AllureCurtain/oxsum/issues/609) — Promotional lots and prepaid bundles (T18): pending.
-- [ ] [#610](https://github.com/AllureCurtain/oxsum/issues/610) — Customer entitlement and paid plan lifecycle (T19): pending.
+- [ ] [#610](https://github.com/AllureCurtain/oxsum/issues/610) — Customer entitlement and paid plan lifecycle (T19): PR [#661](https://github.com/AllureCurtain/oxsum/pull/661) — versioned `sold_plans`, `customer_plans` (D06 machine), `plan_periods` authorization, `planPeriod` order arm bound to `activate_plan_period`, boundary cancel/change and past-due.
 - [ ] [#611](https://github.com/AllureCurtain/oxsum/issues/611) — Plan fee journals and revenue allocation (T20): pending.
 - [ ] [#612](https://github.com/AllureCurtain/oxsum/issues/612) — Customer credit, statements and overdue handling (T21): pending.
 - [ ] [#613](https://github.com/AllureCurtain/oxsum/issues/613) — Financial facts, cost coverage and reconciliation (T22): pending.

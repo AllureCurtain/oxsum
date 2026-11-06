@@ -1,10 +1,26 @@
 openapi: 3.1.0
 info:
   title: oxsum API
-  version: 0.114.0
+  version: 0.115.0
   x-consumption-cache: Response cache v2 binds the exact complete request, concrete endpoint and semantic headers, customer/key permissions, selected experiment/mandate, alias targets, and every admitted route's price, destination, settings and credential configuration. A primary route without an available credential cannot serve a cache hit. Text case and whitespace are significant; old digests miss. Legacy excludeSystem is accepted but ignored.
   description: |
     Common conventions (auth, idempotency, error format, money units) are documented in docs/api.md.
+
+    0.115.0 adds the sold-plan catalogue and the paid plan lifecycle (issue
+    #610): `GET /api/v1/plans` reads the published versioned catalogue a
+    business sells from, `GET`/`POST /api/v1/business/plans` manages it, and
+    `GET`/`PUT /api/v1/business/customers/{id}/plan` plus
+    `GET`/`POST /api/v1/org/plan` carry the customer's entitlement —
+    `pendingPayment → active → renewalPending/pastDue → active|expired`,
+    `cancelAtPeriodEnd` and `scheduledChange` the explicit boundary modifiers.
+    Every period a plan serves is authorized on `planPeriods`: a fulfilled
+    `paymentOrders` row for a paid period, a `complimentary` grant for a free
+    plan — a timer alone never issues unpaid entitlement (D06). A
+    `planPeriod` order's `purposeRef` now names the `customerPlanId` it funds.
+    Quota still meters through `org_subscriptions`/`subscription_periods` —
+    the legacy engine, bound to the new rows; `calendarMonth` preserves its
+    boundary semantics while `anniversary` is the versioned alternative that
+    clamps to the month's last day.
 
     0.114.0 coordinates admission with settlement (issue #603): a resolved sale
     snapshot reprices the freeze at admission and a sale-priced turn commits its
@@ -24,6 +40,14 @@ info:
     key reads only the ones it admitted), `GET /api/v1/operations/{operationId}`
     reads one with its attempts, and `GET /api/v1/admin/operations` is the
     operator's all-organizations read.
+
+    0.114.0 adds payment orders and durable fulfillment: `/api/v1/orders` pins
+    immutable purpose-scoped terms and a server-rated conversion before the
+    provider call — `amountMinor`/`rate` are never request fields — `paid` is
+    established only by the signed merchant webhook, a paid-but-mismatched event
+    parks in `needsAttention`, and `GET /{id}/fulfillment` reads the honest
+    paid-unfulfilled mid-state the recovery sweep drains.
+    `GET /api/v1/business/payment-reconciliation` reports paid against fulfilled.
 
     0.112.0 binds resolved customer sale terms into bill evidence: a v14 settlement
     may commit a `sale` snapshot digest, the proof bundle carries a `sale` link to
@@ -2671,6 +2695,130 @@ paths:
                     items: { $ref: "#/components/schemas/SubscriptionPeriod" }
         "401": { $ref: "#/components/responses/Error" }
         "500": { $ref: "#/components/responses/Error" }
+  /api/v1/plans:
+    get:
+      summary: List the published plan catalogue
+      description: |
+        Every sold plan version still on sale (issue #610): the versioned
+        catalogue a business sells from. Each entry is one immutable version
+        — `priceMinor`, `quotaMinor` per period, `periodKind`
+        (`calendarMonth` for the legacy UTC-month boundary or `anniversary`
+        for the activation date's monthly roll, clamped to the month's last
+        day) and the opt-in `overageEnabled`. A customer binding references
+        one version; later catalogue edits mint new versions and never
+        rewrite what was sold.
+      security: [{ sessionCookie: [], apiKey: [] }]
+      responses:
+        "200":
+          description: The catalogue versions on sale
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    type: array
+                    items: { $ref: "#/components/schemas/SoldPlan" }
+        "401": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
+  /api/v1/plans/{planVersionId}:
+    get:
+      summary: Read one sold plan version
+      description: |
+        The exact terms a `planVersionId` names — the version a bind or a
+        `planPeriod` order's `purposeRef` buys into. Unpublished or retired
+        versions answer `404` on this surface.
+      security: [{ sessionCookie: [], apiKey: [] }]
+      parameters:
+        - { name: planVersionId, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        "200":
+          description: The sold version
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data: { $ref: "#/components/schemas/SoldPlan" }
+        "401": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
+  /api/v1/org/plan:
+    get:
+      summary: The caller's own plan and its periods
+      description: |
+        The customer organization's live plan — `pendingPayment` through
+        `pastDue` — plus every period it has authorized (issue #610, D06):
+        each `planPeriods` row carries its bounds, its quota, and the
+        authorization that opened it (`paymentOrder` for a paid period,
+        `complimentary` for a free plan's grant). A timer alone never opens
+        one. `plan` is `null` while the customer has no live binding.
+      security: [{ sessionCookie: [], apiKey: [] }]
+      responses:
+        "200":
+          description: The live plan and its authorized periods
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data: { $ref: "#/components/schemas/OrgPlanView" }
+        "401": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
+  /api/v1/org/plan/cancel:
+    post:
+      summary: Cancel the caller's plan at the period end
+      description: |
+        Marks `cancelAtPeriodEnd`: the paid period still serves to its end —
+        the draws it funded are honored — but the boundary does not renew
+        (issue #610). No mid-period pro-rating; cancelling keeps serving
+        through what was already paid for.
+      security: [{ sessionCookie: [], apiKey: [] }]
+      responses:
+        "200":
+          description: The plan as it now stands
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data: { $ref: "#/components/schemas/CustomerPlan" }
+        "401": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
+  /api/v1/org/plan/change:
+    post:
+      summary: Book a plan change at the next boundary
+      description: |
+        Schedules a swap to another sold plan version effective at the next
+        period boundary (issue #610): the current period serves to its end,
+        and the new version's first period authorizes at that boundary — a
+        `planPeriod` order for a priced target, a complimentary grant for a
+        free one. `404` without a live plan or for an unsellable target.
+      security: [{ sessionCookie: [], apiKey: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/PlanChangeRequest" }
+      responses:
+        "200":
+          description: The plan as it now stands
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data: { $ref: "#/components/schemas/CustomerPlan" }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
   /api/v1/webhooks:
     get:
       x-customer-role-access: owner-admin
@@ -4747,6 +4895,171 @@ paths:
         "403": { $ref: "#/components/responses/Error" }
         "404": { $ref: "#/components/responses/Error" }
         "409": { $ref: "#/components/responses/Error" }
+  /api/v1/business/plans:
+    get:
+      summary: List the sold plan catalogue
+      description: |
+        The whole catalogue — drafts, live versions and retired ones —
+        newest version per plan (issue #610). Current business staff with
+        `catalogWrite`; a personal session, never a machine credential.
+      security: [{ sessionCookie: [] }]
+      responses:
+        "200":
+          description: The catalogue
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    type: array
+                    items: { $ref: "#/components/schemas/SoldPlan" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
+    post:
+      summary: Publish a sold plan version
+      description: |
+        Mints a version: absent `planId` opens a new plan at version 1, a
+        `planId` naming an existing plan publishes its next version — a
+        catalogue edit is a new row, never a rewrite of the sold form
+        (issue #610). `priceMinor` is the ledger-minor catalogue price (0 is a
+        free plan, activated on a complimentary grant); `quotaMinor` is the
+        per-period credit quota, `null` unmetered; `periodKind` is
+        `calendarMonth` or `anniversary`; `overageEnabled` opts the exhausted
+        period into wallet draw.
+      security: [{ sessionCookie: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/PublishPlanRequest" }
+      responses:
+        "200":
+          description: The published version
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data: { $ref: "#/components/schemas/SoldPlan" }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
+  /api/v1/business/plans/{planVersionId}/retire:
+    post:
+      summary: Retire a sold plan version
+      description: |
+        Stops the version accepting new binds; subscriptions already running
+        under it keep their terms to their boundaries (issue #610). Current
+        business staff with `catalogWrite`.
+      security: [{ sessionCookie: [] }]
+      parameters:
+        - { name: planVersionId, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        "200":
+          description: The version was retired
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    type: object
+                    required: [retired]
+                    properties:
+                      retired: { type: boolean }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
+  /api/v1/business/customers/{organizationId}/plan:
+    get:
+      summary: Read a customer's plan
+      description: |
+        The customer's live plan and every period it has authorized — the
+        staff's entitlement read (issue #610). `plan` is `null` while the
+        customer has no live binding. Current business staff with
+        `customersRead`.
+      security: [{ sessionCookie: [] }]
+      parameters:
+        - { name: organizationId, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        "200":
+          description: The plan and its authorized periods
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data: { $ref: "#/components/schemas/OrgPlanView" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
+    put:
+      summary: Bind a customer to a sold plan version
+      description: |
+        Opens the customer's `customerPlan` (issue #610): a priced version
+        binds `pendingPayment` and activates when its `planPeriod` order
+        fulfills; a free version (`priceMinor` 0) activates at once on the
+        explicit `complimentaryGrant` the request names — never on a
+        fabricated paid record. One live plan per customer; a second bind is
+        `409` — a change books `scheduledChange` through the customer's own
+        surface instead.
+      security: [{ sessionCookie: [] }]
+      parameters:
+        - { name: organizationId, in: path, required: true, schema: { type: string, format: uuid } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/BindPlanRequest" }
+      responses:
+        "200":
+          description: The customer's plan as it now stands
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data: { $ref: "#/components/schemas/CustomerPlan" }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "409": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
+  /api/v1/business/customers/{organizationId}/plan/cancel:
+    post:
+      summary: Cancel a customer's plan at the period end
+      description: |
+        The staff-side boundary-cancel (issue #610): same semantics as the
+        customer's own `POST /api/v1/org/plan/cancel` — the paid period
+        serves to its end but does not renew. Current business staff with
+        `customersWrite`.
+      security: [{ sessionCookie: [] }]
+      parameters:
+        - { name: organizationId, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        "200":
+          description: The plan as it now stands
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data: { $ref: "#/components/schemas/CustomerPlan" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
   /api/v1/webhooks/merchants/{merchantId}/versions/{versionId}:
     post:
       summary: Accept a signed event for an immutable merchant configuration
@@ -4930,6 +5243,116 @@ paths:
         "409": { $ref: "#/components/responses/Error" }
         "500": { $ref: "#/components/responses/Error" }
         "503": { $ref: "#/components/responses/Error" }
+  /api/v1/orders:
+    post:
+      summary: Create a payment order
+      description: The customer pins an immutable order in the display currency it was quoted. The server rates the conversion to ledger credits at the organization's effective display rate — `amountMinor`/`rate` are not request fields, so a client-supplied figure is a schema rejection, not a negotiated term. The expected payment and the order terms commit before the provider is called; the provider idempotency key is the order's durable local UUID, so a replayed `idempotencyKey` returns the standing order and its original checkout rather than a second charge. `purpose` fixes the one fulfillment arm the order may take — `walletTopup`, `bundle`, `planPeriod` or `invoiceRepayment`. The answer is a checkout to complete, never a paid order — `paid` is established only by the signed provider webhook.
+      security: [{ sessionCookie: [], apiKey: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/OrderCreateRequest" }
+      responses:
+        "200":
+          description: The pinned order and its provider checkout handles
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data: { $ref: "#/components/schemas/OrderCheckout" }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "409": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
+        "503": { $ref: "#/components/responses/Error" }
+    get:
+      summary: List the caller's payment orders
+      description: The customer organization's own orders, paged by cursor. An order of another organization is never listed.
+      security: [{ sessionCookie: [], apiKey: [] }]
+      parameters:
+        - { name: after, in: query, schema: { type: string, format: uuid } }
+        - { name: limit, in: query, schema: { type: integer, minimum: 1, maximum: 100, default: 50 } }
+      responses:
+        "200":
+          description: The caller's order page
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data: { $ref: "#/components/schemas/PaymentOrderPage" }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
+  /api/v1/orders/{orderId}:
+    get:
+      summary: Read one payment order
+      description: One order the caller's organization owns; another organization's order is a not-found. Status is the lifecycle state the signed webhook established — it can never be `paid` from this read surface.
+      security: [{ sessionCookie: [], apiKey: [] }]
+      parameters:
+        - { name: orderId, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        "200":
+          description: The order
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data: { $ref: "#/components/schemas/PaymentOrder" }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
+  /api/v1/orders/{orderId}/fulfillment:
+    get:
+      summary: Read an order's fulfillment status
+      description: The order's lifecycle state plus its fulfillment record once it lands. `paid` but unfulfilled is the honest mid-state the recovery sweep drains; the record names exactly what the purpose's grant produced.
+      security: [{ sessionCookie: [], apiKey: [] }]
+      parameters:
+        - { name: orderId, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        "200":
+          description: The order state and its fulfillment record
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data: { $ref: "#/components/schemas/OrderFulfillment" }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
+  /api/v1/business/payment-reconciliation:
+    get:
+      summary: Reconcile paid orders against fulfillment
+      description: Current business staff with report-read capability; a personal session, never a machine credential. Counts per order lifecycle state plus the paid-but-unfulfilled order ids the recovery sweep owes — the discrepancy between `paid` and `fulfilled` is the sweep's backlog, and `needsAttention` is the paid-but-mismatched set a human resolves, never an auto-credit.
+      security: [{ sessionCookie: [] }]
+      responses:
+        "200":
+          description: The order reconciliation report
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data: { $ref: "#/components/schemas/PaymentReconciliation" }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
   /api/v1/business/sale-books:
     get:
       summary: List customer sale books
@@ -11194,6 +11617,178 @@ components:
           type: string
           format: uuid
           description: must name an enabled plan with a `stripePriceId`
+    SoldPlan:
+      type: object
+      required: [planVersionId, planId, businessId, version, name, priceMinor, currency, quotaMinor, periodKind, overageEnabled, sortOrder, publishedAt, retiredAt, createdAt]
+      properties:
+        planVersionId:
+          type: string
+          format: uuid
+          description: the version row's own id — what a binding and a `planPeriod` order's `purposeRef` name
+        planId:
+          type: string
+          format: uuid
+          description: the plan's stable identity across versions
+        businessId: { type: string, format: uuid }
+        version:
+          type: integer
+          description: monotonic within the plan; a catalogue edit mints the next one
+        name: { type: string }
+        priceMinor:
+          type: integer
+          format: int64
+          minimum: 0
+          description: the catalogue price in ledger minor units; 0 is a free plan activated on a complimentary grant
+        currency:
+          type: string
+          pattern: '^[A-Z]{3}$'
+          description: the display currency the price is quoted in
+        quotaMinor:
+          type: integer
+          format: int64
+          nullable: true
+          minimum: 1
+          description: quota per period in credit minor units; null is unmetered
+        periodKind:
+          type: string
+          enum: [calendarMonth, anniversary]
+          description: "`calendarMonth` keeps the legacy UTC-month boundary; `anniversary` rolls on the activation date's monthly anniversary, clamped to the month's last day"
+        overageEnabled:
+          type: boolean
+          description: opt-in — an exhausted period may draw past quota against the wallet at the plan's rates
+        sortOrder: { type: integer }
+        publishedAt:
+          type: string
+          format: date-time
+          nullable: true
+          description: when the version went on sale; null is a draft
+        retiredAt:
+          type: string
+          format: date-time
+          nullable: true
+          description: when the version stopped accepting new binds; existing subscriptions run under it to their boundaries
+        createdAt: { type: string, format: date-time }
+    CustomerPlan:
+      type: object
+      required: [customerPlanId, organizationId, planVersionId, subscriptionId, state, activatedAt, cancelAtPeriodEnd, scheduledChange, createdAt, updatedAt]
+      properties:
+        customerPlanId: { type: string, format: uuid }
+        organizationId: { type: string, format: uuid }
+        planVersionId:
+          type: string
+          format: uuid
+          description: the exact sold version the customer bought
+        subscriptionId:
+          type: string
+          format: uuid
+          nullable: true
+          description: the quota engine row this entitlement runs on; null until the first period activates
+        state:
+          type: string
+          enum: [pendingPayment, active, renewalPending, pastDue, expired, cancelled]
+          description: "D06: pendingPayment → active → renewalPending/pastDue → active|expired; cancelled the explicit exit"
+        activatedAt:
+          type: string
+          format: date-time
+          nullable: true
+        cancelAtPeriodEnd:
+          type: boolean
+          description: serves through the paid period but blocks renewal
+        scheduledChange:
+          type: string
+          format: uuid
+          nullable: true
+          description: a booked plan-version swap effective at the next boundary; null when unscheduled
+        createdAt: { type: string, format: date-time }
+        updatedAt: { type: string, format: date-time }
+    PlanPeriod:
+      type: object
+      required: [planPeriodId, customerPlanId, periodIndex, periodStart, periodEnd, quotaMinor, consumedMinor, authorizationKind, authorizationRef, state, createdAt]
+      properties:
+        planPeriodId: { type: string, format: uuid }
+        customerPlanId: { type: string, format: uuid }
+        periodIndex:
+          type: integer
+          minimum: 0
+          description: 0-based; period 0 is the activation period
+        periodStart: { type: string, format: date-time }
+        periodEnd: { type: string, format: date-time }
+        quotaMinor:
+          type: integer
+          format: int64
+          nullable: true
+          minimum: 1
+        consumedMinor:
+          type: integer
+          format: int64
+          minimum: 0
+        authorizationKind:
+          type: string
+          enum: [paymentOrder, complimentary]
+          description: what authorized the period — a paid `paymentOrders` row, or a free plan's grant
+        authorizationRef:
+          type: string
+          format: uuid
+          description: the authorizing fact — the order id or the grant key
+        state:
+          type: string
+          enum: [active, closed, expired]
+        createdAt: { type: string, format: date-time }
+    OrgPlanView:
+      type: object
+      required: [plan, periods]
+      properties:
+        plan:
+          $ref: "#/components/schemas/CustomerPlan"
+          nullable: true
+          description: the live plan, or null while the customer has none
+        periods:
+          type: array
+          items: { $ref: "#/components/schemas/PlanPeriod" }
+          description: every period the plan has authorized, in index order
+    PublishPlanRequest:
+      type: object
+      required: [name, priceMinor, currency, quotaMinor, periodKind]
+      properties:
+        planId:
+          type: string
+          format: uuid
+          nullable: true
+          description: publish the next version of this plan; absent mints a new plan at version 1
+        name: { type: string }
+        priceMinor: { type: integer, format: int64, minimum: 0 }
+        currency: { type: string, pattern: '^[A-Z]{3}$' }
+        quotaMinor:
+          type: integer
+          format: int64
+          nullable: true
+          minimum: 1
+        periodKind:
+          type: string
+          enum: [calendarMonth, anniversary]
+        overageEnabled: { type: boolean, default: false }
+        sortOrder: { type: integer, default: 0 }
+    BindPlanRequest:
+      type: object
+      required: [planVersionId]
+      properties:
+        planVersionId:
+          type: string
+          format: uuid
+          description: must name a published, unretired sold version
+        complimentaryGrant:
+          type: string
+          format: uuid
+          nullable: true
+          description: required for a free plan — the grant key period 0 authorizes under; refused on a priced plan
+    PlanChangeRequest:
+      type: object
+      required: [planVersionId]
+      properties:
+        planVersionId:
+          type: string
+          format: uuid
+          description: the sold version the change books, effective at the next boundary
     AuditEntry:
       type: object
       required: [auditId, recordedAt, actor, action, detail]
@@ -11615,6 +12210,93 @@ components:
       properties:
         events: { type: array, items: { $ref: "#/components/schemas/MerchantEvent" } }
         nextCursor: { type: [string, "null"], format: uuid }
+    OrderPurpose:
+      type: string
+      enum: [walletTopup, bundle, planPeriod, invoiceRepayment]
+      description: The one fulfillment arm the order may take. `walletTopup` credits wallet cash only; `bundle` posts purchased credit plus a separate promo lot; `planPeriod` activates quota only; `invoiceRepayment` repays a drawn receivable only. No purpose both grants quota and wallet cash.
+    OrderCreateRequest:
+      type: object
+      additionalProperties: false
+      required: [idempotencyKey, rail, purpose, displayAmountMinor, displayCurrency]
+      description: The quoted display terms. The ledger amount is never client input — the server derives it from `displayAmountMinor` at the rate it owns, so a client-supplied `amountMinor` or `rate` is a schema rejection.
+      properties:
+        idempotencyKey: { type: string, minLength: 1, maxLength: 200 }
+        rail: { $ref: "#/components/schemas/MerchantRail" }
+        purpose:
+          type: string
+          enum: [walletTopup, bundle, planPeriod, invoiceRepayment]
+        displayAmountMinor: { type: integer, format: int64, minimum: 1, description: the fiat minor amount the provider will charge }
+        displayCurrency: { type: string, pattern: "^[A-Z]{3}$" }
+        purposeRef: { type: [string, "null"], format: uuid, description: the `customerPlanId` a `planPeriod` activates or renews, or the receivable an `invoiceRepayment` settles }
+        promoMinor: { type: [integer, "null"], format: int64, minimum: 0, description: a `bundle` order's promo lot in credit-minor }
+    PaymentOrder:
+      type: object
+      required: [orderId, merchantId, merchantVersionId, organizationId, purpose, amountMinor, currency, displayCurrency, displayAmountMinor, rateMantissa, rateScale, purposeRef, promoMinor, providerPaymentId, status, createdAt, paidAt]
+      properties:
+        orderId: { type: string, format: uuid }
+        merchantId: { type: string, format: uuid }
+        merchantVersionId: { type: string, format: uuid }
+        organizationId: { type: string, format: uuid }
+        purpose: { $ref: "#/components/schemas/OrderPurpose" }
+        amountMinor: { type: integer, format: int64, description: ledger credit-minor the fulfillment books, frozen at create }
+        currency: { type: string, description: the ledger credit code }
+        displayCurrency: { type: string }
+        displayAmountMinor: { type: integer, format: int64, description: the fiat amount the provider charged }
+        rateMantissa: { type: integer, format: int64, description: the pinned conversion numerator }
+        rateScale: { type: integer, description: the pinned conversion denominator exponent }
+        purposeRef: { type: [string, "null"], format: uuid }
+        promoMinor: { type: integer, format: int64 }
+        providerPaymentId: { type: [string, "null"] }
+        status: { type: string, enum: [created, provider_pending, paid, fulfilled, expired, failed, needs_attention] }
+        createdAt: { type: string, format: date-time }
+        paidAt: { type: [string, "null"], format: date-time }
+    PaymentOrderPage:
+      type: object
+      required: [orders, nextCursor]
+      properties:
+        orders: { type: array, items: { $ref: "#/components/schemas/PaymentOrder" } }
+        nextCursor: { type: [string, "null"], format: uuid }
+    OrderCheckout:
+      type: object
+      required: [order, providerPaymentId, clientSecret, checkoutUrl, publishableKey, sdkUrl]
+      description: The pinned order plus the provider checkout handles the browser completes payment against — a checkout to complete, never a paid order.
+      properties:
+        order: { $ref: "#/components/schemas/PaymentOrder" }
+        providerPaymentId: { type: [string, "null"] }
+        clientSecret: { type: [string, "null"] }
+        checkoutUrl: { type: [string, "null"], format: uri }
+        publishableKey: { type: [string, "null"] }
+        sdkUrl: { type: [string, "null"], format: uri }
+    PaymentFulfillment:
+      type: object
+      required: [fulfillmentId, orderId, purpose, purposePayload, outboxId, fulfilledAt]
+      properties:
+        fulfillmentId: { type: string, format: uuid }
+        orderId: { type: string, format: uuid }
+        purpose: { $ref: "#/components/schemas/OrderPurpose" }
+        purposePayload: { type: object, description: what the purpose's grant produced — the wallet entry, activated subscription or repaid receivable }
+        outboxId: { type: [string, "null"], format: uuid }
+        fulfilledAt: { type: string, format: date-time }
+    OrderFulfillment:
+      type: object
+      required: [orderId, status, paidAt, fulfillment]
+      properties:
+        orderId: { type: string, format: uuid }
+        status: { type: string }
+        paidAt: { type: [string, "null"], format: date-time }
+        fulfillment: { anyOf: [{ $ref: "#/components/schemas/PaymentFulfillment" }, { type: "null" }] }
+    PaymentReconciliation:
+      type: object
+      required: [created, providerPending, paid, fulfilled, expired, failed, needsAttention, paidUnfulfilled]
+      properties:
+        created: { type: integer, format: int64 }
+        providerPending: { type: integer, format: int64 }
+        paid: { type: integer, format: int64 }
+        fulfilled: { type: integer, format: int64 }
+        expired: { type: integer, format: int64 }
+        failed: { type: integer, format: int64 }
+        needsAttention: { type: integer, format: int64 }
+        paidUnfulfilled: { type: array, items: { type: string, format: uuid }, description: the paid orders the recovery sweep still owes a fulfillment }
     ProviderMutationResult:
       type: object
       required: [id, resourceId, version]

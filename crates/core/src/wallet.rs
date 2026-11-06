@@ -603,6 +603,131 @@ impl Wallet {
         }
     }
 
+    /// Repays the credit line and nothing else: cash in, credit-line balance
+    /// restored, the wallet and bonus pools untouched.
+    ///
+    /// This is the posting a purpose-scoped invoice repayment makes — an order
+    /// exists to settle a drawn receivable, so the whole amount books against
+    /// `CreditLine` and none of it can become spendable wallet balance or a
+    /// granted pool. A `top_up` cannot stand in for it: the top-up's own rule
+    /// credits whatever exceeds the draw to the wallet, which is exactly the
+    /// cash a repayment purpose must never grant.
+    ///
+    /// The amount is capped at what is drawn: a repayment larger than the
+    /// outstanding debt has nothing to settle, so it is refused rather than
+    /// booking the excess into a pool the purpose forbids. The repay figure is
+    /// read under the credit lock, serialized with `set_credit_limit` and every
+    /// other repaying write, so a stale read can under-pay, never over-credit
+    /// the line past its limit.
+    ///
+    /// The entry replays under `key`: a crash between the append and the order's
+    /// fulfillment write leaves a committed repayment the retry finds through
+    /// [`Self::repay_replay`], and a raced copy of the same repayment reads the
+    /// drawn figure under the same lock.
+    ///
+    /// # Errors
+    ///
+    /// [`WalletError::InvalidInput`] for a non-positive amount or one over the
+    /// drawn debt; [`WalletError::Conflict`] when `key` is taken by a different
+    /// entry; storage failures surface as [`WalletError`].
+    pub async fn repay_credit(
+        &self,
+        key: &str,
+        minor: i64,
+        on: Date,
+    ) -> Result<Receipt, WalletError> {
+        let amt = positive(minor)?;
+        let entry_id = entry_id_for(key);
+        if let Some(stored) = self.store.get(entry_id).await? {
+            return self.repay_replay(&stored, minor, key);
+        }
+        let mut tx = self.store.pool().begin().await?;
+        sqlx::query("SELECT pg_advisory_xact_lock($1)")
+            .bind(credit_lock_key(&self.tenant_id))
+            .execute(&mut *tx)
+            .await?;
+        // Re-read under the lock, and re-check the entry id: a same-key
+        // repayment may have committed while this one waited on it.
+        if let Some(stored) = self.store.get(entry_id).await? {
+            tx.rollback().await?;
+            return self.repay_replay(&stored, minor, key);
+        }
+        let drawn = self.credit_drawn_in(&mut tx).await?;
+        if minor > drawn {
+            tx.rollback().await?;
+            return Err(WalletError::InvalidInput(
+                "a repayment cannot exceed the outstanding credit debt".into(),
+            ));
+        }
+        let draft = Entry::<Draft, SCALE>::new(entry_id, idem(key)?, on)
+            .debit(self.cash, amt, currency())
+            .credit(self.credit_line, amt, currency());
+        let receipt = self.append_sealed(self.seal(draft).await?).await;
+        match receipt {
+            Ok(receipt) => {
+                tx.commit().await?;
+                Ok(receipt)
+            }
+            Err(WalletError::Conflict(_)) => {
+                tx.rollback().await?;
+                match self.store.get(entry_id).await? {
+                    Some(stored) => self.repay_replay(&stored, minor, key),
+                    None => Err(WalletError::Conflict(format!(
+                        "idempotency key {key:?} is already taken"
+                    ))),
+                }
+            }
+            Err(error) => {
+                tx.rollback().await?;
+                Err(error)
+            }
+        }
+    }
+
+    /// Answers for a key that already has a committed repayment entry: the
+    /// stored receipt when it is the repayment being asked for — a cash debit
+    /// and a credit-line credit of the same amount, nothing reaching the
+    /// spendable pools — and the key-reuse conflict when the entry is anything
+    /// else, including a top-up that split part of the same amount to wallet.
+    fn repay_replay(
+        &self,
+        stored: &StoredEntry<SCALE>,
+        minor: i64,
+        key: &str,
+    ) -> Result<Receipt, WalletError> {
+        let cash: i64 = stored
+            .entry
+            .postings()
+            .iter()
+            .filter(|p| p.account == self.cash && p.direction == Direction::Debit)
+            .map(|p| p.amount.to_minor())
+            .sum();
+        let repaid: i64 = stored
+            .entry
+            .postings()
+            .iter()
+            .filter(|p| p.account == self.credit_line && p.direction == Direction::Credit)
+            .map(|p| p.amount.to_minor())
+            .sum();
+        let pooled: i64 = stored
+            .entry
+            .postings()
+            .iter()
+            .filter(|p| {
+                (p.account == self.wallet || p.account == self.bonus)
+                    && p.direction == Direction::Credit
+            })
+            .map(|p| p.amount.to_minor())
+            .sum();
+        if cash == minor && repaid == minor && pooled == 0 {
+            Ok(stored_receipt(stored))
+        } else {
+            Err(WalletError::Conflict(format!(
+                "idempotency key {key:?} is already taken"
+            )))
+        }
+    }
+
     /// Adjustment: a signed amount the operator books against the pools, with a
     /// `reason` that becomes the entry's description — covered by its content hash,
     /// so the reason is part of the proof.

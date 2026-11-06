@@ -1,0 +1,893 @@
+//! Payment orders and durable fulfillment (issue #606).
+//!
+//! A payment order separates *paid* from *fulfilled*: the signed merchant
+//! callback establishes the first fact inside `merchant_event_inbox`, and a
+//! distinct fulfillment step grants the value the order's purpose bought. The
+//! order pins its terms — amount, currency, purpose and the server-rated
+//! conversion — before any provider call, reusing `merchant_payment_bindings`
+//! (purpose `'order'`) as the expected-payment record and `merchant_payment_refs`
+//! as the provider-idempotency dedup: a retried create recovers the same local
+//! UUID, so a retry never issues a second provider charge.
+//!
+//! Fulfillment is exhaustive on purpose and one-sided by construction: a
+//! `wallet_topup` order books wallet cash, a `bundle` books purchased credit
+//! plus a separate promo lot, a `plan_period` activates quota, and an
+//! `invoice_repayment` repays a drawn receivable — no purpose may both grant
+//! quota and wallet cash.
+
+use crate::business_staff as authority;
+use crate::{BusinessCapability, Db, MerchantEventKind, MerchantEventReceipt, WalletError};
+use serde::{Deserialize, Serialize};
+use serde_json::json;
+use sqlx::{Postgres, Row, Transaction, postgres::PgRow};
+use time::OffsetDateTime;
+use uuid::Uuid;
+
+/// The conversion the server rated a display amount at — the `Display` rate's
+/// `mantissa / 10^scale` units of currency per credit, kept as the order's own
+/// columns so a later re-rate cannot rewrite what the customer agreed to pay.
+#[derive(Debug, Clone, Copy)]
+pub struct OrderRate {
+    pub mantissa: i128,
+    pub scale: u32,
+}
+
+/// The one fulfillment arm a payment order may take. The wire spelling is
+/// camelCase like every API enum; `as_str`/`parse` hold the snake_case the
+/// database stores.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum PaymentOrderPurpose {
+    /// Credits wallet cash only — never grants quota.
+    WalletTopup,
+    /// Posts purchased credit plus a separate promo lot under one fulfillment.
+    Bundle,
+    /// Activates a plan period's quota — never posts wallet cash.
+    PlanPeriod,
+    /// Repays a drawn receivable only — never credits wallet or bonus.
+    InvoiceRepayment,
+}
+impl PaymentOrderPurpose {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::WalletTopup => "wallet_topup",
+            Self::Bundle => "bundle",
+            Self::PlanPeriod => "plan_period",
+            Self::InvoiceRepayment => "invoice_repayment",
+        }
+    }
+    fn parse(value: &str) -> Result<Self, WalletError> {
+        match value {
+            "wallet_topup" => Ok(Self::WalletTopup),
+            "bundle" => Ok(Self::Bundle),
+            "plan_period" => Ok(Self::PlanPeriod),
+            "invoice_repayment" => Ok(Self::InvoiceRepayment),
+            _ => Err(invalid("invalid stored payment order purpose")),
+        }
+    }
+}
+
+/// A payment order as the customer and the reconciliation report read it.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PaymentOrder {
+    pub order_id: Uuid,
+    pub merchant_id: Uuid,
+    pub merchant_version_id: Uuid,
+    pub organization_id: Uuid,
+    pub purpose: PaymentOrderPurpose,
+    /// Ledger terms: integer minor units of one credit, frozen at create.
+    pub amount_minor: i64,
+    pub currency: String,
+    /// The display amount the customer was quoted, and the pinned rate that
+    /// produced `amount_minor` from it.
+    pub display_currency: String,
+    pub display_amount_minor: i64,
+    pub rate_mantissa: i128,
+    pub rate_scale: u32,
+    pub purpose_ref: Option<Uuid>,
+    /// A `bundle` order's promo lot, in credit-minor; 0 for single-leg purposes.
+    pub promo_minor: i64,
+    pub provider_payment_id: Option<String>,
+    /// The checkout handles the provider answered, so a replayed create returns
+    /// the same checkout. Transient, never part of the frozen terms.
+    #[serde(skip_serializing)]
+    pub checkout: serde_json::Value,
+    pub status: String,
+    #[serde(with = "time::serde::rfc3339")]
+    pub created_at: OffsetDateTime,
+    #[serde(with = "time::serde::rfc3339::option")]
+    pub paid_at: Option<OffsetDateTime>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PaymentOrderPage {
+    pub orders: Vec<PaymentOrder>,
+    pub next_cursor: Option<Uuid>,
+}
+
+/// What a fulfillment granted, as `payment_fulfillments.purpose_payload` records
+/// it — the audit of the value the paid order bought, kept beside the grant so
+/// it never has to be re-derived.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PaymentFulfillment {
+    pub fulfillment_id: Uuid,
+    pub order_id: Uuid,
+    pub purpose: PaymentOrderPurpose,
+    pub purpose_payload: serde_json::Value,
+    pub outbox_id: Option<Uuid>,
+    #[serde(with = "time::serde::rfc3339")]
+    pub fulfilled_at: OffsetDateTime,
+}
+
+/// The reconciliation report: paid orders still awaiting fulfillment, fulfilled
+/// ones, and the `needs_attention` discrepancies a paid-but-mismatched event
+/// parked. `paid - fulfilled` should drain to zero; `needs_attention` never
+/// auto-resolves.
+#[derive(Debug, Default, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PaymentReconciliation {
+    pub created: i64,
+    pub provider_pending: i64,
+    pub paid: i64,
+    pub fulfilled: i64,
+    pub expired: i64,
+    pub failed: i64,
+    pub needs_attention: i64,
+    /// Paid orders that have not yet fulfilled — the recovery sweep's backlog.
+    pub paid_unfulfilled: Vec<Uuid>,
+}
+
+/// What an order create carries: the quoted display amount and currency, the
+/// purpose, its reference, and the idempotency key. The ledger `amount_minor`
+/// is never client input — the server derives it from the display amount at
+/// the rate it owns, so a client-supplied rate or ledger figure is refused at
+/// the route rather than reaching here.
+#[derive(Debug, Clone)]
+pub struct NewPaymentOrder {
+    pub purpose: PaymentOrderPurpose,
+    /// The fiat minor amount the provider will charge, in `display_currency`.
+    pub display_amount_minor: i64,
+    pub display_currency: String,
+    /// The purpose's argument: the plan a `plan_period` activates, the
+    /// receivable an `invoice_repayment` settles. `None` for wallet_topup/bundle.
+    pub purpose_ref: Option<Uuid>,
+    pub idempotency_key: String,
+    /// A `bundle` order's promo part: purchased credit is `amount_minor`, the
+    /// separate promo lot is this many extra credit-minor. `0` for the purposes
+    /// with no second leg.
+    pub promo_minor: i64,
+}
+
+fn invalid(message: &str) -> WalletError {
+    WalletError::InvalidInput(message.into())
+}
+fn identifier(value: &str) -> bool {
+    !value.is_empty() && value.len() <= 200 && !value.chars().any(char::is_control)
+}
+
+fn order(row: &PgRow) -> Result<PaymentOrder, WalletError> {
+    Ok(PaymentOrder {
+        order_id: row.try_get("order_id")?,
+        merchant_id: row.try_get("merchant_id")?,
+        merchant_version_id: row.try_get("merchant_version_id")?,
+        organization_id: row.try_get("organization_id")?,
+        purpose: PaymentOrderPurpose::parse(&row.try_get::<String, _>("purpose")?)?,
+        amount_minor: row.try_get("amount_minor")?,
+        currency: row.try_get("currency")?,
+        display_currency: row.try_get("display_currency")?,
+        display_amount_minor: row.try_get("display_amount_minor")?,
+        rate_mantissa: row.try_get::<i64, _>("rate_mantissa")? as i128,
+        rate_scale: row.try_get::<i32, _>("rate_scale")? as u32,
+        purpose_ref: row.try_get("purpose_ref")?,
+        promo_minor: row.try_get("promo_minor")?,
+        provider_payment_id: row.try_get("provider_payment_id")?,
+        checkout: row.try_get("checkout")?,
+        status: row.try_get("status")?,
+        created_at: row.try_get("created_at")?,
+        paid_at: row.try_get("paid_at")?,
+    })
+}
+
+async fn order_in(
+    tx: &mut Transaction<'_, Postgres>,
+    id: Uuid,
+) -> Result<Option<PaymentOrder>, WalletError> {
+    let row = sqlx::query(&format!(
+        "SELECT {ORDER_COLS} FROM oxsum.payment_orders WHERE order_id=$1 FOR UPDATE"
+    ))
+    .bind(id)
+    .fetch_optional(&mut **tx)
+    .await?;
+    row.as_ref().map(order).transpose()
+}
+
+fn fulfillment(row: &PgRow) -> Result<PaymentFulfillment, WalletError> {
+    Ok(PaymentFulfillment {
+        fulfillment_id: row.try_get("fulfillment_id")?,
+        order_id: row.try_get("order_id")?,
+        purpose: PaymentOrderPurpose::parse(&row.try_get::<String, _>("purpose")?)?,
+        purpose_payload: row.try_get("purpose_payload")?,
+        outbox_id: row.try_get("outbox_id")?,
+        fulfilled_at: row.try_get("fulfilled_at")?,
+    })
+}
+
+const FULFILL_COLS: &str = "fulfillment_id,order_id,purpose,purpose_payload,outbox_id,fulfilled_at";
+
+/// The fulfillment read inside the caller's transaction — the row a just-landed
+/// fulfillment INSERT wrote, which a pool connection cannot see until commit.
+async fn fulfillment_in(
+    tx: &mut Transaction<'_, Postgres>,
+    order_id: Uuid,
+) -> Result<Option<PaymentFulfillment>, WalletError> {
+    let row = sqlx::query(&format!(
+        "SELECT {FULFILL_COLS} FROM oxsum.payment_fulfillments WHERE order_id=$1"
+    ))
+    .bind(order_id)
+    .fetch_optional(&mut **tx)
+    .await?;
+    row.as_ref().map(fulfillment).transpose()
+}
+
+const ORDER_COLS: &str = "order_id,merchant_id,merchant_version_id,organization_id,\
+     purpose,amount_minor,currency,display_currency,display_amount_minor,\
+     rate_mantissa,rate_scale,purpose_ref,promo_minor,provider_payment_id,checkout,status,created_at,paid_at";
+
+impl Db {
+    /// Creates a payment order: pins the expected payment under the order's own
+    /// UUID (the `merchant_payment_bindings` row `purpose='order'`) and records
+    /// the immutable terms in one transaction — so the expectation is durable
+    /// before the provider is ever called.
+    ///
+    /// `rate` is the server's own conversion (the organization's effective
+    /// display rate the route resolved); `amount_minor` is derived from
+    /// `display_amount_minor` under it. Replaying the same
+    /// `(organization, idempotency_key)` returns the standing order unchanged —
+    /// changed terms under a reused key conflict, like every deposit rail.
+    ///
+    /// `merchant`/`version` name the immutable merchant version the checkout is
+    /// offered under; the merchant must be enabled for this customer, the same
+    /// gate `pin_merchant_payment` enforces on the binding.
+    pub async fn create_payment_order(
+        &self,
+        context: &crate::MerchantSigningContext,
+        organization: Uuid,
+        new: &NewPaymentOrder,
+        rate: &OrderRate,
+    ) -> Result<PaymentOrder, WalletError> {
+        authority::validate(&new.idempotency_key, None)?;
+        if new.display_amount_minor <= 0
+            || new.display_currency.len() != 3
+            || !new.display_currency.bytes().all(|c| c.is_ascii_uppercase())
+            || !identifier(&new.idempotency_key)
+        {
+            return Err(invalid("invalid payment order terms"));
+        }
+        // The ledger amount is rated here, server-side, from the display amount
+        // — never taken from the request. The conversion is the display rate's
+        // own inverse, integer throughout.
+        let display = crate::display::display_currency(
+            Some(&new.display_currency),
+            Some(&decimal_text(rate)),
+            2,
+        )?
+        .ok_or_else(|| invalid("the organization has no rated display currency"))?;
+        let amount_minor = display
+            .to_credit_minor(new.display_amount_minor)
+            .ok_or_else(|| invalid("the display amount does not rate to a credit figure"))?;
+        if new.promo_minor < 0 {
+            return Err(invalid("a bundle promo amount cannot be negative"));
+        }
+        // Purpose-specific validation: a plan period needs its plan, an invoice
+        // repayment needs the receivable it settles.
+        match new.purpose {
+            PaymentOrderPurpose::PlanPeriod | PaymentOrderPurpose::InvoiceRepayment
+                if new.purpose_ref.is_none() =>
+            {
+                return Err(invalid("this payment order purpose needs a reference"));
+            }
+            _ => {}
+        }
+        let mut tx = self.pool().begin().await?;
+        // The order's own UUID serializes its create: two racing creates of the
+        // same idempotency key lock the same expected-payment identity.
+        sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1,0))")
+            .bind(format!(
+                "payment-order:{organization}:{}",
+                new.idempotency_key
+            ))
+            .execute(&mut *tx)
+            .await?;
+        // A replayed create finds its own order by the idempotency anchor and
+        // returns it unchanged; different terms under the key conflict.
+        let existing = sqlx::query(
+            "SELECT * FROM oxsum.payment_orders WHERE organization_id=$1 AND idempotency_key=$2",
+        )
+        .bind(organization)
+        .bind(&new.idempotency_key)
+        .fetch_optional(&mut *tx)
+        .await?;
+        if let Some(existing) = existing {
+            let standing = order(&existing)?;
+            if standing.purpose != new.purpose
+                || standing.display_amount_minor != new.display_amount_minor
+                || standing.display_currency != new.display_currency
+                || standing.purpose_ref != new.purpose_ref
+            {
+                return Err(WalletError::Conflict(
+                    "payment order terms changed for the same idempotency key".into(),
+                ));
+            }
+            tx.commit().await?;
+            return Ok(standing);
+        }
+        // Gate on the merchant being enabled for this customer, mirroring
+        // `pin_merchant_payment`'s check — the binding and the order agree on it.
+        let business = authority::lock_business(&mut tx).await?;
+        let allowed = sqlx::query(
+            "SELECT m.merchant_id FROM oxsum.merchant_accounts m \
+             JOIN oxsum.customer_profiles c ON c.business_id=m.business_id \
+             WHERE m.merchant_id=$1 AND m.current_version_id=$2 AND m.enabled \
+               AND c.organization_id=$3 FOR SHARE OF m",
+        )
+        .bind(context.merchant_id)
+        .bind(context.version.id)
+        .bind(organization)
+        .fetch_optional(&mut *tx)
+        .await?;
+        if allowed.is_none() {
+            return Err(WalletError::Forbidden(
+                "merchant is not enabled for this customer's new payments".into(),
+            ));
+        }
+        let order_id = Uuid::new_v4();
+        // The expected payment: the provider will charge the display (fiat)
+        // amount, so the binding pins `display_*` for `classify` to match the
+        // signed event against. The order's ledger `amount_minor` is what
+        // fulfillment books — a separate fact the provider never sees.
+        sqlx::query(
+            "INSERT INTO oxsum.merchant_payment_bindings\
+             (payment_id,merchant_id,version_id,organization_id,amount_minor,currency,purpose) \
+             VALUES($1,$2,$3,$4,$5,$6,'order')",
+        )
+        .bind(order_id)
+        .bind(context.merchant_id)
+        .bind(context.version.id)
+        .bind(organization)
+        .bind(new.display_amount_minor)
+        .bind(&new.display_currency)
+        .execute(&mut *tx)
+        .await?;
+        sqlx::query(
+            "INSERT INTO oxsum.payment_orders\
+             (order_id,business_id,merchant_id,merchant_version_id,organization_id,\
+              purpose,amount_minor,currency,display_currency,display_amount_minor,\
+              rate_mantissa,rate_scale,purpose_ref,promo_minor,idempotency_key,status) \
+             VALUES($1,$2,$3,$4,$5,$6,$7,'USD',$8,$9,$10,$11,$12,$13,$14,'created')",
+        )
+        .bind(order_id)
+        .bind(business)
+        .bind(context.merchant_id)
+        .bind(context.version.id)
+        .bind(organization)
+        .bind(new.purpose.as_str())
+        .bind(amount_minor)
+        .bind(&new.display_currency)
+        .bind(new.display_amount_minor)
+        .bind(rate.mantissa as i64)
+        .bind(rate.scale as i32)
+        .bind(new.purpose_ref)
+        .bind(new.promo_minor)
+        .bind(&new.idempotency_key)
+        .execute(&mut *tx)
+        .await?;
+        let created = order_in(&mut tx, order_id)
+            .await?
+            .ok_or_else(|| invalid("the payment order did not land"))?;
+        tx.commit().await?;
+        Ok(created)
+    }
+
+    /// One order the named organization owns — the customer read. An order of
+    /// another organization is a not-found, the same scoping deposits use.
+    pub async fn payment_order(
+        &self,
+        organization: Uuid,
+        order_id: Uuid,
+    ) -> Result<Option<PaymentOrder>, WalletError> {
+        let row = sqlx::query(&format!(
+            "SELECT {ORDER_COLS} FROM oxsum.payment_orders WHERE order_id=$1 AND organization_id=$2"
+        ))
+        .bind(order_id)
+        .bind(organization)
+        .fetch_optional(self.pool())
+        .await?;
+        row.as_ref().map(order).transpose()
+    }
+
+    /// An organization's orders, newest reads page by `created_at`/id cursor.
+    pub async fn organization_payment_orders(
+        &self,
+        organization: Uuid,
+        after: Option<Uuid>,
+        limit: i64,
+    ) -> Result<PaymentOrderPage, WalletError> {
+        if !(1..=100).contains(&limit) {
+            return Err(invalid("limit must be 1..100"));
+        }
+        let rows = sqlx::query(&format!(
+            "SELECT {ORDER_COLS} FROM oxsum.payment_orders \
+             WHERE organization_id=$1 AND ($2::uuid IS NULL OR order_id>$2) \
+             ORDER BY order_id LIMIT $3"
+        ))
+        .bind(organization)
+        .bind(after)
+        .bind(limit + 1)
+        .fetch_all(self.pool())
+        .await?;
+        let mut orders = rows.iter().map(order).collect::<Result<Vec<_>, _>>()?;
+        let more = orders.len() > limit as usize;
+        orders.truncate(limit as usize);
+        let next_cursor = if more {
+            orders.last().map(|o| o.order_id)
+        } else {
+            None
+        };
+        Ok(PaymentOrderPage {
+            orders,
+            next_cursor,
+        })
+    }
+
+    /// The fulfillment record an order landed, if it has one — `None` while the
+    /// order is still `paid` or earlier.
+    pub async fn payment_fulfillment(
+        &self,
+        order_id: Uuid,
+    ) -> Result<Option<PaymentFulfillment>, WalletError> {
+        let row = sqlx::query(&format!(
+            "SELECT {FULFILL_COLS} FROM oxsum.payment_fulfillments WHERE order_id=$1"
+        ))
+        .bind(order_id)
+        .fetch_optional(self.pool())
+        .await?;
+        row.as_ref().map(fulfillment).transpose()
+    }
+}
+
+/// The rate's `mantissa/10^scale` as the decimal text `display_currency` parses —
+/// `"7.20"` for mantissa 720 scale 2 — so the rated conversion reuses the one
+/// validator rather than a second decimal reader.
+fn decimal_text(rate: &OrderRate) -> String {
+    if rate.scale == 0 {
+        return rate.mantissa.to_string();
+    }
+    let digits = rate.mantissa.to_string();
+    let negative = digits.starts_with('-');
+    let digits = digits.trim_start_matches('-');
+    let pad = rate.scale as usize + 1;
+    let padded = format!("{:0>width$}", digits, width = pad);
+    let split = padded.len() - rate.scale as usize;
+    format!(
+        "{}{}.{}",
+        if negative { "-" } else { "" },
+        &padded[..split],
+        &padded[split..]
+    )
+}
+
+impl Db {
+    /// Applies a classified merchant event to the order it names — the
+    /// `paid`/`failed`/`expired`/`needs_attention` marking, deliberately one step
+    /// short of granting anything. Fulfillment is [`Self::fulfill_payment_order`],
+    /// a separate step that can retry independently.
+    ///
+    /// `paid` is only ever written by this signed-callback path: a success event
+    /// that matched the pinned terms moves `provider_pending`/`created` to
+    /// `paid`; a mismatch T14's `classify` rejected never reaches here, and an
+    /// amount/currency that disagrees on re-check parks the order in
+    /// `needs_attention` instead of crediting. The return page can never mark
+    /// an order paid — it holds no signed evidence.
+    pub async fn apply_order_event(
+        &self,
+        receipt: &MerchantEventReceipt,
+    ) -> Result<(), WalletError> {
+        if receipt.state != "accepted" {
+            return Ok(());
+        }
+        let Some(order_id) = receipt.payment_id else {
+            return Ok(());
+        };
+        let mut tx = self.pool().begin().await?;
+        let Some(existing) = order_in(&mut tx, order_id).await? else {
+            tx.commit().await?;
+            return Ok(());
+        };
+        // Only `order`-purpose bindings enter this path; the legacy deposit
+        // adapter owns the other. A terminal or discrepancy order cannot move.
+        if !matches!(
+            existing.status.as_str(),
+            "created" | "provider_pending" | "paid"
+        ) {
+            tx.commit().await?;
+            return Ok(());
+        }
+        let event = self
+            .merchant_event_data(receipt.id)
+            .await?
+            .ok_or_else(|| invalid("missing stored merchant event"))?;
+        match receipt.kind {
+            MerchantEventKind::Succeeded => {
+                // Re-check the paid terms against the pinned order, not the
+                // binding: `classify` already matched the display amount, but
+                // the order's own columns are the discrepancy boundary a paid
+                // event is held to. A mismatch is `needs_attention` — never a
+                // silent credit.
+                if event.amount_minor != Some(existing.display_amount_minor)
+                    || event.currency.as_deref() != Some(existing.display_currency.as_str())
+                {
+                    sqlx::query(
+                        "UPDATE oxsum.payment_orders SET status='needs_attention',updated_at=now() \
+                         WHERE order_id=$1",
+                    )
+                    .bind(order_id)
+                    .execute(&mut *tx)
+                    .await?;
+                    tx.commit().await?;
+                    return Ok(());
+                }
+                if let Some(provider) = event.provider_payment_id.as_deref() {
+                    sqlx::query(
+                        "UPDATE oxsum.payment_orders SET provider_payment_id=$2,updated_at=now() \
+                         WHERE order_id=$1 AND provider_payment_id IS NULL",
+                    )
+                    .bind(order_id)
+                    .bind(provider)
+                    .execute(&mut *tx)
+                    .await?;
+                }
+                sqlx::query(
+                    "UPDATE oxsum.payment_orders SET status='paid',paid_at=COALESCE(paid_at,now()),updated_at=now() \
+                     WHERE order_id=$1 AND status IN ('created','provider_pending','paid')",
+                )
+                .bind(order_id)
+                .execute(&mut *tx)
+                .await?;
+            }
+            MerchantEventKind::Failed => {
+                sqlx::query(
+                    "UPDATE oxsum.payment_orders SET status='failed',updated_at=now() \
+                     WHERE order_id=$1 AND status IN ('created','provider_pending')",
+                )
+                .bind(order_id)
+                .execute(&mut *tx)
+                .await?;
+            }
+            MerchantEventKind::Expired => {
+                sqlx::query(
+                    "UPDATE oxsum.payment_orders SET status='expired',updated_at=now() \
+                     WHERE order_id=$1 AND status IN ('created','provider_pending')",
+                )
+                .bind(order_id)
+                .execute(&mut *tx)
+                .await?;
+            }
+            // Refunds, disputes and unsupported kinds carry no order transition:
+            // they remain authenticated intake for a later purpose's own terms.
+            _ => {}
+        }
+        self.mark_merchant_event_applied(receipt.id).await?;
+        tx.commit().await?;
+        Ok(())
+    }
+
+    /// Marks the order `provider_pending` and binds its provider payment id —
+    /// written after the PSP accepts the checkout, the order's own anchor for
+    /// the synchronous response. The provider reference is bound by the shared
+    /// `merchant_payment_refs` dedup, so a retry that re-uses the id cannot
+    /// issue a second charge.
+    pub async fn note_order_provider(
+        &self,
+        order_id: Uuid,
+        provider_payment_id: &str,
+        checkout: &serde_json::Value,
+    ) -> Result<(), WalletError> {
+        if !identifier(provider_payment_id) {
+            return Err(invalid("invalid provider payment reference"));
+        }
+        // Bind through the shared `merchant_payment_refs` dedup (its own
+        // transaction) so one provider payment cannot fund two orders — the
+        // same guard the inbox's classify applies. Binding before the status
+        // move means a retry that re-uses the id can never issue a second charge.
+        self.record_merchant_payment_reference(order_id, provider_payment_id)
+            .await?;
+        let mut tx = self.pool().begin().await?;
+        let Some(existing) = order_in(&mut tx, order_id).await? else {
+            return Err(WalletError::NotFound("unknown payment order".into()));
+        };
+        if existing
+            .provider_payment_id
+            .as_deref()
+            .is_some_and(|p| p != provider_payment_id)
+        {
+            return Err(WalletError::Conflict(
+                "provider payment reference changed".into(),
+            ));
+        }
+        sqlx::query(
+            "UPDATE oxsum.payment_orders \
+             SET status='provider_pending',provider_payment_id=$2,checkout=$3,updated_at=now() \
+             WHERE order_id=$1 AND status='created'",
+        )
+        .bind(order_id)
+        .bind(provider_payment_id)
+        .bind(checkout)
+        .execute(&mut *tx)
+        .await?;
+        tx.commit().await?;
+        Ok(())
+    }
+
+    /// Recovery's work list: `paid` orders that have not yet fulfilled, plus
+    /// `needs_attention` discrepancies the report surfaces, in bounded pages.
+    /// Paid-unfulfilled is the sweep's backlog; a restart re-scans it and the
+    /// fulfillment's own idempotency makes the retry a single grant.
+    pub async fn unfulfilled_payment_orders(
+        &self,
+        limit: i64,
+    ) -> Result<Vec<PaymentOrder>, WalletError> {
+        if !(1..=100).contains(&limit) {
+            return Err(invalid("limit must be 1..100"));
+        }
+        let rows = sqlx::query(&format!(
+            "SELECT {ORDER_COLS} FROM oxsum.payment_orders \
+             WHERE status='paid' ORDER BY created_at LIMIT $1"
+        ))
+        .bind(limit)
+        .fetch_all(self.pool())
+        .await?;
+        rows.iter().map(order).collect()
+    }
+
+    /// The paid/fulfilled/needs_attention reconciliation the report reads —
+    /// counts per lifecycle state plus the paid-unfulfilled order ids.
+    pub async fn payment_reconciliation(
+        &self,
+        token: &str,
+    ) -> Result<PaymentReconciliation, WalletError> {
+        let mut tx = self.pool().begin().await?;
+        let business = authority::lock_business(&mut tx).await?;
+        authority::require_capability(&mut tx, business, token, BusinessCapability::ReportsRead)
+            .await?;
+        let mut report = PaymentReconciliation::default();
+        let rows = sqlx::query(
+            "SELECT status,count(*)::bigint AS n FROM oxsum.payment_orders GROUP BY status",
+        )
+        .fetch_all(&mut *tx)
+        .await?;
+        for row in &rows {
+            let n: i64 = row.try_get("n")?;
+            match row.try_get::<String, _>("status")?.as_str() {
+                "created" => report.created = n,
+                "provider_pending" => report.provider_pending = n,
+                "paid" => report.paid = n,
+                "fulfilled" => report.fulfilled = n,
+                "expired" => report.expired = n,
+                "failed" => report.failed = n,
+                "needs_attention" => report.needs_attention = n,
+                _ => {}
+            }
+        }
+        report.paid_unfulfilled = sqlx::query_scalar(
+            "SELECT order_id FROM oxsum.payment_orders WHERE status='paid' ORDER BY created_at LIMIT 100",
+        )
+        .fetch_all(&mut *tx)
+        .await?;
+        tx.commit().await?;
+        Ok(report)
+    }
+
+    /// Fulfills a `paid` order: runs the one grant its purpose allows, records
+    /// the fulfillment and its outbox row, and moves the order to `fulfilled` —
+    /// so the grant, the fulfillment record and the dispatch land or roll back
+    /// together.
+    ///
+    /// The purpose is re-read off the locked order row and dispatched
+    /// exhaustively by [`Self::grant_order`], so no order may both grant quota
+    /// and wallet cash. Replaying a fulfilled order returns its standing
+    /// record; a `needs_attention` or not-yet-paid order is refused — the
+    /// discrepancy is a human's, not a retry's, to resolve.
+    ///
+    /// `wallet` is the order organization's ledger, resolved by the caller.
+    /// The grant itself is idempotent under the order-derived ledger key: a
+    /// crash after the grant commits but before the fulfillment row lands
+    /// leaves a `paid` order the sweep re-runs, and the grant replays rather
+    /// than granting twice.
+    pub async fn fulfill_payment_order(
+        &self,
+        order_id: Uuid,
+        wallet: &crate::Wallet,
+        on: time::Date,
+    ) -> Result<PaymentFulfillment, WalletError> {
+        let mut tx = self.pool().begin().await?;
+        // Serialize the order's fulfillment: two workers cannot both grant it.
+        sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1,0))")
+            .bind(format!("payment-order-fulfill:{order_id}"))
+            .execute(&mut *tx)
+            .await?;
+        let Some(existing) = order_in(&mut tx, order_id).await? else {
+            return Err(WalletError::NotFound("unknown payment order".into()));
+        };
+        if existing.status == "fulfilled" {
+            let standing = fulfillment_in(&mut tx, order_id)
+                .await?
+                .ok_or_else(|| WalletError::Storage(sqlx::Error::RowNotFound.into()))?;
+            tx.commit().await?;
+            return Ok(standing);
+        }
+        if existing.status != "paid" {
+            return Err(WalletError::Conflict(format!(
+                "a {} payment order cannot fulfill",
+                existing.status
+            )));
+        }
+        // The grant runs outside the transaction's held row lock but inside the
+        // order's advisory lock: the ledger append is itself idempotent under
+        // the order-derived key.
+        tx.commit().await?;
+        let payload = self
+            .grant_order(&existing, wallet, existing.promo_minor, on)
+            .await?;
+
+        let mut tx = self.pool().begin().await?;
+        sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1,0))")
+            .bind(format!("payment-order-fulfill:{order_id}"))
+            .execute(&mut *tx)
+            .await?;
+        let current = order_in(&mut tx, order_id)
+            .await?
+            .ok_or_else(|| WalletError::NotFound("unknown payment order".into()))?;
+        if current.status == "fulfilled" {
+            let standing = fulfillment_in(&mut tx, order_id)
+                .await?
+                .ok_or_else(|| WalletError::Storage(sqlx::Error::RowNotFound.into()))?;
+            tx.commit().await?;
+            return Ok(standing);
+        }
+        if current.status != "paid" {
+            return Err(WalletError::Conflict(format!(
+                "a {} payment order cannot fulfill",
+                current.status
+            )));
+        }
+        let outbox_id = Uuid::new_v4();
+        sqlx::query(
+            "INSERT INTO oxsum.payment_outbox(outbox_id,order_id,event_type,payload) \
+             VALUES($1,$2,$3,$4)",
+        )
+        .bind(outbox_id)
+        .bind(order_id)
+        .bind(format!(
+            "payment_order.{}_fulfilled",
+            current.purpose.as_str()
+        ))
+        .bind(&payload)
+        .execute(&mut *tx)
+        .await?;
+        let fulfillment_id = Uuid::new_v4();
+        sqlx::query(
+            "INSERT INTO oxsum.payment_fulfillments\
+             (fulfillment_id,order_id,purpose,purpose_payload,outbox_id) \
+             VALUES($1,$2,$3,$4,$5) ON CONFLICT (order_id) DO NOTHING",
+        )
+        .bind(fulfillment_id)
+        .bind(order_id)
+        .bind(current.purpose.as_str())
+        .bind(&payload)
+        .bind(outbox_id)
+        .execute(&mut *tx)
+        .await?;
+        sqlx::query(
+            "UPDATE oxsum.payment_orders SET status='fulfilled',updated_at=now() \
+             WHERE order_id=$1 AND status='paid'",
+        )
+        .bind(order_id)
+        .execute(&mut *tx)
+        .await?;
+        let standing = fulfillment_in(&mut tx, order_id)
+            .await?
+            .ok_or_else(|| WalletError::Storage(sqlx::Error::RowNotFound.into()))?;
+        tx.commit().await?;
+        Ok(standing)
+    }
+
+    /// The purpose-scoped grant [`Self::fulfill_payment_order`] runs: the one
+    /// arm an order's purpose permits, dispatched exhaustively so no order may
+    /// both grant quota and wallet cash.
+    ///
+    /// - `wallet_topup` books wallet cash via [`crate::Wallet::top_up`] — the
+    ///   purchased pool only; it can repay a drawn line but never grants quota.
+    /// - `bundle` books the purchased credit the same way, then the separate
+    ///   promo lot as a second ledger entry into the bonus pool — two postings
+    ///   under one fulfillment, the lot never cash-backed.
+    /// - `plan_period` activates the period via [`Db::bind_subscription`] — the
+    ///   quota grant — and never touches the wallet.
+    /// - `invoice_repayment` repays the drawn line via
+    ///   [`crate::Wallet::repay_credit`] — `debit Cash / credit CreditLine` —
+    ///   so not a minor of it can become spendable wallet balance.
+    ///
+    /// `wallet` is the order organization's ledger; `promo_minor` is the bundle
+    /// order's recorded promo part. The returned value is the
+    /// `purpose_payload` the fulfillment records — what was granted, as audit.
+    pub async fn grant_order(
+        &self,
+        order: &PaymentOrder,
+        wallet: &crate::Wallet,
+        promo_minor: i64,
+        on: time::Date,
+    ) -> Result<serde_json::Value, WalletError> {
+        // The ledger idempotency keys derive from the order id, so a retried or
+        // recovered fulfillment replays the same grant rather than granting
+        // twice — the recovery sweep's "single credit" guarantee.
+        let key = format!("payment-order:{}", order.order_id);
+        match order.purpose {
+            PaymentOrderPurpose::WalletTopup => {
+                let receipt = wallet.top_up(&key, order.amount_minor, on).await?;
+                self.reconcile_statements(order.organization_id, wallet, on)
+                    .await?;
+                Ok(json!({
+                    "arm": "wallet_topup",
+                    "walletEntryId": receipt.entry_id.as_uuid(),
+                    "creditedMinor": order.amount_minor,
+                }))
+            }
+            PaymentOrderPurpose::Bundle => {
+                let purchased = wallet.top_up(&key, order.amount_minor, on).await?;
+                let mut promo_entry = None;
+                if promo_minor > 0 {
+                    let promo = wallet
+                        .adjust(&format!("{key}:promo"), "bundle promo lot", promo_minor, on)
+                        .await?;
+                    promo_entry = Some(*promo.entry_id.as_uuid());
+                }
+                self.reconcile_statements(order.organization_id, wallet, on)
+                    .await?;
+                Ok(json!({
+                    "arm": "bundle",
+                    "walletEntryId": purchased.entry_id.as_uuid(),
+                    "creditedMinor": order.amount_minor,
+                    "promoEntryId": promo_entry,
+                    "promoMinor": promo_minor,
+                }))
+            }
+            PaymentOrderPurpose::PlanPeriod => {
+                let customer_plan = order
+                    .purpose_ref
+                    .ok_or_else(|| invalid("a plan period order carries no customer plan"))?;
+                let plan = self
+                    .activate_plan_period(order.order_id, customer_plan)
+                    .await?;
+                Ok(json!({
+                    "arm": "plan_period",
+                    "customerPlanId": plan.customer_plan_id,
+                    "subscriptionId": plan.subscription_id,
+                    "planVersionId": plan.plan_version_id,
+                }))
+            }
+            PaymentOrderPurpose::InvoiceRepayment => {
+                let receipt = wallet.repay_credit(&key, order.amount_minor, on).await?;
+                self.reconcile_statements(order.organization_id, wallet, on)
+                    .await?;
+                Ok(json!({
+                    "arm": "invoice_repayment",
+                    "walletEntryId": receipt.entry_id.as_uuid(),
+                    "repaidMinor": order.amount_minor,
+                    "receivable": order.purpose_ref,
+                }))
+            }
+        }
+    }
+}
