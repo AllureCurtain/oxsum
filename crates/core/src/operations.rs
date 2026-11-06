@@ -597,6 +597,36 @@ impl Db {
         Ok(())
     }
 
+    /// [`complete_attempt`](Self::complete_attempt) inside the caller's
+    /// transaction (issue #602): the attempt's terminal row commits with the
+    /// settlement's ledger entry and the operation's close, so a settle that
+    /// rolls back leaves no half-written usage evidence.
+    ///
+    /// # Errors
+    ///
+    /// Storage failures surface as [`WalletError`].
+    pub async fn complete_attempt_in(
+        &self,
+        tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+        attempt_id: Uuid,
+        status: AttemptStatus,
+        usage_json: Option<&serde_json::Value>,
+        error: Option<&str>,
+    ) -> Result<(), WalletError> {
+        sqlx::query(
+            "UPDATE oxsum.request_attempts \
+             SET status = $2, usage_json = $3, error = left($4, 500), completed_at = now() \
+             WHERE attempt_id = $1",
+        )
+        .bind(attempt_id)
+        .bind(status.as_str())
+        .bind(usage_json)
+        .bind(error)
+        .execute(&mut **tx)
+        .await?;
+        Ok(())
+    }
+
     /// Stamps upstream's own request/task id onto an attempt row, once the
     /// body it answered names one — the chat completion's `id`, or the task
     /// relay's `external_task_id`. `WHERE external_id IS NULL` keeps the
@@ -696,6 +726,57 @@ impl Db {
             // A missing row or an unreadable state: the settle raced a delete
             // that cannot happen under RESTRICT, or a state this build does
             // not know — both read as lost rather than settled.
+            _ => Ok(OperationSettle::LeaseLost),
+        }
+    }
+
+    /// [`settle_operation`](Self::settle_operation) inside the caller's
+    /// transaction (issue #602, D05): the operation's terminal row commits with
+    /// the settlement's ledger entry, so the two can never disagree — a settle
+    /// whose transaction rolls back leaves the operation open for the sweeper,
+    /// not half-closed over money that never moved.
+    ///
+    /// # Errors
+    ///
+    /// Storage failures surface as [`WalletError`].
+    pub async fn settle_operation_in(
+        &self,
+        tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+        operation_id: Uuid,
+        lease_owner: &str,
+        outcome_state: OperationState,
+        charged_minor: i64,
+        outcome_kind: &str,
+    ) -> Result<OperationSettle, WalletError> {
+        debug_assert!(outcome_state.is_terminal());
+        let touched = sqlx::query_scalar::<_, uuid::Uuid>(
+            "UPDATE oxsum.request_operations \
+             SET state = $3, charged_minor = $4, outcome_kind = $5, \
+                 completed_at = now(), updated_at = now() \
+             WHERE operation_id = $1 \
+               AND (lease_owner = $2 OR state IN ('created','leased','running')) \
+               AND state NOT IN ('succeeded','failed','cancelled','timed_out') \
+             RETURNING operation_id",
+        )
+        .bind(operation_id)
+        .bind(lease_owner)
+        .bind(outcome_state.as_str())
+        .bind(charged_minor)
+        .bind(outcome_kind)
+        .fetch_optional(&mut **tx)
+        .await?;
+        if touched.is_some() {
+            return Ok(OperationSettle::Settled);
+        }
+        let state: Option<String> = sqlx::query_scalar(
+            "SELECT state FROM oxsum.request_operations WHERE operation_id = $1",
+        )
+        .bind(operation_id)
+        .fetch_optional(&mut **tx)
+        .await?;
+        match state.as_deref().map(OperationState::parse) {
+            Some(Ok(state)) if state.is_terminal() => Ok(OperationSettle::AlreadySettled),
+            Some(Ok(_)) => Ok(OperationSettle::LeaseLost),
             _ => Ok(OperationSettle::LeaseLost),
         }
     }

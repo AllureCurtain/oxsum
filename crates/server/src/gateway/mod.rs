@@ -1424,22 +1424,25 @@ async fn run(
         }
     };
     let wallet_minor = freeze - subscription.drawn_minor;
-    if let Err(error) = wallet
-        .hold_for_key(
-            key,
-            Some(request.model.as_str()),
-            &hold_key,
-            &description,
-            // A hold of zero would be refused by the ledger — a fully
-            // subscription-covered turn takes a 1-minor wallet hold instead,
-            // so the turn still carries a ledger hold for the settlement to
-            // land on and the sweeper to watch. The difference is repaid in
-            // the settlement: the wallet is charged only `charged - drawn`.
-            wallet_minor.max(1),
-            today(),
-            mandate.as_ref(),
-        )
-        .await
+    // A fully entitlement-funded turn takes no wallet hold at all (issue
+    // #602): the durable operation row plus the subscription draw are the
+    // reservation's authority, and the settle writes the typed zero-cost
+    // usage receipt instead of a release-and-charge entry — a request covered
+    // by plan or grant must serve with zero wallet funds, so no fabricated
+    // 1-minor purchased hold stands in for one.
+    let wallet_held = wallet_minor > 0;
+    if wallet_held
+        && let Err(error) = wallet
+            .hold_for_key(
+                key,
+                Some(request.model.as_str()),
+                &hold_key,
+                &description,
+                wallet_minor,
+                today(),
+                mandate.as_ref(),
+            )
+            .await
     {
         // The hold was refused, so there is nothing for the sweeper to watch.
         if let Err(clear) = state.db.clear_open_hold(&hold_key).await {
@@ -1497,6 +1500,7 @@ async fn run(
         turn_span,
         mandate,
         subscription,
+        wallet_held,
         organization.id,
         guardrails.clone(),
         operation_ctx,
@@ -2199,17 +2203,22 @@ async fn serve_cache_hit(
         }
     };
     let wallet_minor = freeze - subscription.drawn_minor;
-    if let Err(error) = wallet
-        .hold_for_key(
-            key,
-            Some(request.model.as_str()),
-            &hold_key,
-            &description,
-            wallet_minor.max(1),
-            today(),
-            mandate.as_ref(),
-        )
-        .await
+    // Same rule as a fresh turn (issue #602): a cache hit the subscription
+    // fully covers takes no wallet hold; the settle writes the zero-cost
+    // usage receipt.
+    let wallet_held = wallet_minor > 0;
+    if wallet_held
+        && let Err(error) = wallet
+            .hold_for_key(
+                key,
+                Some(request.model.as_str()),
+                &hold_key,
+                &description,
+                wallet_minor,
+                today(),
+                mandate.as_ref(),
+            )
+            .await
     {
         if let Err(clear) = state.db.clear_open_hold(&hold_key).await {
             tracing::error!(%clear, "clearing a refused cache hold's watch row failed");
@@ -2256,6 +2265,7 @@ async fn serve_cache_hit(
         turn_span,
         mandate,
         subscription,
+        wallet_held,
         organization.id,
         response_guardrails.clone(),
         operation_ctx,
