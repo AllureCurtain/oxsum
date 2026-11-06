@@ -1,0 +1,9 @@
+soak: 300s against http://127.0.0.1:3010
+
+soak report
+  duration:      300s
+  requests:      3648
+  failures:      0
+  p50 latency:   5ms
+  p99 latency:   206ms
+soak: clean
