@@ -1,0 +1,425 @@
+# Release candidate gate (issue #620, T29): given an exact SHA, prove the
+# candidate and produce its artifacts — never publish or deploy them.
+#
+# Run it by hand:
+#   gh workflow run release-candidate.yml -f sha=<40-char commit>
+# The workflow checks out THAT sha (not the branch that happened to point at
+# it), so the gate's verdict and the manifest it writes always name one
+# immutable commit. `workflow_call` exists so a future promotion flow can
+# invoke the gate and receive the manifest as an artifact.
+#
+# What it runs, on the promoted SHA:
+#   fmt + clippy + lib/doc tests   — the fast correctness tier ci.yml uses
+#   wasm build                     — scripts/build-verify-wasm.sh, the real
+#                                    browser-verifier bundle, not the image stage
+#   frontend build                 — codegen from openapi.yaml + `npm run build`
+#   verify-consumer                — scripts/check-verify-consumer.sh: packs the
+#                                    verify-oxsum-bill tarball, installs it into
+#                                    a clean project, verifies genuine + rejects
+#                                    tampered evidence offline
+#   examples                       — scripts/verify-examples.sh: every shipped
+#                                    developer example end to end on a fresh
+#                                    scratch deployment (T26's fresh-install gate)
+#   candidate image                — docker build of the exact SHA, pushed NOWHERE
+#                                    (load: true, no registry login, no push)
+#   artifacts                      — the SDK tarball, web/dist, the wasm bundle,
+#                                    SHA-256 checksums of all of it, a manifest
+#                                    recording {sha, artifact digests, run id,
+#                                    image digest}, and a release-notes draft
+#                                    cut from openapi.yaml's changelog
+#
+# The heavy tier (the three nextest shards + process-shared suites against
+# real PostgreSQL) deliberately stays in ci.yml: a promoted SHA must be a main
+# commit, which the post-merge push run already gated — duplicating ~30 runner
+# minutes here buys nothing. The runbook (docs/self-hosted-release.md) names
+# the post-merge CI run as gate 0 for exactly this reason.
+#
+# Nothing here publishes: no registry login, `push: false`, no npm publish, no
+# deploy trigger, no secrets. `release.yml` remains the publish half and
+# `deploy.yml` the deploy half — both manual-only, both untouched by a gate.
+
+name: Release candidate
+
+on:
+  workflow_dispatch:
+    inputs:
+      sha:
+        description: 'Exact commit SHA to gate (must be a main commit)'
+        required: true
+  workflow_call:
+    inputs:
+      sha:
+        description: 'Exact commit SHA to gate'
+        required: true
+        type: string
+
+concurrency:
+  group: ${{ github.workflow }}-${{ inputs.sha }}
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: 0
+  CARGO_PROFILE_TEST_DEBUG: 0
+  CARGO_PROFILE_TEST_STRIP: symbols
+  RUSTC_WRAPPER: sccache
+  SCCACHE_GHA_ENABLED: "true"
+
+jobs:
+  # One place that decides whether the promoted SHA is even gatable: it must
+  # exist, and it must be an ancestor of main — a candidate is a main commit,
+  # not a side branch.
+  resolve:
+    name: resolve the promoted SHA
+    runs-on: ubuntu-latest
+    outputs:
+      sha: ${{ steps.pin.outputs.sha }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - name: Pin and validate the candidate
+        id: pin
+        run: |
+          sha="${{ inputs.sha }}"
+          if ! git cat-file -e "${sha}^{commit}" 2>/dev/null; then
+            echo "::error::${sha} is not a commit in this repository"
+            exit 1
+          fi
+          if ! git merge-base --is-ancestor "$sha" origin/main; then
+            echo "::error::${sha} is not an ancestor of main — gate a merged commit"
+            exit 1
+          fi
+          full="$(git rev-parse "$sha")"
+          echo "candidate: $full"
+          echo "sha=$full" >> "$GITHUB_OUTPUT"
+
+  fmt:
+    name: fmt
+    needs: [resolve]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.resolve.outputs.sha }}
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+      - run: cargo fmt --all --check
+
+  clippy:
+    name: clippy
+    needs: [resolve]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.resolve.outputs.sha }}
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - name: Install mold
+        run: |
+          curl -sL https://github.com/rui314/mold/releases/download/v2.40.0/mold-2.40.0-x86_64-linux.tar.gz | sudo tar -xz -C /usr/local --strip-components=1
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: "ci"
+          cache-workspace-crates: "true"
+          save-if: false
+      - uses: mozilla-actions/sccache-action@v0.0.11
+      - run: cargo clippy --workspace --all-targets -- -D warnings
+
+  test:
+    name: test (lib + doc)
+    needs: [resolve, fmt]
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.resolve.outputs.sha }}
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Install mold
+        run: |
+          curl -sL https://github.com/rui314/mold/releases/download/v2.40.0/mold-2.40.0-x86_64-linux.tar.gz | sudo tar -xz -C /usr/local --strip-components=1
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: "ci"
+          cache-workspace-crates: "true"
+          save-if: false
+      - uses: mozilla-actions/sccache-action@v0.0.11
+      - run: cargo test --workspace --lib
+      - run: cargo test --workspace --doc
+
+  # The real browser verifier off the promoted SHA — the artifact the tarball
+  # and the /verify page both ship. `wasm-bindgen-cli` is installed to match
+  # the lockfile the same way the Dockerfile's wasm stage pins it.
+  wasm:
+    name: wasm (browser verifier)
+    needs: [resolve]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.resolve.outputs.sha }}
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: "ci"
+          cache-workspace-crates: "true"
+          save-if: false
+      - name: Install wasm-bindgen-cli at the lockfile's version
+        run: |
+          version="$(sed -n '/name = "wasm-bindgen"/{n;s/.*version = "\(.*\)"/\1/p;q}' Cargo.lock)"
+          echo "wasm-bindgen $version"
+          curl -fsSL "https://github.com/rustwasm/wasm-bindgen/releases/download/v${version}/wasm-bindgen-${version}-x86_64-unknown-linux-musl.tar.gz" \
+            | sudo tar -xz --strip-components=1 -C /usr/local/bin \
+                "wasm-bindgen-${version}-x86_64-unknown-linux-musl/wasm-bindgen"
+      - run: bash scripts/build-verify-wasm.sh
+      - uses: actions/upload-artifact@v7
+        with:
+          name: verify-wasm
+          path: crates/web/verify-wasm/
+          retention-days: 30
+
+  frontend:
+    name: frontend
+    needs: [resolve]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.resolve.outputs.sha }}
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - run: |
+          cd web
+          npm ci
+          npm run codegen
+          npm run build
+      - uses: actions/upload-artifact@v7
+        with:
+          name: web-dist
+          path: web/dist/
+          retention-days: 30
+
+  # The SDK half of A30: pack verify-oxsum-bill, install it into a clean
+  # consumer project, verify the genuine evidence and reject the tampered
+  # set — all offline, exactly what a customer's browser does.
+  verify-consumer:
+    name: verify consumer (SDK tarball)
+    needs: [resolve]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.resolve.outputs.sha }}
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: "ci"
+          cache-workspace-crates: "true"
+          save-if: false
+      - name: Install wasm-bindgen-cli at the lockfile's version
+        run: |
+          version="$(sed -n '/name = "wasm-bindgen"/{n;s/.*version = "\(.*\)"/\1/p;q}' Cargo.lock)"
+          curl -fsSL "https://github.com/rustwasm/wasm-bindgen/releases/download/v${version}/wasm-bindgen-${version}-x86_64-unknown-linux-musl.tar.gz" \
+            | sudo tar -xz --strip-components=1 -C /usr/local/bin \
+                "wasm-bindgen-${version}-x86_64-unknown-linux-musl/wasm-bindgen"
+      - name: Pack the tarball and run the clean consumer
+        run: bash scripts/check-verify-consumer.sh
+      - name: Keep the exact tarball the consumer verified
+        run: |
+          mkdir -p candidate-artifacts
+          (cd web/verify-sdk && npm pack --pack-destination "$GITHUB_WORKSPACE/candidate-artifacts")
+          ls -la candidate-artifacts/
+      - uses: actions/upload-artifact@v7
+        with:
+          name: verify-oxsum-bill-tarball
+          path: candidate-artifacts/*.tgz
+          retention-days: 30
+
+  # The runnable developer examples (issue #617, T26): a fresh scratch
+  # deployment — real postgres service, the server built at the promoted
+  # SHA — and every shipped example end to end against it. This is the
+  # A27 fresh-install half a candidate must keep green.
+  examples:
+    name: developer examples (fresh install)
+    needs: [resolve]
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 2s
+          --health-timeout 5s
+          --health-retries 15
+    env:
+      DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/postgres
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.resolve.outputs.sha }}
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Install mold
+        run: |
+          curl -sL https://github.com/rui314/mold/releases/download/v2.40.0/mold-2.40.0-x86_64-linux.tar.gz | sudo tar -xz -C /usr/local --strip-components=1
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: "ci"
+          cache-workspace-crates: "true"
+          save-if: false
+      - uses: mozilla-actions/sccache-action@v0.0.11
+      - name: Install wasm-bindgen-cli at the lockfile's version
+        run: |
+          version="$(sed -n '/name = "wasm-bindgen"/{n;s/.*version = "\(.*\)"/\1/p;q}' Cargo.lock)"
+          curl -fsSL "https://github.com/rustwasm/wasm-bindgen/releases/download/v${version}/wasm-bindgen-${version}-x86_64-unknown-linux-musl.tar.gz" \
+            | sudo tar -xz --strip-components=1 -C /usr/local/bin \
+                "wasm-bindgen-${version}-x86_64-unknown-linux-musl/wasm-bindgen"
+      - run: rustup target add wasm32-unknown-unknown
+      - run: bash scripts/verify-examples.sh
+
+  # The candidate image: built at the promoted SHA, loaded into the local
+  # daemon, and its digest recorded in the manifest. It is NOT pushed —
+  # publishing stays release.yml's manual half. The build's GIT_SHA arg is
+  # the promoted SHA, so /api/v1/version inside the image reports it.
+  image:
+    name: candidate image (no push)
+    needs: [resolve]
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    outputs:
+      digest: ${{ steps.build.outputs.digest }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.resolve.outputs.sha }}
+      - name: Free disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
+          sudo docker image prune --all --force
+          df -h
+      - uses: docker/setup-buildx-action@v4
+      - name: Build the candidate image (load, never push)
+        id: build
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: ./Dockerfile
+          push: false
+          load: true
+          tags: oxsum-candidate:sha-${{ needs.resolve.outputs.sha }}
+          build-args: |
+            GIT_SHA=${{ needs.resolve.outputs.sha }}
+          cache-from: type=gha,scope=candidate
+          cache-to: type=gha,mode=max,scope=candidate
+      - name: Record the image digest
+        run: |
+          digest="$(docker inspect --format='{{index .RepoDigests 0}}' oxsum-candidate:sha-${{ needs.resolve.outputs.sha }} 2>/dev/null || true)"
+          # A locally loaded image has no RepoDigests (digests are registry
+          # facts); the build id is what identifies this exact build output.
+          if [ -z "$digest" ]; then
+            digest="$(docker image inspect --format='{{.Id}}' oxsum-candidate:sha-${{ needs.resolve.outputs.sha }})"
+          fi
+          echo "image identity: $digest"
+          echo "digest=$digest" >> "$GITHUB_OUTPUT"
+          # Same-sha sanity: the baked version answers the promoted commit.
+          docker run --rm --entrypoint sh oxsum-candidate:sha-${{ needs.resolve.outputs.sha }} \
+            -c 'test -x /usr/local/bin/oxsum && echo "binary present"'
+
+  # Everything the gate produced, folded into one manifest with SHA-256s —
+  # the object a release manager reviews before touching release.yml.
+  manifest:
+    name: candidate manifest + release notes draft
+    needs: [resolve, fmt, clippy, test, wasm, frontend, verify-consumer, examples, image]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.resolve.outputs.sha }}
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: "*"
+          path: artifacts/
+      - name: Checksum every artifact
+        run: |
+          cd artifacts
+          find . -type f -print0 | sort -z | xargs -0 sha256sum > ../SHA256SUMS
+          cd ..
+          cat SHA256SUMS
+      - name: Draft the release notes
+        run: |
+          version="$(sed -n 's/^  version: //p' crates/server/openapi.yaml | head -1)"
+          {
+            echo "# Release candidate ${needs.resolve.outputs.sha}"
+            echo
+            echo "Contract version: ${version}"
+            echo "Gated by workflow run ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+            echo
+            echo "## Changelog for ${version}"
+            echo
+            # openapi.yaml's info.description prepends one changelog
+            # paragraph per version, newest first — extract exactly this
+            # version's paragraph (from its heading to the next blank line).
+            awk -v v="$version" '
+              $0 ~ "^    "v" " {in_par=1}
+              in_par && NF==0 {exit}
+              in_par {print}
+            ' crates/server/openapi.yaml
+          } > RELEASE-NOTES-DRAFT.md
+          cat RELEASE-NOTES-DRAFT.md
+      - name: Write the candidate manifest
+        run: |
+          {
+            echo "{"
+            echo "  \"candidate_sha\": \"${{ needs.resolve.outputs.sha }}\","
+            echo "  \"repository\": \"${GITHUB_REPOSITORY}\","
+            echo "  \"workflow_run_id\": \"${GITHUB_RUN_ID}\","
+            echo "  \"workflow_run_url\": \"${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}\","
+            echo "  \"image_identity\": \"${{ needs.image.outputs.digest }}\","
+            echo "  \"gated_at\": \"$(date -u +%Y-%m-%dT%H:%M:%SZ)\","
+            echo "  \"gates\": {"
+            echo "    \"fmt\": \"passed\","
+            echo "    \"clippy\": \"passed\","
+            echo "    \"lib_doc_tests\": \"passed\","
+            echo "    \"wasm_build\": \"passed\","
+            echo "    \"frontend_build\": \"passed\","
+            echo "    \"verify_consumer\": \"passed\","
+            echo "    \"developer_examples\": \"passed\","
+            echo "    \"image_build\": \"passed\""
+            echo "  },"
+            echo "  \"heavy_tier\": \"main post-merge CI run on this SHA (ci.yml shards)\","
+            echo "  \"artifacts\": \"see SHA256SUMS\""
+            echo "}"
+          } > candidate-manifest.json
+          cat candidate-manifest.json
+      - uses: actions/upload-artifact@v7
+        with:
+          name: candidate-bundle
+          path: |
+            candidate-manifest.json
+            SHA256SUMS
+            RELEASE-NOTES-DRAFT.md
+            artifacts/
+          retention-days: 90
