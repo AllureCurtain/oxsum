@@ -770,6 +770,192 @@ async fn a_batch_rolls_back_as_a_whole() {
     );
 }
 
+/// The borrowed-transaction append (oxsum, D05): the caller's transaction
+/// carries both the ledger write and a caller-schema row, and both commit or
+/// roll back as one.
+#[tokio::test]
+async fn append_in_tx_commits_the_entry_and_the_caller_row_together() {
+    let h = Harness::start().await;
+
+    let mut tx = h.store.pool().begin().await.expect("begins");
+    // The caller's own write, schema-qualified — an operation row in oxsum, a
+    // scratch table here.
+    sqlx::query("CREATE TEMPORARY TABLE caller_effects (mark text NOT NULL)")
+        .execute(&mut *tx)
+        .await
+        .expect("creates the caller table");
+    sqlx::query("INSERT INTO caller_effects (mark) VALUES ('settled')")
+        .execute(&mut *tx)
+        .await
+        .expect("writes the caller row");
+
+    let recorded = h
+        .store
+        .append_in_tx(&mut tx, &EntryBatch::single(h.entry(b"shared-tx", 100)))
+        .await
+        .expect("appends inside the caller's transaction");
+    assert!(recorded.first().expect("one record").is_new);
+
+    // The caller's own statements still resolve — its qualified and temp names
+    // are unaffected by the transaction's search_path now pinning the ledger.
+    sqlx::query("INSERT INTO caller_effects (mark) VALUES ('after-append')")
+        .execute(&mut *tx)
+        .await
+        .expect("the caller's schema still resolves after the append");
+
+    tx.commit().await.expect("commits");
+
+    assert_eq!(h.store.len().await.expect("reads"), 1);
+}
+
+/// A rollback after the borrowed append leaves nothing behind: no entry, no
+/// node, no caller row — the failure-injection half of A12.
+#[tokio::test]
+async fn append_in_tx_rolled_back_leaves_no_entry_no_node_no_row() {
+    let h = Harness::start().await;
+
+    let mut tx = h.store.pool().begin().await.expect("begins");
+    sqlx::query("CREATE TEMPORARY TABLE caller_effects (mark text NOT NULL)")
+        .execute(&mut *tx)
+        .await
+        .expect("creates the caller table");
+    h.store
+        .append_in_tx(&mut tx, &EntryBatch::single(h.entry(b"rolled-back", 100)))
+        .await
+        .expect("the append itself succeeds");
+    // Enough entries that at least one MMR node would have been written inside
+    // the transaction — the fault must take the tree's writes with it too.
+    h.store
+        .append_in_tx(&mut tx, &EntryBatch::single(h.entry(b"rolled-back-2", 200)))
+        .await
+        .expect("the second append also succeeds");
+    // The injected fault: the caller's own write fails mid-transaction
+    // (a division by zero), so the whole unit — entry, nodes, caller rows —
+    // aborts.
+    sqlx::query("INSERT INTO caller_effects (mark) VALUES ('boom' || (1/0)::text)")
+        .execute(&mut *tx)
+        .await
+        .ok();
+    tx.rollback().await.expect("rolls back");
+
+    assert_eq!(
+        h.store.len().await.expect("reads"),
+        0,
+        "a rolled-back borrowed append leaves no entry"
+    );
+    assert!(
+        h.store
+            .get_by_key(&doubleentry::IdempotencyKey::new(b"rolled-back".to_vec()).unwrap())
+            .await
+            .expect("reads")
+            .is_none(),
+        "a rolled-back borrowed append leaves no idempotency claim"
+    );
+    // The MMR nodes went with it: the next honest append starts the tree at
+    // size 0 rather than skipping rolled-back node positions.
+    let head = h.store.head().await.expect("reads");
+    assert_eq!(
+        head.size, 0,
+        "a rolled-back borrowed append leaves no nodes"
+    );
+}
+
+/// Two borrowed appends racing one ledger still serialise on the append lock:
+/// the loser's transaction waits, then appends the next dense index.
+#[tokio::test]
+async fn append_in_tx_serialises_with_the_append_lock() {
+    let h = Harness::start().await;
+
+    let mut slow = h.store.pool().begin().await.expect("begins");
+    h.store
+        .append_in_tx(&mut slow, &EntryBatch::single(h.entry(b"first", 100)))
+        .await
+        .expect("appends");
+
+    // The second writer blocks inside append_in_tx until the first commits —
+    // the advisory lock is the transaction's, held to its end.
+    let store = h.store.clone();
+    let second = h.entry(b"second", 200);
+    let blocked = tokio::spawn(async move {
+        let mut tx = store.pool().begin().await.expect("begins");
+        store
+            .append_in_tx(&mut tx, &EntryBatch::single(second))
+            .await
+            .expect("appends once the lock frees");
+        tx.commit().await.expect("commits");
+    });
+
+    // Give the blocked writer a moment to actually wait on the lock, then let
+    // the first through.
+    tokio::task::yield_now().await;
+    slow.commit().await.expect("commits");
+    blocked.await.expect("the racing task finishes");
+
+    let mut indices = Vec::new();
+    let mut cursor = Some(Cursor::start());
+    while let Some(c) = cursor {
+        let page = h.store.page(c).await.expect("pages");
+        indices.extend(
+            page.records
+                .iter()
+                .map(|r| r.require_index().expect("sequenced").get()),
+        );
+        cursor = page.next;
+    }
+    assert_eq!(
+        indices,
+        vec![0, 1],
+        "borrowed appends keep the log dense and ordered"
+    );
+}
+
+/// The wrapper keeps its contract while the borrowed path exists: a plain
+/// `append` interleaved with a committed borrowed append still reads the
+/// accumulator right — no position skipped, no node lost.
+#[tokio::test]
+async fn append_and_append_in_tx_share_one_log() {
+    let h = Harness::start().await;
+
+    h.store
+        .append(&EntryBatch::single(h.entry(b"wrapper", 100)))
+        .await
+        .expect("the wrapper appends");
+
+    let mut tx = h.store.pool().begin().await.expect("begins");
+    h.store
+        .append_in_tx(&mut tx, &EntryBatch::single(h.entry(b"borrowed", 200)))
+        .await
+        .expect("the borrowed append follows it");
+    tx.commit().await.expect("commits");
+
+    let page = h
+        .store
+        .page(Cursor::start().with_limit(10))
+        .await
+        .expect("pages");
+    let indices: Vec<u64> = page
+        .records
+        .iter()
+        .map(|r| r.require_index().expect("sequenced").get())
+        .collect();
+    assert_eq!(indices, vec![0, 1]);
+
+    // Both entries prove against the same tree — the borrowed append's nodes
+    // committed to the same MMR the wrapper's did.
+    let head = h.store.head().await.expect("reads");
+    for record in &page.records {
+        let proof = h
+            .store
+            .prove_inclusion(record.require_index().expect("sequenced"))
+            .await
+            .expect("proves");
+        assert!(
+            proof.verify(&record.content_hash, &head),
+            "an entry written through a borrowed transaction must still prove"
+        );
+    }
+}
+
 #[tokio::test]
 async fn the_database_refuses_an_unbalanced_entry_directly() {
     // Defence in depth: the engine cannot produce one, but the deferred trigger
