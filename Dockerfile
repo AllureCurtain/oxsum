@@ -117,6 +117,12 @@ RUN cargo build --release \
 # ---------- runtime ----------
 FROM debian:bookworm-slim
 
+# The same build arg the builder stage baked into the binary — re-declared so
+# the image's labels carry what GET /api/v1/version reports (issue #619).
+ARG GIT_SHA=unknown
+LABEL org.opencontainers.image.revision=$GIT_SHA \
+      org.opencontainers.image.source=https://github.com/AllureCurtain/oxsum
+
 RUN apt-get update \
     && apt-get install -y --no-install-recommends ca-certificates curl \
     && rm -rf /var/lib/apt/lists/*
