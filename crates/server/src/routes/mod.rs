@@ -29,6 +29,7 @@ mod device;
 mod experiments;
 mod keys;
 mod log;
+mod merchant_events;
 mod merchants;
 mod org;
 mod report_links;
@@ -187,6 +188,14 @@ pub fn router(state: AppState) -> Router {
             get(business::context).post(business::select_context),
         )
         .route("/business", get(business::business))
+        .route(
+            "/business/merchants/{merchant}/events",
+            get(merchant_events::events),
+        )
+        .route(
+            "/webhooks/merchants/{merchant}/versions/{version}",
+            post(merchant_events::webhook),
+        )
         .route(
             "/business/merchants",
             get(merchants::list).post(merchants::create),

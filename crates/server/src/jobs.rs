@@ -329,6 +329,7 @@ async fn run_one(
             );
         }
         kinds::RECONCILE => {
+            crate::merchant_payments::recover(db, &tenants).await?;
             let report = db.reconcile().await?;
             let drifted = report
                 .classes

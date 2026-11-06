@@ -65,6 +65,31 @@ pub struct CheckoutSession {
 pub struct StripeError(pub String);
 
 impl Stripe {
+    /// Explicit one-time deployment bootstrap; the returned secret input has
+    /// no Debug implementation and is encrypted before persistence.
+    pub fn merchant_bootstrap(
+        &self,
+        account_id: String,
+        mode: oxsum_core::MerchantMode,
+        destination_policy: oxsum_core::ProviderDestinationPolicy,
+    ) -> oxsum_core::MerchantBootstrap {
+        oxsum_core::MerchantBootstrap {
+            rail: oxsum_core::MerchantRail::Stripe,
+            mode,
+            account_id,
+            config: oxsum_core::MerchantVersionInput {
+                api_url: self.api_url.clone(),
+                api_key: self.secret_key.clone(),
+                webhook_secret: self.webhook_secret.clone(),
+                client_id: None,
+                publishable_key: None,
+                sdk_url: None,
+                checkout_url: None,
+                destination_policy,
+            },
+        }
+    }
+
     /// Builds the client from its pieces. `public_url` is the deployment's
     /// public origin; the checkout success/cancel paths are appended when a
     /// session is created.

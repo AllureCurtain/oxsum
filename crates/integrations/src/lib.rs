@@ -24,6 +24,8 @@ pub mod bill_providers;
 pub mod facilitator;
 pub mod hyperswitch;
 pub mod mail;
+pub mod merchant_checkout;
+pub mod merchant_events;
 pub mod oauth;
 pub mod oidc;
 pub mod openai_costs;

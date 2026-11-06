@@ -103,6 +103,31 @@ pub struct PaymentIntent {
 pub struct AirwallexError(pub String);
 
 impl Airwallex {
+    /// Explicit one-time deployment bootstrap; the returned secret input has
+    /// no Debug implementation and is encrypted before persistence.
+    pub fn merchant_bootstrap(
+        &self,
+        account_id: String,
+        mode: oxsum_core::MerchantMode,
+        destination_policy: oxsum_core::ProviderDestinationPolicy,
+    ) -> oxsum_core::MerchantBootstrap {
+        oxsum_core::MerchantBootstrap {
+            rail: oxsum_core::MerchantRail::Airwallex,
+            mode,
+            account_id,
+            config: oxsum_core::MerchantVersionInput {
+                api_url: self.api_url.clone(),
+                api_key: self.api_key.clone(),
+                webhook_secret: self.webhook_secret.clone(),
+                client_id: Some(self.client_id.clone()),
+                publishable_key: None,
+                sdk_url: None,
+                checkout_url: Some(self.checkout_url.clone()),
+                destination_policy,
+            },
+        }
+    }
+
     /// Builds the client from its pieces. `public_url` is the deployment's
     /// public origin; the intent's `return_url` is appended when an intent is
     /// created. `http` is the transport the rail uses — the caller passes one

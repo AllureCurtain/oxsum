@@ -218,7 +218,7 @@ impl Db {
                      'stripeCheckoutUrl', $2::text\
                  ), \
                  updated_at = now() \
-             WHERE deposit_id = $3 AND rail = $4 AND status = 'pending'",
+             WHERE deposit_id = $3 AND rail = $4",
         )
         .bind(session_id)
         .bind(checkout_url)
@@ -242,7 +242,7 @@ impl Db {
             "SELECT d.deposit_id, d.organization_id, o.tenant_id \
              FROM oxsum.deposits d \
              JOIN oxsum.organizations o ON o.organization_id = d.organization_id \
-             WHERE d.rail = $1 AND d.meta->>'stripeSessionId' = $2 \
+             WHERE d.rail = $1 AND NOT EXISTS(SELECT 1 FROM oxsum.merchant_payment_bindings mb WHERE mb.payment_id=d.deposit_id) AND d.meta->>'stripeSessionId' = $2 \
              ORDER BY d.created_at DESC LIMIT 1",
         )
         .bind(RAIL_STRIPE)
@@ -274,7 +274,7 @@ impl Db {
         let flipped = sqlx::query(
             "UPDATE oxsum.deposits \
              SET status = 'confirmed', updated_at = now() \
-             WHERE deposit_id = $1 AND rail = $2 AND status = 'pending'",
+             WHERE deposit_id = $1 AND rail = $2 AND status IN ('pending','confirmed')",
         )
         .bind(deposit_id)
         .bind(RAIL_STRIPE)
@@ -293,9 +293,8 @@ impl Db {
     /// crash between the ledger append and the row flip leaves a confirmed
     /// deposit the retry resumes.
     ///
-    /// `received_minor` is what Stripe reports the session paid: a number that
-    /// disagrees with `amount_minor` is recorded for a human, never
-    /// auto-patched (decision D2).
+    /// The reported amount must equal the expected amount exactly. A mismatch
+    /// cannot credit the wallet and stays in the merchant inbox for review.
     ///
     /// Returns the receipt and organization id when a credit ran, `None` when
     /// the deposit was already credited or was never confirmed.
@@ -335,11 +334,23 @@ impl Db {
         }
         // The ledger append replays under the session id — a webhook retried
         // after a crash finds its own entry rather than opening a second one.
-        let receipt = wallet
-            .top_up(&format!("stripe:{session_id}"), amount_minor, on)
-            .await?;
-        // Record what the rail reported paid; a mismatch with amount_minor is
-        // a human's call, never auto-patched (decision D2).
+        if received_minor != Some(amount_minor) {
+            return Err(WalletError::Conflict(
+                "provider amount does not match expected deposit".into(),
+            ));
+        }
+        let merchant: Option<Uuid> = sqlx::query_scalar(
+            "SELECT merchant_id FROM oxsum.merchant_payment_bindings WHERE payment_id=$1 AND NOT legacy_unscoped_key",
+        )
+        .bind(deposit_id)
+        .fetch_optional(&mut *tx)
+        .await?;
+        let credit_key = match merchant {
+            Some(id) => format!("stripe:merchant:{id}:payment:{session_id}"),
+            None => format!("stripe:{session_id}"),
+        };
+        let receipt = wallet.top_up(&credit_key, amount_minor, on).await?;
+        // The amount has been checked before the ledger append.
         let flipped = sqlx::query(
             "UPDATE oxsum.deposits \
              SET status = 'credited', entry_id = $1, received_minor = $2, \
@@ -482,7 +493,7 @@ impl Db {
                      'airwallexCheckoutUrl', $3::text\
                  ), \
                  updated_at = now() \
-             WHERE deposit_id = $4 AND rail = $5 AND status = 'pending'",
+             WHERE deposit_id = $4 AND rail = $5",
         )
         .bind(intent_id)
         .bind(client_secret)
@@ -507,7 +518,7 @@ impl Db {
             "SELECT d.deposit_id, d.organization_id, o.tenant_id \
              FROM oxsum.deposits d \
              JOIN oxsum.organizations o ON o.organization_id = d.organization_id \
-             WHERE d.rail = $1 AND d.meta->>'airwallexIntentId' = $2 \
+             WHERE d.rail = $1 AND NOT EXISTS(SELECT 1 FROM oxsum.merchant_payment_bindings mb WHERE mb.payment_id=d.deposit_id) AND d.meta->>'airwallexIntentId' = $2 \
              ORDER BY d.created_at DESC LIMIT 1",
         )
         .bind(RAIL_AIRWALLEX)
@@ -537,7 +548,7 @@ impl Db {
         let flipped = sqlx::query(
             "UPDATE oxsum.deposits \
              SET status = 'confirmed', updated_at = now() \
-             WHERE deposit_id = $1 AND rail = $2 AND status = 'pending'",
+             WHERE deposit_id = $1 AND rail = $2 AND status IN ('pending','confirmed')",
         )
         .bind(deposit_id)
         .bind(RAIL_AIRWALLEX)
@@ -556,10 +567,8 @@ impl Db {
     /// crash between the ledger append and the row flip leaves a confirmed
     /// deposit the retry resumes.
     ///
-    /// `received_minor` is what Airwallex reports the intent paid (decimal
-    /// major units converted back to cents): a number that disagrees with
-    /// `amount_minor` is recorded for a human, never auto-patched (decision
-    /// D2).
+    /// The exact integer cents parsed from the provider must equal the expected
+    /// amount. Mismatches never credit the wallet.
     ///
     /// Returns the receipt and organization id when a credit ran, `None` when
     /// the deposit was already credited or was never confirmed.
@@ -599,11 +608,23 @@ impl Db {
         }
         // The ledger append replays under the intent id — a webhook retried
         // after a crash finds its own entry rather than opening a second one.
-        let receipt = wallet
-            .top_up(&format!("airwallex:{intent_id}"), amount_minor, on)
-            .await?;
-        // Record what the rail reported paid; a mismatch with amount_minor is
-        // a human's call, never auto-patched (decision D2).
+        if received_minor != Some(amount_minor) {
+            return Err(WalletError::Conflict(
+                "provider amount does not match expected deposit".into(),
+            ));
+        }
+        let merchant: Option<Uuid> = sqlx::query_scalar(
+            "SELECT merchant_id FROM oxsum.merchant_payment_bindings WHERE payment_id=$1 AND NOT legacy_unscoped_key",
+        )
+        .bind(deposit_id)
+        .fetch_optional(&mut *tx)
+        .await?;
+        let credit_key = match merchant {
+            Some(id) => format!("airwallex:merchant:{id}:payment:{intent_id}"),
+            None => format!("airwallex:{intent_id}"),
+        };
+        let receipt = wallet.top_up(&credit_key, amount_minor, on).await?;
+        // The amount has been checked before the ledger append.
         let flipped = sqlx::query(
             "UPDATE oxsum.deposits \
              SET status = 'credited', entry_id = $1, received_minor = $2, \
@@ -741,7 +762,7 @@ impl Db {
                      'hyperswitchClientSecret', $2::text\
                  ), \
                  updated_at = now() \
-             WHERE deposit_id = $3 AND rail = $4 AND status = 'pending'",
+             WHERE deposit_id = $3 AND rail = $4",
         )
         .bind(payment_id)
         .bind(client_secret)
@@ -762,7 +783,7 @@ impl Db {
             "SELECT d.deposit_id, d.organization_id, o.tenant_id \
              FROM oxsum.deposits d \
              JOIN oxsum.organizations o ON o.organization_id = d.organization_id \
-             WHERE d.rail = $1 AND d.meta->>'hyperswitchPaymentId' = $2 \
+             WHERE d.rail = $1 AND NOT EXISTS(SELECT 1 FROM oxsum.merchant_payment_bindings mb WHERE mb.payment_id=d.deposit_id) AND d.meta->>'hyperswitchPaymentId' = $2 \
              ORDER BY d.created_at DESC LIMIT 1",
         )
         .bind(RAIL_HYPERSWITCH)
@@ -789,7 +810,7 @@ impl Db {
         let flipped = sqlx::query(
             "UPDATE oxsum.deposits \
              SET status = 'confirmed', updated_at = now() \
-             WHERE deposit_id = $1 AND rail = $2 AND status = 'pending'",
+             WHERE deposit_id = $1 AND rail = $2 AND status IN ('pending','confirmed')",
         )
         .bind(deposit_id)
         .bind(RAIL_HYPERSWITCH)
@@ -808,9 +829,8 @@ impl Db {
     /// twice, and a crash between the ledger append and the row flip leaves a
     /// confirmed deposit the retry resumes.
     ///
-    /// `received_minor` is what the switch reports paid: a number that
-    /// disagrees with `amount_minor` is recorded for a human, never
-    /// auto-patched (decision D2).
+    /// The reported amount must equal the expected amount exactly. Missing or
+    /// mismatching amounts never credit the wallet.
     pub async fn credit_hyperswitch_deposit(
         &self,
         wallet: &Wallet,
@@ -841,9 +861,22 @@ impl Db {
             tx.commit().await?;
             return Ok(None);
         }
-        let receipt = wallet
-            .top_up(&format!("hyperswitch:{payment_id}"), amount_minor, on)
-            .await?;
+        if received_minor != Some(amount_minor) {
+            return Err(WalletError::Conflict(
+                "provider amount does not match expected deposit".into(),
+            ));
+        }
+        let merchant: Option<Uuid> = sqlx::query_scalar(
+            "SELECT merchant_id FROM oxsum.merchant_payment_bindings WHERE payment_id=$1 AND NOT legacy_unscoped_key",
+        )
+        .bind(deposit_id)
+        .fetch_optional(&mut *tx)
+        .await?;
+        let credit_key = match merchant {
+            Some(id) => format!("hyperswitch:merchant:{id}:payment:{payment_id}"),
+            None => format!("hyperswitch:{payment_id}"),
+        };
+        let receipt = wallet.top_up(&credit_key, amount_minor, on).await?;
         let flipped = sqlx::query(
             "UPDATE oxsum.deposits \
              SET status = 'credited', entry_id = $1, received_minor = $2, \
@@ -1482,7 +1515,7 @@ impl Db {
             "SELECT d.deposit_id, d.organization_id, o.tenant_id \
              FROM oxsum.deposits d \
              JOIN oxsum.organizations o ON o.organization_id = d.organization_id \
-             WHERE d.rail = $1 AND (\
+             WHERE d.rail = $1 AND NOT EXISTS(SELECT 1 FROM oxsum.merchant_payment_bindings mb WHERE mb.payment_id=d.deposit_id) AND (\
                  ($2::text IS NOT NULL AND d.meta->>'hyperswitchRefundId' = $2) \
                  OR d.meta->>'hyperswitchPaymentId' = $3\
              ) ORDER BY d.created_at DESC LIMIT 1",

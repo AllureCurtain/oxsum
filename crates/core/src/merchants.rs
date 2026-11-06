@@ -22,7 +22,7 @@ impl MerchantRail {
             Self::Airwallex => "airwallex",
         }
     }
-    fn parse(value: &str) -> Result<Self, WalletError> {
+    pub(crate) fn parse(value: &str) -> Result<Self, WalletError> {
         match value {
             "hyperswitch" => Ok(Self::Hyperswitch),
             "stripe" => Ok(Self::Stripe),
@@ -44,7 +44,7 @@ impl MerchantMode {
             Self::Live => "live",
         }
     }
-    fn parse(value: &str) -> Result<Self, WalletError> {
+    pub(crate) fn parse(value: &str) -> Result<Self, WalletError> {
         match value {
             "test" => Ok(Self::Test),
             "live" => Ok(Self::Live),
@@ -675,5 +675,106 @@ impl Db {
                 .map_err(|_| invalid("invalid stored merchant credentials"))?;
         }
         Ok(())
+    }
+}
+
+/// Explicit default-business bootstrap from deployment configuration. Raw
+/// credentials have no serializer/debug output and never enter audit.
+#[derive(Clone)]
+pub struct MerchantBootstrap {
+    pub rail: MerchantRail,
+    pub mode: MerchantMode,
+    pub account_id: String,
+    pub config: MerchantVersionInput,
+}
+impl std::fmt::Debug for MerchantBootstrap {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("MerchantBootstrap([credentials redacted])")
+    }
+}
+impl Db {
+    /// Seed only once per environment rail; later environment drift never
+    /// replaces owner-managed versions, identity or enablement.
+    pub async fn bootstrap_merchant(
+        &self,
+        input: &MerchantBootstrap,
+        secret: &SecretKey,
+    ) -> Result<(Uuid, Uuid), WalletError> {
+        let mut tx = self.pool().begin().await?;
+        let business = authority::lock_business(&mut tx).await?;
+        if let Some(row) = sqlx::query(
+            "SELECT merchant_id,version_id FROM oxsum.merchant_environment_bootstrap WHERE rail=$1",
+        )
+        .bind(input.rail.as_str())
+        .fetch_optional(&mut *tx)
+        .await?
+        {
+            return Ok((row.try_get("merchant_id")?, row.try_get("version_id")?));
+        }
+        input.config.validate(input.rail, input.mode)?;
+        if !text(&input.account_id, 1, 200) {
+            return Err(invalid("invalid environment merchant account"));
+        }
+        let existing:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM oxsum.merchant_accounts WHERE business_id=$1 AND rail=$2 AND mode=$3 AND account_id=$4)").bind(business).bind(input.rail.as_str()).bind(input.mode.as_str()).bind(&input.account_id).fetch_one(&mut *tx).await?;
+        if existing {
+            return Err(WalletError::Conflict("environment merchant identity already exists; configure the explicit merchant callback instead".into()));
+        }
+        let merchant = Uuid::new_v4();
+        let version = Uuid::new_v4();
+        sqlx::query("INSERT INTO oxsum.merchant_accounts(merchant_id,business_id,name,rail,mode,account_id,current_version_id,enabled) VALUES($1,$2,$3,$4,$5,$6,$7,true)").bind(merchant).bind(business).bind(format!("environment-{}",input.rail.as_str())).bind(input.rail.as_str()).bind(input.mode.as_str()).bind(&input.account_id).bind(version).execute(&mut *tx).await?;
+        let sealed = secret.seal(
+            &serde_json::to_string(&Credentials {
+                api_key: input.config.api_key.clone(),
+                webhook_secret: input.config.webhook_secret.clone(),
+                client_id: input.config.client_id.clone(),
+            })
+            .map_err(|_| invalid("invalid merchant credentials"))?,
+        )?;
+        sqlx::query("INSERT INTO oxsum.merchant_versions(version_id,merchant_id,revision,api_url,publishable_key,sdk_url,checkout_url,destination_policy,credentials_sealed,source) VALUES($1,$2,1,$3,$4,$5,$6,$7,$8,'environment')").bind(version).bind(merchant).bind(&input.config.api_url).bind(&input.config.publishable_key).bind(&input.config.sdk_url).bind(&input.config.checkout_url).bind(json!(input.config.destination_policy)).bind(sealed).execute(&mut *tx).await?;
+        sqlx::query("INSERT INTO oxsum.merchant_environment_bootstrap(rail,merchant_id,version_id) VALUES($1,$2,$3)").bind(input.rail.as_str()).bind(merchant).bind(version).execute(&mut *tx).await?;
+        // Explicit bootstrap attributes existing single-rail commitments to the
+        // deployment's declared merchant. Preserve their UUID/amount/ledger key.
+        sqlx::query("INSERT INTO oxsum.merchant_payment_bindings(payment_id,merchant_id,version_id,organization_id,amount_minor,currency,purpose,legacy_unscoped_key) SELECT d.deposit_id,$1,$2,d.organization_id,d.amount_minor,'USD','legacyDeposit',true FROM oxsum.deposits d JOIN oxsum.customer_profiles c USING(organization_id) WHERE d.rail=$3 AND c.business_id=$4 ON CONFLICT DO NOTHING").bind(merchant).bind(version).bind(input.rail.as_str()).bind(business).execute(&mut *tx).await?;
+        sqlx::query("INSERT INTO oxsum.merchant_payment_refs(payment_id,merchant_id,provider_payment_id) SELECT d.deposit_id,$1,CASE d.rail WHEN 'stripe' THEN d.meta->>'stripeSessionId' WHEN 'airwallex' THEN d.meta->>'airwallexIntentId' ELSE d.meta->>'hyperswitchPaymentId' END FROM oxsum.deposits d JOIN oxsum.merchant_payment_bindings b ON b.payment_id=d.deposit_id WHERE b.merchant_id=$1 AND coalesce(CASE d.rail WHEN 'stripe' THEN d.meta->>'stripeSessionId' WHEN 'airwallex' THEN d.meta->>'airwallexIntentId' ELSE d.meta->>'hyperswitchPaymentId' END,'')<>'' ORDER BY d.created_at ON CONFLICT DO NOTHING").bind(merchant).execute(&mut *tx).await?;
+        tx.commit().await?;
+        Ok((merchant, version))
+    }
+    /// Legacy URL scope comes from a server-owned bootstrap record, never the body.
+    pub async fn environment_merchant(
+        &self,
+        rail: MerchantRail,
+        secret: &SecretKey,
+    ) -> Result<Option<MerchantSigningContext>, WalletError> {
+        let row=sqlx::query("SELECT m.merchant_id,m.current_version_id FROM oxsum.merchant_environment_bootstrap e JOIN oxsum.merchant_accounts m USING(merchant_id) WHERE e.rail=$1").bind(rail.as_str()).fetch_optional(self.pool()).await?;
+        match row {
+            Some(row) => {
+                self.merchant_signing_context(
+                    row.try_get("merchant_id")?,
+                    row.try_get("current_version_id")?,
+                    secret,
+                )
+                .await
+            }
+            None => Ok(None),
+        }
+    }
+    /// The trusted compatibility URL may verify retained versions for its one
+    /// bootstrap merchant. This lookup never accepts a payload-selected secret.
+    pub async fn merchant_signing_versions(
+        &self,
+        merchant: Uuid,
+        secret: &SecretKey,
+    ) -> Result<Vec<MerchantSigningContext>, WalletError> {
+        let versions:Vec<Uuid>=sqlx::query_scalar("SELECT version_id FROM oxsum.merchant_versions WHERE merchant_id=$1 ORDER BY revision DESC").bind(merchant).fetch_all(self.pool()).await?;
+        let mut result = Vec::new();
+        for version in versions {
+            if let Some(context) = self
+                .merchant_signing_context(merchant, version, secret)
+                .await?
+            {
+                result.push(context);
+            }
+        }
+        Ok(result)
     }
 }

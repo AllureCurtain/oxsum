@@ -280,6 +280,7 @@ pub struct Config {
     /// `OXSUM_HYPERSWITCH_*` set is complete, `None` — the default — when the
     /// deployment takes no switch payments.
     hyperswitch: Option<crate::hyperswitch::Hyperswitch>,
+    merchant_bootstraps: Vec<oxsum_core::MerchantBootstrap>,
     /// The deployment's public origin, `OXSUM_PUBLIC_URL` — required by the
     /// mailer and the OAuth client, optional on its own: the device grant
     /// builds `verificationUri` from it when set (issue #156).
@@ -352,6 +353,7 @@ impl Config {
             stripe: None,
             airwallex: None,
             hyperswitch: None,
+            merchant_bootstraps: Vec::new(),
             public_url: None,
             rate_limit_backend: RateLimitBackend::default(),
             retention: oxsum_core::Retention::default(),
@@ -481,6 +483,8 @@ impl Config {
         let stripe = stripe_of()?;
         let airwallex = airwallex_of()?;
         let hyperswitch = hyperswitch_of()?;
+        let merchant_bootstraps =
+            merchant_bootstraps_of(stripe.as_ref(), airwallex.as_ref(), hyperswitch.as_ref())?;
         let rate_limit_backend = rate_limit_backend_of()?;
         let retention = oxsum_core::Retention {
             provider_raw_days: retention_days("OXSUM_RETENTION_PROVIDER_RAW_DAYS")?.unwrap_or(7),
@@ -518,6 +522,7 @@ impl Config {
             stripe,
             airwallex,
             hyperswitch,
+            merchant_bootstraps,
             public_url,
             rate_limit_backend,
             retention,
@@ -605,6 +610,17 @@ impl Config {
     #[must_use]
     pub fn turnstile(&self) -> Option<&crate::antibot::Turnstile> {
         self.turnstile.as_ref()
+    }
+
+    /// Explicit default-business merchant bootstrap, never populated from a
+    /// webhook body or a client payment request.
+    pub fn merchant_bootstraps(&self) -> &[oxsum_core::MerchantBootstrap] {
+        &self.merchant_bootstraps
+    }
+    #[must_use]
+    pub fn with_merchant_bootstrap(mut self, input: oxsum_core::MerchantBootstrap) -> Self {
+        self.merchant_bootstraps.push(input);
+        self
     }
 
     /// The Stripe rail, or `None` when `OXSUM_STRIPE_SECRET_KEY` and
@@ -1577,6 +1593,58 @@ fn turnstile_of() -> Result<Option<crate::antibot::Turnstile>, String> {
     Ok(Some(crate::antibot::Turnstile::new(
         site_key, secret_key, verify_url,
     )))
+}
+
+/// Environment credentials need explicit merchant identity and mode before
+/// they can start new payments. This is a one-time bootstrap, not an override.
+fn merchant_bootstraps_of(
+    stripe: Option<&crate::stripe::Stripe>,
+    airwallex: Option<&crate::airwallex::Airwallex>,
+    hyperswitch: Option<&crate::hyperswitch::Hyperswitch>,
+) -> Result<Vec<oxsum_core::MerchantBootstrap>, String> {
+    let mut result = Vec::new();
+    for (prefix, configured) in [
+        ("OXSUM_STRIPE", stripe.is_some()),
+        ("OXSUM_AIRWALLEX", airwallex.is_some()),
+        ("OXSUM_HYPERSWITCH", hyperswitch.is_some()),
+    ] {
+        let account = var(&format!("{prefix}_MERCHANT_ACCOUNT_ID"));
+        let mode = var(&format!("{prefix}_MERCHANT_MODE"));
+        if account.is_none() && mode.is_none() {
+            continue;
+        }
+        if !configured {
+            return Err(format!(
+                "{prefix} merchant bootstrap requires rail credentials"
+            ));
+        }
+        let (Some(account), Some(mode)) = (account, mode) else {
+            return Err(format!(
+                "{prefix}_MERCHANT_ACCOUNT_ID and {prefix}_MERCHANT_MODE are set together"
+            ));
+        };
+        let mode = match mode.as_str() {
+            "test" => oxsum_core::MerchantMode::Test,
+            "live" => oxsum_core::MerchantMode::Live,
+            _ => return Err(format!("{prefix}_MERCHANT_MODE must be test or live")),
+        };
+        let policy = var(&format!("{prefix}_MERCHANT_DESTINATION_POLICY"))
+            .map(|v| {
+                serde_json::from_str::<oxsum_core::ProviderDestinationPolicy>(&v)
+                    .map_err(|_| format!("{prefix}_MERCHANT_DESTINATION_POLICY is invalid"))
+            })
+            .transpose()?
+            .unwrap_or_default();
+        let bootstrap = match prefix {
+            "OXSUM_STRIPE" => stripe.map(|s| s.merchant_bootstrap(account, mode, policy)),
+            "OXSUM_AIRWALLEX" => airwallex.map(|s| s.merchant_bootstrap(account, mode, policy)),
+            _ => hyperswitch.map(|s| s.merchant_bootstrap(account, mode, policy)),
+        };
+        if let Some(bootstrap) = bootstrap {
+            result.push(bootstrap);
+        }
+    }
+    Ok(result)
 }
 
 #[cfg(test)]
