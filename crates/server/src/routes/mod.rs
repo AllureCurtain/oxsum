@@ -283,6 +283,7 @@ pub fn router(state: AppState) -> Router {
             get(refunds::business_credit_notes),
         )
         .route("/business/disputes", get(refunds::business_disputes))
+        .route("/business/audit", get(refunds::business_audit))
         .route(
             "/business/disputes/{dispute_id}/resolve",
             post(refunds::resolve_dispute),

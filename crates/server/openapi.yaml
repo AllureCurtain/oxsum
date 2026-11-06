@@ -6381,6 +6381,31 @@ paths:
         "404": { $ref: "#/components/responses/Error" }
         "409": { $ref: "#/components/responses/Error" }
         "500": { $ref: "#/components/responses/Error" }
+  /api/v1/business/audit:
+    get:
+      operationId: businessFinanceAudit
+      summary: List the business finance audit
+      description: |
+        Current business staff with report-read capability; a personal session. One immutable `finance_audit` row per staff financial action — every refund resolution, dispute close, journal void, statement release and reconciliation resolve/waive/repair — newest first. Each row names the actor, the audited action and the reason it carried, and drills to the entity it corrected. `action` narrows to one audited action.
+      security: [{ sessionCookie: [] }]
+      parameters:
+        - { name: after, in: query, schema: { type: string, format: uuid } }
+        - { name: action, in: query, schema: { type: string }, description: "narrow to one audited action, e.g. `refund.approve`" }
+        - { name: limit, in: query, schema: { type: integer, minimum: 1, maximum: 100, default: 50 } }
+      responses:
+        "200":
+          description: The business's finance-audit page
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data: { $ref: "#/components/schemas/FinanceAuditPage" }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
   /api/v1/business/sale-books:
     get:
       summary: List customer sale books
@@ -10273,6 +10298,13 @@ components:
           oneOf:
             - $ref: "#/components/schemas/BusinessPrincipal"
             - type: "null"
+          description: >-
+            The session's staff principal — the role and capability set the membership
+            carries whenever the user is staff, in either context. `context` names which
+            authority the session currently acts under: a `customer` answer carrying a
+            non-null `business` means staff authority is claimable via `POST
+            /session/context`, never that it is selected (every `/business/*` call still
+            requires `context: business`); null means the user holds no staff seat.
     SessionContextRequest:
       type: object
       additionalProperties: false
@@ -14063,6 +14095,27 @@ components:
       required: [disputes, nextCursor]
       properties:
         disputes: { type: array, items: { $ref: "#/components/schemas/OrderDispute" } }
+        nextCursor: { type: [string, "null"], format: uuid }
+    FinanceAuditEntry:
+      type: object
+      required: [auditId, actorUserId, action, target, detail, noteId, createdAt]
+      description: One immutable `finance_audit` row — the staff financial action's authorization record. Every refund resolution, dispute close, journal void, statement release and reconciliation close/repair lands one, naming the actor, the audited action and the reason it carried.
+      properties:
+        auditId: { type: string, format: uuid }
+        actorUserId: { type: string, format: uuid, description: the staff user who authorized the action }
+        action:
+          type: string
+          enum: [refund.approve, refund.decline, refund.release, dispute.resolve, journal.void, statement.release, reconciliation.resolve, reconciliation.waive, reconciliation.repair]
+          description: the audited financial action — the same vocabulary `finance_audit`'s check constraint bounds
+        target: { type: string, description: the entity the action corrected — a refund, dispute, journal, statement or exception id }
+        detail: { type: object, additionalProperties: true, description: the action's safe fields — reason, decision, repair patch; never a credential }
+        noteId: { type: [string, "null"], format: uuid, description: the credit note a refund approval produced; null on every other action }
+        createdAt: { type: string, format: date-time }
+    FinanceAuditPage:
+      type: object
+      required: [entries, nextCursor]
+      properties:
+        entries: { type: array, items: { $ref: "#/components/schemas/FinanceAuditEntry" } }
         nextCursor: { type: [string, "null"], format: uuid }
     ProviderMutationResult:
       type: object

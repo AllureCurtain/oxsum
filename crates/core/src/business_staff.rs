@@ -318,11 +318,39 @@ async fn context_info(
     .bind(actor.organization)
     .fetch_one(&mut **tx)
     .await?;
+    // The staff principal answers in either context — the console nav needs a
+    // membership signal before the session selects business authority (#615).
+    // `context` keeps naming which authority the session acts under, so a
+    // customer-context answer carrying `business` means the staff seat is
+    // claimable through `POST /session/context`, never that it is selected:
+    // every `/business/*` call still demands the switch and its second factor.
+    // This is a membership read, so it deliberately skips the second-factor
+    // gate the business branch enforces.
+    let seat: Option<String> = sqlx::query_scalar(
+        "SELECT s.role FROM oxsum.business_staff s \
+         JOIN oxsum.businesses b USING (business_id) \
+         WHERE s.business_id=$1 AND s.user_id=$2 AND b.initialized_at IS NOT NULL",
+    )
+    .bind(business)
+    .bind(actor.user.id)
+    .fetch_optional(&mut **tx)
+    .await?;
+    let principal = seat
+        .map(|role| {
+            let role = BusinessRole::parse(&role)?;
+            Ok::<BusinessPrincipal, WalletError>(BusinessPrincipal {
+                business_id: business,
+                user_id: actor.user.id,
+                role,
+                capabilities: role.capabilities(),
+            })
+        })
+        .transpose()?;
     Ok(SessionContextInfo {
         context: SessionContext::Customer,
         user: actor.user,
         organization_id: actor.organization.filter(|_| member),
-        business: None,
+        business: principal,
     })
 }
 pub(crate) fn validate(key: &str, reason: Option<&str>) -> Result<(), WalletError> {
