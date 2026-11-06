@@ -170,6 +170,7 @@ pub fn router(state: AppState) -> Router {
         .route("/log/consistency", get(log::log_consistency))
         .route("/log/checkpoint", get(log::log_checkpoint))
         .route("/log/price-head", get(log::log_price_head))
+        .route("/log/sale-head", get(log::log_sale_head))
         .layer(middleware::from_fn_with_state(
             state.clone(),
             require_principal,

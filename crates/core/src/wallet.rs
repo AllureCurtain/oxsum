@@ -18,6 +18,7 @@ use crate::error::{WalletError, invalid};
 use crate::heads::{
     Consistency, HeadSigningKey, STATEMENT_ANCHOR_DOCUMENT, SignedHead, USAGE_ANCHOR_DOCUMENT,
     USAGE_REPORT_DOCUMENT, canonical_price_row, origin_for, sign_head, sign_price_head,
+    sign_sale_checkpoint,
 };
 use crate::keys::{ActingKey, BudgetDuration};
 use crate::proof::ProofBundle;
@@ -2680,15 +2681,19 @@ impl Wallet {
         let index = stored.require_index().map_err(invalid)?;
         let head = self.store.head().await?;
         let proof = self.store.prove_inclusion(index).await?;
-        let price = match key {
-            Some(key) => self.price_link(&stored, key).await?,
-            None => None,
+        let (price, sale) = match key {
+            Some(key) => (
+                self.price_link(&stored, key).await?,
+                self.sale_link(&stored, key).await?,
+            ),
+            None => (None, None),
         };
         Ok(Some(ProofBundle {
             entry: stored.entry,
             head,
             proof,
             price,
+            sale,
         }))
     }
 
@@ -2742,6 +2747,79 @@ impl Wallet {
             channel: signed.channel,
             model: signed.model,
             version: signed.version,
+            row: canonical,
+            note: signed.note,
+            key_name: signed.key.name,
+            public_key: signed
+                .key
+                .public_key
+                .iter()
+                .map(|b| format!("{b:02x}"))
+                .collect(),
+            key_hash: signed
+                .key
+                .key_hash
+                .iter()
+                .map(|b| format!("{b:02x}"))
+                .collect(),
+        }))
+    }
+
+    /// The signed sale binding for one settlement entry, or `None` when the
+    /// entry is not a settlement, the settlement priced under the wholesale
+    /// channel catalog (its description commits no `sale` digest), or the
+    /// snapshot the digest names was never recorded.
+    ///
+    /// Reads the `sale.digest` the settlement description commits — the same
+    /// field the entry's content hash already covers — fetches the canonical
+    /// snapshot row the digest names, and signs it as a sale-catalog checkpoint
+    /// (issue #600). Signing is stateless and deterministic over (key, origin,
+    /// version, row), so the note a bundle carries is identical whether it was
+    /// made at bill time or after the sale book moved on. The canonical row
+    /// binds only the customer-visible terms, so the evidence cannot attest a
+    /// supplier rate.
+    async fn sale_link(
+        &self,
+        stored: &StoredEntry<SCALE>,
+        key: &HeadSigningKey,
+    ) -> Result<Option<oxsum_verify::SaleLink>, WalletError> {
+        let Some(record) = SettlementRecord::parse(stored.entry.description().as_str()) else {
+            return Ok(None);
+        };
+        let Some(sale) = record.sale else {
+            return Ok(None);
+        };
+        // The digest names the stored canonical row verbatim — the bytes the
+        // checkpoint's root commits to, so re-serving them keeps the proof
+        // honest however the sale book has since moved.
+        let Some((business, canonical)) = crate::Db::from_pool(self.store.pool().clone())
+            .sale_snapshot_by_digest(&sale.digest)
+            .await?
+        else {
+            return Ok(None);
+        };
+        let snapshot: serde_json::Value = serde_json::from_str(&canonical)
+            .map_err(|e| WalletError::Misconfigured(format!("stored sale row: {e}")))?;
+        let str_field = |field: &str| {
+            snapshot
+                .get(field)
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_owned)
+        };
+        let organization: uuid::Uuid = str_field("organizationId")
+            .and_then(|s| s.parse().ok())
+            .ok_or_else(|| invalid("stored sale row has no organizationId"))?;
+        let model = str_field("model").ok_or_else(|| invalid("stored sale row has no model"))?;
+        let version = snapshot
+            .get("version")
+            .and_then(serde_json::Value::as_i64)
+            .unwrap_or(0);
+        let signed = sign_sale_checkpoint(key, business, organization, &model, version, &canonical)
+            .map_err(invalid)?;
+        Ok(Some(oxsum_verify::SaleLink {
+            organization_id: organization.to_string(),
+            model,
+            digest: sale.digest.clone(),
             row: canonical,
             note: signed.note,
             key_name: signed.key.name,
@@ -3089,6 +3167,8 @@ impl Wallet {
             guardrail: Vec::new(),
             reason: Some(reason),
             experiment: None,
+            // A refused request never priced: no sale terms to commit.
+            sale: None,
         }
         .description()?;
         let mut draft = Entry::<Draft, SCALE>::new(

@@ -112,7 +112,7 @@ async function main() {
   console.log();
 
   const bill = await attempt(() => verifyBill(JSON.stringify(bundle), expectedHash));
-  if (!report("bill: hash, inclusion, charge, price", bill.ok, bill.ok ? `${bill.charge}${bill.price}` : bill.detail ?? bill.verdict)) {
+  if (!report("bill: hash, inclusion, charge, price, sale", bill.ok, bill.ok ? `${bill.charge}${bill.price}${bill.sale ?? ""}` : bill.detail ?? bill.verdict)) {
     failures += 1;
   }
 

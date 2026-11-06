@@ -560,6 +560,8 @@ async fn sweep_one(
         guardrail: Vec::new(),
         reason: None,
         experiment: None,
+        // A swept hold priced under the wholesale catalog, not a sale book.
+        sale: None,
     }
     .description()?;
     match wallet.settle(&hold.hold_key, &description, 0, on).await {

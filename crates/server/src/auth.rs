@@ -212,7 +212,8 @@ fn customer_route_capability(method: &str, path: &str) -> oxsum_core::CustomerCa
             | "/log/head"
             | "/log/consistency"
             | "/log/checkpoint"
-            | "/log/price-head",
+            | "/log/price-head"
+            | "/log/sale-head",
         )
         | ("POST", "/estimate-price") => C::ScopedRead,
         ("POST", "/topups" | "/holds" | "/settlements" | "/org/members") => C::Retired,
