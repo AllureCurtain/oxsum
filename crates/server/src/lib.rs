@@ -163,11 +163,11 @@ pub async fn prepare(db: &Db, config: &Config) -> Result<(), WalletError> {
         }
     }
     let Some(secret) = config.secret() else {
-        // Without a key there can be no channels: either there are none and nothing is served, or
-        // the deployment lost the key it wrote with and must not start.
-        return if db.has_channels().await? {
+        // Stored provider and merchant credentials require the original encryption key,
+        // including historical merchant versions pinned by in-flight payments.
+        return if db.has_channels().await? || db.has_merchants().await? {
             Err(WalletError::Misconfigured(
-                "the database holds channels, but OXSUM_SECRET_KEY is not set, so their upstream \
+                "the database holds channels or merchants, but OXSUM_SECRET_KEY is not set, so their \
                  credentials cannot be opened"
                     .into(),
             ))
@@ -196,7 +196,8 @@ pub async fn prepare(db: &Db, config: &Config) -> Result<(), WalletError> {
         }
     }
     // Every credential must open: the alternative is finding out one request at a time.
-    db.check_sealed_keys(secret).await
+    db.check_sealed_keys(secret).await?;
+    db.check_merchant_secrets(secret).await
 }
 
 /// The posting date of every ledger write: the server's current UTC date, which a client cannot

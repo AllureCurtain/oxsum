@@ -389,3 +389,11 @@ Provider destinations default to public HTTPS; only the owner can approve exact 
 ### Customer model authority (#644, T07.a)
 
 Model lists and prices reflect the customer's actual tier and the consumption key's model/channel grants. Public aliases must also have permission for their resolved targets. Experiments and fallback chains can choose only authorized paths and keep the original requested name in billing evidence. Catalog reads need no provider decryption. Existing task history remains bound to its submitting customer/key after a later grant change; new tasks apply the current customer/key/group snapshot. Generic task aliases and signed mandates remain unsupported until T13 completes their price and operation binding, and are explicitly refused before send. T07.b completes cache request context.
+
+### Business merchant configuration (T14.a, #648)
+
+A merchant belongs to the Business, with stable provider account identity, rail and test/live mode. Hyperswitch using the Stripe connector is the primary payment rail; direct Stripe and Airwallex retain compatibility status. New merchants start disabled. Only the current business owner can create or rotate credentials and change checkout enablement. Owner/admin/finance/viewer can read redacted settings and immutable version history; customer accounts, machine credentials and support roles cannot manage this configuration.
+
+Each rotation supplies a complete version, encrypts its API/signing credentials with `OXSUM_SECRET_KEY`, and selects it for future checkout. Prior versions remain immutable so an in-flight operation keeps its merchant/signing context. Disablement stops future selection without erasing callback history. Version status `locallyValidated` confirms only field, mode-prefix and destination-policy checks; saving performs no provider call and does not certify live or sandbox payments. No plaintext credentials or ciphertexts appear in read responses or audit.
+
+This configuration foundation does not redirect legacy checkout automatically. Scoped event intake and environment bootstrap are T14.b (#649); purpose-specific orders and customer checkout follow in T15/T16. Their completion is required before these settings collect customer money.

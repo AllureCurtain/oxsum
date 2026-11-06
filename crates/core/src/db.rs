@@ -325,6 +325,10 @@ const MIGRATIONS: &[(&str, &str)] = &[
         "0080_response_cache_v2",
         include_str!("../migrations/0080_response_cache_v2.sql"),
     ),
+    (
+        "0085_merchant_configuration",
+        include_str!("../migrations/0085_merchant_configuration.sql"),
+    ),
 ];
 
 /// Advisory-lock key serialising the migration runner across processes.
