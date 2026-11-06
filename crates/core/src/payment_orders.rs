@@ -864,17 +864,17 @@ impl Db {
                 }))
             }
             PaymentOrderPurpose::PlanPeriod => {
-                let plan = order
+                let customer_plan = order
                     .purpose_ref
-                    .ok_or_else(|| invalid("a plan period order carries no plan"))?;
-                let subscription = self
-                    .bind_subscription(order.organization_id, plan, "payment-order", None)
+                    .ok_or_else(|| invalid("a plan period order carries no customer plan"))?;
+                let plan = self
+                    .activate_plan_period(order.order_id, customer_plan)
                     .await?;
                 Ok(json!({
                     "arm": "plan_period",
-                    "subscriptionId": subscription.subscription_id,
-                    "planId": plan,
-                    "quotaMinor": subscription.quota_minor,
+                    "customerPlanId": plan.customer_plan_id,
+                    "subscriptionId": plan.subscription_id,
+                    "planVersionId": plan.plan_version_id,
                 }))
             }
             PaymentOrderPurpose::InvoiceRepayment => {
