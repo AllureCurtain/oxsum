@@ -629,6 +629,339 @@ async fn the_price_head_endpoint_needs_a_seed_and_a_credential() {
     assert_eq!(status, StatusCode::UNAUTHORIZED);
 }
 
+// ── signed sale heads (issue #600) ──────────────────────────────────────────
+//
+// The sale side of the price binding: a customer settlement's `sale.digest`
+// commits a resolved `SalePriceSnapshot`, and `/api/v1/log/sale-head` serves
+// its operator-signed checkpoint — origin `oxsum/sale-catalog/<business>`,
+// the book version as `size`, the snapshot digest as `root`. These tests pin
+// the endpoint's contract: the customer's own credential scopes the read,
+// the digest path serves the stored canonical row verbatim, and the cases
+// that would attest nothing answer 404 or 400 — never a borrowed identity.
+
+/// Registers a customer, returns its org id and API key.
+async fn sale_customer(app: &Router, name: &str) -> (String, String) {
+    let (registration, key) = register(app, name).await;
+    let org = registration["organization"]["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    (org, key)
+}
+
+/// Gives `db` a business owner session and publishes a one-model book
+/// assigned to `org` — the live terms `resolve_sale_price` then pins.
+/// Returns the business id the sale-catalog origin names.
+async fn assign_sale_book(db: &Db, owner: &str, org: &str, model: &str) -> uuid::Uuid {
+    use oxsum_core::{SaleChange, SaleChangeRequest, SaleMutationResult, SaleTerms};
+    use std::collections::BTreeMap;
+
+    let org: uuid::Uuid = org.parse().unwrap();
+    let business = db.business_ownership().await.unwrap().business.id;
+    let terms: SaleTerms = serde_json::from_value(json!({
+        "price": {
+            "inputPricePerMillion": 1_000_000,
+            "outputPricePerMillion": 2_000_000,
+            "maxOutputTokens": 100
+        },
+        "discountPercent": 0
+    }))
+    .unwrap();
+    let change = |change: SaleChange| {
+        let db = db.clone();
+        let owner = owner.to_owned();
+        async move {
+            db.change_sale_terms(
+                &owner,
+                &SaleChangeRequest {
+                    idempotency_key: uuid::Uuid::new_v4().to_string(),
+                    reason: "sale head fixture".into(),
+                    change,
+                },
+            )
+            .await
+            .unwrap()
+        }
+    };
+    let book: SaleMutationResult = change(SaleChange::CreateBook {
+        name: uuid::Uuid::new_v4().to_string(),
+    })
+    .await;
+    change(SaleChange::SaveDraft {
+        book_id: book.resource_id,
+        expected_revision: 0,
+        models: BTreeMap::from([(model.to_owned(), terms)]),
+    })
+    .await;
+    change(SaleChange::PublishDraft {
+        book_id: book.resource_id,
+        draft_revision: 1,
+    })
+    .await;
+    change(SaleChange::AssignBook {
+        organization_id: org,
+        book_id: book.resource_id,
+        version: 1,
+        effective_from: None,
+        effective_until: None,
+        replaces: None,
+    })
+    .await;
+    business
+}
+
+/// A business-owner session in Business context. The business is a singleton
+/// and this binary's tests share one scratch database, so only the first test
+/// to run initializes it through the production consent flow; a test that
+/// finds it already initialized registers its own user and grants owner staff
+/// directly — the consent path's coverage lives in `customer_lifecycle.rs`,
+/// and this fixture only needs the role `change_sale_terms` checks.
+async fn sale_owner(db: &Db) -> String {
+    use oxsum_core::{
+        BusinessSetupRequest, BusinessSetupTokenRequest, NewUser, SessionContext,
+        SessionContextRequest, SetupAuthority,
+    };
+    let password = "sale head owner fixture password";
+    let user = db
+        .register(NewUser {
+            email: format!("{}@example.com", uuid::Uuid::new_v4()),
+            password: password.into(),
+            organization_name: None,
+        })
+        .await
+        .unwrap();
+    let session = db
+        .login(&user.user.email, password)
+        .await
+        .unwrap()
+        .into_session();
+    let business = db.business_ownership().await.unwrap().business;
+    if business.initialized_at.is_none() {
+        let setup = db
+            .mint_business_setup(
+                SetupAuthority::Deployment,
+                &BusinessSetupTokenRequest {
+                    idempotency_key: uuid::Uuid::new_v4().to_string(),
+                    owner_email: user.user.email.clone(),
+                },
+            )
+            .await
+            .unwrap();
+        db.accept_business_setup(
+            &session.token,
+            &BusinessSetupRequest {
+                token: setup.token.unwrap(),
+                business_name: "Sale head fixture".into(),
+            },
+        )
+        .await
+        .unwrap();
+    } else {
+        sqlx::query(
+            "INSERT INTO oxsum.business_staff (business_id,user_id,role) VALUES ($1,$2,'owner')",
+        )
+        .bind(business.id)
+        .bind(user.user.id)
+        .execute(db.pool())
+        .await
+        .unwrap();
+    }
+    db.switch_session_context(
+        &session.token,
+        &SessionContextRequest {
+            idempotency_key: uuid::Uuid::new_v4().to_string(),
+            context: SessionContext::Business,
+            organization_id: None,
+        },
+    )
+    .await
+    .unwrap();
+    session.token
+}
+
+/// Checks a sale-head answer the way `check_price_note` checks a price head:
+/// the note parses, the origin is the business's sale catalog, `size` is the
+/// book version, `root` is the snapshot digest, and the operator's signature
+/// verifies under the key `/log/key` publishes.
+fn check_sale_note(body: &Value, business: &str, org: &str, model: &str) {
+    let data = &body["data"];
+    assert_eq!(data["businessId"].as_str().unwrap(), business);
+    assert_eq!(data["organizationId"].as_str().unwrap(), org);
+    assert_eq!(data["model"].as_str().unwrap(), model);
+    assert_eq!(
+        data["origin"].as_str().unwrap(),
+        format!("oxsum/sale-catalog/{business}")
+    );
+
+    let note = SignedTreeHead::parse(data["note"].as_str().unwrap()).unwrap();
+    assert_eq!(note.head.size, data["version"].as_u64().unwrap());
+    assert_eq!(
+        note.head.root.to_hex(),
+        data["digest"].as_str().unwrap(),
+        "the checkpoint root is the snapshot digest"
+    );
+    assert_eq!(
+        data["rowHash"].as_str().unwrap(),
+        data["digest"].as_str().unwrap(),
+        "the row hash is the digest the settlement commits"
+    );
+
+    let key = published_key(body);
+    let signature = note
+        .signatures
+        .iter()
+        .find(|s| s.key_hash == key.note_key_hash())
+        .expect("the operator's signature line is on the note");
+    assert!(key.verify(&note.body(), signature));
+}
+
+#[tokio::test]
+async fn a_sale_checkpoint_binds_the_customers_terms_to_the_signed_row() {
+    let (app, pool) = app_or_skip!(Some(SEED));
+    let db = Db::from_pool(pool.clone());
+    let owner = sale_owner(&db).await;
+    let (org, key) = sale_customer(&app, "sale-heads").await;
+    let model = fresh_channel("sale-m");
+    let business = assign_sale_book(&db, &owner, &org, &model).await;
+
+    // By terms: the live resolution signs under the customer's own credential.
+    let (status, body) = call(
+        &app,
+        "GET",
+        &format!("/api/v1/log/sale-head?organizationId={org}&model={model}"),
+        None,
+        Some(&key),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    check_sale_note(&body, &business.to_string(), &org, &model);
+
+    // By digest: the stored canonical row re-signs identically — the same
+    // note, byte for byte.
+    let digest = body["data"]["digest"].as_str().unwrap().to_owned();
+    let (status, again) = call(
+        &app,
+        "GET",
+        &format!("/api/v1/log/sale-head?digest={digest}"),
+        None,
+        Some(&key),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{again}");
+    assert_eq!(
+        again["data"]["note"].as_str().unwrap(),
+        body["data"]["note"].as_str().unwrap(),
+        "the committed digest re-signs deterministically"
+    );
+    check_sale_note(&again, &business.to_string(), &org, &model);
+}
+
+#[tokio::test]
+async fn the_sale_head_endpoint_refuses_the_cases_that_attest_nothing() {
+    let (app, pool) = app_or_skip!(Some(SEED));
+    let db = Db::from_pool(pool.clone());
+    let owner = sale_owner(&db).await;
+    let (org, key) = sale_customer(&app, "sale-heads-edges").await;
+    let (other_org, other_key) = sale_customer(&app, "sale-heads-other").await;
+    let model = fresh_channel("sale-m-edges");
+    assign_sale_book(&db, &owner, &org, &model).await;
+
+    // A customer may name only its own organization: another customer's id is
+    // 404, never a cross-customer read of their terms.
+    let (status, _) = call(
+        &app,
+        "GET",
+        &format!("/api/v1/log/sale-head?organizationId={other_org}&model={model}"),
+        None,
+        Some(&key),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+
+    // The digest that commits org A's terms answers not_found to org B's
+    // credential — the signed head names its customer, and the endpoint holds
+    // it to the caller.
+    let (status, body) = call(
+        &app,
+        "GET",
+        &format!("/api/v1/log/sale-head?organizationId={org}&model={model}"),
+        None,
+        Some(&key),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let digest = body["data"]["digest"].as_str().unwrap();
+    let (status, _) = call(
+        &app,
+        "GET",
+        &format!("/api/v1/log/sale-head?digest={digest}"),
+        None,
+        Some(&other_key),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+
+    // No live terms for the model: absence is 404, not a checkpoint of nothing.
+    let (status, _) = call(
+        &app,
+        "GET",
+        &format!("/api/v1/log/sale-head?organizationId={org}&model=never-priced"),
+        None,
+        Some(&key),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+
+    // An unrecorded digest is the same absence.
+    let (status, _) = call(
+        &app,
+        "GET",
+        &format!("/api/v1/log/sale-head?digest={}", "0".repeat(64)),
+        None,
+        Some(&key),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+
+    // Neither a digest nor the terms pair: 400, a request that cannot select
+    // a snapshot at all.
+    let (status, body) = call(&app, "GET", "/api/v1/log/sale-head", None, Some(&key)).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    assert_eq!(body["error"]["code"].as_str().unwrap(), "VALIDATION_ERROR");
+}
+
+#[tokio::test]
+async fn the_sale_head_endpoint_needs_a_seed_and_a_credential() {
+    // No seed: the log surface degrades to 503, identically to /log/head.
+    let (app, _pool) = app_or_skip!(None);
+    let (_org, key) = sale_customer(&app, "sale-heads-noseed").await;
+    let (status, body) = call(
+        &app,
+        "GET",
+        "/api/v1/log/sale-head?digest=anything",
+        None,
+        Some(&key),
+    )
+    .await;
+    assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE, "{body}");
+    assert_eq!(
+        body["error"]["code"].as_str().unwrap(),
+        "SERVICE_UNAVAILABLE"
+    );
+
+    // No credential: a customer's sale terms are served only to a principal.
+    let app = offline_app(Some(SEED));
+    let (status, _) = call(
+        &app,
+        "GET",
+        "/api/v1/log/sale-head?digest=anything",
+        None,
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+}
+
 /// `/log/checkpoint` answers the last witness-anchored head with its
 /// cosignatures — `data: null` before the first anchor (issue #231).
 #[tokio::test]

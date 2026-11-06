@@ -579,6 +579,105 @@ impl Db {
         tx.commit().await?;
         Ok(result)
     }
+
+    /// Reads the canonical snapshot bytes a committed digest names, plus the
+    /// business whose catalog signed it (issue #600).
+    ///
+    /// The proof path and the `/api/v1/log/sale-head` endpoint both serve the
+    /// stored row verbatim — the digest was taken over those exact bytes, so
+    /// re-serving them keeps the checkpoint's root honest. `None` when no
+    /// resolution recorded the digest.
+    pub async fn sale_snapshot_by_digest(
+        &self,
+        digest: &str,
+    ) -> Result<Option<(uuid::Uuid, String)>, WalletError> {
+        let row = sqlx::query(
+            "SELECT business_id, canonical_row FROM oxsum.sale_snapshot_digests WHERE digest=$1",
+        )
+        .bind(digest)
+        .fetch_optional(self.pool())
+        .await?;
+        Ok(row.map(|r| {
+            (
+                r.try_get("business_id").unwrap_or_default(),
+                r.try_get("canonical_row").unwrap_or_default(),
+            )
+        }))
+    }
+
+    /// Signs a resolved sale snapshot as an operator checkpoint: the
+    /// `/api/v1/log/sale-head` response (issue #600).
+    ///
+    /// `digest` selects a stored snapshot directly — the value a settlement
+    /// committed. Otherwise `organization_id`, `model` and `at` re-resolve the
+    /// terms in force; the resolution records its digest so the signed row is
+    /// recoverable forever. Either way the served `row` is the canonical bytes
+    /// the checkpoint's root commits to.
+    pub async fn sign_sale_snapshot(
+        &self,
+        key: &crate::HeadSigningKey,
+        digest: Option<&str>,
+        organization_id: Option<Uuid>,
+        model: Option<&str>,
+        at: Option<OffsetDateTime>,
+    ) -> Result<Option<(crate::SignedSaleHead, String)>, WalletError> {
+        // By digest: the stored canonical row re-signs deterministically — the
+        // checkpoint's root is the digest itself, so a bill that committed it
+        // stays verifiable however the catalog has since moved.
+        if let Some(digest) = digest {
+            let Some((business, canonical)) = self.sale_snapshot_by_digest(digest).await? else {
+                return Ok(None);
+            };
+            // The signed head needs the snapshot's identity fields; the
+            // canonical row carries them all (it is what they were hashed from),
+            // so read them back out of it rather than re-resolving.
+            let snapshot: serde_json::Value = serde_json::from_str(&canonical)
+                .map_err(|e| WalletError::Misconfigured(format!("stored sale row: {e}")))?;
+            let version = snapshot
+                .get("version")
+                .and_then(serde_json::Value::as_i64)
+                .unwrap_or(0);
+            let organization = snapshot
+                .get("organizationId")
+                .and_then(serde_json::Value::as_str)
+                .and_then(|s| s.parse().ok())
+                .unwrap_or_default();
+            let model = snapshot
+                .get("model")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or_default()
+                .to_owned();
+            let signed = crate::sign_sale_checkpoint(
+                key,
+                business,
+                organization,
+                &model,
+                version,
+                &canonical,
+            )
+            .map_err(crate::error::invalid)?;
+            return Ok(Some((signed, canonical)));
+        }
+        // By terms: re-resolve what was in force and sign the fresh snapshot.
+        let (Some(org), Some(model)) = (organization_id, model) else {
+            return Err(invalid(
+                "sale-head needs a digest or organizationId and model",
+            ));
+        };
+        let mut tx = self.pool().begin().await?;
+        let business = authority::lock_business(&mut tx).await?;
+        customer(&mut tx, business, org).await?;
+        model_name(model)?;
+        let now: OffsetDateTime = sqlx::query_scalar("SELECT clock_timestamp()")
+            .fetch_one(&mut *tx)
+            .await?;
+        let snapshot = resolve(&mut tx, business, org, model, instant(at.unwrap_or(now))?).await?;
+        tx.commit().await?;
+        let canonical = crate::canonical_sale_snapshot(&snapshot)?;
+        let signed =
+            crate::sign_sale_head(key, &snapshot, &canonical).map_err(crate::error::invalid)?;
+        Ok(Some((signed, canonical)))
+    }
 }
 async fn resolve(
     tx: &mut Transaction<'_, Postgres>,
@@ -610,7 +709,7 @@ async fn resolve(
             return Err(WalletError::Misconfigured("invalid sale schedule".into()));
         };
         if let Some(terms) = terms {
-            return Ok(SalePriceSnapshot {
+            let snapshot = SalePriceSnapshot {
                 business_id: business,
                 organization_id: org,
                 model: model.into(),
@@ -624,10 +723,43 @@ async fn resolve(
                 effective_from: current.effective_from,
                 effective_until: current.effective_until,
                 terms,
-            });
+            };
+            record_digest(tx, &snapshot).await?;
+            return Ok(snapshot);
         }
     }
     Err(WalletError::NotFound(
         "no active sale price for this model and customer".into(),
     ))
+}
+
+/// Persists the snapshot's digest → canonical-row mapping so a later proof can
+/// re-serve the exact bytes the settlement committed (issue #600).
+///
+/// The digest is content-derived — `sale_snapshot_hash` over the canonical
+/// `SaleSnapshotV1` bytes — so the insert is idempotent: two resolutions of the
+/// same terms write the same row and `ON CONFLICT` does nothing. The canonical
+/// row is stored, never re-rendered, because the checkpoint's root commits to
+/// those exact bytes.
+async fn record_digest(
+    tx: &mut Transaction<'_, Postgres>,
+    snapshot: &SalePriceSnapshot,
+) -> Result<crate::Hash, WalletError> {
+    let canonical = crate::canonical_sale_snapshot(snapshot)?;
+    let digest = crate::sale_snapshot_hash(&canonical);
+    sqlx::query(
+        "INSERT INTO oxsum.sale_snapshot_digests
+             (digest, business_id, organization_id, model, canonical_row, version)
+         VALUES ($1, $2, $3, $4, $5, $6)
+         ON CONFLICT (digest) DO NOTHING",
+    )
+    .bind(digest.to_hex())
+    .bind(snapshot.business_id)
+    .bind(snapshot.organization_id)
+    .bind(&snapshot.model)
+    .bind(&canonical)
+    .bind(snapshot.version.unwrap_or(0))
+    .execute(&mut **tx)
+    .await?;
+    Ok(digest)
 }

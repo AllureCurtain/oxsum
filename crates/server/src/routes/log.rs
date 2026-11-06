@@ -348,6 +348,90 @@ pub(crate) async fn log_price_head(
     )
 }
 
+/// A signed sale-snapshot checkpoint, as `GET /api/v1/log/sale-head` serves it:
+/// the note text, the snapshot it attests, and the key that signed it.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct SignedSaleHeadRes {
+    note: String,
+    origin: String,
+    business_id: Uuid,
+    organization_id: Uuid,
+    model: String,
+    version: i64,
+    digest: String,
+    row_hash: String,
+    #[serde(flatten)]
+    key: VerifyingKeyRes,
+}
+
+impl From<oxsum_core::SignedSaleHead> for SignedSaleHeadRes {
+    fn from(signed: oxsum_core::SignedSaleHead) -> Self {
+        Self {
+            note: signed.note,
+            origin: signed.origin,
+            business_id: signed.business_id,
+            organization_id: signed.organization_id,
+            model: signed.model,
+            version: signed.version,
+            digest: signed.digest.to_hex(),
+            row_hash: signed.row_hash.to_hex(),
+            key: VerifyingKeyRes::of(&signed.key),
+        }
+    }
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct SaleHeadQuery {
+    /// The snapshot digest a settlement committed; when present it selects the
+    /// snapshot directly and the other parameters are ignored.
+    digest: Option<String>,
+    organization_id: Option<Uuid>,
+    model: Option<String>,
+    /// The instant to resolve the snapshot at; defaults to the current time.
+    #[serde(default, with = "time::serde::rfc3339::option")]
+    at: Option<time::OffsetDateTime>,
+}
+
+/// The signed checkpoint of one resolved customer sale snapshot — the
+/// customer-visible terms a settlement priced under — under the operator's key
+/// (issue #600). A customer may read only its own sale terms: `organizationId`
+/// must be the caller's organization, and a `digest` that resolves to another
+/// customer's terms is `not_found`, never a cross-customer read.
+pub(crate) async fn log_sale_head(
+    State(state): State<AppState>,
+    Extension(principal): Extension<Principal>,
+    ApiQuery(q): ApiQuery<SaleHeadQuery>,
+) -> ApiResult<SignedSaleHeadRes> {
+    let key = head_signing_key(&state)?;
+    let caller = principal.organization().id;
+    // A by-terms read names its own organization only — a customer never asks
+    // for another customer's sale terms.
+    if q.digest.is_none() && q.organization_id.is_some() && q.organization_id != Some(caller) {
+        return Err(ApiError::not_found());
+    }
+    let Some((signed, _row)) = state
+        .db
+        .sign_sale_snapshot(
+            &key,
+            q.digest.as_deref(),
+            q.organization_id,
+            q.model.as_deref(),
+            q.at,
+        )
+        .await?
+    else {
+        return Err(ApiError::not_found());
+    };
+    // The signed head names the customer it priced; a digest that resolves to
+    // another customer's terms answers `not_found` rather than revealing it.
+    if signed.organization_id != caller {
+        return Err(ApiError::not_found());
+    }
+    ok(signed.into())
+}
+
 /// The operator's tree-head verifying key. A public key, so no credential: fetching it from
 /// the server is convenience, and a verifier must have chosen it through a channel the
 /// operator does not control.

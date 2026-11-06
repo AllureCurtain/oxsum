@@ -173,7 +173,11 @@ async fn verify_submit(cx: &Cx, Form(form): Form<VerifyForm>) -> Result<impl Vie
     // export makes (issue #284), so the page reads the same whichever side ran
     // it. The binding reports under the pass, never a verdict of its own.
     enum Verdict {
-        Pass { charge: String, price: String },
+        Pass {
+            charge: String,
+            price: String,
+            sale: Option<String>,
+        },
         ChargeMismatch,
         Fail,
     }
@@ -200,6 +204,7 @@ async fn verify_submit(cx: &Cx, Form(form): Form<VerifyForm>) -> Result<impl Vie
             "pass" => Verdict::Pass {
                 charge: bill.charge,
                 price: bill.price,
+                sale: bill.sale,
             },
             "chargeMismatch" => Verdict::ChargeMismatch,
             _ => Verdict::Fail,
@@ -224,12 +229,13 @@ async fn verify_submit(cx: &Cx, Form(form): Form<VerifyForm>) -> Result<impl Vie
                         }
                     }
                     Page::Bill(verdict) => match verdict {
-                    Verdict::Pass { charge, price } => {
+                    Verdict::Pass { charge, price, sale } => {
                         <p class="ok"><strong>"The bill verifies."</strong></p>
                         <p class="muted">
                             "The content hash recomputes from the entry, and the inclusion proof links it to the tree head."
                             (charge)
                             (price)
+                            (sale.unwrap_or_default())
                         </p>
                     }
                     Verdict::ChargeMismatch => {

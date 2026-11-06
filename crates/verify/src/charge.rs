@@ -19,7 +19,7 @@ use serde_json::Value;
 /// written before descriptions were versioned counts as older; every `v` above
 /// this is newer than this build. Versions it does know each get their own
 /// rule: an old bill stays recomputable after the writer has moved on.
-const KNOWN_VERSION: i64 = 13;
+const KNOWN_VERSION: i64 = 14;
 
 /// The line items the input side prices: their units must account for the
 /// whole `inputTokens`, between them and the usage record — cached reads and
@@ -103,7 +103,8 @@ pub fn verify_charge(description: &str) -> ChargeCheck {
             Some(10) => recompute_v10(&value),
             Some(11) => recompute_v11(&value),
             Some(12) => recompute_v12(&value),
-            Some(KNOWN_VERSION) => recompute_v13(&value),
+            Some(13) => recompute_v13(&value),
+            Some(KNOWN_VERSION) => recompute_v14(&value),
             Some(v) if v > KNOWN_VERSION => ChargeCheck::NewerSchema { version: v },
             Some(_) => ChargeCheck::OlderSchema,
             // A `v` that names no version is a broken record, not an old one.
@@ -458,6 +459,37 @@ fn recompute_v13(value: &Value) -> ChargeCheck {
         return ChargeCheck::Mismatch;
     }
     recompute_v12(value)
+}
+
+/// The v14 rule: a sale-priced turn's `sale` object (issue #600) — v13's
+/// arithmetic unchanged, plus the optional `sale` block committing the digest
+/// of the customer sale snapshot the turn priced under. `sale` is absent or
+/// `{digest: 64 lowercase hex}` — the snapshot's tagged-BLAKE3 hash the bundle's
+/// `sale` link attests. Recorded, never a pricing input: the served model still
+/// prices the turn, and the digest only says which customer terms it charged
+/// under, so the bill proves *which* sale book priced it without the verifier
+/// ever seeing a supplier rate.
+fn recompute_v14(value: &Value) -> ChargeCheck {
+    let sale_ok = match value.get("sale") {
+        Some(field) => field
+            .get("digest")
+            .and_then(Value::as_str)
+            .is_some_and(is_digest),
+        None => true,
+    };
+    if !sale_ok {
+        return ChargeCheck::Mismatch;
+    }
+    recompute_v13(value)
+}
+
+/// A 64-character lowercase-hex digest — the spelling every committed hash on
+/// the wire takes (`Hash::to_hex` never emits uppercase).
+fn is_digest(value: &str) -> bool {
+    value.len() == 64
+        && value
+            .bytes()
+            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
 }
 
 /// A UUID in its canonical `8-4-4-4-12` hex spelling — validated by hand so the
@@ -850,6 +882,41 @@ mod tests {
         }
     }
 
+    /// The v14 record: v13's arithmetic with a `sale` block committing the
+    /// resolved customer sale snapshot's digest (issue #600).
+    const V14: &str = r#"{"v":14,"request":"req-sale","channel":"backup","model":"deepseek-chat","servedModel":"deepseek-chat","priceVersion":2,"kind":"usage","usage":{"inputTokens":116,"outputTokens":100,"cachedTokens":96,"reasoningTokens":20},"lines":[["input",20,1000000],["cache_read",96,100000],["output",80,2000000],["reasoning",20,3000000]],"upstreamAttempts":1,"charged":250,"freeze":400,"sale":{"digest":"3176de676b608f8f74d28054c68443fd1b999ba0349d17c7e72181990d788afc"}}"#;
+
+    #[test]
+    fn a_genuine_v14_record_recomputes() {
+        assert_eq!(verify_charge(V14), ChargeCheck::Recomputed);
+        // A turn the wholesale catalog priced writes no `sale` and is still an
+        // honest v14 write.
+        let plain = V14.replacen(
+            r#","sale":{"digest":"3176de676b608f8f74d28054c68443fd1b999ba0349d17c7e72181990d788afc"}"#,
+            "",
+            1,
+        );
+        assert_eq!(verify_charge(&plain), ChargeCheck::Recomputed);
+    }
+
+    #[test]
+    fn a_v14_record_binds_the_sale_shape() {
+        // A digest that is not 64 lowercase hex is not an honest write.
+        for bad_digest in [
+            r#""not-a-digest""#,
+            r#""3176DE676B608F8F74D28054C68443FD1B999BA0349D17C7E72181990D788AFC""#,
+            r#""3176de""#,
+            "7",
+        ] {
+            let bad = V14.replacen(
+                r#""digest":"3176de676b608f8f74d28054c68443fd1b999ba0349d17c7e72181990d788afc""#,
+                &format!(r#""digest":{bad_digest}"#),
+                1,
+            );
+            assert_eq!(verify_charge(&bad), ChargeCheck::Mismatch, "{bad_digest}");
+        }
+    }
+
     #[test]
     fn a_v3_record_must_account_for_the_whole_usage() {
         // The input lines split 116 into 20 + 96; claim only part of it and the
@@ -980,10 +1047,10 @@ mod tests {
         // One version beyond the newest this build recomputes — a verifier an
         // upgrade behind meets a settlement it cannot price, and inclusion
         // proof alone answers for it.
-        let future = r#"{"v":14,"kind":"usage","charged":1,"freeze":1}"#;
+        let future = r#"{"v":15,"kind":"usage","charged":1,"freeze":1}"#;
         assert_eq!(
             verify_charge(future),
-            ChargeCheck::NewerSchema { version: 14 }
+            ChargeCheck::NewerSchema { version: 15 }
         );
     }
 

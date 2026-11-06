@@ -68,12 +68,13 @@ function render(card, result) {
   if (result.verdict === "pass" || result.ok) {
     verdict.className = "ok";
     strong.textContent = "The bill verifies.";
-    // charge/price arrive page-ready, leading space included — the same
+    // charge/price/sale arrive page-ready, leading space included — the same
     // strings the server-rendered verdict interpolates.
     note.textContent =
       "The content hash recomputes from the entry, and the inclusion proof links it to the tree head." +
       (result.charge || "") +
-      (result.price || "");
+      (result.price || "") +
+      (result.sale || "");
   } else if (result.verdict === "chargeMismatch") {
     verdict.className = "error";
     strong.textContent = "The charge does not add up.";
