@@ -1,6 +1,6 @@
 # Customer capability and evidence inventory
 
-Contract: OpenAPI 0.108.0, issues #637/#638 (T05) and #641/#642 (T06). The exact method/MatchedPath matrix in `crates/server/src/auth.rs` fails closed for every unclassified customer route or method. Authentication resolves the current membership for each request. Business and deployment credentials use separate gates; customer roles grant no business authority.
+Contract: OpenAPI 0.109.0, issues #637/#638 (T05) #641/#642 (T06) and #644 (T07.a). The exact method/MatchedPath matrix in `crates/server/src/auth.rs` fails closed for every unclassified customer route or method. Authentication resolves the current membership for each request. Business and deployment credentials use separate gates; customer roles grant no business authority.
 
 ## Record policy
 
@@ -271,3 +271,6 @@ Secrets are returned only as tails; audit binds full requests through a keyed fi
 
 
 Internal endpoint approval is part of owner-only connection configuration. Admin/catalog permission cannot change destination policy or trigger the explicit connection check. Deployment recovery remains separately authenticated. Channel runtime requests use the admitted endpoint/policy snapshot and never follow redirects with credentials.
+
+
+Customer model metadata (`/v1/models`, pricing, estimate and direct signed-price checkpoints) intersects customer tier and business ownership with a consumption key's model and group-channel grants. Personal sessions read their tier's catalog. Public alias and resolved target must both pass. Experiment configuration accepts only customer-visible variants; runtime keys still narrow them. Task status/cancel remains an original-key read/recovery action after later model/grant edits.

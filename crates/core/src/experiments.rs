@@ -172,20 +172,18 @@ impl Db {
         variants: &[Variant],
     ) -> Result<Experiment, WalletError> {
         validate_experiment(name, variants)?;
-        let served: std::collections::HashSet<String> =
-            self.served_models().await?.into_iter().collect();
-        let aliased: std::collections::HashSet<String> =
-            sqlx::query_scalar("SELECT alias FROM oxsum.model_aliases")
-                .fetch_all(self.pool())
-                .await?
-                .into_iter()
-                .collect();
+        let access = self.serving_access(org_id, None).await?;
+        let served: std::collections::HashSet<_> = self
+            .catalog_for_access(&access)
+            .await?
+            .into_iter()
+            .map(|route| route.model)
+            .collect();
         for variant in variants {
-            if !served.contains(&variant.model) && !aliased.contains(&variant.model) {
-                return Err(WalletError::InvalidInput(format!(
-                    "variant {:?} is not a served model",
-                    variant.model
-                )));
+            if !served.contains(&variant.model) {
+                return Err(WalletError::InvalidInput(
+                    "variant is not an available customer model".into(),
+                ));
             }
         }
         let row = sqlx::query(

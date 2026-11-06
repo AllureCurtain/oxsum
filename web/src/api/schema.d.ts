@@ -2669,7 +2669,9 @@ export interface paths {
         get?: never;
         /**
          * Create or replace an experiment
-         * @description Creates the named experiment or replaces its whole variant set atomically —
+         * @description Every variant must be visible in the current customer-authorized catalog.
+         *     Runtime key/group and alias-target restrictions are checked again at admission.
+         *     Creates the named experiment or replaces its whole variant set atomically —
          *     config, not ledger, so the write is a `PUT` of the full
          *     `{variants: [{model, weight}]}` rather than an append. Every variant's `model`
          *     must resolve to a served model or an alias (400 `VALIDATION` otherwise — a
@@ -4913,11 +4915,14 @@ export interface paths {
         /**
          * Price a declared token shape
          * @description The number the gateway would freeze for a request with this shape: the dearest
-         *     applicable price set over the declared input tokens and the output ceiling
+         *     permitted price set over the declared input tokens and the output ceiling
          *     (`outputTokens` clamped to the model's `maxOutputTokens`). Nothing is held or
          *     charged — the answer is the upper bound a real request could cost, and a real
          *     settle never exceeds it. An unknown model answers `VALIDATION`; a shape the
-         *     model's price cannot express answers the same.
+         *     model's price cannot express answers the same. Customer tier limits apply;
+         *     consumption keys additionally restrict model names and group channels. Aliases
+         *     require both the public and resolved model name to be allowed. Unavailable or
+         *     forbidden names return the same validation error, without hidden route details.
          */
         post: {
             parameters: {
@@ -4974,14 +4979,18 @@ export interface paths {
             cookie?: never;
         };
         /**
-         * The public price catalog
-         * @description Every route the operator sells — a model may be served by several
+         * The customer-authorized price catalog
+         * @description Every route this customer may use — a model may be served by several
          *     channels, and each `(model, channel)` pair lists its own row with the
          *     current price version and the route's `weight`, the relative preference
          *     for leading a request. These are the same rows `POST
          *     /v1/chat/completions` is priced by, without the channel's credential. A
          *     caller that wants a version's full rule set reads the flattened price on
-         *     each row; estimate-price answers what one shape costs.
+         *     each row; estimate-price answers what one shape costs. The customer tier filters
+         *     model names, and consumption keys also apply their own model and request-group
+         *     channel restrictions. Alias names and their resolved targets must both be allowed.
+         *     Customer sessions see the tier-authorized catalog, without a key-specific grant.
+         *     Alias prices use the alias version when present, otherwise the target version.
          */
         get: {
             parameters: {
@@ -5259,7 +5268,9 @@ export interface paths {
         };
         /**
          * A channel-model price row, signed by the operator
-         * @description The signed checkpoint of one `(channel, model)` price row — `version`'s exact
+         * @description Current customer/key model and channel grants filter this direct price read.
+         *     Historical proof bundles already exported remain independently verifiable.
+         *     The signed checkpoint of one `(channel, model)` price row — `version`'s exact
          *     row, or the latest when `version` is omitted — as a C2SP signed-note under the
          *     same Ed25519 key that signs tree heads (issue #204). The body reuses the
          *     tlog-checkpoint shape: `origin` is the catalog `oxsum/price-catalog/<channel>`,
@@ -10047,11 +10058,15 @@ export interface paths {
          * List the served models, in OpenAI's shape
          * @description Only models with a relayable price are listed: a model the gateway cannot price cannot be
          *     frozen, so it cannot be served — and a `mode: event` price is a billable code for
-         *     `/api/v1/metering`, not a model any `/v1` surface relays, so it is not listed either.
+         *     `/api/v1/metering`, so it is omitted unless the channel uses the generic `tasks`
+         *     protocol. Task entries identify the generic task adapter, not certified media support.
          *     `owned_by` is the channel that serves the model, and `created` is when the version in force
          *     was written. Model aliases are listed beside the direct names (issue
          *     #286): a caller writes the public name and the channel relays the
-         *     upstream model it renames.
+         *     upstream model it renames. Only the authenticated customer's business channels,
+         *     tier-authorized models, key-authorized models and request-group channels appear.
+         *     Both public alias and resolved target must be allowed; denied or unpriced aliases
+         *     are omitted. Catalog reads never open provider credentials.
          */
         get: {
             parameters: {
@@ -10286,7 +10301,10 @@ export interface paths {
          *     minutes — an image render, a video generation, a batch — where neither
          *     side wants a socket held open. The surface serves only channels whose
          *     `protocol` is `tasks`; upstream is called at `{baseUrl}/tasks` with the
-         *     channel credential as `Authorization: Bearer`.
+         *     channel credential as `Authorization: Bearer`. Customer tier, consumption-key
+         *     model and group-channel restrictions apply. Public aliases and signed spend
+         *     mandates are not supported by this generic task adapter and are refused
+         *     before provider contact. Use a permitted direct task model.
          *
          *     Submission freezes the request's declared upper bound (`maxCostMinor`,
          *     or the channel price's own bound when the request names none), relays

@@ -963,3 +963,119 @@ async fn task_poll_and_cancel_retain_submission_endpoint_after_channel_repoint()
     );
     assert!(replacement.seen_cancels.lock().unwrap().is_empty());
 }
+
+#[tokio::test]
+async fn task_admission_honors_customer_models_and_refuses_unsupported_aliases_and_mandates() {
+    let Some(url) = url() else {
+        return;
+    };
+    let world = world(&url, 10_000).await;
+    world
+        .db
+        .set_tier("task-limited", None, Some(vec!["other".into()]))
+        .await
+        .unwrap();
+    world
+        .db
+        .set_organization_tier(world.organization_id, Some("task-limited"))
+        .await
+        .unwrap();
+    let response = submit_task(&world.app, &world.key, simple_submit()).await;
+    assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    assert!(world.script.seen_submits.lock().unwrap().is_empty());
+    world
+        .db
+        .set_organization_tier(world.organization_id, None)
+        .await
+        .unwrap();
+    world
+        .db
+        .create_alias(&world.channel, "task-alias", "task-model")
+        .await
+        .unwrap();
+    let mut aliased = simple_submit();
+    aliased["model"] = json!("task-alias");
+    assert_eq!(
+        submit_task(&world.app, &world.key, aliased).await.status(),
+        StatusCode::BAD_REQUEST
+    );
+    let request = Request::builder()
+        .method("POST")
+        .uri("/v1/tasks")
+        .header("authorization", format!("Bearer {}", world.key))
+        .header("content-type", "application/json")
+        .header("x-oxsum-mandate", "a-mandate-must-not-be-ignored")
+        .body(Body::from(simple_submit().to_string()))
+        .unwrap();
+    assert_eq!(
+        world.app.clone().oneshot(request).await.unwrap().status(),
+        StatusCode::FORBIDDEN
+    );
+    assert!(world.script.seen_submits.lock().unwrap().is_empty());
+    assert_eq!(
+        world
+            .tenants
+            .get(&world.tenant_id)
+            .await
+            .unwrap()
+            .reserved()
+            .await
+            .unwrap(),
+        0
+    );
+    let (_, list) = call(&world.app, "GET", "/v1/models", None, Some(&world.key)).await;
+    let listed = list["data"].as_array().unwrap();
+    assert!(listed.iter().any(|m| m["id"] == "task-model"));
+    assert!(listed.iter().all(|m| m["id"] != "task-alias"));
+    world.script.submit(
+        "task-model",
+        SubmitAnswer::Accept {
+            task_id: "permission-snapshot-task".into(),
+        },
+    );
+    let response = submit_task(&world.app, &world.key, simple_submit()).await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let body: Value =
+        serde_json::from_slice(&response.into_body().collect().await.unwrap().to_bytes()).unwrap();
+    let task_id = body["taskId"].as_str().unwrap();
+    world
+        .db
+        .set_organization_tier(world.organization_id, Some("task-limited"))
+        .await
+        .unwrap();
+    assert_eq!(
+        call(
+            &world.app,
+            "GET",
+            &format!("/v1/tasks/{task_id}"),
+            None,
+            Some(&world.key)
+        )
+        .await
+        .0,
+        StatusCode::OK
+    );
+    assert_eq!(
+        call(
+            &world.app,
+            "POST",
+            &format!("/v1/tasks/{task_id}/cancel"),
+            Some(json!({})),
+            Some(&world.key)
+        )
+        .await
+        .0,
+        StatusCode::OK
+    );
+    assert_eq!(
+        world
+            .tenants
+            .get(&world.tenant_id)
+            .await
+            .unwrap()
+            .reserved()
+            .await
+            .unwrap(),
+        0
+    );
+}

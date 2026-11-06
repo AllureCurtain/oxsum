@@ -385,3 +385,7 @@ Business owners configure their own encrypted provider pools and billing credent
 
 
 Provider destinations default to public HTTPS; only the owner can approve exact internal IPs for a connection. DNS, redirects and credential forwarding obey the same policy across channel inference, tasks, catalog and bill sync. Explicit non-inference HEAD checks have audited intent and stable replay results. Task poll/cancel uses the originally admitted endpoint/key snapshot after later configuration changes. Historical proof/ledger identity is unchanged. Connectivity is distinct from certified provider/model support.
+
+### Customer model authority (#644, T07.a)
+
+Model lists and prices reflect the customer's actual tier and the consumption key's model/channel grants. Public aliases must also have permission for their resolved targets. Experiments and fallback chains can choose only authorized paths and keep the original requested name in billing evidence. Catalog reads need no provider decryption. Existing task history remains bound to its submitting customer/key after a later grant change; new tasks apply the current customer/key/group snapshot. Generic task aliases and signed mandates remain unsupported until T13 completes their price and operation binding, and are explicitly refused before send. T07.b completes cache request context.

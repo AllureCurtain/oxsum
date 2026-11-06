@@ -692,12 +692,13 @@ impl Db {
         sqlx::query("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY")
             .execute(&mut *tx)
             .await?;
-        Self::servings_in(&mut tx, model, key).await
+        Self::servings_in(&mut tx, model, key, None).await
     }
     async fn servings_in(
         connection: &mut sqlx::PgConnection,
         model: &str,
         key: &SecretKey,
+        access: Option<&crate::ServingAccess>,
     ) -> Result<Vec<Serving>, WalletError> {
         let rows = sqlx::query(
             "SELECT c.channel_id, c.name, c.base_url, c.protocol, c.settings, p.version, p.weight, \
@@ -718,6 +719,9 @@ impl Db {
         let mut servings = Vec::with_capacity(rows.len());
         for row in &rows {
             let channel_id: Uuid = row.try_get("channel_id")?;
+            if access.is_some_and(|scope| !scope.allows_channel(channel_id)) {
+                continue;
+            }
             servings.push(Serving {
                 channel: row.try_get("name")?,
                 channel_id,
@@ -757,6 +761,52 @@ impl Db {
         .fetch_all(self.pool())
         .await?;
         rows.iter().map(catalog_from_row).collect()
+    }
+
+    /// The caller's permitted direct and alias routes, without selecting credentials.
+    /// Alias resolution and price selection share one SQL snapshot. The public
+    /// alias's own price wins; otherwise its target supplies the price.
+    pub async fn catalog_for_access(
+        &self,
+        access: &crate::ServingAccess,
+    ) -> Result<Vec<CatalogModel>, WalletError> {
+        let rows = sqlx::query(
+            "WITH latest AS (SELECT DISTINCT ON (channel_id,model) * \
+                 FROM oxsum.channel_prices ORDER BY channel_id,model,version DESC), \
+             names AS ( \
+                 SELECT p.channel_id,p.model AS public_model,p.model AS price_model, \
+                     NULL::text AS upstream_model FROM latest p \
+                 WHERE NOT EXISTS(SELECT 1 FROM oxsum.model_aliases a WHERE a.alias=p.model) \
+                 UNION ALL \
+                 SELECT a.channel_id,a.alias, \
+                     CASE WHEN EXISTS(SELECT 1 FROM latest p WHERE p.channel_id=a.channel_id \
+                         AND p.model=a.alias) THEN a.alias ELSE a.upstream_model END, \
+                     a.upstream_model FROM oxsum.model_aliases a) \
+             SELECT c.name,c.protocol,n.public_model AS model,n.upstream_model,p.version,p.weight, \
+                 p.input_price_per_million,p.output_price_per_million,p.max_output_tokens, \
+                 p.cache_read_price_per_million,p.cache_write_5m_price_per_million, \
+                 p.cache_write_1h_price_per_million,p.reasoning_price_per_million, \
+                 p.cost_per_request,p.mode,p.upstream_prices,p.rules,p.created_at \
+             FROM names n JOIN latest p ON p.channel_id=n.channel_id AND p.model=n.price_model \
+             JOIN oxsum.channels c ON c.channel_id=n.channel_id \
+             WHERE c.business_id=$1 AND c.channel_id=ANY($2) \
+             ORDER BY n.public_model,p.weight DESC,c.name",
+        )
+        .bind(access.business_id)
+        .bind(access.channel_ids())
+        .fetch_all(self.pool())
+        .await?;
+        let mut catalog = Vec::new();
+        for row in rows {
+            let model: String = row.try_get("model")?;
+            let upstream: Option<String> = row.try_get("upstream_model")?;
+            if access.allows_path(&model, upstream.as_deref())
+                && !(row.try_get::<String, _>("protocol")? == crate::TASKS && upstream.is_some())
+            {
+                catalog.push(catalog_from_row(&row)?);
+            }
+        }
+        Ok(catalog)
     }
 
     /// Every model's current price version per route across all channels — the
@@ -1108,15 +1158,43 @@ impl Db {
         model: &str,
         key: &SecretKey,
     ) -> Result<(Vec<Serving>, Option<String>), WalletError> {
+        self.servings_named_with_access(model, key, None).await
+    }
+
+    /// Resolve an admitted customer's route without opening excluded credentials.
+    pub async fn servings_named_for_access(
+        &self,
+        model: &str,
+        key: &SecretKey,
+        access: &crate::ServingAccess,
+    ) -> Result<(Vec<Serving>, Option<String>), WalletError> {
+        self.servings_named_with_access(model, key, Some(access))
+            .await
+    }
+
+    async fn servings_named_with_access(
+        &self,
+        model: &str,
+        key: &SecretKey,
+        access: Option<&crate::ServingAccess>,
+    ) -> Result<(Vec<Serving>, Option<String>), WalletError> {
+        if access.is_some_and(|scope| !scope.allows_model(model)) {
+            return Ok((Vec::new(), None));
+        }
         let mut tx = self.pool().begin().await?;
         sqlx::query("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY")
             .execute(&mut *tx)
             .await?;
-        let alias: Option<(String, String)> = sqlx::query_as("SELECT c.name,a.upstream_model FROM oxsum.model_aliases a JOIN oxsum.channels c USING(channel_id) WHERE a.alias=$1")
+        let alias: Option<(Uuid, String, String)> = sqlx::query_as("SELECT c.channel_id,c.name,a.upstream_model FROM oxsum.model_aliases a JOIN oxsum.channels c USING(channel_id) WHERE a.alias=$1")
             .bind(model).fetch_optional(&mut *tx).await?;
-        let Some((channel, upstream_model)) = alias else {
-            return Ok((Self::servings_in(&mut tx, model, key).await?, None));
+        let Some((channel_id, channel, upstream_model)) = alias else {
+            return Ok((Self::servings_in(&mut tx, model, key, access).await?, None));
         };
+        if access.is_some_and(|scope| {
+            !scope.allows_path(model, Some(&upstream_model)) || !scope.allows_channel(channel_id)
+        }) {
+            return Ok((Vec::new(), Some(upstream_model)));
+        }
         // The alias's own price wins when the channel wrote one; the upstream
         // model's is the fallback that keeps an unpriced public name servable.
         let serving = match Self::serving_on(&mut tx, &channel, model, key).await? {

@@ -282,18 +282,25 @@ pub(crate) struct EstimateRes {
 /// hold would take (issue #168). `version` names the route that priced it.
 pub(crate) async fn estimate_price(
     State(state): State<AppState>,
-    Extension(_principal): Extension<Principal>,
+    Extension(principal): Extension<Principal>,
     ApiJson(r): ApiJson<EstimateReq>,
 ) -> ApiResult<EstimateRes> {
     // Only the mode's own routes price the shape: an embeddings estimate reads
     // `embeddings` prices, a chat estimate `chat` ones (issue #170).
     let mode = r.mode.unwrap_or_default();
+    let access = state
+        .db
+        .serving_access(
+            principal.organization().id,
+            principal.acting_key().map(|key| key.key_id),
+        )
+        .await?;
     let routes: Vec<_> = state
         .db
-        .routes(&r.model)
+        .catalog_for_access(&access)
         .await?
         .into_iter()
-        .filter(|route| route.price.mode == mode)
+        .filter(|route| route.model == r.model && route.price.mode == mode)
         .collect();
     if routes.is_empty() {
         return Err(ApiError::Validation(format!(
@@ -321,14 +328,21 @@ pub(crate) async fn estimate_price(
     })
 }
 
-/// The public catalog: every model's current price version. The query never
-/// selects channel credentials, so there is nothing to withhold here.
+/// The customer-authorized catalog, filtered before any row is returned.
+/// Personal sessions use customer tiers; keys also apply their own grants.
 pub(crate) async fn pricing(
     State(state): State<AppState>,
-    Extension(_principal): Extension<Principal>,
+    Extension(principal): Extension<Principal>,
 ) -> ApiResult<PricingRes> {
+    let access = state
+        .db
+        .serving_access(
+            principal.organization().id,
+            principal.acting_key().map(|key| key.key_id),
+        )
+        .await?;
     ok(PricingRes {
-        models: state.db.catalog().await?,
+        models: state.db.catalog_for_access(&access).await?,
     })
 }
 

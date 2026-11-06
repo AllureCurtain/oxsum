@@ -53,6 +53,7 @@ mod request_log;
 mod routing;
 mod seed;
 mod service_credentials;
+mod serving_access;
 mod sessions;
 mod statement_pdf;
 mod statements;
@@ -189,6 +190,7 @@ pub use request_log::{RequestLogFilter, RequestLogPage, RequestLogRow};
 pub use routing::{ChannelStats, RouteStats, SharedRouteStats};
 pub use seed::{DEMO_EMAIL, DEMO_ORGANIZATION, DEMO_PASSWORD, MEMBER_EMAIL, SeedReport};
 pub use service_credentials::ServiceCredential;
+pub use serving_access::ServingAccess;
 pub use sessions::{
     CreatedSession, KeyPrincipal, KeyScope, Principal, SESSION_COOKIE, SESSION_LIFETIME, Session,
     SessionPrincipal,

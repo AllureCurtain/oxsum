@@ -958,3 +958,7 @@ The current business owner can use the [business provider API](api.md#business-p
 
 
 For an internal provider, explicitly list its server IP addresses in the owner connection request's `destinationPolicy`. Public providers use HTTPS by default. A changed destination needs fresh keys and fresh internal approval. Use `POST /api/v1/business/channels/{name}/connection-check` with a reason and saved idempotency key to run a HEAD connection check; saving does not contact the provider. A reachable response confirms only connectivity. Redirects are refused, and interrupted pending checks do not repeat on retry. Model tests may incur provider cost and remain deliberate separate actions.
+
+### Model visibility and routing permissions
+
+Your model list and price catalog show routes allowed by your customer tier. A consumption key can narrow that list with its own model allowlist and request group. To use an alias with a restricted key, include both its public name and the provider model it resolves to; the request group must permit the alias's channel. Experiments and fallback models need the same grants. The bill retains the original requested and actually served names. Generic asynchronous tasks currently use direct task model names and do not accept signed spend mandates; see the [protocol matrix](roadmap/self-hosted-v1/PROTOCOL-MATRIX.md) for the current scope.

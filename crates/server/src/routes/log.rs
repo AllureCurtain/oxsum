@@ -316,10 +316,26 @@ pub(crate) struct PriceHeadQuery {
 /// exists to drift.
 pub(crate) async fn log_price_head(
     State(state): State<AppState>,
-    Extension(_principal): Extension<Principal>,
+    Extension(principal): Extension<Principal>,
     ApiQuery(q): ApiQuery<PriceHeadQuery>,
 ) -> ApiResult<SignedPriceHeadRes> {
     let key = head_signing_key(&state)?;
+    let access = state
+        .db
+        .serving_access(
+            principal.organization().id,
+            principal.acting_key().map(|key| key.key_id),
+        )
+        .await?;
+    if !state
+        .db
+        .catalog_for_access(&access)
+        .await?
+        .iter()
+        .any(|route| route.channel == q.channel && route.model == q.model)
+    {
+        return Err(ApiError::not_found());
+    }
     let Some(row) = oxsum_core::price_row(state.db.pool(), &q.channel, &q.model, q.version).await?
     else {
         return Err(ApiError::not_found());
