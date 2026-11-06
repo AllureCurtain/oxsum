@@ -430,6 +430,23 @@ mismatch is held for review rather than applied, and a replayed or out-of-order
 delivery never credits twice. A rail without the bootstrap keeps its ordinary
 unscoped behavior.
 
+The order form (issue #606) pins what the payment buys before any provider call:
+`POST /api/v1/orders` takes the quoted `displayAmountMinor`/`displayCurrency`,
+the `purpose` — `walletTopup`, `bundle`, `planPeriod` or `invoiceRepayment` — and
+the `idempotencyKey` that anchors it, and answers the provider checkout to
+complete (`{order, providerPaymentId, clientSecret, checkoutUrl, publishableKey,
+sdkUrl}`). The ledger amount is the server's own rated conversion at the
+organization's display rate, so it is never a field you send. Repeating the call
+with the same key answers the standing order and the same checkout rather than
+charging again; paying on the provider's page and returning does not itself mark
+the order paid — only the provider's signed webhook does, and the fulfillment
+that credits the wallet, activates the plan or repays the receivable lands right
+after, or on the recovery sweep if the process stopped in between. A paid event
+whose amount disagrees with what the order pinned is held for the business to
+review, never credited. `GET /api/v1/orders` lists your orders and
+`GET /api/v1/orders/{orderId}/fulfillment` shows the state and what the
+fulfillment granted.
+
 On a deployment running the real rail (`OXSUM_X402_FACILITATOR_*` — an x402-rs
 facilitator sidecar verifies the authorization on-chain, settles it, and the
 chain transaction hash lands on the deposit row) or pinning a stand-in payer key
