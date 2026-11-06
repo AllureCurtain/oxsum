@@ -50,3 +50,9 @@ New tasks retain their original provider coordinates and sealed credential acros
 ### Customer catalog and serving authority (T07.a, #644)
 
 Model lists, pricing/estimates and direct price checkpoints are filtered by customer/key grants. Alias public and target names both require permission. Experiments preserve the original requested name and cannot replace a forbidden original route. Denied channel credentials are never opened during resolution. Existing task ownership and connection snapshots remain stable; newly admitted direct tasks apply customer model and rate limits. The generic adapter now explicitly refuses aliases and signed mandates until T13 can pin their complete billing context. T07.b must still replace incomplete response-cache keys.
+
+### Complete response-cache context (T07.b, #645)
+
+Response-cache keys now bind the complete admitted context, not a normalized prompt: exact request and forwarded bodies (including system text, tools, media parameters and generation settings), protocol-owned headers, the customer/key permission snapshot, the selected experiment and mandate, the primary route's price version and connection generation, the fallback chain and the discount. A cached answer can only be reused by the same admitted context, and old normalized-prompt rows are discarded by migration 0080.
+
+The legacy `excludeSystem` setting is accepted but ignored, because the system preamble is part of the question. Cache rows remain rebuildable projections: no historical proof, ledger identity or balance changes. Existing gateway responses, settlement formats and the cache-hit charge are unchanged.

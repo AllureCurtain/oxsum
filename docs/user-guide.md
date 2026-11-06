@@ -542,13 +542,14 @@ Steps:
    non-streamed answer or a post-hold refusal, and an HTTP trailer (`Trailer:
    x-oxsum-charged-minor` announces it) on a streamed one, since the response head is sent
    before the stream settles. `x-oxsum-cache: hit` says the answer came from the response
-   cache rather than upstream: on a channel whose operator enabled it, a repeat of an
-   earlier question (case and whitespace aside) re-serves the stored answer and bills the
-   cache-read rate instead of a fresh turn's. The match is exact — the same normalized
-   prompt digest, not a similarity score; the settlement's `cache` block carries
-   `similarity: 1.0` and names the original turn's entry, so the replay is provable on
-   `/verify` like every other charge.
-   Cached answers never cross organizations, a `stream` request is never cached, and a
+   cache rather than upstream: on a channel whose operator enabled it, an exact repeat of an
+   earlier request re-serves the stored answer and bills the cache-read rate instead of a
+   fresh turn's. The match is exact — the same complete request and admitted context (text,
+   tools, parameters, key permissions and route), not a similarity score; the settlement's
+   `cache` block carries `similarity: 1.0` and names the original turn's entry, so the replay
+   is provable on `/verify` like every other charge.
+   Cached answers never cross organizations or sibling consumption keys, a `stream` request
+   is never cached, and a
    hit's `upstreamAttempts` reads `0` because no upstream call happened.
 
 Notes:
