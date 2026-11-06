@@ -1786,7 +1786,7 @@ pub(crate) async fn prices_in(
 /// A stored `mode` this build cannot name, or rules that do not deserialize,
 /// are configuration the gateway cannot price — [`WalletError::Misconfigured`]
 /// rather than a bill computed on a guess.
-fn price_from_row(row: &sqlx::postgres::PgRow) -> Result<Price, WalletError> {
+pub(crate) fn price_from_row(row: &sqlx::postgres::PgRow) -> Result<Price, WalletError> {
     let mode: String = row.try_get("mode")?;
     let rules: Option<serde_json::Value> = row.try_get("rules")?;
     let upstream: Option<serde_json::Value> = row.try_get("upstream_prices")?;

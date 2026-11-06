@@ -6,6 +6,17 @@ info:
   description: |
     Common conventions (auth, idempotency, error format, money units) are documented in docs/api.md.
 
+    0.112.0 binds resolved customer sale terms into bill evidence: a v14 settlement
+    may commit a `sale` snapshot digest, the proof bundle carries a `sale` link to
+    the operator-signed snapshot checkpoint (`GET /api/v1/log/sale-head`), and the
+    canonical snapshot binds only customer-visible terms — never supplier rates.
+
+    0.111.0 adds business-owned customer sale books, immutable draft revisions and
+    published versions, scheduled default/assigned terms and per-model overrides.
+    Preview resolves override then assigned book then default book, pinning one
+    discount and rejecting unsupported dimensions. Supplier costs are excluded.
+    This foundation does not yet change gateway settlement or signed bill formats.
+
     0.104.0 requires customer/team invitation consent: direct member addition is retired,
     invitation creation is idempotent, bound recipients can register or authenticate and
     accept, pending links are revocable, and business invitations reserve new customer IDs.
@@ -3940,6 +3951,12 @@ paths:
                         $ref: "#/components/schemas/PriceLink"
                         # Absent on a non-settlement entry, a bundle made before price
                         # binding, or a deployment that signs no heads.
+                      sale:
+                        $ref: "#/components/schemas/SaleLink"
+                        # Absent on a non-settlement entry, a settlement that priced
+                        # under the wholesale channel catalog rather than a sale book
+                        # (v14's optional `sale` digest), or a deployment that signs
+                        # no heads.
         "400": { $ref: "#/components/responses/Error" }
         "401": { $ref: "#/components/responses/Error" }
         "404": { $ref: "#/components/responses/Error" }
@@ -4108,6 +4125,75 @@ paths:
                 required: [data]
                 properties:
                   data: { $ref: "#/components/schemas/SignedPriceHead" }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
+        "503": { $ref: "#/components/responses/Error" }
+  /api/v1/log/sale-head:
+    get:
+      security: [{ bearer: [] }, { apiKeyHeader: [] }, { googApiKeyHeader: [] }, { sessionCookie: [] }]
+      x-consumption-key-access: own-records-or-metadata
+      summary: "A customer sale snapshot, signed by the operator"
+      description: |
+        The signed checkpoint of one resolved customer sale snapshot — the
+        customer-visible terms a settlement priced under — as a C2SP signed-note
+        under the same Ed25519 key that signs tree heads (issue #600). The body
+        reuses the tlog-checkpoint shape: `origin` is the business's sale catalog
+        `oxsum/sale-catalog/<businessId>`, the note's size slot carries the
+        snapshot's book `version` (0 when the snapshot names none), and its root
+        carries the tagged-BLAKE3 digest of the canonical snapshot bytes — the
+        same `sale.digest` a v14 settlement description commits. The canonical
+        bytes bind the *customer* terms only: organization, model, the
+        book/version/draft/legacy provenance, the effective window and the sale
+        price plus discount. Supplier (`upstream`) rates are never part of a sale
+        snapshot, so the evidence they produce cannot attest a supplier cost.
+        Signing is stateless and deterministic over (key, origin, digest, row), so
+        a snapshot already served re-signs identically whenever it is asked for:
+        a bill that named an older snapshot stays verifiable after the sale book
+        moves on, and no snapshot table exists to drift. Look the snapshot up by
+        `digest` — the value a settlement records — or by `organizationId`,
+        `model` and `at` to re-resolve what was in force. Verify the note
+        signature against `publicKey` exactly as for `GET /api/v1/log/head`; the
+        same key is published at `GET /api/v1/log/key`. A deployment with no
+        `OXSUM_HEAD_SIGNING_KEY` answers 503.
+      parameters:
+        - name: digest
+          in: query
+          required: false
+          schema: { type: string, pattern: "^[0-9a-f]{64}$" }
+          description: |
+            The snapshot digest a settlement records, lowercase hex. When given,
+            it selects the snapshot directly and `organizationId`/`model`/`at`
+            are ignored.
+        - name: organizationId
+          in: query
+          required: false
+          schema: { type: string, format: uuid }
+          description: The customer organization whose sale terms are signed; required without `digest`.
+        - name: model
+          in: query
+          required: false
+          schema: { type: string }
+          description: The model whose sale snapshot is signed; required without `digest`.
+        - name: at
+          in: query
+          required: false
+          schema: { type: string, format: date-time }
+          description: |
+            The instant to resolve the snapshot at; defaults to the current time.
+            A bill names the digest it priced under — pass that, not `at`, to
+            verify an older snapshot.
+      responses:
+        "200":
+          description: The signed sale-snapshot checkpoint
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data: { $ref: "#/components/schemas/SignedSaleHead" }
         "400": { $ref: "#/components/responses/Error" }
         "401": { $ref: "#/components/responses/Error" }
         "404": { $ref: "#/components/responses/Error" }
@@ -4743,6 +4829,135 @@ paths:
         "409": { $ref: "#/components/responses/Error" }
         "500": { $ref: "#/components/responses/Error" }
         "503": { $ref: "#/components/responses/Error" }
+  /api/v1/business/sale-books:
+    get:
+      summary: List customer sale books
+      description: |
+        Current owner/admin/finance in business context. Machine credentials are refused. Supplier costs are never included.
+      security: [{ sessionCookie: [] }]
+      parameters:
+        - { name: after, in: query, schema: { type: string, format: uuid } }
+        - { name: limit, in: query, schema: { type: integer, minimum: 1, maximum: 100, default: 50 } }
+      responses:
+        "200":
+          description: Authorized result
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data: { $ref: "#/components/schemas/SaleBookPage" }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "409": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
+  /api/v1/business/sale-books/{bookId}:
+    get:
+      summary: Read sale book revision history
+      description: |
+        Current owner/admin/finance in business context. Machine credentials are refused. Supplier costs are never included. Immutable draft revisions, published versions and schedules. This administrative history includes customer assignment identities.
+      security: [{ sessionCookie: [] }]
+      parameters:
+        - { name: bookId, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        "200":
+          description: Authorized result
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data: { $ref: "#/components/schemas/SaleBookHistory" }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "409": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
+  /api/v1/business/sale-books/changes:
+    post:
+      summary: Change customer sale terms atomically
+      description: |
+        Current business session. Owner/admin create books, save drafts, publish and schedule defaults. Owner/finance assign books or override customer models. Ending a schedule requires its original capability. Every change requires a reason and an idempotency key; current authority is rechecked on retry. Changed replay terms conflict. Mutations, immutable results and audit commit together.
+        Draft saves use expectedRevision to refuse lost edits; publication pins an exact draft revision. Schedules use UTC microsecond [effectiveFrom,effectiveUntil) windows. Omitted effectiveFrom is transaction time; explicit starts and ends cannot be backdated. Overlaps in the same scope are refused. replaces atomically ends one existing schedule at the new start, preserving history. endSchedule may cancel a future schedule at its start. Ending cannot extend an existing window or change a previous end event. Publication never activates prices by itself.
+      security: [{ sessionCookie: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/SaleChangeRequest" }
+      responses:
+        "200":
+          description: Authorized result
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data: { $ref: "#/components/schemas/SaleMutationResult" }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "409": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
+  /api/v1/business/customers/{organizationId}/sale-terms:
+    get:
+      summary: Read customer sale term history
+      description: |
+        Current owner/admin/finance in business context. Machine credentials are refused. Supplier costs are never included. Includes assignments and per-model overrides; default history is available through its book.
+      security: [{ sessionCookie: [] }]
+      parameters:
+        - { name: organizationId, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        "200":
+          description: Authorized result
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data: { $ref: "#/components/schemas/SaleScheduleList" }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "409": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
+  /api/v1/business/sale-price-preview:
+    post:
+      summary: Preview resolved or draft customer sale prices
+      description: |
+        Current owner/admin/finance in business context. Machine credentials are refused. Supplier costs are never included.
+        Resolves each model by customer override, then assigned published book, then default published book. Missing models fall through; an explicitly zero price wins. Exactly one selected discount is applied to the complete integer numerator before one ceiling division. No active terms is NOT_FOUND. Unsupported or unknown usage dimensions are refused. Draft and explicit legacy sources are staff-only comparisons, not live sale authority. Legacy requires the exact channel, model and version; supplier costs are removed without changing the original channel snapshot. at defaults to transaction time; timestamps are truncated to UTC microseconds. Snapshot terms are self-contained for later pinning; signed proof and gateway integration are separate work.
+      security: [{ sessionCookie: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/SalePreviewRequest" }
+      responses:
+        "200":
+          description: Authorized result
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data: { $ref: "#/components/schemas/SalePricePreview" }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "409": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
   /api/v1/business/channels:
     get:
       summary: List business provider channels
@@ -9192,6 +9407,419 @@ components:
           type: array
           description: one entry per model, at its current version
           items: { $ref: "#/components/schemas/ModelPrice" }
+    MerchantRail:
+      type: string
+      enum: [hyperswitch, stripe, airwallex]
+    MerchantMode:
+      type: string
+      enum: [test, live]
+    MerchantVersionInput:
+      type: object
+      additionalProperties: false
+      required: [apiUrl, apiKey, webhookSecret]
+      description: Complete configuration for one immutable version. Hyperswitch requires publishableKey and sdkUrl; Airwallex requires clientId and checkoutUrl. Fields belonging only to another rail are rejected. API destination rules are shared with provider connections; browser SDK/checkout URLs must be public HTTPS URLs without user info, query or fragment. Secrets are encrypted together and never returned.
+      properties:
+        apiUrl: { type: string, format: uri }
+        apiKey: { type: string, minLength: 8, maxLength: 8192, writeOnly: true }
+        webhookSecret: { type: string, minLength: 8, maxLength: 8192, writeOnly: true }
+        clientId: { type: [string, "null"], minLength: 1, maxLength: 200, writeOnly: true }
+        publishableKey: { type: [string, "null"], minLength: 1, maxLength: 200 }
+        sdkUrl: { type: [string, "null"], format: uri }
+        checkoutUrl: { type: [string, "null"], format: uri }
+        destinationPolicy: { $ref: "#/components/schemas/ProviderDestinationPolicy" }
+    MerchantCreateRequest:
+      type: object
+      additionalProperties: false
+      required: [idempotencyKey, reason, name, rail, mode, accountId, config]
+      properties:
+        idempotencyKey: { type: string, minLength: 1, maxLength: 200 }
+        reason: { type: string, minLength: 1, maxLength: 500 }
+        name: { type: string, minLength: 1, maxLength: 80, pattern: "^[a-z0-9]+(-[a-z0-9]+)*$" }
+        rail: { $ref: "#/components/schemas/MerchantRail" }
+        mode: { $ref: "#/components/schemas/MerchantMode" }
+        accountId: { type: string, minLength: 1, maxLength: 200, description: Stable provider merchant/account identifier; unique per business, rail and mode. }
+        config: { $ref: "#/components/schemas/MerchantVersionInput" }
+    MerchantVersionRequest:
+      type: object
+      additionalProperties: false
+      required: [idempotencyKey, reason, config]
+      properties:
+        idempotencyKey: { type: string, minLength: 1, maxLength: 200 }
+        reason: { type: string, minLength: 1, maxLength: 500 }
+        config: { $ref: "#/components/schemas/MerchantVersionInput" }
+    MerchantStatusRequest:
+      type: object
+      additionalProperties: false
+      required: [idempotencyKey, reason, enabled]
+      properties:
+        idempotencyKey: { type: string, minLength: 1, maxLength: 200 }
+        reason: { type: string, minLength: 1, maxLength: 500 }
+        enabled: { type: boolean }
+    MerchantMutationResult:
+      type: object
+      required: [id, merchantId, versionId, revision, enabled]
+      properties:
+        id: { type: string, format: uuid }
+        merchantId: { type: string, format: uuid }
+        versionId: { type: string, format: uuid }
+        revision: { type: integer, format: int64, minimum: 1 }
+        enabled: { type: boolean }
+    MerchantVersion:
+      type: object
+      required: [id, merchantId, revision, apiUrl, publishableKey, sdkUrl, checkoutUrl, destinationPolicy, source, validationStatus, createdAt]
+      properties:
+        id: { type: string, format: uuid }
+        merchantId: { type: string, format: uuid }
+        revision: { type: integer, format: int64, minimum: 1 }
+        apiUrl: { type: string, format: uri }
+        publishableKey: { type: [string, "null"] }
+        sdkUrl: { type: [string, "null"], format: uri }
+        checkoutUrl: { type: [string, "null"], format: uri }
+        destinationPolicy: { $ref: "#/components/schemas/ProviderDestinationPolicy" }
+        source: { type: string, enum: [owner, environment] }
+        validationStatus: { type: string, enum: [locallyValidated], description: Shape and destination syntax validated; external credentials and payments remain uncertified. }
+        createdAt: { type: string, format: date-time }
+    Merchant:
+      type: object
+      required: [id, businessId, name, rail, mode, accountId, connector, supportStatus, enabled, currentVersion]
+      properties:
+        id: { type: string, format: uuid }
+        businessId: { type: string, format: uuid }
+        name: { type: string }
+        rail: { $ref: "#/components/schemas/MerchantRail" }
+        mode: { $ref: "#/components/schemas/MerchantMode" }
+        accountId: { type: string }
+        connector: { type: string, enum: [stripe, direct] }
+        supportStatus: { type: string, enum: [primary, compatibility] }
+        enabled: { type: boolean }
+        currentVersion: { $ref: "#/components/schemas/MerchantVersion" }
+    MerchantPage:
+      type: object
+      required: [merchants, nextCursor]
+      properties:
+        merchants: { type: array, items: { $ref: "#/components/schemas/Merchant" } }
+        nextCursor: { type: [string, "null"], format: uuid }
+    MerchantVersionPage:
+      type: object
+      required: [versions, nextCursor]
+      properties:
+        versions: { type: array, items: { $ref: "#/components/schemas/MerchantVersion" } }
+        nextCursor: { type: [integer, "null"], format: int64 }
+    SalePriceSet:
+      type: object
+      additionalProperties: false
+      description: Customer rates only. Optional cache/reasoning rates fall back to their base input/output rate. No supplier cost fields.
+      required: [inputPricePerMillion]
+      properties:
+        inputPricePerMillion: { type: integer, format: int64, minimum: 0 }
+        outputPricePerMillion: { type: integer, format: int64, minimum: 0 }
+        maxOutputTokens: { type: integer, format: int64, minimum: 0 }
+        cacheReadPricePerMillion: { type: [integer, "null"], format: int64, minimum: 0 }
+        cacheWrite5mPricePerMillion: { type: [integer, "null"], format: int64, minimum: 0 }
+        cacheWrite1hPricePerMillion: { type: [integer, "null"], format: int64, minimum: 0 }
+        reasoningPricePerMillion: { type: [integer, "null"], format: int64, minimum: 0 }
+        costPerRequest: { type: [integer, "null"], format: int64, minimum: 0 }
+    SalePriceMatch:
+      type: object
+      additionalProperties: false
+      description: At least one condition; inclusive token bounds. Equal-specificity overlapping rules are refused.
+      properties:
+        serviceTier: { type: [string, "null"], minLength: 1, maxLength: 64 }
+        minInputTokens: { type: [integer, "null"], format: int64, minimum: 0 }
+        maxInputTokens: { type: [integer, "null"], format: int64, minimum: 0 }
+    SalePriceRule:
+      type: object
+      additionalProperties: false
+      required: [match, price]
+      properties:
+        match: { $ref: "#/components/schemas/SalePriceMatch" }
+        price: { $ref: "#/components/schemas/SalePriceSet" }
+    SalePrice:
+      type: object
+      additionalProperties: false
+      description: Existing whole-set conditional rating. Chat requires positive maxOutputTokens; embeddings/rerank require zero output and maximum; event requires zero maximum.
+      required: [inputPricePerMillion]
+      properties:
+        inputPricePerMillion: { type: integer, format: int64, minimum: 0 }
+        outputPricePerMillion: { type: integer, format: int64, minimum: 0 }
+        maxOutputTokens: { type: integer, format: int64, minimum: 0 }
+        cacheReadPricePerMillion: { type: [integer, "null"], format: int64, minimum: 0 }
+        cacheWrite5mPricePerMillion: { type: [integer, "null"], format: int64, minimum: 0 }
+        cacheWrite1hPricePerMillion: { type: [integer, "null"], format: int64, minimum: 0 }
+        reasoningPricePerMillion: { type: [integer, "null"], format: int64, minimum: 0 }
+        costPerRequest: { type: [integer, "null"], format: int64, minimum: 0 }
+        mode: { type: string, enum: [chat, embeddings, rerank, event], default: chat }
+        rules: { type: array, maxItems: 100, items: { $ref: "#/components/schemas/SalePriceRule" } }
+    SaleTerms:
+      type: object
+      additionalProperties: false
+      description: The selected percentage is the only discount, applied once; zero means no discount. All amounts are credits in integer minor units.
+      required: [price]
+      properties:
+        price: { $ref: "#/components/schemas/SalePrice" }
+        discountPercent: { type: integer, format: int64, minimum: 0, maximum: 100, default: 0 }
+    CreateSaleBook:
+      type: object
+      additionalProperties: false
+      required: [operation, name]
+      properties:
+        operation: { const: createBook }
+        name: { type: string, minLength: 1, maxLength: 200 }
+    SaveSaleDraft:
+      type: object
+      additionalProperties: false
+      required: [operation, bookId, expectedRevision, models]
+      properties:
+        operation: { const: saveDraft }
+        bookId: { type: string, format: uuid }
+        expectedRevision: { type: integer, format: int64, minimum: 0 }
+        models: { type: object, minProperties: 1, maxProperties: 500, additionalProperties: { $ref: "#/components/schemas/SaleTerms" } }
+    PublishSaleDraft:
+      type: object
+      additionalProperties: false
+      required: [operation, bookId, draftRevision]
+      properties:
+        operation: { const: publishDraft }
+        bookId: { type: string, format: uuid }
+        draftRevision: { type: integer, format: int64, minimum: 1 }
+    ScheduleDefaultSaleBook:
+      type: object
+      additionalProperties: false
+      required: [operation, bookId, version]
+      properties:
+        operation: { const: scheduleDefault }
+        bookId: { type: string, format: uuid }
+        version: { type: integer, format: int64, minimum: 1 }
+        effectiveFrom: { type: [string, "null"], format: date-time }
+        effectiveUntil: { type: [string, "null"], format: date-time }
+        replaces: { type: [string, "null"], format: uuid }
+    AssignCustomerSaleBook:
+      type: object
+      additionalProperties: false
+      required: [operation, organizationId, bookId, version]
+      properties:
+        operation: { const: assignBook }
+        organizationId: { type: string, format: uuid }
+        bookId: { type: string, format: uuid }
+        version: { type: integer, format: int64, minimum: 1 }
+        effectiveFrom: { type: [string, "null"], format: date-time }
+        effectiveUntil: { type: [string, "null"], format: date-time }
+        replaces: { type: [string, "null"], format: uuid }
+    OverrideCustomerSaleModel:
+      type: object
+      additionalProperties: false
+      required: [operation, organizationId, model, terms]
+      properties:
+        operation: { const: overrideModel }
+        organizationId: { type: string, format: uuid }
+        model: { type: string, minLength: 1, maxLength: 200 }
+        terms: { $ref: "#/components/schemas/SaleTerms" }
+        effectiveFrom: { type: [string, "null"], format: date-time }
+        effectiveUntil: { type: [string, "null"], format: date-time }
+        replaces: { type: [string, "null"], format: uuid }
+    EndSaleSchedule:
+      type: object
+      additionalProperties: false
+      required: [operation, scheduleId, effectiveUntil]
+      properties:
+        operation: { const: endSchedule }
+        scheduleId: { type: string, format: uuid }
+        effectiveUntil: { type: string, format: date-time }
+    SaleChange:
+      oneOf:
+        - $ref: "#/components/schemas/CreateSaleBook"
+        - $ref: "#/components/schemas/SaveSaleDraft"
+        - $ref: "#/components/schemas/PublishSaleDraft"
+        - $ref: "#/components/schemas/ScheduleDefaultSaleBook"
+        - $ref: "#/components/schemas/AssignCustomerSaleBook"
+        - $ref: "#/components/schemas/OverrideCustomerSaleModel"
+        - $ref: "#/components/schemas/EndSaleSchedule"
+      discriminator:
+        propertyName: operation
+        mapping:
+          createBook: '#/components/schemas/CreateSaleBook'
+          saveDraft: '#/components/schemas/SaveSaleDraft'
+          publishDraft: '#/components/schemas/PublishSaleDraft'
+          scheduleDefault: '#/components/schemas/ScheduleDefaultSaleBook'
+          assignBook: '#/components/schemas/AssignCustomerSaleBook'
+          overrideModel: '#/components/schemas/OverrideCustomerSaleModel'
+          endSchedule: '#/components/schemas/EndSaleSchedule'
+    SaleChangeRequest:
+      type: object
+      additionalProperties: false
+      required: [idempotencyKey, reason, change]
+      properties:
+        idempotencyKey: { type: string, minLength: 1, maxLength: 200 }
+        reason: { type: string, minLength: 1, maxLength: 500 }
+        change: { $ref: "#/components/schemas/SaleChange" }
+    SaleMutationResult:
+      type: object
+      additionalProperties: false
+      required: [id, resourceId, revision]
+      properties:
+        id: { type: string, format: uuid }
+        resourceId: { type: string, format: uuid }
+        revision: { type: [integer, "null"], format: int64 }
+    SaleBook:
+      type: object
+      additionalProperties: false
+      required: [id, name, createdAt]
+      properties:
+        id: { type: string, format: uuid }
+        name: { type: string }
+        createdAt: { type: string, format: date-time }
+    SaleBookPage:
+      type: object
+      additionalProperties: false
+      required: [books, nextAfter]
+      properties:
+        books: { type: array, items: { $ref: "#/components/schemas/SaleBook" } }
+        nextAfter: { type: [string, "null"], format: uuid }
+    SaleDraft:
+      type: object
+      additionalProperties: false
+      required: [revision, models, createdAt]
+      properties:
+        revision: { type: integer, format: int64, minimum: 1 }
+        models: { type: object, minProperties: 1, maxProperties: 500, additionalProperties: { $ref: "#/components/schemas/SaleTerms" } }
+        createdAt: { type: string, format: date-time }
+    SaleVersion:
+      type: object
+      additionalProperties: false
+      required: [version, draftRevision, models, publishedAt]
+      properties:
+        version: { type: integer, format: int64, minimum: 1 }
+        draftRevision: { type: integer, format: int64, minimum: 1 }
+        models: { type: object, minProperties: 1, maxProperties: 500, additionalProperties: { $ref: "#/components/schemas/SaleTerms" } }
+        publishedAt: { type: string, format: date-time }
+    SaleSchedule:
+      type: object
+      additionalProperties: false
+      description: Original schedule and its possibly shortened effective end. An end at the start cancels a future schedule; rows and end events remain immutable.
+      required: [id, kind, organizationId, model, bookId, version, terms, effectiveFrom, scheduledUntil, effectiveUntil, createdAt]
+      properties:
+        id: { type: string, format: uuid }
+        kind: { type: string, enum: [default, assigned, override] }
+        organizationId: { type: [string, "null"], format: uuid }
+        model: { type: [string, "null"] }
+        bookId: { type: [string, "null"], format: uuid }
+        version: { type: [integer, "null"], format: int64 }
+        terms: { anyOf: [{ $ref: "#/components/schemas/SaleTerms" }, { type: "null" }] }
+        effectiveFrom: { type: string, format: date-time }
+        scheduledUntil: { type: [string, "null"], format: date-time }
+        effectiveUntil: { type: [string, "null"], format: date-time }
+        createdAt: { type: string, format: date-time }
+    SaleBookHistory:
+      type: object
+      additionalProperties: false
+      required: [book, drafts, versions, schedules]
+      properties:
+        book: { $ref: "#/components/schemas/SaleBook" }
+        drafts: { type: array, items: { $ref: "#/components/schemas/SaleDraft" } }
+        versions: { type: array, items: { $ref: "#/components/schemas/SaleVersion" } }
+        schedules: { type: array, items: { $ref: "#/components/schemas/SaleSchedule" } }
+    SaleScheduleList:
+      type: array
+      items: { $ref: "#/components/schemas/SaleSchedule" }
+    EffectiveSaleSelector:
+      type: object
+      additionalProperties: false
+      required: [kind]
+      properties:
+        kind: { const: effective }
+    DraftSaleSelector:
+      type: object
+      additionalProperties: false
+      required: [kind, bookId, revision]
+      properties:
+        kind: { const: draft }
+        bookId: { type: string, format: uuid }
+        revision: { type: integer, format: int64, minimum: 1 }
+    LegacySaleSelector:
+      type: object
+      additionalProperties: false
+      required: [kind, channel, version]
+      properties:
+        kind: { const: legacy }
+        channel: { type: string, minLength: 1, maxLength: 200 }
+        version: { type: integer, minimum: 1, maximum: 2147483647 }
+    SalePreviewSource:
+      oneOf:
+        - $ref: "#/components/schemas/EffectiveSaleSelector"
+        - $ref: "#/components/schemas/DraftSaleSelector"
+        - $ref: "#/components/schemas/LegacySaleSelector"
+      discriminator:
+        propertyName: kind
+        mapping:
+          effective: '#/components/schemas/EffectiveSaleSelector'
+          draft: '#/components/schemas/DraftSaleSelector'
+          legacy: '#/components/schemas/LegacySaleSelector'
+    SalePreviewUsage:
+      type: object
+      additionalProperties: false
+      description: Normalized usage only. Missing counts are zero. Cache reads/writes are subsets of input; reasoning is a subset of output. Unsupported positive tool/media quantities are refused. Extra fields are refused.
+      properties:
+        inputTokens: { type: integer, format: int64, minimum: 0 }
+        outputTokens: { type: integer, format: int64, minimum: 0 }
+        cachedTokens: { type: integer, format: int64, minimum: 0 }
+        cacheWrite5mTokens: { type: integer, format: int64, minimum: 0 }
+        cacheWrite1hTokens: { type: integer, format: int64, minimum: 0 }
+        reasoningTokens: { type: integer, format: int64, minimum: 0 }
+        toolCalls: { type: integer, format: int64, minimum: 0 }
+        imageInputTokens: { type: integer, format: int64, minimum: 0 }
+        audioInputTokens: { type: integer, format: int64, minimum: 0 }
+        videoInputTokens: { type: integer, format: int64, minimum: 0 }
+        imageOutputTokens: { type: integer, format: int64, minimum: 0 }
+        audioOutputTokens: { type: integer, format: int64, minimum: 0 }
+        serviceTier: { type: [string, "null"], maxLength: 64 }
+        eventType: { type: [string, "null"], maxLength: 64 }
+    SalePreviewRequest:
+      type: object
+      additionalProperties: false
+      required: [organizationId, model, usage]
+      properties:
+        organizationId: { type: string, format: uuid }
+        model: { type: string, minLength: 1, maxLength: 200 }
+        at: { type: [string, "null"], format: date-time }
+        source: { $ref: "#/components/schemas/SalePreviewSource" }
+        usage: { $ref: "#/components/schemas/SalePreviewUsage" }
+    SalePriceSnapshot:
+      type: object
+      additionalProperties: false
+      description: Self-contained immutable terms selected for a model and customer. This is not yet a signed sale proof. Existing legacy price identities remain explicitly distinguishable.
+      required: [businessId, organizationId, model, at, source, scheduleId, bookId, version, draftRevision, legacyChannel, effectiveFrom, effectiveUntil, terms]
+      properties:
+        businessId: { type: string, format: uuid }
+        organizationId: { type: string, format: uuid }
+        model: { type: string, minLength: 1, maxLength: 200 }
+        at: { type: string, format: date-time }
+        source: { type: string, enum: [default, assigned, override, draft, legacy] }
+        scheduleId: { type: [string, "null"], format: uuid }
+        bookId: { type: [string, "null"], format: uuid }
+        version: { type: [integer, "null"], format: int64 }
+        draftRevision: { type: [integer, "null"], format: int64 }
+        legacyChannel: { type: [string, "null"] }
+        effectiveFrom: { type: string, format: date-time }
+        effectiveUntil: { type: [string, "null"], format: date-time }
+        terms: { $ref: "#/components/schemas/SaleTerms" }
+    SaleBillLine:
+      type: array
+      minItems: 3
+      maxItems: 3
+      prefixItems:
+        - { type: string }
+        - { type: integer, format: int64, minimum: 0 }
+        - { type: integer, format: int64, minimum: 0 }
+    SalePricePreview:
+      type: object
+      additionalProperties: false
+      required: [snapshot, lines, matchedRule, undiscountedMinor, chargeMinor]
+      properties:
+        snapshot: { $ref: "#/components/schemas/SalePriceSnapshot" }
+        lines: { type: array, items: { $ref: "#/components/schemas/SaleBillLine" } }
+        matchedRule: { anyOf: [{ $ref: "#/components/schemas/SalePriceMatch" }, { type: "null" }] }
+        undiscountedMinor: { type: integer, format: int64, minimum: 0 }
+        chargeMinor: { type: integer, format: int64, minimum: 0 }
     PriceSet:
       type: object
       required: [inputPricePerMillion]
@@ -11118,6 +11746,21 @@ components:
         keyName: { type: string }
         publicKey: { type: string, description: "the operator's Ed25519 verifying key, base64 of 32 bytes" }
         keyHash: { type: string, description: "the 4-byte selector this key's note signatures carry, lowercase hex" }
+    SignedSaleHead:
+      type: object
+      required: [note, origin, businessId, organizationId, model, version, digest, rowHash, keyName, publicKey, keyHash]
+      properties:
+        note: { type: string, description: "the complete C2SP signed-note text: body, blank line, signature lines" }
+        origin: { type: string, description: "the sale catalog this checkpoint belongs to: `oxsum/sale-catalog/<businessId>`" }
+        businessId: { type: string, format: uuid, description: "the business whose sale catalog the snapshot belongs to" }
+        organizationId: { type: string, format: uuid, description: "the customer organization the sale terms priced" }
+        model: { type: string, description: "the model the snapshot prices" }
+        version: { type: integer, format: int64, description: "the snapshot's book version (0 when it names none); the note's size slot carries it" }
+        digest: { type: string, description: "the snapshot digest a v14 settlement commits, lowercase hex" }
+        rowHash: { type: string, description: "hash of the canonical sale snapshot bytes, lowercase hex; the note's root carries it — equal to `digest`" }
+        keyName: { type: string }
+        publicKey: { type: string, description: "the operator's Ed25519 verifying key, base64 of 32 bytes" }
+        keyHash: { type: string, description: "the 4-byte selector this key's note signatures carry, lowercase hex" }
     PriceLink:
       type: object
       required: [channel, model, version, row, note, keyName, publicKey, keyHash]
@@ -11134,6 +11777,29 @@ components:
         version: { type: integer, format: int64, description: "the price version the checkpoint attests" }
         row: { type: string, description: "the canonical JSON the checkpoint root commits to — the exact bytes hashed, hashed verbatim" }
         note: { type: string, description: "the C2SP signed-note attesting `row`'s hash under `version`" }
+        keyName: { type: string, description: "the key name the operator signs under" }
+        publicKey: { type: string, description: "the operator's Ed25519 verifying key, lowercase hex of 32 bytes" }
+        keyHash: { type: string, description: "the 4-byte selector this key's note signatures carry, lowercase hex" }
+    SaleLink:
+      type: object
+      required: [organizationId, model, digest, row, note, keyName, publicKey, keyHash]
+      description: |
+        The signed link a settlement's proof bundle carries between the customer
+        sale terms it records (v14's `sale.digest`) and the resolved sale
+        snapshot it priced under (issue #600). Self-contained: the canonical
+        snapshot bytes, the checkpoint note, and the published key, so the
+        verifier never asks the server twice. The canonical `row` binds only
+        *customer-visible* terms — organization, model, the book/version/draft/
+        legacy provenance, the effective window, and the sale price plus
+        discount; supplier (`upstream`) rates are never part of a sale snapshot.
+        `publicKey` and `keyHash` spell lowercase hex here — the encoding a
+        verifier reads — unlike the base64 the endpoint response uses.
+      properties:
+        organizationId: { type: string, format: uuid, description: "the customer organization the sale terms priced" }
+        model: { type: string, description: "the model the snapshot prices" }
+        digest: { type: string, description: "the snapshot digest the settlement commits, lowercase hex; equals `row`'s digest and the note's root" }
+        row: { type: string, description: "the canonical JSON the checkpoint root commits to — the exact bytes hashed, hashed verbatim" }
+        note: { type: string, description: "the C2SP signed-note attesting `row`'s hash under the snapshot's version" }
         keyName: { type: string, description: "the key name the operator signs under" }
         publicKey: { type: string, description: "the operator's Ed25519 verifying key, lowercase hex of 32 bytes" }
         keyHash: { type: string, description: "the 4-byte selector this key's note signatures carry, lowercase hex" }

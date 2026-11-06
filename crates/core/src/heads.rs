@@ -17,6 +17,7 @@
 use doubleentry::witness::signing::SigningKey;
 use doubleentry::witness::{KeyName, NoteError, SignedTreeHead};
 use doubleentry::{ConsistencyProof, Hash, TreeHead};
+use time::OffsetDateTime;
 
 use crate::channels::ModelPrice;
 use crate::error::WalletError;
@@ -292,6 +293,206 @@ pub fn sign_price_head(
         channel: channel.to_owned(),
         model: price.model.clone(),
         version: price.version,
+        row_hash,
+        key: signed.key,
+    })
+}
+
+// ── signed sale snapshots (issue #600) ────────────────────────────────────────
+//
+// A bill that priced under a *sale book* names the customer terms it charged —
+// not the wholesale channel catalog. The wholesale `price` binding attests the
+// supplier-side `channel_prices` row; the customer never agreed to those rates
+// and must never see them. So a sale-priced settlement carries its own binding:
+// the operator signs a checkpoint over the resolved `SalePriceSnapshot` — the
+// customer-visible terms — under the business's sale catalog. The digest the
+// settlement description commits is the snapshot's own hash, so the link cannot
+// be replayed as a different customer's, model's or window's terms, and a
+// wholesale checkpoint cannot answer for it.
+
+/// The domain separator the canonical sale snapshot hashes under.
+///
+/// `oxsum/sale-catalog/v1`: a tagged-BLAKE3 domain so the digest cannot collide
+/// with any other in the system, and versioned so the canonical form can evolve
+/// without reinterpreting notes already signed.
+pub const SALE_SNAPSHOT_DOMAIN: &[u8] = b"oxsum/sale-catalog/v1";
+
+/// The origin a business's sale catalog signs under:
+/// `oxsum/sale-catalog/<business_id>`.
+///
+/// One origin per business — the tenant the sale books belong to — because a
+/// sale catalog is a tenant's own price list, keyed the way a ledger origin is.
+/// A `business_id` is a UUID, always origin-safe.
+///
+/// # Errors
+///
+/// Returns [`NoteError`] when the origin is malformed — unreachable for a UUID.
+pub fn sale_origin_for(business_id: uuid::Uuid) -> Result<Origin, NoteError> {
+    Origin::new(format!("oxsum/sale-catalog/{business_id}"))
+}
+
+/// The canonical JSON bytes a resolved sale snapshot hashes into the signed
+/// checkpoint.
+///
+/// The body signs `{v, businessId, organizationId, model, source, scheduleId,
+/// bookId, version, draftRevision, legacyChannel, effectiveFrom, effectiveUntil,
+/// terms}` as compact JSON through [`SaleSnapshotV1`]. The `businessId`,
+/// customer (`organizationId`) and `model` inside the hash so a checkpoint for
+/// one sale cannot answer for another business's, customer's or model's terms;
+/// the provenance fields (`source`, `scheduleId`, `bookId`, `version`,
+/// `draftRevision`, `legacyChannel`) inside so the snapshot names the exact
+/// book/draft/legacy row the terms resolved from; the `effectiveFrom`/
+/// `effectiveUntil` window inside so the terms are bound to when they held;
+/// `terms` — the `SalePrice` (which cannot carry supplier `upstream` costs) and
+/// `discountPercent` — inside because it is what the customer paid. `at` stays
+/// out — it is the instant the resolution ran, display context rather than the
+/// terms' identity. The `v` field future-proofs the shape: a `SaleSnapshotV2`
+/// would hash under a new domain.
+#[derive(Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct SaleSnapshotV1<'a> {
+    v: i64,
+    business_id: uuid::Uuid,
+    organization_id: uuid::Uuid,
+    model: &'a str,
+    source: &'a str,
+    schedule_id: Option<uuid::Uuid>,
+    book_id: Option<uuid::Uuid>,
+    version: Option<i64>,
+    draft_revision: Option<i64>,
+    legacy_channel: Option<&'a str>,
+    #[serde(with = "time::serde::rfc3339")]
+    effective_from: OffsetDateTime,
+    #[serde(with = "time::serde::rfc3339::option")]
+    effective_until: Option<OffsetDateTime>,
+    terms: &'a crate::SaleTerms,
+}
+
+/// Renders the canonical snapshot bytes for `snapshot`.
+///
+/// `serde_json` emits struct fields in declaration order, so the bytes are
+/// deterministic — the bundle carries this exact string, and the verifier
+/// hashes it verbatim rather than re-serializing.
+///
+/// # Errors
+///
+/// Serialization of these fields cannot fail; the `Result` keeps the caller honest.
+pub fn canonical_sale_snapshot(snapshot: &crate::SalePriceSnapshot) -> Result<String, WalletError> {
+    serde_json::to_string(&SaleSnapshotV1 {
+        v: 1,
+        business_id: snapshot.business_id,
+        organization_id: snapshot.organization_id,
+        model: &snapshot.model,
+        source: &snapshot.source,
+        schedule_id: snapshot.schedule_id,
+        book_id: snapshot.book_id,
+        version: snapshot.version,
+        draft_revision: snapshot.draft_revision,
+        legacy_channel: snapshot.legacy_channel.as_deref(),
+        effective_from: snapshot.effective_from,
+        effective_until: snapshot.effective_until,
+        terms: &snapshot.terms,
+    })
+    .map_err(|error| WalletError::InvalidInput(format!("canonical sale snapshot: {error}")))
+}
+
+/// The 32-byte digest of the canonical snapshot: what the settlement description
+/// commits as `sale.digest` and what the signed checkpoint's root carries.
+#[must_use]
+pub fn sale_snapshot_hash(canonical: &str) -> Hash {
+    Hash::digest(SALE_SNAPSHOT_DOMAIN, canonical.as_bytes())
+}
+
+/// A resolved customer sale snapshot, signed by the operator: what
+/// `GET /api/v1/log/sale-head` serves.
+///
+/// The note reuses the `tlog-checkpoint` body — origin, size, root — because a
+/// versioned sale snapshot *is* a checkpoint: `size` carries the snapshot's book
+/// `version` (0 when it names none) and `root` carries the snapshot digest.
+/// `sign_head` renders it, so nothing here is a new format.
+#[derive(Debug, Clone)]
+pub struct SignedSaleHead {
+    /// The complete C2SP signed-note text: body, blank line, signature lines.
+    pub note: String,
+    /// Which sale catalog this checkpoint belongs to (`oxsum/sale-catalog/<business_id>`).
+    pub origin: String,
+    /// The business the sale catalog belongs to.
+    pub business_id: uuid::Uuid,
+    /// The customer organization the sale terms priced.
+    pub organization_id: uuid::Uuid,
+    /// The model the snapshot prices.
+    pub model: String,
+    /// The snapshot's book version (0 when it names none).
+    pub version: i64,
+    /// The snapshot digest a v14 settlement commits.
+    pub digest: Hash,
+    /// The canonical-snapshot hash the note's root carries — equal to `digest`.
+    pub row_hash: Hash,
+    /// The key that signed it, as the API publishes it.
+    pub key: KeyPublication,
+}
+
+/// Signs a resolved sale snapshot as a checkpoint note.
+///
+/// `canonical` is the exact bytes the note's root commits to — pass the output
+/// of [`canonical_sale_snapshot`] so the served hash and the served row agree.
+///
+/// # Errors
+///
+/// Returns [`NoteError`] when the key name or origin is invalid — unreachable
+/// for a UUID origin, but reported rather than asserted.
+pub fn sign_sale_head(
+    key: &HeadSigningKey,
+    snapshot: &crate::SalePriceSnapshot,
+    canonical: &str,
+) -> Result<SignedSaleHead, NoteError> {
+    sign_sale_checkpoint(
+        key,
+        snapshot.business_id,
+        snapshot.organization_id,
+        &snapshot.model,
+        snapshot.version.unwrap_or(0),
+        canonical,
+    )
+}
+
+/// The field-level signer [`sign_sale_head`] delegates to: the checkpoint over
+/// `canonical` under `business`'s sale catalog, with `version` in the note's
+/// size slot. The proof and the `/api/v1/log/sale-head` by-digest path serve a
+/// stored canonical row whose snapshot struct no longer exists, so they sign
+/// from the fields the row itself carried.
+///
+/// # Errors
+///
+/// Returns [`NoteError`] when the origin is invalid — unreachable for a UUID.
+pub fn sign_sale_checkpoint(
+    key: &HeadSigningKey,
+    business: uuid::Uuid,
+    organization: uuid::Uuid,
+    model: &str,
+    version: i64,
+    canonical: &str,
+) -> Result<SignedSaleHead, NoteError> {
+    let origin = sale_origin_for(business)?;
+    let row_hash = sale_snapshot_hash(canonical);
+    // A resolved snapshot is a checkpoint: `size` is its book version (0 when it
+    // names none), `root` the snapshot digest.
+    let signed = sign_head(
+        key,
+        &origin,
+        TreeHead {
+            size: version as u64,
+            root: row_hash,
+        },
+    )?;
+    Ok(SignedSaleHead {
+        note: signed.note,
+        origin: signed.origin,
+        business_id: business,
+        organization_id: organization,
+        model: model.to_owned(),
+        version,
+        digest: row_hash,
         row_hash,
         key: signed.key,
     })

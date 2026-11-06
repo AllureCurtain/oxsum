@@ -326,6 +326,14 @@ const MIGRATIONS: &[(&str, &str)] = &[
         include_str!("../migrations/0080_response_cache_v2.sql"),
     ),
     (
+        "0081_sale_books",
+        include_str!("../migrations/0081_sale_books.sql"),
+    ),
+    (
+        "0082_sale_snapshot_digests",
+        include_str!("../migrations/0082_sale_snapshot_digests.sql"),
+    ),
+    (
         "0085_merchant_configuration",
         include_str!("../migrations/0085_merchant_configuration.sql"),
     ),

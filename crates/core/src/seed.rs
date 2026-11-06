@@ -526,6 +526,8 @@ impl Db {
             guardrail: Vec::new(),
             reason: None,
             experiment: None,
+            // A seeded turn priced under the wholesale catalog, not a sale book.
+            sale: None,
         }
         .description()?;
         world

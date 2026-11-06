@@ -53,6 +53,7 @@ mod reconcile;
 mod report_links;
 mod request_log;
 mod routing;
+mod sale_books;
 mod seed;
 mod service_credentials;
 mod serving_access;
@@ -83,10 +84,11 @@ pub use anomaly::{AnomalyFacts, Severity, anomaly_score};
 pub use audit::{AuditEntry, AuditPage, action as audit_action};
 pub use billing::{
     BillLine, BillingMode, CacheRef, ExperimentRef, GuardrailRef, ItemizedCharge, MandateRef,
-    MeteredSettlement, MeteredUsage, Price, PriceBook, PriceRule, PriceSet, RuleMatch, Settlement,
-    SettlementCache, SettlementExperiment, SettlementGuardrail, SettlementGuardrailOwned,
-    SettlementKind, SettlementMandate, SettlementRecord, SettlementSubscription, SubscriptionRef,
-    UpstreamPrices, estimate_tokens, hold_description, input_upper_bound,
+    MeteredSettlement, MeteredUsage, Price, PriceBook, PriceRule, PriceSet, RuleMatch, SaleRef,
+    Settlement, SettlementCache, SettlementExperiment, SettlementGuardrail,
+    SettlementGuardrailOwned, SettlementKind, SettlementMandate, SettlementRecord, SettlementSale,
+    SettlementSubscription, SubscriptionRef, UpstreamPrices, estimate_tokens, hold_description,
+    input_upper_bound,
 };
 pub use business::{
     Business, BusinessMigration, BusinessMigrationPreview, BusinessOwnership, CustomerProfile,
@@ -146,11 +148,13 @@ pub use guardrail::{
 };
 pub use heads::{
     Consistency, Cosigner, HeadSigningKey, KeyPublication, MemoryWitnessStore, Origin,
-    PRICE_ROW_DOMAIN, SignedHead, SignedPriceHead, USAGE_ANCHOR_DOCUMENT, USAGE_DAY_DOMAIN,
-    USAGE_REPORT_DOCUMENT, USAGE_REPORT_DOMAIN, UsageReportV1, VerifyingKey, Witness,
-    WitnessCheckpoint, WitnessCosign, WitnessError, WitnessKeyName, WitnessStore,
-    canonical_price_row, canonical_usage_report, origin_for, price_origin_for, price_row_hash,
-    seed_from_base64, sign_head, sign_price_head, signing_key, usage_report_subset_hash,
+    PRICE_ROW_DOMAIN, SALE_SNAPSHOT_DOMAIN, SignedHead, SignedPriceHead, SignedSaleHead,
+    USAGE_ANCHOR_DOCUMENT, USAGE_DAY_DOMAIN, USAGE_REPORT_DOCUMENT, USAGE_REPORT_DOMAIN,
+    UsageReportV1, VerifyingKey, Witness, WitnessCheckpoint, WitnessCosign, WitnessError,
+    WitnessKeyName, WitnessStore, canonical_price_row, canonical_sale_snapshot,
+    canonical_usage_report, origin_for, price_origin_for, price_row_hash, sale_origin_for,
+    sale_snapshot_hash, seed_from_base64, sign_head, sign_price_head, sign_sale_checkpoint,
+    sign_sale_head, signing_key, usage_report_subset_hash,
 };
 pub use holds::{
     DEAD_AFTER_SWEEP_ATTEMPTS, DEFAULT_HOLD_TIMEOUT, InFlightHold, OpenHold, SWEEP_INTERVAL,
@@ -256,3 +260,9 @@ pub use x402::{
 };
 
 pub use customer_authority::{CustomerCapability, CustomerRecordScope};
+
+pub use sale_books::{
+    SaleBook, SaleBookHistory, SaleBookPage, SaleChange, SaleChangeRequest, SaleDraft,
+    SaleModelMap, SaleMutationResult, SalePreviewRequest, SalePreviewSource, SalePreviewUsage,
+    SalePrice, SalePricePreview, SalePriceSnapshot, SaleSchedule, SaleTerms, SaleVersion,
+};

@@ -899,6 +899,7 @@ async fn the_anomalies_list_shows_the_turns_that_did_not_price_cleanly() {
             guardrail: Vec::new(),
             reason: None,
             experiment: None,
+            sale: None,
         }
         .description()
         .expect("the settlement record serializes");
@@ -1036,6 +1037,7 @@ async fn anomalies_carry_a_score_and_filter_by_severity() {
             guardrail: Vec::new(),
             reason: None,
             experiment: None,
+            sale: None,
         }
         .description()
         .expect("the settlement record serializes");

@@ -153,6 +153,7 @@ async fn settle_one(
         guardrail: Vec::new(),
         reason: None,
         experiment: None,
+        sale: None,
     }
     .description()
     .expect("the settlement serializes");

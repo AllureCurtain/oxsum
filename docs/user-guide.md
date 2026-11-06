@@ -836,6 +836,8 @@ Steps:
 
 A passed check on a settlement also reports how the bill's *price* fared. The operator signs a checkpoint per `(channel, model, priceVersion)` — the same key that signs tree heads, under the origin `oxsum/price-catalog/<channel>` — and a fresh bundle carries that checkpoint in its `price` field: the canonical row the server hashed, the note attesting it, and the verifying key. "Bound to a checkpoint the operator signed" means the price your bill names is the catalog row the operator attested — a forged current price table cannot produce it. "No signed price binding" is information, not failure: a top-up names no price, a bundle made before this shipped carries none, and a deployment without `OXSUM_HEAD_SIGNING_KEY` signs nothing. A binding that *does not verify* is its own sentence — the note names a different price or its signature fails — and that never happens on an honest bill. You can also fetch any version's checkpoint yourself at `GET /api/v1/log/price-head?channel=<name>&model=<name>[&version=<n>]`; signing is deterministic, so an old version's note is identical whenever it is asked for.
 
+When a bill priced under your *customer sale terms* (a sale book rather than the raw channel catalog), the report adds a `sale` line beside `price`: the operator signs a checkpoint of the resolved customer snapshot under `oxsum/sale-catalog/<business>`, and the bundle carries it in its `sale` field. The snapshot binds only what you agreed to pay — your organization, model, the book and window the terms came from, and the sale price plus discount — never the supplier's own rates, so the evidence cannot leak what the operator paid upstream. "Bound to a checkpoint the operator signed" means the customer terms your bill names are the snapshot the operator attested. A bill that priced under the wholesale catalog instead reports no sale binding at all — and deliberately so: an old channel checkpoint is never offered as proof of your customer terms. You can fetch the checkpoint yourself at `GET /api/v1/log/sale-head?digest=<hex>` (the value your bill commits) or `?organizationId=<uuid>&model=<name>[&at=<rfc3339>]`.
+
 Note: verification proves "this record has not been altered since it was written", and for a versioned settlement that its charge agrees with the usage and rates it records; the signed price binding extends that to "the price it names is the one the operator's catalog held". It still cannot prove "upstream really returned that many tokens".
 
 ## Verifying the log's history
@@ -973,6 +975,17 @@ For an internal provider, explicitly list its server IP addresses in the owner c
 ### Model visibility and routing permissions
 
 Your model list and price catalog show routes allowed by your customer tier. A consumption key can narrow that list with its own model allowlist and request group. To use an alias with a restricted key, include both its public name and the provider model it resolves to; the request group must permit the alias's channel. Experiments and fallback models need the same grants. The bill retains the original requested and actually served names. Generic asynchronous tasks currently use direct task model names and do not accept signed spend mandates; see the [protocol matrix](roadmap/self-hosted-v1/PROTOCOL-MATRIX.md) for the current scope.
+
+
+### Prepare customer sale books
+
+Select business context and use the [sale-book API](api.md#customer-sale-books-apiv1businesssale-books-599). Owner/admin creates a named book, saves its full model map with `expectedRevision: 0` for the first draft, and publishes that exact draft revision. Later edits save a new revision; the previous publication is unchanged. Each model has customer rates and one optional percentage discount. Provider costs belong to provider configuration and are refused here.
+
+Schedule a published version as the business default, or have owner/finance assign a version to one customer. Owner/finance may override an individual customer model. Previews use the override, then the assigned book, then the default for a missing model. Supply normalized usage to see line items, the matched conditional rule, the selected terms and the final integer charge. A draft preview can compare a proposed change before publishing.
+
+Use a future `effectiveFrom` to schedule a change. `replaces` ends an existing schedule of the same scope at that instant and starts its replacement atomically. To cancel a future schedule, append an `endSchedule` at its start. Saves cannot backdate or overlap terms. Save each mutation's idempotency key; retry the same request after a connection failure instead of issuing a new change. An already ended schedule cannot be extended or have its end rewritten.
+
+These API controls currently prepare and preview sale terms. Gateway adoption and signed customer evidence follow in T09–T13; the business console follows in T24. Existing gateway billing continues using its original channel price versions until that integration.
 
 ### Configure a business payment merchant
 
