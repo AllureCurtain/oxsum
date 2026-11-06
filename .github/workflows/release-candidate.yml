@@ -170,6 +170,11 @@ jobs:
           shared-key: "ci"
           cache-workspace-crates: "true"
           save-if: false
+      # The env-level RUSTC_WRAPPER=sccache applies here too: `cargo install`
+      # compiles wasm-bindgen-cli, so the runner must have sccache on PATH —
+      # the wrapper otherwise resolves to a missing binary and rustc never
+      # executes (the first crates.io-install dispatch hit exactly this).
+      - uses: mozilla-actions/sccache-action@v0.0.11
       - name: Install wasm-bindgen-cli at the lockfile's version
         run: |
           version="$(sed -n '/name = "wasm-bindgen"/{n;s/.*version = "\(.*\)"/\1/p;q}' Cargo.lock)"
@@ -235,6 +240,11 @@ jobs:
           shared-key: "ci"
           cache-workspace-crates: "true"
           save-if: false
+      # The env-level RUSTC_WRAPPER=sccache applies here too: `cargo install`
+      # compiles wasm-bindgen-cli, so the runner must have sccache on PATH the
+      # same way the examples job does — the workflow-level wrapper otherwise
+      # resolves to a missing binary and rustc never executes.
+      - uses: mozilla-actions/sccache-action@v0.0.11
       - name: Install wasm-bindgen-cli at the lockfile's version
         run: |
           version="$(sed -n '/name = "wasm-bindgen"/{n;s/.*version = "\(.*\)"/\1/p;q}' Cargo.lock)"
