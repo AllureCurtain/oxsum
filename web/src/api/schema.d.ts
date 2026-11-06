@@ -6017,6 +6017,116 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/webhooks/merchants/{merchantId}/versions/{versionId}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Accept a signed event for an immutable merchant configuration
+         * @description Trusted path coordinates select the merchant and signing version before the raw body is verified. The payload cannot select a signing secret. Authenticated events are durably scoped by merchant and event ID across rotations. Reusing an ID with different signed content conflicts. Recognized payment events must match the pinned payment/customer/provider account/mode/amount/currency exactly before acceptance; unknown local payments remain pending for recovery. Receipt does not itself grant wallet credit or entitlement. Authenticated rejected and unsupported events are acknowledged without any financial effect.
+         */
+        post: {
+            parameters: {
+                query?: never;
+                header?: {
+                    /** @description Hyperswitch HMAC-SHA512 over exact request bytes. */
+                    "X-Webhook-Signature-512"?: string;
+                    /** @description Stripe timestamped signature; five-minute freshness window. */
+                    "Stripe-Signature"?: string;
+                    /** @description Airwallex Unix milliseconds; five-minute freshness window. */
+                    "x-timestamp"?: string;
+                    /** @description Airwallex HMAC-SHA256 over timestamp plus exact request bytes. */
+                    "x-signature"?: string;
+                };
+                path: {
+                    merchantId: string;
+                    versionId: string;
+                };
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": Record<string, never>;
+                };
+            };
+            responses: {
+                /** @description Authenticated event durably received or replayed; not a promise of fulfillment. */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content?: never;
+                };
+                400: components["responses"]["Error"];
+                401: components["responses"]["Error"];
+                404: components["responses"]["Error"];
+                409: components["responses"]["Error"];
+                500: components["responses"]["Error"];
+                503: components["responses"]["Error"];
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/business/merchants/{merchantId}/events": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Inspect redacted durable merchant intake
+         * @description Current business report-read capability. Ordered by immutable receipt UUID. Only normalized coordinates, state and rejection reason are returned; no raw provider payload or secret. Pending events are retained for reconciliation instead of discarded.
+         */
+        get: {
+            parameters: {
+                query?: {
+                    after?: string;
+                    limit?: number;
+                };
+                header?: never;
+                path: {
+                    merchantId: string;
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Redacted event page */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            data: components["schemas"]["MerchantEventPage"];
+                        };
+                    };
+                };
+                400: components["responses"]["Error"];
+                401: components["responses"]["Error"];
+                403: components["responses"]["Error"];
+                404: components["responses"]["Error"];
+                500: components["responses"]["Error"];
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/business/merchants": {
         parameters: {
             query?: never;
@@ -14924,6 +15034,27 @@ export interface components {
              * @description the settlement ledger entry's id — derivable as `entry_id_for(settlement_key_for(holdKey))`
              */
             settlementId?: string;
+        };
+        MerchantEvent: {
+            /** Format: uuid */
+            id: string;
+            /** Format: uuid */
+            merchantId: string;
+            /** Format: uuid */
+            versionId: string;
+            eventId: string;
+            /** @enum {string} */
+            kind: "succeeded" | "failed" | "expired" | "refundSucceeded" | "refundFailed" | "dispute" | "unsupported";
+            /** Format: uuid */
+            paymentId: string | null;
+            /** @enum {string} */
+            state: "pending" | "accepted" | "applied" | "rejected" | "ignored";
+            reason: string | null;
+        };
+        MerchantEventPage: {
+            events: components["schemas"]["MerchantEvent"][];
+            /** Format: uuid */
+            nextCursor: string | null;
         };
         ProviderMutationResult: {
             /** Format: uuid */
