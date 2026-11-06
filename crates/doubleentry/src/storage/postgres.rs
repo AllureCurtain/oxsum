@@ -476,6 +476,118 @@ impl<const P: u8> PostgresStore<P> {
         Ok(tx)
     }
 
+    /// Points the caller's transaction at this store's schema for the rest of
+    /// the transaction's life.
+    ///
+    /// oxsum change (not upstream): [`append_in_tx`](Self::append_in_tx) runs on
+    /// a transaction the caller opened. The pin must outlive the append itself,
+    /// not just cover it: the schema's deferred balance trigger fires at COMMIT
+    /// and resolves `postings` by whatever `search_path` is current *then* — a
+    /// pin restored after the append would leave the trigger looking in the
+    /// wrong schema. `SET LOCAL` lasts exactly to the transaction's end, which
+    /// is the scope the trigger needs and no more: the connection's own
+    /// `search_path` is untouched, so the pool never carries the pin into the
+    /// next borrower's transaction.
+    ///
+    /// Callers keep their own writes schema-qualified, which oxsum's always
+    /// are (`oxsum.*`), so the pin is transparent to them.
+    async fn pin_schema_in(&self, tx: &mut Transaction<'_, Postgres>) -> Result<(), PostgresError> {
+        sqlx::query(&set_local_search_path(&self.schema))
+            .execute(&mut **tx)
+            .await?;
+        Ok(())
+    }
+
+    /// Appends a batch inside the caller's transaction.
+    ///
+    /// oxsum change (not upstream): the same append [`LedgerStore::append`]
+    /// runs — the advisory lock, the dense inline index, the idempotency gate,
+    /// the limits, the MMR nodes — but against a transaction the caller opened
+    /// and will commit. That is the seam oxsum's settlement needs: the ledger
+    /// entry, the operation's terminal row, the entitlement consumption and the
+    /// outbox event commit as one unit or roll back as one, so a crash mid-settle
+    /// cannot leave money moved without the operation that explains it. See
+    /// docs/decisions.md, "a borrowed-transaction append for the Postgres
+    /// backend".
+    ///
+    /// The transaction's `search_path` is pinned to this store's schema until
+    /// the transaction ends — the deferred balance trigger resolves names at
+    /// COMMIT, so the pin cannot be scoped to the append alone. Callers write
+    /// schema-qualified names for their own tables, as every `oxsum.*` query
+    /// already does. The caller owns commit and rollback: an error leaves the
+    /// transaction usable but with the batch's writes inside it uncommitted,
+    /// exactly like any other failed statement — except where Postgres has
+    /// already aborted it, which the caller sees as a `25P02` on its next
+    /// statement.
+    ///
+    /// Lock ordering is the caller's responsibility. The append takes the
+    /// per-ledger advisory lock *inside* the caller's transaction, so every lock
+    /// the caller took earlier stays held underneath it; a caller that takes the
+    /// same key earlier in its own transaction simply holds it re-entrantly
+    /// (`pg_advisory_xact_lock` counts requests per session).
+    ///
+    /// # Errors
+    ///
+    /// As [`LedgerStore::append`]. The transaction is *not* rolled back on
+    /// error — that choice, and the commit, belong to the caller.
+    pub async fn append_in_tx(
+        &self,
+        tx: &mut Transaction<'_, Postgres>,
+        batch: &EntryBatch<P>,
+    ) -> Result<Vec<Recorded>, PostgresError> {
+        self.pin_schema_in(tx).await?;
+        self.append_batch_in(tx, batch).await
+    }
+
+    /// The append body [`LedgerStore::append`] and [`append_in_tx`] share.
+    ///
+    /// Runs entirely inside `tx` and does not end it: the caller commits (the
+    /// wrapper) or the caller's caller does (the borrowed-transaction path).
+    /// The schema must already be pinned — `begin` does it for the wrapper and
+    /// `pin_schema_in` for the borrowed path.
+    ///
+    /// oxsum change (not upstream): extracted so the same sequence — lock,
+    /// accumulator, per-entry write — backs both entry points rather than
+    /// drifting between two copies.
+    async fn append_batch_in(
+        &self,
+        tx: &mut Transaction<'_, Postgres>,
+        batch: &EntryBatch<P>,
+    ) -> Result<Vec<Recorded>, PostgresError> {
+        let placement = match self.sequencing {
+            Sequencing::Inline => {
+                // Serialise appends so positions stay dense and follow commit
+                // order. Held for the transaction, released on commit or abort.
+                sqlx::query("SELECT pg_advisory_xact_lock($1)")
+                    .bind(self.append_lock)
+                    .execute(&mut **tx)
+                    .await?;
+                Placement::Inline
+            }
+            // No lock: writers do not contend, and ordering is the sequencer's
+            // problem rather than theirs.
+            Sequencing::Deferred => Placement::Deferred,
+        };
+
+        let mut next_index = 0i64;
+        let mut accumulator = MerkleAccumulator::new();
+        if placement == Placement::Inline {
+            // From the nodes, not from `MAX(log_index)`: the nodes are the log,
+            // and an archived prefix pruned from `entries` must not renumber
+            // what comes next.
+            accumulator = Self::accumulator(tx).await?;
+            next_index = i64::try_from(accumulator.size()).unwrap_or(i64::MAX);
+        }
+
+        let mut out = Vec::with_capacity(batch.len());
+        for entry in batch.entries() {
+            out.push(
+                Self::append_one(tx, entry, &mut next_index, &mut accumulator, placement).await?,
+            );
+        }
+        Ok(out)
+    }
+
     /// Applies [`SCHEMA`].
     ///
     /// # Errors
@@ -1630,40 +1742,7 @@ impl<const P: u8> LedgerStore<P> for PostgresStore<P> {
 
     async fn append(&self, batch: &EntryBatch<P>) -> Result<Vec<Recorded>, Self::Error> {
         let mut tx = self.begin().await?;
-
-        let placement = match self.sequencing {
-            Sequencing::Inline => {
-                // Serialise appends so positions stay dense and follow commit
-                // order. Held for the transaction, released on commit or abort.
-                sqlx::query("SELECT pg_advisory_xact_lock($1)")
-                    .bind(self.append_lock)
-                    .execute(&mut *tx)
-                    .await?;
-                Placement::Inline
-            }
-            // No lock: writers do not contend, and ordering is the sequencer's
-            // problem rather than theirs.
-            Sequencing::Deferred => Placement::Deferred,
-        };
-
-        let mut next_index = 0i64;
-        let mut accumulator = MerkleAccumulator::new();
-        if placement == Placement::Inline {
-            // From the nodes, not from `MAX(log_index)`: the nodes are the log,
-            // and an archived prefix pruned from `entries` must not renumber
-            // what comes next.
-            accumulator = Self::accumulator(&mut tx).await?;
-            next_index = i64::try_from(accumulator.size()).unwrap_or(i64::MAX);
-        }
-
-        let mut out = Vec::with_capacity(batch.len());
-        for entry in batch.entries() {
-            out.push(
-                Self::append_one(&mut tx, entry, &mut next_index, &mut accumulator, placement)
-                    .await?,
-            );
-        }
-
+        let out = self.append_batch_in(&mut tx, batch).await?;
         tx.commit().await?;
         Ok(out)
     }

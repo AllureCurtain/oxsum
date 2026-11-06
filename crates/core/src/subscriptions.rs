@@ -695,6 +695,36 @@ impl Db {
         actual_minor: i64,
     ) -> Result<Option<i64>, WalletError> {
         let mut tx = self.pool().begin().await?;
+        let settled = self
+            .settle_subscription_draw_in(&mut tx, hold_key, actual_minor)
+            .await?;
+        tx.commit().await?;
+        Ok(settled)
+    }
+
+    /// [`settle_subscription_draw`](Self::settle_subscription_draw) inside the
+    /// caller's transaction (issue #602, D05): the draw's consumption, the
+    /// released share's return to the period counter, and the rest of the
+    /// settlement — the ledger entry, the operation's close — commit as one
+    /// unit, so a rolled-back settle cannot leave a draw consumed against
+    /// money that never moved.
+    ///
+    /// The org's advisory lock is re-entrant per session: the caller's
+    /// transaction already holds it when this runs inside
+    /// [`admit_subscription_draw`]'s own lock-taking callers, and taking it
+    /// again here only counts the request. The lock order the draw's own
+    /// writer follows — subscription lock before the row's — is unchanged.
+    ///
+    /// # Errors
+    ///
+    /// As [`settle_subscription_draw`](Self::settle_subscription_draw); the
+    /// transaction is the caller's to commit or roll back.
+    pub async fn settle_subscription_draw_in(
+        &self,
+        tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+        hold_key: &str,
+        actual_minor: i64,
+    ) -> Result<Option<i64>, WalletError> {
         let draw = sqlx::query(
             "SELECT d.draw_id, d.subscription_id, d.period_id, d.drawn_minor, d.settled_minor, \
                     s.organization_id \
@@ -703,10 +733,9 @@ impl Db {
              WHERE d.hold_key = $1 FOR UPDATE OF d",
         )
         .bind(hold_key)
-        .fetch_optional(&mut *tx)
+        .fetch_optional(&mut **tx)
         .await?;
         let Some(draw) = draw else {
-            tx.rollback().await?;
             return Ok(None);
         };
         let drawn: i64 = draw.try_get("drawn_minor")?;
@@ -714,7 +743,6 @@ impl Db {
         let subscription_id: Uuid = draw.try_get("subscription_id")?;
         let period_id: Uuid = draw.try_get("period_id")?;
         if let Some(settled) = draw.try_get::<Option<i64>, _>("settled_minor")? {
-            tx.rollback().await?;
             return Ok(Some(settled));
         }
         if actual_minor < 0 || actual_minor > drawn {
@@ -726,7 +754,7 @@ impl Db {
             "SELECT pg_advisory_xact_lock(hashtextextended('oxsum.subscription' || $1::text, 0))",
         )
         .bind(organization_id.to_string())
-        .execute(&mut *tx)
+        .execute(&mut **tx)
         .await?;
         sqlx::query(
             "UPDATE oxsum.subscription_draws \
@@ -735,7 +763,7 @@ impl Db {
         )
         .bind(draw.try_get::<Uuid, _>("draw_id")?)
         .bind(actual_minor)
-        .execute(&mut *tx)
+        .execute(&mut **tx)
         .await?;
         // Give back what the draw reserved but the charge did not use — the
         // period's counter and the subscription's live one move together.
@@ -748,7 +776,7 @@ impl Db {
             )
             .bind(subscription_id)
             .bind(released)
-            .execute(&mut *tx)
+            .execute(&mut **tx)
             .await?;
             sqlx::query(
                 "UPDATE oxsum.subscription_periods \
@@ -757,10 +785,9 @@ impl Db {
             )
             .bind(period_id)
             .bind(released)
-            .execute(&mut *tx)
+            .execute(&mut **tx)
             .await?;
         }
-        tx.commit().await?;
         Ok(Some(actual_minor))
     }
 

@@ -169,6 +169,26 @@ impl Db {
         Ok(())
     }
 
+    /// [`clear_open_hold`](Self::clear_open_hold) inside the caller's
+    /// transaction (issue #602): a settled hold's watch row dies with the
+    /// settlement, never outliving it by a commit — a rolled-back settle keeps
+    /// the row watched so the sweeper still owns the recovery.
+    ///
+    /// # Errors
+    ///
+    /// Storage failures surface as [`WalletError`].
+    pub async fn clear_open_hold_in(
+        &self,
+        tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+        hold_key: &str,
+    ) -> Result<(), WalletError> {
+        sqlx::query("DELETE FROM oxsum.open_holds WHERE hold_key = $1")
+            .bind(hold_key)
+            .execute(&mut **tx)
+            .await?;
+        Ok(())
+    }
+
     /// Records one failed sweep attempt against a watched hold: bumps
     /// `sweep_attempts`, stores the error and, the first time the count reaches
     /// [`DEAD_AFTER_SWEEP_ATTEMPTS`], sets `dead_at` — the dead-letter marker.
@@ -439,6 +459,65 @@ pub async fn sweep_stale_holds(
                     }
                 }
             }
+        }
+    }
+    // The operations pass (issue #601): open operations whose lease lapsed are
+    // the same recovery problem the watch rows answer — a worker that stopped
+    // heartbeating died. Each is claimed under `SWEEPER_OWNER` by CAS — `false`
+    // means a live worker or another sweeper got there first — then its bound
+    // hold sweeps through the existing `sweep_one` path (a `swept` settlement
+    // at zero, the watch row cleared) and the operation goes `timed_out`. An
+    // operation whose hold never bound has nothing to release: it just marks
+    // terminal.
+    for operation in db.operations_past_lease(64).await? {
+        if !db
+            .claim_operation(
+                operation.operation_id,
+                crate::operations::SWEEPER_OWNER,
+                300,
+            )
+            .await?
+        {
+            continue;
+        }
+        let mut failed = false;
+        if let Some(hold_key) = &operation.hold_key
+            && let Some(hold) = db.open_hold(hold_key).await?
+        {
+            match sweep_one(db, tenants, &hold, on).await {
+                Ok(()) => report.resolved += 1,
+                Err(error) => {
+                    failed = true;
+                    match db.note_sweep_failure(hold_key, &error.to_string()).await {
+                        Ok(DEAD_AFTER_SWEEP_ATTEMPTS) => report.dead_lettered += 1,
+                        Ok(_) => {
+                            tracing::error!(%error, %hold_key,
+                                "sweeping a lapsed operation's hold failed; the next pass retries");
+                        }
+                        Err(note_error) => {
+                            tracing::error!(%error, %note_error, %hold_key,
+                                "sweeping a lapsed operation's hold failed and could not be recorded");
+                        }
+                    }
+                }
+            }
+        }
+        // The operation goes terminal only when its hold released: a failed
+        // sweep leaves it claimed under the sweeper's short lease so the next
+        // pass picks it back up rather than marking dead what may still settle.
+        if !failed
+            && let Err(error) = db
+                .settle_operation(
+                    operation.operation_id,
+                    crate::operations::SWEEPER_OWNER,
+                    crate::operations::OperationState::TimedOut,
+                    0,
+                    "swept",
+                )
+                .await
+        {
+            tracing::error!(%error, operation_id = %operation.operation_id,
+                "marking a swept operation timed_out failed");
         }
     }
     Ok(report)

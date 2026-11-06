@@ -63,6 +63,11 @@ pub(crate) struct AppState {
     /// The process's own telemetry registry: per-app, not the `metrics` facade's global
     /// slot, so a test reads back exactly the counts it caused (src/metrics.rs).
     pub(crate) metrics: Metrics,
+    /// This process's instance id (issue #601): minted once at startup, it is the
+    /// `lease_owner` every operation this worker binds heartbeats under. A uuid
+    /// per process is what lets the sweeper tell a crashed worker's operations
+    /// from a live one's.
+    pub(crate) instance_id: String,
 }
 
 impl AppState {
@@ -131,6 +136,7 @@ pub fn app_with_billing(
         billing: billing.clone(),
         rate_limiter,
         metrics: metrics.clone(),
+        instance_id: uuid::Uuid::new_v4().to_string(),
     };
     (routes::router(state), billing, metrics)
 }

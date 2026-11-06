@@ -2209,6 +2209,209 @@ impl Wallet {
         }
     }
 
+    /// [`settle`](Self::settle) inside the caller's transaction: the same
+    /// release-and-charge draft, appended through the engine's borrowed
+    /// transaction so the settlement entry, the operation's terminal row, the
+    /// subscription draw's consumption and the usage row commit as one unit
+    /// (issue #602, D05). The caller owns the commit — a failure leaves nothing
+    /// half-written: no release, no charge, no operation close.
+    ///
+    /// The outstanding-hold read still runs on the pool first: the hold entry it
+    /// reads is immutable once committed, and reading it inside the caller's
+    /// transaction would only lengthen the lock hold. The settle draft the read
+    /// feeds cannot drift either — the settlement's idempotency key is derived
+    /// from the hold's key, so a raced second settle conflicts at the append
+    /// inside the transaction rather than writing a different release.
+    ///
+    /// # Errors
+    ///
+    /// As [`settle`](Self::settle); the transaction is the caller's to commit
+    /// or roll back.
+    pub async fn settle_in(
+        &self,
+        tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+        hold_key: &str,
+        description: &str,
+        actual_minor: i64,
+        on: Date,
+    ) -> Result<Receipt, WalletError> {
+        idem(hold_key)?;
+        if self.day_is_anchored(on).await? {
+            return Err(WalletError::DaySealed);
+        }
+        if actual_minor < 0 {
+            return Err(WalletError::InvalidInput(
+                "actual must be within 0..=held".into(),
+            ));
+        }
+        let (bonus_held, wallet_held, credit_held, outstanding_actor, outstanding_correlation) =
+            self.outstanding_hold(hold_key).await?;
+        if actual_minor > bonus_held + wallet_held + credit_held {
+            return Err(WalletError::InvalidInput(
+                "actual must be within 0..=held".into(),
+            ));
+        }
+        let held = Credits::from_minor(bonus_held + wallet_held + credit_held);
+        let settle_key = settlement_key_for(hold_key);
+        let mut draft =
+            Entry::<Draft, SCALE>::new(entry_id_for(&settle_key), idem(&settle_key)?, on)
+                .with_description(description_of(description)?);
+        if outstanding_actor.is_some() || outstanding_correlation.is_some() {
+            let mut provenance = Provenance::none();
+            if let Some(actor) = outstanding_actor {
+                provenance = provenance.with_actor(&actor).map_err(invalid)?;
+            }
+            if let Some(correlation) = outstanding_correlation {
+                provenance = provenance.with_correlation(&correlation).map_err(invalid)?;
+            }
+            draft = draft.with_provenance(provenance);
+        }
+        for (account, held_part) in [
+            (self.bonus, bonus_held),
+            (self.wallet, wallet_held),
+            (self.credit_line, credit_held),
+        ] {
+            if held_part > 0 {
+                draft = draft.post(
+                    Posting::credit(account, Credits::from_minor(held_part), currency())
+                        .in_layer(Layer::Pending),
+                );
+            }
+        }
+        draft = draft.post(Posting::debit(self.revenue, held, currency()).in_layer(Layer::Pending));
+        if actual_minor > 0 {
+            let bonus_take = actual_minor.min(bonus_held);
+            let wallet_take = (actual_minor - bonus_take).min(wallet_held);
+            let credit_take = actual_minor - bonus_take - wallet_take;
+            for (account, take) in [
+                (self.bonus, bonus_take),
+                (self.wallet, wallet_take),
+                (self.credit_line, credit_take),
+            ] {
+                if take > 0 {
+                    draft = draft.debit(account, Credits::from_minor(take), currency());
+                }
+            }
+            draft = draft.credit(self.revenue, Credits::from_minor(actual_minor), currency());
+        }
+        match self.append_in(tx, draft).await {
+            Err(WalletError::Conflict(_)) => {
+                Err(WalletError::Conflict("hold already settled".into()))
+            }
+            other => other,
+        }
+    }
+
+    /// The typed zero-cost usage receipt (issue #602, D05): the settlement
+    /// record a turn with no wallet hold still needs — a fully entitlement- or
+    /// grant-covered call that served with zero wallet funds.
+    ///
+    /// Shaped like the statement- and usage-day anchors: a 1-minor balanced
+    /// `Equity:Adjustments` debit/credit in the *settled* layer, so the marker
+    /// is metadata, not money — no pool moves, no pending reservation, no
+    /// revenue. The idempotency key is `settlement_key_for(hold_key)`, the same
+    /// figure a wallet-hold settlement derives, so a replayed receipt and a
+    /// raced settlement of the same turn cannot both land. The description is
+    /// the ordinary [`crate::Settlement::description`] record — `charged: 0`,
+    /// the subscription block naming what the entitlement paid — so a bill
+    /// proves the turn ran, what it used, and that the wallet was never
+    /// asked.
+    ///
+    /// `actor` and `correlation` are the turn's attribution — the key id and
+    /// the mandate id it ran under — carried onto the receipt the way a hold's
+    /// settlement carries them, so the key's request history and the mandate's
+    /// record stay complete even though no money moved.
+    ///
+    /// # Errors
+    ///
+    /// [`WalletError::Conflict`] when the key is already taken — the turn
+    /// settled, or a different entry claimed it. Storage failures surface as
+    /// [`WalletError`].
+    pub async fn usage_receipt(
+        &self,
+        hold_key: &str,
+        description: &str,
+        actor: Option<&str>,
+        correlation: Option<&str>,
+        on: Date,
+    ) -> Result<Receipt, WalletError> {
+        if self.day_is_anchored(on).await? {
+            return Err(WalletError::DaySealed);
+        }
+        let draft = self.usage_receipt_draft(hold_key, description, actor, correlation, on)?;
+        match self.append(draft).await {
+            Err(WalletError::Conflict(_)) => {
+                Err(WalletError::Conflict("hold already settled".into()))
+            }
+            other => other,
+        }
+    }
+
+    /// [`usage_receipt`](Self::usage_receipt) inside the caller's transaction —
+    /// the borrowed-append half of the zero-cost settle (issue #602). The
+    /// receipt commits with whatever else the caller's transaction carries:
+    /// the operation's terminal row, the entitlement's consumption, the usage
+    /// row. `tx` is the caller's to commit or roll back.
+    ///
+    /// # Errors
+    ///
+    /// As [`usage_receipt`](Self::usage_receipt).
+    pub async fn usage_receipt_in(
+        &self,
+        tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+        hold_key: &str,
+        description: &str,
+        actor: Option<&str>,
+        correlation: Option<&str>,
+        on: Date,
+    ) -> Result<Receipt, WalletError> {
+        if self.day_is_anchored(on).await? {
+            return Err(WalletError::DaySealed);
+        }
+        let draft = self.usage_receipt_draft(hold_key, description, actor, correlation, on)?;
+        match self.append_in(tx, draft).await {
+            Err(WalletError::Conflict(_)) => {
+                Err(WalletError::Conflict("hold already settled".into()))
+            }
+            other => other,
+        }
+    }
+
+    /// The receipt's draft: the 1-minor balanced adjustments marker carrying
+    /// the settlement description and the turn's provenance. Shared by
+    /// [`usage_receipt`](Self::usage_receipt) and
+    /// [`usage_receipt_in`](Self::usage_receipt_in).
+    fn usage_receipt_draft(
+        &self,
+        hold_key: &str,
+        description: &str,
+        actor: Option<&str>,
+        correlation: Option<&str>,
+        on: Date,
+    ) -> Result<Entry<Draft, SCALE>, WalletError> {
+        idem(hold_key)?;
+        let settle_key = settlement_key_for(hold_key);
+        // The marker amount is immaterial — 1 minor like the other anchors —
+        // and balanced on one account: the entry is the receipt, not a charge.
+        let minor = Credits::from_minor(1);
+        let mut draft =
+            Entry::<Draft, SCALE>::new(entry_id_for(&settle_key), idem(&settle_key)?, on)
+                .with_description(description_of(description)?)
+                .debit(self.adjustments, minor, currency())
+                .credit(self.adjustments, minor, currency());
+        if actor.is_some() || correlation.is_some() {
+            let mut provenance = Provenance::none();
+            if let Some(actor) = actor {
+                provenance = provenance.with_actor(actor).map_err(invalid)?;
+            }
+            if let Some(correlation) = correlation {
+                provenance = provenance.with_correlation(correlation).map_err(invalid)?;
+            }
+            draft = draft.with_provenance(provenance);
+        }
+        Ok(draft)
+    }
+
     /// The settlement record a hold's settlement committed, when it did: how a
     /// replayed settlement answers the original outcome — the settlement entry
     /// id derives from the hold's key, so the read is one probe (issue #172).
@@ -2253,6 +2456,23 @@ impl Wallet {
     /// makes this the ceiling on what a settlement may release.
     pub async fn reserved(&self) -> Result<i64, WalletError> {
         Ok(-self.pool_net(Layer::Pending).await?)
+    }
+
+    /// [`available`](Self::available) on the caller's connection (issue #602):
+    /// the atomic settle's `balance.low` read, taken on the settle's own
+    /// transaction so the figure already counts the uncommitted settlement —
+    /// a pool read would still see the pre-settle balance and judge the
+    /// threshold against money the turn had already spent.
+    ///
+    /// # Errors
+    ///
+    /// Storage failures surface as [`WalletError`].
+    pub async fn available_in(&self, conn: &mut sqlx::PgConnection) -> Result<i64, WalletError> {
+        let mut total = 0i64;
+        for account in [self.bonus, self.wallet, self.credit_line] {
+            total += self.pool_available_in(conn, account).await?;
+        }
+        Ok(total)
     }
 
     /// The credit limit the operator granted, in minor units: the credit-facility
@@ -3798,6 +4018,34 @@ impl Wallet {
 
     async fn append_sealed(&self, entry: Entry<Balanced, SCALE>) -> Result<Receipt, WalletError> {
         let recorded = self.store.append(&EntryBatch::single(entry)).await?;
+        let r = recorded
+            .into_iter()
+            .next()
+            .ok_or_else(|| WalletError::InvalidInput("empty append result".into()))?;
+        Ok(Receipt {
+            entry_id: r.id,
+            log_index: r.index.map(|i| i.get()),
+            content_hash: r.content_hash,
+            is_new: r.is_new,
+        })
+    }
+
+    /// [`append`](Self::append) inside the caller's transaction (issue #602):
+    /// the draft seals against the calendar read off the pool — same as
+    /// `append` does — then rides the borrowed-transaction append, so the
+    /// entry commits with whatever else the caller's transaction carries.
+    /// The caller owns the commit; a rolled-back transaction leaves no entry,
+    /// no node and no idempotency claim.
+    async fn append_in(
+        &self,
+        tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+        draft: Entry<Draft, SCALE>,
+    ) -> Result<Receipt, WalletError> {
+        let entry = self.seal(draft).await?;
+        let recorded = self
+            .store
+            .append_in_tx(tx, &EntryBatch::single(entry))
+            .await?;
         let r = recorded
             .into_iter()
             .next()

@@ -133,6 +133,10 @@ pub fn router(state: AppState) -> Router<AppState> {
         .route("/audit", get(ops::audit))
         .route("/requests", get(crate::routes::requests::admin_requests))
         .route(
+            "/operations",
+            get(crate::routes::operations::admin_operations),
+        )
+        .route(
             "/service-credentials",
             get(credentials::service_credentials).post(credentials::mint_service_credential),
         )
