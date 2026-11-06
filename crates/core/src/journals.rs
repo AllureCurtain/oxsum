@@ -598,6 +598,23 @@ async fn lines_in(
     tx: &mut Transaction<'_, Postgres>,
     journal_id: Uuid,
 ) -> Result<Vec<InvoiceJournalLine>, WalletError> {
+    journal_lines_in(tx, journal_id).await
+}
+
+/// The journal lines a statement restates (issue #612, T21): the same read
+/// `lines_in` runs, named for the consumer so the statement module need not
+/// reach inside the journal's own helpers.
+pub(crate) async fn lines_for_statement_in(
+    tx: &mut Transaction<'_, Postgres>,
+    journal_id: Uuid,
+) -> Result<Vec<InvoiceJournalLine>, WalletError> {
+    journal_lines_in(tx, journal_id).await
+}
+
+async fn journal_lines_in(
+    tx: &mut Transaction<'_, Postgres>,
+    journal_id: Uuid,
+) -> Result<Vec<InvoiceJournalLine>, WalletError> {
     let rows = sqlx::query(&format!(
         "SELECT {LINE_COLS} FROM oxsum.invoice_journal_lines \
          WHERE journal_id=$1 ORDER BY created_at, line_id"
@@ -946,6 +963,28 @@ impl Db {
             .execute(&mut **tx)
             .await?;
         }
+        // The statement the customer reads (issue #612, T21): issued inside
+        // this same transaction so the receivable and its customer-facing
+        // document are one commit — `open → issued` beside the journal's own
+        // `draft → posted → paid` walk.
+        if let Some(journal) = journal_in(tx, journal_id).await? {
+            self.issue_statement_for_journal_in(
+                tx,
+                &journal,
+                Some(period.period_start),
+                Some(period.period_end),
+            )
+            .await?;
+            // A journal already `paid` at close reconciles its statement in
+            // the same commit — the prepaid order covered the bill, so the
+            // statement lands settled rather than issued-open.
+            if journal.state == JournalState::Paid
+                && let Some(order) = journal.paid_order_id
+            {
+                self.reconcile_statement_for_journal_in(tx, &journal, order, journal.total_minor)
+                    .await?;
+            }
+        }
         Ok(Some(journal_id))
     }
 
@@ -1014,6 +1053,12 @@ impl Db {
             .bind(order_id)
             .execute(&mut **tx)
             .await?;
+            // The statement the customer reads reconciles beside the journal
+            // (issue #612, T21): a `paymentApplied` line and `issued|past_due
+            // → paid` when this payment covered the bill — the suspension a
+            // dunning sweep placed lifts in the same commit.
+            self.reconcile_statement_for_journal_in(tx, &journal, order_id, pay)
+                .await?;
             remaining -= pay;
         }
         if remaining > 0 {
@@ -1195,6 +1240,12 @@ impl Db {
         .bind(recharge)
         .execute(&mut **tx)
         .await?;
+        // The restored receivable surfaces in customer terms (issue #612,
+        // T21): a `disputeChargeback` line lands on the next open statement —
+        // the same fact the journal's `posted` receivable carries, spelled for
+        // the customer who owes it.
+        self.chargeback_statement_in(tx, &journal, dispute_id, recharge)
+            .await?;
         Ok(Some(journal.journal_id))
     }
 

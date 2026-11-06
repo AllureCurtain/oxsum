@@ -642,6 +642,14 @@ impl Db {
                 tx.rollback().await?;
                 return Err(WalletError::InsufficientFunds);
             }
+            // The wallet-side overage — `minor - drawn` — is what the credit
+            // limit caps (issue #612, T21): open statements' remaining plus
+            // current holds, plus this overflow, may not exceed the binding's
+            // `credit_limit_minor`. A NULL cap is unlimited.
+            if allow_overflow && drawn < minor {
+                self.check_plan_credit_in(&mut tx, organization_id, minor - drawn)
+                    .await?;
+            }
             tx.commit().await?;
             return Ok(SubscriptionAdmission {
                 drawn_minor: drawn,
@@ -737,6 +745,12 @@ impl Db {
             tx.rollback().await?;
             return Err(WalletError::InsufficientFunds);
         }
+        // The wallet-side overage is what the credit limit caps (issue #612,
+        // T21) — subscription-drawn quota is already paid for and never counts.
+        if allow_overflow && drawn < minor {
+            self.check_plan_credit_in(&mut tx, organization_id, minor - drawn)
+                .await?;
+        }
         tx.commit().await?;
         Ok(SubscriptionAdmission {
             drawn_minor: drawn,
@@ -744,6 +758,70 @@ impl Db {
             period_id,
             subscription_id,
         })
+    }
+
+    /// The plan-statement credit limit's admission check (issue #612, T21):
+    /// the wallet-side `overage_minor` a turn wants to hold may not push
+    /// `outstanding + this_overage` past the binding's `credit_limit_minor`,
+    /// where `outstanding` is the open statements' remaining plus the pools'
+    /// current holds. A NULL cap is unlimited — the check answers `Ok` for
+    /// every overage the way an unbounded binding already runs.
+    ///
+    /// Runs inside the caller's transaction under the org's advisory lock, so
+    /// a racing payment's reconcile or a second hold observes the same
+    /// outstanding figure this read took.
+    ///
+    /// # Errors
+    ///
+    /// [`WalletError::InsufficientFunds`] when the overage would exceed the
+    /// cap; storage failures surface as [`WalletError`].
+    pub(crate) async fn check_plan_credit_in(
+        &self,
+        tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+        organization_id: Uuid,
+        overage_minor: i64,
+    ) -> Result<(), WalletError> {
+        if overage_minor <= 0 {
+            return Ok(());
+        }
+        let row = sqlx::query(
+            "SELECT cp.credit_limit_minor, o.tenant_id \
+             FROM oxsum.customer_plans cp \
+             JOIN oxsum.organizations o ON o.organization_id = cp.organization_id \
+             WHERE cp.organization_id=$1 \
+               AND cp.state IN ('pending_payment','active','renewal_pending','past_due') \
+             LIMIT 1",
+        )
+        .bind(organization_id)
+        .fetch_optional(&mut **tx)
+        .await?;
+        let Some(row) = row else { return Ok(()) };
+        let limit: Option<i64> = row.try_get("credit_limit_minor")?;
+        let Some(limit) = limit else { return Ok(()) };
+        // Open statements' remaining — the receivable the customer still owes.
+        let statements_outstanding: i64 = sqlx::query_scalar(
+            "SELECT COALESCE(SUM(total_minor - paid_minor),0)::bigint \
+             FROM oxsum.plan_statements \
+             WHERE organization_id=$1 AND state IN ('issued','past_due')",
+        )
+        .bind(organization_id)
+        .fetch_one(&mut **tx)
+        .await?;
+        // Current holds — the pending reservations a racing turn would compete
+        // for, counted from the watch rows the same lock covers.
+        let tenant: String = row.try_get("tenant_id")?;
+        let holds: i64 = sqlx::query_scalar(
+            "SELECT COALESCE(SUM(freeze_minor),0)::bigint FROM oxsum.open_holds \
+             WHERE tenant_id=$1",
+        )
+        .bind(&tenant)
+        .fetch_one(&mut **tx)
+        .await?;
+        let outstanding = statements_outstanding + holds;
+        if outstanding + overage_minor > limit {
+            return Err(WalletError::InsufficientFunds);
+        }
+        Ok(())
     }
 
     /// Charges what the settlement consumed against a hold's draw, and
