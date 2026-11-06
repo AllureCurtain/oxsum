@@ -10,6 +10,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // and real variables always win over the file.
     dotenvy::dotenv().ok();
 
+    // Preflight needs only database configuration. Run before telemetry,
+    // provider configuration and migrations so it has no external side effects
+    // and stdout contains only the JSON report.
+    if std::env::args().nth(1).as_deref() == Some("ownership-preview") {
+        let db = Db::connect(&required_env("DATABASE_URL")?, pool_size()?).await?;
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&db.business_migration_preview().await?)?
+        );
+        return Ok(());
+    }
+
     // fmt is always on; OTLP trace export joins it on the same subscriber only
     // when OXSUM_OTLP_ENDPOINT names a collector (issue #224). The guard flushes
     // the buffered spans on the way out — held until after serving stops.
@@ -53,7 +65,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
         Some(other) => {
             return Err(
-                format!("unknown argument {other:?}: the only subcommand is `seed`").into(),
+                format!("unknown argument {other:?}: supported subcommands are `seed` and `ownership-preview`").into(),
             );
         }
         None => {}

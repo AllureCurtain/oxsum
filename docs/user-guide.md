@@ -2,6 +2,8 @@
 
 For callers integrating with oxsum; no technical internals. Field details live in `crates/server/openapi.yaml`. Every API request except `GET /healthz`, `POST /api/v1/auth/register`, `POST /api/v1/auth/login` and `POST /api/v1/auth/logout` carries a credential — `Authorization: Bearer <api-key>` or the session cookie — and the credential decides which organization the request acts for — no request names a tenant.
 
+Each self-hosted deployment belongs to one business. Your organization is your personal or team customer billing account; its existing keys, balance and bill evidence continue to work after the ownership upgrade. Being an organization owner does not make you business staff. API fields such as `organizationId` keep their existing names.
+
 ## Get an account and a key
 
 Purpose: get a user, an organization to hold credits, and a credential to call the API with.

@@ -2253,3 +2253,11 @@ The Airwallex rail is now sandbox-verified end-to-end at the API and webhook lay
 - Removed the manual customer hold bench and mutation hooks. No deployment-token compatibility bypass is added to these customer routes.
 - Tests that exercised obsolete customer mutation permission now drive the production gateway for mandates, member budgets, suspension and metrics. Existing gateway tests cover key spend/RPM/TPM/concurrent caps; historical ledger/read tests seed explicit test-only hold/settlement fixtures. Dedicated production-router denial tests assert unchanged money, ledger head and watch rows across customer roles and keys.
 - This is a breaking authority correction under T01/A01/A02. Staff capability expansion remains T03, credential scope tightening T05, and operation recovery improvements T10–T13.
+
+## 2026-11-05 — Preserve customer ledgers while adding singleton seller ownership (#593)
+
+- Status: Adopted, T02 implementation of D01/D08.
+- Existing organizations already carry customer identity, members, keys, wallet schemas and proof origins. Add a distinct singleton business and customer_profiles mapping; never move ledger data or promote an existing customer owner.
+- A schema trigger maps every newly created organization in the same transaction. The fixed default_business_id function also assigns legacy/global channels and subscription plans, whose historical prices/periods stay unchanged. No second business or business-wide response cache is introduced.
+- Immutable migration receipt captures pre-mapping counts. A read-only ownership-preview command runs before migrations/prepare, so operators can inspect upgrades without schema or provider side effects. Explicit owner setup is T03, not an incidental signup or migration effect.
+- Tests reconstruct the real pre-ownership schema, create customer funds/settlement, genuine finalized statement and signed proof, then compare IDs, history, balance and signed evidence after rerun/concurrent migration. A 1,000-customer smoke verifies mapping and lazy schema count; it is not a throughput certification.

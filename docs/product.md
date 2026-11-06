@@ -337,3 +337,7 @@ Nothing this document describes is unbuilt: the last tracked gap — pagination 
 ## Customer billing authority (#625)
 
 Customers may inspect reservations but cannot create raw holds, select actual usage charges or release a gateway hold. Both raw mutation routes return 403, and the overview no longer offers the manual hold bench. Gateway and service-metering admission/settlement and historical hold recovery remain available under their existing trusted authority.
+
+## Self-hosted customer identity foundation (#593)
+
+Each deployment has one Business; existing organizations are its individual/team customer billing accounts. Migration preserves account IDs, wallet balances, ledger origins and signed evidence. Customer external IDs initially equal organization UUIDs. New organizations acquire business ownership in the same creation transaction; unused accounts do not create physical ledger schemas. A customer owner has no business staff authority. The business starts uninitialized with no staff; explicit authenticated setup is the dependent T03 workflow. The stored registration policy defaults to invite, while existing `OXSUM_SIGNUP` enforcement remains until T03 connects it to setup.

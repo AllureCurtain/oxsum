@@ -1,15 +1,15 @@
 # Release status
 
-Updated: 2026-11-05. Contract issue: [#591](https://github.com/AllureCurtain/oxsum/issues/591).
+Updated: 2026-11-06. Contract issue: [#591](https://github.com/AllureCurtain/oxsum/issues/591).
 
-Implementation: in progress. Release: not ready. T00 is integrated; T01.a and T02 are in review; T01.b is locally validated. No release readiness claimed.
+Implementation: in progress. Release: not ready. T00 and both T01 children are integrated. T02 has completed source review and is awaiting CI after merging current main into PR #627. T03 is locally validated in PRs #631/#632. No release readiness claimed.
 
 | Task | Issue | State | Depends on |
 | --- | --- | --- | --- |
 | T00 — Adopt the release contract and baseline | [#591](https://github.com/AllureCurtain/oxsum/issues/591) | integrated (PR #623) | None |
-| T01 — Restrict financial and metering authority | [#592](https://github.com/AllureCurtain/oxsum/issues/592) | in_progress | T00 |
+| T01 — Restrict financial and metering authority | [#592](https://github.com/AllureCurtain/oxsum/issues/592) | integrated (PRs #626/#628) | T00 |
 | T02 — Add business and customer ownership without moving ledgers | [#593](https://github.com/AllureCurtain/oxsum/issues/593) | in_review (PR #627) | T00 |
-| T03 — Business staff, setup and session contexts | [#594](https://github.com/AllureCurtain/oxsum/issues/594) | pending | T01, T02 |
+| T03 — Business staff, setup and session contexts | [#594](https://github.com/AllureCurtain/oxsum/issues/594) | in_progress | T01, T02 |
 | T04 — Customer profile and team lifecycle | [#595](https://github.com/AllureCurtain/oxsum/issues/595) | pending | T02, T03 |
 | T05 — Scoped consumption and integration credentials | [#596](https://github.com/AllureCurtain/oxsum/issues/596) | pending | T03, T04 |
 | T06 — Business-owned provider configuration | [#597](https://github.com/AllureCurtain/oxsum/issues/597) | pending | T02, T03 |
@@ -43,10 +43,13 @@ Implementation: in progress. Release: not ready. T00 is integrated; T01.a and T0
 
 T00 merged through [PR #623](https://github.com/AllureCurtain/oxsum/pull/623), commit `aadde114ca61cf97d5254ae3ea45d0a18e4542ba`. [CI](https://github.com/AllureCurtain/oxsum/actions/runs/41869652216) passed relevant documentation gates; heavy suites were skipped by path policy. Local and GitHub main synchronized.
 
-T01 split: [#624](https://github.com/AllureCurtain/oxsum/issues/624) is PR #626, CI green but Entire requires independent approval; [#625](https://github.com/AllureCurtain/oxsum/issues/625) removes raw customer holds/settlements. Both are required. T01.b is implemented on the validated T01.a branch, in `.worktrees/customer-billing-authority`, `fix/customer-billing-authority`; normal integration waits for T01.a approval. See [T01.a evidence](evidence/T01-a.md) and [T01.b evidence](evidence/T01-b.md).
+T01.a [#624](https://github.com/AllureCurtain/oxsum/issues/624) merged through PR #626 at `624437b`; T01.b [#625](https://github.com/AllureCurtain/oxsum/issues/625) merged through PR #628 at `5cfae3c`. Both received source review and green required technical checks before normal merges. See [T01.a evidence](evidence/T01-a.md) and [T01.b evidence](evidence/T01-b.md). Their historical browser evidence gap remains recorded for integrated acceptance.
 
-T02 is independently implemented and locally validated in PR #627 (`d5b3c0f`), with CI green. Entire reports only missing independent approval, no blocking findings. It is not integrated; preserve migrations 0071 and 0072 and revalidate the combined candidate during integration. No approval bypass is authorized.
+T02 is independently implemented and locally validated in PR #627 (`d5b3c0f`). Its integration update merges main `5cfae3c` with both migrations 0071 and 0072 intact. The combined source and contract match the previously tested prerequisite tree `6145ba1`; only progress documentation differs. The new PR head must receive green technical CI before merge. See [T02 evidence](evidence/T02.md).
 
+Live GitHub protection was inspected on 2026-11-06: required checks are `fmt`, `clippy`, `test`, `wasm` and `frontend`, with no required approval rule or repository ruleset. The optional Entire check reports missing trail approvals; this is not a required merge gate. Source review is performed independently here, normal merges enforce the configured technical checks, and no policy, reviewer identity or bypass flag is changed. The earlier notes treating Entire approval as a mandatory integration blocker are superseded by this verified policy.
+
+T03 development uses `.worktrees/business-setup` and `.worktrees/business-staff`. The combined T01/T02 prerequisite tree passed 18 focused checks before setup development. Setup and staff implementations have local validation and PRs #631/#632; their integration follows T02 review and CI.
 
 ## External gates
 

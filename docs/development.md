@@ -947,3 +947,9 @@ embeds `web/dist`), and packages the one binary into the image described above. 
 also builds the image and runs it against PostgreSQL
 (`.github/workflows/release-image.yml`, issue #49), so the artifact a release ships is
 checked long before the release is cut.
+
+## Business ownership upgrade preflight (#593)
+
+Before starting an upgraded server, back up the database and encryption/signing keys using the deployment runbook. Run the candidate binary with `oxsum ownership-preview` against the intended database to inspect customer, channel, plan and ledger-schema counts. This subcommand executes before `Db::migrate` and provider preparation; it changes no schema or ownership and makes no provider call. It handles a fresh database (zero counts) and the legacy schema. Normal server startup applies additive migration 0072 and records the mapped counts once.
+
+Inspect `GET /api/v1/admin/business` with deployment authority after startup. `initializedAt: null` and an empty business_staff table are intentional: existing customers are never silently promoted. The authenticated setup flow is delivered in T03. New orgs map automatically; their ledgers remain lazy. A schema downgrade is unsupported: restoring the matching database/key backup is the rollback route. Do not dispatch the live Deploy workflow to rehearse migration; use an isolated database and candidate binary.
