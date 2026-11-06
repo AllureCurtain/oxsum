@@ -2345,11 +2345,23 @@ The Airwallex rail is now sandbox-verified end-to-end at the API and webhook lay
 - Current generic tasks cannot reliably settle an alias whose price came from its target: the preexisting task record stores only the public name, while settlement reads its price directly. It also has no signed-mandate finalization binding. Refuse these unsupported inputs before send rather than accepting a task that cannot be settled correctly. T13 remains responsible for complete task operation/price/evidence binding; this is an explicit intermediate support limit, not completed full-release task acceptance. Direct generic tasks apply customer tier/key/group and request-rate restrictions.
 - T07.b #645 must replace normalized text cache digests with complete versioned request/permission/route context. This change alone does not close A08 or the release.
 
+## 2026-11-06 — Response-cache keys bind the complete admitted context (T07.b, #645)
+
+- Source review found the cache digest covered only normalized prompt text behind a credential wrapper. System instructions, tools, media, generation parameters, protocol headers, permission changes and route configuration did not participate; `excludeSystem` could fold two different questions onto one row.
+- Replace it with `ResponseCacheContext`: the exact caller and forwarded bodies, the concrete upstream endpoint and protocol-owned semantic headers (`anthropic-version`, `anthropic-beta`), the `ServingAccess` permission snapshot, key admission constraints, the experiment binding, every admitted route's price version/destination/settings/credential configuration/weight/price, and fallback aliases and targets, and the discount. Canonicalization sorts object keys only; every array element and string byte is preserved.
+- The stored digest is `v2:` plus HMAC-SHA256 under the deployment sealing key (`oxsum/response-cache/v2`). Prompts are never stored; a deployment without a sealing key cannot cache. A sealing-key rotation intentionally invalidates old rows.
+- Migration 0080 deletes pre-v2 rows rather than migrating private answers across an incomplete context: cache rows are rebuildable projections and never authority. Lookup remains organization-scoped and now binds the exact consumption key through the access snapshot, so sibling keys still cannot share an answer.
+- `excludeSystem` is accepted and ignored. It was an unsafe widening: the preamble is part of the question. The OpenAPI contract moves to 0.110.0; settlement evidence, ledger identities and historical proofs are unchanged.
+- The store remains limited to a whole, non-streamed answer served by the primary route with provider-reported usage. A hit still settles at the cache-read rate and records no new inference cost.
+
+- Review corrections: bind `chat/completions` versus `responses` explicitly even when both accept identical JSON; bind all fallback targets/configurations, not just their public names. Read a keyed credential-configuration fingerprint alongside each route (all IDs, sealed credentials, positions and statuses), excluding LRU/cooldown timestamps. This catches credential add/remove/disable without relying on channel timestamps. With no available primary credential, skip the response cache. Register 0080 in the explicit migration list and verify actual upgrade execution.
+
 ## 2026-11-06 — Immutable business merchant versions (#648, T14.a)
 
 Merchant ownership and provider account identity live separately from immutable credential versions. Identity is `(business, rail, test/live mode, account ID)`; names are business-unique and immutable. A deferred composite foreign key requires the selected version to belong to its merchant. Full replacement rotations preserve old sealed credentials for in-flight callbacks and reconciliation; disablement affects future checkout selection rather than deleting verification context.
 
 Use the existing AES-GCM `SecretKey` for the complete credential envelope, with a keyed mutation fingerprint for exact retry comparison. Owner authority, immutable mutation result and redacted audit share one transaction under the business lock. Redacted read capability is `ReportsRead`; `MerchantSecretsWrite` remains owner-only. A configuration save validates rail fields, known mode prefixes and the shared destination-policy syntax but makes no provider request; `locallyValidated` must not be represented as external certification. Hyperswitch with Stripe remains the primary contract; direct Stripe/Airwallex remain compatibility rails. Scoped callback intake/bootstrap is a required separate child (#649); purpose-specific payment fulfillment remains T15.
+
 
 ## 2026-11-06 — Scoped merchant event intake pins expected payments before provider calls (#649, T14.b)
 

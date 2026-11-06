@@ -1203,13 +1203,18 @@ async fn run(
     // whether this request reads the store at all. A hit is served — and
     // billed at the cache-read rate — before any fresh-turn freeze is taken:
     // the answer is already paid for once, so the turn reserves only what the
-    // replay itself costs. The lookup is org-scoped and keyed by
-    // `(channel, model, credential-bound digest)`. Sibling keys cannot read
-    // each other's answers, and legacy unbound digests miss after upgrade.
-    // A streamed request never looks: the store holds whole bodies, and a
+    // replay itself costs.
+    //
+    // The key is a versioned HMAC of the complete admitted context (issue
+    // #645): the exact caller body, the exact body upstream would receive,
+    // protocol-owned headers, the customer/key permission snapshot, the
+    // selected experiment and mandate, the primary route's configuration and
+    // price version, and the discount. Nothing about the prompt is stored —
+    // only the digest — and a deployment without a sealing key cannot cache at
+    // all. A streamed request never looks: the store holds whole bodies, and a
     // client that asked for SSE cannot be handed one — re-chunking a finished
     // answer is a feature, not this one's (whole-response hits only).
-    let cache_policy = if request.stream {
+    let cache_policy = if request.stream || primary.credentials.is_empty() {
         oxsum_core::CachePolicy::default()
     } else {
         oxsum_core::CachePolicy::of(Some(&primary.settings)).map_err(|error| {
@@ -1221,17 +1226,53 @@ async fn run(
         })?
     };
     let cache_key = if cache_policy.enabled {
-        oxsum_core::prompt_digest(
-            surface.protocol(),
-            &request.model,
-            &request.prompt_parts,
-            cache_policy.exclude_system,
-        )
-        .map(|digest| {
-            (
-                credential_fingerprint(key.key_id, "semantic-cache", Some(&digest), &[]),
-                cache_policy,
-            )
+        state.config.secret().and_then(|secret| {
+            let request_body = request.cache_body();
+            let forwarded_body = {
+                let mut forwarded_request = request.clone();
+                forwarded_request.model = model_routes[0].model.clone();
+                forwarded_request.upstream_model = model_routes[0].upstream_model.clone();
+                forwarded_request.forwarded(output_bound)
+            };
+            let semantic_headers = cache_semantic_headers(surface, headers);
+            let key_constraints = cache_key_constraints(key);
+            let experiment = experiment.as_ref().map_or(Value::Null, cache_experiment);
+            let mandate = cache_mandate(mandate.as_ref());
+            let routes: Vec<Value> = model_routes
+                .iter()
+                .map(|routes| {
+                    // Route health can reorder attempts without changing configuration.
+                    // The selected primary remains explicit; other candidates are
+                    // sorted so only configuration changes invalidate their identity.
+                    let mut configured: Vec<&Serving> = routes.ordered.iter().collect();
+                    configured.sort_by_key(|route| route.channel_id);
+                    json!({
+                        "model": routes.model,
+                        "upstreamModel": routes.upstream_model,
+                        "channels": configured.into_iter().map(cache_route).collect::<Vec<_>>(),
+                    })
+                })
+                .collect();
+            let routes = json!({"primary": primary.channel_id, "models": routes});
+            let context = oxsum_core::ResponseCacheContext {
+                access: &access,
+                surface: surface.upstream_path(),
+                requested_model: &requested_model,
+                requested_upstream: requested_upstream.as_deref(),
+                served_model: &request.model,
+                upstream_model: request.upstream_model.as_deref(),
+                request: &request_body,
+                forwarded: &forwarded_body,
+                semantic_headers: &semantic_headers,
+                key_constraints: &key_constraints,
+                experiment: &experiment,
+                mandate: &mandate,
+                routes: &routes,
+                discount_percent,
+            };
+            oxsum_core::response_cache_digest(secret, &context)
+                .ok()
+                .map(|digest| (digest, cache_policy))
         })
     } else {
         None
@@ -2140,6 +2181,80 @@ fn retry_after(response: &reqwest::Response) -> Option<Duration> {
         .parse::<u64>()
         .ok()
         .map(Duration::from_secs)
+}
+
+/// The caller headers an upstream answer depends on, in the protocol's own
+/// spelling. Only the Anthropic surface forwards a version (with a default
+/// when the caller omitted it) and an optional beta set; every other surface's
+/// request is fully described by its body.
+fn cache_semantic_headers(surface: Surface, headers: &HeaderMap) -> Value {
+    match surface {
+        Surface::Anthropic => {
+            let mut map = serde_json::Map::new();
+            map.insert("version".to_owned(), json!(anthropic_version(headers)));
+            if let Some(beta) = headers.get("anthropic-beta").and_then(|v| v.to_str().ok()) {
+                map.insert("beta".to_owned(), json!(beta));
+            }
+            Value::Object(map)
+        }
+        _ => Value::Object(serde_json::Map::new()),
+    }
+}
+
+/// The key's admission constraints as they stood for this request: authority
+/// state the answer was admitted under, not part of the prompt.
+fn cache_key_constraints(key: &ActingKey) -> Value {
+    json!({
+        "keyId": key.key_id,
+        "spendLimitMinor": key.spend_limit_minor,
+        "requestsPerMinute": key.requests_per_minute,
+        "tokensPerMinute": key.tokens_per_minute,
+        "tokensPerMinuteScopes": key.tokens_per_minute_scopes,
+        "requiredPolicies": key.required_policies,
+    })
+}
+
+/// The experiment binding that selected the served model, if any. Two variants
+/// of the same experiment never share an answer even when they resolve to the
+/// same upstream name: the settlement and usage row name the variant.
+fn cache_experiment(binding: &oxsum_core::ExperimentBinding) -> Value {
+    json!({
+        "experimentId": binding.experiment_id,
+        "variant": binding.variant,
+    })
+}
+
+/// The spend mandate the turn presented, if any: the authority it delegated
+/// under, not part of the prompt. Two mandates with different identities never
+/// share an answer, so a cache hit cannot reuse a turn admitted under a
+/// different delegated authority.
+fn cache_mandate(mandate: Option<&oxsum_core::PresentedMandate>) -> Value {
+    mandate.map_or(Value::Null, |mandate| {
+        json!({
+            "mandateId": mandate.verified.mandate_id,
+            "hash": mandate.verified.hash,
+            "models": mandate.verified.models,
+            "requiredPolicies": mandate.verified.required_policies,
+        })
+    })
+}
+
+/// Private route configuration enters only the keyed digest. Every admitted
+/// route participates, including fallback aliases and their provider targets.
+fn cache_route(route: &Serving) -> Value {
+    json!({
+        "channelId": route.channel_id,
+        "channel": &route.channel,
+        "protocol": &route.protocol,
+        "baseUrl": &route.base_url,
+        "settings": &route.settings,
+        "credentialConfiguration": &route.credential_configuration,
+        "version": route.version,
+        "weight": route.weight,
+        "configurationUpdatedAt":
+            route.configuration_updated_at.unix_timestamp_nanos().to_string(),
+        "price": &route.price,
+    })
 }
 
 /// The `anthropic-version` upstream is told: the caller's when it sent one, the version

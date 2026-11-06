@@ -107,7 +107,9 @@ pub use business_staff::{
     BusinessStaffRevokeRequest, RegistrationMode, SessionContext, SessionContextInfo,
     SessionContextRequest,
 };
-pub use cache::{CachePolicy, CacheStore, CachedAnswer, PromptPart, prompt_digest};
+pub use cache::{
+    CachePolicy, CacheStore, CachedAnswer, ResponseCacheContext, response_cache_digest,
+};
 pub use channels::{
     CatalogModel, Channel, MAX_WEIGHT, ModelAlias, ModelPrice, ProbeChannel, SecretKey, Serving,
     price_row, route_order, route_order_stats,
