@@ -369,6 +369,10 @@ const MIGRATIONS: &[(&str, &str)] = &[
         "0093_order_refunds",
         include_str!("../migrations/0093_order_refunds.sql"),
     ),
+    (
+        "0094_invoice_journals",
+        include_str!("../migrations/0094_invoice_journals.sql"),
+    ),
 ];
 
 /// Advisory-lock key serialising the migration runner across processes.

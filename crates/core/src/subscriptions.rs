@@ -586,7 +586,7 @@ impl Db {
                 .await?
                 .is_some()
         {
-            if Self::plan_rollover_in(&mut tx, subscription_id).await? {
+            if self.plan_rollover_in(&mut tx, subscription_id).await? {
                 // An authorized period was opened by a fulfilled order that
                 // already rolled the window: re-read the fresh counters and
                 // fall through to the draw below.
@@ -937,7 +937,7 @@ impl Db {
                 .await?
                 .is_some()
             {
-                if Self::plan_rollover_in(&mut tx, subscription_id).await? {
+                if self.plan_rollover_in(&mut tx, subscription_id).await? {
                     report.rolled += 1;
                 } else {
                     report.expired += 1;

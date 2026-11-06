@@ -764,6 +764,10 @@ impl Db {
                     .date();
                 let end = period_end_for(sold.period_kind, anchor, start);
                 close_open_plan_period(&mut tx, customer_plan_id, "closed").await?;
+                // The closing period's journal lands inside this transaction —
+                // the bill for the period the order's payment is applied to
+                // below.
+                self.write_close_journal(&mut tx, &plan_row).await?;
                 // The quota engine's window follows the authorized period:
                 // its own rollover is bypassed for plan-bound rows, so the
                 // renewal writes the window itself.
@@ -796,6 +800,28 @@ impl Db {
                 )));
             }
         }
+        // The order's journal step: settle any open receivable the plan still
+        // carries (a past-due or overage remainder, oldest first), then book
+        // the rest as the prepayment the next period close reclassifies —
+        // `debit Cash / credit Receivables|UnearnedPlanFees` inside the same
+        // transaction as the activation itself. A missing order row (direct
+        // calls in tests, or the T19 replay path) means zero applied.
+        let wallet = self.journal_wallet(&mut tx, organization_id).await?;
+        let amount: i64 =
+            sqlx::query_scalar("SELECT amount_minor FROM oxsum.payment_orders WHERE order_id=$1")
+                .bind(order_id)
+                .fetch_optional(&mut *tx)
+                .await?
+                .unwrap_or(0);
+        self.apply_order_to_journals_in(
+            &mut tx,
+            &wallet,
+            order_id,
+            customer_plan_id,
+            amount,
+            now.date(),
+        )
+        .await?;
         let standing = customer_plan_in(&mut tx, customer_plan_id).await?;
         tx.commit().await?;
         standing.ok_or_else(|| invalid("the customer plan did not land"))
@@ -885,6 +911,9 @@ impl Db {
     /// plan-bound — the seam that makes "a timer cannot issue unpaid
     /// entitlement" hold on the legacy quota machinery.
     ///
+    /// Every path that closes the period also writes its fee journal in the
+    /// same transaction (issue #611, T20) — the close and the bill are atomic.
+    ///
     /// Returns whether the subscription may draw in a fresh window: `true`
     /// when a new authorized period opened, `false` when it stays bound to
     /// the ended one (past-due draws still meter against its remainder).
@@ -893,6 +922,7 @@ impl Db {
     ///
     /// Storage failures surface as [`WalletError`].
     pub(crate) async fn plan_rollover_in(
+        &self,
         tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
         subscription_id: Uuid,
     ) -> Result<bool, WalletError> {
@@ -923,8 +953,10 @@ impl Db {
         let next_index: i32 = last.try_get::<i32, _>("period_index")? + 1;
         if cancel_at_end {
             // Boundary cancel: the paid period ends, no new one opens, the
-            // plan goes `cancelled` — the wallet takes every later draw.
+            // plan goes `cancelled` — the wallet takes every later draw. The
+            // closing period's journal lands in the same transaction.
             close_open_plan_period(tx, customer_plan_id, "closed").await?;
+            self.write_close_journal(tx, &plan_row).await?;
             sqlx::query(
                 "UPDATE oxsum.customer_plans \
                  SET state = 'cancelled', updated_at = now() WHERE customer_plan_id = $1",
@@ -963,7 +995,10 @@ impl Db {
             // and the new first period indexes from 0 under the new version —
             // but only once its own authorization lands. Until then the plan
             // waits `renewal_pending`, still drawing the ended period's
-            // remainder.
+            // remainder. The journal is written under the *closing* version,
+            // so it must land before the swap overwrites `plan_version_id`.
+            close_open_plan_period(tx, customer_plan_id, "closed").await?;
+            self.write_close_journal(tx, &plan_row).await?;
             sqlx::query(
                 "UPDATE oxsum.customer_plans \
                  SET plan_version_id = $2, scheduled_change = NULL, \
@@ -974,10 +1009,13 @@ impl Db {
             .bind(target)
             .execute(&mut **tx)
             .await?;
-            close_open_plan_period(tx, customer_plan_id, "closed").await?;
             return Ok(false);
         }
         close_open_plan_period(tx, customer_plan_id, "expired").await?;
+        // Past-due: the closed period's journal lands `posted` — the open
+        // receivable a renewal order will settle, the same fact the plan's
+        // `past_due` state carries.
+        self.write_close_journal(tx, &plan_row).await?;
         sqlx::query(
             "UPDATE oxsum.customer_plans \
              SET state = 'past_due', updated_at = now() WHERE customer_plan_id = $1",
@@ -989,6 +1027,64 @@ impl Db {
         // remaining quota still draws (past-due service), but no fresh quota
         // issues until a renewal order fulfills.
         Ok(false)
+    }
+
+    /// The tenant ledger a plan-bound journal posts to (issue #611, T20):
+    /// resolved inside the caller's transaction from the organization's own
+    /// row, so a close or an activation never reaches outside its org.
+    pub(crate) async fn journal_wallet(
+        &self,
+        tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+        organization_id: Uuid,
+    ) -> Result<crate::Wallet, WalletError> {
+        let tenant: Option<String> = sqlx::query_scalar(
+            "SELECT tenant_id FROM oxsum.organizations WHERE organization_id=$1",
+        )
+        .bind(organization_id)
+        .fetch_optional(&mut **tx)
+        .await?;
+        let tenant = tenant.ok_or_else(|| invalid("the organization has no tenant"))?;
+        crate::Wallet::open(self.pool().clone(), &tenant).await
+    }
+
+    /// Writes the journal for the `plan_periods` row a close just marked —
+    /// the one shared write every close path (`plan_rollover_in`'s arms and
+    /// `activate_plan_period`'s renewal) runs, so the bill and the period's
+    /// end are one transaction (issue #611, T20). `plan_row` is the
+    /// `customer_plans` read taken before the close: the sold version the
+    /// period ran under is resolved from it, so a scheduled change's swap in
+    /// the same transaction cannot bill the *new* version's price for the
+    /// *old* period.
+    ///
+    /// A journal already standing for the period is a replay — the
+    /// `(customer_plan_id, period_index)` partial unique refuses the second
+    /// live row, and the close's ledger entries are idempotent under their
+    /// journal-derived keys.
+    async fn write_close_journal(
+        &self,
+        tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+        plan_row: &sqlx::postgres::PgRow,
+    ) -> Result<(), WalletError> {
+        let customer_plan_id: Uuid = plan_row.try_get("customer_plan_id")?;
+        let organization_id: Uuid = plan_row.try_get("organization_id")?;
+        let plan_version_id: Uuid = plan_row.try_get("plan_version_id")?;
+        let Some(period) = crate::journals::closing_period_in(tx, customer_plan_id).await? else {
+            return Ok(());
+        };
+        let Some(sold) = self.sold_plan(plan_version_id).await? else {
+            return Err(invalid("the bound plan version is gone"));
+        };
+        let wallet = self.journal_wallet(tx, organization_id).await?;
+        self.journal_closing_period_in(
+            tx,
+            &wallet,
+            plan_row,
+            &period,
+            &sold,
+            OffsetDateTime::now_utc().date(),
+        )
+        .await?;
+        Ok(())
     }
 }
 

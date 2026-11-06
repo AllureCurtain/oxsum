@@ -37,6 +37,7 @@ mod idempotency;
 mod integration_credentials;
 mod invitations;
 mod jobs;
+mod journals;
 mod keys;
 mod mandates;
 mod manual_receipts;
@@ -177,6 +178,10 @@ pub use invitations::{
 pub use jobs::{
     CLAIM_LEASE_SECS, DEAD_RESCHEDULE, Job, JobOutcome, MAX_ATTEMPTS, Retention, RetentionReport,
     StatementReport, kinds, leader_lock_key, next_run, requires_leader,
+};
+pub use journals::{
+    InvoiceJournal, InvoiceJournalDetail, InvoiceJournalLine, InvoiceJournalPage, JournalLineKind,
+    JournalState,
 };
 pub use keys::{
     ActingKey, ApiKey, BudgetDuration, CreatedApiKey, KeyConstraints, TagScope, TpmScope, TpmScopes,

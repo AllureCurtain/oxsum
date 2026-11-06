@@ -2857,6 +2857,146 @@ paths:
         "401": { $ref: "#/components/responses/Error" }
         "404": { $ref: "#/components/responses/Error" }
         "500": { $ref: "#/components/responses/Error" }
+  /api/v1/org/plan/journals:
+    get:
+      summary: List the caller's plan-fee journals
+      description: |
+        The customer organization's own invoice journals (issue #611, T20),
+        newest first — the per-period bills the plan lifecycle writes at each
+        close: base fee, usage overage, discounts and promo coverage as the
+        lines sum to `totalMinor`. `posted` journals are the open receivable —
+        the same fact the plan's `pastDue` state carries. `settledMinor` is how
+        much of the total is already covered; `paidOrderId` names the
+        `planPeriod` order whose payment completed the settlement.
+      security: [{ sessionCookie: [], apiKey: [] }]
+      parameters:
+        - { name: after, in: query, required: false, schema: { type: string, format: uuid } }
+        - { name: limit, in: query, required: false, schema: { type: integer, minimum: 1, maximum: 100, default: 50 } }
+      responses:
+        "200":
+          description: The organization's journals, newest first
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data: { $ref: "#/components/schemas/InvoiceJournalPage" }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
+  /api/v1/org/plan/journals/{journalId}:
+    get:
+      summary: One journal plus its lines
+      description: |
+        The journal's header and its itemized lines — the bill's charges and
+        credits, each naming the fact it came from (`sourceRef`: the
+        `planPeriods` row, a `creditNotes` id, a promo lot or grant). A journal
+        of another organization is `404`, the same scoping the order read uses.
+      security: [{ sessionCookie: [], apiKey: [] }]
+      parameters:
+        - { name: journalId, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        "200":
+          description: The journal and its lines
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data: { $ref: "#/components/schemas/InvoiceJournalDetail" }
+        "401": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
+  /api/v1/business/journals:
+    get:
+      summary: List plan-fee journals across customers
+      description: |
+        The staff finance list (issue #611, T20): every customer's journals,
+        newest first — `state=posted` is the dunning work list of open
+        receivables. `ReportsRead` capability, a personal session token, never
+        a machine credential.
+      security: [{ sessionCookie: [] }]
+      parameters:
+        - { name: state, in: query, required: false, schema: { type: string, enum: [posted, paid, void] } }
+        - { name: customerPlanId, in: query, required: false, schema: { type: string, format: uuid } }
+        - { name: periodIndex, in: query, required: false, schema: { type: integer, minimum: 0 } }
+        - { name: after, in: query, required: false, schema: { type: string, format: uuid } }
+        - { name: limit, in: query, required: false, schema: { type: integer, minimum: 1, maximum: 100, default: 50 } }
+      responses:
+        "200":
+          description: The journals matching the filters, newest first
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data: { $ref: "#/components/schemas/InvoiceJournalPage" }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
+  /api/v1/business/journals/{journalId}:
+    get:
+      summary: One journal plus its lines
+      description: |
+        The journal and its itemized lines as the staff surface reads them —
+        `ReportsRead` capability.
+      security: [{ sessionCookie: [] }]
+      parameters:
+        - { name: journalId, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        "200":
+          description: The journal and its lines
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data: { $ref: "#/components/schemas/InvoiceJournalDetail" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
+  /api/v1/business/journals/{journalId}/void:
+    post:
+      summary: Void a journal
+      description: |
+        Cancels the journal (issue #611, T20): reversing lines append so the
+        bill nets to zero — never an edit, never a delete — the mirroring
+        ledger entry posts the open receivable back off a `posted` journal, or
+        unwinds the settlement to `Liabilities:RefundPayable` on a `paid` one,
+        and a `finance_audit` row records the actor and reason. A correction
+        that needs a different bill reissues under `replacesJournalId`.
+        `FundsWrite` capability; the replay of an `idempotencyKey` answers the
+        standing voided journal.
+      security: [{ sessionCookie: [] }]
+      parameters:
+        - { name: journalId, in: path, required: true, schema: { type: string, format: uuid } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/VoidJournalRequest" }
+      responses:
+        "200":
+          description: The voided journal and its full line set
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data: { $ref: "#/components/schemas/InvoiceJournalDetail" }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "409": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
   /api/v1/webhooks:
     get:
       x-customer-role-access: owner-admin
@@ -12276,6 +12416,115 @@ components:
           type: array
           items: { $ref: "#/components/schemas/PlanPeriod" }
           description: every period the plan has authorized, in index order
+    InvoiceJournal:
+      type: object
+      required: [journalId, customerPlanId, organizationId, planPeriodId, periodIndex, state, totalMinor, settledMinor, currency, paidOrderId, disputedMinor, replacesJournalId, voidReason, postedAt, paidAt, voidedAt, createdAt]
+      properties:
+        journalId: { type: string, format: uuid }
+        customerPlanId: { type: string, format: uuid }
+        organizationId: { type: string, format: uuid }
+        planPeriodId:
+          type: string
+          format: uuid
+          nullable: true
+          description: the `planPeriods` row this journal bills; null on a staff-issued correction journal
+        periodIndex:
+          type: integer
+          minimum: 0
+        state:
+          type: string
+          enum: [posted, paid, void]
+          description: "`posted` is the open receivable — the journal is billed, not yet settled. `draft` exists only inside the close transaction and never answers a read."
+        totalMinor:
+          type: integer
+          format: int64
+          description: the lines' sum — charges positive, credits negative; what the receivable was opened for
+        settledMinor:
+          type: integer
+          format: int64
+          minimum: 0
+          description: how much of `totalMinor` the clearing legs (prepayment, order payments) already covered
+        currency:
+          type: string
+          pattern: '^[A-Z]{3}$'
+        paidOrderId:
+          type: string
+          format: uuid
+          nullable: true
+          description: the `planPeriod` order whose payment completed the settlement — the link a refund or dispute hangs its correction on
+        disputedMinor:
+          type: integer
+          format: int64
+          minimum: 0
+          description: what open disputes contest of this journal's receivable
+        replacesJournalId:
+          type: string
+          format: uuid
+          nullable: true
+          description: the journal this one reissues after a staff void
+        voidReason:
+          type: string
+          nullable: true
+        postedAt:
+          type: string
+          format: date-time
+          nullable: true
+        paidAt:
+          type: string
+          format: date-time
+          nullable: true
+        voidedAt:
+          type: string
+          format: date-time
+          nullable: true
+        createdAt: { type: string, format: date-time }
+    InvoiceJournalLine:
+      type: object
+      required: [lineId, journalId, kind, amountMinor, description, sourceRef, createdAt]
+      properties:
+        lineId: { type: string, format: uuid }
+        journalId: { type: string, format: uuid }
+        kind:
+          type: string
+          enum: [baseFee, usageOverage, discount, promoCredit, tax]
+          description: "`baseFee` the sold version's price, `usageOverage` the overage-enabled plan's wallet-billed overflow at par, `discount` a credit note or grant write-off, `promoCredit` promo money covering the fee, `tax` reserved"
+        amountMinor:
+          type: integer
+          format: int64
+          description: signed — charges positive, credits negative; `totalMinor` is their sum
+        description: { type: string }
+        sourceRef:
+          type: string
+          format: uuid
+          nullable: true
+          description: the fact the line came from — a `planPeriods` id, a `creditNotes` id, a promo lot or grant key, or the line a void reversal mirrors
+        createdAt: { type: string, format: date-time }
+    InvoiceJournalDetail:
+      allOf:
+        - $ref: "#/components/schemas/InvoiceJournal"
+        - type: object
+          required: [lines]
+          properties:
+            lines:
+              type: array
+              items: { $ref: "#/components/schemas/InvoiceJournalLine" }
+    InvoiceJournalPage:
+      type: object
+      required: [journals, nextCursor]
+      properties:
+        journals:
+          type: array
+          items: { $ref: "#/components/schemas/InvoiceJournal" }
+        nextCursor:
+          type: string
+          format: uuid
+          nullable: true
+    VoidJournalRequest:
+      type: object
+      required: [idempotencyKey, reason]
+      properties:
+        idempotencyKey: { type: string, minLength: 1, maxLength: 200 }
+        reason: { type: string, minLength: 1, maxLength: 500 }
     PublishPlanRequest:
       type: object
       required: [name, priceMinor, currency, quotaMinor, periodKind]

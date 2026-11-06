@@ -803,6 +803,19 @@ does not skip the gap. `POST /api/v1/org/plan/cancel` marks
 closes without renewing. `POST /api/v1/org/plan/change` books a swap to
 another version at the next boundary; there is no mid-period pro-rating.
 
+Each closed period leaves an invoice journal — the bill for what that period
+cost (issue #611). `GET /api/v1/org/plan/journals` lists yours newest first
+and `GET /api/v1/org/plan/journals/{journalId}` reads one with its lines:
+`baseFee` the version's price, `usageOverage` the period's wallet-billed
+overflow (at par), `discount` a credit note or complimentary write-off,
+`promoCredit` promo that covered the fee — `totalMinor` their sum. A journal
+is `posted` while it still owes (the unpaid receivable your `pastDue` plan
+carries), `paid` once a `planPeriod` order's payment settles it, `void` if
+staff cancelled it. The fee bills in arrears: your order prepays the period
+it authorizes, the close bills it, and a renewal order settles any open
+journal before prepaying its own period — so an unpaid period never reads
+as free.
+
 ## Webhooks
 
 Purpose: be notified when money moves — a request settles, a deposit lands,
