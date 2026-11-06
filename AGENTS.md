@@ -21,6 +21,7 @@ crates/server/        HTTP layer: routing, auth, error mapping, produces the oxs
 crates/web/           The server-rendered sliver: `/verify` + its stylesheet + the bills-export types the server reuses. UI rules in DESIGN.md
 web/                  React dashboard (issue #234), embedded at /app; README has the parity checklist
 examples/verify-consumer/  Clean consumer of the packed verify-oxsum-bill npm tarball; offline evidence checks (issue #561)
+deploy/               Self-hosted Compose profiles (core + payment overlay) and operator.env.example (issue #619); runbooks in docs/self-hosted-*.md
 docs/                 Project documentation
 ```
 
@@ -191,6 +192,8 @@ All project documentation, code comments, and commit messages are written in Eng
 | User-visible feature changes | docs/user-guide.md |
 | Verifying a bill as its customer | docs/verify-your-bill.md |
 | What each proof covers, and what it does not | docs/proofs.md |
+| Self-hosted install (operator runbook) | docs/self-hosted-install.md |
+| Self-hosted upgrade, rollback and restore | docs/self-hosted-upgrade.md |
 
 ## Doc update rules
 

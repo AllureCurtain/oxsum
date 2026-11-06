@@ -51,7 +51,7 @@ The accepted contract and evidence live in [docs/roadmap/self-hosted-v1](docs/ro
 - [ ] [#616](https://github.com/AllureCurtain/oxsum/issues/616) — End-to-end customer evidence and compatibility (T25): pending.
 - [ ] [#617](https://github.com/AllureCurtain/oxsum/issues/617) — Supported integrations and developer examples (T26): pending.
 - [ ] [#618](https://github.com/AllureCurtain/oxsum/issues/618) — Cross-cutting fault, isolation and capacity hardening (T27): pending.
-- [ ] [#619](https://github.com/AllureCurtain/oxsum/issues/619) — Self-hosted installation, upgrade and restore (T28): pending.
+- [ ] [#619](https://github.com/AllureCurtain/oxsum/issues/619) — Self-hosted installation, upgrade and restore (T28): in progress on this worktree — versioned core/payment compose profiles with `oxsum-migrate`, `/readyz` + `/api/v1/version`, `--migrate-only`/`--check-config`, `OXSUM_RAILS`/`OXSUM_CUSTOMER_SELF_REGISTER` intent validation, `OXSUM_DEMO_SEED` gate, `scripts/backup.sh`/`restore.sh`/`check-secrets.sh`/`check-config.sh`, install/upgrade runbooks, `release.yml` publish-only path; install_ops suite (7) green.
 - [ ] [#620](https://github.com/AllureCurtain/oxsum/issues/620) — Release artifact and candidate gates (T29): pending.
 - [ ] [#621](https://github.com/AllureCurtain/oxsum/issues/621) — Final integrated acceptance and launch materials (T30): pending.
 - [ ] [#622](https://github.com/AllureCurtain/oxsum/issues/622) — External certification and promotion gates (T31): pending.
