@@ -6893,13 +6893,15 @@ export interface paths {
         };
         /**
          * List the caller's payment orders
-         * @description The customer organization's own orders, paged by cursor. An order of another organization is never listed.
+         * @description The customer organization's own orders, newest first, paged by cursor. An order of another organization is never listed. `purpose` and `status` narrow the page — the order history's own filters.
          */
         get: {
             parameters: {
                 query?: {
                     after?: string;
                     limit?: number;
+                    purpose?: components["schemas"]["OrderPurpose"];
+                    status?: "created" | "provider_pending" | "paid" | "fulfilled" | "expired" | "failed" | "needs_attention";
                 };
                 header?: never;
                 path?: never;
@@ -7057,6 +7059,141 @@ export interface paths {
         };
         put?: never;
         post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/orders/{orderId}/checkout-session": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Read an order's live checkout session
+         * @description The recovery read a returned or refreshed browser polls (issue
+         */
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    orderId: string;
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description The live checkout session */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            data: components["schemas"]["OrderCheckoutSession"];
+                        };
+                    };
+                };
+                400: components["responses"]["Error"];
+                401: components["responses"]["Error"];
+                403: components["responses"]["Error"];
+                404: components["responses"]["Error"];
+                500: components["responses"]["Error"];
+                503: components["responses"]["Error"];
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/business/orders": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List orders across customers
+         * @description Current business staff with report-read capability; a personal session, never a machine credential. Every customer's payment orders — provider and manual — newest first, filterable by organization, purpose and status. The operator's view of the same history the customer reads scoped.
+         */
+        get: {
+            parameters: {
+                query?: {
+                    organizationId?: string;
+                    purpose?: components["schemas"]["OrderPurpose"];
+                    status?: "created" | "provider_pending" | "paid" | "fulfilled" | "expired" | "failed" | "needs_attention";
+                    after?: string;
+                    limit?: number;
+                };
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description The cross-organization order page */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            data: components["schemas"]["PaymentOrderPage"];
+                        };
+                    };
+                };
+                400: components["responses"]["Error"];
+                401: components["responses"]["Error"];
+                403: components["responses"]["Error"];
+                500: components["responses"]["Error"];
+            };
+        };
+        put?: never;
+        /**
+         * Record a manual receipt as a payment order
+         * @description Current business staff with funds-write capability; a personal session, never a machine credential (issue
+         */
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": components["schemas"]["ManualOrderRequest"];
+                };
+            };
+            responses: {
+                /** @description The fulfilled manual order and its grant record */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            data: components["schemas"]["ManualOrderResult"];
+                        };
+                    };
+                };
+                400: components["responses"]["Error"];
+                401: components["responses"]["Error"];
+                403: components["responses"]["Error"];
+                404: components["responses"]["Error"];
+                409: components["responses"]["Error"];
+                500: components["responses"]["Error"];
+            };
+        };
         delete?: never;
         options?: never;
         head?: never;
@@ -15989,14 +16126,24 @@ export interface components {
              * @description a `bundle` order's promo lot in credit-minor
              */
             promoMinor?: number | null;
+            /** @description where the provider returns the browser — an absolute http(s) URL or a site-absolute path; absent, the order's own `/app/orders?order={orderId}` page */
+            returnUrl?: string | null;
+            /** @description the rail's cancel destination where one exists (Stripe); ignored by single-return rails */
+            cancelUrl?: string | null;
         };
         PaymentOrder: {
             /** Format: uuid */
             orderId: string;
-            /** Format: uuid */
-            merchantId: string;
-            /** Format: uuid */
-            merchantVersionId: string;
+            /**
+             * Format: uuid
+             * @description the merchant the checkout was offered under — null on a `manual` order
+             */
+            merchantId: string | null;
+            /**
+             * Format: uuid
+             * @description the immutable merchant version — null on a `manual` order
+             */
+            merchantVersionId: string | null;
             /** Format: uuid */
             organizationId: string;
             purpose: components["schemas"]["OrderPurpose"];
@@ -16010,7 +16157,7 @@ export interface components {
             displayCurrency: string;
             /**
              * Format: int64
-             * @description the fiat amount the provider charged
+             * @description the fiat amount the provider charged or the receipt evidenced
              */
             displayAmountMinor: number;
             /**
@@ -16025,6 +16172,13 @@ export interface components {
             /** Format: int64 */
             promoMinor: number;
             providerPaymentId: string | null;
+            /**
+             * @description how the order's payment arrived — a rail's signed webhook or a staff-recorded receipt
+             * @enum {string}
+             */
+            source: "provider" | "manual";
+            /** @description a manual order's audit payload (`reference`, `reason`, `recordedBy`); `{}` on provider orders */
+            evidence: Record<string, never>;
             /** @enum {string} */
             status: "created" | "provider_pending" | "paid" | "fulfilled" | "expired" | "failed" | "needs_attention";
             /** Format: date-time */
@@ -16067,6 +16221,46 @@ export interface components {
             status: string;
             /** Format: date-time */
             paidAt: string | null;
+            fulfillment: components["schemas"]["PaymentFulfillment"] | null;
+        };
+        /** @description The live checkout handles and lifecycle truth the returned or refreshed browser polls — a recovery read, never a paid promise. */
+        OrderCheckoutSession: {
+            /** @enum {string} */
+            status: "created" | "provider_pending" | "paid" | "fulfilled" | "expired" | "failed" | "needs_attention";
+            providerPaymentId: string | null;
+            clientSecret: string | null;
+            /** Format: uri */
+            checkoutUrl: string | null;
+            /** @description the pinned merchant version's publishable key — null on a manual order */
+            publishableKey: string | null;
+            /** Format: uri */
+            sdkUrl: string | null;
+        };
+        /** @description A verified out-of-band receipt. The credit amount rates server-side at the customer's display rate — a staff-supplied ledger figure never enters. `reference` is the receipt's unique evidence. */
+        ManualOrderRequest: {
+            /**
+             * Format: uuid
+             * @description the customer the receipt funds
+             */
+            organizationId: string;
+            idempotencyKey: string;
+            /**
+             * @description fixed — a receipt only funds wallet cash
+             * @enum {string|null}
+             */
+            purpose?: "walletTopup" | null;
+            /**
+             * Format: int64
+             * @description the fiat minor amount the receipt evidences
+             */
+            displayAmountMinor: number;
+            displayCurrency: string;
+            /** @description the receipt's own reference — a bank transaction id or remittance note */
+            reference: string;
+            reason: string;
+        };
+        ManualOrderResult: {
+            order: components["schemas"]["PaymentOrder"];
             fulfillment: components["schemas"]["PaymentFulfillment"] | null;
         };
         PaymentReconciliation: {

@@ -1,10 +1,20 @@
 openapi: 3.1.0
 info:
   title: oxsum API
-  version: 0.115.0
+  version: 0.116.0
   x-consumption-cache: Response cache v2 binds the exact complete request, concrete endpoint and semantic headers, customer/key permissions, selected experiment/mandate, alias targets, and every admitted route's price, destination, settings and credential configuration. A primary route without an available credential cannot serve a cache hit. Text case and whitespace are significant; old digests miss. Legacy excludeSystem is accepted but ignored.
   description: |
     Common conventions (auth, idempotency, error format, money units) are documented in docs/api.md.
+
+    0.116.0 adds the customer checkout surface (issue #607):
+    `GET /api/v1/orders/{orderId}/checkout-session` returns the live checkout
+    handles and lifecycle truth a returned or refreshed browser polls — a
+    still-`created` order re-issues the provider call under the order's own
+    UUID, never a second charge. `GET /api/v1/orders` filters by `purpose` and
+    `status`, and `GET /api/v1/business/orders` is the staff's
+    cross-organization read. `POST /api/v1/business/orders` records a verified
+    out-of-band receipt as a `source: manual` order — `evidence.reference`
+    unique per business — that the same fulfillment path credits exactly once.
 
     0.115.0 adds the sold-plan catalogue and the paid plan lifecycle (issue
     #610): `GET /api/v1/plans` reads the published versioned catalogue a
@@ -5271,11 +5281,13 @@ paths:
         "503": { $ref: "#/components/responses/Error" }
     get:
       summary: List the caller's payment orders
-      description: The customer organization's own orders, paged by cursor. An order of another organization is never listed.
+      description: The customer organization's own orders, newest first, paged by cursor. An order of another organization is never listed. `purpose` and `status` narrow the page — the order history's own filters.
       security: [{ sessionCookie: [], apiKey: [] }]
       parameters:
         - { name: after, in: query, schema: { type: string, format: uuid } }
         - { name: limit, in: query, schema: { type: integer, minimum: 1, maximum: 100, default: 50 } }
+        - { name: purpose, in: query, schema: { $ref: "#/components/schemas/OrderPurpose" } }
+        - { name: status, in: query, schema: { type: string, enum: [created, provider_pending, paid, fulfilled, expired, failed, needs_attention] } }
       responses:
         "200":
           description: The caller's order page
@@ -5333,6 +5345,79 @@ paths:
         "401": { $ref: "#/components/responses/Error" }
         "403": { $ref: "#/components/responses/Error" }
         "404": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
+  /api/v1/orders/{orderId}/checkout-session:
+    get:
+      summary: Read an order's live checkout session
+      description: The recovery read a returned or refreshed browser polls (issue #607). The stored provider handles plus the order's lifecycle truth in one answer — `clientSecret`/`checkoutUrl` are whatever the provider last minted, `publishableKey`/`sdkUrl` come off the pinned merchant version, and a still-`created` order re-issues its provider call under the order's own durable UUID so the retry never charges twice. `failed`, `expired` and `fulfilled` answer their truth, and a `manual` order answers nulls for every handle — this surface can never mark an order paid.
+      security: [{ sessionCookie: [], apiKey: [] }]
+      parameters:
+        - { name: orderId, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        "200":
+          description: The live checkout session
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data: { $ref: "#/components/schemas/OrderCheckoutSession" }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
+        "503": { $ref: "#/components/responses/Error" }
+  /api/v1/business/orders:
+    get:
+      summary: List orders across customers
+      description: Current business staff with report-read capability; a personal session, never a machine credential. Every customer's payment orders — provider and manual — newest first, filterable by organization, purpose and status. The operator's view of the same history the customer reads scoped.
+      security: [{ sessionCookie: [] }]
+      parameters:
+        - { name: organizationId, in: query, schema: { type: string, format: uuid } }
+        - { name: purpose, in: query, schema: { $ref: "#/components/schemas/OrderPurpose" } }
+        - { name: status, in: query, schema: { type: string, enum: [created, provider_pending, paid, fulfilled, expired, failed, needs_attention] } }
+        - { name: after, in: query, schema: { type: string, format: uuid } }
+        - { name: limit, in: query, schema: { type: integer, minimum: 1, maximum: 100, default: 50 } }
+      responses:
+        "200":
+          description: The cross-organization order page
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data: { $ref: "#/components/schemas/PaymentOrderPage" }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
+    post:
+      summary: Record a manual receipt as a payment order
+      description: Current business staff with funds-write capability; a personal session, never a machine credential (issue #607). Records a verified out-of-band payment — a bank transfer, a remittance — as a `source: manual` `walletTopup` order: the fiat amount rates to credits at the customer's own display rate, the order lands `paid` on the receipt's own `evidence` (`reference` unique per business, so one receipt can never fund twice), and the same fulfillment path a webhook-paid order takes books the wallet cash exactly once. A replayed `idempotencyKey` returns the standing fulfilled order; a reused `reference` conflicts.
+      security: [{ sessionCookie: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ManualOrderRequest" }
+      responses:
+        "200":
+          description: The fulfilled manual order and its grant record
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data: { $ref: "#/components/schemas/ManualOrderResult" }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "409": { $ref: "#/components/responses/Error" }
         "500": { $ref: "#/components/responses/Error" }
   /api/v1/business/payment-reconciliation:
     get:
@@ -12218,24 +12303,28 @@ components:
         displayCurrency: { type: string, pattern: "^[A-Z]{3}$" }
         purposeRef: { type: [string, "null"], format: uuid, description: the `customerPlanId` a `planPeriod` activates or renews, or the receivable an `invoiceRepayment` settles }
         promoMinor: { type: [integer, "null"], format: int64, minimum: 0, description: a `bundle` order's promo lot in credit-minor }
+        returnUrl: { type: [string, "null"], description: "where the provider returns the browser — an absolute http(s) URL or a site-absolute path; absent, the order's own `/app/orders?order={orderId}` page" }
+        cancelUrl: { type: [string, "null"], description: "the rail's cancel destination where one exists (Stripe); ignored by single-return rails" }
     PaymentOrder:
       type: object
-      required: [orderId, merchantId, merchantVersionId, organizationId, purpose, amountMinor, currency, displayCurrency, displayAmountMinor, rateMantissa, rateScale, purposeRef, promoMinor, providerPaymentId, status, createdAt, paidAt]
+      required: [orderId, merchantId, merchantVersionId, organizationId, purpose, amountMinor, currency, displayCurrency, displayAmountMinor, rateMantissa, rateScale, purposeRef, promoMinor, providerPaymentId, source, evidence, status, createdAt, paidAt]
       properties:
         orderId: { type: string, format: uuid }
-        merchantId: { type: string, format: uuid }
-        merchantVersionId: { type: string, format: uuid }
+        merchantId: { type: [string, "null"], format: uuid, description: the merchant the checkout was offered under — null on a `manual` order }
+        merchantVersionId: { type: [string, "null"], format: uuid, description: the immutable merchant version — null on a `manual` order }
         organizationId: { type: string, format: uuid }
         purpose: { $ref: "#/components/schemas/OrderPurpose" }
         amountMinor: { type: integer, format: int64, description: ledger credit-minor the fulfillment books, frozen at create }
         currency: { type: string, description: the ledger credit code }
         displayCurrency: { type: string }
-        displayAmountMinor: { type: integer, format: int64, description: the fiat amount the provider charged }
+        displayAmountMinor: { type: integer, format: int64, description: the fiat amount the provider charged or the receipt evidenced }
         rateMantissa: { type: integer, format: int64, description: the pinned conversion numerator }
         rateScale: { type: integer, description: the pinned conversion denominator exponent }
         purposeRef: { type: [string, "null"], format: uuid }
         promoMinor: { type: integer, format: int64 }
         providerPaymentId: { type: [string, "null"] }
+        source: { type: string, enum: [provider, manual], description: "how the order's payment arrived — a rail's signed webhook or a staff-recorded receipt" }
+        evidence: { type: object, description: "a manual order's audit payload (`reference`, `reason`, `recordedBy`); `{}` on provider orders" }
         status: { type: string, enum: [created, provider_pending, paid, fulfilled, expired, failed, needs_attention] }
         createdAt: { type: string, format: date-time }
         paidAt: { type: [string, "null"], format: date-time }
@@ -12273,6 +12362,36 @@ components:
         orderId: { type: string, format: uuid }
         status: { type: string }
         paidAt: { type: [string, "null"], format: date-time }
+        fulfillment: { anyOf: [{ $ref: "#/components/schemas/PaymentFulfillment" }, { type: "null" }] }
+    OrderCheckoutSession:
+      type: object
+      required: [status, providerPaymentId, clientSecret, checkoutUrl, publishableKey, sdkUrl]
+      description: The live checkout handles and lifecycle truth the returned or refreshed browser polls — a recovery read, never a paid promise.
+      properties:
+        status: { type: string, enum: [created, provider_pending, paid, fulfilled, expired, failed, needs_attention] }
+        providerPaymentId: { type: [string, "null"] }
+        clientSecret: { type: [string, "null"] }
+        checkoutUrl: { type: [string, "null"], format: uri }
+        publishableKey: { type: [string, "null"], description: the pinned merchant version's publishable key — null on a manual order }
+        sdkUrl: { type: [string, "null"], format: uri }
+    ManualOrderRequest:
+      type: object
+      additionalProperties: false
+      required: [organizationId, idempotencyKey, displayAmountMinor, displayCurrency, reference, reason]
+      description: A verified out-of-band receipt. The credit amount rates server-side at the customer's display rate — a staff-supplied ledger figure never enters. `reference` is the receipt's unique evidence.
+      properties:
+        organizationId: { type: string, format: uuid, description: the customer the receipt funds }
+        idempotencyKey: { type: string, minLength: 1, maxLength: 200 }
+        purpose: { type: [string, "null"], enum: [walletTopup], description: "fixed — a receipt only funds wallet cash" }
+        displayAmountMinor: { type: integer, format: int64, minimum: 1, description: the fiat minor amount the receipt evidences }
+        displayCurrency: { type: string, pattern: "^[A-Z]{3}$" }
+        reference: { type: string, minLength: 1, maxLength: 200, description: the receipt's own reference — a bank transaction id or remittance note, unique per business }
+        reason: { type: string, minLength: 1, maxLength: 500 }
+    ManualOrderResult:
+      type: object
+      required: [order, fulfillment]
+      properties:
+        order: { $ref: "#/components/schemas/PaymentOrder" }
         fulfillment: { anyOf: [{ $ref: "#/components/schemas/PaymentFulfillment" }, { type: "null" }] }
     PaymentReconciliation:
       type: object
