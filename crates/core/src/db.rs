@@ -338,6 +338,10 @@ const MIGRATIONS: &[(&str, &str)] = &[
         include_str!("../migrations/0085_merchant_configuration.sql"),
     ),
     (
+        "0086_request_operations",
+        include_str!("../migrations/0086_request_operations.sql"),
+    ),
+    (
         "0087_merchant_event_intake",
         include_str!("../migrations/0087_merchant_event_intake.sql"),
     ),

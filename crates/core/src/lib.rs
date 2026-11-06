@@ -44,6 +44,7 @@ mod merchant_events;
 mod merchants;
 mod metering;
 mod oauth;
+mod operations;
 mod orgs;
 mod pools;
 mod proof;
@@ -189,6 +190,10 @@ pub use merchants::{
 };
 pub use metering::{MeteredEvent, MeteredHold, MeteredOutcome};
 pub use oauth::{ConsumedState, OAuthIdentity};
+pub use operations::{
+    AttemptStatus, LEASE_SECS, NewOperation, OperationAttempt, OperationSettle, OperationState,
+    RequestOperation, SWEEPER_OWNER,
+};
 pub use orgs::{
     AdminOrganization, Kind, Member, MembershipActor, Organization, Ownership, Role,
     UserOrganization,

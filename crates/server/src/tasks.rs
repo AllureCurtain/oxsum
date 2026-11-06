@@ -305,6 +305,35 @@ async fn submit_inner(
     let description = hold_description(&task_id.to_string(), model, freeze)?;
     let wallet = state.tenants.get(&organization.tenant_id).await?;
 
+    // The operation row (issue #601): the task's durable parent, created with
+    // its hold — surface `task:<kind>` so the operations read names the relay
+    // that served it. The fingerprint is the submit's scoped idempotency
+    // digest, so a replayed submit names the same operation rather than
+    // writing a second. Best-effort like the usage record: a failed write is
+    // a thinner recovery trail, never a failed submit.
+    let operation = match state
+        .db
+        .insert_operation(&oxsum_core::NewOperation {
+            operation_id: task_id,
+            organization_id: organization.id,
+            key_id: Some(key.key_id),
+            surface: format!("task:{}", kind.as_str()),
+            fingerprint: bound_fingerprint.clone(),
+            bound_minor: freeze,
+            model: model.to_owned(),
+            channel: Some(primary.channel.clone()),
+            customer_id: None,
+            terms_version: Some(primary.version),
+        })
+        .await
+    {
+        Ok(pair) => Some(pair),
+        Err(error) => {
+            tracing::error!(%error, %task_id, "writing the task's operation row failed");
+            None
+        }
+    };
+
     // The watch row before the hold: a row without a hold heals itself — the
     // sweeper deletes it — while a hold without a row would be invisible to
     // the sweeper if this process died.
@@ -334,6 +363,15 @@ async fn submit_inner(
             tracing::error!(%error, "recording the task's open hold failed");
             GatewayError::Internal
         })?;
+    // The operation binds its hold beside the watch row (issue #601).
+    if let Some((operation, _)) = &operation
+        && let Err(error) = state
+            .db
+            .bind_hold(operation.operation_id, &hold_key, &state.instance_id)
+            .await
+    {
+        tracing::error!(%error, %task_id, "binding the task's operation hold failed");
+    }
     if let Err(error) = wallet
         .hold_for_key(
             key,
@@ -455,6 +493,43 @@ async fn submit_inner(
             Some(&endpoint),
         )
         .await?;
+    // The submit relay's attempt row (issue #601): upstream accepted and
+    // named the job, so the attempt carries `external_task_id` — the
+    // operation's running marker lands on the first `running` poll, not the
+    // submit, because a submitted job is upstream's promise, not its work.
+    if let Some((operation, _)) = &operation {
+        match state
+            .db
+            .record_attempt(
+                operation.operation_id,
+                &primary.channel,
+                Some(credential.credential_id),
+                Some(&task.external_task_id),
+            )
+            .await
+        {
+            // The submit relay answered: upstream accepted and named the job.
+            Ok(attempt_id) => {
+                if let Err(error) = state
+                    .db
+                    .complete_attempt(attempt_id, oxsum_core::AttemptStatus::Answered, None, None)
+                    .await
+                {
+                    tracing::warn!(%error, %task_id, "completing the submit attempt failed");
+                }
+            }
+            Err(error) => {
+                tracing::warn!(%error, %task_id, "recording the submit attempt failed");
+            }
+        }
+        if let Err(error) = state
+            .db
+            .note_running(operation.operation_id, &state.instance_id)
+            .await
+        {
+            tracing::warn!(%error, %task_id, "marking the task's operation running failed");
+        }
+    }
 
     Ok((
         task_response(&task, request_id, Some(freeze)),
