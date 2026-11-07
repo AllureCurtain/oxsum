@@ -62,6 +62,37 @@ The dashboard's **Get started** page (`/app/getting-started`) lists five steps, 
 
 The state comes from the deployment on every load, so completing a step and reloading flips it. The Overview carries a **Finish setting up** card with the next step until all five are met.
 
+## Business provider connections
+
+Sign in as the business owner, enter **Business → Channels**, and use **Create
+or replace connection**. Choose a stable channel name, protocol and base URL.
+This operation sets the connection by name: an existing name replaces its
+credential pool. Open the existing row and choose **Edit connection** when
+preserving its pool. Configuration saves make no upstream request.
+
+Public connections require HTTPS and public addresses. An internal service
+requires the owner's explicit grant for every exact IPv4/IPv6 address; use
+neither hostnames nor CIDR ranges in that list. Reserved and metadata addresses
+remain blocked. An endpoint/protocol change needs a fresh key and clears the
+billing credential. Previously admitted calls keep their pinned configuration.
+
+To rotate a key, add its replacement first, then disable/remove the old row.
+Only last-four metadata is returned. Removing the last active key is refused;
+explicitly disabling it stops new requests on this connection. Billing query
+credentials can be set or cleared separately. Each write collects an audit
+reason. Keep the dialog open after an unknown network outcome and retry its
+unchanged fields to reuse the same operation. Editing begins a new operation;
+closing discards the draft and its retry identity. Secret drafts are held only
+in memory, cleared on success/close and never stored by the app.
+
+**Check reachability** asks separately before one authenticated HEAD request.
+It generates no model tokens and does not certify inference, upstream billing
+or customer sale prices. A pending result may mean the check was interrupted;
+replaying it does not send again. A deliberate new check is a new attempt.
+Channel model prices describe provider cost; customers use separate sale terms.
+Admin staff can read the redacted channel list; finance/support/viewer cannot
+open it, and only owners can change connections/credentials or run HEAD checks.
+
 ## Dashboard
 
 Purpose: see and manage the organization in a browser instead of over the API.
