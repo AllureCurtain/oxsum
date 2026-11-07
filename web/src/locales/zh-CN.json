@@ -1423,6 +1423,7 @@
     "back": "返回账单"
   },
   "biz": {
+    "customerPortal": "客户门户",
     "console": "业务控制台",
     "title": "业务控制台",
     "notStaff": "此会话没有业务员工身份。",

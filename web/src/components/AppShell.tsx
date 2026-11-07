@@ -33,12 +33,13 @@ import {
   useSession,
   useSessionContext,
   useSwitchOrganization,
+  useSwitchContext,
 } from "../api/hooks";
 import { ApiError } from "../api/client";
 import { applyBranding } from "../lib/branding";
 import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { Button, IconButton, TextInput } from "./ui";
+import { Banner, Button, IconButton, TextInput } from "./ui";
 import { LanguageSwitcher } from "./LanguageSwitcher";
 import { LiveIsland } from "./LiveIsland";
 
@@ -266,7 +267,57 @@ function BusinessNavItem({
   );
 }
 
+/** Authentication spans both authorities; /session is a customer-only read. */
 export function AppShell() {
+  const context = useSessionContext();
+  const navigate = useNavigate();
+  const location = useLocation();
+  const { t } = useTranslation();
+  const business = context.data?.context === "business" ||
+    (context.data?.organizationId === null && context.data?.business != null);
+  useEffect(() => {
+    if (context.error instanceof ApiError && context.error.status === 401) {
+      navigate("/login", { replace: true });
+    } else if (business && location.pathname !== "/app/business") {
+      navigate("/business", { replace: true });
+    }
+  }, [context.error, business, location.pathname, navigate]);
+  if (!context.data) return <p className="p-8 text-muted">{t("common.loading")}</p>;
+  return business ? <BusinessShell /> : <CustomerShell />;
+}
+
+function BusinessShell() {
+  const { t } = useTranslation();
+  const context = useSessionContext();
+  const branding = useBranding();
+  const switchContext = useSwitchContext();
+  const logout = useLogout();
+  const navigate = useNavigate();
+  useEffect(() => applyBranding(branding.data), [branding.data]);
+  return (
+    <div className="min-h-screen">
+      <header className="flex flex-wrap items-center justify-between gap-3 border-b border-line bg-surface px-4 py-3 sm:px-6">
+        <p className="font-semibold">{branding.data?.name ?? "oxsum"}</p>
+        <div className="flex flex-wrap items-center gap-3">
+          <LanguageSwitcher />
+          <span className="text-xs text-muted">{context.data?.user.email}</span>
+          <Button tone="ghost" isLoading={switchContext.isPending} onClick={() =>
+            switchContext.mutate("customer", { onSuccess: () => navigate("/", { replace: true }) })
+          }>{t("biz.customerPortal")}</Button>
+          <Button tone="ghost" onClick={() => logout.mutate(undefined, {
+            onSettled: () => navigate("/login", { replace: true }),
+          })}>{t("nav.logout")}</Button>
+        </div>
+      </header>
+      <main className="px-4 py-4 sm:px-6 sm:py-6">
+        {switchContext.error instanceof ApiError ? <Banner tone="error">{switchContext.error.message}</Banner> : null}
+        <Outlet />
+      </main>
+    </div>
+  );
+}
+
+function CustomerShell() {
   const { t } = useTranslation();
   const session = useSession();
   const logout = useLogout();

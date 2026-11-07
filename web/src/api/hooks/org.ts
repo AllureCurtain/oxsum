@@ -1,5 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api } from "../client";
+import { useSessionContext } from "./business";
 import type { components } from "../schema";
 import type { ApiKey, DisplayCurrencyType, Entitlement, Member, RequestGroup, UserOrganization } from "./types";
 
@@ -129,7 +130,9 @@ export function useSwitchOrganization() {
 }
 
 export function useOrg() {
+  const context = useSessionContext();
   return useQuery({
+    enabled: context.data?.context === "customer" && context.data.organizationId !== null,
     queryKey: ["org"],
     queryFn: () =>
       api<{
