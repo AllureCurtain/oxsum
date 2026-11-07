@@ -1,8 +1,10 @@
 # TODO
 
-Updated: 2026-11-06
+Updated: 2026-11-07
 
 ## In progress
+
+- [x] [#685](https://github.com/AllureCurtain/oxsum/issues/685) — Reproducible D09 streaming load and accounting conservation: 1,000 accounts, 10,000 keys, 100 peak streams, 5,897 successful requests, zero drift; performance shortfall declared in `evidence/closeout-capacity.md`.
 
 ### Self-hosted release (#591)
 
