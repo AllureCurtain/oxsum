@@ -36,6 +36,7 @@ pub struct TierProfile {
     pub model_allowlist: Option<Vec<String>>,
     /// How many organizations are assigned the tier.
     pub organizations: i64,
+    /// When the tier profile was created.
     #[serde(with = "time::serde::rfc3339")]
     pub created_at: OffsetDateTime,
 }

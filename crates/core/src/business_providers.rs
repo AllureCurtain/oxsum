@@ -13,64 +13,93 @@ use uuid::Uuid;
 
 use crate::cache::SETTINGS_KEY;
 
+/// A provider mutation request wrapping a typed change under `config`.
 #[derive(Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ProviderRequest<T> {
+    /// Caller-chosen key; a replay answers the standing mutation.
     pub idempotency_key: String,
+    /// Operator-facing reason recorded in the audit trail.
     pub reason: String,
+    /// The typed configuration payload.
     pub config: T,
 }
+/// A channel connection: upstream base URL, protocol and credentials.
 #[derive(Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ProviderConnection {
+    /// Channel name, unique within the business.
     pub name: String,
+    /// Upstream base URL without credentials, query or fragment.
     pub base_url: String,
+    /// Upstream protocol adapter name.
     pub protocol: String,
+    /// API keys to install, replacing the current set; `None` keeps them.
     pub api_keys: Option<Vec<String>>,
+    /// Optional policy restricting which destinations requests may reach.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub destination_policy: Option<crate::ProviderDestinationPolicy>,
 }
+/// One API key to add to a channel.
 #[derive(Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ProviderCredentialInput {
+    /// The provider API key, 8 to 8192 bytes.
     pub api_key: String,
 }
+/// Sets or clears the channel's billing-inquiry key.
 #[derive(Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ProviderBillKeyInput {
+    /// New billing key; `null` clears it, while omitting it is rejected.
     #[serde(deserialize_with = "required_nullable")]
     pub api_key: Option<String>,
 }
+/// New status for one channel credential.
 #[derive(Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ProviderStatusInput {
+    /// `active` or `disabled`.
     pub status: String,
 }
+/// Sets or clears a channel's semantic-cache policy.
 #[derive(Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ProviderCacheInput {
+    /// Cache policy object, or `null` to remove the policy.
     #[serde(deserialize_with = "required_nullable")]
     pub policy: Option<Value>,
 }
+/// Creates a model alias on a channel.
 #[derive(Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ProviderAliasInput {
+    /// Name customers request.
     pub alias: String,
+    /// Model served on the channel that the alias resolves to.
     pub upstream_model: String,
 }
+/// Appends a price version for one model on a channel.
 #[derive(Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ProviderPriceInput {
+    /// Model name being priced.
     pub model: String,
+    /// Complete price list; all required price fields must be supplied.
     #[serde(deserialize_with = "explicit_price")]
     pub price: Price,
+    /// Routing weight, 1 to 1000.
     pub weight: i64,
 }
+/// Replaces a model's ordered fallback list.
 #[derive(Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ProviderFallbackInput {
+    /// Fallback model names, at most 16, each owned by the business and
+    /// distinct from the primary.
     pub fallbacks: Vec<String>,
 }
+/// An empty body for operations that need no configuration.
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ProviderRemoveInput {}
@@ -150,44 +179,74 @@ fn redacted_settings(settings: &Value) -> Value {
 #[derive(Serialize)]
 #[serde(tag = "operation", rename_all = "camelCase")]
 pub enum ProviderChange {
+    /// Creates or updates a channel connection.
     Connection {
+        /// Connection settings, including replacement credentials.
         config: ProviderConnection,
     },
+    /// Adds one API key to an existing channel.
     AddCredential {
+        /// Channel receiving the credential.
         channel: String,
+        /// The credential to add.
         config: ProviderCredentialInput,
     },
+    /// Sets or clears the channel's billing-inquiry key.
     BillKey {
+        /// Channel being changed.
         channel: String,
+        /// The new billing key, or `null` to clear it.
         config: ProviderBillKeyInput,
     },
+    /// Enables or disables one channel credential.
     CredentialStatus {
+        /// Channel owning the credential.
         channel: String,
+        /// Credential identifier.
         credential: Uuid,
+        /// The new status.
         config: ProviderStatusInput,
     },
+    /// Deletes one channel credential.
     RemoveCredential {
+        /// Channel owning the credential.
         channel: String,
+        /// Credential identifier.
         credential: Uuid,
     },
+    /// Sets or clears the channel's semantic-cache policy.
     Cache {
+        /// Channel being changed.
         channel: String,
+        /// The new policy, or `null` to remove it.
         config: ProviderCacheInput,
     },
+    /// Appends a price version for one model.
     Price {
+        /// Channel the price belongs to.
         channel: String,
+        /// Model, price list and routing weight.
         config: Box<ProviderPriceInput>,
     },
+    /// Adds a model alias.
     Alias {
+        /// Channel the alias belongs to.
         channel: String,
+        /// Alias and the upstream model it names.
         config: ProviderAliasInput,
     },
+    /// Removes a model alias.
     RemoveAlias {
+        /// Channel owning the alias.
         channel: String,
+        /// Alias to remove.
         alias: String,
     },
+    /// Replaces a model's fallback order.
     Fallbacks {
+        /// Model whose fallbacks are replaced.
         model: String,
+        /// The ordered fallback list.
         config: ProviderFallbackInput,
     },
 }
@@ -234,31 +293,47 @@ impl ProviderChange {
         }
     }
 }
+/// Identifiers produced by one provider mutation.
 #[derive(Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct ProviderMutationResult {
+    /// Receipt id of the mutation.
     pub id: Uuid,
+    /// Resource the change created or affected, when there is one.
     pub resource_id: Option<Uuid>,
+    /// New price version, when the operation appends one.
     pub version: Option<i64>,
 }
+/// One page of business channels.
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct BusinessChannelPage {
+    /// Channels in this page, with settings redacted.
     pub channels: Vec<Channel>,
+    /// Cursor for the next page; `None` at the end.
     pub next_cursor: Option<Uuid>,
 }
+/// State of one provider connectivity probe.
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ProviderConnectionCheck {
+    /// Receipt id of the probe.
     pub id: Uuid,
+    /// Channel that was probed.
     pub channel_id: Uuid,
+    /// `pending`, `reachable`, `authenticationFailed`, `httpError`, `blocked`
+    /// or `unreachable`.
     pub state: String,
+    /// HTTP status the probe received, when one answered.
     pub http_status: Option<i32>,
 }
 /// Only a newly committed intent returns coordinates. A replay never causes
 /// another network call, including after a process died with a pending check.
 pub struct ProviderCheckStart {
+    /// The probe's current record.
     pub result: ProviderConnectionCheck,
+    /// Endpoint to call, only when this call newly committed the probe;
+    /// `None` on a replay.
     pub endpoint: Option<crate::TaskProviderEndpoint>,
 }
 fn unknown() -> WalletError {
@@ -313,6 +388,8 @@ async fn model_owned(
         .bind(business).bind(model).fetch_one(&mut **tx).await?)
 }
 impl Db {
+    /// Starts one authorized connectivity probe and returns the endpoint to
+    /// call, or the standing probe on a replay.
     pub async fn begin_provider_check(
         &self,
         token: &str,
@@ -477,6 +554,8 @@ impl Db {
             version,
         })
     }
+    /// Lists the business's channels with redacted settings, credentials and
+    /// latest prices.
     pub async fn business_channels(
         &self,
         token: &str,
@@ -525,6 +604,7 @@ impl Db {
             next_cursor,
         })
     }
+    /// Returns all price versions for one business-owned channel.
     pub async fn business_channel_prices(
         &self,
         token: &str,
@@ -538,6 +618,7 @@ impl Db {
         let id = owned_channel(&mut tx, business, name).await?;
         channels::prices_in(&mut tx, id, None).await
     }
+    /// Returns all model aliases on one business-owned channel.
     pub async fn business_channel_aliases(
         &self,
         token: &str,
@@ -561,6 +642,7 @@ impl Db {
             })
             .collect()
     }
+    /// Returns the ordered fallback models configured for one business model.
     pub async fn business_model_fallbacks(
         &self,
         token: &str,

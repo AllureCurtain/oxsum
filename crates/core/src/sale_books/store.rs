@@ -1,3 +1,5 @@
+//! Sale-book persistence: drafts, published versions and signed snapshots.
+
 use crate::{
     BusinessCapability, Db, SaleBook, SaleBookHistory, SaleBookPage, SaleChange, SaleChangeRequest,
     SaleDraft, SaleModelMap, SaleMutationResult, SalePreviewRequest, SalePreviewSource, SalePrice,
@@ -197,6 +199,13 @@ fn new_schedule(
 }
 
 impl Db {
+    /// Applies one authorized change to the caller's sale terms — a book,
+    /// draft, version or schedule — and records the mutation result.
+    ///
+    /// # Errors
+    ///
+    /// [`WalletError::Forbidden`] when the authority token lacks the capability
+    /// the change requires, plus input and storage failures.
     pub async fn change_sale_terms(
         &self,
         token: &str,
@@ -410,6 +419,13 @@ impl Db {
         })
     }
 
+    /// Lists the caller's sale books after the `after` cursor, newest key
+    /// order, with a `next_after` when more remain. `limit` is 1..=100.
+    ///
+    /// # Errors
+    ///
+    /// [`WalletError::InvalidInput`] for an out-of-range limit, plus authority
+    /// and storage failures.
     pub async fn sale_books(
         &self,
         token: &str,
@@ -434,6 +450,13 @@ impl Db {
         tx.commit().await?;
         Ok(SaleBookPage { books, next_after })
     }
+    /// Returns one sale book with its draft revisions, published versions and
+    /// schedules, in creation order.
+    ///
+    /// # Errors
+    ///
+    /// [`WalletError::NotFound`] when the book is not the caller's, plus
+    /// authority and storage failures.
     pub async fn sale_book_history(
         &self,
         token: &str,
@@ -476,6 +499,13 @@ impl Db {
             schedules,
         })
     }
+    /// Returns the sale schedules that apply to one customer organization,
+    /// ordered by effective time.
+    ///
+    /// # Errors
+    ///
+    /// [`WalletError::NotFound`] when `org` is not the caller's customer, plus
+    /// authority and storage failures.
     pub async fn customer_sale_terms(
         &self,
         token: &str,
@@ -490,6 +520,13 @@ impl Db {
         tx.commit().await?;
         Ok(schedules)
     }
+    /// Computes what one model would cost for a customer under the sale terms
+    /// effective at the request's `at` time, without writing anything.
+    ///
+    /// # Errors
+    ///
+    /// [`WalletError::NotFound`] when the customer is not the caller's, plus
+    /// input and storage failures.
     pub async fn preview_sale_price(
         &self,
         token: &str,

@@ -24,6 +24,7 @@ use crate::error::WalletError;
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Discount {
+    /// The discount's identifier.
     pub discount_id: Uuid,
     /// The organization the discount applies to; `None` is every organization.
     pub organization_id: Option<Uuid>,
@@ -35,11 +36,13 @@ pub struct Discount {
     pub percent: i32,
     /// Why the discount exists, in the operator's own words.
     pub label: Option<String>,
+    /// The start of the validity window.
     #[serde(with = "time::serde::rfc3339")]
     pub valid_from: OffsetDateTime,
     /// The end of the window; `None` does not expire.
     #[serde(with = "time::serde::rfc3339::option")]
     pub valid_until: Option<OffsetDateTime>,
+    /// When the row was created.
     #[serde(with = "time::serde::rfc3339")]
     pub created_at: OffsetDateTime,
 }
@@ -49,11 +52,17 @@ pub struct Discount {
 /// matches — the same key under different fields is a conflict.
 #[derive(Debug)]
 pub struct NewDiscount {
+    /// The percent taken off the priced sum — 100 settles at zero.
     pub percent: i32,
+    /// The organization the discount applies to; `None` is every organization.
     pub organization_id: Option<Uuid>,
+    /// The model the discount applies to; `None` is every model.
     pub model: Option<String>,
+    /// Why the discount exists, in the operator's own words.
     pub label: Option<String>,
+    /// The start of the validity window; `None` starts immediately.
     pub valid_from: Option<OffsetDateTime>,
+    /// The end of the window; `None` does not expire.
     pub valid_until: Option<OffsetDateTime>,
 }
 

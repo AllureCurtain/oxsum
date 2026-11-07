@@ -28,7 +28,9 @@ pub(crate) const FIRST_KEY_NAME: &str = "default";
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct User {
+    /// The user's identifier.
     pub id: Uuid,
+    /// The user's email address, as registered.
     pub email: String,
     /// Whether the address has been verified through a mailed token (issue
     /// #150): `false` for an account that registered before or without a mailer.
@@ -38,7 +40,9 @@ pub struct User {
 /// What a caller must supply to register.
 #[derive(Debug, Clone)]
 pub struct NewUser {
+    /// The email address to register.
     pub email: String,
+    /// The plaintext password; it is hashed before storage and never persisted.
     pub password: String,
     /// Name of the personal organization; defaults to the local part of the email.
     pub organization_name: Option<String>,
@@ -61,8 +65,11 @@ pub struct AccountDeletion {
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Registration {
+    /// The newly registered user.
     pub user: User,
+    /// The personal organization created for the user.
     pub organization: Organization,
+    /// The first API key, with its secret shown once.
     pub api_key: CreatedApiKey,
     /// Whether a verification mail went out — false until the route layer mails
     /// one, which a deployment without a mailer never does (issue #150).

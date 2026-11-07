@@ -11,10 +11,13 @@ use std::fmt::Write as _;
 use time::{Duration, OffsetDateTime};
 use uuid::Uuid;
 
+/// A capability an integration credential may exercise on behalf of a business.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum IntegrationScope {
+    /// Read customer profiles granted to the credential.
     CustomersRead,
+    /// Submit usage metering for payments on behalf of the business.
     MeteringWrite,
 }
 impl IntegrationScope {
@@ -25,51 +28,77 @@ impl IntegrationScope {
         }
     }
 }
+/// Request to issue an integration credential.
 #[derive(Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct IntegrationCredentialRequest {
+    /// Caller-supplied key that makes repeated requests return the same credential.
     pub idempotency_key: String,
+    /// Optional human-readable label, at most 80 characters.
     pub name: Option<String>,
+    /// Scopes the credential is allowed to use; must be non-empty and distinct.
     pub scopes: Vec<IntegrationScope>,
+    /// Customers the credential may access; 1 to 1000 distinct organization IDs.
     pub customer_ids: Vec<Uuid>,
+    /// When the credential stops authenticating, within the next 365 days.
     #[serde(with = "time::serde::rfc3339")]
     pub expires_at: OffsetDateTime,
+    /// Operator-visible justification recorded in the audit log.
     pub reason: String,
 }
+/// Request to revoke an integration credential.
 #[derive(Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct IntegrationCredentialRevokeRequest {
+    /// Caller-supplied key that makes repeated revocations idempotent.
     pub idempotency_key: String,
+    /// Operator-visible justification recorded in the audit log.
     pub reason: String,
 }
+/// An issued integration credential; the secret is stored only as a hash.
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct IntegrationCredential {
+    /// Credential identifier, serialized as `credentialId`.
     #[serde(rename = "credentialId")]
     pub id: Uuid,
+    /// Business the credential acts for.
     pub business_id: Uuid,
+    /// Optional human-readable label.
     pub name: Option<String>,
+    /// Non-secret prefix of the credential secret, for display and lookup.
     pub prefix: String,
+    /// Scopes granted to the credential.
     pub scopes: Vec<IntegrationScope>,
+    /// Customers the credential may access.
     pub customer_ids: Vec<Uuid>,
+    /// When the credential was issued.
     #[serde(with = "time::serde::rfc3339")]
     pub created_at: OffsetDateTime,
+    /// When the credential stops authenticating.
     #[serde(with = "time::serde::rfc3339")]
     pub expires_at: OffsetDateTime,
+    /// When the credential was revoked, if it has been.
     #[serde(with = "time::serde::rfc3339::option")]
     pub revoked_at: Option<OffsetDateTime>,
 }
+/// A newly issued credential, including its one-time plaintext secret.
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CreatedIntegrationCredential {
+    /// Credential metadata.
     #[serde(flatten)]
     pub credential: IntegrationCredential,
+    /// Plaintext secret, returned only on first issuance.
     pub secret: Option<String>,
 }
+/// A cursor-paginated page of integration credentials.
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct IntegrationCredentialPage {
+    /// Credentials in ascending identifier order.
     pub credentials: Vec<IntegrationCredential>,
+    /// Identifier to pass as `after` for the next page; `None` at the end.
     pub next_cursor: Option<Uuid>,
 }
 /// An authenticated identity, not a cached permission grant. Core operations
@@ -81,6 +110,7 @@ pub struct ActingService {
     pub(crate) name: Option<String>,
 }
 impl ActingService {
+    /// Identifier of the credential that authenticated this service.
     #[must_use]
     pub fn credential_id(&self) -> Uuid {
         self.credential_id
@@ -144,6 +174,8 @@ pub(crate) async fn require_integration(
     Ok(())
 }
 impl Db {
+    /// Issues an integration credential for the business. The plaintext secret
+    /// is returned once; retries with the same key return it as `None`.
     pub async fn create_integration_credential(
         &self,
         token: &str,
@@ -239,6 +271,8 @@ impl Db {
             secret: Some(secret),
         })
     }
+    /// Lists credentials for the business in cursor order. `limit` must be
+    /// between 1 and 100.
     pub async fn integration_credentials(
         &self,
         token: &str,
@@ -273,6 +307,8 @@ impl Db {
             next_cursor,
         })
     }
+    /// Revokes a credential; already-revoked credentials keep their first
+    /// revocation time and repeat calls are idempotent.
     pub async fn revoke_integration_credential(
         &self,
         token: &str,
@@ -317,6 +353,8 @@ impl Db {
         tx.commit().await?;
         Ok(result)
     }
+    /// Resolves a plaintext integration secret to its acting service. Returns
+    /// `None` for unknown, revoked or expired credentials.
     pub async fn authenticate_service(
         &self,
         secret: &str,

@@ -1026,6 +1026,9 @@ impl SettlementKind {
 /// wholesale channel catalog priced.
 const DESCRIPTION_VERSION: i64 = 14;
 
+/// The canonical settlement description a turn writes into its ledger entry:
+/// what was frozen, what was charged, and every input a verifier needs to
+/// recompute the charge from the proof bundle alone.
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Settlement<'a> {

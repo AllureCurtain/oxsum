@@ -48,7 +48,7 @@ pub const MAX_CONTEXT_NAME: usize = 64;
 /// context the caller supplied, plus the escape hatch for everything else.
 ///
 /// The structured fields hold token-metered quantities only. Units that are not
-/// tokens — per image, per second, per request — ride in [`usage_details`]
+/// tokens — per image, per second, per request — ride in `usage_details`
 /// instead, so the columns never mix units (docs/decisions.md).
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default, rename_all = "camelCase")]
@@ -75,9 +75,13 @@ pub struct UsageRecord {
     pub tool_calls: i64,
     /// Media tokens, metered the same way as text but priced on their own rows.
     pub image_input_tokens: i64,
+    /// Audio tokens fed to the model, priced on the audio-input row.
     pub audio_input_tokens: i64,
+    /// Video tokens fed to the model, priced on the video-input row.
     pub video_input_tokens: i64,
+    /// Image tokens the model emitted, priced on the image-output row.
     pub image_output_tokens: i64,
+    /// Audio tokens the model emitted, priced on the audio-output row.
     pub audio_output_tokens: i64,
     /// The service tier the caller asked for (OpenAI's `service_tier` and its
     /// equivalents): a schema slot — it is recorded and forwarded, and prices
@@ -320,11 +324,21 @@ pub fn validate_attribution(
 #[derive(Debug, Clone, Copy, Default)]
 pub enum CountsProvenance {
     /// Upstream's usage report produced the counts (`provider_*` columns).
-    Provider { input: i64, output: i64 },
+    Provider {
+        /// Input tokens upstream reported.
+        input: i64,
+        /// Output tokens upstream reported.
+        output: i64,
+    },
     /// A local estimate produced them (`local_*` columns): tiktoken over the
     /// request text and, where the policy counts it, the forwarded prefix.
     /// `output: None` is the degraded settle — only the input side is counted.
-    Local { input: i64, output: Option<i64> },
+    Local {
+        /// Input tokens the estimate counted.
+        input: i64,
+        /// Output tokens the estimate counted; `None` on a degraded settle.
+        output: Option<i64>,
+    },
     /// Nothing was counted — a refusal, or a swept turn the watch row timed out.
     #[default]
     None,
@@ -400,7 +414,9 @@ pub struct UsageRow {
     pub mandate_id: Option<Uuid>,
     /// What the turn was priced by, copied from the settlement record.
     pub model: String,
+    /// The channel the turn served through, by name.
     pub channel: String,
+    /// The price book version the settlement priced against.
     pub price_version: i64,
     /// How the turn was priced, the settlement record's kind.
     pub kind: SettlementKind,
@@ -428,6 +444,7 @@ pub struct UsageRow {
     pub counts: CountsProvenance,
     /// What the settlement charged and what it had frozen, in minor units.
     pub charged_minor: i64,
+    /// The hold's upper bound, in minor units, before settlement adjusted it.
     pub freeze_minor: i64,
     /// What the channel's `upstream` prices made of the same usage — the
     /// platform's cost for the turn (roadmap P1-6, issue #112). `None` means
@@ -1380,14 +1397,19 @@ pub struct UsageDay {
     /// The key that paid for these turns; `None` is the shared unattributed
     /// usage (session settles) every member may see.
     pub key_id: Option<Uuid>,
+    /// The channel the day's turns served through, by name.
     pub channel: String,
+    /// The model the day's turns were priced by.
     pub model: String,
     /// The settled turns the row sums.
     pub turns: i64,
     /// Token sums over the turns, the normalized record's same four counts.
     pub input_tokens: i64,
+    /// Completion-side tokens, including the reasoning subset.
     pub output_tokens: i64,
+    /// The part of `input_tokens` that hit a provider cache.
     pub cached_tokens: i64,
+    /// The part of `output_tokens` that is model reasoning.
     pub reasoning_tokens: i64,
     /// What the turns charged, in minor units.
     pub charged_minor: i64,
@@ -1398,7 +1420,9 @@ pub struct UsageDay {
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Margin {
+    /// The channel the pair served through, by name.
     pub channel: String,
+    /// The model the turns were priced by.
     pub model: String,
     /// The settled turns the row sums.
     pub turns: i64,

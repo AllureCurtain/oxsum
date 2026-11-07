@@ -10,14 +10,19 @@ use sqlx::{Postgres, Row, Transaction};
 use time::OffsetDateTime;
 use uuid::Uuid;
 
+/// A payment rail a merchant account is configured for.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum MerchantRail {
+    /// Hyperswitch, the primary supported rail.
     Hyperswitch,
+    /// Stripe, used directly.
     Stripe,
+    /// Airwallex, used directly.
     Airwallex,
 }
 impl MerchantRail {
+    /// Returns the wire name of the rail.
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Hyperswitch => "hyperswitch",
@@ -34,13 +39,17 @@ impl MerchantRail {
         }
     }
 }
+/// Whether a merchant account moves test or live money.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum MerchantMode {
+    /// Sandbox credentials and no real money.
     Test,
+    /// Production credentials and real money.
     Live,
 }
 impl MerchantMode {
+    /// Returns the wire name of the mode.
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Test => "test",
@@ -60,90 +69,149 @@ impl MerchantMode {
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct MerchantVersionInput {
+    /// Provider API base URL; must not embed credentials, a query or a fragment.
     pub api_url: String,
+    /// Secret API key, 8 to 8192 bytes.
     pub api_key: String,
+    /// Webhook signing secret, 8 to 8192 bytes.
     pub webhook_secret: String,
+    /// OAuth client identifier; required by Airwallex and refused by the others.
     pub client_id: Option<String>,
+    /// Publishable key; required by Hyperswitch and refused by the others.
     pub publishable_key: Option<String>,
+    /// Hosted SDK URL; required by Hyperswitch and refused by the others.
     pub sdk_url: Option<String>,
+    /// Hosted checkout URL; required by Airwallex and refused by the others.
     pub checkout_url: Option<String>,
+    /// Destinations this merchant may reach.
     #[serde(default)]
     pub destination_policy: ProviderDestinationPolicy,
 }
+/// Request to create a merchant account with its first credential version.
 #[derive(Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct MerchantCreateRequest {
+    /// Caller-chosen key; a replay answers the standing mutation.
     pub idempotency_key: String,
+    /// Operator-facing reason recorded in the audit trail.
     pub reason: String,
+    /// Lowercase alphanumeric name with hyphens, unique within the business.
     pub name: String,
+    /// Payment rail the account uses.
     pub rail: MerchantRail,
+    /// Test or live mode.
     pub mode: MerchantMode,
+    /// Provider-side account identifier, unique per rail and mode.
     pub account_id: String,
+    /// The first credential version.
     pub config: MerchantVersionInput,
 }
+/// Request to rotate a merchant account's credentials.
 #[derive(Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct MerchantVersionRequest {
+    /// Caller-chosen key; a replay answers the standing mutation.
     pub idempotency_key: String,
+    /// Operator-facing reason recorded in the audit trail.
     pub reason: String,
+    /// Replacement credentials.
     pub config: MerchantVersionInput,
 }
+/// Request to enable or disable a merchant account.
 #[derive(Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct MerchantStatusRequest {
+    /// Caller-chosen key; a replay answers the standing mutation.
     pub idempotency_key: String,
+    /// Operator-facing reason recorded in the audit trail.
     pub reason: String,
+    /// Whether new checkouts may select this merchant.
     pub enabled: bool,
 }
+/// Identifiers produced by one merchant mutation.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct MerchantMutationResult {
+    /// Receipt id of the mutation.
     pub id: Uuid,
+    /// Merchant account affected.
     pub merchant_id: Uuid,
+    /// Credential version current after the mutation.
     pub version_id: Uuid,
+    /// Version revision number.
     pub revision: i64,
+    /// Whether the merchant is enabled after the mutation.
     pub enabled: bool,
 }
+/// One immutable merchant credential version, with secrets withheld.
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct MerchantVersion {
+    /// Version identifier.
     pub id: Uuid,
+    /// Merchant account this version belongs to.
     pub merchant_id: Uuid,
+    /// Revision number, increasing per merchant.
     pub revision: i64,
+    /// Provider API base URL.
     pub api_url: String,
+    /// Publishable key, when the rail uses one.
     pub publishable_key: Option<String>,
+    /// Hosted SDK URL, when the rail uses one.
     pub sdk_url: Option<String>,
+    /// Hosted checkout URL, when the rail uses one.
     pub checkout_url: Option<String>,
+    /// Destinations this version may reach.
     pub destination_policy: ProviderDestinationPolicy,
+    /// Who created the version: `owner` or `environment`.
     pub source: String,
+    /// Local validation result; `locallyValidated` today.
     pub validation_status: &'static str,
+    /// When the version was created.
     #[serde(with = "time::serde::rfc3339")]
     pub created_at: OffsetDateTime,
 }
+/// A merchant account with its current credential version.
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Merchant {
+    /// Merchant account identifier.
     pub id: Uuid,
+    /// Business that owns the account.
     pub business_id: Uuid,
+    /// Human-readable account name.
     pub name: String,
+    /// Payment rail.
     pub rail: MerchantRail,
+    /// Test or live mode.
     pub mode: MerchantMode,
+    /// Provider-side account identifier.
     pub account_id: String,
+    /// Connector name: `stripe` through Hyperswitch, else `direct`.
     pub connector: &'static str,
+    /// Support level: `primary` for Hyperswitch, else `compatibility`.
     pub support_status: &'static str,
+    /// Whether new checkouts may select this merchant.
     pub enabled: bool,
+    /// Current credential version.
     pub current_version: MerchantVersion,
 }
+/// One page of merchant accounts.
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct MerchantPage {
+    /// Merchants in this page.
     pub merchants: Vec<Merchant>,
+    /// Cursor for the next page; `None` at the end.
     pub next_cursor: Option<Uuid>,
 }
+/// One page of merchant credential versions.
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct MerchantVersionPage {
+    /// Versions in this page.
     pub versions: Vec<MerchantVersion>,
+    /// Cursor for the next page; `None` at the end.
     pub next_cursor: Option<i64>,
 }
 
@@ -156,22 +224,32 @@ struct Credentials {
 /// Plaintext is opened only for a trusted server-side provider operation. This
 /// type deliberately implements neither Serialize nor Debug.
 pub struct MerchantSigningContext {
+    /// Merchant account identifier.
     pub merchant_id: Uuid,
+    /// Business that owns the merchant.
     pub business_id: Uuid,
+    /// Payment rail.
     pub rail: MerchantRail,
+    /// Test or live mode.
     pub mode: MerchantMode,
+    /// Provider-side account identifier.
     pub account_id: String,
+    /// Whether the merchant may be selected for new checkouts.
     pub enabled: bool,
+    /// The credential version being used.
     pub version: MerchantVersion,
     credentials: Credentials,
 }
 impl MerchantSigningContext {
+    /// Returns the plaintext API key for a server-side provider call.
     pub fn api_key(&self) -> &str {
         &self.credentials.api_key
     }
+    /// Returns the plaintext webhook signing secret.
     pub fn webhook_secret(&self) -> &str {
         &self.credentials.webhook_secret
     }
+    /// Returns the OAuth client identifier, when the rail uses one.
     pub fn client_id(&self) -> Option<&str> {
         self.credentials.client_id.as_deref()
     }
@@ -432,6 +510,8 @@ impl Db {
         tx.commit().await?;
         Ok(result)
     }
+    /// Creates a new credential version for an owned merchant and makes it
+    /// current, leaving enablement unchanged.
     pub async fn rotate_merchant(
         &self,
         token: &str,
@@ -512,6 +592,8 @@ impl Db {
         tx.commit().await?;
         Ok(result)
     }
+    /// Enables or disables future checkout selection for an owned merchant;
+    /// historical signatures are unaffected.
     pub async fn set_merchant_enabled(
         &self,
         token: &str,
@@ -570,6 +652,8 @@ impl Db {
         tx.commit().await?;
         Ok(result)
     }
+    /// Lists the business's merchants in identifier order, with secrets
+    /// withheld.
     pub async fn business_merchants(
         &self,
         token: &str,
@@ -597,6 +681,7 @@ impl Db {
             next_cursor,
         })
     }
+    /// Lists one owned merchant's credential versions in revision order.
     pub async fn business_merchant_versions(
         &self,
         token: &str,
@@ -660,6 +745,7 @@ impl Db {
             })
             .transpose()
     }
+    /// Reports whether any merchant account exists, for first-run setup.
     pub async fn has_merchants(&self) -> Result<bool, WalletError> {
         Ok(
             sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM oxsum.merchant_accounts)")
@@ -667,6 +753,8 @@ impl Db {
                 .await?,
         )
     }
+    /// Opens every stored merchant credential, including historical versions,
+    /// so a wrong secret key fails startup instead of a live callback.
     pub async fn check_merchant_secrets(&self, secret: &SecretKey) -> Result<(), WalletError> {
         // Include historical versions: in-flight callbacks still depend on them.
         let records: Vec<String> =
@@ -685,9 +773,13 @@ impl Db {
 /// credentials have no serializer/debug output and never enter audit.
 #[derive(Clone)]
 pub struct MerchantBootstrap {
+    /// Payment rail to seed.
     pub rail: MerchantRail,
+    /// Test or live mode to seed.
     pub mode: MerchantMode,
+    /// Provider-side account identifier.
     pub account_id: String,
+    /// Credentials for the seeded version.
     pub config: MerchantVersionInput,
 }
 impl std::fmt::Debug for MerchantBootstrap {

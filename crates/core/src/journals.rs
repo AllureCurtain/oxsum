@@ -48,6 +48,7 @@ fn invalid(message: &str) -> WalletError {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub enum JournalState {
+    /// Exists only inside the close transaction — never a resting state.
     Draft,
     /// Billed, awaiting settlement — the receivable is open.
     Posted,
@@ -127,31 +128,45 @@ impl JournalLineKind {
 #[derive(Debug, Clone, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct InvoiceJournal {
+    /// Local journal identifier.
     pub journal_id: Uuid,
+    /// Customer plan the journal bills.
     pub customer_plan_id: Uuid,
+    /// Customer organization that owes the bill.
     pub organization_id: Uuid,
+    /// Business that owns the journal, hidden from customer responses.
     #[serde(skip_serializing)]
     pub business_id: Uuid,
+    /// The authorized period the journal bills, when plan-bound.
     pub plan_period_id: Option<Uuid>,
+    /// Zero-based period number within the customer plan.
     pub period_index: i32,
+    /// Lifecycle state of the journal.
     pub state: JournalState,
     /// The lines' sum — what the receivable was opened for.
     pub total_minor: i64,
     /// How much the clearing legs already covered.
     pub settled_minor: i64,
+    /// Three-letter ISO 4217 currency code of the amounts.
     pub currency: String,
     /// The order whose payment completed the settlement.
     pub paid_order_id: Option<Uuid>,
     /// What open disputes contest of the receivable.
     pub disputed_minor: i64,
+    /// Journal this one replaces, when reissued after a void.
     pub replaces_journal_id: Option<Uuid>,
+    /// Staff's reason for voiding the journal.
     pub void_reason: Option<String>,
+    /// When the journal was posted.
     #[serde(with = "time::serde::rfc3339::option")]
     pub posted_at: Option<OffsetDateTime>,
+    /// When the journal was fully settled.
     #[serde(with = "time::serde::rfc3339::option")]
     pub paid_at: Option<OffsetDateTime>,
+    /// When the journal was voided.
     #[serde(with = "time::serde::rfc3339::option")]
     pub voided_at: Option<OffsetDateTime>,
+    /// When the journal row was created.
     #[serde(with = "time::serde::rfc3339")]
     pub created_at: OffsetDateTime,
 }
@@ -161,14 +176,19 @@ pub struct InvoiceJournal {
 #[derive(Debug, Clone, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct InvoiceJournalLine {
+    /// Local line identifier.
     pub line_id: Uuid,
+    /// Journal the line belongs to.
     pub journal_id: Uuid,
+    /// What the line bills or credits.
     pub kind: JournalLineKind,
     /// Signed: charges positive, credits negative.
     pub amount_minor: i64,
+    /// Human-readable description of the line.
     pub description: String,
     /// The fact the line came from — period id, credit note id, lot or grant.
     pub source_ref: Option<Uuid>,
+    /// When the line was written.
     #[serde(with = "time::serde::rfc3339")]
     pub created_at: OffsetDateTime,
 }
@@ -177,15 +197,21 @@ pub struct InvoiceJournalLine {
 #[derive(Debug, Clone, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct InvoiceJournalDetail {
+    /// The journal header.
     #[serde(flatten)]
     pub journal: InvoiceJournal,
+    /// The journal's lines in write order.
     pub lines: Vec<InvoiceJournalLine>,
 }
 
+/// A cursor-paginated page of invoice journals.
 #[derive(serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct InvoiceJournalPage {
+    /// Journals in newest-first order.
     pub journals: Vec<InvoiceJournal>,
+    /// Journal identifier to pass as `after` for the next page; `None` at the
+    /// end.
     pub next_cursor: Option<Uuid>,
 }
 

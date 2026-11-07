@@ -29,6 +29,7 @@ use crate::error::WalletError;
 #[derive(Debug, Clone, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SubscriptionPlan {
+    /// Plan identifier.
     pub plan_id: Uuid,
     /// What the plan is called — the admin list and the bind target.
     pub name: String,
@@ -50,8 +51,11 @@ pub struct SubscriptionPlan {
     pub stripe_price_id: Option<String>,
     /// Whether new subscriptions may bind. A disabled plan keeps its history.
     pub enabled: bool,
+    /// Catalogue display order, lowest first.
     pub sort_order: i32,
+    /// When the plan row was created.
     pub created_at: OffsetDateTime,
+    /// When the plan row last changed.
     pub updated_at: OffsetDateTime,
 }
 
@@ -59,9 +63,13 @@ pub struct SubscriptionPlan {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum ResetPeriod {
+    /// Quota resets at each UTC midnight.
     Daily,
+    /// Quota resets each Monday at 00:00 UTC.
     Weekly,
+    /// Quota resets on the first of each UTC month.
     Monthly,
+    /// The counter never resets for the subscription's life.
     Never,
 }
 
@@ -95,8 +103,11 @@ impl ResetPeriod {
 #[derive(Debug, Clone, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct OrgSubscription {
+    /// Subscription identifier.
     pub subscription_id: Uuid,
+    /// Organization the subscription belongs to.
     pub organization_id: Uuid,
+    /// Plan the subscription follows.
     pub plan_id: Uuid,
     /// `active`, `cancelled` or `expired` — the state the index keys on.
     pub state: String,
@@ -118,7 +129,9 @@ pub struct OrgSubscription {
     pub source: String,
     /// The Stripe subscription id the webhook renews against, when bound there.
     pub stripe_subscription_id: Option<String>,
+    /// When the subscription was bound.
     pub created_at: OffsetDateTime,
+    /// When the subscription row last changed.
     pub updated_at: OffsetDateTime,
 }
 
@@ -128,20 +141,28 @@ pub struct OrgSubscription {
 #[derive(Debug, Clone, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SubscriptionPeriod {
+    /// Period identifier.
     pub period_id: Uuid,
+    /// Subscription the period belongs to.
     pub subscription_id: Uuid,
+    /// Organization the subscription belongs to.
     pub organization_id: Uuid,
+    /// Plan in force during the period.
     pub plan_id: Uuid,
+    /// When the period opened.
     #[serde(with = "time::serde::rfc3339")]
     pub period_start: OffsetDateTime,
+    /// When the period closed; `None` while it is open.
     #[serde(with = "time::serde::rfc3339::option")]
     pub period_end: Option<OffsetDateTime>,
     /// The quota the plan carried into the period, snapshotted.
     pub quota_minor: Option<i64>,
+    /// What the period consumed, minor units.
     pub consumed_minor: i64,
     /// How the period closed: `boundary`, `cancelled`, `expired`, `upgrade` or
     /// `downgrade`. `open` while it still runs.
     pub outcome: String,
+    /// When the period row was created.
     pub created_at: OffsetDateTime,
 }
 
@@ -864,7 +885,7 @@ impl Db {
     ///
     /// The org's advisory lock is re-entrant per session: the caller's
     /// transaction already holds it when this runs inside
-    /// [`admit_subscription_draw`]'s own lock-taking callers, and taking it
+    /// `admit_subscription_draw`'s own lock-taking callers, and taking it
     /// again here only counts the request. The lock order the draw's own
     /// writer follows — subscription lock before the row's — is unchanged.
     ///

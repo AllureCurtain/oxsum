@@ -28,7 +28,9 @@ use crate::webhooks::ORG_SUSPENDED;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Kind {
+    /// One person's organization, created at signup.
     Personal,
+    /// An organization with more than one member.
     Team,
 }
 
@@ -59,8 +61,11 @@ impl Kind {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Role {
+    /// The single owner seat, transferred rather than assigned.
     Owner,
+    /// May manage members and keys, but may not act on an owner.
     Admin,
+    /// Manages their own keys and resources.
     Member,
 }
 
@@ -87,11 +92,15 @@ impl Role {
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Organization {
+    /// Organization identifier.
     pub id: Uuid,
+    /// Display name of the organization.
     pub name: String,
     /// The ledger's tenant id: `ledger_<tenant_id>` is this organization's schema.
     pub tenant_id: String,
+    /// Whether this is a personal or team organization.
     pub kind: Kind,
+    /// When the organization was created.
     #[serde(with = "time::serde::rfc3339")]
     pub created_at: OffsetDateTime,
     /// The fiat unit this organization displays its credit figures in (issue #257)
@@ -105,9 +114,13 @@ pub struct Organization {
 /// is opened, not something an answer reports.
 #[derive(Debug, Clone)]
 pub struct AdminOrganization {
+    /// Organization identifier.
     pub id: Uuid,
+    /// Display name of the organization.
     pub name: String,
+    /// The ledger's tenant id, used to open the wallet.
     pub tenant_id: String,
+    /// Whether this is a personal or team organization.
     pub kind: Kind,
     /// How many people belong: a personal organization is normally one, a team's more.
     pub members: i64,
@@ -130,6 +143,7 @@ pub struct AdminOrganization {
     /// The fiat unit this organization displays its credit figures in (issue #257);
     /// `None` renders credits alone.
     pub display_currency: Option<DisplayCurrency>,
+    /// When the organization was created.
     pub created_at: OffsetDateTime,
 }
 
@@ -137,8 +151,11 @@ pub struct AdminOrganization {
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Member {
+    /// Account identifier of the member.
     pub user_id: Uuid,
+    /// Login email of the member.
     pub email: String,
+    /// Role the member holds in the organization.
     pub role: Role,
     /// The member's committed-spend cap across every key they minted
     /// (issue #162); `None` carries no cap.
@@ -146,6 +163,7 @@ pub struct Member {
     /// The team the member belongs to (issue #440); `None` means unassigned —
     /// no team cap applies to the member's keys.
     pub team_id: Option<Uuid>,
+    /// When the member joined the organization.
     #[serde(with = "time::serde::rfc3339")]
     pub joined_at: OffsetDateTime,
 }
@@ -155,7 +173,9 @@ pub struct Member {
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct UserOrganization {
+    /// The organization.
     pub organization: Organization,
+    /// The user's role in that organization.
     pub role: Role,
 }
 
@@ -163,6 +183,7 @@ pub struct UserOrganization {
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Ownership {
+    /// The member who now owns the organization.
     pub owner: Member,
     /// The transferring owner, in their new role (an admin).
     pub previous_owner: Member,
@@ -176,7 +197,9 @@ pub struct Ownership {
 /// for an API key: a key is not a person and names no role.
 #[derive(Debug, Clone, Copy)]
 pub struct MembershipActor {
+    /// The acting person's account identifier.
     pub user_id: Uuid,
+    /// The role the session carries.
     pub role: Role,
 }
 
@@ -456,6 +479,12 @@ impl Db {
         .flatten())
     }
 
+    /// The members of an organization, oldest first — the dashboard's members
+    /// list, readable by any member of the organization.
+    ///
+    /// # Errors
+    ///
+    /// Storage failures surface as [`WalletError`].
     pub async fn members(&self, organization_id: Uuid) -> Result<Vec<Member>, WalletError> {
         let rows = sqlx::query(
             "SELECT m.user_id, u.email, m.role, m.budget_limit_minor, m.team_id, m.created_at \

@@ -36,6 +36,7 @@ use crate::orgs::MembershipActor;
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Team {
+    /// The team's identifier.
     pub team_id: Uuid,
     /// The member-count the subgroup currently holds — the roster the
     /// committed sum walks.
@@ -44,6 +45,7 @@ pub struct Team {
     pub budget_limit_minor: Option<i64>,
     /// How many memberships the team groups today.
     pub members: i64,
+    /// When the team was created.
     #[serde(with = "time::serde::rfc3339")]
     pub created_at: OffsetDateTime,
 }

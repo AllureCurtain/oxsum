@@ -30,7 +30,9 @@ const MAX_NAME: usize = 64;
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Group {
+    /// The group's identifier.
     pub id: Uuid,
+    /// The group's name, unique within the organization.
     pub name: String,
     /// The channels this group may serve through.
     pub channel_ids: Vec<Uuid>,
@@ -42,7 +44,9 @@ pub struct Group {
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct GroupChannel {
+    /// The channel's identifier.
     pub id: Uuid,
+    /// The channel's name.
     pub name: String,
 }
 

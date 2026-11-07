@@ -209,6 +209,8 @@ pub struct RequestOperation {
     pub terms_version: Option<i64>,
     /// The customer the operation serves, when the business model names one.
     pub customer_id: Option<Uuid>,
+    /// The turn's lifecycle state — open while created, leased or running,
+    /// terminal once the settle CAS lands.
     pub state: OperationState,
     /// The worker that owns the lease — a per-process instance id, or
     /// [`SWEEPER_OWNER`] on a claimed row.
@@ -219,13 +221,17 @@ pub struct RequestOperation {
     pub charged_minor: Option<i64>,
     /// The settlement kind's spelling, when the row carries one.
     pub outcome_kind: Option<String>,
+    /// The public model name the turn priced under.
     pub model: String,
     /// The channel the turn served under — the primary route at admission,
     /// rewritten by a failover's `reroute` only on the settlement, not here:
     /// the operation names where the turn started.
     pub channel: Option<String>,
+    /// When the admission wrote the row.
     pub created_at: OffsetDateTime,
+    /// When a heartbeat or lifecycle write last changed the row.
     pub updated_at: OffsetDateTime,
+    /// When the settle made the row terminal; `None` while the turn is open.
     pub completed_at: Option<OffsetDateTime>,
 }
 
@@ -237,16 +243,21 @@ pub struct NewOperation {
     /// oxsum's operation id — minted by the caller so the request id and the
     /// operation id are the same figure.
     pub operation_id: Uuid,
+    /// The organization whose ledger holds the freeze.
     pub organization_id: Uuid,
+    /// The consumption key that admitted; `None` on a service-credential turn.
     pub key_id: Option<Uuid>,
     /// The surface spelling, e.g. `chat` or `task:image`.
     pub surface: String,
+    /// The scoped idempotency fingerprint — a retry names the same operation.
     pub fingerprint: String,
     /// The freeze the turn admitted under, in minor units.
     pub bound_minor: i64,
+    /// The public model name the turn priced under.
     pub model: String,
     /// The primary route's channel — where the turn starts.
     pub channel: Option<String>,
+    /// The customer the operation serves, when the business model names one.
     pub customer_id: Option<Uuid>,
     /// The price version the turn pinned — the primary route's.
     pub terms_version: Option<i64>,
@@ -256,7 +267,9 @@ pub struct NewOperation {
 /// winning attempt's usage record.
 #[derive(Debug, Clone)]
 pub struct OperationAttempt {
+    /// The attempt's own id.
     pub attempt_id: Uuid,
+    /// The operation this attempt ran under.
     pub operation_id: Uuid,
     /// The channel's name, denormalized.
     pub channel: String,
@@ -264,13 +277,16 @@ pub struct OperationAttempt {
     pub credential_id: Option<Uuid>,
     /// Upstream's own request/task id, when it gave one back.
     pub external_id: Option<String>,
+    /// The route-level outcome this attempt reached.
     pub status: AttemptStatus,
     /// What upstream's terminal answer reported — the `usage` object verbatim,
     /// or the estimate block the degraded settle priced from.
     pub usage_json: Option<serde_json::Value>,
     /// The refusal's message, bounded.
     pub error: Option<String>,
+    /// When the route was tried.
     pub started_at: OffsetDateTime,
+    /// When the attempt answered or failed; `None` while it is in flight.
     pub completed_at: Option<OffsetDateTime>,
 }
 

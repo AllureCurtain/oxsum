@@ -165,7 +165,7 @@ impl RouteStats {
     /// The TTFT the fleet's healthy channels are judged against: the median-ish
     /// of observed channels — implemented as the smallest running TTFT, which
     /// for a "what does good look like" comparison is the honest figure (the
-    /// fastest observed upstream), with [`HEALTHY_TTFT_MS`] as the cold-start
+    /// fastest observed upstream), with `HEALTHY_TTFT_MS` as the cold-start
     /// floor so a healthy deployment's weights never collapse on a single slow
     /// turn.
     pub fn healthy_ttft_ms(&self) -> f64 {
@@ -200,7 +200,7 @@ impl RouteStats {
 }
 
 /// `Arc`-shared so [`Db`]'s cheap clones all reach the one window — the same
-/// sharing [`crate::pools::SharedAffinity`] uses for the affinity map.
+/// sharing `crate::pools::SharedAffinity` uses for the affinity map.
 pub type SharedRouteStats = Arc<RouteStats>;
 
 impl Db {

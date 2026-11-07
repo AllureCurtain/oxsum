@@ -60,7 +60,9 @@ pub struct DeviceGrant {
 pub struct DeviceRequest {
     /// The code as the tool displayed it, `XXXX-XXXX`.
     pub user_code: String,
+    /// When the grant was minted.
     pub created_at: OffsetDateTime,
+    /// When both codes lapse.
     pub expires_at: OffsetDateTime,
 }
 
@@ -87,8 +89,11 @@ pub enum PollError {
     NotFound,
     /// Polled inside `interval`; the field is seconds until the next legal poll.
     TooFast {
+        /// Seconds until the next legal poll.
         retry_after_secs: u64,
     },
+    /// The wallet layer refused the poll; surfaced as the corresponding
+    /// wallet error.
     Wallet(WalletError),
 }
 

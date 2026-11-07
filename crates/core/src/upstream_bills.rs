@@ -78,6 +78,7 @@ pub trait UpstreamBillProvider: Debug + Send + Sync {
 /// immediate `None` — no bill is fetchable without it.
 #[derive(Clone)]
 pub struct ChannelBilling {
+    /// The egress policy the billing connection must satisfy.
     pub destination_policy: crate::ProviderDestinationPolicy,
     /// The channel's row id — the bill's `channel_id`.
     pub channel_id: Uuid,

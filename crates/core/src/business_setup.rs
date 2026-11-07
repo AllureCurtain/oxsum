@@ -10,42 +10,65 @@ use uuid::Uuid;
 /// Constructed by the deployment-authenticated transport, never a customer principal.
 #[derive(Clone, Copy)]
 pub enum SetupAuthority {
+    /// The deployment held the authority: an operator-configured transport,
+    /// not a customer principal.
     Deployment,
 }
 
+/// Request to mint a one-time setup invitation for the intended owner.
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct BusinessSetupTokenRequest {
+    /// Caller-supplied key that makes repeated requests return the same invitation.
     pub idempotency_key: String,
+    /// Email address of the intended owner, lowercased before storage.
     pub owner_email: String,
 }
+/// Request from an authenticated owner accepting a setup invitation.
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct BusinessSetupRequest {
+    /// One-time setup secret from the invitation.
     pub token: String,
+    /// Name to assign to the business, 1 to 120 characters.
     pub business_name: String,
 }
+/// Request to accept a setup invitation while creating a new owner account.
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct BusinessSetupRegistrationRequest {
+    /// One-time setup secret from the invitation.
     pub token: String,
+    /// Name to assign to the business, 1 to 120 characters.
     pub business_name: String,
+    /// Email address for the new owner account.
     pub email: String,
+    /// Password for the new owner account.
     pub password: String,
 }
+/// A pending or accepted setup invitation.
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct BusinessSetupToken {
+    /// Setup invitation identifier.
     pub id: Uuid,
+    /// Business the invitation initializes.
     pub business_id: Uuid,
+    /// Email address the invitation is bound to.
     pub owner_email: String,
+    /// The one-time secret, returned only on first issuance and `None` on retry.
     pub token: Option<String>,
+    /// When the invitation stops being accepted.
     #[serde(with = "time::serde::rfc3339")]
     pub expires_at: OffsetDateTime,
 }
+/// Result of accepting a setup invitation.
 #[derive(Serialize)]
 pub struct BusinessSetupResult {
+    /// The initialized business and its ownership migration record.
     pub ownership: BusinessOwnership,
+    /// Registration details when a new owner account was created; `None` when
+    /// an authenticated existing user accepted instead.
     pub registration: Option<Registration>,
 }
 
@@ -112,6 +135,8 @@ async fn initialize(
     Ok(())
 }
 impl Db {
+    /// Mints a one-time setup invitation for the intended owner. Repeating the
+    /// same idempotency key returns the original invitation without the secret.
     pub async fn mint_business_setup(
         &self,
         _authority: SetupAuthority,
@@ -174,6 +199,8 @@ impl Db {
             registration: None,
         })
     }
+    /// Accepts a setup invitation while creating a new owner account, then
+    /// initializes the business.
     pub async fn register_business_owner(
         &self,
         request: &BusinessSetupRegistrationRequest,

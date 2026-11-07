@@ -6,13 +6,18 @@ use serde::{Deserialize, Serialize};
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 use url::{Host, Url};
 
+/// The channel `settings` key a destination policy is stored under.
 pub const DESTINATION_POLICY_KEY: &str = "destinationPolicy";
 
+/// Which network the provider connection may reach.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum ProviderNetwork {
+    /// Internet addresses only; the connection must use HTTPS.
     #[default]
     Public,
+    /// Exact internal addresses pinned in `allowed_ips`, for one configured
+    /// endpoint.
     Internal,
 }
 
@@ -21,7 +26,10 @@ pub enum ProviderNetwork {
 #[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ProviderDestinationPolicy {
+    /// The network the connection may reach.
     pub network: ProviderNetwork,
+    /// Exact internal addresses the connection may use; must be empty for a
+    /// public policy and non-empty (at most 16) for an internal one.
     #[serde(default)]
     pub allowed_ips: Vec<IpAddr>,
 }
@@ -42,6 +50,13 @@ impl ProviderDestinationPolicy {
         Ok(policy)
     }
 
+    /// Checks the policy's own consistency: a public policy carries no
+    /// allowlist, an internal one carries one to sixteen distinct internal
+    /// addresses.
+    ///
+    /// # Errors
+    ///
+    /// [`WalletError::InvalidInput`] when the policy is inconsistent.
     pub fn validate(&self) -> Result<(), WalletError> {
         match self.network {
             ProviderNetwork::Public if !self.allowed_ips.is_empty() => return Err(invalid()),
@@ -143,6 +158,8 @@ fn public_v6(ip: Ipv6Addr) -> bool {
         && !(s[0] == 0x3fff && (s[1] & 0xf000) == 0)
 }
 
+/// Whether an address is globally routable, excluding loopback, private,
+/// link-local, documentation and other special-purpose ranges.
 pub fn public_address(ip: IpAddr) -> bool {
     match ip {
         IpAddr::V4(ip) => public_v4(ip),

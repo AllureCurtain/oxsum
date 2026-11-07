@@ -183,6 +183,8 @@ pub struct EvidenceManifestV1<'a> {
     /// do not. Part of the committed bytes, so a bundle cannot quietly drop
     /// the honesty.
     pub covered: &'a [&'a str],
+    /// The claim classes the bundle explicitly does not attest, committed in
+    /// the digest so a bundle cannot quietly drop the scope.
     pub excluded: &'a [String],
     /// The committed artifacts, sorted by `(kind, id)` — order is
     /// load-bearing, as it is in the usage-report fold.
@@ -213,6 +215,7 @@ pub struct EvidenceBundle {
     /// The covered UTC span for `period`; absent on `statement`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub period_from: Option<String>,
+    /// The end of the covered UTC span for `period`; absent on `statement`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub period_to: Option<String>,
     /// The statement a `statement` bundle wraps; absent on `period`.
@@ -237,10 +240,13 @@ pub struct EvidenceBundle {
     /// The operator-signed note over `head`, when the deployment signs heads.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub note: Option<String>,
+    /// The signing key's name, when the head was signed.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub key_name: Option<String>,
+    /// The signing key's public key, hex-encoded, when the head was signed.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub public_key: Option<String>,
+    /// The signing key's own hash, hex-encoded, when the head was signed.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub key_hash: Option<String>,
 }
@@ -279,6 +285,7 @@ pub struct EvidenceEntryBundle {
     /// of the manifest row it backs (the marker's own row is `"bundle"` and
     /// the bundle id).
     pub for_kind: String,
+    /// The id of the committed artifact this entry evidences.
     pub for_id: String,
 }
 
@@ -294,6 +301,7 @@ pub struct EvidenceBundleRow {
     pub kind: EvidenceKind,
     /// The covered span for `period`.
     pub period_from: Option<time::Date>,
+    /// The end of the covered span for `period`.
     pub period_to: Option<time::Date>,
     /// The statement a `statement` bundle wraps.
     pub statement_id: Option<Uuid>,
@@ -374,7 +382,7 @@ impl Db {
     /// `to` must be a fully ended UTC day — the same discipline a usage
     /// report applies, because the manifest commits a complete artifact set
     /// and an open day can still book rows the bundle would omit. The span
-    /// is bounded to [`MAX_PERIOD_DAYS`] so a mis-typed `from` cannot mint
+    /// is bounded to `MAX_PERIOD_DAYS` so a mis-typed `from` cannot mint
     /// an unbounded scan.
     ///
     /// `wallet` is the organization's open ledger; `include_upstream_cost`

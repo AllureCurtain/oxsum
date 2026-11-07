@@ -92,9 +92,14 @@ const DEMO_GEMINI_MODELS: &str = r#"{
 /// `created: false` means the demo world was already there and nothing changed.
 #[derive(Debug, Clone)]
 pub struct SeedReport {
+    /// Whether this run created the demo world; `false` means it already
+    /// existed and nothing was written.
     pub created: bool,
+    /// The demo owner's email address.
     pub email: String,
+    /// The demo member's email address.
     pub member_email: String,
+    /// The seeded organization's name.
     pub organization: String,
     /// The first key's secret — printed once; a rerun cannot recover it.
     pub api_secret: Option<String>,

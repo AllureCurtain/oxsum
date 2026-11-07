@@ -3,7 +3,7 @@
 //!
 //! The ledger only ever holds integer minor units of one credit — this module
 //! converts for display and is never an input to a charge, a freeze or a proof.
-//! The conversion itself stays in integer arithmetic: a [`DisplayRate`] is a
+//! The conversion itself stays in integer arithmetic: a `DisplayRate` is a
 //! decimal stored as text and parsed to a mantissa plus a scale, so converting
 //! a minor-unit figure is one `i128` multiply and one divide — no float ever
 //! touches money.
@@ -17,7 +17,7 @@ use crate::wallet::SCALE;
 ///
 /// ISO 4217-shaped: three uppercase letters, which is also all the database
 /// column admits. `DisplayCurrency` carries the code and nothing else — what a
-/// credit converts to it at is the [`DisplayRate`] beside it, and the two are
+/// credit converts to it at is the `DisplayRate` beside it, and the two are
 /// written and cleared together (`Db::set_display_currency`).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]

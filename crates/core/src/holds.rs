@@ -37,12 +37,15 @@ pub struct OpenHold {
     pub tenant_id: String,
     /// From the `x-oxsum-request-id` header.
     pub request_id: String,
+    /// The public model name the turn priced under.
     pub model: String,
+    /// The channel that served the turn.
     pub channel: String,
     /// The price version in force when the turn started.
     pub price_version: i64,
-    /// Minor units per million tokens at that version.
+    /// Minor units per million input tokens at that version.
     pub input_price: i64,
+    /// Minor units per million output tokens at that version.
     pub output_price: i64,
     /// What was frozen, in minor units.
     pub freeze_minor: i64,
@@ -56,7 +59,9 @@ pub struct OpenHold {
     /// The caller's attribution on the turn, carried so a swept settlement's usage
     /// row still says whose turn it was.
     pub end_user: Option<String>,
+    /// The service tier the caller requested, when it named one.
     pub service_tier: Option<String>,
+    /// The caller's attribution tags on the turn.
     pub tags: BTreeMap<String, String>,
     /// How many sweep attempts have failed on this hold.
     pub sweep_attempts: i32,
@@ -333,7 +338,9 @@ pub struct InFlightHold {
     pub organization: String,
     /// From the `x-oxsum-request-id` header.
     pub request_id: String,
+    /// The public model name the turn priced under.
     pub model: String,
+    /// The channel that served the turn.
     pub channel: String,
     /// The price version in force when the turn started.
     pub price_version: i64,

@@ -46,11 +46,17 @@ pub const RAIL_HYPERSWITCH: &str = "hyperswitch";
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CodeBatch {
+    /// The batch's identifier.
     pub batch_id: Uuid,
+    /// How many codes the batch holds.
     pub count: i64,
+    /// The credit each code carries, in minor units.
     pub amount_minor: i64,
+    /// When the codes lapse; `None` means they do not expire.
     #[serde(with = "time::serde::rfc3339::option")]
     pub expires_at: Option<OffsetDateTime>,
+    /// The plaintext codes; the database keeps only their hashes, so this is
+    /// the sole time the values are visible.
     pub codes: Vec<String>,
 }
 
@@ -58,8 +64,10 @@ pub struct CodeBatch {
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Redemption {
+    /// The ledger receipt of the credit.
     #[serde(flatten)]
     pub receipt: Receipt,
+    /// The amount credited, in minor units.
     pub amount_minor: i64,
 }
 
@@ -1266,7 +1274,7 @@ impl Db {
     }
 
     /// Reverses one credited deposit (issue #356, decision D12): the ledger
-    /// half of a refund. [`Wallet::reverse_deposit`] posts the mirror entry —
+    /// half of a refund. reverse_deposit posts the mirror entry —
     /// Wallet debited, Cash credited, the reason as its description — under a
     /// key derived from the deposit id, and the row flips to `reversed`
     /// naming it. The PSP call that returns the money is a separate issue; no

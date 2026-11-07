@@ -52,13 +52,16 @@ pub struct Experiment {
     /// The experiment's own id — what `X-Oxsum-Experiment` and `experimentId`
     /// name.
     pub id: Uuid,
+    /// The experiment's caller-facing name.
     pub name: String,
     /// The variant set `[{model, weight}]`.
     pub variants: Vec<Variant>,
     /// `open` serves variants; `ended` resolves the plain model instead.
     pub status: String,
+    /// When the experiment was created.
     #[serde(with = "time::serde::rfc3339")]
     pub created_at: OffsetDateTime,
+    /// When the experiment was ended; `None` while it is open.
     #[serde(with = "time::serde::rfc3339::option")]
     pub ended_at: Option<OffsetDateTime>,
 }
@@ -83,7 +86,9 @@ pub struct VariantResult {
     pub variant: String,
     /// How many settled turns served this variant.
     pub turns: i64,
+    /// Input tokens the variant's settled turns used.
     pub input_tokens: i64,
+    /// Output tokens the variant's settled turns used.
     pub output_tokens: i64,
     /// What the variant's turns charged, in minor units.
     pub charged_minor: i64,
@@ -166,7 +171,7 @@ impl Db {
     ///
     /// `WalletError::InvalidInput` when a variant's model is unserved, a weight
     /// is below 1, a name is empty or over-long, or the set exceeds
-    /// [`MAX_VARIANTS`]; storage failures surface as `WalletError`.
+    /// `MAX_VARIANTS`; storage failures surface as `WalletError`.
     pub async fn put_experiment(
         &self,
         org_id: Uuid,

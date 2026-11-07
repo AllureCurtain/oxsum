@@ -53,7 +53,9 @@ pub enum Principal {
 /// The organization a key acts as, plus the key that acted.
 #[derive(Debug, Clone)]
 pub struct KeyPrincipal {
+    /// The organization the key acts for.
     pub organization: Organization,
+    /// The API key that authenticated the request.
     pub key: ActingKey,
 }
 
@@ -150,9 +152,13 @@ pub enum KeyScope {
 /// The user behind a session cookie, resolved at request time.
 #[derive(Debug, Clone)]
 pub struct SessionPrincipal {
+    /// The session row the cookie resolved to.
     pub session: Session,
+    /// The logged-in user.
     pub user: User,
+    /// The organization the user is acting as.
     pub organization: Organization,
+    /// The user's role in that organization.
     pub role: Role,
 }
 
@@ -160,11 +166,16 @@ pub struct SessionPrincipal {
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Session {
+    /// The session's identifier, stable for the session's lifetime.
     pub id: Uuid,
+    /// When the session was minted at login.
     #[serde(with = "time::serde::rfc3339")]
     pub created_at: OffsetDateTime,
+    /// Absolute expiry; the session does not slide forward on use.
     #[serde(with = "time::serde::rfc3339")]
     pub expires_at: OffsetDateTime,
+    /// When the session last authenticated a request, touched at most every
+    /// five minutes to avoid a write per request.
     #[serde(with = "time::serde::rfc3339")]
     pub last_used_at: OffsetDateTime,
 }
@@ -172,9 +183,15 @@ pub struct Session {
 /// A session plus its token, returned exactly once: at login.
 #[derive(Debug, Clone)]
 pub struct CreatedSession {
+    /// The resolved principal, absent when the user has no organization
+    /// membership to act as.
     pub principal: Option<SessionPrincipal>,
+    /// The logged-in user.
     pub user: User,
+    /// The freshly written session row.
     pub session: Session,
+    /// The bearer token to set as the cookie; the database keeps only its
+    /// hash, so this is the sole time the value is available.
     pub token: String,
 }
 

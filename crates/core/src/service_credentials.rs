@@ -17,6 +17,7 @@ const CREDENTIAL_COLS: &str = "credential_id, name, prefix, created_at, revoked_
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ServiceCredential {
+    /// The credential's identifier.
     #[serde(rename = "credentialId")]
     pub id: Uuid,
     /// Which service holds it — the name settlement descriptions record as the
@@ -24,8 +25,10 @@ pub struct ServiceCredential {
     pub name: Option<String>,
     /// The leading characters of the secret, for recognizing it in a list.
     pub prefix: String,
+    /// When the credential was minted.
     #[serde(with = "time::serde::rfc3339")]
     pub created_at: OffsetDateTime,
+    /// When the credential was revoked; `None` while it is live.
     #[serde(with = "time::serde::rfc3339::option")]
     pub revoked_at: Option<OffsetDateTime>,
 }

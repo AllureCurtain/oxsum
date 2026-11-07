@@ -13,16 +13,22 @@ use crate::{Db, WalletError};
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ServingAccess {
+    /// The customer the credential serves.
     pub customer_id: Uuid,
+    /// The consumption key used; `None` for a service-credential turn.
     pub key_id: Option<Uuid>,
+    /// The business that owns the customer.
     pub business_id: Uuid,
     key_models: Option<BTreeSet<String>>,
     customer_models: Option<BTreeSet<String>>,
     channels: BTreeSet<Uuid>,
+    /// The credential's rolling-minute request cap; `None` is uncapped.
     pub requests_per_minute: Option<i32>,
 }
 
 impl ServingAccess {
+    /// Whether both the key's and the customer's model scopes allow this public
+    /// model name; an absent scope allows everything.
     pub fn allows_model(&self, model: &str) -> bool {
         self.key_models
             .as_ref()
@@ -38,6 +44,7 @@ impl ServingAccess {
         self.allows_model(model) && upstream.is_none_or(|name| self.allows_model(name))
     }
 
+    /// Whether the credential may route a request to this channel.
     pub fn allows_channel(&self, channel: Uuid) -> bool {
         self.channels.contains(&channel)
     }
