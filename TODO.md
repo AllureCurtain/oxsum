@@ -4,6 +4,8 @@ Updated: 2026-11-06
 
 ## In progress
 
+- [ ] [#620](https://github.com/AllureCurtain/oxsum/issues/620) — Candidate validation follow-up: require executed full CI on the exact SHA, smoke the built image, and retain the image and evidence without publication.
+
 ### Self-hosted release (#591)
 
 The accepted contract and evidence live in [docs/roadmap/self-hosted-v1](docs/roadmap/self-hosted-v1/README.md). Each issue below has its own completion criteria; no implementation is complete merely because this plan is adopted.
