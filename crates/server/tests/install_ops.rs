@@ -3,6 +3,9 @@
 //! backup/restore script pair run against real scratch databases.
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
+#[path = "support/binary.rs"]
+mod binary;
+
 use axum::{
     body::Body,
     http::{Request, StatusCode},
@@ -165,7 +168,7 @@ async fn check_config_validates_env_without_a_database() {
     std::fs::write(dir.join(".env"), "").unwrap();
 
     let run = |extra: &[(&str, &str)]| {
-        let mut cmd = std::process::Command::new(env!("CARGO_BIN_EXE_oxsum"));
+        let mut cmd = binary::oxsum();
         cmd.arg("--check-config").current_dir(&dir).env_clear().env(
             "DATABASE_URL",
             "postgres://postgres:postgres@127.0.0.1:5432/oxsum",
@@ -219,7 +222,7 @@ async fn check_config_validates_env_without_a_database() {
     assert!(err.contains("OXSUM_SMTP_URL"), "{err}");
 
     // Missing DATABASE_URL names that instead of connecting to nothing.
-    let missing = std::process::Command::new(env!("CARGO_BIN_EXE_oxsum"))
+    let missing = binary::oxsum()
         .arg("--check-config")
         .current_dir(&dir)
         .env_clear()
@@ -251,7 +254,7 @@ async fn seed_is_opt_in_and_refuses_a_used_database() {
     std::fs::write(dir.join(".env"), "").unwrap();
 
     let run_seed = |demo_flag: Option<&str>| {
-        let mut cmd = std::process::Command::new(env!("CARGO_BIN_EXE_oxsum"));
+        let mut cmd = binary::oxsum();
         cmd.arg("seed")
             .current_dir(&dir)
             .env_clear()
@@ -308,7 +311,7 @@ async fn migrate_only_brings_a_fresh_database_current() {
     std::fs::write(dir.join(".env"), "").unwrap();
 
     let run = || {
-        std::process::Command::new(env!("CARGO_BIN_EXE_oxsum"))
+        binary::oxsum()
             .arg("--migrate-only")
             .current_dir(&dir)
             .env_clear()
@@ -401,7 +404,7 @@ async fn previous_version_fixture_upgrades_intact() {
     let dir = std::env::temp_dir().join(format!("oxsum-upg-{}", uuid::Uuid::new_v4()));
     std::fs::create_dir(&dir).unwrap();
     std::fs::write(dir.join(".env"), "").unwrap();
-    let out = std::process::Command::new(env!("CARGO_BIN_EXE_oxsum"))
+    let out = binary::oxsum()
         .arg("--migrate-only")
         .current_dir(&dir)
         .env_clear()
