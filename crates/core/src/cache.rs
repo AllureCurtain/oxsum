@@ -97,19 +97,37 @@ impl CachePolicy {
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ResponseCacheContext<'a> {
+    /// The resolved serving access — customer, key and business, plus the
+    /// model and channel permissions the credential carries.
     pub access: &'a crate::ServingAccess,
+    /// The API surface the request arrived on, e.g. `chat` or `responses`.
     pub surface: &'a str,
+    /// The model name the caller asked for, before any alias or fallback.
     pub requested_model: &'a str,
+    /// The upstream model the caller explicitly requested, if any.
     pub requested_upstream: Option<&'a str>,
+    /// The public model name that answered.
     pub served_model: &'a str,
+    /// The upstream model name the served name resolved to.
     pub upstream_model: Option<&'a str>,
+    /// The request body as received, canonicalized by object key only.
     pub request: &'a Value,
+    /// The body actually forwarded upstream after admission rewrites.
     pub forwarded: &'a Value,
+    /// The request headers that can change the answer and so participate in
+    /// the digest.
     pub semantic_headers: &'a Value,
+    /// The key's constraints (model scope, tags, per-minute limits) at
+    /// admission.
     pub key_constraints: &'a Value,
+    /// The experiment binding that selected the route, if one did.
     pub experiment: &'a Value,
+    /// The spend mandate presented with the request, if any.
     pub mandate: &'a Value,
+    /// The route configuration the admission resolved.
     pub routes: &'a Value,
+    /// The organization's discount at admission, in percent — part of the
+    /// charge a hit recomputes.
     pub discount_percent: Option<i64>,
     /// The resolved sale snapshot's digest when the admission priced under
     /// customer sale terms (issue #603): the cached answer's charge recomputes

@@ -10,13 +10,20 @@ use sha2::{Digest, Sha256};
 use sqlx::{Postgres, Row, Transaction};
 use uuid::Uuid;
 
+/// A staff role within the business; each role grants an explicit capability
+/// set.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum BusinessRole {
+    /// Full authority, including staff, secrets and ownership transfer.
     Owner,
+    /// Manages customers, catalog and routing.
     Admin,
+    /// Reads reports and performs commercial, funds and refund writes.
     Finance,
+    /// Reads customers and requests and can suspend customers.
     Support,
+    /// Read-only overview and reports access.
     Viewer,
 }
 impl BusinessRole {
@@ -68,6 +75,8 @@ impl BusinessRole {
             | C::IntegrationsManage => self == Self::Owner,
         }
     }
+    /// Returns every capability this role grants, in `BusinessCapability::ALL`
+    /// order.
     #[must_use]
     pub fn capabilities(self) -> Vec<BusinessCapability> {
         BusinessCapability::ALL
@@ -77,28 +86,47 @@ impl BusinessRole {
             .collect()
     }
 }
+/// One independently grantable business permission.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum BusinessCapability {
+    /// Read the business overview.
     OverviewRead,
+    /// Read customer records.
     CustomersRead,
+    /// Create and update customer records.
     CustomersWrite,
+    /// Suspend or restore a customer.
     CustomersSuspend,
+    /// Read request history.
     RequestsRead,
+    /// Change models, prices and aliases.
     CatalogWrite,
+    /// Change routing and fallback configuration.
     RoutingWrite,
+    /// Read and change provider credentials.
     ProviderSecretsWrite,
+    /// Change sale books and commercial terms.
     CommercialWrite,
+    /// Move funds and adjust balances.
     FundsWrite,
+    /// Resolve refunds and disputes.
     RefundsWrite,
+    /// Read reports and finance lists.
     ReportsRead,
+    /// Read and change merchant credentials.
     MerchantSecretsWrite,
+    /// Manage staff roles.
     StaffManage,
+    /// Transfer business ownership.
     OwnershipTransfer,
+    /// Change the registration mode.
     RegistrationWrite,
+    /// Manage business integrations.
     IntegrationsManage,
 }
 impl BusinessCapability {
+    /// Every capability, in a stable order.
     pub const ALL: &[Self] = &[
         Self::OverviewRead,
         Self::CustomersRead,
@@ -119,18 +147,26 @@ impl BusinessCapability {
         Self::IntegrationsManage,
     ];
 }
+/// The authenticated staff member acting in one business.
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct BusinessPrincipal {
+    /// Business whose authority applies.
     pub business_id: Uuid,
+    /// Authenticated user.
     pub user_id: Uuid,
+    /// Current staff role.
     pub role: BusinessRole,
+    /// Capabilities the role grants.
     pub capabilities: Vec<BusinessCapability>,
 }
+/// Which authority a session acts under.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum SessionContext {
+    /// Customer membership authority.
     Customer,
+    /// Business staff authority.
     Business,
 }
 impl SessionContext {
@@ -141,48 +177,75 @@ impl SessionContext {
         }
     }
 }
+/// The session's resolved context and available authorities.
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SessionContextInfo {
+    /// Authority the session currently acts under.
     pub context: SessionContext,
+    /// Authenticated user.
     pub user: User,
+    /// Customer organization selected in customer context, if any.
     pub organization_id: Option<Uuid>,
+    /// Business principal and capabilities, when the user holds a staff seat.
     pub business: Option<BusinessPrincipal>,
 }
+/// Switches the session between customer and business context.
 #[derive(Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct SessionContextRequest {
+    /// Caller-chosen key; a replay answers the standing switch.
     pub idempotency_key: String,
+    /// Context to select.
     pub context: SessionContext,
+    /// Customer organization to select; must be absent in business context.
     pub organization_id: Option<Uuid>,
 }
+/// One staff member of the business.
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct BusinessStaff {
+    /// Staff user identifier.
     pub user_id: Uuid,
+    /// Staff user's email address.
     pub email: String,
+    /// Assigned business role.
     pub role: BusinessRole,
 }
+/// Sets one user's business role.
 #[derive(Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct BusinessStaffRequest {
+    /// Caller-chosen key; a replay answers the standing mutation.
     pub idempotency_key: String,
+    /// User to add or update.
     pub user_id: Uuid,
+    /// Role to grant; `owner` is refused here.
     pub role: BusinessRole,
+    /// Operator-facing reason recorded in the audit trail.
     pub reason: String,
 }
+/// Removes one user's staff membership.
 #[derive(Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct BusinessStaffRevokeRequest {
+    /// Caller-chosen key; a replay answers the standing mutation.
     pub idempotency_key: String,
+    /// Staff user to remove.
     pub user_id: Uuid,
+    /// Operator-facing reason recorded in the audit trail.
     pub reason: String,
 }
+/// Transfers ownership to another staff member; the current owner becomes
+/// admin.
 pub type BusinessOwnershipRequest = BusinessStaffRevokeRequest;
+/// How new users may join the business.
 #[derive(Debug, Clone, Copy, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub enum RegistrationMode {
+    /// Only invited users may register.
     Invite,
+    /// Anyone may register.
     Open,
 }
 impl RegistrationMode {
@@ -193,15 +256,21 @@ impl RegistrationMode {
         }
     }
 }
+/// Changes the business's registration mode.
 #[derive(Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct BusinessRegistrationRequest {
+    /// Caller-chosen key; a replay answers the standing mutation.
     pub idempotency_key: String,
+    /// Registration mode to set.
     pub mode: RegistrationMode,
+    /// Operator-facing reason recorded in the audit trail.
     pub reason: String,
 }
+/// Receipt identifying one committed business mutation.
 #[derive(Debug, Serialize)]
 pub struct BusinessMutationResult {
+    /// Mutation receipt id.
     pub id: Uuid,
 }
 
@@ -406,12 +475,15 @@ impl Db {
         let mut tx = self.pool().begin().await?;
         Ok(identity(&mut tx, token).await?.user)
     }
+    /// Resolves the session's current context, user and available authorities.
     pub async fn session_context(&self, token: &str) -> Result<SessionContextInfo, WalletError> {
         let mut tx = self.pool().begin().await?;
         let business = lock_business(&mut tx).await?;
         let actor = identity(&mut tx, token).await?;
         context_info(&mut tx, business, actor).await
     }
+    /// Switches the session's context; entering business context requires a
+    /// staff seat and a second-factor-verified login.
     pub async fn switch_session_context(
         &self,
         token: &str,
@@ -492,6 +564,7 @@ impl Db {
         let business = lock_business(&mut tx).await?;
         require_capability(&mut tx, business, token, capability).await
     }
+    /// Lists the business's staff members in seat order.
     pub async fn business_staff(&self, token: &str) -> Result<Vec<BusinessStaff>, WalletError> {
         let mut tx = self.pool().begin().await?;
         let business = lock_business(&mut tx).await?;
@@ -507,6 +580,7 @@ impl Db {
             })
             .collect()
     }
+    /// Adds a staff member or changes a non-owner's role.
     pub async fn set_business_staff(
         &self,
         token: &str,
@@ -557,6 +631,7 @@ impl Db {
         tx.commit().await?;
         Ok(result)
     }
+    /// Removes a non-owner staff member.
     pub async fn revoke_business_staff(
         &self,
         token: &str,
@@ -612,6 +687,8 @@ impl Db {
         tx.commit().await?;
         Ok(result)
     }
+    /// Transfers ownership to another staff member, demoting the caller to
+    /// admin.
     pub async fn transfer_business_ownership(
         &self,
         token: &str,
@@ -659,6 +736,7 @@ impl Db {
         tx.commit().await?;
         Ok(result)
     }
+    /// Sets whether the business registers by invitation or openly.
     pub async fn set_business_registration(
         &self,
         token: &str,

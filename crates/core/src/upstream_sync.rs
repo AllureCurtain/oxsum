@@ -132,7 +132,7 @@ pub fn diff_upstream(stored: &UpstreamPrices, live: &UpstreamPrices) -> Vec<Fiel
 /// diff. `stored` is the `price.upstream` of the model's current version (the
 /// same object `/api/v1/pricing` serves); `live` is the `upstream` block the
 /// probed catalog answers for the model, `None` when the model is absent from
-/// the catalog — an absent model is left to [`reconcile_model`], not diffed
+/// the catalog — an absent model is left to `reconcile_model`, not diffed
 /// field-by-field.
 pub struct ModelPair<'a> {
     /// The model both sides name.

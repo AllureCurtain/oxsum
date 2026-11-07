@@ -34,6 +34,7 @@ pub struct RequestLogRow {
     /// The model the caller asked for and the model that answered: equal
     /// until a cross-model failover rewrote the served name (issue #500).
     pub model_requested: String,
+    /// The model that actually answered, after any fallback.
     pub model_served: String,
     /// The channel that served; empty on a refusal.
     pub channel: String,
@@ -51,6 +52,7 @@ pub struct RequestLogRow {
     pub total_ms: Option<i64>,
     /// The tokens the settle billed.
     pub input_tokens: i64,
+    /// The output tokens the settle billed.
     pub output_tokens: i64,
     /// The input served from the cache.
     pub cached_tokens: i64,
@@ -80,12 +82,19 @@ pub struct RequestLogFilter {
     /// An explicit org filter the admin endpoint applies on top of the
     /// unscoped read.
     pub filter_organization_id: Option<Uuid>,
+    /// Only rows paid by this key.
     pub key_id: Option<Uuid>,
+    /// Only rows whose served model is this name.
     pub model_served: Option<String>,
+    /// Only rows served by this channel.
     pub channel: Option<String>,
+    /// Inclusive lower bound on the row's creation time.
     pub from: Option<OffsetDateTime>,
+    /// Exclusive upper bound on the row's creation time.
     pub to: Option<OffsetDateTime>,
+    /// Only rows with this terminal status, e.g. `settled` or `refused`.
     pub status: Option<String>,
+    /// Only rows that charged at least this many minor units.
     pub min_charge: Option<i64>,
 }
 
@@ -93,6 +102,7 @@ pub struct RequestLogFilter {
 /// the log's start.
 #[derive(Debug)]
 pub struct RequestLogPage {
+    /// The page's rows, newest first.
     pub rows: Vec<RequestLogRow>,
     /// `(created_at, request_id)` of the page's last row; echoed back as the
     /// keyset position the next page resumes above.
@@ -170,6 +180,13 @@ impl Db {
         )
         .await
     }
+    /// [`request_log_page`](Self::request_log_page) under a customer record
+    /// scope: the page is narrowed to the keys and attribution the scope
+    /// allows, on top of `filter`.
+    ///
+    /// # Errors
+    ///
+    /// Storage failures surface as [`WalletError`].
     pub async fn scoped_request_log_page(
         &self,
         filter: &RequestLogFilter,

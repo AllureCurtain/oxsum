@@ -161,7 +161,9 @@ pub struct Task {
     pub channel: String,
     /// Upstream's own id for the job.
     pub external_task_id: String,
+    /// The task's billing class.
     pub kind: TaskKind,
+    /// Where the task is in its life.
     pub state: TaskState,
     /// The hold's idempotency key — `req-<task id>:hold` — the settle derives from.
     pub hold_key: String,
@@ -177,6 +179,7 @@ pub struct Task {
     pub error_json: Option<serde_json::Value>,
     /// The usage report the terminal answer carried.
     pub usage_json: Option<serde_json::Value>,
+    /// When the submission wrote the row.
     pub submitted_at: OffsetDateTime,
     /// When the state went terminal.
     pub completed_at: Option<OffsetDateTime>,
@@ -188,14 +191,18 @@ pub struct NewTask {
     /// oxsum's task id — minted by the route so the hold key derives before
     /// the row exists.
     pub task_id: Uuid,
+    /// The organization that submitted the task.
     pub organization_id: Uuid,
+    /// The key that submitted — the usage record's payer.
     pub key_id: Option<Uuid>,
+    /// The channel that accepted the submission.
     pub channel_id: Uuid,
     /// The channel's name, denormalized onto the row so a settle never
     /// re-asks the directory.
     pub channel: String,
     /// Upstream's own id for the job.
     pub external_task_id: String,
+    /// The task's billing class.
     pub kind: TaskKind,
     /// `req-<task id>:hold`.
     pub hold_key: String,
@@ -238,6 +245,8 @@ fn task_from_row(row: &sqlx::postgres::PgRow) -> Result<Task, WalletError> {
 pub struct TaskPollTarget {
     /// The task row.
     pub task: Task,
+    /// The endpoint and sealed credential captured at submission, absent for
+    /// a row written before endpoints were snapshotted.
     pub endpoint: Option<TaskProviderEndpoint>,
 }
 
@@ -245,9 +254,14 @@ pub struct TaskPollTarget {
 #[derive(Clone, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct TaskProviderEndpoint {
+    /// The provider's base URL the submit and poll paths append to.
     pub base_url: String,
+    /// The wire protocol the provider speaks, e.g. `openai`.
     pub protocol: String,
+    /// The egress policy the connection must satisfy.
     pub destination_policy: crate::ProviderDestinationPolicy,
+    /// The sealed credential used for the call, if the credential is held
+    /// per channel rather than per pool entry.
     pub api_key_sealed: Option<String>,
 }
 impl std::fmt::Debug for TaskProviderEndpoint {
@@ -281,6 +295,13 @@ impl Db {
             .await
     }
 
+    /// Writes the task row with an explicit endpoint snapshot, for callers
+    /// that already captured the connection (the submit relay) instead of
+    /// re-reading the channel directory.
+    ///
+    /// # Errors
+    ///
+    /// Storage failures surface as [`WalletError`].
     pub async fn insert_task_with_endpoint(
         &self,
         task: &NewTask,
@@ -390,6 +411,13 @@ impl Db {
         Ok(targets)
     }
 
+    /// Reads the endpoint snapshot stored on a task, or `None` when the task
+    /// has no captured connection.
+    ///
+    /// # Errors
+    ///
+    /// Storage failures and a malformed stored snapshot surface as
+    /// [`WalletError`].
     pub async fn task_provider_endpoint(
         &self,
         task_id: Uuid,

@@ -106,7 +106,7 @@ pub const MAX_DELIVERY_ATTEMPTS: i32 = 10;
 /// The projection a settle computes for one periodically-limited key: the date
 /// the current window's committed spend, carried forward at the rate observed
 /// so far in the window, would cross the key's `spendLimitMinor`. Produced by
-/// [`forecast_exhaustion`]; consumed by [`Db::enqueue_budget_forecast`] and by
+/// [`forecast_exhaustion`]; consumed by `Db::enqueue_budget_forecast` and by
 /// the keys dashboard, which renders the same projection as a line per key.
 ///
 /// `days_remaining` is `projected_exhaustion_date - today`, floored at zero —
@@ -249,9 +249,13 @@ const CLAIM_LEASE_SECS: i64 = 120;
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct WebhookEndpoint {
+    /// Endpoint identifier.
     pub id: Uuid,
+    /// Receiver URL the deliveries POST to.
     pub url: String,
+    /// Event names the endpoint subscribes to.
     pub events: Vec<String>,
+    /// Whether new events are enqueued for this endpoint.
     pub enabled: bool,
     /// The available-balance line `balance.low` fires below; `None` is off.
     pub balance_low_minor: Option<i64>,
@@ -259,7 +263,9 @@ pub struct WebhookEndpoint {
     /// is off (issue #232).
     #[serde(rename = "budgetThresholdsPercent")]
     pub budget_thresholds: Vec<i32>,
+    /// Last four characters of the signing secret, for recognition only.
     pub secret_last4: String,
+    /// When the endpoint was registered.
     pub created_at: OffsetDateTime,
 }
 
@@ -267,8 +273,10 @@ pub struct WebhookEndpoint {
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CreatedWebhook {
+    /// The registered endpoint's metadata.
     #[serde(flatten)]
     pub endpoint: WebhookEndpoint,
+    /// The plaintext signing secret, returned only at creation.
     pub secret: String,
 }
 
@@ -276,15 +284,26 @@ pub struct CreatedWebhook {
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct WebhookDelivery {
+    /// Delivery identifier.
     pub id: Uuid,
+    /// Endpoint the delivery belongs to.
     pub endpoint_id: Uuid,
+    /// Event name carried in the payload.
     pub event_type: String,
+    /// Delivery state, such as `"pending"`, `"sending"`, `"delivered"` or
+    /// `"failed"`.
     pub status: String,
+    /// Number of attempts made so far.
     pub attempts: i32,
+    /// When the next attempt is due.
     pub next_attempt_at: OffsetDateTime,
+    /// HTTP status the receiver last answered, if it answered.
     pub response_status: Option<i32>,
+    /// Error text from the last failed attempt.
     pub last_error: Option<String>,
+    /// When the delivery was enqueued.
     pub created_at: OffsetDateTime,
+    /// When the receiver last accepted the delivery.
     pub delivered_at: Option<OffsetDateTime>,
     /// The lease fencing token: `record_delivery` accepts the outcome only from
     /// the worker holding the claim this timestamp proves. Internal to the
@@ -298,7 +317,9 @@ pub struct WebhookDelivery {
 /// API field.
 #[derive(Debug)]
 pub struct DueDelivery {
+    /// The claimed delivery's bookkeeping record.
     pub delivery: WebhookDelivery,
+    /// Receiver URL to POST to.
     pub url: String,
     /// The sealed signing secret; the sender opens it with `OXSUM_SECRET_KEY`.
     pub secret_sealed: String,
@@ -310,13 +331,19 @@ pub struct DueDelivery {
 #[derive(Debug)]
 pub enum DeliveryOutcome {
     /// The receiver answered 2xx; `status` is what it answered.
-    Delivered { status: i32 },
+    Delivered {
+        /// HTTP status the receiver answered.
+        status: i32,
+    },
     /// The receiver answered, or the attempt failed before an answer. `attempt`
     /// is the number of the attempt just made, so the record knows both the
     /// backoff that follows it and whether the budget ran out.
     AttemptFailed {
+        /// HTTP status the receiver answered, when it answered.
         status: Option<i32>,
+        /// Why the attempt failed.
         error: String,
+        /// Number of the attempt just made.
         attempt: i32,
     },
 }
@@ -711,7 +738,7 @@ impl Db {
     }
 
     /// Enqueues one delivery per endpoint subscribed to `event_type` — like
-    /// [`enqueue_event`](Self::enqueue_event), but on the pool rather than a
+    /// `enqueue_event`, but on the pool rather than a
     /// transaction: for the notifications that have no transaction of their own
     /// (`org.credit_limit_exceeded`, fired at the dispatch layer after a hold
     /// the engine's append refused).
@@ -1021,7 +1048,7 @@ impl Db {
     /// moves `pending` → `sending` atomically, so two workers never hand the
     /// same delivery to a receiver twice in one pass — `SKIP LOCKED` means a
     /// claim in flight is invisible rather than contended. A row left `sending`
-    /// past [`CLAIM_LEASE_SECS`] belonged to a worker that died mid-attempt and
+    /// past `CLAIM_LEASE_SECS` belonged to a worker that died mid-attempt and
     /// is claimed again.
     ///
     /// A disabled endpoint's queued deliveries still send — `enabled` gates

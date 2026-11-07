@@ -11,41 +11,63 @@ use uuid::Uuid;
 use crate::wallet::ORG_ADMISSION_LOCK;
 use crate::webhooks::ORG_SUSPENDED;
 
+/// A customer identity as seen by its owning business.
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct BusinessCustomer {
+    /// Organization that holds the customer's ledger and money.
     pub organization_id: Uuid,
+    /// Business that owns this customer profile.
     pub business_id: Uuid,
+    /// Caller-chosen identifier, unique within the business.
     pub external_id: String,
+    /// Display name of the customer organization.
     pub name: String,
+    /// Optional contact email for the customer.
     pub contact_email: Option<String>,
+    /// Lifecycle state: `"active"` or `"archived"`.
     pub state: String,
+    /// When a manual suspension was applied, if one is active.
     #[serde(with = "time::serde::rfc3339::option")]
     pub manual_suspended_at: Option<OffsetDateTime>,
+    /// When dunning suspended the customer, if applicable.
     #[serde(with = "time::serde::rfc3339::option")]
     pub dunning_suspended_at: Option<OffsetDateTime>,
+    /// Whether the customer is currently blocked by suspension or archival.
     pub suspended: bool,
+    /// When the customer organization was created.
     #[serde(with = "time::serde::rfc3339")]
     pub created_at: OffsetDateTime,
 }
+/// A cursor-paginated page of business customers.
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct BusinessCustomerPage {
+    /// Customers in ascending organization identifier order.
     pub customers: Vec<BusinessCustomer>,
+    /// Identifier to pass as `after` for the next page; `None` at the end.
     pub next_cursor: Option<Uuid>,
 }
+/// Request to update a customer's display name and contact email.
 #[derive(Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct BusinessCustomerUpdate {
+    /// Caller-supplied key that makes repeated updates idempotent.
     pub idempotency_key: String,
+    /// New display name, 1 to 80 characters.
     pub name: String,
+    /// New contact email; `None` clears it.
     pub contact_email: Option<String>,
+    /// Operator-visible justification recorded in the audit log.
     pub reason: String,
 }
+/// Lifecycle state of a customer profile.
 #[derive(Serialize, Deserialize, Clone, Copy)]
 #[serde(rename_all = "camelCase")]
 pub enum CustomerState {
+    /// The customer may transact and is not blocked.
     Active,
+    /// The customer is archived and blocked from transacting.
     Archived,
 }
 impl CustomerState {
@@ -56,18 +78,26 @@ impl CustomerState {
         }
     }
 }
+/// Request to change a customer's lifecycle state.
 #[derive(Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct BusinessCustomerLifecycle {
+    /// Caller-supplied key that makes repeated changes idempotent.
     pub idempotency_key: String,
+    /// State to move the customer into.
     pub state: CustomerState,
+    /// Operator-visible justification recorded in the audit log.
     pub reason: String,
 }
+/// Request to manually suspend or reinstate a customer.
 #[derive(Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct BusinessCustomerSuspension {
+    /// Caller-supplied key that makes repeated changes idempotent.
     pub idempotency_key: String,
+    /// `true` to suspend, `false` to clear a manual suspension.
     pub suspended: bool,
+    /// Operator-visible justification recorded in the audit log.
     pub reason: String,
 }
 const COLUMNS: &str = "c.organization_id,c.business_id,c.external_id,c.contact_email,c.state,o.name,o.created_at,o.suspended_at AS manual_suspended_at,o.dunning_suspended_at,(o.suspended_at IS NOT NULL OR o.dunning_suspended_at IS NOT NULL OR c.state='archived') AS suspended";
@@ -103,6 +133,8 @@ async fn admission_lock(tx: &mut Transaction<'_, Postgres>, id: Uuid) -> Result<
     Ok(())
 }
 impl Db {
+    /// Lists customers granted to an integration credential. `limit` must be
+    /// between 1 and 100.
     pub async fn integration_customers(
         &self,
         service: &crate::ActingService,
@@ -136,6 +168,8 @@ impl Db {
             next_cursor,
         })
     }
+    /// Loads one customer granted to an integration credential. A customer
+    /// outside the grant is reported as not found.
     pub async fn integration_customer(
         &self,
         service: &crate::ActingService,
@@ -151,6 +185,7 @@ impl Db {
         .await?;
         customer(&mut tx, service.business_id, id).await
     }
+    /// Lists the business's customers. `limit` must be between 1 and 100.
     pub async fn business_customers(
         &self,
         token: &str,
@@ -180,6 +215,7 @@ impl Db {
             next_cursor,
         })
     }
+    /// Loads one customer owned by the business.
     pub async fn business_customer(
         &self,
         token: &str,
@@ -191,6 +227,7 @@ impl Db {
             .await?;
         customer(&mut tx, business, id).await
     }
+    /// Updates a customer's display name and contact email.
     pub async fn update_business_customer(
         &self,
         token: &str,
@@ -251,6 +288,8 @@ impl Db {
         tx.commit().await?;
         Ok(result)
     }
+    /// Moves a customer between `active` and `archived`, emitting a suspension
+    /// event when archival first blocks the customer.
     pub async fn set_customer_lifecycle(
         &self,
         token: &str,
@@ -305,6 +344,8 @@ impl Db {
         tx.commit().await?;
         Ok(result)
     }
+    /// Applies or clears a manual suspension, emitting a suspension event when
+    /// the customer first becomes blocked.
     pub async fn set_customer_suspension(
         &self,
         token: &str,

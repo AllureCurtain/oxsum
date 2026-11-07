@@ -41,8 +41,11 @@ const STATE_LIFETIME: Duration = Duration::minutes(10);
 /// trusts it only because the route required the provider to say `verified`.
 #[derive(Debug, Clone)]
 pub struct OAuthIdentity {
+    /// The provider's short name, e.g. `github`.
     pub provider: String,
+    /// The provider's stable id for the account.
     pub provider_user_id: String,
+    /// The email the provider verified.
     pub email: String,
 }
 

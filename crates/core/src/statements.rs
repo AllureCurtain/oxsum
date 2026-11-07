@@ -53,7 +53,9 @@ time::serde::format_description!(due_date_format, Date, "[year]-[month]-[day]");
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum StatementStatus {
+    /// The operator's working copy, rebuilt on regeneration.
     Draft,
+    /// Issued; its lines and totals are locked.
     Finalized,
 }
 
@@ -83,9 +85,13 @@ impl StatementStatus {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum PaymentStatus {
+    /// The drawn part is unpaid and the due date has not passed.
     Pending,
+    /// Repayments cover `credit_drawn_minor`.
     Paid,
+    /// The due date has passed with an unpaid balance.
     Overdue,
+    /// The operator marked the unpaid statement suspended.
     Suspended,
 }
 
@@ -117,13 +123,19 @@ impl PaymentStatus {
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct StatementLine {
+    /// Provider channel the usage ran on.
     pub channel: String,
+    /// Model the usage billed.
     pub model: String,
     /// Settled requests the line aggregates.
     pub turns: i64,
+    /// Total input tokens across the line's requests.
     pub input_tokens: i64,
+    /// Total output tokens across the line's requests.
     pub output_tokens: i64,
+    /// Total cache-read tokens across the line's requests.
     pub cached_tokens: i64,
+    /// Total reasoning tokens across the line's requests.
     pub reasoning_tokens: i64,
     /// What the line's usage was charged.
     pub amount_minor: i64,
@@ -134,11 +146,15 @@ pub struct StatementLine {
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Statement {
+    /// Statement identifier.
     pub id: Uuid,
+    /// Organization the statement bills.
     pub organization_id: Uuid,
     /// The billed month, `YYYY-MM`.
     pub period: String,
+    /// Document standing: draft or finalized.
     pub status: StatementStatus,
+    /// Payment standing of a finalized statement.
     pub payment_status: PaymentStatus,
     /// The period's settled usage charges, own funds and credit alike.
     pub total_minor: i64,
@@ -157,16 +173,20 @@ pub struct Statement {
     /// The first covered ledger entry's log index — the proof window's bounds,
     /// set at finalization.
     pub log_from_index: Option<i64>,
+    /// The last covered ledger entry's log index, set at finalization.
     pub log_to_index: Option<i64>,
     /// Usage rows the statement itemizes.
     pub entry_count: i64,
+    /// When the statement was finalized.
     #[serde(with = "time::serde::rfc3339::option")]
     pub finalized_at: Option<OffsetDateTime>,
+    /// When the statement became fully paid.
     #[serde(with = "time::serde::rfc3339::option")]
     pub paid_at: Option<OffsetDateTime>,
     /// When the statement first answered past due.
     #[serde(with = "time::serde::rfc3339::option")]
     pub overdue_at: Option<OffsetDateTime>,
+    /// When the statement was suspended.
     #[serde(with = "time::serde::rfc3339::option")]
     pub suspended_at: Option<OffsetDateTime>,
     /// The marker entry's id — the anchor appended to the tenant ledger at
@@ -181,6 +201,7 @@ pub struct Statement {
     /// The rollup digest the anchor's description commits — the canonical form
     /// of the statement's own figures and lines, lowercase hex.
     pub rollup_hash: Option<String>,
+    /// When the statement row was created.
     #[serde(with = "time::serde::rfc3339")]
     pub created_at: OffsetDateTime,
 }
@@ -188,10 +209,15 @@ pub struct Statement {
 /// The shape `generate_statement` fills: the period's totals and lines read from the
 /// usage rows before they are persisted.
 pub struct DraftStatement {
+    /// The period's settled usage charges.
     pub total_minor: i64,
+    /// The part of the charges the credit line carried.
     pub credit_drawn_minor: i64,
+    /// Number of usage rows the draft itemizes.
     pub entry_count: i64,
+    /// Lowest covered ledger log index.
     pub log_from_index: Option<i64>,
+    /// Highest covered ledger log index.
     pub log_to_index: Option<i64>,
     /// The window digest over the covered entries' content hashes in log order —
     /// what the anchor's document hash commits (issue #221).
@@ -199,6 +225,7 @@ pub struct DraftStatement {
     /// The rollup digest over the draft's own canonical form — what the anchor's
     /// description commits.
     pub rollup_hash: Hash,
+    /// The draft's itemized lines.
     pub lines: Vec<StatementLine>,
 }
 
@@ -206,7 +233,9 @@ pub struct DraftStatement {
 /// `[first, last]` booking-date window its entries fall in.
 #[derive(Debug, Clone, Copy)]
 pub struct StatementPeriod {
+    /// First day of the month, inclusive.
     pub first: Date,
+    /// Last day of the month, inclusive.
     pub last: Date,
 }
 

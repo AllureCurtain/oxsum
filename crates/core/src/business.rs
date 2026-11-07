@@ -8,33 +8,49 @@ use uuid::Uuid;
 
 use crate::{Db, WalletError};
 
+/// A seller business registered in the deployment.
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Business {
+    /// Stable business identifier.
     pub id: Uuid,
+    /// Display name chosen when the business was initialized.
     pub name: String,
+    /// How the business was created, for example `"invite"`.
     pub registration_mode: String,
+    /// When the owner completed initialization; `None` until setup is accepted.
     #[serde(with = "time::serde::rfc3339::option")]
     pub initialized_at: Option<OffsetDateTime>,
+    /// When the business row was created.
     #[serde(with = "time::serde::rfc3339")]
     pub created_at: OffsetDateTime,
 }
 
+/// Record of the one-time migration that assigned existing data to a business.
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct BusinessMigration {
+    /// The business that owns the migrated data.
     pub business_id: Uuid,
+    /// Migration version identifier, for example `"0072_business_ownership"`.
     pub version: String,
+    /// Number of customer profiles assigned during migration.
     pub customers: i64,
+    /// Number of channels assigned during migration.
     pub channels: i64,
+    /// Number of subscription plans assigned during migration.
     pub plans: i64,
+    /// When the migration was recorded.
     #[serde(with = "time::serde::rfc3339")]
     pub recorded_at: OffsetDateTime,
 }
 
+/// The singleton business together with its ownership migration record.
 #[derive(Debug, Serialize)]
 pub struct BusinessOwnership {
+    /// The currently registered business.
     pub business: Business,
+    /// The migration that assigned pre-existing data to the business.
     pub migration: BusinessMigration,
 }
 
@@ -42,22 +58,35 @@ pub struct BusinessOwnership {
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct BusinessMigrationPreview {
+    /// Whether an ownership migration record already exists.
     pub already_mapped: bool,
+    /// Organizations currently present in the baseline schema.
     pub customers: i64,
+    /// Channels currently present in the baseline schema.
     pub channels: i64,
+    /// Subscription plans currently present in the baseline schema.
     pub plans: i64,
+    /// Number of ledger schemas matching the expected naming pattern.
     pub ledger_schemas: i64,
 }
 
+/// A customer identity scoped to one business.
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CustomerProfile {
+    /// Organization that holds the customer's ledger and money.
     pub organization_id: Uuid,
+    /// Business that owns this customer profile.
     pub business_id: Uuid,
+    /// Caller-chosen identifier, unique within the business.
     pub external_id: String,
+    /// Optional contact email recorded for the customer.
     pub contact_email: Option<String>,
+    /// Lifecycle state: `"active"` or `"archived"`.
     pub state: String,
+    /// Display name of the customer organization.
     pub name: String,
+    /// Ledger tenant identifier backing the customer.
     pub tenant_id: String,
 }
 
@@ -106,6 +135,7 @@ impl Db {
         })
     }
 
+    /// Loads the singleton business and its ownership migration record.
     pub async fn business_ownership(&self) -> Result<BusinessOwnership, WalletError> {
         let row = sqlx::query("SELECT business_id, name, registration_mode, initialized_at, created_at FROM oxsum.businesses WHERE singleton")
             .fetch_one(self.pool()).await?;

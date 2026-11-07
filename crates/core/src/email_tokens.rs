@@ -32,7 +32,9 @@ const RESEND_COOLDOWN: Duration = Duration::seconds(60);
 /// Which mail a token is for. The string is the row's `purpose` column.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EmailPurpose {
+    /// Verifies the account's email address.
     Verify,
+    /// Resets the account's password.
     Reset,
 }
 
@@ -56,8 +58,12 @@ impl EmailPurpose {
 /// is visible — the row holds its hash.
 #[derive(Debug, Clone)]
 pub struct MintedEmailToken {
+    /// The plaintext token the mail's link carries; the row keeps only its
+    /// hash, so this is the sole time the value is visible.
     pub token: String,
+    /// The address the token mails to and authenticates.
     pub email: String,
+    /// When the token lapses.
     pub expires_at: OffsetDateTime,
 }
 

@@ -196,8 +196,11 @@ impl std::fmt::Debug for SecretKey {
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Channel {
+    /// The channel's identifier.
     pub id: Uuid,
+    /// The channel's name, unique across the deployment.
     pub name: String,
+    /// The upstream base URL requests are relayed to.
     pub base_url: String,
     /// The upstream protocol the channel speaks: the name the usage-adapter registry
     /// resolves (issue #104).
@@ -215,6 +218,7 @@ pub struct Channel {
     /// shows of `semanticCache` and any future channel-scoped knobs. Whole
     /// object, never secrets — keys live under their own columns.
     pub settings: serde_json::Value,
+    /// When the channel was created.
     #[serde(with = "time::serde::rfc3339")]
     pub created_at: OffsetDateTime,
     /// One entry per model, at its current version.
@@ -233,6 +237,7 @@ pub struct CatalogModel {
     /// The upstream protocol the model answers on: `openai`, `anthropic` or
     /// `gemini`.
     pub protocol: String,
+    /// The public model name callers request.
     pub model: String,
     /// The current price version; a settlement names the version that priced it.
     pub version: i64,
@@ -250,7 +255,9 @@ pub struct CatalogModel {
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ModelPrice {
+    /// The public model name.
     pub model: String,
+    /// The price version this record carries.
     pub version: i64,
     /// The route's relative preference for leading a request — versioned with
     /// the price, so the settlement names the routing in force by the same
@@ -282,6 +289,7 @@ pub struct ProbeChannel {
     pub name: String,
     /// The upstream protocol the channel speaks.
     pub protocol: String,
+    /// The egress policy the probe connection must satisfy.
     pub destination_policy: crate::ProviderDestinationPolicy,
     /// The base URL `{baseUrl}/api/v1/pricing` is appended to.
     pub base_url: String,
@@ -293,9 +301,11 @@ pub struct ProbeChannel {
 /// What one request relays to and is charged by, resolved once when the request starts.
 #[derive(Clone)]
 pub struct Serving {
+    /// The channel's name.
     pub channel: String,
     /// The channel's id, the key the conversation-affinity map sticks under.
     pub channel_id: Uuid,
+    /// The upstream base URL requests are relayed to.
     pub base_url: String,
     /// The upstream protocol, resolved into a usage adapter when the turn starts.
     pub protocol: String,
@@ -318,6 +328,7 @@ pub struct Serving {
     pub version: i64,
     /// The route's relative preference for leading a request (issue #168).
     pub weight: i64,
+    /// The price this route bills the request at.
     pub price: Price,
 }
 
@@ -1401,6 +1412,15 @@ impl Db {
             .await
     }
 
+    /// [`seed_channel_as`](Self::seed_channel_as) with an egress destination
+    /// policy for the connection, or `None` for the default public-network
+    /// policy. The channel name is the idempotency key: a second call for the
+    /// same channel returns `false` without writing.
+    ///
+    /// # Errors
+    ///
+    /// As [`Db::seed_channel_as`], plus [`WalletError::Misconfigured`] when
+    /// `policy` refuses `base_url`.
     pub async fn seed_channel_as_policy(
         &self,
         book: &PriceBook,

@@ -8,35 +8,57 @@ use serde_json::json;
 use sqlx::postgres::PgRow;
 use sqlx::{Postgres, Row, Transaction};
 use uuid::Uuid;
+/// Normalized kind of a verified merchant event.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum MerchantEventKind {
+    /// The payment completed successfully.
     Succeeded,
+    /// The payment attempt failed.
     Failed,
+    /// The payment expired before completing.
     Expired,
+    /// A refund completed successfully.
     RefundSucceeded,
+    /// A refund attempt failed.
     RefundFailed,
+    /// A dispute was opened or updated.
     Dispute,
+    /// An event type this service does not handle; recorded as ignored.
     Unsupported,
 }
+/// A merchant event whose origin has already been authenticated by the caller.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct VerifiedMerchantEvent {
+    /// Provider event identifier, unique per merchant.
     pub event_id: String,
+    /// Normalized event kind.
     pub kind: MerchantEventKind,
+    /// Local payment identifier the event refers to, if known.
     pub payment_id: Option<Uuid>,
+    /// Provider-side payment identifier.
     pub provider_payment_id: Option<String>,
+    /// Customer organization expected to own the payment.
     pub organization_id: Option<Uuid>,
+    /// Provider account that produced the event.
     pub provider_account_id: Option<String>,
+    /// Live or test mode reported by the provider.
     pub mode: Option<MerchantMode>,
+    /// Event amount in integer minor units.
     pub amount_minor: Option<i64>,
+    /// ISO 4217 currency code.
     pub currency: Option<String>,
+    /// Provider refund identifier for refund events.
     pub refund_id: Option<String>,
 }
+/// What a bound merchant payment is for.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum MerchantPaymentPurpose {
+    /// An order fulfilled through the purpose-specific order path.
     Order,
+    /// A legacy wallet deposit credited through the compatibility adapter.
     LegacyDeposit,
 }
 impl MerchantPaymentPurpose {
@@ -47,33 +69,54 @@ impl MerchantPaymentPurpose {
         }
     }
 }
+/// Expected payment terms pinned before any provider request is sent.
 #[derive(Debug, Clone)]
 pub struct MerchantPaymentBinding {
+    /// Local payment identifier.
     pub payment_id: Uuid,
+    /// Merchant account the payment belongs to.
     pub merchant_id: Uuid,
+    /// Merchant configuration version in force when the terms were pinned.
     pub version_id: Uuid,
+    /// Customer organization that owns the payment.
     pub organization_id: Uuid,
+    /// Expected amount in integer minor units.
     pub amount_minor: i64,
+    /// Expected ISO 4217 currency code.
     pub currency: String,
+    /// Whether this is an order or a legacy deposit.
     pub purpose: MerchantPaymentPurpose,
+    /// Provider payment identifier once one has been observed.
     pub provider_payment_id: Option<String>,
 }
+/// Durable receipt for a merchant event stored in the inbox.
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct MerchantEventReceipt {
+    /// Inbox receipt identifier.
     pub id: Uuid,
+    /// Merchant that received the event.
     pub merchant_id: Uuid,
+    /// Merchant configuration version that classified the event.
     pub version_id: Uuid,
+    /// Provider event identifier.
     pub event_id: String,
+    /// Normalized event kind.
     pub kind: MerchantEventKind,
+    /// Local payment identifier, if the event resolved to one.
     pub payment_id: Option<Uuid>,
+    /// Processing state, such as `"pending"`, `"accepted"` or `"rejected"`.
     pub state: String,
+    /// Machine-readable rejection or deferral reason, when applicable.
     pub reason: Option<String>,
 }
+/// A cursor-paginated page of merchant event receipts.
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct MerchantEventPage {
+    /// Receipts in ascending receipt identifier order.
     pub events: Vec<MerchantEventReceipt>,
+    /// Identifier to pass as `after` for the next page; `None` at the end.
     pub next_cursor: Option<Uuid>,
 }
 fn invalid(message: &str) -> WalletError {
@@ -270,6 +313,7 @@ impl Db {
         tx.commit().await?;
         Ok(())
     }
+    /// Loads the pinned terms for a local payment, or `None` if never pinned.
     pub async fn merchant_payment_binding(
         &self,
         id: Uuid,
@@ -279,6 +323,7 @@ impl Db {
         tx.commit().await?;
         Ok(found)
     }
+    /// Looks up a pinned payment by the merchant and provider payment reference.
     pub async fn merchant_payment_by_provider(
         &self,
         merchant: Uuid,
@@ -287,6 +332,8 @@ impl Db {
         let row=sqlx::query("SELECT b.*,r.provider_payment_id FROM oxsum.merchant_payment_refs r JOIN oxsum.merchant_payment_bindings b USING(payment_id) WHERE r.merchant_id=$1 AND r.provider_payment_id=$2").bind(merchant).bind(provider).fetch_optional(self.pool()).await?;
         row.as_ref().map(binding).transpose()
     }
+    /// Records the provider payment reference for an already pinned payment.
+    /// A changed or already-claimed reference is a conflict.
     pub async fn record_merchant_payment_reference(
         &self,
         id: Uuid,
@@ -395,6 +442,8 @@ impl Db {
             ..result
         })
     }
+    /// Marks an accepted event applied once its effects are durable. Events in
+    /// any other state are left untouched.
     pub async fn mark_merchant_event_applied(&self, id: Uuid) -> Result<(), WalletError> {
         sqlx::query("UPDATE oxsum.merchant_event_inbox SET state='applied',updated_at=now() WHERE receipt_id=$1 AND state='accepted'").bind(id).execute(self.pool()).await?;
         Ok(())
@@ -410,6 +459,8 @@ impl Db {
         let rows=sqlx::query("SELECT * FROM oxsum.merchant_event_inbox WHERE state IN ('pending','accepted') ORDER BY received_at LIMIT $1").bind(limit).fetch_all(self.pool()).await?;
         rows.iter().map(receipt).collect()
     }
+    /// Returns the normalized verified event stored for a receipt, or `None` if
+    /// the receipt is unknown.
     pub async fn merchant_event_data(
         &self,
         id: Uuid,
@@ -426,6 +477,8 @@ impl Db {
             })
             .transpose()
     }
+    /// Lists a merchant's event inbox for business reports. Requires the
+    /// reports-read capability; `limit` must be between 1 and 100.
     pub async fn business_merchant_events(
         &self,
         token: &str,
@@ -578,11 +631,17 @@ impl Db {
 /// Compatibility checkout snapshot. Browser handles remain customer-scoped;
 /// callers must never serialize this into business settings or event history.
 pub struct LegacyMerchantCheckout {
+    /// Pinned expected terms for the deposit payment.
     pub payment: MerchantPaymentBinding,
+    /// Provider client secret for completing checkout, when the rail uses one.
     pub client_secret: Option<String>,
+    /// Hosted checkout URL, when the rail uses one.
     pub checkout_url: Option<String>,
 }
 impl Db {
+    /// Starts or resumes a legacy deposit checkout. Repeating the same
+    /// organization, rail and key returns the existing checkout rather than
+    /// creating another payment.
     pub async fn begin_merchant_deposit(
         &self,
         context: &MerchantSigningContext,

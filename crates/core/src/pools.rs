@@ -91,6 +91,7 @@ impl std::fmt::Debug for PoolCredential {
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ChannelCredential {
+    /// The credential row's identifier.
     pub credential_id: Uuid,
     /// The last four characters of the upstream key, and nothing more of it.
     pub api_key_last4: String,
@@ -103,8 +104,10 @@ pub struct ChannelCredential {
     pub cooldown_until: Option<OffsetDateTime>,
     /// What cooled it, when one did — observability for the admin list.
     pub last_error: Option<String>,
+    /// When the credential last led an upstream call; `None` is never used.
     #[serde(with = "time::serde::rfc3339::option")]
     pub last_used_at: Option<OffsetDateTime>,
+    /// When the credential was added to the pool.
     #[serde(with = "time::serde::rfc3339")]
     pub created_at: OffsetDateTime,
 }

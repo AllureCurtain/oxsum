@@ -1,3 +1,5 @@
+//! Domain errors and the stable codes the HTTP layer maps them to.
+
 use doubleentry::storage::postgres::PostgresError;
 
 /// Domain-layer errors. The HTTP layer maps these onto the codes defined in docs/api.md.
@@ -48,7 +50,10 @@ pub enum WalletError {
         "key spend limit exceeded: {committed_minor} of {limit_minor} minor units already committed"
     )]
     KeyLimitExceeded {
+        /// The key's limit, in minor units.
         limit_minor: i64,
+        /// Settled charges plus outstanding holds already attributed to the
+        /// key, in minor units.
         committed_minor: i64,
     },
 
@@ -56,7 +61,12 @@ pub enum WalletError {
     /// allowance. The HTTP layer answers 429 with `Retry-After`; the numbers are
     /// the key's own, so they are safe to show.
     #[error("key rate limit exceeded: {limit} requests per minute, retry in {retry_after_secs}s")]
-    RateLimited { limit: i64, retry_after_secs: u64 },
+    RateLimited {
+        /// The key's request allowance per rolling minute.
+        limit: i64,
+        /// Seconds until the trailing window's request count falls below the cap.
+        retry_after_secs: u64,
+    },
 
     /// A request would push the acting API key past its rolling-minute token
     /// allowance — the settled input+output tokens inside the trailing minute
@@ -67,7 +77,12 @@ pub enum WalletError {
     #[error(
         "key token rate limit exceeded: {limit} tokens per minute, retry in {retry_after_secs}s"
     )]
-    TokensPerMinute { limit: i64, retry_after_secs: u64 },
+    TokensPerMinute {
+        /// The key's token allowance per rolling minute.
+        limit: i64,
+        /// Seconds until the trailing window's usage falls below the cap.
+        retry_after_secs: u64,
+    },
 
     /// The settlement would book into a day the daily usage anchor has already
     /// sealed: the day log's leaf for that day is committed, and a settlement
@@ -80,7 +95,12 @@ pub enum WalletError {
     /// HTTP layer answers 429; the numbers are the key's own, so they are safe to
     /// show.
     #[error("key has {open} holds outstanding, at or over its cap of {limit}")]
-    TooManyHolds { limit: i64, open: i64 },
+    TooManyHolds {
+        /// The key's outstanding-holds cap.
+        limit: i64,
+        /// The holds the key currently has outstanding.
+        open: i64,
+    },
 
     /// The presented `X-Oxsum-Mandate` did not verify — bad base64, bad JSON, or
     /// a signature that fails under the key's mandate public key. The HTTP layer
@@ -106,7 +126,10 @@ pub enum WalletError {
         "mandate cap exceeded: {committed_minor} of {cap_minor} minor units already committed under it"
     )]
     MandateExceeded {
+        /// The mandate's spend cap, in minor units.
         cap_minor: i64,
+        /// Settled charges plus outstanding holds already committed under
+        /// the mandate, in minor units.
         committed_minor: i64,
     },
 

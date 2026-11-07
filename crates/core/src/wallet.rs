@@ -1,3 +1,5 @@
+//! The wallet facade: holds, settlements, receipts and ledger reads.
+
 use std::collections::{BTreeMap, HashMap};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -37,6 +39,8 @@ use crate::usage_reports::{ReportEntryBundle, UsageReportRow};
 /// and therefore the content hash — depends on it, so writer and verifier use the one
 /// definition.
 pub use oxsum_verify::SCALE;
+/// A credit amount at the ledger's six-decimal scale; 1 credit = 1_000_000
+/// minor units.
 pub type Credits = Amount<SCALE>;
 
 /// Account opening date. Every posting date must not be earlier than this.
@@ -108,7 +112,7 @@ const RECLASS_KEY: &str = "pool-reclassification";
 
 /// The idempotency key under which the promo-lots migration (issue #609) posts
 /// its `debit Bonus, credit Promo` entry — the aggregate legacy bonus moving
-/// into a `legacy_migration` lot. Fixed like [`RECLASS_KEY`]: a re-open finds
+/// into a `legacy_migration` lot. Fixed like `RECLASS_KEY`: a re-open finds
 /// the entry and does nothing, and spend reads exclude the rebalancing the
 /// same way.
 const LEGACY_PROMO_KEY: &str = "legacy-promo-migration";
@@ -255,8 +259,12 @@ pub struct Wallet {
 #[derive(Debug, Clone, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Receipt {
+    /// The posted entry's id.
     pub entry_id: EntryId,
+    /// The entry's position in the Merkle log, when it is sequenced.
     pub log_index: Option<u64>,
+    /// The content hash the Merkle log commits, which the entry's proof
+    /// verifies against.
     pub content_hash: Hash,
     /// false means an idempotent replay: nothing new was written.
     pub is_new: bool,
@@ -267,6 +275,7 @@ pub struct Receipt {
 pub struct LogEntry {
     /// Position in the log.
     pub index: u64,
+    /// The entry's id, hex-encoded.
     pub id: String,
     /// What the writer recorded: holds and settlements describe the request.
     pub description: String,
@@ -277,6 +286,7 @@ pub struct LogEntry {
 /// One settled entry as the bills page lists it and its exports carry it.
 #[derive(Debug, Clone)]
 pub struct SettledEntry {
+    /// The entry's id, hex-encoded.
     pub id: String,
     /// The booking date: the server's UTC date when the entry was written. The ledger
     /// records no time of day.
@@ -765,7 +775,7 @@ impl Wallet {
     ///
     /// The entry replays under `key`: a crash between the append and the order's
     /// fulfillment write leaves a committed repayment the retry finds through
-    /// [`Self::repay_replay`], and a raced copy of the same repayment reads the
+    /// `Self::repay_replay`, and a raced copy of the same repayment reads the
     /// drawn figure under the same lock.
     ///
     /// # Errors
@@ -2326,7 +2336,7 @@ impl Wallet {
         self.key_committed_in(&mut conn, key_id, since).await
     }
 
-    /// The [`member_committed_in`](Self::member_committed_in) read on its own
+    /// The `member_committed_in` read on its own
     /// connection: the member's committed spend across every key they minted
     /// (issue #232).
     pub async fn member_committed(
@@ -2419,7 +2429,7 @@ impl Wallet {
         Ok(committed)
     }
 
-    /// The [`team_committed_in`](Self::team_committed_in) read on its own
+    /// The `team_committed_in` read on its own
     /// connection: the team's committed spend across every key its members
     /// minted (issue #440).
     pub async fn team_committed(
@@ -2438,7 +2448,7 @@ impl Wallet {
     /// ledger attributes each posting to the key's actor id, and
     /// `memberships.team_id` + `api_keys.created_by` map keys to the team, so
     /// the sum is the ledger's own figure for the subgroup's spend — the same
-    /// attribution [`member_committed_in`](Self::member_committed_in) gives
+    /// attribution `member_committed_in` gives
     /// per member, aggregated.
     ///
     /// Run inside the transaction holding the team's locked row, so the sum
@@ -2595,7 +2605,7 @@ impl Wallet {
     ///
     /// The figures are a snapshot a racing request may already have spent —
     /// the surface is "can I", not "reserve me", and the atomic admission
-    /// checks stay authoritative. `scope` is the caller's [`KeyScope`],
+    /// checks stay authoritative. `scope` is the caller's [`crate::KeyScope`],
     /// applied like the key list's: a member asks only about the keys they
     /// created — any other id answers `None`, indistinguishable from a foreign
     /// or nonexistent one.
@@ -3587,7 +3597,7 @@ impl Wallet {
     /// ledger does not know it, stops new postings into it and seals it — the seal
     /// the store appends is the month's closing record, chained onto the seals
     /// before it. From then on every write whose booking date falls in the month is
-    /// refused at seal time (see [`Wallet::seal`]), which is product.md's "after
+    /// refused at seal time (see `Wallet::seal`), which is product.md's "after
     /// closing, that month accepts no new entries" made structural rather than
     /// conventional.
     ///
@@ -3729,7 +3739,7 @@ impl Wallet {
 
     /// The one-time pool migration (decision D1): moves the unspent remainder of
     /// historical grants out of `Liabilities:Wallet` into `Equity:Bonus` with a
-    /// single `debit Wallet, credit Bonus` entry under [`RECLASS_KEY`].
+    /// single `debit Wallet, credit Bonus` entry under `RECLASS_KEY`.
     ///
     /// `grants` counts the settled credits on Wallet that pair with an Adjustments
     /// debit — top-ups pair with Cash instead, so money the user paid in is never
@@ -3746,7 +3756,7 @@ impl Wallet {
     /// whether an entry was written. The move is a
     /// rebalancing between pools — the settled_spend_since read excludes the key,
     /// and the bills page never lists it (it has no pending, cash or adjustments
-    /// posting, so [`classify`](Self::classify) has no kind for it).
+    /// posting, so `classify` has no kind for it).
     pub async fn reclassify_grants(&self) -> Result<bool, WalletError> {
         let schema = &self.tenant_id;
         let amount = {

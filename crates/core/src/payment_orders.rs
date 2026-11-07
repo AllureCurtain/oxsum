@@ -31,7 +31,9 @@ use uuid::Uuid;
 /// columns so a later re-rate cannot rewrite what the customer agreed to pay.
 #[derive(Debug, Clone, Copy)]
 pub struct OrderRate {
+    /// Rate numerator: currency minor units per credit = `mantissa / 10^scale`.
     pub mantissa: i128,
+    /// Decimal scale applied to `mantissa`.
     pub scale: u32,
 }
 
@@ -76,25 +78,37 @@ impl PaymentOrderPurpose {
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PaymentOrder {
+    /// Local order identifier.
     pub order_id: Uuid,
     /// The merchant/version the checkout was offered under. `None` on a
     /// `source: manual` order — a recorded receipt never transited a rail.
     pub merchant_id: Option<Uuid>,
+    /// Merchant configuration version in force at creation; `None` for manual orders.
     pub merchant_version_id: Option<Uuid>,
+    /// Customer organization that owns the order.
     pub organization_id: Uuid,
+    /// What the payment buys: credits, or a subscription period.
     pub purpose: PaymentOrderPurpose,
     /// Ledger terms: integer minor units of one credit, frozen at create.
     pub amount_minor: i64,
+    /// Currency of `amount_minor`; currently `"USD"`.
     pub currency: String,
     /// The display amount the customer was quoted, and the pinned rate that
     /// produced `amount_minor` from it.
     pub display_currency: String,
+    /// Quoted amount in integer minor units of `display_currency`.
     pub display_amount_minor: i64,
+    /// Numerator of the pinned conversion rate, `mantissa / 10^rate_scale`
+    /// currency minor units per credit.
     pub rate_mantissa: i128,
+    /// Decimal scale of the pinned conversion rate.
     pub rate_scale: u32,
+    /// Purpose argument: the plan for `plan_period`, the receivable for
+    /// `invoice_repayment`; `None` for single-leg purposes.
     pub purpose_ref: Option<Uuid>,
     /// A `bundle` order's promo lot, in credit-minor; 0 for single-leg purposes.
     pub promo_minor: i64,
+    /// Provider-side payment identifier once the provider supplied one.
     pub provider_payment_id: Option<String>,
     /// The checkout handles the provider answered, so a replayed create returns
     /// the same checkout. Transient, never part of the frozen terms.
@@ -106,17 +120,24 @@ pub struct PaymentOrder {
     /// A manual order's audit payload — the receipt `reference`, the operator's
     /// `reason` and the staff `recordedBy`. `{}` on provider orders.
     pub evidence: serde_json::Value,
+    /// Lifecycle state: `created`, `provider_pending`, `paid`, `fulfilled`,
+    /// `expired`, `failed` or `needs_attention`.
     pub status: String,
+    /// When the order was created.
     #[serde(with = "time::serde::rfc3339")]
     pub created_at: OffsetDateTime,
+    /// When the signed payment confirmation arrived; `None` until paid.
     #[serde(with = "time::serde::rfc3339::option")]
     pub paid_at: Option<OffsetDateTime>,
 }
 
+/// A cursor-paginated page of payment orders.
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PaymentOrderPage {
+    /// Orders in newest-first order.
     pub orders: Vec<PaymentOrder>,
+    /// Order identifier to pass as `after` for the next page; `None` at the end.
     pub next_cursor: Option<Uuid>,
 }
 
@@ -126,11 +147,17 @@ pub struct PaymentOrderPage {
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PaymentFulfillment {
+    /// Local fulfillment identifier.
     pub fulfillment_id: Uuid,
+    /// Order this fulfillment was granted for.
     pub order_id: Uuid,
+    /// Purpose whose single grant arm ran.
     pub purpose: PaymentOrderPurpose,
+    /// Audit of what the grant produced, as the purpose arm reported it.
     pub purpose_payload: serde_json::Value,
+    /// Outbox row queued for dispatch, when one was written.
     pub outbox_id: Option<Uuid>,
+    /// When the fulfillment was recorded.
     #[serde(with = "time::serde::rfc3339")]
     pub fulfilled_at: OffsetDateTime,
 }
@@ -142,12 +169,19 @@ pub struct PaymentFulfillment {
 #[derive(Debug, Default, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PaymentReconciliation {
+    /// Orders still awaiting a provider response.
     pub created: i64,
+    /// Orders with a provider payment pending confirmation.
     pub provider_pending: i64,
+    /// Orders paid but not yet fulfilled.
     pub paid: i64,
+    /// Orders whose fulfillment completed.
     pub fulfilled: i64,
+    /// Orders that expired before payment.
     pub expired: i64,
+    /// Orders whose payment attempt failed.
     pub failed: i64,
+    /// Paid orders with a mismatch that requires human resolution.
     pub needs_attention: i64,
     /// Paid orders that have not yet fulfilled — the recovery sweep's backlog.
     pub paid_unfulfilled: Vec<Uuid>,
@@ -160,13 +194,16 @@ pub struct PaymentReconciliation {
 /// the route rather than reaching here.
 #[derive(Debug, Clone)]
 pub struct NewPaymentOrder {
+    /// The fulfillment arm this order will take.
     pub purpose: PaymentOrderPurpose,
     /// The fiat minor amount the provider will charge, in `display_currency`.
     pub display_amount_minor: i64,
+    /// ISO 4217 code of the fiat currency the customer is quoted in.
     pub display_currency: String,
     /// The purpose's argument: the plan a `plan_period` activates, the
     /// receivable an `invoice_repayment` settles. `None` for wallet_topup/bundle.
     pub purpose_ref: Option<Uuid>,
+    /// Caller-supplied key that makes repeated creates return the same order.
     pub idempotency_key: String,
     /// A `bundle` order's promo part: purchased credit is `amount_minor`, the
     /// separate promo lot is this many extra credit-minor. `0` for the purposes
@@ -181,11 +218,15 @@ pub struct NewPaymentOrder {
 /// wallet cash or it is not a receipt.
 #[derive(Debug, Clone)]
 pub struct NewManualOrder {
+    /// Customer organization the receipt funds.
     pub organization: Uuid,
+    /// Order purpose; the service pins this to `walletTopup`.
     pub purpose: PaymentOrderPurpose,
     /// The fiat minor amount the receipt evidences, in `display_currency`.
     pub display_amount_minor: i64,
+    /// ISO 4217 code of the fiat currency the receipt is denominated in.
     pub display_currency: String,
+    /// Caller-supplied key that makes repeated creates return the same order.
     pub idempotency_key: String,
     /// The receipt's own reference — a bank transaction id, a remittance note —
     /// unique per business among manual orders.

@@ -1,3 +1,5 @@
+//! Tenant registry: one shared pool and one ledger facade per tenant.
+
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -21,6 +23,8 @@ pub struct Tenants {
 }
 
 impl Tenants {
+    /// Builds a registry over a shared pool; no tenant is opened until first
+    /// use.
     pub fn new(pool: PgPool) -> Self {
         Self {
             pool,
@@ -28,6 +32,12 @@ impl Tenants {
         }
     }
 
+    /// Returns the cached ledger facade for a tenant, opening and caching it
+    /// on first use. Concurrent first calls converge on one wallet.
+    ///
+    /// # Errors
+    ///
+    /// Opening the tenant's schema or ledger surfaces as [`WalletError`].
     pub async fn get(&self, tenant_id: &str) -> Result<Arc<Wallet>, WalletError> {
         if let Some(w) = self.open.read().await.get(tenant_id) {
             return Ok(w.clone());

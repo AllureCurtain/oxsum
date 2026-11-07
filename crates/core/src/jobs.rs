@@ -108,13 +108,18 @@ const RETENTION_BATCH: i64 = 10_000;
 /// One claimed run, as the worker reads it.
 #[derive(Debug)]
 pub struct Job {
+    /// The run's identifier.
     pub job_id: Uuid,
+    /// The periodic kind, as [`kinds`] spells it.
     pub kind: String,
+    /// When the run is next due.
     pub run_at: OffsetDateTime,
+    /// How many attempts the run has made so far.
     pub attempts: i32,
     /// The claim's stamp: finish and fail fence on it, so a worker whose lease
     /// lapsed cannot overwrite the next claimant's state.
     pub claimed_at: OffsetDateTime,
+    /// The kind-specific JSON the run carries, if any.
     pub payload: Value,
     /// Whether the kind runs under the advisory-lock leader election (issue
     /// #281): a worker claiming a leader-required run that cannot take the
@@ -445,7 +450,7 @@ impl Db {
     /// The retention spec's batched cleanup (docs/decisions.md): idempotency
     /// records past their own `expires_at`, `usage_details.provider_raw` nulled
     /// past its window, terminal webhook deliveries and finished job rows past
-    /// theirs. Each rule takes at most [`RETENTION_BATCH`] rows a pass — the
+    /// theirs. Each rule takes at most `RETENTION_BATCH` rows a pass — the
     /// daily cadence drains any backlog without one giant transaction.
     pub async fn run_retention(
         &self,

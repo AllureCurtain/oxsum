@@ -15,6 +15,12 @@ pub enum CustomerCapability {
     Retired,
 }
 impl Principal {
+    /// Checks that this principal grants `capability`; a key grants only
+    /// scoped reads, while account management needs an owner or admin session.
+    ///
+    /// # Errors
+    ///
+    /// [`WalletError::Forbidden`] when the credential does not grant it.
     pub fn require_customer(&self, capability: CustomerCapability) -> Result<(), WalletError> {
         let allowed = match capability {
             CustomerCapability::ScopedRead => true,
@@ -37,7 +43,9 @@ impl Principal {
 /// members, but never with a consumption key whose own usage is the only scope.
 #[derive(Debug, Clone)]
 pub struct CustomerRecordScope {
+    /// The key ids whose records are visible; `None` means every key.
     pub key_ids: Option<Vec<String>>,
+    /// Whether records with no key attribution are visible.
     pub include_unattributed: bool,
 }
 impl CustomerRecordScope {
@@ -52,6 +60,8 @@ impl CustomerRecordScope {
         }
         self.allows(entry.provenance().actor.as_ref().map(|a| a.as_str()))
     }
+    /// Whether a record attributed to `key`, or to no key, falls inside this
+    /// scope.
     #[must_use]
     pub fn allows(&self, key: Option<&str>) -> bool {
         match key {
@@ -64,6 +74,14 @@ impl CustomerRecordScope {
     }
 }
 impl Db {
+    /// Resolves the records a principal may read: a key sees only its own
+    /// usage, a member sees the organization's keys plus unattributed history,
+    /// and an owner or admin sees the whole organization.
+    ///
+    /// # Errors
+    ///
+    /// Storage failures while listing a member's keys surface as
+    /// [`WalletError`].
     pub async fn customer_record_scope(
         &self,
         principal: &Principal,

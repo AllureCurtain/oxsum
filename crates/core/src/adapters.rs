@@ -30,7 +30,7 @@ pub const GEMINI: &str = "gemini";
 /// The task-relay protocol (issue #503): a channel whose `POST {baseUrl}/tasks`
 /// submits a long-running job and `GET {baseUrl}/tasks/{id}` reports it. The
 /// surface is `/v1/tasks`, and the terminal answer's `usage` is read by
-/// [`TaskUsage`].
+/// `TaskUsage`.
 pub const TASKS: &str = "tasks";
 
 /// What one protocol's usage report becomes: the normalized record.

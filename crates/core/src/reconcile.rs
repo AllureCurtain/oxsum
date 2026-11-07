@@ -64,16 +64,29 @@ const SAMPLE_LIMIT: i64 = 20;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum DriftKind {
+    /// A usage row whose settlement entry is absent from the ledger.
     UsageOrphans,
+    /// A settlement ledger entry that wrote no usage row.
     SettlementsUnrecorded,
+    /// A deposit marked `credited` whose ledger entry is absent.
     DepositsUnbooked,
+    /// The rail's received amount differs from the deposit's expected amount.
     DepositsMismatched,
+    /// A `confirmed` deposit past the grace window that never credited or
+    /// reversed.
     DepositsStuck,
+    /// A hold watch row whose hold has no live pending reservation.
     WatchesOrphaned,
+    /// A live pending hold with no watch row, so the sweeper never sees it.
     HoldsUnwatched,
+    /// A watch row whose settlement failed ten sweeps and needs an operator.
     HoldsDeadLettered,
+    /// A log whose indices are not dense from zero, or that has entries still
+    /// unsequenced past the grace window.
     LogGaps,
+    /// A job row whose run exhausted its attempts.
     JobsDead,
+    /// A stored upstream rate that no longer matches the live channel catalog.
     UpstreamPriceDrift,
     /// An anchored day's day log no longer folds to the map root its anchor
     /// committed: a late settlement or a hand edit rewrote a leaf the ledger
@@ -113,10 +126,11 @@ pub struct DriftSample {
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DriftClass {
+    /// Which way the projections and the books disagree.
     pub class: DriftKind,
     /// The full count, whatever the sample truncated.
     pub count: i64,
-    /// Up to [`SAMPLE_LIMIT`] offenders, newest first.
+    /// Up to `SAMPLE_LIMIT` offenders, newest first.
     pub samples: Vec<DriftSample>,
 }
 
@@ -131,7 +145,7 @@ pub struct Reconciliation {
     pub organizations: i64,
     /// Every class counted zero.
     pub clean: bool,
-    /// Every drift class, zero-count ones included, in [`DRIFT_KINDS`] order.
+    /// Every drift class, zero-count ones included, in `DRIFT_KINDS` order.
     pub classes: Vec<DriftClass>,
 }
 

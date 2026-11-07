@@ -60,8 +60,11 @@ pub struct MeteredEvent {
 #[derive(Debug, Clone, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct MeteredHold {
+    /// The scoped hold key `settle` and `release` name.
     pub hold_key: String,
+    /// The frozen upper bound, in minor units.
     pub freeze_minor: i64,
+    /// The price version pinned to the hold.
     pub price_version: i64,
 }
 
@@ -69,7 +72,9 @@ pub struct MeteredHold {
 #[derive(Debug, Clone, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct MeteredOutcome {
+    /// What the event actually charged, in minor units, never above the freeze.
     pub charged_minor: i64,
+    /// Which settlement kind priced the event.
     pub kind: SettlementKind,
     /// The version the event priced at — the hold's pin on `settle`/`release`,
     /// latest on a one-shot.

@@ -58,7 +58,9 @@ fn identifier(value: &str) -> bool {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum RefundDecision {
+    /// Approve the refund: reserve the bound and issue a credit note.
     Approve,
+    /// Decline the refund: no money moves.
     Decline,
 }
 
@@ -66,19 +68,26 @@ pub enum RefundDecision {
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct OrderRefund {
+    /// Refund identifier.
     pub refund_id: Uuid,
+    /// Payment order the refund corrects.
     pub order_id: Uuid,
+    /// Customer organization that owns the order.
     pub organization_id: Uuid,
     /// The credit amount asked back, in ledger minor units.
     pub amount_minor: i64,
     /// The fiat figure the PSP is asked to return.
     pub display_amount_minor: i64,
+    /// Currency of the display amount.
     pub display_currency: String,
+    /// Customer's reason for the refund request.
     pub reason: String,
     /// `requested → provider_pending → succeeded | failed | released`; the
     /// request's other exit is `declined`.
     pub state: String,
+    /// PSP-side refund reference, once the provider assigns one.
     pub provider_refund_id: Option<String>,
+    /// Provider attempts made so far for a `provider_pending` refund.
     pub retry_count: i32,
     /// The business the refund's audit rows belong to — internal scoping,
     /// never serialized to the customer.
@@ -87,20 +96,26 @@ pub struct OrderRefund {
     /// The staff user who resolved it; `None` while requested.
     #[serde(skip_serializing)]
     pub resolved_by: Option<Uuid>,
+    /// When the next provider attempt is due; `None` when not retrying.
     #[serde(with = "time::serde::rfc3339::option")]
     pub next_retry_at: Option<OffsetDateTime>,
     /// The credit note the approval issued, once it exists.
     pub note_id: Option<Uuid>,
+    /// When the request was recorded.
     #[serde(with = "time::serde::rfc3339")]
     pub created_at: OffsetDateTime,
+    /// When the refund last changed.
     #[serde(with = "time::serde::rfc3339")]
     pub updated_at: OffsetDateTime,
 }
 
+/// One page of refunds.
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct OrderRefundPage {
+    /// Refunds in this page.
     pub refunds: Vec<OrderRefund>,
+    /// Cursor for the next page; `None` at the end.
     pub next_cursor: Option<Uuid>,
 }
 
@@ -110,26 +125,37 @@ pub struct OrderRefundPage {
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct OrderDispute {
+    /// Dispute identifier.
     pub dispute_id: Uuid,
+    /// Order whose charge is contested.
     pub order_id: Uuid,
+    /// Customer organization that owns the order.
     pub organization_id: Uuid,
+    /// PSP-side dispute reference.
     pub provider_dispute_id: String,
     /// The fiat figure contested, from the signed event.
     pub amount_minor: i64,
+    /// Currency of the contested amount.
     pub currency: String,
     /// `opened → evidence_due → won | lost | closed`.
     pub state: String,
+    /// Ledger entry that re-charged the receivable once lost; `None` before.
     pub recharge_entry_id: Option<Uuid>,
+    /// When the dispute record opened.
     #[serde(with = "time::serde::rfc3339")]
     pub created_at: OffsetDateTime,
+    /// When the dispute last changed.
     #[serde(with = "time::serde::rfc3339")]
     pub updated_at: OffsetDateTime,
 }
 
+/// One page of the business's disputes.
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct OrderDisputePage {
+    /// Disputes in this page.
     pub disputes: Vec<OrderDispute>,
+    /// Cursor for the next page; `None` at the end.
     pub next_cursor: Option<Uuid>,
 }
 
@@ -138,12 +164,19 @@ pub struct OrderDisputePage {
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct FinanceAudit {
+    /// Audit row identifier.
     pub audit_id: Uuid,
+    /// Staff user who made the decision.
     pub actor_user_id: Uuid,
+    /// Dotted action name, such as `refund.approve`.
     pub action: String,
+    /// Identifier of the affected resource, usually the refund or dispute.
     pub target: String,
+    /// Action-specific detail, including the reason and amounts.
     pub detail: serde_json::Value,
+    /// Credit note the action produced, when it produced one.
     pub note_id: Option<Uuid>,
+    /// When the audit row was written.
     #[serde(with = "time::serde::rfc3339")]
     pub created_at: OffsetDateTime,
 }
@@ -154,23 +187,34 @@ pub struct FinanceAudit {
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct OrderCreditNote {
+    /// Credit note identifier.
     pub credit_note_id: Uuid,
+    /// Customer organization the note corrects.
     pub organization_id: Uuid,
+    /// Order the note corrects.
     pub order_id: Uuid,
+    /// Refund whose approval issued the note.
     pub refund_id: Uuid,
     /// The take-back entry once `applied`; `None` while issued-unapplied.
     pub entry_id: Option<Uuid>,
+    /// Credit amount being corrected, in ledger minor units.
     pub amount_minor: i64,
+    /// Human-readable reason shown to the customer.
     pub reason: String,
+    /// `issued`, `applied` or `reversed`.
     pub state: String,
+    /// When the note was issued.
     #[serde(with = "time::serde::rfc3339")]
     pub created_at: OffsetDateTime,
 }
 
+/// One page of the business's order-linked credit notes.
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct OrderCreditNotePage {
+    /// Credit notes in this page.
     pub notes: Vec<OrderCreditNote>,
+    /// Cursor for the next page; `None` at the end.
     pub next_cursor: Option<Uuid>,
 }
 
@@ -324,8 +368,12 @@ fn display_refund_minor(
 /// refund under.
 #[derive(Debug, Clone)]
 pub struct NewRefundRequest {
+    /// Credit amount to refund in minor units; `None` refunds the full
+    /// refundable remainder.
     pub amount_minor: Option<i64>,
+    /// Customer's reason, up to 500 bytes.
     pub reason: String,
+    /// Idempotency key scoped to the organization.
     pub request_key: String,
     /// The session user asking — audit, never authorization: the row records
     /// who asked; only staff resolves.
@@ -684,7 +732,7 @@ impl Db {
     /// Marks a provider call's outcome without a terminal answer: a timeout
     /// or transport failure leaves `provider_pending` and schedules the next
     /// attempt on the backoff; a definite refusal past the attempt budget is
-    /// [`Self::release_order_refund`]'s job — this only reschedules.
+    /// `Self::release_order_refund`'s job — this only reschedules.
     pub async fn retry_order_refund(&self, refund_id: Uuid) -> Result<(), WalletError> {
         sqlx::query(
             "UPDATE oxsum.refunds SET retry_count=retry_count+1,\
@@ -1400,19 +1448,28 @@ impl Db {
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct FinanceAuditEntry {
+    /// Audit row identifier.
     pub audit_id: Uuid,
+    /// Staff user who made the decision.
     pub actor_user_id: Uuid,
+    /// Dotted action name, such as `refund.approve`.
     pub action: String,
+    /// Identifier of the affected resource.
     pub target: String,
+    /// Action-specific detail, including the reason and amounts.
     pub detail: serde_json::Value,
+    /// Credit note the action produced, when it produced one.
     pub note_id: Option<Uuid>,
+    /// When the audit row was written.
     #[serde(with = "time::serde::rfc3339")]
     pub created_at: OffsetDateTime,
 }
 
+/// One page of the business's finance audit.
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct FinanceAuditPage {
+    /// Audit rows in this page, newest first.
     pub entries: Vec<FinanceAuditEntry>,
     /// The last row's audit id; the next call resolves it back to the
     /// `(created_at, audit_id)` keyset against the same business.
@@ -1437,9 +1494,13 @@ fn dispute_from_row(row: &PgRow) -> Result<OrderDispute, WalletError> {
 /// What [`Db::refund_retry_target`] returns — the reservation plus the
 /// merchant coordinates its PSP call needs.
 pub struct RefundRetryTarget {
+    /// The refund reservation to re-issue.
     pub refund: OrderRefund,
+    /// Merchant account whose credentials sign the call.
     pub merchant_id: Uuid,
+    /// Merchant configuration version to sign with.
     pub merchant_version_id: Uuid,
+    /// PSP payment the refund points at.
     pub provider_payment_id: Option<String>,
 }
 

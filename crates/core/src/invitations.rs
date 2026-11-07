@@ -17,59 +17,85 @@ use crate::{
     BusinessCapability, BusinessMutationResult, Db, WalletError, business_staff as authority, keys,
 };
 
+/// A newly created invitation.
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CreatedInvitation {
+    /// Invitation identifier.
     pub id: Uuid,
     /// Only the first creation returns the secret. A retry cannot recover it.
     pub token: Option<String>,
+    /// Organization the invitation admits the recipient to.
     pub organization_id: Uuid,
+    /// When the invitation stops being accepted.
     #[serde(with = "time::serde::rfc3339")]
     pub expires_at: OffsetDateTime,
 }
+/// Request to invite someone into the caller's customer organization.
 #[derive(Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct TeamInvitationRequest {
+    /// Caller-supplied key that makes repeated requests return the same invitation.
     pub idempotency_key: String,
+    /// Email the invitation is bound to; required for a single recipient.
     pub intended_email: Option<String>,
     /// Also requests email delivery at the HTTP boundary.
     pub email: Option<String>,
 }
+/// Request to invite a new customer identity into the business.
 #[derive(Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct CustomerInvitationRequest {
+    /// Caller-supplied key that makes repeated requests return the same invitation.
     pub idempotency_key: String,
+    /// Email the invitation is bound to.
     pub email: String,
+    /// Display name for the new customer, 1 to 80 characters.
     pub name: String,
+    /// Caller-chosen customer identifier, 1 to 200 characters and unique in the business.
     pub external_id: String,
+    /// Operator-visible justification recorded in the audit log.
     pub reason: String,
 }
+/// Request to revoke a pending invitation.
 #[derive(Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct InvitationRevokeRequest {
+    /// Caller-supplied key that makes repeated revocations idempotent.
     pub idempotency_key: String,
+    /// Operator-visible justification recorded in the audit log.
     pub reason: String,
 }
+/// Request to accept an invitation with the current session.
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct InvitationAcceptRequest {
+    /// One-time invitation secret.
     pub token: String,
 }
+/// Receipt for an accepted invitation.
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct InvitationAcceptance {
+    /// Invitation identifier.
     pub id: Uuid,
+    /// Organization the recipient joined.
     pub organization_id: Uuid,
     /// Historical accepted role; this receipt never grants current authority.
     pub role: Role,
 }
 
+/// Public details shown before an invitation is accepted.
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct InvitationPreview {
+    /// Organization the invitation admits the recipient to.
     pub organization_id: Uuid,
+    /// Name of the organization or pending customer.
     pub name: String,
+    /// Role the recipient will hold after accepting.
     pub role: Role,
+    /// When the invitation stops being accepted.
     #[serde(with = "time::serde::rfc3339")]
     pub expires_at: OffsetDateTime,
 }
@@ -160,6 +186,8 @@ async fn creation_replay(
     created(&row, None)
 }
 impl Db {
+    /// Reads the public details of a live invitation by its secret. Invalid,
+    /// expired or already-used tokens are reported as not found.
     pub async fn invitation_preview(&self, token: &str) -> Result<InvitationPreview, WalletError> {
         let row=sqlx::query("SELECT COALESCE(i.organization_id,i.pending_customer_id) AS organization_id,COALESCE(o.name,i.customer_name) AS name,i.kind,i.expires_at FROM oxsum.invitations i LEFT JOIN oxsum.organizations o USING (organization_id) WHERE i.token_hash=$1 AND i.accepted_at IS NULL AND i.revoked_at IS NULL AND i.expires_at>clock_timestamp()")
             .bind(hash_token(token)).fetch_optional(self.pool()).await?.ok_or_else(invalid)?;
@@ -175,6 +203,8 @@ impl Db {
         })
     }
 
+    /// Creates a team invitation for the caller's customer organization. The
+    /// secret is returned only on first creation.
     pub async fn create_invitation(
         &self,
         token: &str,
@@ -215,6 +245,8 @@ impl Db {
         tx.commit().await?;
         Ok(result)
     }
+    /// Creates an invitation that establishes a new customer identity with the
+    /// given `externalId`. An assigned or reserved identifier is a conflict.
     pub async fn create_customer_invitation(
         &self,
         token: &str,
@@ -279,6 +311,8 @@ impl Db {
         tx.commit().await?;
         Ok(result)
     }
+    /// Revokes a pending invitation. `business_invite` selects the business or
+    /// team scope; accepted invitations cannot be revoked.
     pub async fn revoke_invitation(
         &self,
         token: &str,

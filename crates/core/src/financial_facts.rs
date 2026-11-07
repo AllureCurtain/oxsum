@@ -980,22 +980,31 @@ impl Db {
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ReconciliationRun {
+    /// Local run identifier.
     pub run_id: Uuid,
     /// `daily` | `period_close` | `manual`.
     pub kind: String,
+    /// First day covered by the run, inclusive.
     pub period_start: Date,
+    /// Last day covered by the run, inclusive.
     pub period_end: Date,
     /// `running` | `matched` | `exceptions` | `failed`.
     pub state: String,
     /// The eight-category figures each side computed, frozen at run time.
     pub expected_totals: serde_json::Value,
+    /// The figures the run actually observed, frozen beside `expected_totals`.
     pub actual_totals: serde_json::Value,
+    /// Number of exceptions the run opened.
     pub exception_count: i64,
+    /// Staff user who requested a manual run; `None` for scheduled runs.
     pub requested_by: Option<Uuid>,
+    /// When the run started.
     #[serde(with = "time::serde::rfc3339")]
     pub started_at: OffsetDateTime,
+    /// When the run finished; `None` while still running.
     #[serde(with = "time::serde::rfc3339::option")]
     pub finished_at: Option<OffsetDateTime>,
+    /// Failure detail when the run ended `failed`.
     pub last_error: Option<String>,
 }
 
@@ -1003,23 +1012,35 @@ pub struct ReconciliationRun {
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ReconciliationException {
+    /// Local exception identifier.
     pub exception_id: Uuid,
+    /// Run that opened the exception.
     pub run_id: Uuid,
+    /// Customer organization the exception blames, when scoped to one.
     pub organization_id: Option<Uuid>,
     /// `unmatched_usage` | `unmatched_journal` | `unmatched_payment` |
     /// `amount_drift` | `missing_cost` | `double_entry`.
     pub kind: String,
+    /// The figure the projections expected, in minor units.
     pub expected_minor: Option<i64>,
+    /// The figure actually observed, in minor units.
     pub actual_minor: Option<i64>,
+    /// Table holding the blamed source row.
     pub source_table: Option<String>,
+    /// Identifier of the blamed source row.
     pub source_ref: Option<String>,
+    /// Human-readable explanation of the disagreement.
     pub detail: Option<String>,
     /// `open` | `resolved` | `waived`.
     pub state: String,
+    /// Staff user who closed the exception, if any.
     pub resolved_by: Option<Uuid>,
+    /// The resolution or waiver explanation.
     pub resolution: Option<String>,
+    /// When the exception was closed, if it has been.
     #[serde(with = "time::serde::rfc3339::option")]
     pub resolved_at: Option<OffsetDateTime>,
+    /// When the exception was opened.
     #[serde(with = "time::serde::rfc3339")]
     pub created_at: OffsetDateTime,
 }
@@ -1029,15 +1050,23 @@ pub struct ReconciliationException {
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ReconciliationRepair {
+    /// Local repair identifier.
     pub repair_id: Uuid,
+    /// Exception the repair was applied to.
     pub exception_id: Uuid,
+    /// Staff user who ran the repair.
     pub actor_user_id: Uuid,
     /// `reclassify_cost` | `adjust_journal` | `link_payment` | `mark_duplicate`.
     pub action: String,
+    /// Snapshot of the affected fact before the write.
     pub before: serde_json::Value,
+    /// Snapshot of the affected fact after the write.
     pub after: serde_json::Value,
+    /// Finance-audit row that authorized the repair.
     pub audit_ref: Option<Uuid>,
+    /// Operator's stated reason for the corrective action.
     pub reason: String,
+    /// When the repair was recorded.
     #[serde(with = "time::serde::rfc3339")]
     pub created_at: OffsetDateTime,
 }

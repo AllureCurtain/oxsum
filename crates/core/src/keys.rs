@@ -63,8 +63,11 @@ pub(crate) fn validate_model_allowlist(models: &[String]) -> Result<(), WalletEr
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum BudgetDuration {
+    /// A limit that resets at the start of each UTC day.
     Daily,
+    /// A limit that resets at the start of each ISO week (Monday).
     Weekly,
+    /// A limit that resets on the first day of each UTC month.
     Monthly,
 }
 
@@ -347,17 +350,22 @@ fn validate_tpm_scopes(scopes: &TpmScopes) -> Result<(), WalletError> {
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ApiKey {
+    /// The key's identifier, used to address it in management calls.
     pub id: Uuid,
+    /// The caller-facing label; `None` for an unnamed key.
     pub name: Option<String>,
     /// The leading characters of the secret, for recognizing a key in a list.
     pub prefix: String,
     /// Who minted the key, for the per-member role rules. `None` for keys minted with an
     /// API key, because no person acts there.
     pub created_by: Option<Uuid>,
+    /// When the key was minted.
     #[serde(with = "time::serde::rfc3339")]
     pub created_at: OffsetDateTime,
+    /// When the key stops authenticating; `None` means it never expires.
     #[serde(with = "time::serde::rfc3339::option")]
     pub expires_at: Option<OffsetDateTime>,
+    /// When the key was revoked; `None` while it is live.
     #[serde(with = "time::serde::rfc3339::option")]
     pub revoked_at: Option<OffsetDateTime>,
     /// The key's spend limit in minor units: settled charges plus outstanding holds
@@ -390,7 +398,10 @@ pub struct ApiKey {
 /// path can enforce it.
 #[derive(Debug, Clone)]
 pub struct ActingKey {
+    /// The identifier of the key that authenticated.
     pub key_id: Uuid,
+    /// The key's spend limit in minor units, counting settled charges and
+    /// outstanding holds; `None` is unlimited.
     pub spend_limit_minor: Option<i64>,
     /// The rolling-minute request allowance in force when the key authenticated.
     /// Checked against the limiter's own window at admission; a PATCH landing
@@ -414,8 +425,11 @@ pub struct ActingKey {
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CreatedApiKey {
+    /// The key's public metadata.
     #[serde(flatten)]
     pub key: ApiKey,
+    /// The full secret; the database keeps only its hash, so this is the sole
+    /// time the value is available.
     pub secret: String,
 }
 

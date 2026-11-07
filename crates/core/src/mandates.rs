@@ -93,6 +93,7 @@ pub struct Mandate {
     pub not_after: OffsetDateTime,
     /// Uniqueness, so two identical mints are two different mandates.
     pub nonce: String,
+    /// When the mandate was minted.
     #[serde(with = "time::serde::rfc3339")]
     pub created_at: OffsetDateTime,
 }
@@ -101,6 +102,7 @@ pub struct Mandate {
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CreatedMandate {
+    /// The mandate's committed fields.
     #[serde(flatten)]
     pub mandate: Mandate,
     /// base64url of the canonical body plus its Ed25519 signature — what the
@@ -128,6 +130,7 @@ pub struct VerifiedMandate {
     pub required_policies: Option<Vec<String>>,
     /// The window the mandate is honored inside, unix seconds.
     pub not_before: i64,
+    /// The end of the window, unix seconds.
     pub not_after: i64,
     /// The mandate's own digest, for the settlement description's v7 `mandate`
     /// field.

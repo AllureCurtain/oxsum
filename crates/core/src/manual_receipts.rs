@@ -13,6 +13,7 @@ use crate::{Db, Receipt, Tenants, WalletError};
 /// extend this type when the business authority surface is introduced.
 #[derive(Clone, Copy)]
 pub enum FundingAuthority {
+    /// The deployment itself, authenticated out of band by the operator.
     Deployment,
 }
 
@@ -21,9 +22,14 @@ pub enum FundingAuthority {
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ManualReceiptRequest {
+    /// The caller's idempotency key; a replay with the same key recovers the
+    /// original receipt instead of crediting twice.
     pub idempotency_key: String,
+    /// The credit to record, in minor units; must be positive.
     pub amount_minor: i64,
+    /// The payment reference an operator uses to trace the money to its rail.
     pub reference: String,
+    /// Why the receipt was recorded, in the operator's own words.
     pub reason: String,
 }
 

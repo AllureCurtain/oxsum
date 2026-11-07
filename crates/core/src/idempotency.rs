@@ -56,15 +56,21 @@ const MAX_KEY_LEN: usize = 255;
 #[derive(Debug)]
 pub enum Claim {
     /// The claim is fresh: run the turn under this request id.
-    Fresh { request_id: String },
+    Fresh {
+        /// The request id the fresh turn runs under.
+        request_id: String,
+    },
     /// The first request is still running.
     InFlight,
     /// The key was claimed under a different request body.
     Mismatch,
     /// The first request finished: replay its stored answer under its own request id.
     Replay {
+        /// The request id the original turn ran under.
         request_id: String,
+        /// The stored HTTP status to replay.
         status: i32,
+        /// The stored response body to replay.
         body: Value,
     },
 }

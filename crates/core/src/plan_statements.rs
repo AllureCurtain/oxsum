@@ -138,40 +138,57 @@ impl StatementLineKind {
 #[derive(Debug, Clone, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PlanStatement {
+    /// Local statement identifier.
     pub statement_id: Uuid,
     /// NULL on a wallet-only statement — a dispute chargeback an org carries
     /// when no live plan stands.
     pub customer_plan_id: Option<Uuid>,
+    /// Customer organization the statement bills.
     pub organization_id: Uuid,
+    /// Business that owns the statement, hidden from customer responses.
     #[serde(skip_serializing)]
     pub business_id: Uuid,
+    /// Zero-based plan period this statement covers; `None` on a
+    /// chargeback-only statement.
     pub period_index: Option<i32>,
+    /// Inclusive start of the billed period, when plan-bound.
     #[serde(with = "time::serde::rfc3339::option")]
     pub period_start: Option<OffsetDateTime>,
+    /// Exclusive end of the billed period, when plan-bound.
     #[serde(with = "time::serde::rfc3339::option")]
     pub period_end: Option<OffsetDateTime>,
     /// The invoice journal whose receivable this statement surfaces.
     pub journal_id: Option<Uuid>,
+    /// Lifecycle state of the statement.
     pub state: PlanStatementState,
     /// The lines' sum — what the customer owes.
     pub total_minor: i64,
     /// What reconciled payments already covered.
     pub paid_minor: i64,
+    /// Three-letter ISO 4217 currency code of the amounts.
     pub currency: String,
+    /// When the statement was issued.
     #[serde(with = "time::serde::rfc3339::option")]
     pub issued_at: Option<OffsetDateTime>,
+    /// Payment due date, `issued_at + net_terms_days`.
     #[serde(with = "time::serde::rfc3339::option")]
     pub due_at: Option<OffsetDateTime>,
+    /// When the statement was fully paid.
     #[serde(with = "time::serde::rfc3339::option")]
     pub paid_at: Option<OffsetDateTime>,
+    /// When the statement first became past due.
     #[serde(with = "time::serde::rfc3339::option")]
     pub past_due_at: Option<OffsetDateTime>,
+    /// When the statement was voided.
     #[serde(with = "time::serde::rfc3339::option")]
     pub voided_at: Option<OffsetDateTime>,
+    /// Staff's reason for voiding the statement.
     pub void_reason: Option<String>,
+    /// Statement this one replaces, when reissued.
     pub replaces_statement_id: Option<Uuid>,
     /// The order whose payment completed the settlement — the dispute link.
     pub paid_order_id: Option<Uuid>,
+    /// When the statement row was created.
     #[serde(with = "time::serde::rfc3339")]
     pub created_at: OffsetDateTime,
 }
@@ -181,15 +198,20 @@ pub struct PlanStatement {
 #[derive(Debug, Clone, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PlanStatementLine {
+    /// Local line identifier.
     pub line_id: Uuid,
+    /// Statement the line belongs to.
     pub statement_id: Uuid,
+    /// What the line bills or credits.
     pub kind: StatementLineKind,
     /// Signed: charges positive, credits negative.
     pub amount_minor: i64,
+    /// Customer-facing description of the line.
     pub description: String,
     /// The fact the line came from — a journal line, a refund, an order, a
     /// dispute.
     pub source_ref: Option<Uuid>,
+    /// When the line was written.
     #[serde(with = "time::serde::rfc3339")]
     pub created_at: OffsetDateTime,
 }
@@ -198,15 +220,21 @@ pub struct PlanStatementLine {
 #[derive(Debug, Clone, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PlanStatementDetail {
+    /// The statement header.
     #[serde(flatten)]
     pub statement: PlanStatement,
+    /// The statement's lines in write order.
     pub lines: Vec<PlanStatementLine>,
 }
 
+/// A cursor-paginated page of plan statements.
 #[derive(serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PlanStatementPage {
+    /// Statements in newest-first order.
     pub statements: Vec<PlanStatement>,
+    /// Statement identifier to pass as `after` for the next page; `None` at
+    /// the end.
     pub next_cursor: Option<Uuid>,
 }
 

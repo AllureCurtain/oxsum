@@ -87,7 +87,7 @@ pub fn seed_from_base64(text: &str) -> Result<[u8; 32], String> {
 /// The public half of the operator's key, as the API publishes it.
 #[derive(Debug, Clone)]
 pub struct KeyPublication {
-    /// The name the operator signs under ([`KEY_NAME`]).
+    /// The name the operator signs under (`KEY_NAME`).
     pub name: String,
     /// The raw Ed25519 public key.
     pub public_key: [u8; 32],

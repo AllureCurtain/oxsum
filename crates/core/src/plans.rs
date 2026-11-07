@@ -145,8 +145,11 @@ pub struct SoldPlan {
     pub plan_version_id: Uuid,
     /// The plan's stable identity across versions.
     pub plan_id: Uuid,
+    /// Business that owns the catalogue entry.
     pub business_id: Uuid,
+    /// Monotonically increasing version number within `plan_id`.
     pub version: i32,
+    /// Display name of the plan version.
     pub name: String,
     /// The catalogue price in ledger minor units; 0 is a free plan.
     pub price_minor: i64,
@@ -158,6 +161,7 @@ pub struct SoldPlan {
     pub period_kind: PeriodKind,
     /// Whether an exhausted period may overflow into the wallet — opt-in.
     pub overage_enabled: bool,
+    /// Catalogue display order, lowest first.
     pub sort_order: i32,
     /// Set once the version may be sold; `None` is a draft.
     #[serde(with = "time::serde::rfc3339::option")]
@@ -165,6 +169,7 @@ pub struct SoldPlan {
     /// Set when the version stops accepting new binds.
     #[serde(with = "time::serde::rfc3339::option")]
     pub retired_at: Option<OffsetDateTime>,
+    /// When the version row was created.
     pub created_at: OffsetDateTime,
 }
 
@@ -173,12 +178,19 @@ pub struct SoldPlan {
 pub struct NewSoldPlan {
     /// The plan's identity; `None` mints a new one (version 1).
     pub plan_id: Option<Uuid>,
+    /// Display name for the new version.
     pub name: String,
+    /// Price in ledger minor units; 0 makes the plan free.
     pub price_minor: i64,
+    /// Three-letter uppercase ISO 4217 code the price is quoted in.
     pub currency: String,
+    /// Quota per period in credit minor units; `None` is unmetered.
     pub quota_minor: Option<i64>,
+    /// Boundary policy the version sells under.
     pub period_kind: PeriodKind,
+    /// Whether an exhausted period may overflow into the wallet.
     pub overage_enabled: bool,
+    /// Catalogue display order, lowest first.
     pub sort_order: i32,
 }
 
@@ -240,6 +252,8 @@ pub enum PlanAuthorizationKind {
     Complimentary,
 }
 impl PlanAuthorizationKind {
+    /// Reads a stored authorization kind back; an unknown one refuses rather
+    /// than guesses.
     #[must_use]
     pub fn parse(text: &str) -> Option<Self> {
         match text {
@@ -254,11 +268,16 @@ impl PlanAuthorizationKind {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub enum PlanPeriodState {
+    /// The period is running and may serve draws.
     Active,
+    /// The period ended normally at its boundary.
     Closed,
+    /// The period ended without a renewal authorization.
     Expired,
 }
 impl PlanPeriodState {
+    /// Reads a stored period state back; an unknown one refuses rather than
+    /// guesses.
     #[must_use]
     pub fn parse(text: &str) -> Option<Self> {
         match text {
@@ -275,7 +294,9 @@ impl PlanPeriodState {
 #[derive(Debug, Clone, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CustomerPlan {
+    /// Local customer plan identifier.
     pub customer_plan_id: Uuid,
+    /// Customer organization the plan belongs to.
     pub organization_id: Uuid,
     /// The exact sold version the customer bought.
     pub plan_version_id: Uuid,
@@ -285,13 +306,16 @@ pub struct CustomerPlan {
     /// `pendingPayment`, `active`, `renewalPending`, `pastDue`, `expired`
     /// or `cancelled` — D06's machine.
     pub state: CustomerPlanState,
+    /// When the first period was authorized; `None` while pending payment.
     #[serde(with = "time::serde::rfc3339::option")]
     pub activated_at: Option<OffsetDateTime>,
     /// Serves through the paid period but blocks renewal when set.
     pub cancel_at_period_end: bool,
     /// A booked swap effective at the next boundary; `None` when unscheduled.
     pub scheduled_change: Option<Uuid>,
+    /// When the customer plan row was created.
     pub created_at: OffsetDateTime,
+    /// When the customer plan row last changed.
     pub updated_at: OffsetDateTime,
 }
 
@@ -299,14 +323,21 @@ pub struct CustomerPlan {
 #[derive(Debug, Clone, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PlanPeriod {
+    /// Local period identifier.
     pub plan_period_id: Uuid,
+    /// Customer plan this period belongs to.
     pub customer_plan_id: Uuid,
+    /// Zero-based period number within the customer plan.
     pub period_index: i32,
+    /// Inclusive start of the period.
     #[serde(with = "time::serde::rfc3339")]
     pub period_start: OffsetDateTime,
+    /// Exclusive end of the period.
     #[serde(with = "time::serde::rfc3339")]
     pub period_end: OffsetDateTime,
+    /// Quota granted for the period in credit minor units; `None` is unmetered.
     pub quota_minor: Option<i64>,
+    /// Quota consumed so far, in credit minor units.
     pub consumed_minor: i64,
     /// `paymentOrder` or `complimentary` — what authorized the period.
     pub authorization_kind: PlanAuthorizationKind,
@@ -314,6 +345,7 @@ pub struct PlanPeriod {
     pub authorization_ref: Uuid,
     /// `active`, `closed` or `expired`.
     pub state: PlanPeriodState,
+    /// When the period row was created.
     pub created_at: OffsetDateTime,
 }
 
