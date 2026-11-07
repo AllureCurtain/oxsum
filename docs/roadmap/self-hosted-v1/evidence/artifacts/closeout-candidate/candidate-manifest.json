@@ -1,0 +1,21 @@
+{
+  "candidate_sha": "813c788613f9f2a737562493c3b305ca1aaff5c1",
+  "repository": "AllureCurtain/oxsum",
+  "workflow_run_id": "42338752086",
+  "workflow_run_url": "https://github.com/AllureCurtain/oxsum/actions/runs/42338752086",
+  "image_identity": "ghcr.io/allurecurtain/oxsum@sha256:ab431efdcfcb0089578893ad64691b577f6308e6e3a1a3e1c0f94cc33113f180",
+  "gated_at": "2026-11-07T04:42:19Z",
+  "gates": {
+    "fmt": "passed",
+    "clippy": "passed",
+    "lib_doc_tests": "passed",
+    "wasm_build": "passed",
+    "frontend_build": "passed",
+    "verify_consumer": "passed",
+    "developer_examples": "passed",
+    "image_build": "passed",
+    "image_smoke": "passed"
+  },
+  "heavy_tier": "https://github.com/AllureCurtain/oxsum/actions/runs/42337766660",
+  "artifacts": "see SHA256SUMS"
+}

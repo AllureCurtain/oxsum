@@ -1,4 +1,4 @@
-# T31 follow-up — real-provider certification + Airwallex credential finding (2026-11-06)
+# T31 follow-up — one real-provider call and Airwallex credential failure (2026-11-06)
 
 Issue: [#622](https://github.com/AllureCurtain/oxsum/issues/622). Companion to
 `T31-partial.md`: after the local proxy switched from fake-IP (TUN) mode to
@@ -27,10 +27,10 @@ The real upstream usage was `prompt_tokens 6, completion_tokens 1` — the
 smallest billable turn Deepseek serves. No stream, no retry, no fallback:
 one attempt, one settle.
 
-**This closes the real-provider certification item** for the test tier: a
-paid call ran through the gateway's own hold/settle path against the live
-provider, and the exported evidence verifies offline exactly as a customer's
-browser would check it.
+This establishes one DeepSeek nonstreaming call and its exported evidence.
+It does **not** close the supported real-provider/protocol matrix: streaming,
+retry, fallback, other model endpoints and other provider examples were not
+run. Preserve this result without promoting it to broad certification.
 
 ## 2. Airwallex outbound — credential finding, not a network block
 
@@ -51,14 +51,13 @@ x-api-key:    <.env OXSUM_AIRWALLEX_API_KEY>
 The same 403 returns with no headers, with `Accept`/`User-Agent` set, with
 the system proxy bypassed (`--noproxy '*'`), and pinned directly to the
 resolved IP (`--resolve …:443:114.117.133.34`). The network path is clean —
-**the stored demo credential is rejected by Airwallex itself**, most likely
-rotated or deprovisioned since it was issued. oxsum's outbound hop is doing
-the right request shape; the provider will not issue the bearer token the
-intent create needs.
+**the stored demo credential is rejected by Airwallex itself**, but the
+record does not establish why it was rejected. The provider did not
+issue the bearer token the intent create needs.
 
 This stays external-pending, but for a new reason: it needs a *working*
-Airwallex demo/test credential, not a network change. The receive→credit
-→reverse leg remains verified from `T31-partial.md` §4 (in-repo webhook path,
+Airwallex demo/test credential, not a network change. The manually seeded
+receive→credit→ledger-reverse leg is recorded in `T31-partial.md` §4 (in-repo webhook path,
 HMAC-verified, ledger-conserving), and the create-intent code path is the
 same one the live rail uses — only the upstream auth answer differs.
 
@@ -66,8 +65,8 @@ same one the live rail uses — only the upstream auth answer differs.
 
 | Item | State |
 | --- | --- |
-| Real-provider certified call | **Done (test tier)** — this document §1 |
-| Merchant sandbox payment create | Blocked on a *valid* Airwallex demo credential (403 on login); receive/refund legs verified in `T31-partial.md` §4 |
+| One DeepSeek nonstreaming call | **Passed within this scope** — §1; remaining real-provider matrix pending |
+| Merchant sandbox payment create | Blocked on a *valid* Airwallex demo credential (403 on login); simulated receive/ledger-reversal recorded in `T31-partial.md` §4 |
 | Low-value live payment/refund | Still needs authorized real-money credentials |
 | Two independent pilots | Still none authorized — internal only |
 | G5 publication decision | Still pending per chosen SHA |
@@ -84,15 +83,17 @@ runs could not reach. GitHub `git push` needed the local HTTP proxy pinned
 (`http://127.0.0.1:7897`) because git does not read `scutil`; `gh` and
 `curl` pick the system proxy up themselves.
 
-## Gate outcome (resolved after this document's first commit)
+## Historical candidate outcome and correction
 
-The candidate-gate story begun in `T31-partial.md` §1 closed green: dispatch
-`42240437323` on `930794c` ran all ten jobs to `success` and produced the
-`candidate-bundle` artifact — the first end-to-end clean run on a real SHA.
-Three dispatches each surfaced one latent defect and each was fixed in its
-own PR before the next attempt: `wasm-bindgen` release-asset 404 (#677,
-crates.io install), missing `sccache-action` before the compile step plus a
-missing `build-verify-wasm.sh` ahead of `npm pack` (#679), and a
-`${{ needs.resolve.outputs.sha }}` typo the earlier failures had hidden
-(#681). The gate now does what T29 designed it to do on an arbitrary main
-commit.
+Dispatch [42240437323](https://github.com/AllureCurtain/oxsum/actions/runs/42240437323)
+on `930794c` ran all ten candidate jobs successfully after #677/#679/#681
+fixed tool installation, package ordering and the expression typo. However,
+full CI [42240404235](https://github.com/AllureCurtain/oxsum/actions/runs/42240404235)
+on that same code failed, and the candidate job did not boot its image.
+The green dispatch alone was insufficient A30/G2 evidence.
+
+Closeout #686 fixes the schema inventory and relocated test executable path;
+#687 requires actually executed full CI on the exact SHA, boots the image,
+checks its version SHA and retains a Docker archive without publishing.
+The superseding candidate is recorded in
+[closeout-candidate.md](closeout-candidate.md).

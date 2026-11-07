@@ -1,83 +1,52 @@
 # Release checklist — promotion gates and external actions
 
-The G1–G5 promotion gates from [ACCEPTANCE.md](ACCEPTANCE.md), each recorded
-as pass / fail / external-pending with its evidence pointer, followed by the
-exact external-action list T31 executes. Nothing on this page is a
-production-ready claim; G4 and G5 are unexercised by policy.
+Updated 2026-11-07. Candidate:
+`813c788613f9f2a737562493c3b305ca1aaff5c1`. See the pinned evidence in
+[closeout-candidate.md](evidence/closeout-candidate.md); documentation added
+after that commit does not change the candidate identity. No publication or
+production-ready status is implied.
 
 ## Promotion gates
 
-| Gate | Contract | Verdict | Evidence |
-| --- | --- | --- | --- |
-| G1 — T00–T30 software validated and integrated; no unresolved money/permission/isolation correctness issue | All task PRs merged through normal green checks; A01–A30 matrix green; no open correctness defect | **pass** | [STATUS.md](STATUS.md) task table (T00–T30 integrated, 38 PRs); [ACCEPTANCE-RESULTS.md](ACCEPTANCE-RESULTS.md) — every A-row cites its proving suite/script; no unresolved money, permission or isolation defect is open |
-| G2 — exact promoted SHA passes relevant full checks, built UI and independent packaged verifier | Candidate gate on one SHA | **pass (software)** | `release-candidate.yml` on main (`45e4b22`): same-SHA resolve → fast tier → wasm → frontend → `check-verify-consumer.sh` → `verify-examples.sh` → no-push image → `candidate-bundle`. The *run* is a maintainer `workflow_dispatch` (gate 1 in [docs/self-hosted-release.md](../../self-hosted-release.md)); this checklist records the gate exists, landed and is runnable — its first real candidate run is T31's dispatch |
-| G3 — measured capacity and fault/upgrade/restore evidence; accurate support matrix | D09 workload, soak, upgrade/restore, support matrix | **pass with declared limitation** | [evidence/T27.md](evidence/T27.md) (17 fault cells, schema-count/fairness/cache measurements, harness hazards); `install_ops.rs` 7/7 (upgrade fixture, cross-database restore); [docs/integrations.md](../../integrations.md) + [docs/unsupported.md](../../unsupported.md) support/refusal matrices. **Limitation:** the normalized D09 shape (1,000 customers / 100 streams / 4 vCPU target) and the 5-minute soak are unmeasured — `scripts/soak.sh` exists, unrunnable to declared target locally. Recorded as a release limitation |
-| G4 — primary live collection certification and independent pilots with authorized real evidence | Real money + real outsiders | **external-pending** | Requires authorized merchant credentials, real-provider paid calls and contact-authorized pilot operators — enumerated under *External actions* below |
-| G5 — user authorizes actual publication/deployment for the reviewable candidate | Separate human authorization | **external-pending** | The candidate is reviewable (`candidate-bundle` per run, this checklist, ACCEPTANCE-RESULTS). Publication (`release.yml` version tag, npm publish, deploy) requires a separate explicit user authorization — never implied by G1–G3 |
+| Gate | Verdict | Evidence and limit |
+| --- | --- | --- |
+| G1 — T00–T30 software validated/integrated; no unresolved money/permission/isolation defect | integrated, with scoped acceptance | [STATUS.md](STATUS.md) maps merged work. #686/#691/#693/#694 fix the concrete closeout defects. Automated and browser evidence is scoped in [ACCEPTANCE-RESULTS.md](ACCEPTANCE-RESULTS.md); no blanket A01–A30 certification. |
+| G2 — exact promoted SHA full checks, built UI and independent package | executed candidate evidence | [closeout-candidate.md](evidence/closeout-candidate.md): full CI, mandatory consumer, image startup and version SHA match, no-push image archive/manifest/checksums. Interactive browser evidence used incremental local builds, not a complete replay against this image. |
+| G3 — measured capacity/fault/upgrade/restore and accurate support matrix | measured; performance target not met | [closeout-capacity.md](evidence/closeout-capacity.md): 1,000 accounts/10,000 keys/100 streams, 5,897 successes/zero failures, zero drift. 19.657 admissions/s and 113.421 ms p95 overhead upper bound miss >=20/s and <100 ms. [T27](evidence/T27.md) fault suites and `install_ops.rs` upgrade/restore run in full CI. Four-vCPU certification and long-duration load remain pending. |
+| G4 — primary collection certification and independent pilots | external-pending | Real PSP capture/refund, remaining real-provider scenarios and two independent operators have not been established. |
+| G5 — explicit publication/deployment authorization | external-pending | Review this exact candidate and its limitations before separately authorizing release/image/npm publication or live deployment. |
 
-## External actions (T31's work list)
+The candidate workflow is authorized software validation. It requires no
+additional release permission because it exports artifacts without publishing
+or deploying. A green workflow is evidence of its checks, not permission to
+promote or a waiver of the D09 shortfall.
 
-Every item below requires an explicit authorization or credential that does
-not exist inside the repository. Each names its prerequisite and the
-evidence it must produce. None may be simulated or marked complete from
-in-repo artifacts.
+## External actions
 
-1. **Merchant sandbox + low-value live payment/refund certification**
-   - *Prerequisite:* user-supplied merchant credentials (Stripe/Airwallex/
-     Hyperswitch sandbox + live, per [docs/rails.md](../../rails.md)) and
-     specific authorization for real-money amounts and recipients.
-   - *Must produce:* recorded sandbox and low-value live payment + refund
-     cycles (order → provider event → fulfillment → refund → credit note)
-     with the operator, timestamp, amount and transaction references —
-     secrets and personal data excluded.
-   - *Covers:* A16–A18 external halves, A31 primary collection.
+1. **Merchant sandbox and low-value live payment/refund.** Supply working
+   credentials and specific authorization for amounts/recipients. Record the
+   real order → capture → authenticated provider event → fulfillment →
+   provider refund → credit-note cycle with sanitized references. The older
+   Airwallex intent creation, manually seeded reference, locally signed event
+   and ledger reversal are not capture/refund certification.
+2. **Remaining real-provider examples.** Supply the relevant credentials and
+   paid-call authorization. The historical DeepSeek nonstreaming call is
+   limited evidence; run the remaining advertised protocols, streaming,
+   retry/fallback and examples with exported/offline-verified bills.
+3. **Two independent operators.** Obtain actual participants and contact
+   authorization. Each independently installs and completes a plan/billing
+   cycle, recording environment, operator and result. The internal
+   [onboarding walkthrough](ONBOARDING-DRYRUN.md) is preparation, not pilot evidence.
+4. **Publication/deployment.** Make distinct explicit decisions for the
+   reviewed candidate's release/image, npm package and live deployment.
+   `release.yml` and `deploy.yml` were not run in this closeout. The verified
+   SDK distribution remains the packed tarball.
 
-2. **Real-provider validation of the supported certified examples**
-   - *Prerequisite:* provider credentials for the supported model providers
-     ([docs/integrations.md](../../integrations.md) matrix) and paid-call
-     authorization.
-   - *Must produce:* each supported example's real-provider run (metered
-     call → usage/bill → evidence bundle → offline verify) with model,
-     cost and outcome recorded.
-   - *Covers:* A15/A27 external halves.
+## Software limitations to carry forward
 
-3. **Two independent pilot operators**
-   - *Prerequisite:* user authorization to contact real outside operators,
-     and the operators themselves.
-   - *Must produce:* two independent install + billing/plan-cycle
-     completions — each pilot's environment, install path, plan sale and
-     billing cycle result, who performed it and when, documented without
-     secrets or personal data (per T31's "never simulate outside-user
-     evidence" rule).
-   - *Covers:* A31 pilots; exercises [ONBOARDING-DRYRUN.md](ONBOARDING-DRYRUN.md)
-     end to end on unfamiliar infrastructure.
-
-4. **Publication and live deployment**
-   - *Prerequisite:* separate user authorization after the exact candidate
-     is reviewable — the `candidate-bundle` from a `release-candidate.yml`
-     run on the chosen SHA, this checklist and ACCEPTANCE-RESULTS.
-   - *Must produce:* `gh workflow run release.yml -f image_tag=v<x.y.z>`,
-     npm publication of `verify-oxsum-bill`, and (separately authorized)
-     `deploy.yml` — each a distinct recorded decision, never bundled into
-     implementation work.
-   - *Covers:* G5.
-
-5. **Candidate gate run on the final SHA** (software, but gated on
-   authorization to run the workflow)
-   - *Prerequisite:* none beyond maintainer access — but the run belongs to
-     the release decision, not this acceptance.
-   - *Must produce:* `candidate-bundle` (manifest + SHA256SUMS + notes
-     draft) from `gh workflow run release-candidate.yml -f sha=<chosen>`,
-     plus a `scripts/release-candidate-smoke.sh` green run against that
-     build.
-   - *Covers:* the executed half of G2/A30.
-
-## Standing non-claims
-
-- No live payment rail has moved real money — every payment test ran the
-  stub/sandbox path.
-- No independent third party has installed or operated this software.
-- Nothing has been published to a registry or deployed to a server as a
-  release.
-- `verify-oxsum-bill` remains unpublished on npm (`npm view` answers 404);
-  the packed-tarball path is the verified distribution.
+- Improve or expressly accept the measured D09 throughput/overhead shortfall
+  for a narrower preview; do not relabel the thresholds after measuring.
+- Complete broader browser coverage for paid plans, disputes and receivables
+  before claiming the entire console/portal has been exercised.
+- Before promoting a later code SHA, rerun full `ci.yml` and
+  `release-candidate.yml` for that SHA; older green artifacts do not transfer.

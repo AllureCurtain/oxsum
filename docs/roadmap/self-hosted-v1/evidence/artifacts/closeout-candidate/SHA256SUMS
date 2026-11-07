@@ -1,0 +1,15 @@
+fc677a404d0cce55ea5e8f1b311818e2b86ea7b5e763a4155fc82c5c500bb7f4  ./AllureCurtain~oxsum~M1M7AX.dockerbuild/AllureCurtain~oxsum~M1M7AX.dockerbuild
+5c354286f320a4215a613e7d0cff3a12a001ba857f9ecde889e6db01938a15a5  ./candidate-full-ci/candidate-ci.json
+99be4081cc4e8faaea81ebcd8aed98281466a5a0430e63e8c6ef0f7fc8cbee27  ./candidate-image/candidate-image.tar.gz
+49740229a18cbf08d04f93d5ba80f4d8f81564fd89a7e47684eb877b85a431b3  ./candidate-smoke/candidate-smoke.log
+a3049c1d15e9ebd3e9c303facd6c1109b5aea4c9198383080c3a5a7c74325141  ./verify-oxsum-bill-tarball/verify-oxsum-bill-0.1.0.tgz
+cf657f0b7c1d3ecd111ff772f05c5293d270f018342a82a120c3d9f33165a02e  ./verify-wasm/verify_wasm.d.ts
+dd1ae1936591ddfe3282ae5396a66f0e60fa380557230c7c6aa710cfcbdc7fe7  ./verify-wasm/verify_wasm.js
+85343cc8c9748782e6a5f288cedbc9afc08092db4f5d7902b81db4b541ca9f1d  ./verify-wasm/verify_wasm_bg.wasm
+3ae0b4fb3aeed305e28ab5f0c8af6084aa3a18db79097c29b76e70ce76973dbc  ./verify-wasm/verify_wasm_bg.wasm.d.ts
+e07f7ffd6df19f075233360a7a4b863853d9429f73a332ce90fc45d6950a83d1  ./web-dist/assets/index-CDEiihMB.css
+363b0d03f71af5fc36d285b1fec07174f1c4fe4a89f3c51175768f290b722192  ./web-dist/assets/index-CoOet8Vg.js
+0731374848e72c24e97a15eca811c01f2b2f5448c8223cb2bd8d06485d6ddf5d  ./web-dist/assets/motion-CFNv9vlu.js
+7af9f364ba4b2d2329311389d37fdeb09b2530709e725ad95bc727bff5e0e14b  ./web-dist/assets/react-vendor-Z64du6Wu.js
+0db1ee45fc7b0e17735a0dab20aed51373f6d06c2e1636795b40ccf6af471e17  ./web-dist/assets/ui-vendor-BeYkVgkH.js
+3750bc21757133843315839f485f160004f72fa88d695402f8a88d0d34b80aa9  ./web-dist/index.html

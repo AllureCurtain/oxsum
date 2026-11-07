@@ -16,7 +16,10 @@ Final server source was `ba6fea62247552e36e470d6f5d43f6234c2a6cb5`;
 the frontend was built from the source changes accompanying this evidence,
 based on `be5dd4c1e351ecd2f93c21f5317c026fb17d12cc`. This is incremental
 defect/retest evidence, not a claim that every screenshot came from one
-immutable release binary. Exact integrated candidate checks are recorded
+immutable release binary. Source comparison after integration found no backend/runtime difference
+between that server commit and `813c788`, and no frontend source difference
+between the final browser changes (`95fa2f2`) and `813c788`. The candidate
+container build is still a separate artifact. Exact candidate checks are recorded
 separately in [ACCEPTANCE-RESULTS](../ACCEPTANCE-RESULTS.md).
 
 The retained [fixture source](artifacts/closeout-browser/browser-fixture.mjs)
@@ -72,6 +75,8 @@ Orders: `d6990faa-78e3-4b12-b941-3d655532c9ed` (USD 1) and
 `831e7866-27cd-4519-8c42-f1512da04dd7` (USD 2).
 Request: `fd3a3670-d071-4cbb-a323-c4133ca77e3e`.
 Settlement: `64b6dfe6-5b5e-5fcd-9826-f33b1ed78269`.
+Retained [actual proof](artifacts/closeout-browser/customer-proof.json) and
+[sanitized accounting read](artifacts/closeout-browser/accounting.json).
 Recorded hash:
 `1682422814b90fd66e16c686a2b5c970bd95d8b3b1595f684a63fba7cbd824e0`.
 
@@ -104,3 +109,11 @@ The focused backend fixes have their own checks: four context/console tests
 for #691; 30 PostgreSQL-backed payment/refund/event/job tests, strict Clippy
 and a 1,780-pass workspace selection for #693. These checks do not turn the
 mock payment/model services into external certification.
+
+After integration, the SDK tarball from candidate run `42338752086` was
+installed into a fresh temporary project and verified this retained actual
+bill offline. Correct hash passed, an all-zero hash failed, and a throwing
+`fetch` stub recorded zero network attempts. See the
+[recorded verdicts](artifacts/closeout-candidate/actual-bill-verification.json).
+This ties the retained bill to the final candidate verifier without claiming
+a second browser journey against the final container image.
