@@ -11,7 +11,7 @@
 //! `financial_facts` read scoped to the caller's organization, so the
 //! customer's total and the business's sum for that organization are one
 //! figure by construction, never two totals that could disagree.
-use super::business::personal_token;
+
 use super::{ApiResult, ok, parse_day};
 use crate::AppState;
 use crate::error::{ApiError, ApiJson, ApiQuery};
@@ -67,7 +67,7 @@ pub(crate) async fn business_financial_facts(
     ok(state
         .db
         .business_financial_facts(
-            &personal_token(&headers)?,
+            &super::business::personal_token(&headers)?,
             &oxsum_core::FactFilter {
                 organization_id: q.organization_id,
                 model: q.model,
@@ -114,7 +114,12 @@ pub(crate) async fn business_cost_coverage(
     let to = q.to.as_deref().map(parse_day).transpose()?;
     ok(state
         .db
-        .business_cost_coverage(&personal_token(&headers)?, q.organization_id, from, to)
+        .business_cost_coverage(
+            &super::business::personal_token(&headers)?,
+            q.organization_id,
+            from,
+            to,
+        )
         .await?)
 }
 
@@ -134,7 +139,7 @@ pub(crate) async fn business_runs(
     ok(state
         .db
         .reconciliation_runs(
-            &personal_token(&headers)?,
+            &super::business::personal_token(&headers)?,
             page.after,
             page.limit.unwrap_or(50),
         )
@@ -149,7 +154,7 @@ pub(crate) async fn business_run(
 ) -> ApiResult<ReconciliationRun> {
     let run = state
         .db
-        .reconciliation_run(&personal_token(&headers)?, run_id)
+        .reconciliation_run(&super::business::personal_token(&headers)?, run_id)
         .await?
         .ok_or_else(ApiError::not_found)?;
     ok(run)
@@ -173,7 +178,7 @@ pub(crate) async fn business_run_exceptions(
     ok(state
         .db
         .reconciliation_exceptions(
-            &personal_token(&headers)?,
+            &super::business::personal_token(&headers)?,
             Some(run_id),
             q.open.unwrap_or(false),
         )
@@ -189,7 +194,11 @@ pub(crate) async fn business_exceptions(
 ) -> ApiResult<Vec<ReconciliationException>> {
     ok(state
         .db
-        .reconciliation_exceptions(&personal_token(&headers)?, None, q.open.unwrap_or(true))
+        .reconciliation_exceptions(
+            &super::business::personal_token(&headers)?,
+            None,
+            q.open.unwrap_or(true),
+        )
         .await?)
 }
 
@@ -212,7 +221,12 @@ pub(crate) async fn request_run(
     let end = parse_day(&r.period_end)?;
     ok(state
         .db
-        .request_reconciliation_run(&personal_token(&headers)?, start, end, &r.idempotency_key)
+        .request_reconciliation_run(
+            &super::business::personal_token(&headers)?,
+            start,
+            end,
+            &r.idempotency_key,
+        )
         .await?)
 }
 
@@ -235,7 +249,7 @@ pub(crate) async fn resolve_exception(
     ok(state
         .db
         .close_reconciliation_exception(
-            &personal_token(&headers)?,
+            &super::business::personal_token(&headers)?,
             exception_id,
             "resolve",
             &r.resolution,
@@ -253,7 +267,7 @@ pub(crate) async fn waive_exception(
     ok(state
         .db
         .close_reconciliation_exception(
-            &personal_token(&headers)?,
+            &super::business::personal_token(&headers)?,
             exception_id,
             "waive",
             &r.resolution,
@@ -298,7 +312,7 @@ pub(crate) async fn repair_exception(
     ok(state
         .db
         .repair_reconciliation_exception(
-            &personal_token(&headers)?,
+            &super::business::personal_token(&headers)?,
             exception_id,
             &action,
             &r.reason,

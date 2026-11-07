@@ -1,5 +1,5 @@
 //! Merchant callback transport. Signature verification precedes normalization.
-use super::business::personal_token;
+
 use super::{ApiResult, ok};
 use crate::AppState;
 use crate::error::{ApiError, ApiQuery};
@@ -24,7 +24,7 @@ pub(crate) async fn events(
     ok(state
         .db
         .business_merchant_events(
-            &personal_token(&headers)?,
+            &super::business::personal_token(&headers)?,
             merchant,
             page.after,
             page.limit.unwrap_or(50),

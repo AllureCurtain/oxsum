@@ -27,8 +27,6 @@ use time::Date;
 
 use oxsum_core::{ChannelBilling, DailyBill, UpstreamBillProvider};
 
-use crate::openai_costs::parse_minor;
-
 /// The admin API version the request pins — Anthropic's header-versioned
 /// contract, independent of the `v1` path prefix the base URL carries.
 const ANTHROPIC_VERSION: &str = "2023-06-01";
@@ -143,7 +141,7 @@ impl AnthropicBillProvider {
         let mut total: i64 = 0;
         for bucket in &page.data {
             for result in &bucket.results {
-                total += parse_minor(&result.amount)?;
+                total += crate::openai_costs::parse_minor(&result.amount)?;
             }
         }
         Some(DailyBill {

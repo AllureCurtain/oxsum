@@ -22,8 +22,6 @@ use oxsum_core::{
     Tenants, signing_key,
 };
 
-use crate::views::plain;
-
 path_param!(token);
 
 /// Registers the bill page and its script on the server-rendered router.
@@ -319,7 +317,7 @@ async fn bill_page(cx: &Cx) -> Result<impl View> {
     };
 
     Ok(view! {
-        plain(
+        crate::views::plain(
             title: heading,
             <div class="card">
                 <h1>(heading)</h1>

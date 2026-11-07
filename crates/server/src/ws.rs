@@ -19,7 +19,6 @@ use oxsum_core::{CustomerRecordScope, Principal};
 use serde::Serialize;
 
 use crate::AppState;
-use crate::auth::session_cookie_value;
 use crate::error::ApiError;
 
 /// Upgrades to the billing-progress socket for the session's organization.
@@ -33,7 +32,7 @@ pub async fn billing_ws(
     if crate::auth::has_machine_credential(&parts.headers) {
         return Err(ApiError::Unauthorized);
     }
-    let token = session_cookie_value(&parts.headers).ok_or(ApiError::Unauthorized)?;
+    let token = crate::auth::session_cookie_value(&parts.headers).ok_or(ApiError::Unauthorized)?;
     let principal = session_principal(&state, &token).await?;
     let ws = WebSocketUpgrade::from_request_parts(&mut parts, &state)
         .await

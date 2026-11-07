@@ -34,7 +34,7 @@ impl Mailer {
     ///
     /// A descriptive `Err` when the URL is not a lettre SMTP URL, the From
     /// address does not parse, or the public URL has no http(s) scheme.
-    pub fn new(smtp_url: &str, from: &str, public_url: &str) -> Result<Self, String> {
+    pub fn try_new(smtp_url: &str, from: &str, public_url: &str) -> Result<Self, String> {
         let transport = AsyncSmtpTransport::<Tokio1Executor>::from_url(smtp_url)
             .map_err(|e| format!("OXSUM_SMTP_URL is not an SMTP URL: {e}"))?
             .build();

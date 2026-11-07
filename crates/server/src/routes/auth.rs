@@ -9,10 +9,9 @@ use uuid::Uuid;
 
 use oxsum_core::{CreatedSession, LoginOutcome, NewUser, Registration};
 
-use crate::auth::session_cookie_value;
+use crate::AppState;
 use crate::error::{ApiError, ApiJson, ApiQuery};
 use crate::routes::{ApiResult, Data, SessionInfo, clear_session_cookie, ok, session_cookie};
-use crate::{AppState, today};
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -93,7 +92,7 @@ async fn grant_signup_bonus(state: &AppState, registration: &Registration) -> Re
             &format!("signup-bonus:{}", organization.id),
             "signup bonus",
             bonus,
-            today(),
+            crate::today(),
         )
         .await?;
     Ok(())
@@ -278,7 +277,7 @@ pub(crate) async fn logout(
     State(state): State<AppState>,
     headers: HeaderMap,
 ) -> Result<Response, ApiError> {
-    if let Some(token) = session_cookie_value(&headers) {
+    if let Some(token) = crate::auth::session_cookie_value(&headers) {
         state.db.logout(&token).await?;
     }
     let mut response = Json(Data { data: LogoutRes {} }).into_response();

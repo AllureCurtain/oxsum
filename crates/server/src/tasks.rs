@@ -25,9 +25,8 @@ use oxsum_core::{
 use serde_json::{Value, json};
 use uuid::Uuid;
 
-use crate::auth::require_key_gateway;
+use crate::AppState;
 use crate::gateway::error::{FREEZE_MINOR, GatewayError, REQUEST_ID};
-use crate::{AppState, today};
 
 /// The task surface, nested under `/v1` by [`crate::routes`].
 pub fn router(state: AppState) -> Router<AppState> {
@@ -37,7 +36,7 @@ pub fn router(state: AppState) -> Router<AppState> {
         .route("/tasks/{task_id}/cancel", post(cancel))
         .layer(middleware::from_fn_with_state(
             state.clone(),
-            require_key_gateway,
+            crate::auth::require_key_gateway,
         ))
 }
 
@@ -378,7 +377,7 @@ async fn submit_inner(
             &hold_key,
             &description,
             freeze,
-            today(),
+            crate::today(),
             None,
         )
         .await
@@ -626,7 +625,7 @@ async fn cancel(
         &task,
         organization.id,
         &outcome,
-        today(),
+        crate::today(),
     )
     .await
     {
@@ -666,7 +665,9 @@ async fn release_task_hold(state: &AppState, hold_key: &str) {
         return;
     };
     let description = "task submit failed before upstream accepted".to_owned();
-    let _ = wallet.settle(hold_key, &description, 0, today()).await;
+    let _ = wallet
+        .settle(hold_key, &description, 0, crate::today())
+        .await;
     let _ = state.db.clear_open_hold(hold_key).await;
 }
 

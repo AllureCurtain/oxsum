@@ -14,10 +14,9 @@ use oxsum_core::{ActingService, MeteredEvent, MeteredHold, MeteredOutcome, Usage
 use serde::Deserialize;
 use uuid::Uuid;
 
-use crate::auth::require_service;
+use crate::AppState;
 use crate::error::ApiJson;
 use crate::routes::{ApiResult, ok};
-use crate::{AppState, today};
 
 /// The metering surface: `holds` freezes an event's bound, `settle` and
 /// `release` close it, `settlements` bills a completed event in one call.
@@ -27,7 +26,10 @@ pub fn router(state: AppState) -> Router<AppState> {
         .route("/settle", post(settle))
         .route("/release", post(release))
         .route("/settlements", post(settle_once))
-        .layer(middleware::from_fn_with_state(state, require_service))
+        .layer(middleware::from_fn_with_state(
+            state,
+            crate::auth::require_service,
+        ))
 }
 
 /// A `holds` call: which organization's wallet freezes, under which channel's
@@ -103,7 +105,7 @@ async fn hold(
                 event_id,
                 usage,
             },
-            today(),
+            crate::today(),
         )
         .await?)
 }
@@ -123,7 +125,7 @@ async fn settle(
             &request.hold_key,
             request.event_id,
             &request.usage,
-            today(),
+            crate::today(),
         )
         .await?)
 }
@@ -141,7 +143,7 @@ async fn release(
             &service,
             request.organization_id,
             &request.hold_key,
-            today(),
+            crate::today(),
         )
         .await?)
 }
@@ -174,7 +176,7 @@ async fn settle_once(
                 event_id,
                 usage,
             },
-            today(),
+            crate::today(),
         )
         .await?)
 }

@@ -33,11 +33,10 @@ use oxsum_core::{
 use serde_json::{Value, json};
 use uuid::Uuid;
 
-use crate::auth::require_key_gateway;
+use crate::AppState;
 use crate::gateway::error::{CHARGED_MINOR, FREEZE_MINOR, GatewayError, REQUEST_ID};
 use crate::gateway::relay::{Charge, Turn};
 use crate::gateway::request::{GatewayRequest, Surface};
-use crate::{AppState, today, today_at};
 
 /// How long the connection to upstream may take to establish.
 ///
@@ -78,7 +77,7 @@ pub fn router(state: AppState) -> Router<AppState> {
         .route("/rerank", post(rerank))
         .layer(middleware::from_fn_with_state(
             state.clone(),
-            require_key_gateway,
+            crate::auth::require_key_gateway,
         ))
 }
 
@@ -92,7 +91,7 @@ pub fn beta_router(state: AppState) -> Router<AppState> {
         .route("/models/{*target}", post(gemini_generate))
         .layer(middleware::from_fn_with_state(
             state.clone(),
-            require_key_gateway,
+            crate::auth::require_key_gateway,
         ))
 }
 
@@ -1029,7 +1028,7 @@ async fn run(
             access.business_id,
             organization.id,
             &request.model,
-            today_at(),
+            crate::today_at(),
         )
         .await
     {
@@ -1515,7 +1514,7 @@ async fn run(
                 &hold_key,
                 &description,
                 wallet_minor,
-                today(),
+                crate::today(),
                 mandate.as_ref(),
             )
             .await
@@ -2300,7 +2299,7 @@ async fn serve_cache_hit(
                 &hold_key,
                 &description,
                 wallet_minor,
-                today(),
+                crate::today(),
                 mandate.as_ref(),
             )
             .await

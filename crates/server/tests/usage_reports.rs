@@ -1356,7 +1356,7 @@ async fn mailing_app(url: &str) -> (Router, Db, SmtpStub) {
     db.migrate().await.expect("migrates");
     oxsum_testkit::set_registration_fixture(db.pool(), true).await;
     let stub = smtp_stub().await;
-    let mailer = Mailer::new(
+    let mailer = Mailer::try_new(
         &stub.url,
         "oxsum <noreply@oxsum.test>",
         "http://oxsum.test/",

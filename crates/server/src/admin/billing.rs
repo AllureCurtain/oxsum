@@ -8,7 +8,6 @@ use time::OffsetDateTime;
 use uuid::Uuid;
 
 use crate::AppState;
-use crate::admin::record;
 use crate::error::{ApiError, ApiJson};
 use crate::routes::{ApiResult, ok};
 
@@ -38,7 +37,7 @@ pub(crate) async fn set_tier(
         .db
         .set_tier(&tier, request.requests_per_minute, request.model_allowlist)
         .await?;
-    record(
+    crate::admin::record(
         &state,
         audit_action::TIER_SET,
         Some(tier),
@@ -63,7 +62,7 @@ pub(crate) async fn delete_tier(
         .delete_tier(&tier)
         .await?
         .ok_or_else(ApiError::not_found)?;
-    record(
+    crate::admin::record(
         &state,
         audit_action::TIER_DELETE,
         Some(tier),
@@ -118,7 +117,7 @@ pub(crate) async fn create_discount(
             },
         )
         .await?;
-    record(
+    crate::admin::record(
         &state,
         audit_action::DISCOUNT_CREATE,
         request.organization_id.map(|id| id.to_string()),
@@ -137,7 +136,7 @@ pub(crate) async fn end_discount(
 ) -> ApiResult<Discount> {
     match state.db.end_discount(discount_id).await? {
         Some(discount) => {
-            record(
+            crate::admin::record(
                 &state,
                 audit_action::DISCOUNT_END,
                 Some(discount_id.to_string()),
@@ -175,7 +174,7 @@ pub(crate) async fn mint_codes(
         .await?;
     // The codes themselves are secrets held by their recipients — the audit row
     // records the batch, never what was in it.
-    record(
+    crate::admin::record(
         &state,
         audit_action::CODES_MINT,
         Some(batch.batch_id.to_string()),

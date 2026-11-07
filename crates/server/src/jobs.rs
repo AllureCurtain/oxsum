@@ -260,8 +260,13 @@ async fn run_one(
             }
         }
         kinds::POLL_TASKS => {
-            let report =
-                poll_open_tasks(db, &tenants, &ctx.webhook, OffsetDateTime::now_utc().date()).await;
+            let report = poll_open_tasks(
+                db,
+                &tenants,
+                ctx.webhook.as_ref(),
+                OffsetDateTime::now_utc().date(),
+            )
+            .await;
             match report {
                 Ok(report) => {
                     if report.settled > 0 || report.still_open > 0 {
@@ -895,7 +900,7 @@ struct TaskPollReport {
 async fn poll_open_tasks(
     db: &Db,
     tenants: &Tenants,
-    webhook: &Option<(reqwest::Client, SecretKey)>,
+    webhook: Option<&(reqwest::Client, SecretKey)>,
     on: time::Date,
 ) -> Result<TaskPollReport, oxsum_core::WalletError> {
     let Some((_http, secret)) = webhook else {

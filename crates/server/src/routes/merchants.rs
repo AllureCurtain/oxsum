@@ -1,5 +1,5 @@
 //! Merchant transport; current authority and atomic configuration live in core.
-use super::business::personal_token;
+
 use crate::AppState;
 use crate::error::{ApiError, ApiJson, ApiQuery};
 use crate::routes::{ApiResult, ok};
@@ -29,7 +29,7 @@ pub(crate) async fn list(
     ok(state
         .db
         .business_merchants(
-            &personal_token(&headers)?,
+            &super::business::personal_token(&headers)?,
             page.after,
             page.limit.unwrap_or(50),
         )
@@ -40,7 +40,7 @@ pub(crate) async fn create(
     headers: HeaderMap,
     ApiJson(request): ApiJson<MerchantCreateRequest>,
 ) -> ApiResult<MerchantMutationResult> {
-    let token = personal_token(&headers)?;
+    let token = super::business::personal_token(&headers)?;
     let secret = state.config.secret().ok_or_else(|| {
         ApiError::ServiceUnavailable("merchant encryption is not configured".into())
     })?;
@@ -55,7 +55,7 @@ pub(crate) async fn versions(
     ok(state
         .db
         .business_merchant_versions(
-            &personal_token(&headers)?,
+            &super::business::personal_token(&headers)?,
             merchant,
             page.after,
             page.limit.unwrap_or(50),
@@ -68,7 +68,7 @@ pub(crate) async fn rotate(
     Path(merchant): Path<Uuid>,
     ApiJson(request): ApiJson<MerchantVersionRequest>,
 ) -> ApiResult<MerchantMutationResult> {
-    let token = personal_token(&headers)?;
+    let token = super::business::personal_token(&headers)?;
     let secret = state.config.secret().ok_or_else(|| {
         ApiError::ServiceUnavailable("merchant encryption is not configured".into())
     })?;
@@ -85,6 +85,10 @@ pub(crate) async fn status(
 ) -> ApiResult<MerchantMutationResult> {
     ok(state
         .db
-        .set_merchant_enabled(&personal_token(&headers)?, merchant, &request)
+        .set_merchant_enabled(
+            &super::business::personal_token(&headers)?,
+            merchant,
+            &request,
+        )
         .await?)
 }

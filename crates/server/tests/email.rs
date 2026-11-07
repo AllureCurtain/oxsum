@@ -133,7 +133,7 @@ async fn online_app(url: &str, mailer: Option<Mailer>) -> (Router, PgPool) {
 /// The app plus the stub it mails through.
 async fn mailing_app(url: &str) -> (Router, PgPool, SmtpStub) {
     let stub = smtp_stub().await;
-    let mailer = Mailer::new(
+    let mailer = Mailer::try_new(
         &stub.url,
         "oxsum <noreply@oxsum.test>",
         "http://oxsum.test/",

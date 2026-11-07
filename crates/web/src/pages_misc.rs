@@ -24,11 +24,8 @@ use serde::Deserialize;
 use topcoat::Result;
 use topcoat::context::Cx;
 use topcoat::router::content::{Css, Form, Js, Wasm};
-use topcoat::router::error::bad_request;
 use topcoat::router::{RouterBuilder, page, parse_query_params, route};
 use topcoat::view::{View, view};
-
-use crate::views::plain;
 
 /// Registers the remaining server-rendered pages on the router builder.
 ///
@@ -81,7 +78,7 @@ async fn verify_page(cx: &Cx) -> Result<impl View> {
     };
     let entry = query.entry.unwrap_or_default();
     Ok(view! {
-        plain(
+        crate::views::plain(
             title: "Verify a bill",
             <div class="card">
                 <h1>"Verify a bill"</h1>
@@ -155,7 +152,7 @@ async fn verify_submit(cx: &Cx, Form(form): Form<VerifyForm>) -> Result<impl Vie
     // either the envelope or the bundle itself.
     let bundle = form.bundle.trim();
     let value = serde_json::from_str::<serde_json::Value>(bundle)
-        .map_err(|_| bad_request("the bundle did not parse as JSON"))?;
+        .map_err(|_| topcoat::router::error::bad_request("the bundle did not parse as JSON"))?;
     let inner = value
         .get("data")
         .cloned()
@@ -196,10 +193,11 @@ async fn verify_submit(cx: &Cx, Form(form): Form<VerifyForm>) -> Result<impl Vie
         let (passed, detail) = usage_report_outcome(cx, &inner).await?;
         Page::UsageReport { passed, detail }
     } else {
-        let hash = oxsum_verify::Hash::parse_hex(form.expected_hash.trim())
-            .map_err(|_| bad_request("the content hash is not 64 hex characters"))?;
+        let hash = oxsum_verify::Hash::parse_hex(form.expected_hash.trim()).map_err(|_| {
+            topcoat::router::error::bad_request("the content hash is not 64 hex characters")
+        })?;
         let bill = oxsum_verify::verify_bill(&inner, &hash)
-            .map_err(|_| bad_request("the bundle did not parse as JSON"))?;
+            .map_err(|_| topcoat::router::error::bad_request("the bundle did not parse as JSON"))?;
         let verdict = match bill.verdict {
             "pass" => Verdict::Pass {
                 charge: bill.charge,
@@ -212,7 +210,7 @@ async fn verify_submit(cx: &Cx, Form(form): Form<VerifyForm>) -> Result<impl Vie
         Page::Bill(verdict)
     };
     Ok(view! {
-        plain(
+        crate::views::plain(
             title: "Verification result",
             <div class="card">
                 <h1>"Verification result"</h1>
@@ -269,11 +267,11 @@ async fn usage_report_outcome(cx: &Cx, inner: &str) -> Result<(bool, String)> {
     // its head names — both come off the bundle, never from the verifier, so a
     // report minted for somebody else cannot pass by borrowing this page's org.
     let value = serde_json::from_str::<serde_json::Value>(inner)
-        .map_err(|_| bad_request("the report did not parse as JSON"))?;
+        .map_err(|_| topcoat::router::error::bad_request("the report did not parse as JSON"))?;
     let end_user = value
         .get("endUser")
         .and_then(|v| v.as_str())
-        .ok_or_else(|| bad_request("the report carries no endUser"))?
+        .ok_or_else(|| topcoat::router::error::bad_request("the report carries no endUser"))?
         .to_owned();
     // The published key: present on a signing deployment, absent otherwise —
     // `verify_usage_report` verifies membership to the two digests alone then.
