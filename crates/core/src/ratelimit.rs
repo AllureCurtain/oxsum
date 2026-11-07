@@ -85,7 +85,10 @@ impl RateLimiter for SlidingWindow {
                 resets_in: WINDOW,
             });
         }
-        let mut hits = self.hits.lock().unwrap_or_else(|e| e.into_inner());
+        // A poisoned lock means another thread panicked mid-update; admitting
+        // on half-updated state would be worse than crashing.
+        #[expect(clippy::expect_used, reason = "a poisoned lock must panic")]
+        let mut hits = self.hits.lock().expect("rate limiter hits mutex poisoned");
         let queue = hits.entry(key).or_default();
         while queue
             .front()
@@ -125,7 +128,10 @@ impl RateLimiter for SlidingWindow {
                 resets_in: WINDOW,
             });
         }
-        let mut hits = self.hits.lock().unwrap_or_else(|e| e.into_inner());
+        // A poisoned lock means another thread panicked mid-update; admitting
+        // on half-updated state would be worse than crashing.
+        #[expect(clippy::expect_used, reason = "a poisoned lock must panic")]
+        let mut hits = self.hits.lock().expect("rate limiter hits mutex poisoned");
         // The peek expires stale entries the way admit does — a window full of
         // aged-out hits must not report itself full — but it pushes nothing and
         // leaves an emptied queue behind, because the answer is a snapshot, not
