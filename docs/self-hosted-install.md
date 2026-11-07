@@ -95,7 +95,7 @@ Wait for `postgres` to show `(healthy)` — `pg_isready` is its healthcheck.
 
 ```bash
 docker compose -f deploy/docker-compose.core.yml run --rm oxsum-migrate
-# expect: schema migrated to 0095_plan_statements
+# expect: schema migrated to the latest migration included in this artifact
 ```
 
 `oxsum --migrate-only` applies every pending migration and exits. It is
@@ -126,7 +126,7 @@ schema is current. Probe the endpoints yourself:
 
 ```bash
 curl -s http://127.0.0.1:3000/healthz          # ok       — process up
-curl -s http://127.0.0.1:3000/readyz           # ready (0095_plan_statements)
+curl -s http://127.0.0.1:3000/readyz           # ready with the schema required by this artifact
 curl -s http://127.0.0.1:3000/api/v1/version   # {"data":{"version":...,"gitSha":...,"schemaVersion":...}}
 ```
 
@@ -138,8 +138,8 @@ landed the intended build.
 ## 5. Initialize the business
 
 Everything until now is infrastructure; this step mints the deployment's
-business, its owner and the first merchant — the T03 setup flow over the API,
-no database edits.
+business and its owner through the T03 setup API. Merchant configuration is a
+separate step; owner setup does not silently create a working payment route.
 
 ### 5.1 Mint a setup invitation (operator token)
 
@@ -166,6 +166,13 @@ A new owner enters the business name, invited email and a password of at least 1
 After acceptance, sign in if necessary and select **Open business setup** to enter business context. Customer registration remains invitation-only. The form keeps its draft on an error; refreshing or leaving intentionally clears the token. If the response was lost, sign in with the intended account and reopen `/app/setup`: a current staff membership offers the console without repeating setup. If setup is still incomplete and the token expired, the deployer mints another token with a new idempotency key.
 
 The API equivalents remain `POST /api/v1/business/setup/register` for a new identity and session-cookie `POST /api/v1/business/setup` for an existing user. The browser uses these same endpoints and their authority rules; see [API conventions](api.md#initial-business-owner-consent-629).
+The owner logs into `http://127.0.0.1:3000/app` with that email and
+password. Select Business context and open `/app/business`. The portal's
+current editors and the Business APIs manage capabilities; browser setup and
+onboarding extensions are tracked by #725. The legacy getting-started checklist
+is not a complete readiness verdict. Never put the deployment token in a
+customer browser. An existing identity signs in and accepts the setup token
+through `POST /api/v1/business/setup` instead of registering again.
 
 ### 5.3 Optional: merchant payment rails
 
@@ -188,8 +195,9 @@ declaration names.
 ## 6. Verify
 
 - `GET /api/v1/version` still answers; `gitSha` is the build you pulled.
-- Log in as the owner; the setup checklist should show the business
-  initialized with rails pending only where credentials are absent.
+- Log in as the owner, select Business context and verify the business identity
+  and actual allowed actions. Verify the configured route and sale terms
+  separately; a merchant row or reachable endpoint does not certify checkout.
 - A first wallet request: register a customer organization
   (`POST /api/v1/auth/register`) once the business enables self-registration,
   or invite it from the owner session (`POST /api/v1/business/customer-invitations`).

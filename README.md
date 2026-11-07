@@ -1,37 +1,86 @@
 # oxsum
 
 [![CI](https://github.com/AllureCurtain/oxsum/actions/workflows/ci.yml/badge.svg)](https://github.com/AllureCurtain/oxsum/actions/workflows/ci.yml)
-[![Live demo](https://img.shields.io/badge/demo-oxsum.785777.xyz-blue)](https://oxsum.785777.xyz)
 
-A verifiable AI credit wallet, written in Rust. Users top up credits; before each streaming LLM call, oxsum freezes an upper-bound estimate, then settles against the actual token usage reported by the upstream provider and refunds whatever was not spent. Every transaction is recorded in an append-only Merkle log: users receive an inclusion proof for each bill and can verify in their own browser — without trusting the server — that their billing history has not been tampered with.
+Oxsum is self-hosted billing for AI services, with evidence customers can keep and
+verify. One Business owns its suppliers, sale terms and collection; personal and
+team customer accounts own their balances, keys and bills. Operators use the
+built-in portal at `/app/business`. AI application and Agent SaaS developers can
+embed the gateway and scoped metering APIs in their own product. Oxsum takes no
+platform fee in this deployment model.
 
-What makes it different from existing gateways: each balance check and freeze is atomic on a double-entry ledger, settlement is idempotent, and every write carries a proof. Concurrent requests cannot overdraw, retries cannot double-charge, and every entry can be independently verified. The ledger core is [doubleentry](https://github.com/hupe1980/doubleentry) (MIT/Apache-2.0), vendored into `crates/doubleentry`.
+Before an admitted model call, oxsum reserves the applicable upper bound, then
+settles the recorded usage against the pinned terms and releases unused credit.
+Purchased funds, promotional credit, plan quota and approved credit lines retain
+their separate accounting rules. Unknown usage, estimation and capped settlement
+are explicit outcomes. The Rust backend uses a double-entry ledger and an
+append-only Merkle log; an independently retained hash, key and head let a customer
+check the evidence within its [documented scope](docs/proofs.md). A proof does not
+establish that the upstream token count was truthful or that every provider has
+been certified.
 
-![The flagship flow — top up, billed turns on the Requests page, the ledger on Bills, and a verification on /verify](docs/assets/demo.gif)
+The ledger engine is [doubleentry](https://github.com/hupe1980/doubleentry)
+(MIT/Apache-2.0), vendored in `crates/doubleentry`. The React dashboard is embedded
+in the Rust binary; PostgreSQL 17 holds the database.
 
-## Quick start
+## Start an operator deployment
+
+Follow the [self-hosted installation runbook](docs/self-hosted-install.md) for the
+recommended Compose installation, secrets, owner initialization and backups. For
+a local development checkout:
 
 ```bash
-git clone https://github.com/AllureCurtain/oxsum.git && cd oxsum
-cp .env.example .env            # OXSUM_SIGNUP=open if you want to register through the API
-docker compose up -d            # local PostgreSQL
+git clone https://github.com/AllureCurtain/oxsum.git
+cd oxsum
+cp .env.example .env
+# Set the database and required setup/sealing/signing values for this instance.
+docker compose up -d
 cargo run -p oxsum-server
 ```
 
-Then visit <http://localhost:3000/healthz>. The database schema is created at startup. To try the API, set `OXSUM_SIGNUP=open` and register:
+Check [health](http://localhost:3000/healthz), then complete the runbook's one-time
+owner setup and sign in at [the app](http://localhost:3000/app). The initialized
+owner selects Business context to enter `/app/business`. Customer registration
+is invite-only by default; `OXSUM_SIGNUP=open` does not override the persisted
+business policy. Customer invitations and an explicit owner change to open
+registration are the supported admission paths. Registration grants no purchased
+funds or staff authority.
+
+The current onboarding UI still has gaps tracked in the
+[operator-launch work](https://github.com/AllureCurtain/oxsum/issues/725).
+Use the documented setup APIs where the installed revision lacks a browser
+editor. A configured channel or merchant is not evidence of a successful model
+call or payment. Keep the deployment token in operator tooling; customer
+browsers do not need it.
+
+## Try and verify locally
+
+The [maintained integration examples](docs/integrations.md) cover scoped
+management, consumption and signed webhooks. The standalone
+[`examples/verify-consumer`](examples/verify-consumer) checks an export using a
+locally packed SDK outside the workspace, including tampered evidence rejection:
 
 ```bash
-curl -X POST localhost:3000/api/v1/auth/register \
-  -H 'content-type: application/json' \
-  -d '{"email":"you@example.com","password":"correct horse battery"}'
-# the response's data.apiKey.secret is your Bearer credential, shown once
+bash scripts/check-verify-consumer.sh
 ```
 
-The API reference is in [docs/api.md](docs/api.md).
+The old `demo/demo.py` flow predates current customer authority and safe database
+isolation. Its replacement is tracked in
+[#728](https://github.com/AllureCurtain/oxsum/issues/728) /
+[PR #751](https://github.com/AllureCurtain/oxsum/pull/751); use its own revision's
+instructions after integration. Do not run the old script against an ordinary
+database or use its historical transcript as current acceptance evidence.
 
-## Live demo
+A customer funds an account through a verified purpose-specific order, an
+applicable entitlement, redemption, or an authorized staff-recorded receipt.
+`POST /api/v1/topups` no longer permits customer self-credit. Requests and Bills
+expose settlement evidence immediately. Period reports require the covered UTC
+days to close. `/verify` performs the browser check when the WASM assets are
+installed and has a server form fallback; the packed SDK provides a separate
+offline verification path.
 
-**[oxsum.785777.xyz](https://oxsum.785777.xyz)** is a running deployment against a real upstream (DeepSeek). Register an account — new signups get 5 demo credits — or log in as `admin@oxsum.local` / `admin-password` to see the seeded world: 800 credits of balance, 100+ settled turns in the ledger, and a signed head you can verify on `/verify`.
+Historical screenshots illustrate the earlier UI, not acceptance of the current
+candidate:
 
 Every tenant head is cosigned by an independent witness — a second oxsum process with its own key and database — so `/api/v1/log/checkpoint` serves a third-party `cosignature/v1` alongside the operator's signature, and the bill page reports "Witnessed by N." The same check is a product, not only a page: the [`verify-oxsum-bill`](web/verify-sdk) package verifies a bill in any browser, and its `<verify-bill>`, `<verify-statement>` and `<verify-usage-report>` elements drop the whole proof card onto a host page with one `<script>` tag. The package is **not yet published to npm** (`npm view verify-oxsum-bill` answers 404); build it from `web/verify-sdk`, or run the repository's [`examples/verify-consumer`](examples/verify-consumer) against a locally packed tarball — `bash scripts/check-verify-consumer.sh` is the reproducible path. The wire protocol both speak is [docs/transparency-log-v1.md](docs/transparency-log-v1.md).
 
@@ -57,45 +106,54 @@ After stopping the server and dropping its own database, the script installs the
 The dashboard surfaces the same flow: a top-up on **Top up** (manual, Stripe, Airwallex, Hyperswitch or a redeem code — the Hyperswitch tab mounts the switch's Unified Checkout in place), billed turns on **Requests** and aggregated on **Usage**, the ledger entries with their proof bundles on **Bills**, and the verification itself on **`/verify`**:
 
 | | |
+| Funding | Evidence |
 | --- | --- |
-| ![Top up through the Hyperswitch checkout](docs/assets/topup-hyperswitch.png) | ![Bills — the ledger entries with verify/proof](docs/assets/bills.png) |
-| ![Usage — billed turns aggregated per key](docs/assets/usage.png) | ![Verifying a bill on /verify](docs/assets/verify.png) |
+| ![Historical Hyperswitch top-up screen](docs/assets/topup-hyperswitch.png) | ![Historical Bills screen](docs/assets/bills.png) |
 
-## Docker
-
-The release image is a multi-stage build of the whole workspace: the `web/` React frontend is built and embedded into the binary (served at `/app`), and the one server-rendered page (`/verify`) rides along in the same crate set. It runs the `oxsum` binary against an external PostgreSQL — no database is bundled:
+## Build a local image
 
 ```bash
 docker build -t oxsum .
-docker run --rm -p 3000:3000 \
-  -e DATABASE_URL=postgresql://user:pass@dbhost/oxsum \
-  -e OXSUM_SIGNUP=open \
-  oxsum
 ```
 
-`DATABASE_URL` is the only required variable; the rest are the `OXSUM_*` settings [docs/development.md](docs/development.md) documents (`.env` is never baked into the image — pass them with `-e`). The schema is migrated at startup, and the dashboard's stylesheet is embedded in the binary. Then visit <http://localhost:3000/healthz>.
+The image contains the binary, React app and verifier assets; it requires an
+external PostgreSQL and deployment configuration. Use
+[`deploy/docker-compose.core.yml`](deploy/docker-compose.core.yml) and the
+[installation runbook](docs/self-hosted-install.md) rather than treating a healthy
+process as a fully initialized business. `.env` is excluded from the image.
 
-## Status
+## Evidence and release status
 
-Under active development; the self-hosted release program (T00–T30) is implemented and integrated, with scoped acceptance evidence and declared capacity limits — see [docs/roadmap/self-hosted-v1/ACCEPTANCE-RESULTS.md](docs/roadmap/self-hosted-v1/ACCEPTANCE-RESULTS.md). On top of the core (top-up, hold/settle, inclusion proofs, tamper detection, the OpenAI/Anthropic-compatible gateway, `/app` dashboard, browser `/verify`), the release adds: one business per deployment with many customer accounts and a staff console at `/app/business`, a customer portal with plans/billing/self-service, versioned sale books and paid plans with journals + statements + receivables, payment orders across Stripe/Hyperswitch/Airwallex/x402 rails with refunds and disputes, promotional lots, financial-facts reporting with reconciliation, v2 evidence bundles customers can verify offline, runnable developer examples, and the compose-based self-hosted install/upgrade/restore path in [docs/self-hosted-install.md](docs/self-hosted-install.md). Release limitations include D09 throughput/overhead below target and limited browser workflow coverage; merchant/provider certification, independent pilots and publication authorization also remain pending — the exact list lives in [docs/roadmap/self-hosted-v1/RELEASE-CHECKLIST.md](docs/roadmap/self-hosted-v1/RELEASE-CHECKLIST.md). No production-ready label is claimed yet.
+The earlier self-hosted program's
+[acceptance results](docs/roadmap/self-hosted-v1/ACCEPTANCE-RESULTS.md) and
+[release checklist](docs/roadmap/self-hosted-v1/RELEASE-CHECKLIST.md) are historical,
+SHA-specific evidence. The next operator-launch program is
+[#725](https://github.com/AllureCurtain/oxsum/issues/725); it includes portal setup,
+embedded application lifecycle, daily revenue recognition and exact-artifact
+acceptance. A green fast PR run is not a full candidate pass.
+
+Provider sandbox certification, required reference capacity, independent pilots
+and publication remain distinct gates. The [rail matrix](docs/rails.md) separates
+local fixtures from actual provider and live-money evidence. No production-ready
+label or npm publication is inferred here. Build `verify-oxsum-bill` from
+[`web/verify-sdk`](web/verify-sdk) or use an explicitly supplied tarball.
+
+The historical public demo at [oxsum.785777.xyz](https://oxsum.785777.xyz) is a
+separate deployment. Its availability, credentials, balances, provider access and
+current build have not been revalidated by this documentation update. A second
+local witness process demonstrates the protocol; organizational independence
+requires a separately trusted operator and key.
 
 ## Documentation
 
-- The pitch — what it is, who it is for, and why a verifiable bill matters: docs/product-page.md
-- Product specification: docs/product.md
-- API conventions: docs/api.md
-- User guide: docs/user-guide.md
-- Verifying a bill (for the customer): docs/verify-your-bill.md
-- What each proof covers (the surface map): docs/proofs.md
-- What each payment rail has actually been exercised to: docs/rails.md
-- Supported integrations and what the server refuses: docs/integrations.md and docs/unsupported.md
-- Self-hosted install/upgrade/restore: docs/self-hosted-install.md and docs/self-hosted-upgrade.md
-- Release candidate → promotion runbook: docs/self-hosted-release.md
-- Development guide: docs/development.md
-- Architecture: docs/architecture.md
-- Technical decisions: docs/decisions.md
-- Security reports: SECURITY.md — operator support: SUPPORT.md
+- [Product overview](docs/product-page.md), [behavior](docs/product.md) and [user guide](docs/user-guide.md)
+- [API](docs/api.md), [integrations](docs/integrations.md) and [unsupported operations](docs/unsupported.md)
+- [Verify a bill](docs/verify-your-bill.md), [proof scope](docs/proofs.md) and [payment evidence](docs/rails.md)
+- [Install](docs/self-hosted-install.md), [upgrade/restore](docs/self-hosted-upgrade.md) and [candidate/release gates](docs/self-hosted-release.md)
+- [Development](docs/development.md), [architecture](docs/architecture.md) and [decisions](docs/decisions.md)
+- [Security](SECURITY.md) and [support](SUPPORT.md)
 
 ## License
 
-MIT OR Apache-2.0. `crates/doubleentry` retains the original author's copyright notices; see the LICENSE files in that directory.
+MIT OR Apache-2.0. `crates/doubleentry` retains the original author's copyright
+notices; see the LICENSE files in that directory.

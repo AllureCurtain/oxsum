@@ -10,7 +10,7 @@ Updated: 2026-11-08
 
 - [ ] [#725](https://github.com/AllureCurtain/oxsum/issues/725) — Complete operator/customer and embedded adoption software and available acceptance.
 - [ ] [#726](https://github.com/AllureCurtain/oxsum/issues/726) — N00: Rebaseline and adopt the execution contract.
-- [ ] [#727](https://github.com/AllureCurtain/oxsum/issues/727) — N01: Align current product claims and documentation.
+- [ ] [#727](https://github.com/AllureCurtain/oxsum/issues/727) — Align operator/customer product documentation, setup authority and proof/provider evidence claims; documentation implemented and locally validated; review pending.
 - [ ] [#728](https://github.com/AllureCurtain/oxsum/issues/728) — N02: Repair the runnable demo and first-run example.
 - [ ] [#729](https://github.com/AllureCurtain/oxsum/issues/729) — N03: Owner setup, business profile and operating settings.
 - [ ] [#730](https://github.com/AllureCurtain/oxsum/issues/730) — N04: Business provider/channel administration.

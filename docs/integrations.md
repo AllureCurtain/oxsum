@@ -2,9 +2,19 @@
 
 The exact protocol, provider and parameter surface this build serves — and the one it
 refuses. The contract is `crates/server/openapi.yaml`: every row here names a routed
-path, and the proof column names the suite that exercises it. A capability an upstream
+path, and each Test coverage column names the local suite that exercises it. A capability an upstream
 provider happens to offer is not a row unless this server wires it; [unsupported.md](unsupported.md)
 is the refusal catalog — what the API turns away and the error it answers.
+
+These suites use controlled local fixtures unless a retained evidence record
+explicitly names an external provider, model, protocol and executed artifact.
+They establish software behavior, not universal provider or PSP certification.
+Current payment tiers and credential limitations are in [rails.md](rails.md);
+T31 evidence and pending external gates are in
+[the release checklist](roadmap/self-hosted-v1/RELEASE-CHECKLIST.md). A historical
+non-streaming DeepSeek call does not certify streaming, other protocols/models,
+or a newly changed build. HEAD reachability is not an inference result.
+
 
 ## LLM gateway
 
@@ -14,7 +24,7 @@ Each surface is protocol-native: a channel declares one `protocol` and serves on
 surfaces that speak it; a model an `anthropic` channel serves is never translated onto
 the OpenAI surface (`Surface::protocol`, `crates/server/src/gateway/request.rs:38`).
 
-| Surface | Channel protocol | Price mode | Streams | Proof |
+| Surface | Channel protocol | Price mode | Streams | Test coverage |
 | --- | --- | --- | --- | --- |
 | `POST /v1/chat/completions` — OpenAI chat body | `openai` | `chat` | SSE via `"stream": true` | `crates/server/tests/gateway.rs`, `apis.rs` |
 | `POST /v1/responses` — OpenAI Responses wire (issue #495) | `openai` (upstream path `responses`) | `chat` | SSE via `"stream": true` | `crates/server/tests/gateway.rs`, `serving.rs` |
@@ -54,7 +64,7 @@ rechecked inside the authorization transaction
 (`x-integration-scope` on each operation, `crates/server/tests/metering.rs`,
 `integration_credentials.rs`).
 
-| Endpoint | Effect | Proof |
+| Endpoint | Effect | Test coverage |
 | --- | --- | --- |
 | `POST /api/v1/metering/holds` | freeze the declared usage bound at the channel's latest `event` price for `billableCode` | `a_hold_then_settle_charges_the_actual_usage` |
 | `POST /api/v1/metering/settle` | settle a hold at actual usage; over-bound settles `capped` at the freeze | `a_settle_above_the_freeze_is_capped` |
@@ -93,7 +103,7 @@ schema rejection (`OrderCreateRequest` is `additionalProperties: false`).
 `GET /api/v1/orders/{orderId}/checkout-session` re-reads or re-issues the provider
 handles durably; only the signed webhook moves an order to `paid`.
 
-| Rail | Checkout form the order serves | Signed webhook intake | Event kinds normalized | Proof |
+| Rail | Checkout form the order serves | Signed webhook intake | Event kinds normalized | Test coverage |
 | --- | --- | --- | --- | --- |
 | `hyperswitch` | Unified Checkout SDK: `sdkUrl` + `publishableKey` + `clientSecret` — no hosted redirect | `X-Webhook-Signature-512`: hex HMAC-SHA-512 over the raw body, no timestamp window | `payment_succeeded`, `payment_failed`, `payment_cancelled`/`payment_expired`, `refund_succeeded`, `refund_failed`, `dispute_opened` | `crates/server/tests/hyperswitch.rs`, `merchant_events.rs` |
 | `stripe` | hosted Checkout redirect URL | `Stripe-Signature` `t=…,v1=…`: HMAC-SHA-256 over `t.body`, 300 s freshness | `checkout.session.completed` (paid, non-subscription), `checkout.session.expired` | `crates/server/tests/stripe.rs` |
@@ -173,8 +183,7 @@ Each refusal is a behavior a caller can test, not a gap to assume around.
 The `verify-oxsum-bill` npm package (`web/verify-sdk`, packed locally — not yet
 published) exports the wasm-backed verifiers: `verifyBill`, `verifySignedHead`,
 `verifyConsistency`, `verifyWitnesses`, `verifyStatementAnchor`, `verifyUsageReport`,
-`verifyPriceHead`, `verifySaleHead`, `verifyEvidenceBundle`, and — added alongside
-this document — `listBundleManifests`, the pure function that extracts a bundle's
+`verifyPriceHead`, `verifySaleHead`, `verifyEvidenceBundle`, and `listBundleManifests`, the pure function that extracts a bundle's
 `{kind, id, digest}` manifest rows for inspection. All take and return JSON the
 endpoints serve; none fetches anything.
 

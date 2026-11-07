@@ -54,11 +54,12 @@ organization committed to**. It does not prove:
 - **Charge arithmetic.** The check binds each entry's bytes to its hash; it does not recompute each
   row's price × usage. The operator's `/verify` page runs that per-bill check when you paste a
   single settlement's bundle.
-- **Write-time honesty.** A ledger can only prove it was not rewritten; it cannot prove the person
-  writing it counted the tokens the model really returned. Your own copy of the upstream response
+- **Write-time honesty.** An entry proof binds bytes to a retained hash and head; it cannot prove the
+  writer counted the tokens the model really returned. Your own copy of the upstream response
   is the counter-check.
-- **That anyone vouched for the head.** A passing cosignature means an independent witness saw the
-  head; it does not mean the witness audited every row, and witnesses can collude. The page says
+- **That anyone vouched for the head.** A passing cosignature means the holder of the pinned witness key signed the
+  head. Independence is a separate operational fact; it does not mean the witness
+  audited every row, and witnesses can collude. The page says
   which case you are in rather than implying all three are the same.
 
 ## Trust anchors
@@ -73,15 +74,16 @@ organization committed to**. It does not prove:
 
 ## Verify offline, without the server
 
-The bill page is the simplest path, and it already runs the verifier in your
-browser. If you want a check that outlives the link — or you want to hold the
+The bill page runs the installed verifier in your browser. If you want a check that outlives the link — or you want to hold the
 evidence yourself — the same verifier is packaged as `verify-oxsum-bill`, and
-it needs no account and no connection to the billing server.
+it needs no account and no connection to the billing server after its dependencies and
+evidence are saved.
 
-Save three things while the link works, through the page or the API:
+For an individual entry, save the following while access works. A usage report,
+statement and period evidence bundle have different formats and verifier calls;
+do not pass a report bundle to `verifyBill`.
 
-- the proof bundle (`GET /api/v1/entries/{entryId}/proof`, or the bundle the
-  bill page embeds);
+- the individual entry proof (`GET /api/v1/entries/{entryId}/proof`);
 - the 64-hex content hash the bill printed — your record, not the bundle's own
   `contentHash`;
 - if you want the signature check, the operator key from
@@ -102,12 +104,19 @@ node --input-type=module -e '
 '
 ```
 
-A passing bill verdict means the entry's bytes hash to the value you saved, the
-entry is in the head the inclusion proof names, the charge recomputes from the
-usage and rates inside the entry, and the price it names is bound to a
-checkpoint the operator signed. It does not prove completeness, and it does not
-prove the writer counted the tokens the model really returned — those limits are
-the same ones above.
+A passing entry verdict establishes hash/inclusion and reports the charge,
+price and sale checks separately. Read every returned field: a non-settlement or
+an old/new schema can skip arithmetic, and `ok: true` can coexist with an absent
+or invalid price/sale binding sentence. This function does not authenticate the
+ledger head. Use `verifySignedHead` with the expected origin and independently
+trusted operator key, then `verifyConsistency` against a previously archived
+head. A fresh key bundled with fresh evidence cannot prove continuity with the
+key you originally trusted.
+
+The `/verify` form has a server fallback when the WASM assets are unavailable;
+that fallback is not an independent browser execution. A separately installed,
+retained SDK and its artifact checksum let you verify offline without relying
+on newly served code. Neither path proves honest upstream token counts.
 
 The repository's [`examples/verify-consumer`](https://github.com/AllureCurtain/oxsum/tree/main/examples/verify-consumer)
 shows the full form: settlement bundle, signed head, consistency against an
@@ -133,6 +142,7 @@ node --input-type=module -e '
   import { verifyEvidenceBundle } from "verify-oxsum-bill";
   import { readFileSync } from "node:fs";
   const bundle = readFileSync("evidence-bundle.json", "utf8");
+  const keyJson = readFileSync("trusted-operator-key.json", "utf8");
   console.log(await verifyEvidenceBundle(bundle, "<your organization id>", keyJson));
 '
 ```
@@ -140,15 +150,18 @@ node --input-type=module -e '
 The check passes when every artifact the bundle's manifest names re-digests to
 the figure the ledger committed, the manifest itself re-digests to the digest
 the ledger's marker entry bound, the money rows' ledger entries sit inside the
-signed tree head, and the head's signature verifies under the operator key.
-A dropped row, a changed amount or a bundle minted for a different organization
+supplied tree head, and a present note verifies under the selected operator key.
+An unsigned bundle can pass its digest/inclusion checks without a signature;
+inspect the note and retain that weaker status. Supplying a key does not turn a
+missing note into an attestation. A dropped row, a changed amount or a bundle minted for a different organization
 each fail the check by name.
 
 The bundle's `scope` block is the honest half: it names what the bundle does
 *not* cover — the platform's own supplier costs (redacted unless the operator
 opts in), another organization's rows, history outside the committed period,
-and anything still in flight when it was minted. It proves the committed set,
-not that the operator recorded every token the model returned.
+and anything still in flight when it was minted. It proves the committed set within that scope. It does not recompute every
+settlement charge, establish the unprovided supplier books, or prove that the
+operator recorded every token the model returned.
 
 ## If the link stops working
 

@@ -23,6 +23,11 @@ docker compose up -d
 cargo build --workspace
 ```
 
+Initialize the Business owner through the [installation runbook](self-hosted-install.md)
+and use `/app/business` with that owner's session. Fresh business policy is
+invite-only; `OXSUM_SIGNUP` is a legacy parsed value, not authorization to create
+customers. Use isolated fixtures for tests and retain the root `.env` separately.
+
 ### Formatting
 
 Format with `scripts/fmt.sh`, never bare `cargo fmt`. The script reads
@@ -258,7 +263,7 @@ curl -X POST http://127.0.0.1:3000/api/v1/topups/x402 \
 # carries the on-chain tx hash on `facilitator_tx_hash`.
 ```
 
-A successful run was exercised against Base Sepolia on 2026-10-25 (issue #372) — transaction `0xe25f9c399dbb2f620d236246ac382b8d7cf9760bc6ec4d184442a7bff0cc4038` on `https://sepolia.basescan.org` — so the row sits at **live-verified** in `docs/rails.md`. The wallet needs only faucet USDC; the facilitator fronts the gas.
+A successful run was exercised against Base Sepolia on 2026-10-25 (issue #372) — transaction `0xe25f9c399dbb2f620d236246ac382b8d7cf9760bc6ec4d184442a7bff0cc4038` on `https://sepolia.basescan.org` — which is historical **testnet** evidence in [the rail matrix](rails.md), not a live-money certification. The wallet needs only faucet USDC; the facilitator fronts the gas.
 
 Two wire details the script exists to absorb, both of which cost a debugging round-trip during bring-up:
 
@@ -267,9 +272,16 @@ Two wire details the script exists to absorb, both of which cost a debugging rou
 
 ### Real Airwallex rail exercise
 
-The Airwallex rail (issue #285) is verified at the API and webhook layers against `api-demo.airwallex.com`. The hosted-page checkout is deliberately not mounted — see `docs/decisions.md` — so the exercise proves the deposit's `pending → confirmed → credited` walk, not the payer's browser leg.
+This historical exercise combined an API intent with a locally synthesized
+signed success event. It did not establish a real payer checkout or automatic
+provider delivery. The later [T31 follow-up](roadmap/self-hosted-v1/evidence/T31-followup.md)
+records a 403 credential rejection. Use the current merchant/version contract
+and a usable processor sandbox account for new certification; the following
+recipe is retained only to explain the earlier fixture, not as a current setup
+command. Its credential and callback authority predates current personal-session
+and versioned-merchant requirements.
 
-`.env` carries the rail's five vars:
+The historical fixture used these variables:
 
 ```
 OXSUM_AIRWALLEX_CLIENT_ID=…
@@ -279,7 +291,7 @@ OXSUM_AIRWALLEX_CHECKOUT_URL=https://checkout-demo.airwallex.com
 OXSUM_AIRWALLEX_WEBHOOK_SECRET=whsec_…
 ```
 
-Then the walk:
+The historical fixture transcript (do not copy into an ordinary deployment):
 
 ```bash
 cargo run -p oxsum-server &
@@ -434,7 +446,16 @@ Copy `.env.example` to `.env` and the server and the tests pick it up automatica
 
 #### A witness sidecar beside the deployment
 
-The witness machinery needs a *second* process to mean anything — the operator cosigning its own log proves nothing. The live demo (`oxsum.785777.xyz`) runs one on the same host: a second container off the same image, its own Postgres database and its own `OXSUM_WITNESS_SIGNING_KEY`, listening on its own `OXSUM_ADDR` and mounting only `POST /add-checkpoint`. Its `OXSUM_WITNESS_TRUST` pins each of the deployment's `oxsum/ledgers/<tenant>` origins at `size=0` — the deliberate onboarding case, where the first real head is taken on trust and every later one must extend it. The deployment points `OXSUM_WITNESS_URLS` at the sidecar and pins its key under `OXSUM_WITNESS_KEYS`, so `GET /api/v1/log/checkpoint` serves a cosignature a reader verifies against a key that is not the operator's — and the bill page renders "Witnessed by N" rather than the honest "no witness keys are pinned".
+A witness process uses its own database and `OXSUM_WITNESS_SIGNING_KEY`,
+listens on its own address and accepts `POST /add-checkpoint`.
+`OXSUM_WITNESS_TRUST` pins expected ledger origins and initial heads; `size=0`
+explicitly trusts the first received head. The deployment uses
+`OXSUM_WITNESS_URLS` and `OXSUM_WITNESS_KEYS` to publish and check cosignatures.
+
+Running a second process on the same operator's host exercises the protocol and
+continuity checks. It does not establish organizational independence. Customers
+must choose independently trusted witness keys if they need that corroboration;
+no current public-demo witness deployment is certified by this guide.
 
 The mailer trio is all three or none: a subset refuses to boot, because a half-configured mailer would only fail at send time inside a request. Unset, the deployment sends no email — registration answers `verificationSent: false`, forgot-password still answers its indistinguishable 200, and `POST /api/v1/auth/verify/request` alone reports the absence with 503. The GitHub OAuth pair follows the same rule — a client id or secret without `OXSUM_PUBLIC_URL` refuses to boot, and unset the login page draws no GitHub button and the OAuth endpoints answer 404. So does the Stripe trio (`OXSUM_STRIPE_SECRET_KEY`, `OXSUM_STRIPE_WEBHOOK_SECRET`, `OXSUM_PUBLIC_URL`): a subset refuses to boot, and unset, the intent endpoint 503s and the inbound webhook 404s.
 
@@ -520,6 +541,9 @@ upgrade runbook's deliberate migrate. Ledger schemas are untouched by either: do
 | All tests | `cargo nextest run --workspace` — runs the full suite locally (loads `DATABASE_URL` from `.env` or the shell; `cargo test --workspace` is the fallback and covers doctests). Worth it for cross-crate changes; otherwise CI runs the same coverage on every PR — see "CI" below |
 | Focused while iterating | `cargo nextest run -p oxsum-<crate>` — only the crates the change touched; the local pre-push gate is fmt + clippy + these focused runs, with CI holding the full suite |
 | Run the end-to-end demo | `python3 demo/demo.py` (Python dependencies in `demo/requirements.txt`, Node 20.16+, WASM toolchain and PostgreSQL CREATEDB role; isolated database, stub SDK call, clean offline consumer; see README) |
+| All tests | `cargo nextest run --workspace` — runs the full suite locally (loads `DATABASE_URL` from `.env` or the shell; `cargo test --workspace` is the fallback and covers doctests). Worth it for cross-crate changes; PR CI runs the fast tier; heavy integration/engine evidence requires the full workflow — see "CI" below |
+| Focused while iterating | `cargo nextest run -p oxsum-<crate>` — only the crates the change touched; the local pre-push gate is fmt + clippy + these focused runs, with full workspace coverage additionally required for cross-crate changes |
+| Demo replacement | Follow #728 / PR #751 after integration; the baseline script has stale authority/isolation assumptions and must not run against an ordinary database |
 | Generative sequences, quick run | `PROPTEST_CASES=50 cargo test -p oxsum-core --test generative` |
 | Real-provider end-to-end check | `cargo test -p oxsum-server --test real_upstream` (needs env vars — see "Real-provider smoke check") |
 | doubleentry's Postgres tests | `cargo test -p doubleentry --features postgres --test postgres` (spins up its own container via testcontainers; `DOUBLEENTRY_DATABASE_URL`/`DATABASE_URL` set → that server instead, no Docker) |
@@ -1008,6 +1032,15 @@ Tailwind v4 theme colors in `web/src/index.css`.
   OXSUM_E2E_MODEL=step-5-preview \
     cargo test -p oxsum-server --test real_upstream -- --ignored --nocapture
   ```
+- E2E: the full top-up → call → verify flow is covered. `crates/server/tests/chat_flow.rs` drives login, a top-up, one streaming chat turn through a scripted upstream, the billing events, and then fetches the settlement's proof bundle and verifies it with `oxsum_verify::verify_bundle`; the standalone demo replacement is tracked by #728 / PR #751 and needs its own post-integration clean-checkout acceptance. Test-only funding is not a customer self-credit API. TODO.md carries the current status.
+- Real-provider E2E: `crates/server/tests/real_upstream.rs` is explicitly ignored
+  and requires provider variables. It is not ordinary regression coverage or a
+  spending guard. The current bounded provider harness is tracked by #740;
+  pricing, input/output bounds and durable attempt reservations must be settled
+  before any external request. Use an isolated database and a task-owned config,
+  not a reset of the ordinary development database. The
+  [historical T31 call](roadmap/self-hosted-v1/evidence/T31-followup.md) establishes
+  one nonstreaming DeepSeek response, not the full protocol/provider matrix.
 
 - Pool-saturation load check (issue #235): `a_saturated_pool_refuses_backpressure_never_a_500` in `crates/server/tests/gateway.rs` fires fifty concurrent turns through a three-connection pool against a 250 ms scripted upstream — saturation must answer 429 `POOL_BUSY` with `Retry-After`, never a 500. `#[ignore]`d like the real-provider suite; run it when the pool or the gateway's database access moves:
 
@@ -1021,7 +1054,7 @@ Before committing, confirm:
 
 - [ ] Branch name matches the branch naming policy above, and the PR links its issue in the title or body where applicable
 - [ ] `scripts/fmt-check.sh` and `cargo clippy --workspace --all-targets` produce no warnings
-- [ ] With `DATABASE_URL` set in `.env` or the shell, `cargo test --workspace` passes
+- [ ] With `DATABASE_URL` available, the relevant `cargo nextest` suites pass; cross-crate changes also pass `cargo nextest run --workspace`. Doctests and final candidate full CI remain separate required gates.
 - [ ] Interface changed: `openapi.yaml`, implementation, tests and callers are all in sync
 - [ ] `crates/doubleentry` changed: carries an `oxsum change` comment and an entry in docs/decisions.md
 - [ ] UI changed: loading, empty and error states all checked
