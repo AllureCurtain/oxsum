@@ -121,7 +121,14 @@ after that it is clutter, not history.
 
 ## Before pushing
 
-CI runs the full gate — lib/doc tests, the three nextest shards, the process-shared suites and the doubleentry Postgres conformance run — and every job sits on the required-check chain, so a regression cannot reach main through a PR. The local gate is the fast half:
+PR protection requires the fast tier: fmt, clippy, lib/doc tests, wasm and
+frontend. The three nextest shards and process-shared suites run after merge;
+engine conformance is conditional on relevant changes, or always included in
+a manual/nightly full run. A green PR or path-filtered push is therefore not
+full release evidence. The candidate workflow requires an executed green full
+CI run on its exact SHA, including engine conformance, then smokes the built
+image. Never promote a candidate whose full CI is missing, skipped or red.
+The local gate is the fast half:
 
 ```bash
 cargo fmt --all --check

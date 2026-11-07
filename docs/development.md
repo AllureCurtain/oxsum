@@ -2,6 +2,13 @@
 
 ## Requirements
 
+- Candidate validation: `python3 scripts/test-candidate-ci.py` exercises the
+  full-CI evidence gate without credentials. `scripts/check-candidate-ci.py
+  --sha <40-character-sha> --repository AllureCurtain/oxsum --output ci.json`
+  requires authenticated `gh` and refuses absent, failed or skipped heavy
+  checks. The release workflow runs the image smoke automatically; see
+  [self-hosted-release.md](self-hosted-release.md).
+
 - Rust stable: no toolchain pin — rustup uses whatever `stable` resolves to. The workspace MSRV is `rust-version = "1.98"` in the root manifest; cargo will refuse to build on anything older.
 - Docker: runs local PostgreSQL 17, also used by doubleentry's Postgres tests
 
@@ -87,6 +94,13 @@ deployment normally leaves days between them. `cargo nextest run -p
 oxsum-server --test statements` is the check.
 
 ### Test database isolation
+
+Server integration tests that launch `oxsum` use
+`crates/server/tests/support/binary.rs`: nextest's runtime executable path
+takes precedence over Cargo's build-time path. CI extracts test archives into
+a different directory, so `env!("CARGO_BIN_EXE_oxsum")` alone is not portable.
+Use `cargo nextest archive` followed by `cargo nextest run --archive-file`
+when changing these subprocess tests (issue #684).
 
 Each integration-test suite (`crates/server/tests/*.rs`, `crates/core/tests/*.rs`)
 gets its own scratch PostgreSQL database, so suites never share mutable state

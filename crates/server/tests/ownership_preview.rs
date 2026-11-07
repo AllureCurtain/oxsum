@@ -2,6 +2,9 @@
 //! server, applying migrations or requiring provider/telemetry configuration.
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
+#[path = "support/binary.rs"]
+mod binary;
+
 use oxsum_core::Db;
 use serde_json::{Value, json};
 
@@ -16,7 +19,7 @@ async fn preflight_is_json_only_and_leaves_a_fresh_database_unmigrated() {
     std::fs::create_dir(&dir).unwrap();
     // Stop dotenv traversal at this isolated directory.
     std::fs::write(dir.join(".env"), "").unwrap();
-    let output = std::process::Command::new(env!("CARGO_BIN_EXE_oxsum"))
+    let output = binary::oxsum()
         .arg("ownership-preview")
         .current_dir(&dir)
         .env_clear()

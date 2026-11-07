@@ -2592,3 +2592,19 @@ Receipt is deliberately not fulfillment. A recognized event must match the pinne
 
 - **A certification call is sized to prove the path, not to spend.** The Deepseek run used `max_tokens=4` and a one-word prompt — `prompt 6 / completion 1` tokens — because what the evidence must show is *the gateway's own hold→settle→export chain against a live upstream*, not a usage volume. `x-oxsum-freeze-minor=1`/`charged=1` plus the offline `verify.mjs` PASS is the whole claim; a bigger call would add cost, not coverage.
 - **A provider 403 after the network is proven clean is a credential verdict, not a transport bug.** `api-demo.airwallex.com` was reachable (`114.117.133.34`, real IP, proxy-bypassed, IP-pinned — all 403 the same `authentication/login`). The receive side had already been certified in-repo; the create side failing on `unauthorized` narrows the external blocker from "environment" to "a working demo credential" — a materially smaller ask, and the evidence documents it instead of retrying indefinitely.
+
+## 2026-11-07 — Candidate acceptance requires executed evidence on the same SHA (#620 follow-up)
+
+The green candidate run on `930794c` coexisted with a failed full CI run. Being
+an ancestor of main is not proof of passing post-merge checks. The candidate
+resolve job now validates the exact CI SHA, main branch, completed result, all
+three shards and executed process-shared/engine-conformance steps, retaining
+that evidence with the manifest. A missing, failed or skipped check refuses
+the candidate; a manual full CI run supplies evidence when path filtering or
+conditional conformance skipped it. No repository protection is bypassed.
+
+The same candidate image is now booted by the workflow on an isolated Compose
+stack, and its version must equal the requested SHA. A temporary project
+directory keeps operator configuration untouched. The tested image is exported
+for download together with its smoke log; it is never published. This
+supersedes the T29 choice to leave live smoke entirely to the operator.

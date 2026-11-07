@@ -32,8 +32,9 @@
 #      rejects the tampered fixtures (check-verify-consumer.sh — skipped
 #      with SMOKE_SKIP_CONSUMER=1)
 #
-# Env: OXSUM_IMAGE (image under test), SMOKE_BUILD (default 1), SMOKE_PORT
-# (host port, default 3917), SMOKE_SKIP_CONSUMER (default 0).
+# Env: OXSUM_IMAGE_TAG, SMOKE_EXPECTED_SHA (defaults to checkout HEAD),
+# SMOKE_BUILD (default 1), SMOKE_PORT (default 3917),
+# SMOKE_SKIP_CONSUMER (default 0; CI uses its mandatory verify-consumer job).
 
 set -euo pipefail
 
@@ -45,6 +46,7 @@ OXSUM_IMAGE="ghcr.io/allurecurtain/oxsum:${OXSUM_IMAGE_TAG}"
 SMOKE_BUILD="${SMOKE_BUILD:-1}"
 SMOKE_PORT="${SMOKE_PORT:-3917}"
 SMOKE_SKIP_CONSUMER="${SMOKE_SKIP_CONSUMER:-0}"
+SMOKE_EXPECTED_SHA="${SMOKE_EXPECTED_SHA:-$(git rev-parse HEAD)}"
 PROJECT="oxsum-candidate-smoke-$$"
 WORKDIR="$(mktemp -d "${TMPDIR:-/tmp}/oxsum-candidate-smoke.XXXXXX")"
 BASE="http://127.0.0.1:${SMOKE_PORT}"
@@ -52,37 +54,38 @@ BASE="http://127.0.0.1:${SMOKE_PORT}"
 step() { printf '\n== %s ==\n' "$*"; }
 die() { echo "smoke FAILED at: $*" >&2; exit 1; }
 
-# The compose services declare `env_file: [.env]`, which resolves beside the
-# compose file — the env must live at deploy/.env while the project is up.
-# The script writes the smoke file there and restores any pre-existing
-# operator file on the way out; a deployment that already has one is left
-# exactly as it was.
-DEPLOY_ENV=deploy/.env
-ENV_BACKUP=""
-if [ -f "$DEPLOY_ENV" ]; then
-    ENV_BACKUP="$WORKDIR/operator-env-backup"
-    mv "$DEPLOY_ENV" "$ENV_BACKUP"
-fi
+# Copy the profile beside a throwaway env file. Even interruption cannot
+# replace the operator's deploy/.env or borrow a live compose project.
+cp deploy/docker-compose.core.yml "$WORKDIR/docker-compose.core.yml"
+DEPLOY_ENV="$WORKDIR/.env"
+compose() {
+    env POSTGRES_USER=postgres POSTGRES_DB=oxsum POSTGRES_PASSWORD="$POSTGRES_PASSWORD" \
+        OXSUM_IMAGE_TAG="$OXSUM_IMAGE_TAG" OXSUM_BIND=127.0.0.1 OXSUM_PORT="$SMOKE_PORT" \
+        docker compose --project-directory "$WORKDIR" --env-file "$DEPLOY_ENV" \
+        -p "$PROJECT" -f "$WORKDIR/docker-compose.core.yml" "$@"
+}
 cleanup() {
-    (cd deploy && docker compose -p "$PROJECT" -f docker-compose.core.yml \
-        down -v --remove-orphans >/dev/null 2>&1) || true
-    if [ -n "$ENV_BACKUP" ] && [ -f "$ENV_BACKUP" ]; then
-        mv "$ENV_BACKUP" "$DEPLOY_ENV"
-    else
-        rm -f "$DEPLOY_ENV"
+    if [ -f "$DEPLOY_ENV" ]; then
+        compose down -v --remove-orphans >/dev/null 2>&1 || true
     fi
     rm -rf "$WORKDIR"
 }
 trap cleanup EXIT
 
-json_field() { sed -n "s/.*\"$2\":\"\([^\"]*\)\".*/\1/p" <<<"$1"; }
+json_field() {
+    python3 -c 'import json,sys; value=json.load(sys.stdin)
+for part in sys.argv[1].split("."): value=value[part]
+assert value is not None
+print(value)' "$2" <<<"$1"
+}
 
 # --- image -----------------------------------------------------------------
 step "candidate image: $OXSUM_IMAGE"
 if ! docker image inspect "$OXSUM_IMAGE" >/dev/null 2>&1; then
     [ "$SMOKE_BUILD" = "1" ] || die "image $OXSUM_IMAGE missing and SMOKE_BUILD=0"
+    [ "$(git rev-parse HEAD)" = "$SMOKE_EXPECTED_SHA" ] || die "checkout does not match the image SHA to build"
     echo "building $OXSUM_IMAGE from $(git rev-parse --short HEAD)…"
-    docker build --build-arg "GIT_SHA=$(git rev-parse HEAD)" -t "$OXSUM_IMAGE" . \
+    docker build --build-arg "GIT_SHA=$SMOKE_EXPECTED_SHA" -t "$OXSUM_IMAGE" . \
         || die "docker build"
 fi
 
@@ -102,11 +105,6 @@ OXSUM_BUSINESS_NAME=Candidate Smoke Co.
 OXSUM_BUSINESS_SLUG=candidate-smoke
 EOF
 chmod 600 "$DEPLOY_ENV"
-
-# Compose resolves `env_file: [.env]` and its own `--env-file` default beside
-# the compose file — run it from deploy/ so both land on the smoke file.
-compose() { (cd deploy && docker compose -p "$PROJECT" -f docker-compose.core.yml "$@"); }
-export OXSUM_IMAGE_TAG
 
 # --- 1. check-config -------------------------------------------------------
 step "1. oxsum --check-config"
@@ -129,7 +127,8 @@ done
 curl -fsS -o /dev/null "$BASE/healthz" || die "/healthz"
 VERSION="$(curl -fsS "$BASE/api/v1/version")" || die "/api/v1/version"
 echo "version: $VERSION"
-grep -q '"gitSha"' <<<"$VERSION" || die "version payload lacks gitSha"
+ACTUAL_SHA="$(json_field "$VERSION" data.gitSha)" || die "version payload lacks gitSha"
+[ "$ACTUAL_SHA" = "$SMOKE_EXPECTED_SHA" ] || die "image SHA $ACTUAL_SHA differs from $SMOKE_EXPECTED_SHA"
 
 # --- 4. business surface ---------------------------------------------------
 step "4. business init + owner session + business-context read"
@@ -138,7 +137,7 @@ SETUP="$(curl -fsS -X POST "$BASE/api/v1/admin/business/setup-tokens" \
     -H "content-type: application/json" \
     -d "{\"idempotencyKey\":\"smoke-$RANDOM-$RANDOM\",\"ownerEmail\":\"owner@smoke.test\"}")" \
     || die "setup-token mint"
-TOKEN="$(json_field "$SETUP" token)"
+TOKEN="$(json_field "$SETUP" data.token)"
 [ -n "$TOKEN" ] || die "setup-token response carried no token"
 curl -fsS -X POST "$BASE/api/v1/business/setup/register" \
     -H "content-type: application/json" \
@@ -152,7 +151,7 @@ curl -fsS -X POST "$BASE/api/v1/auth/login" \
 # A fresh session is in customer context; the staff seat is claimed through
 # the explicit context switch the console documents (#630).
 CTX="$(curl -fsS "$BASE/api/v1/session/context" -b "$WORKDIR/cookies")" || die "session/context"
-grep -q '"business":{' <<<"$CTX" || die "context carried no claimable business seat"
+json_field "$CTX" data.business.businessId >/dev/null || die "context carried no claimable business seat"
 curl -fsS -X POST "$BASE/api/v1/session/context" -b "$WORKDIR/cookies" \
     -H "content-type: application/json" \
     -d "{\"idempotencyKey\":\"smoke-ctx-$RANDOM\",\"context\":\"business\"}" >/dev/null \
