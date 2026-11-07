@@ -4,6 +4,7 @@
 //! a request is handled. Everything else the server needs is an environment variable read
 //! once at startup, in main.rs.
 
+use std::str::FromStr;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -30,6 +31,14 @@ pub enum Signup {
 impl Signup {
     /// Parses `OXSUM_SIGNUP`.
     pub fn parse(raw: &str) -> Result<Self, String> {
+        raw.parse()
+    }
+}
+
+impl FromStr for Signup {
+    type Err = String;
+
+    fn from_str(raw: &str) -> Result<Self, Self::Err> {
         match raw.trim().to_ascii_lowercase().as_str() {
             "invite" => Ok(Self::Invite),
             "open" => Ok(Self::Open),
@@ -58,6 +67,14 @@ pub enum RateLimitBackend {
 impl RateLimitBackend {
     /// Parses `OXSUM_RATE_LIMIT_BACKEND`.
     pub fn parse(raw: &str) -> Result<Self, String> {
+        raw.parse()
+    }
+}
+
+impl FromStr for RateLimitBackend {
+    type Err = String;
+
+    fn from_str(raw: &str) -> Result<Self, Self::Err> {
         match raw.trim().to_ascii_lowercase().as_str() {
             "memory" => Ok(Self::Memory),
             "postgres" => Ok(Self::Postgres),
@@ -1879,7 +1896,9 @@ mod tests {
     // The tests may unwrap: a panic here is a failing test, which is what a test is for.
     #![allow(clippy::unwrap_used, clippy::expect_used)]
 
-    use super::{Config, Gateway, Signup};
+    use std::str::FromStr;
+
+    use super::{Config, Gateway, RateLimitBackend, Signup};
     use oxsum_core::{PriceBook, SecretKey};
 
     fn book() -> PriceBook {
@@ -2054,5 +2073,27 @@ mod tests {
         // Anything else refuses to start rather than guess.
         assert!(super::session_cookie_secure_of("yes".to_owned()).is_err());
         assert!(super::session_cookie_secure_of("".to_owned()).is_err());
+    }
+
+    #[test]
+    fn from_str_and_parse_agree() {
+        for raw in ["invite", "open", " OPEN "] {
+            assert_eq!(
+                Signup::from_str(raw).ok(),
+                Signup::parse(raw).ok(),
+                "{raw:?}"
+            );
+        }
+        assert!(Signup::from_str("other").is_err());
+        assert!(Signup::parse("other").is_err());
+        for raw in ["memory", "postgres", " Postgres "] {
+            assert_eq!(
+                RateLimitBackend::from_str(raw).ok(),
+                RateLimitBackend::parse(raw).ok(),
+                "{raw:?}"
+            );
+        }
+        assert!(RateLimitBackend::from_str("other").is_err());
+        assert!(RateLimitBackend::parse("other").is_err());
     }
 }
