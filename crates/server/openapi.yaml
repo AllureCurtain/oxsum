@@ -11547,7 +11547,12 @@ components:
           description: "the channel's credential pool (issue #444): one entry per upstream key, ordered by position, each showing only its last four plus the health state the pick reads"
           items: { $ref: "#/components/schemas/ChannelCredential" }
         billKeyLast4: { type: string, nullable: true, description: "the last four characters of the admin billing credential (issue #283), and nothing more of it; null when the channel carries none" }
-        settings: { type: object, description: "the channel's free-form settings (issue #497): `semanticCache` and `destinationPolicy` configuration — `{}` when nothing was ever set" }
+        settings:
+          type: object
+          description: "The channel's settings (issue #497); business reads redact unsupported fields. An absent destinationPolicy means public."
+          additionalProperties: true
+          properties:
+            destinationPolicy: { $ref: "#/components/schemas/ProviderDestinationPolicy" }
         createdAt: { type: string, format: date-time }
         models:
           type: array

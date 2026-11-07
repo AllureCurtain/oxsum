@@ -16008,8 +16008,12 @@ export interface components {
             credentials: components["schemas"]["ChannelCredential"][];
             /** @description the last four characters of the admin billing credential (issue #283), and nothing more of it; null when the channel carries none */
             billKeyLast4: string | null;
-            /** @description the channel's free-form settings (issue #497): `semanticCache` and `destinationPolicy` configuration — `{}` when nothing was ever set */
-            settings: Record<string, never>;
+            /** @description The channel's settings (issue #497); business reads redact unsupported fields. An absent destinationPolicy means public. */
+            settings: {
+                destinationPolicy?: components["schemas"]["ProviderDestinationPolicy"];
+            } & {
+                [key: string]: unknown;
+            };
             /** Format: date-time */
             createdAt: string;
             /** @description one entry per model, at its current version */

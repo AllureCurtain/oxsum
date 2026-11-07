@@ -74,7 +74,7 @@ const SECTION_GROUPS: { group: string; items: Section[] }[] = [
   {
     group: "catalog",
     items: [
-      { key: "channels", labelKey: "channels", Icon: Network, cap: "overviewRead" },
+      { key: "channels", labelKey: "channels", Icon: Network, cap: "catalogWrite" },
       { key: "prices", labelKey: "prices", Icon: Tags, cap: "overviewRead" },
       { key: "plans", labelKey: "plans", Icon: Layers, cap: "catalogWrite" },
     ],

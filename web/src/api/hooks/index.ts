@@ -12,3 +12,4 @@ export * from "./plans";
 export * from "./reports";
 export * from "./orders";
 export * from "./business";
+export * from "./providers";

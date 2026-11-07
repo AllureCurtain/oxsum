@@ -593,10 +593,11 @@ export function useBusinessChannels(after?: string) {
 
 export function useChannelConnectionCheck() {
   return useMutation({
+    retry: false,
     mutationFn: (v: { channelName: string; idempotencyKey: string; reason: string }) =>
-      api<ProviderConnectionCheck>(`/business/channels/${v.channelName}/connection-check`, {
+      api<ProviderConnectionCheck>(`/business/channels/${encodeURIComponent(v.channelName)}/connection-check`, {
         method: "POST",
-        body: { idempotencyKey: v.idempotencyKey, reason: v.reason },
+        body: { idempotencyKey: v.idempotencyKey, reason: v.reason, config: {} } satisfies components["schemas"]["BusinessProviderRemoveRequest"],
       }),
   });
 }
