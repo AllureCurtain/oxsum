@@ -1,5 +1,6 @@
 {
   "common": {
+    "table": "表格",
     "cancel": "取消",
     "save": "保存",
     "saving": "保存中…",

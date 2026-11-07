@@ -1118,3 +1118,10 @@ sections, without requesting customer balances or opening a customer billing
 socket. Use **Customer portal** to select the existing customer membership
 again. A staff identity without a customer membership sees the backend's
 refusal and remains in the console; it does not gain a customer account.
+
+The order detail refreshes its paid and fulfilled state automatically while a
+checkout is active. The provider checkout stays mounted while its handles are
+unchanged. On narrow screens, scroll inside a data table to reach amounts and
+row actions; the table region can receive keyboard focus. The staff setup
+checklist lists only steps the current role can read. Customer detail shows
+financial tables only to staff with reporting authority.

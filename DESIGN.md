@@ -136,3 +136,8 @@ Breakpoints: 640 / 1024, mobile first.
 - Form controls must have an associated label
 - Every action is reachable with the keyboard alone
 - Verification results must never rely on color alone; pair them with an icon and text
+
+Tables below the desktop breakpoint must allow horizontal scrolling of every
+column and row action within a keyboard-focusable region. Never clip an
+off-screen amount or action on mobile. Desktop tables retain viewport-sticky
+headers; scrollable narrow tables use a normal header.

@@ -1,12 +1,13 @@
 import { useTranslation } from "react-i18next";
 import { CheckCircle2, Circle } from "lucide-react";
 import {
+  useBusiness,
   useBusinessCustomers,
   useBusinessPlans,
   useBusinessStaff,
   useMerchants,
 } from "../../api/hooks";
-import { Card, Skeleton } from "../../components/ui";
+import { Banner, Card, Skeleton } from "../../components/ui";
 
 // ---------------------------------------------------------------------------
 // /app/business#business/setup — the onboarding checklist. There is no
@@ -20,39 +21,49 @@ type Step = {
   section: string;
   /** true when the step's own read confirms it. `undefined` while loading. */
   done: boolean | undefined;
+  visible: boolean;
 };
 
 function Checklist() {
   const { t } = useTranslation();
-  const staff = useBusinessStaff();
-  const merchants = useMerchants();
-  const plans = useBusinessPlans();
-  const customers = useBusinessCustomers();
+  const caps = new Set(useBusiness().data?.capabilities ?? []);
+  const canStaff = caps.has("staffManage");
+  const canMerchants = caps.has("merchantSecretsWrite");
+  const canPlans = caps.has("catalogWrite");
+  const canCustomers = caps.has("customersRead");
+  const staff = useBusinessStaff(canStaff);
+  const merchants = useMerchants(undefined, canMerchants);
+  const plans = useBusinessPlans(canPlans);
+  const customers = useBusinessCustomers(undefined, canCustomers);
 
   const steps: Step[] = [
     {
       key: "profile",
-      labelKey: "setup.steps.profile",
+      labelKey: "biz.setup.steps.profile",
       section: "staff",
+      visible: canStaff,
       done: staff.data === undefined ? undefined : staff.data.length > 0,
     },
     {
       key: "staff",
-      labelKey: "setup.steps.staff",
+      labelKey: "biz.setup.steps.staff",
       section: "staff",
+      visible: canStaff,
       // More than the founding owner means at least one invite landed.
       done: staff.data === undefined ? undefined : staff.data.length > 1,
     },
     {
       key: "merchant",
-      labelKey: "setup.steps.merchant",
+      labelKey: "biz.setup.steps.merchant",
       section: "integrations",
+      visible: canMerchants,
       done: merchants.data === undefined ? undefined : (merchants.data.merchants.length ?? 0) > 0,
     },
     {
       key: "plan",
-      labelKey: "setup.steps.plan",
+      labelKey: "biz.setup.steps.plan",
       section: "plans",
+      visible: canPlans,
       // A published version exists — `publishedAt` set, not a draft.
       done:
         plans.data === undefined
@@ -61,18 +72,22 @@ function Checklist() {
     },
     {
       key: "customer",
-      labelKey: "setup.steps.customer",
+      labelKey: "biz.setup.steps.customer",
       section: "customers",
+      visible: canCustomers,
       done: customers.data === undefined ? undefined : customers.data.customers.length > 0,
     },
   ];
 
-  const done = steps.filter((s) => s.done === true).length;
-  const loading = steps.some((s) => s.done === undefined);
+  const visible = steps.filter((s) => s.visible);
+  const failed = (canStaff && staff.isError) || (canMerchants && merchants.isError) ||
+    (canPlans && plans.isError) || (canCustomers && customers.isError);
+  const done = visible.filter((s) => s.done === true).length;
+  const loading = visible.some((s) => s.done === undefined);
 
   return (
     <Card title={t("biz.setup.checklist")}>
-      {loading ? (
+      {failed ? <Banner tone="error">{t("biz.loadError")}</Banner> : loading ? (
         <div className="flex flex-col gap-3">
           <Skeleton className="h-5 w-56" />
           <Skeleton className="h-5 w-72" />
@@ -81,10 +96,10 @@ function Checklist() {
       ) : (
         <>
           <p className="mb-4 text-sm text-muted">
-            {t("biz.setup.progress", { done, total: steps.length })}
+            {t("biz.setup.progress", { done, total: visible.length })}
           </p>
           <ul className="flex flex-col gap-1">
-            {steps.map((s) => (
+            {visible.map((s) => (
               <li key={s.key}>
                 <a
                   href={`#business/${s.section}`}

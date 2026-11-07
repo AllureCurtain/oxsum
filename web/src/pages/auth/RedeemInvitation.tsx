@@ -15,7 +15,7 @@ export function RedeemInvitation() {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const token = params.get("token") ?? "";
-  const identity = useQuery({ queryKey: ["session-context"], queryFn: () => api<components["schemas"]["SessionContextInfo"]>("/session/context"), retry: false });
+  const identity = useQuery({ queryKey: ["session-context"], queryFn: () => api<components["schemas"]["SessionContextInfo"]>("/session/context"), retry: false, refetchOnWindowFocus: false });
   const preview = useQuery({ queryKey: ["invitation", token], queryFn: () => api<components["schemas"]["InvitationPreview"]>("/invitations/preview", { method: "POST", body: { token } }), enabled: !!token, retry: false });
   const redeem = useMutation({
     mutationFn: (body: { token: string; email: string; password: string }) =>

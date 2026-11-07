@@ -432,3 +432,10 @@ identity. Customer balances, organization switching and billing sockets mount
 only in customer context. Its **Customer portal** action explicitly returns
 to an existing customer membership; a business-only identity remains a valid
 staff session and is never redirected to login merely for lacking that seat.
+
+Browser acceptance for the customer and staff surfaces is recorded in
+`docs/roadmap/self-hosted-v1/evidence/closeout-browser.md`. The setup checklist
+uses live, capability-filtered reads and follows its section links; denied
+financial reports are hidden from support. Customer checkout polls the order
+through fulfillment without remounting an unchanged payment widget. Narrow
+tables preserve access to every column and action through local scrolling.

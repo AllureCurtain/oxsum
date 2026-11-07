@@ -1,5 +1,6 @@
 {
   "common": {
+    "table": "Table",
     "cancel": "Cancel",
     "save": "Save",
     "saving": "Saving…",

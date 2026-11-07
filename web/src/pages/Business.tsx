@@ -76,7 +76,7 @@ const SECTION_GROUPS: { group: string; items: Section[] }[] = [
     items: [
       { key: "channels", labelKey: "channels", Icon: Network, cap: "overviewRead" },
       { key: "prices", labelKey: "prices", Icon: Tags, cap: "overviewRead" },
-      { key: "plans", labelKey: "plans", Icon: Layers, cap: "customersRead" },
+      { key: "plans", labelKey: "plans", Icon: Layers, cap: "catalogWrite" },
     ],
   },
   {
@@ -154,13 +154,9 @@ export function Business() {
     navigate({ hash: `business/${s}` }, { replace: true });
   };
   useEffect(() => {
-    const onHash = () => {
-      const s = sectionFromHash(location.hash);
-      if (s) setSectionState(s);
-    };
-    window.addEventListener("hashchange", onHash);
-    return () => window.removeEventListener("hashchange", onHash);
-  }, []);
+    const selected = sectionFromHash(location.hash);
+    if (selected) setSectionState(selected);
+  }, [location.hash]);
 
   // Auto-select business context once the session says it can — staff
   // membership is the only path to a non-null `business` on the context read.
