@@ -306,11 +306,9 @@ async fn usage_report_outcome(cx: &Cx, inner: &str) -> Result<(bool, String)> {
                 .collect::<String>()
         })
         .unwrap_or_default();
-    let key = publication.as_ref().map(|k| oxsum_verify::PublishedKey {
-        key_name: &k.name,
-        public_key: &public_hex,
-        key_hash: &hash_hex,
-    });
+    let key = publication
+        .as_ref()
+        .map(|k| oxsum_verify::PublishedKey::new(&k.name, &public_hex, &hash_hex));
     // The origin the head note attests — parsed from the bundle, not assumed,
     // so a report for another tenant's ledger is checked under its own origin.
     let origin = value

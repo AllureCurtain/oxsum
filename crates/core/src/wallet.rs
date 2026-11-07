@@ -4233,13 +4233,13 @@ impl Wallet {
             ),
             None => (None, None),
         };
-        Ok(Some(ProofBundle {
-            entry: stored.entry,
+        Ok(Some(ProofBundle::new(
+            stored.entry,
             head,
             proof,
             price,
             sale,
-        }))
+        )))
     }
 
     /// Customer evidence must apply the same attribution scope as record lists.
@@ -4288,26 +4288,18 @@ impl Wallet {
         };
         let canonical = canonical_price_row(&record.channel, &row)?;
         let signed = sign_price_head(key, &record.channel, &row, &canonical).map_err(invalid)?;
-        Ok(Some(oxsum_verify::PriceLink {
-            channel: signed.channel,
-            model: signed.model,
-            version: signed.version,
-            row: canonical,
-            note: signed.note,
-            key_name: signed.key.name,
-            public_key: signed
-                .key
-                .public_key
-                .iter()
-                .map(|b| format!("{b:02x}"))
-                .collect(),
-            key_hash: signed
-                .key
-                .key_hash
-                .iter()
-                .map(|b| format!("{b:02x}"))
-                .collect(),
-        }))
+        Ok(Some(
+            oxsum_verify::PriceLink::builder()
+                .channel(signed.channel)
+                .model(signed.model)
+                .version(signed.version)
+                .row(canonical)
+                .note(signed.note)
+                .key_name(signed.key.name)
+                .public_key(hex(&signed.key.public_key))
+                .key_hash(hex(&signed.key.key_hash))
+                .build(),
+        ))
     }
 
     /// The signed sale binding for one settlement entry, or `None` when the
@@ -4361,26 +4353,18 @@ impl Wallet {
             .unwrap_or(0);
         let signed = sign_sale_checkpoint(key, business, organization, &model, version, &canonical)
             .map_err(invalid)?;
-        Ok(Some(oxsum_verify::SaleLink {
-            organization_id: organization.to_string(),
-            model,
-            digest: sale.digest.clone(),
-            row: canonical,
-            note: signed.note,
-            key_name: signed.key.name,
-            public_key: signed
-                .key
-                .public_key
-                .iter()
-                .map(|b| format!("{b:02x}"))
-                .collect(),
-            key_hash: signed
-                .key
-                .key_hash
-                .iter()
-                .map(|b| format!("{b:02x}"))
-                .collect(),
-        }))
+        Ok(Some(
+            oxsum_verify::SaleLink::builder()
+                .organization_id(organization.to_string())
+                .model(model)
+                .digest(sale.digest.clone())
+                .row(canonical)
+                .note(signed.note)
+                .key_name(signed.key.name)
+                .public_key(hex(&signed.key.public_key))
+                .key_hash(hex(&signed.key.key_hash))
+                .build(),
+        ))
     }
 
     /// Number of entries in the log. With isolated ledgers, each tenant counts from zero.
@@ -5574,6 +5558,11 @@ pub struct SettledTurn {
     /// The API key that paid the turn, as its id in uuid simple form: the hold's
     /// provenance actor, copied onto the settlement.
     pub key_id: Option<String>,
+}
+
+/// Lowercase hex of a byte slice, the spelling the signed-link key fields use.
+fn hex(bytes: &[u8]) -> String {
+    bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
 
 /// The handle of the account registered at `path`, or an error naming it.
