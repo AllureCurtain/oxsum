@@ -34,7 +34,7 @@ docker compose up -d                       # start the database
 cargo run -p oxsum-server                  # start the server (needs variables from .env)
 cargo nextest run -p oxsum-<crate>       # focused tests while iterating (loads .env when present)
 cargo nextest run --workspace            # the full suite — cross-crate changes, or just before a risky push
-cargo fmt --all && cargo clippy --workspace --all-targets
+scripts/fmt.sh && cargo clippy --workspace --all-targets
 ```
 
 `cargo nextest` is the default test runner: it runs test binaries in parallel
@@ -131,7 +131,7 @@ image. Never promote a candidate whose full CI is missing, skipped or red.
 The local gate is the fast half:
 
 ```bash
-cargo fmt --all --check
+scripts/fmt-check.sh
 cargo clippy --workspace --all-targets
 cargo nextest run -p <crate>   # the crates the change touched
 ```
@@ -181,6 +181,11 @@ workspace standard. `[chrome]` and `[Fuchsia]` rules are not adopted. The full
 decision, including every deliberate exception, is the 2026-11-07 entry in
 `docs/decisions.md`.
 
+- **Formatting.** Always format through `scripts/fmt.sh` (check with
+  `scripts/fmt-check.sh`). The script reads `rustfmt-nightly`, the single
+  version source CI and the pre-commit hook also read. Bare `cargo fmt` uses
+  stable, silently ignores the unstable options, and `--all` would reorder the
+  vendored `crates/doubleentry`.
 - **Imports.** No glob imports in production code; `use super::*;` is allowed
   only inside an inline `#[cfg(test)]` module. One `use` imports one module, and
   rustfmt groups and sorts them (`imports_granularity = "Module"`).
@@ -210,7 +215,7 @@ decision, including every deliberate exception, is the 2026-11-07 entry in
 Check a change with:
 
 ```bash
-cargo fmt --all --check
+scripts/fmt-check.sh
 cargo clippy --workspace --all-targets -- -D warnings
 cargo nextest run -p <crate>   # the crates the change touched
 ```
