@@ -1,130 +1,74 @@
-# oxsum — a verifiable AI credit wallet
+# Oxsum: verifiable billing for AI services
 
-**The short version.** oxsum is an AI gateway you run yourself, with billing that
-your customers can check. Point an OpenAI or Anthropic SDK at it instead of at
-the provider; every call reserves an upper bound *before* a token is generated,
-then settles against the usage the upstream actually reported. Every charge —
-top-up, settled turn, adjustment — is one entry in an append-only Merkle log the
-organization can export and verify in a browser, without trusting the server
-that issued it.
+Oxsum lets an AI-service business operate billing in its own infrastructure and
+hand customers evidence they can verify. One Business owns upstream connections,
+customer sale terms and collection. Customer accounts hold their own purchased
+credit, promotional credit, plan entitlements and approved receivables. Oxsum
+takes no platform fee in this self-hosted model.
 
-It is a portfolio piece and a working system, not a hosted service: the README's
-quick start brings the whole thing up against a local PostgreSQL, and the same
-single binary is what a deployment runs.
+The product serves two workflows:
 
-## Who it is for
+- An API-service operator uses the Business portal to configure supply and sale
+  terms, enroll customers, collect payments and reconcile the books. Customers
+  use `/app` to manage keys, calls, orders and evidence.
+- An AI application or Agent SaaS developer embeds gateway and scoped billing
+  operations in an existing application. The application owns its end-user
+  experience; credentials and grants restrict the customer accounts and actions
+  the integration can access. The complete embedded lifecycle is part of the
+  current [operator-launch program](https://github.com/AllureCurtain/oxsum/issues/725),
+  not a claim that every planned endpoint is already available.
 
-Two readers, with opposite seats at the same table:
+## From request to evidence
 
-- **A reseller or platform** that meters LLM usage for its own customers. The
-  pain oxsum answers is the invoice question — *"where did this number come
-  from?"* — which today has exactly one answer, "trust us". On oxsum the answer
-  is a bill the customer checks themselves, entry by entry, in their own
-  browser.
-- **An engineer evaluating the codebase.** The interesting claims — concurrent
-  requests cannot overdraw, retries cannot double-charge, a rewritten history is
-  detectable — are not slogans. They are properties the ledger enforces and the
-  test suite pins, and this page names where each one lives.
+An admitted request pins its route and sale context before reserving the upper
+bound. Concurrent admission checks and ledger writes enforce the applicable
+limits. A provider failure before output can release the customer hold; that
+customer result does not prove the supplier incurred no cost. Partial responses,
+missing usage, estimation and capped charges retain explicit settlement outcomes.
+Supplier costs and customer sale revenue are different facts.
 
-## The three-part trust model
+Settlement records the charged amount, usage, terms and outcome. Purchased
+balances, quota and promotions are not interchangeable cash. Payment collection
+is separate from revenue recognition; a provider checkout response or return URL
+cannot establish payment success. Signed provider events and purpose-specific
+fulfillment establish what the order funded. A local reversal does not by itself
+prove the PSP returned money.
 
-Every billed turn walks the same three steps, and each step answers the
-objection the step before it leaves open:
+Customers can retain the settlement entry, content hash and proof. The verifier
+recomputes the entry hash and its inclusion in a particular log head. Supported
+settlement formats permit a separate arithmetic check. Signed price/sale
+bindings, operator signatures, consistency proofs and witness cosignatures each
+answer a different question; missing inputs retain their weaker verdicts.
+An independently trusted key and an earlier archived head matter more than a
+key supplied beside the very bundle being checked.
 
-1. **Freeze before the call.** When a request arrives, oxsum computes the most
-   it could possibly cost — the byte-count bound on the input, the caller's
-   `max_tokens` on the output, priced at the dearest applicable rate — and
-   freezes that much against the organization's balance. If the balance cannot
-   cover it, the request is refused *before upstream sees it*, and the refusal
-   itself becomes a ledger row. A request can never spend more than was
-   reserved; there is no "the model ran long, so the bill did too".
-2. **Settle to actual.** While the answer streams, oxsum reads the token counts
-   the upstream reports in the final chunk and settles the real charge — always
-   ≤ the freeze, with the difference refunded. An upstream that errors before
-   emitting anything costs zero; an unreachable upstream costs zero; a client
-   that disconnects pays only for what was already forwarded. The charge, the
-   token counts and the exact price version are packed into the settlement
-   entry itself, so "what was I billed for" is answered by the record, not by
-   the server's memory of it.
-3. **Verify the bill yourself.** The ledger is append-only and every entry is
-   hashed into a Merkle tree whose head the operator signs. A bill comes with a
-   proof bundle — the entry, its inclusion proof, the signed head — and
-   `/verify` recomputes the content hash and walks the proof in the customer's
-   own browser. The verdict does not come from the server that issued the bill;
-   it comes from the verifier's bytes, which travel to the browser rather than
-   the customer trusting a rendered page.
+## Choose the evidence for the question
 
-![The whole flow in one pass — top up, billed turns, the ledger, a browser-side verification](assets/demo.gif)
-
-## What a bill actually is
-
-The demo script drives the flow end to end against a scripted upstream — no real
-provider, no API key — and prints the artifacts a user holds:
-
-```
-== 1. Register and top up ==
-   topped up 100000000 minor units (100 credits)
-   top-up entry: 7dcf20b9-…   content hash (keep for verification): 45b88ddd…
-
-== 2. One billed chat turn through the OpenAI SDK ==
-   upstream said: "Holds are oxsum's way of saying 'reserved'."
-   x-oxsum-request-id: fca1ed85-…
-
-== 3. The turn's settlement entry and its proof ==
-   billing record: {"request": "fca1ed85-…", "channel": "demo-…",
-     "model": "demo-chat", "priceVersion": 1, "kind": "usage",
-     "inputTokens": 23, "outputTokens": 11, "charged": 34, "freeze": 118}
-   balance after the turn: 99999966 minor units (charged 34)
-```
-
-The settlement entry is the bill: it names the request, the model, the price
-version that priced it, the token counts upstream reported and the freeze it was
-charged against. `verify_charge` recomputes the recorded charge from the usage
-and rates inside the entry — so the record proves not just that *something* was
-written, but that the arithmetic inside it holds. The bundle a row of the bills
-page links to is the same JSON `/verify` checks:
-
-| | |
+| Customer question | Evidence and boundary |
 | --- | --- |
-| ![Top up through the Hyperswitch checkout](assets/topup-hyperswitch.png) | ![Bills — every row with its verify/proof actions](assets/bills.png) |
-| ![Usage aggregated per key](assets/usage.png) | ![The /verify verdict](assets/verify.png) |
+| Was this entry changed? | Entry proof against the hash the customer retained; a fresh self-supplied hash is a weaker anchor |
+| Does the charge recompute? | Supported settlement arithmetic and price/sale bindings; not independent measurement of the provider's tokens |
+| Did the history extend my earlier view? | Consistency proof against the previously retained head and expected origin |
+| Are these the committed report rows? | Usage report subset digest and inclusion; anchored completeness only when supplied; no automatic per-row arithmetic |
+| Is this the statement that was finalized? | Statement anchor and its check payload; not integrity of an edited PDF rendering |
+| Are all committed export artifacts present? | Version-2 evidence manifest, artifact digests and entry proofs for the named scope; excluded supplier costs and in-flight activity remain excluded |
 
-## What is proven, and what is claimed
+[Proof scope](proofs.md) and [the customer verification guide](verify-your-bill.md)
+describe the actual checks. Signatures authenticate attestations under selected
+keys; they cannot prove honest token counting. A witness controlled by the same
+operator is a protocol demonstration, not independent corroboration.
 
-The product's discipline is that it never says *trustless*. What a verified bill
-establishes, in its own words:
+## Operate it
 
-- **Proven** — this entry was written to this ledger; its bytes hash to the
-  recorded content hash; the head carrying it is signed by the operator key; a
-  versioned settlement's recorded charge recomputes from the usage and priced
-  lines inside the entry; a price the bill names is bound to a catalog row the
-  operator attested; and, over an anchored span, a usage report carries every
-  settlement of the customer it covers — a dropped day or a misattributed row
-  fails the check.
-- **Still a claim** — that upstream really returned that many tokens (the
-  record proves what was written, not what the model produced; a customer who
-  kept their own request log is the counter-check), and completeness over an
-  *unanchored* span, where "these are all the settlements" is the
-  organization's signed statement rather than a Merkle fact.
+The established architecture is a Rust binary with an embedded React portal,
+PostgreSQL 17 and the vendored doubleentry engine. The operator retains database
+backups, sealing/signing keys and release artifacts; customers retain their own
+verification inputs. Start with the [installation runbook](self-hosted-install.md),
+then enter `/app/business` using the initialized owner's session. The deployment
+token is a bootstrap and technical operations credential.
 
-[proofs.md](proofs.md) is the surface-by-surface map — every proof surface and
-the sentence it must not be read as.
-
-## Beside hosted billing
-
-A hosted billing service (a Stripe usage meter, a managed gateway) is the right
-choice when the invoice is the vendor's problem. oxsum is for the operator who
-wants the billing to be *evidence*: the ledger lives in their own database, the
-proofs are checkable without oxsum running, and a customer's verification runs
-in the customer's browser. The trade is operational — one binary plus
-PostgreSQL, a Stripe/Airwallex/Hyperswitch/x402 rail for real top-ups, and the
-operator carries the deploy.
-
-## Where to go next
-
-- Run it: the [README](../README.md) quick start, then `demo/demo.py` for the
-  scripted end-to-end pass.
-- The behavior spec: [product.md](product.md) — every page and flow, each marked
-  shipped or planned.
-- The checkable surface: [proofs.md](proofs.md) and
-  [verify-your-bill.md](verify-your-bill.md).
+Current software capabilities, fixture coverage, genuine PSP sandbox evidence
+and live-money evidence are separate in [the rail matrix](rails.md). Historical
+release results apply to the source and artifacts they name. The ongoing launch
+work retains unmet browser, capacity, provider and independent-pilot gates; it
+does not turn a local fixture into a certification or authorize publication.

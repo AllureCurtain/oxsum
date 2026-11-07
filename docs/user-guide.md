@@ -1,6 +1,6 @@
 # User guide
 
-For callers integrating with oxsum; no technical internals. Field details live in `crates/server/openapi.yaml`. Every API request except `GET /healthz`, `POST /api/v1/auth/register`, `POST /api/v1/auth/login` and `POST /api/v1/auth/logout` carries a credential — `Authorization: Bearer <api-key>` or the session cookie — and the credential decides which organization the request acts for — no request names a tenant.
+For callers integrating with oxsum; no technical internals. Field details live in `crates/server/openapi.yaml`. Protected routes require the credential class declared in OpenAPI: customer keys, user sessions, or narrowly scoped integration credentials. Public setup/invitation/verification links have their own token authority. The credential and selected context determine the customer or business scope; an identifier in a payload never grants access.
 
 Each self-hosted deployment belongs to one business. Your organization is your personal or team customer billing account; its existing keys, balance and bill evidence continue to work after the ownership upgrade. Being an organization owner does not make you business staff. API fields such as `organizationId` keep their existing names.
 
@@ -20,11 +20,15 @@ Steps:
    - The response carries `user`, `organization` and `apiKey.secret`. **The secret is shown once and cannot be retrieved again**; store it now.
    - A personal organization is created with you as its owner, named after the address's local part unless you chose a name.
    - An existing address answers 409 `CONFLICT`.
-   - Some deployments answer 403 `FORBIDDEN`: registration is by invitation there. An
-     owner or admin of the organization hands you a link (`/app/invite?token=…`) —
-     possibly by email — that lets you register or sign in and explicitly accept; it expires seven days after it was
-     minted and cannot be reused. The same page also serves `open` deployments for
-     invitees who prefer it.
+   - Invite-only deployments answer 403 `FORBIDDEN` until the initialized
+     business owner explicitly changes the persisted registration policy. The
+     legacy `OXSUM_SIGNUP` setting cannot override it.
+   - A business customer invitation reserves a new customer identity and its
+     first owner. A customer-team invitation joins an existing account as a
+     member. Both use `/app/invite?token=…`, bind the intended email and require
+     registration or explicit signed-in acceptance before expiry. Neither
+     grants business staff authority or purchased funds. A team invitation does
+     not create a separate funded customer account.
    - Deployments that run the anti-bot check draw a small Turnstile widget on the
      register page — solve it once and submit; a missing or expired answer answers
      `FORBIDDEN`, so redo the widget and resend. Send its token as `turnstileToken`
@@ -48,9 +52,9 @@ Notes:
 - When the deployment configures GitHub OAuth, the login page also shows **Continue with GitHub**: it takes you to GitHub and back, signs you into the account your verified GitHub email belongs to — or registers you when the deployment allows open signup — and the session that lands is the same `oxsum_session` cookie a password login mints. An account created this way has no password until you set one through the reset flow. The page learns whether the button exists from `GET /api/v1/auth/methods`, the one unauthenticated read the auth surface offers.
 - When the deployment configures enterprise OIDC providers (`OXSUM_OIDC_PROVIDERS`), the login page draws a button per IdP — Okta, Keycloak, Authentik — from the same `auth/methods` read (`oidcProviders` lists their `oidc:{name}` route names). The flow is the same shape as GitHub's — provider, verified email, a linked account or a registration when signup is open — running authorization-code + PKCE against the IdP's own discovery document, so your IT-issued login lands in the same session either way.
 - You can add a TOTP second factor (any authenticator app) from your session: `POST /api/v1/auth/totp/enroll` answers a base32 secret and an `otpauthUrl` your app reads as a QR; `POST /api/v1/auth/totp/confirm` with a live code turns it on and shows ten `xxxx-xxxx` backup codes — once, so save them. From then on your password login answers `{"requiresTotp": true, "challengeToken"}` instead of a session, and `POST /api/v1/auth/totp` with the challenge plus a live or backup code finishes it. `POST /api/v1/auth/totp/disable` with a live code removes the factor — so a stolen session alone cannot strip it.
-- The session expires thirty days after login, and it stops working the moment your membership in the organization is gone.
+- The session expires thirty days after login. Customer access rechecks membership; Business access independently rechecks current staff authority. Removing one customer membership does not itself revoke unrelated staff authority.
 - When the deployment sends email, registration and an invitation's redemption mail a verification link; the dashboard shows an unverified address a reminder with a resend (a minute between mails), and the link verifies the address for good. `GET /api/v1/session` reports the state as `user.emailVerified`. A deployment without a mailer skips all of it — nothing is mailed, nothing is reminded.
-- Every `/api/v1` endpoint accepts the cookie wherever it accepts a Bearer key; the gateway (`/v1`) takes an API key only.
+- Session-only account and Business routes do not accept a consumption key as a substitute. The gateway (`/v1`) uses consumption credentials, not the login cookie; scoped integration endpoints enforce their own declared grants.
 - Members see and revoke only the keys they created; owners and admins see and revoke every key of the organization. Keys you mint while logged in record you as their creator.
 - Deleting the account: `DELETE /api/v1/users/me` with `{"password": "…"}` — the session cookie plus your password, since the act is irreversible. Your email is tombstoned, every session and every key you minted dies at once, your memberships go, and the `endUser`/`tags` attribution on usage your keys paid is erased. Your personal organization is suspended and renamed rather than deleted — the ledger under it cannot be orphaned — and any organization where you are the last owner among remaining members refuses until you transfer the seat. Your bills still verify: the ledger is never touched. An account created through GitHub has no password until one is set through the reset flow, so it cannot confirm the delete before that.
 
@@ -58,15 +62,24 @@ Notes:
 
 Purpose: reach a first settled request and a customer-verifiable bill without guessing the order.
 
-The dashboard's **Get started** page (`/app/getting-started`) lists five steps, each linking to the screen that does the work:
+The recommended operator entry is `/app/business` after one-time owner setup
+in the [installation runbook](self-hosted-install.md). Configure the serving
+route and customer sale terms, then the chosen collection/admission path. Customer
+accounts use `/app` to obtain a permitted key and make a call against authorized
+funding or entitlement. A fully entitled request can be ready with zero purchased
+wallet balance; paid quota is not wallet cash.
 
-1. **Connect an upstream and price a model** — platform admin, under Admin → Channels. The state is checked with the operator token stored in this browser; without one the step says so instead of guessing.
-2. **Make credit available** — the organization owner tops up, or the platform admin grants credit under Admin → Organizations.
-3. **Create an API key** — registration already mints the first one; the Keys page mints more.
-4. **Send a real request** — a turn from Chat is a normal billable call: credit is frozen first and settled afterwards; it is not a free probe.
-5. **Share a customer bill** — Reports mints a signed report for one end user over a fully ended UTC span and shares it as a link. A turn sent today appears in tomorrow's report. The recipient opens `/bill/{token}` without an account and presses **Verify this bill** in their own browser; this dashboard cannot observe that check.
+The current `/app/getting-started` checklist predates this separation. It still
+checks some operator facts through the legacy deployment-token surface and asks
+for positive credit and a report link. These are known gaps tracked in
+[#735](https://github.com/AllureCurtain/oxsum/issues/735), not requirements to give
+customers a deployment token or purchase funds their entitlement already covers.
+A completed checklist does not certify a provider or payment configuration.
 
-The state comes from the deployment on every load, so completing a step and reloading flips it. The Overview carries a **Finish setting up** card with the next step until all five are met.
+A Chat turn is a real billable request. Its settlement proof is available on
+Requests/Bills immediately. Reports and period exports cover closed UTC spans;
+a first-turn verification does not require a public end-user report link. Keep
+the expected hash and trusted key/head with the export for independent checking.
 
 ## Business provider connections
 
@@ -112,8 +125,11 @@ the EN/中文 switch in the header flips it — the choice is remembered across
 visits. Public pages outside `/app` (`/verify`, the report links) stay English:
 a verification artifact is read against the ledger, not localized.
 
-Platform operators enter the admin console with `OXSUM_ADMIN_TOKEN`. In
-**Channels**, **Model fallbacks** lets an operator choose a served model, read
+Business operators enter `/app/business` using an owner or staff session and
+explicit Business context. Capabilities determine which controls are available.
+The deployment-token console remains a technical compatibility surface for
+operations whose Business editor has not shipped. In its **Channels** page,
+**Model fallbacks** lets an authorized operator choose a served model, read
 its current ordered chain, add served model names or aliases, move entries,
 remove entries, and save the replacement. An empty chain saved through the
 console clears the configuration. The gateway tries the requested model's
@@ -326,9 +342,11 @@ turn's billing visible in real time.
 Steps:
 
 1. Log in at `/app/login` and open **Chat** in the dashboard (`/app/chat`).
-2. **Top up**: enter an amount in credits and submit. The page calls the top-up
-   endpoint with your login session; keep the content hash it shows — it is what
-   the top-up's bill verifies against later.
+2. **Funding**: use a configured purpose-specific checkout or ask authorized
+   staff to record a verified receipt. An applicable paid entitlement or
+   promotional grant may already cover the request. A customer cannot grant
+   purchased credit by calling `POST /api/v1/topups`. Payment success comes from
+   authenticated provider evidence and fulfillment, not the return page.
 3. **Chat key**: the gateway takes an API key, not the login session, so the page
    needs one. **Mint a chat key** mints a key named `chat` and keeps it in this
    browser — you never have to handle it. (Or paste a key you minted under API
@@ -341,7 +359,8 @@ Under each answer the turn's billing shows live: the frozen upper bound while th
 answer streams, then the settled charge — amount, settlement kind, token counts and
 the price version that priced it. **Verify this bill** opens `/verify` with the
 turn's proof bundle and content hash prefilled, and the check runs there, in your
-browser, as always.
+browser when the WASM assets are installed. The form fallback executes on the
+server; use the packed SDK for an independent offline check.
 
 Notes:
 
@@ -1024,7 +1043,7 @@ A version-2 evidence bundle (issue #616) is minted against a fully ended `[from,
 
 Minting and downloading is an owner/admin session surface (`POST /api/v1/org/evidence-bundles` with `{"from","to"}` to mint, `GET /api/v1/org/evidence-bundles` to list, `GET /api/v1/org/evidence-bundles/{bundleId}` to download the frozen bytes; `GET /api/v1/org/statements/{statementId}/evidence` for the single-statement export). Sharing works like bill links but is stricter: `POST /api/v1/org/evidence-bundles/{bundleId}/share` mints an `oxe-…` token you may bound with `expiresAt` and `maxDownloads`; the recipient downloads through `GET /api/v1/evidence/{token}` with no account, and `DELETE` on the same path revokes. Expired, revoked, exhausted and guessed tokens all answer `410`, and every download is counted — `GET …/share` shows `downloadCount` and `lastDownloadAt`.
 
-The check runs offline with `verifyEvidenceBundle` from the `verify-oxsum-bill` package (or `oxsum_verify::verify_evidence_bundle` in Rust): every artifact the manifest names re-digests to the committed figure, the manifest re-digests to what the marker bound, the money rows' ledger entries sit inside the signed head, and the head verifies under the operator key. A dropped row, a changed amount or a bundle minted for a different organization each fail by name. The bundle's `scope` block states what it does *not* cover — the platform's own supplier costs (redacted unless the operator sets `OXSUM_EVIDENCE_UPSTREAM_COST`; `costBasis` always exports), other organizations' rows, history outside the span, and in-flight operations. See [Verifying an oxsum bill](verify-your-bill.md) for the customer-facing walkthrough.
+The check runs offline with `verifyEvidenceBundle` from the `verify-oxsum-bill` package (or `oxsum_verify::verify_evidence_bundle` in Rust): every artifact the manifest names re-digests to the committed figure, the manifest re-digests to what the marker bound, the money rows' ledger entries sit inside the supplied head, and a present note verifies under the selected operator key. An unsigned bundle verifies digests/inclusion only; inspect signature presence rather than interpreting a digest pass as an authenticated attestation. A dropped row, a changed amount or a bundle minted for a different organization each fail by name. The bundle's `scope` block states what it does *not* cover — the platform's own supplier costs (redacted unless the operator sets `OXSUM_EVIDENCE_UPSTREAM_COST`; `costBasis` always exports), other organizations' rows, history outside the span, and in-flight operations. See [Verifying an oxsum bill](verify-your-bill.md) for the customer-facing walkthrough.
 
 ## Platform admin
 

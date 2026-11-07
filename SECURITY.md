@@ -3,8 +3,9 @@
 ## Supported versions
 
 oxsum ships as a single binary + PostgreSQL (self-hosted). Security fixes
-land on `main`; the supported target is the latest merged `main` / release
-candidate — there is no backport line while the release gates are open.
+land on `main`; there is no backport line while the release gates are open.
+A merged commit is not automatically an accepted release candidate: deployment
+requires the exact SHA/artifact gates in the release runbook.
 Pin a deployed version with `OXSUM_IMAGE_TAG` in `deploy/.env`; upgrade per
 `docs/self-hosted-upgrade.md`.
 

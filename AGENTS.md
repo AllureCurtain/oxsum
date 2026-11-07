@@ -1,6 +1,6 @@
 # oxsum
 
-A verifiable AI credit wallet: users top up credits, each streaming LLM call freezes an upper bound before it starts and settles against actual usage afterwards, and users can verify their bills in the browser themselves. The project is a full-stack Rust portfolio piece.
+Self-hosted billing for AI-service businesses. One Business owns suppliers, sale terms and collection; personal and team customer accounts own their balances, keys and evidence. Operators use the built-in portal, while AI application and Agent SaaS developers embed scoped gateway/billing operations. Calls reserve before execution and settle recorded usage against pinned terms. Exported evidence supports independent checks within the documented proof scope. The established implementation is Rust/PostgreSQL with an embedded React dashboard; oxsum takes no platform fee in this model.
 
 ## Tech stack
 

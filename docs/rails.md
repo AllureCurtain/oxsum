@@ -1,61 +1,75 @@
-# The rail honesty matrix
+# Payment rail evidence
 
-One row per deposit rail: what environment it has actually been exercised in, and what "verified"
-means there. oxsum never reports a rail as "working" past what has been proven — the distinction
-between *code shipped* and *money actually moved* is the difference between a demo and a payment
-rail.
+This matrix distinguishes implemented adapters from exercised infrastructure.
+A successful fixture establishes the tested state transitions and conservation;
+it does not establish an actual payment, current credential access or readiness
+of another deployment. Historical observations retain their original date and
+scope. A new candidate needs its own acceptance evidence.
 
-## Legend
+## Evidence tiers
 
-| Level | Meaning |
+| Tier | Meaning |
 | --- | --- |
-| **unit-tested** | the request/response/wire shape is exercised in tests, against a stub or an in-code fake — no external call leaves the process |
-| **integration-tested** | the full `pending → confirmed → credited` walk runs in a process-shared suite against a stub service — the deposit row, the ledger credit and the webhook handling all real, only the PSP is mocked |
-| **sandbox-verified** | the rail has completed at least one real end-to-end round trip against the provider's own sandbox / testnet / hosted test environment — a real (test) credential was used, real webhook deliveries arrived |
-| **live-verified** | the rail has moved real money in a deployment — the strongest claim oxsum makes, and only the deployer can certify it |
+| Software fixture | Rust/HTTP/database tests with explicit local provider stubs and signed fixture events |
+| Local switch fixture | An actual self-hosted switch with a dummy connector; signing or posting a fixture callback is not automatic PSP delivery |
+| Provider sandbox | A real processor test account completes checkout, automatic authenticated callback, fulfillment and applicable refund/reconciliation |
+| Live payment | An authorized payment moves real money through the configured deployment; testnet and seeded balances do not qualify |
 
-## The matrix
+A rail may have passed one operation while another remains unperformed. Record
+source SHA, artifact identity, configuration version, operation IDs and exact
+amounts for each observation; never record secret credentials or card data.
 
-| Rail | Path | Level | What was actually run | Notes |
-| --- | --- | --- | --- | --- |
-| **Manual** (`rail='manual'`) | `POST /api/v1/admin/organizations/{organizationId}/manual-receipts` | **integration-tested** | isolated production-router tests cover authorization, reference uniqueness, concurrent replay and interrupted fulfillment (#624) | no PSP; the authorized operator verifies out-of-band receipt and records reason/reference. Customer `POST /api/v1/topups` is retired. Local fixtures do not prove an actual bank payment |
-| **Redemption** (`rail='redemption'`) | `POST /api/v1/redemptions` | **live-verified** | every seed run mints and redeems a batch against the real ledger | no PSP — a minted code *is* the instrument, the verifier is a hash compare |
-| **Stripe** (`rail='stripe'`) | `POST /api/v1/topups/stripe` + `POST /api/v1/webhooks/stripe` | **integration-tested** | the `pending → confirmed → credited` walk runs against a stubbed Stripe (`crates/server/tests/stripe.rs`); no `sk_test_*` charge has been run end-to-end | a deployment's own Stripe sandbox must do the live check — see "for deployers" below; superseded in practice by the Hyperswitch rail below |
-| **Airwallex** (`rail='airwallex'`) | `POST /api/v1/topups/airwallex` + `POST /api/v1/webhooks/airwallex` | **sandbox-verified** | on 2026-10-25 the full `pending → confirmed → credited` walk ran end-to-end against `api-demo.airwallex.com`: real `x-client-id`/`x-api-key` login → real `intentId`/`clientSecret`/`checkoutUrl` returned to a payer → a `payment_intent.succeeded` webhook signed under `OXSUM_AIRWALLEX_WEBHOOK_SECRET` was accepted and credited the deposit (issue #377, fixes #375/#376) | the hosted-page checkout is intentionally not mounted — `checkout-demo.airwallex.com` is an SDK bootstrap, not a self-contained form like Stripe Checkout, and the product recommendation is Hyperswitch (which routes to Airwallex behind its own surface). The rail's API and webhook contract are verified; the JS SDK front-end is a product decision oxsum does not need to make |
-| **Hyperswitch switch** (`rail='hyperswitch'`) | `POST /api/v1/topups/hyperswitch` + `POST /api/v1/webhooks/hyperswitch` | **sandbox-verified** | a self-hosted switch sidecar (`infra/hyperswitch/`) plus a Stripe test connector ran a real payment `pay_…` → `payment_succeeded` webhook → **25 cr credited** on first delivery attempt; a cancelled payment expired cleanly (issue #320); a reversal issued `POST /refunds` and the `refund_*`/`dispute_*` webhooks walked `meta` correctly (issue #360) | this is the rail a deployment is expected to use — it fronts Stripe, Airwallex and ~60 other connectors with one webhook vocabulary; the manual tests above were run against a *locally self-hosted* switch, not Juspay's hosted sandbox |
-| **x402** (`rail='x402'`) | `POST /api/v1/topups/x402` | **live-verified** (on testnet) | on 2026-10-25 a real EIP-3009 `TransferWithAuthorization` signed by a funded Base Sepolia wallet was verified and settled by `https://facilitator.x402.rs`, landing transaction [`0xe25f9c399dbb2f620d236246ac382b8d7cf9760bc6ec4d184442a7bff0cc4038`](https://sepolia.basescan.org/tx/0xe25f9c399dbb2f620d236246ac382b8d7cf9760bc6ec4d184442a7bff0cc4038) — gas paid by the facilitator's relayer, the deposit row flipped `pending → confirmed → credited` with `facilitator_tx_hash` filled (issue #372) | the exercise is reproducible from `scripts/x402_sign.py` plus the recipe in `docs/development.md` "Real x402 rail exercise"; the two wire details that bit during bring-up (the contract's EIP-712 domain name is `"USDC"`, and `v` must be `{27,28}` not `{0,1}`) are recorded in `docs/decisions.md` |
+## Current software and historical evidence
 
-## What "verified" does not cover
+| Rail | Software scope | Retained external evidence and limits |
+| --- | --- | --- |
+| Manual receipt | Staff/deployment-authorized receipt, unique reference, idempotent fulfillment and ledger correction; customer self-credit is retired | Local tests prove the software. The staff member's out-of-band receipt verification remains necessary; fixtures do not prove a bank transfer |
+| Redemption | Minted instrument, hashed redemption secret, one-time credit and concurrency checks | Seed redemption is a local fixture, not a live-money certification. Distinguish promotional grants from purchased funds |
+| Stripe | Compatibility deposit checkout and purpose-specific order adapter, versioned signed intake; order refund adapter | Local stub coverage. No current end-to-end real Stripe test-account result is established by this matrix |
+| Airwallex | Payment intent/checkout adapter and versioned signed intake; order refund adapter | The 2026-10-25 notes (#377) recorded API/webhook work. The later [T31 follow-up](roadmap/self-hosted-v1/evidence/T31-followup.md) records credential login failure (403). Historical notes do not certify the current account, browser checkout or candidate |
+| Hyperswitch | Unified Checkout/payment and refund adapters, versioned callbacks, order fulfillment; distinct compatibility deposit reversal path | #320/#360 contain earlier manual observations. The old disposable switch data is lost. The fresh pinned local-switch work is [#757](https://github.com/AllureCurtain/oxsum/issues/757), using a dummy connector. Genuine PSP credentials, SDK browser completion and automatic callback certification must be recorded separately |
+| x402 | V1 exact-scheme verification/settlement through a facilitator and compatibility deposit path | On 2026-10-25, Base Sepolia transaction [0xe25f9c…4038](https://sepolia.basescan.org/tx/0xe25f9c399dbb2f620d236246ac382b8d7cf9760bc6ec4d184442a7bff0cc4038) was recorded under #372. This is historical testnet evidence, not live money or current-candidate certification |
 
-- **Refunds on rails that do not offer them.** Manual, redemption, Stripe, Airwallex and x402 deposits can all be `reversed` in the ledger — but only `hyperswitch` currently issues a real `POST /refunds` call to the provider. Every other rail's `refundStatus` is `null`, meaning "no rail refund was attempted", not "the rail refused one".
-- **The deposit reversal path itself.** `POST /api/v1/admin/deposits/{id}/reverse` is integration-tested on every rail — the ledger half is identical across them. What differs is whether a *provider-side* refund also happens.
-- **Chargeback / dispute webhooks.** Only `hyperswitch` registers `dispute_opened` (issue #360); the other rails do not surface disputes because their test surfaces did not reach that event. A deployment running a real Stripe/Airwallex rail would need to map its provider's dispute event onto the same `deposit.disputed` webhook before that signal exists.
+The current T31 record and the
+[release checklist](roadmap/self-hosted-v1/RELEASE-CHECKLIST.md) take precedence
+over an older blanket “verified” label. No genuine PSP or live-payment
+certification has been performed by the November 8 operator-launch documentation
+update. Model-provider certification is separate from payment certification.
 
-## For deployers
+## Refunds, disputes and migration boundaries
 
-A rail is ready to offer to your users when its matrix row reads **sandbox-verified** or better and
-you have run at least one real payment through it on your own infrastructure. The suites ship
-`crates/server/tests/{rail}.rs` as the harness — running them against real test credentials
-(`sk_test_…`, an Airwallex sandbox account, a funded x402 testnet wallet) is a one-line change away;
-the contract is written, only the credential is missing.
+Purpose-specific orders use `/api/v1/orders` and the staff refund workflow.
+Compatibility deposit endpoints use `/api/v1/topups/{rail}` and the deployment
+admin reversal path. Their implementations and callback vocabularies differ:
+a purpose-order refund adapter existing for Stripe or Airwallex does not mean
+legacy deposits automatically issue the same refund.
 
-| Rail | What you need to run a real check |
+The compatibility reversal books a local correction for supported deposits;
+its Hyperswitch arm also attempts the external refund. A null provider refund
+status means no external refund was attempted, not that money was returned.
+Unknown outcomes require reconciliation. The retry defects found during fresh
+switch testing are tracked in [#760](https://github.com/AllureCurtain/oxsum/issues/760)
+and [#763](https://github.com/AllureCurtain/oxsum/issues/763); consult the installed
+revision before enabling recovery against a real processor.
+
+Only event kinds explicitly normalized by the rail can drive a dispute or
+refund transition. Do not infer a complete processor dispute lifecycle from a
+successful payment callback. See [integration contracts](integrations.md) and
+[OpenAPI](../crates/server/openapi.yaml) for the accepted vocabulary.
+
+## Prepare a genuine sandbox acceptance
+
+| Rail | Required input and exercise |
 | --- | --- |
-| Stripe | `sk_test_…` + a webhook endpoint (`cloudflared`/`ngrok` if local) pointing at `/api/v1/webhooks/stripe`; test card `4242 4242 4242 4242` |
-| Airwallex | an Airwallex sandbox account + `OXSUM_AIRWALLEX_*` env vars + a public webhook URL |
-| Hyperswitch | `infra/hyperswitch/` compose up + a Stripe connector configured in Control Center + a public URL for `OXSUM_PUBLIC_URL` |
-| x402 | a funded wallet on a supported testnet (`base-sepolia` is free via faucet) + `ghcr.io/x402-rs/x402-facilitator` running + the `OXSUM_X402_FACILITATOR_*` set |
+| Stripe | Processor test-account key, exact merchant identity/mode and signing secret; complete hosted checkout, automatic callback, duplicate handling and refund with the processor's test instructions |
+| Airwallex | Usable sandbox client/key pair, matching signing secret and supported checkout integration; authenticate first, then exercise actual payment and callback rather than synthesizing success |
+| Hyperswitch | Pinned switch/SDK, durable fresh merchant/profile/key records, HTTPS SDK backend and callback topology, and an actual PSP test connector credential. The `paypal_test` dummy connector is a local fixture |
+| x402 | Supported testnet/facilitator, matching asset/recipient and funded test wallet; record the actual transaction and callback/settlement outcome as testnet evidence |
 
-## Honest summary
-
-- **Money you can receive today without trusting a stub:** manual, redemption, Hyperswitch
-  (sandbox-verified on the wire) and x402 (live-verified on Base Sepolia, gas paid by the
-  facilitator).
-- **Money that needs a real credential before you claim it:** Stripe — code-complete and
-  wire-tested against stubs; needs a sandbox run on your infrastructure before you tell
-  anyone it works. Airwallex is sandbox-verified at the API/webhook level: the calls a
-  payer's browser would trigger are real, only the hosted checkout page is deliberately
-  not mounted (Hyperswitch is the recommended surface for card rails).
-- **Money you cannot receive here:** anything not on this list — no PayPal rail, no bank transfer,
-  no other connector exists yet. The `deposits` seam is the place a new one lands, but none is
-  pending.
+Configure merchant credentials through the supported owner or explicit bootstrap
+interface; preserve versions needed by late callbacks. A configured merchant, a
+reachable URL or a returned client secret is not completed checkout. The Rust
+suites deliberately start local stubs: changing a credential does not turn them
+into a safe real-provider harness. Use a dedicated isolated exercise, exact
+amount bounds and the provider's test instruments. Live money and public
+publication are outside the current execution authorization.

@@ -41,7 +41,7 @@ whatever the branch pointed at when the run started.
 Per step:
 
 - **fmt / clippy / test** — the same fast tier a PR gates on
-  (`cargo fmt --all --check`, `cargo clippy --workspace --all-targets`,
+  (`scripts/fmt-check.sh`, `cargo clippy --workspace --all-targets`,
   `cargo test --workspace --lib` + `--doc`).
 - **wasm** — `scripts/build-verify-wasm.sh` compiles `oxsum_verify` for
   wasm32 with the wasm-bindgen CLI pinned to the lockfile's version; the
