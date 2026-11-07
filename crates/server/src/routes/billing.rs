@@ -1,3 +1,5 @@
+//! Billing routes: holds, bills, top-ups and x402 payments.
+
 use axum::body::{Body, Bytes};
 use axum::extract::{Extension, Path, State};
 use axum::http::{HeaderMap, StatusCode};

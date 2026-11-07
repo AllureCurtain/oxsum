@@ -1,3 +1,5 @@
+//! `/api/v1/keys` and the organization's key groups.
+
 use std::collections::BTreeMap;
 use std::time::Instant;
 

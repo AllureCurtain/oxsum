@@ -1,3 +1,5 @@
+//! Webhook endpoint management and delivery history routes.
+
 use axum::extract::{Extension, Path, State};
 use serde::Deserialize;
 use uuid::Uuid;

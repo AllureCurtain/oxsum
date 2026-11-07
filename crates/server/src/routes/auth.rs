@@ -1,3 +1,5 @@
+//! Authentication routes: registration, login, sessions and password reset.
+
 use axum::Json;
 use axum::extract::{Path, State};
 use axum::http::header::SET_COOKIE;

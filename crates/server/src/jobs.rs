@@ -475,10 +475,15 @@ async fn run_one(
 /// `OXSUM_WITNESS_URLS` names.
 #[derive(Clone)]
 pub struct WitnessConfig {
+    /// The HTTP client that POSTs each `add-checkpoint` request and reads the
+    /// cosigned note back from the witness.
     pub http: reqwest::Client,
     /// The `OXSUM_HEAD_SIGNING_KEY` seed — the signing key is derived per pass
     /// (`SigningKey` is deliberately not `Clone`).
     pub head_signing_seed: [u8; 32],
+    /// The `tlog-witness` base URLs `OXSUM_WITNESS_URLS` names, without a
+    /// trailing slash; the pass appends `/add-checkpoint` to each when it
+    /// offers a head.
     pub urls: Vec<String>,
 }
 

@@ -1,5 +1,5 @@
 //! The facilitator-delegated x402 verifier (issue #282): the real rail the
-//! `RailVerifier` seam was cut for. Where [`Ed25519RailVerifier`] checked a
+//! `RailVerifier` seam was cut for. Where `Ed25519RailVerifier` checked a
 //! test-scheme signature against a pinned key, this implementation delegates
 //! to the x402-rs facilitator sidecar — `POST /verify` proves the EIP-3009
 //! authorization's signature and limits, `POST /settle` lands the transfer
@@ -180,7 +180,7 @@ impl RailVerifier for X402FacilitatorVerifier {
     /// refused settlement or an unreachable sidecar — the deposit stays
     /// `confirmed`, the caller sees the refusal, and the nonce anchor keeps
     /// the retry clean. The facilitator's `error_reason` rides the
-    /// [`SettleRefusal`] into the deposit's `meta`; a transport failure
+    /// `SettleRefusal` into the deposit's `meta`; a transport failure
     /// carries a local description instead, so the row names *why* the
     /// rail could not land it either way.
     fn settle<'a>(
