@@ -1,13 +1,10 @@
 import { useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Tags } from "lucide-react";
-import { Network } from "lucide-react";
-import { ApiError } from "../../api/client";
 import {
   useDisplay,
   useSaleBookHistory,
   useSaleBooks,
-  type Channel,
 } from "../../api/hooks";
 import {
   Badge,
@@ -16,6 +13,8 @@ import {
   Card,
   Cr,
   EmptyRows,
+  PageState,
+  Skeleton,
   TableShell,
   Td,
 } from "../../components/ui";
@@ -118,167 +117,6 @@ export function BusinessPrices() {
       ) : (
         (books.data?.books ?? []).map((b) => <BookCard key={b.id} bookId={b.id} name={b.name} />)
       )}
-// ---------------------------------------------------------------------------
-// /app/business#business/channels — provider routes and credential health.
-// Customer sale books live separately in sales.tsx.
-// ---------------------------------------------------------------------------
-
-function ChannelDetail({ channel, onBack }: { channel: Channel; onBack: () => void }) {
-  const { t } = useTranslation();
-  const display = useDisplay();
-  const check = useChannelConnectionCheck();
-  const canCheck = useCapability(useBusiness().data, "routingWrite");
-
-  return (
-    <div className="flex flex-col gap-6">
-      <div>
-        <button type="button" className="text-sm text-primary" onClick={onBack}>
-          {t("biz.channels.back")}
-        </button>
-        <h2 className="mt-1 text-xl font-bold">{channel.name}</h2>
-      </div>
-      <Card title={t("biz.channels.detail")}>
-        <DetailGrid>
-          <Field2 label={t("biz.channels.colProtocol")}>{channel.protocol}</Field2>
-          <Field2 label={t("biz.channels.colUrl")}>
-            <span className="mono break-all text-xs">{channel.baseUrl}</span>
-          </Field2>
-          <Field2 label={t("biz.channels.credentials")}>
-            {channel.credentials.length === 0
-              ? t("biz.channels.noCredentials")
-              : t("biz.channels.credentialCount", { count: channel.credentials.length })}
-          </Field2>
-          <Field2 label={t("biz.channels.billKey")}>{channel.billKeyLast4 ?? "—"}</Field2>
-        </DetailGrid>
-        {channel.credentials.length > 0 ? (
-          <TableShell
-            className="mt-4"
-            density="compact"
-            head={[
-              t("biz.channels.colKeyTail"),
-              t("common.status"),
-              t("biz.channels.colCooldown"),
-              t("biz.channels.colLastUsed"),
-            ]}
-            sticky={false}
-          >
-            {channel.credentials.map((cr) => (
-              <tr key={cr.credentialId}>
-                <Td mono>•••{cr.apiKeyLast4}</Td>
-                <td>
-                  {cr.status}
-                  {cr.cooldownUntil ? (
-                    <Badge tone="danger" className="ml-2">{t("biz.channels.cooling")}</Badge>
-                  ) : null}
-                </td>
-                <Td>{cr.cooldownUntil?.slice(0, 10) ?? "—"}</Td>
-                <Td>{cr.lastUsedAt?.slice(0, 10) ?? "—"}</Td>
-              </tr>
-            ))}
-          </TableShell>
-        ) : null}
-        {canCheck ? (
-          <div className="mt-4 border-t border-line pt-4">
-            <Button
-              tone="ghost"
-              isLoading={check.isPending}
-              onClick={() =>
-                check.mutate({
-                  channelName: channel.name,
-                  idempotencyKey: crypto.randomUUID(),
-                  reason: "console connection check",
-                })
-              }
-            >
-              {t("biz.channels.check")}
-            </Button>
-            {check.data ? (
-              <div className="mt-2">{stateBadge(check.data.state)}</div>
-            ) : null}
-            {check.error instanceof ApiError ? (
-              <Banner tone="error" className="mt-2">{check.error.message}</Banner>
-            ) : null}
-          </div>
-        ) : null}
-      </Card>
-      <Card title={t("biz.channels.models")}>
-        <TableShell
-          head={[
-            t("common.model"),
-            t("biz.channels.colVersion"),
-            { label: t("biz.channels.colIn"), align: "right" },
-            { label: t("biz.channels.colOut"), align: "right" },
-            t("biz.channels.colMode"),
-          ]}
-        >
-          {(channel.models ?? []).map((m) => (
-            <tr key={m.model}>
-              <td className="font-medium">{m.model}</td>
-              <Td mono>v{m.version}</Td>
-              <Td mono align="right"><Cr minor={m.inputPricePerMillion} currency={display} /></Td>
-              <Td mono align="right">
-                {m.outputPricePerMillion != null ? <Cr minor={m.outputPricePerMillion} currency={display} /> : "—"}
-              </Td>
-              <td>{m.mode ?? "chat"}</td>
-            </tr>
-          ))}
-          {(channel.models?.length ?? 0) === 0 ? (
-            <EmptyRows colSpan={5}>{t("biz.channels.noModels")}</EmptyRows>
-          ) : null}
-        </TableShell>
-      </Card>
-    </div>
-  );
-}
-
-export function BusinessChannels() {
-  const { t } = useTranslation();
-  const [picked, setPicked] = useState<Channel | null>(null);
-  const channels = useBusinessChannels();
-  const page = channels.data;
-
-  if (picked) {
-    return <ChannelDetail channel={picked} onBack={() => setPicked(null)} />;
-  }
-  return (
-    <div className="flex flex-col gap-6">
-      <h2 className="text-xl font-bold">{t("biz.channels.title")}</h2>
-      <Card title={t("biz.channels.listTitle")}>
-        {channels.isError ? (
-          <Banner tone="error">{t("biz.loadError")}</Banner>
-        ) : (
-          <TableShell
-            head={[
-              t("biz.channels.colName"),
-              t("biz.channels.colProtocol"),
-              t("biz.channels.colUrl"),
-              t("biz.channels.colModels"),
-              t("biz.channels.colKeys"),
-            ]}
-            loading={channels.isLoading ? 4 : 0}
-          >
-            {!channels.isLoading &&
-              (page?.channels ?? []).map((c) => (
-                <tr key={c.id}>
-                  <td>
-                    <button type="button" className="font-medium text-primary" onClick={() => setPicked(c)}>
-                      {c.name}
-                    </button>
-                  </td>
-                  <td>{c.protocol}</td>
-                  <Td mono truncate>{c.baseUrl}</Td>
-                  <Td mono>{c.models?.length ?? 0}</Td>
-                  <Td mono>{c.credentials.length}</Td>
-                </tr>
-              ))}
-            {!channels.isLoading && (page?.channels.length ?? 0) === 0 ? (
-              <EmptyRows colSpan={5} icon={<Network />}>
-                {t("biz.channels.empty")}
-              </EmptyRows>
-            ) : null}
-          </TableShell>
-        )}
-      </Card>
     </div>
   );
 }
