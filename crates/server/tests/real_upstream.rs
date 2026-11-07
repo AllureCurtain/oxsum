@@ -407,11 +407,11 @@ async fn real_provider_bill_verifies() {
         .decode(body["data"]["publicKey"].as_str().unwrap())
         .unwrap();
     let public_hex = hex(raw_key);
-    let key = oxsum_verify::PublishedKey {
-        key_name: body["data"]["keyName"].as_str().unwrap(),
-        public_key: &public_hex,
-        key_hash: body["data"]["keyHash"].as_str().unwrap(),
-    };
+    let key = oxsum_verify::PublishedKey::new(
+        body["data"]["keyName"].as_str().unwrap(),
+        &public_hex,
+        body["data"]["keyHash"].as_str().unwrap(),
+    );
     oxsum_verify::verify_signed_head(
         body["data"]["note"].as_str().unwrap(),
         &served,

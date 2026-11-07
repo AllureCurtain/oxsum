@@ -957,11 +957,7 @@ async fn an_unsigned_anchor_verifies_against_the_detail_answer() {
         size: 0,
         root: doubleentry::Hash::from_bytes([0; 32]),
     };
-    let check = oxsum_verify::StatementAnchorCheck {
-        window_hashes: &hashes,
-        expected_head: &dummy_head,
-        expected_origin: &origin,
-    };
+    let check = oxsum_verify::StatementAnchorCheck::new(&hashes, &dummy_head, &origin);
     oxsum_verify::verify_statement_anchor(&body["data"].to_string(), &check)
         .expect("the unsigned anchor verifies");
 
@@ -1056,11 +1052,7 @@ async fn a_signed_anchor_verifies_the_head_that_follows_it() {
     let hashes = window_hashes(&pool, &tenant, first, last).await;
     let hashes: Vec<&str> = hashes.iter().map(String::as_str).collect();
 
-    let check = oxsum_verify::StatementAnchorCheck {
-        window_hashes: &hashes,
-        expected_head: &expected_head,
-        expected_origin: &origin,
-    };
+    let check = oxsum_verify::StatementAnchorCheck::new(&hashes, &expected_head, &origin);
     oxsum_verify::verify_statement_anchor(&body["data"].to_string(), &check)
         .expect("the signed anchor verifies");
 }
@@ -1134,11 +1126,7 @@ async fn the_proof_bundle_verifies_off_its_own_answer() {
 
     // The whole point: reconstruct the check purely from the answer.
     let window_hashes: Vec<&str> = window.iter().map(|h| h.as_str().unwrap()).collect();
-    let check = oxsum_verify::StatementAnchorCheck {
-        window_hashes: &window_hashes,
-        expected_head: &expected_head,
-        expected_origin: origin,
-    };
+    let check = oxsum_verify::StatementAnchorCheck::new(&window_hashes, &expected_head, origin);
     // The verifier wants the detail's `{statement, lines, anchor}` wire — the
     // bundle is a superset, and the extra fields are ignored on parse.
     oxsum_verify::verify_statement_anchor(&data.to_string(), &check)
@@ -1173,11 +1161,7 @@ async fn the_unsigned_proof_bundle_serves_no_head() {
         size: 0,
         root: doubleentry::Hash::from_bytes([0; 32]),
     };
-    let check = oxsum_verify::StatementAnchorCheck {
-        window_hashes: &window_hashes,
-        expected_head: &dummy_head,
-        expected_origin: origin,
-    };
+    let check = oxsum_verify::StatementAnchorCheck::new(&window_hashes, &dummy_head, origin);
     oxsum_verify::verify_statement_anchor(&data.to_string(), &check)
         .expect("the unsigned bundle verifies to its digests");
 }

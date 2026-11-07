@@ -318,17 +318,17 @@ async fn mint(app: &Router, cookie: &str, end_user: &str, from: &str, to: &str) 
 /// The verifier's published key, rebuilt from the fields the bundle itself
 /// serves — the same reconstruction `GET /api/v1/log/key` would answer.
 fn published_key(report: &Value) -> oxsum_verify::PublishedKey<'_> {
-    oxsum_verify::PublishedKey {
-        key_name: report["keyName"]
+    oxsum_verify::PublishedKey::new(
+        report["keyName"]
             .as_str()
             .expect("a signing deployment names a key"),
-        public_key: report["publicKey"]
+        report["publicKey"]
             .as_str()
             .expect("a signing deployment serves a public key"),
-        key_hash: report["keyHash"]
+        report["keyHash"]
             .as_str()
             .expect("a signing deployment serves a key hash"),
-    }
+    )
 }
 
 /// The report's origin: the tenant's ledger origin the head note names.

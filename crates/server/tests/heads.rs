@@ -1119,16 +1119,13 @@ async fn log_checkpoint_serves_the_pinned_witness_keys() {
     // The served pin verifies the served cosignature under the checkpoint's own
     // origin and head — the check oxsum_verify::verify_witness runs.
     let verified = oxsum_verify::verify_witness(
-        &oxsum_verify::WitnessNote {
+        &oxsum_verify::WitnessNote::new(witness_url, &cosigned_note),
+        &[oxsum_verify::WitnessPin::new(
             witness_url,
-            note: &cosigned_note,
-        },
-        &[oxsum_verify::WitnessPin {
-            witness_url,
-            key_name: keys[0]["keyName"].as_str().unwrap(),
-            public_key: keys[0]["publicKey"].as_str().unwrap(),
-            key_hash: keys[0]["keyHash"].as_str().unwrap(),
-        }],
+            keys[0]["keyName"].as_str().unwrap(),
+            keys[0]["publicKey"].as_str().unwrap(),
+            keys[0]["keyHash"].as_str().unwrap(),
+        )],
         parsed.origin.as_str(),
         &parsed.head,
     );
