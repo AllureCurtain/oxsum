@@ -310,29 +310,42 @@ Two wire details this exercise surfaced during bring-up (issue #374, fixed by #3
 
 ### Hyperswitch sidecar
 
-The Hyperswitch rail (issue #319) is a self-hosted [Hyperswitch](https://github.com/juspay/hyperswitch) switch running beside oxsum, not a Juspay-hosted dependency — the hosted sandbox's registration has been broken upstream for a while, and a local switch is what a production deploy would run anyway.
-
-The deployment assets live in `infra/hyperswitch/` — a slimmed `compose.yml`, its `config/` and `scripts/`, and `setup.sh`. First time only:
+Use the [isolated pinned test stack](../infra/hyperswitch/README.md), issue #757.
+It owns a random Compose project, private generated keys and named PostgreSQL
+17/Redis/mail volumes; no database/admin ports are published beyond loopback.
+Source, image digests and the migration tool are locked in
+`infra/hyperswitch/versions.json`. Do not run the raw Compose file without its
+private generated env/project identity.
 
 ```bash
-./infra/hyperswitch/setup.sh           # clones juspay/hyperswitch into .repo (gitignored)
-docker compose -f infra/hyperswitch/compose.yml up -d
+./infra/hyperswitch/setup.sh
+python3 infra/hyperswitch/stack.py check
+python3 infra/hyperswitch/stack.py up
+python3 infra/hyperswitch/merchant.py provision
+python3 infra/hyperswitch/merchant.py inspect
+python3 -m unittest discover -s infra/hyperswitch -p 'test_*.py'
+# Pass the exact binary already built by Cargo:
+python3 infra/hyperswitch/smoke.py --binary /absolute/path/to/oxsum
+python3 infra/hyperswitch/stack.py stop
 ```
 
-The clone is a cache for the migration_runner's mount (the `migrations/` and `justfile` live upstream, not here); delete `.repo/` and re-run `setup.sh` to refresh it. `setup.sh` also normalizes line endings and comments out upstream's `drop_id.patch`, which does not apply to the schema its own branch generates.
+Local addresses: router `127.0.0.1:18080`, SDK `127.0.0.1:19050`, private
+Control Center `127.0.0.1:19000`, Mailpit UI `127.0.0.1:8025`, SMTP
+`127.0.0.1:1025`. No shared demo login is created. `merchant.json` under ignored
+`.runtime/` retains the fresh API/publishable/signing credentials; never print
+or commit it. `up` recreates services and preserves their volumes; do not
+remove encryption state while retaining the database.
 
-First boot runs several minutes of migrations, then the router, the SDK bundle server, the Control Center and `create-default-user`, which seeds `demo@hyperswitch.com` / `Hyperswitch@123`. Sign in at `http://localhost:9000` and read the three values the rail needs — the API key under Developers → API Keys (`snd_…`), `payment_response_hash_key` under Settings → Payment Settings, and the publishable key (`pk_snd_…`). Configure a Stripe connector with a `sk_test_…` key, then fill `.env`:
-
-```
-OXSUM_HYPERSWITCH_API_KEY=snd_…
-OXSUM_HYPERSWITCH_WEBHOOK_SECRET=<payment_response_hash_key>
-OXSUM_HYPERSWITCH_PUBLISHABLE_KEY=pk_snd_…
-OXSUM_HYPERSWITCH_BASE_URL=http://localhost:8080
-OXSUM_HYPERSWITCH_SDK_URL=http://localhost:9050
-OXSUM_PUBLIC_URL=<the public origin the webhook reaches — a tunnel in local dev>
-```
-
-Ports avoid oxsum's own Postgres and any local Redis: pg `5433`, redis `6380`, superposition `8081`, router `8080`, SDK `9050`, Control Center `9000`. The SDK origin matters twice: `OXSUM_HYPERSWITCH_BASE_URL` is what the *server* posts payments to, `OXSUM_HYPERSWITCH_SDK_URL` is where the *browser* loads `HyperLoader.js` for the checkout widget (issue #320) — with the hosted sandbox the two are `sandbox.hyperswitch.io` and `beta.hyperswitch.io/v1`. Webhooks need a public URL — `cloudflared tunnel --url http://localhost:3000` or `ngrok http 3000`, then register `<tunnel>/api/v1/webhooks/hyperswitch` in the Control Center and point `OXSUM_PUBLIC_URL` at the tunnel origin.
+The `paypal_test` connector is a local simulation, not PayPal or Stripe sandbox
+certification. The smoke uses an isolated oxsum database and locally signed
+callback fixtures, never a real PSP or model. HTTPS browser checkout and
+switch-delivered callbacks require the documented reachable public SDK/API/
+callback topology. Set both SDK `ENV_BACKEND_URL` and `ENV_SDK_URL`; do not
+serve public payers a localhost API or bypass destination/TLS policy. Use
+`public_proxy.py` to restrict temporary tunnel paths, and keep administrative
+interfaces private. Genuine Stripe sandbox acceptance requires a separately
+supplied Stripe test-account credential. See the stack README for exact
+configuration, identity persistence and task-only cleanup.
 
 ## Branch naming
 

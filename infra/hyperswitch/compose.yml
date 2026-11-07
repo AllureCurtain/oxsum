@@ -1,226 +1,108 @@
-# Local Hyperswitch sidecar for the oxsum deposit rail (issue #319).
-#
-# This is a slimmed copy of juspay/hyperswitch's docker-compose.yml — the
-# monitoring, scheduler, Kafka, ClickHouse and OpenSearch profiles are dropped;
-# what remains is the minimum the rail needs: the router, its Postgres and
-# Redis, the SDK bundle server and the Control Center. Files are copied, not
-# vendored: to upgrade, re-copy config/ and scripts/ from a fresh clone.
-#
-# Start:  docker compose -f infra/hyperswitch/compose.yml up -d
-# Stop:   docker compose -f infra/hyperswitch/compose.yml down
-# Reset:  docker compose -f infra/hyperswitch/compose.yml down -v
-#
-# After the first boot, the Control Center at http://localhost:9000 has the
-# merchant `demo@hyperswitch.com` / `Hyperswitch@123` (created by
-# create-default-user). The .env keys the rail needs come from it — see
-# docs/development.md, "Hyperswitch sidecar".
-
-volumes:
-  hyperswitch_pg_data:
-
-networks:
-  hyperswitch_net:
-
+# Disposable local sandbox; all images are pinned in versions.json and .runtime/stack.env.
+# Run through ./infra/hyperswitch/stack.py, never against a production database.
 services:
-  prestart-hook:
-    image: docker.io/curlimages/curl-base:latest
-    container_name: hyperswitch-prestart-hook
-    environment:
-      - ONE_CLICK_SETUP=${ONE_CLICK_SETUP:-false}
-    entrypoint:
-      [
-        "/bin/sh",
-        "-c",
-        "apk add --no-cache bash && /bin/bash /prestart_hook.sh",
-      ]
-    volumes:
-      - ./scripts/prestart_hook.sh:/prestart_hook.sh
-    networks:
-      - hyperswitch_net
-
   pg:
-    # Pinned: schema output changes across major versions and the migration
-    # post-step applies a patch that must match what the branch generated.
-    image: docker.io/postgres:17
-    ports:
-      # oxsum's own Postgres already holds 5432 on this machine.
-      - "127.0.0.1:5433:5432"
-    networks:
-      - hyperswitch_net
-    volumes:
-      - hyperswitch_pg_data:/var/lib/postgresql
+    image: ${HS_POSTGRES_IMAGE:?Run setup.sh first}
     environment:
-      - POSTGRES_USER=db_user
-      - POSTGRES_PASSWORD=db_pass
-      - POSTGRES_DB=hyperswitch_db
+      POSTGRES_USER: db_user
+      POSTGRES_PASSWORD: ${HS_DB_PASSWORD:?Run setup.sh first}
+      POSTGRES_DB: hyperswitch_db
+    volumes:
+      - pg_data:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -d $${POSTGRES_DB} -U $${POSTGRES_USER}"]
-      interval: 5s
-      retries: 3
-      start_period: 5s
-      timeout: 5s
-
-  redis-standalone:
-    image: docker.io/redis:7
-    networks:
-      - hyperswitch_net
-    ports:
-      - "127.0.0.1:6380:6379"
+      test: ["CMD-SHELL", "pg_isready -d hyperswitch_db -U db_user"]
+      interval: 3s
+      timeout: 3s
+      retries: 30
+  redis:
+    image: ${HS_REDIS_IMAGE:?Run setup.sh first}
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - redis_data:/data
     healthcheck:
-      test: ["CMD-SHELL", "redis-cli ping | grep '^PONG$'"]
-      interval: 5s
-      retries: 3
-      start_period: 5s
-      timeout: 5s
-
-  migration_runner:
-    image: docker.io/debian:trixie-slim
-    command: >
-      bash -c "
-      apt-get update && apt-get install -y curl xz-utils &&
-      curl --proto '=https' --tlsv1.2 -LsSf https://github.com/diesel-rs/diesel/releases/download/v2.3.5/diesel_cli-installer.sh | bash &&
-      if ! command -v just >/dev/null 2>&1; then
-        curl --proto '=https' --tlsv1.2 -sSf https://just.systems/install.sh | bash -s -- --to /usr/local/bin
-      fi &&
-      export PATH="$${PATH}:$${HOME}/.cargo/bin" &&
-      just migrate"
-    working_dir: /app
-    networks:
-      - hyperswitch_net
-    volumes:
-      # The migrations and the justfile live in the hyperswitch repo, not here:
-      # `infra/hyperswitch/setup.sh` clones it into .repo (gitignored cache).
-      - ./.repo:/app
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 3s
+      timeout: 3s
+      retries: 30
+  migration:
+    image: ${HS_ROUTER_IMAGE:?Run setup.sh first}
+    entrypoint: ["/tools/diesel"]
+    command: ["migration", "run", "--migration-dir", "/migrations", "--config-file", "/tools/diesel.toml"]
     environment:
-      - DATABASE_URL=postgresql://db_user:db_pass@pg:5432/hyperswitch_db
-
-  superposition:
-    image: ghcr.io/juspay/superposition-demo:0.113.0
+      DATABASE_URL: postgres://db_user:${HS_DB_PASSWORD:?Run setup.sh first}@pg:5432/hyperswitch_db
+    volumes:
+      - ./.runtime/tools:/tools:ro
+      - ./.repo/migrations:/migrations:ro
+    depends_on:
+      pg: {condition: service_healthy}
+    restart: "no"
+  router:
+    image: ${HS_ROUTER_IMAGE:?Run setup.sh first}
+    command: ["/local/bin/router", "-f", "/local/config/docker_compose.toml"]
+    working_dir: /local
     ports:
-      - "8081:8080"
-    networks:
-      - hyperswitch_net
-    environment:
-      - API_HOSTNAME=http://localhost:8081
-      - REDIS_URL=redis://redis-standalone:6379
-    depends_on:
-      redis-standalone:
-        condition: service_healthy
-
-  superposition-init:
-    image: alpine:latest
-    depends_on:
-      superposition:
-        condition: service_started
-    networks:
-      - hyperswitch_net
+      - "127.0.0.1:${HS_ROUTER_PORT:-18080}:8080"
     volumes:
-      - ./config/superposition_seed.toml:/seed.toml:ro
-      - ./scripts/seed_superposition.sh:/seed_superposition.sh:ro
-    environment:
-      - SUPERPOSITION_URL=http://superposition:8080
-      - SEED_FILE=/seed.toml
-      - WORKSPACE_ID=dev
-      - ORG_ID=localorg
-    # The script uses a C-style `for ((…))`; /bin/sh on alpine is dash.
-    command: sh -c "apk add --no-cache curl jq yq bash && bash /seed_superposition.sh"
-
-  hyperswitch-server:
-    image: docker.juspay.io/juspaydotin/hyperswitch-router:standalone
-    pull_policy: always
-    command: /local/bin/router -f /local/config/docker_compose.toml
-    ports:
-      - "8080:8080"
-    networks:
-      - hyperswitch_net
-    volumes:
-      - ./config:/local/config
-      - ./files:/local/bin/files
+      - ./.runtime/config:/local/config:ro
+      - router_files:/local/bin/files
     depends_on:
-      pg:
-        condition: service_healthy
-      redis-standalone:
-        condition: service_healthy
-      migration_runner:
-        condition: service_completed_successfully
-      superposition-init:
-        condition: service_completed_successfully
+      pg: {condition: service_healthy}
+      redis: {condition: service_healthy}
+      migration: {condition: service_completed_successfully}
+      mailpit: {condition: service_started}
     healthcheck:
-      test: curl --fail http://localhost:8080/health || exit 1
+      test: ["CMD", "curl", "--fail", "--silent", "http://127.0.0.1:8080/health"]
       interval: 5s
-      retries: 3
-      start_period: 5s
+      timeout: 3s
+      retries: 36
+      start_period: 30s
+  sdk:
+    image: ${HS_SDK_IMAGE:?Run setup.sh first}
+    ports:
+      - "127.0.0.1:${HS_SDK_PORT:-19050}:9050"
+    environment:
+      ENABLE_LOGGING: "false"
+      sdkEnv: local
+      ENV_BACKEND_URL: ${HS_PUBLIC_ROUTER_URL:-http://127.0.0.1:18080}
+      ENV_SDK_URL: ${HS_PUBLIC_SDK_URL:-http://127.0.0.1:19050}
+    depends_on:
+      router: {condition: service_healthy}
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:9050/HyperLoader.js').then(async r=>{if(!r.ok || (await r.text()).length<1000)process.exit(1)}).catch(()=>process.exit(1))"]
+      interval: 5s
+      timeout: 10s
+      retries: 36
+      start_period: 30s
+  control-center:
+    image: ${HS_CONTROL_CENTER_IMAGE:?Run setup.sh first}
+    ports:
+      - "127.0.0.1:${HS_CONTROL_PORT:-19000}:9000"
+    environment:
+      configPath: /tmp/dashboard-config.toml
+      themeConfigPath: /tmp/dashboard-theme.json
+    volumes:
+      - ./.runtime/config/dashboard.toml:/tmp/dashboard-config.toml:ro
+      - ./.runtime/config/dashboard_theme.json:/tmp/dashboard-theme.json:ro
+    depends_on:
+      router: {condition: service_healthy}
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:9000/').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))"]
+      interval: 5s
       timeout: 5s
-
-  hyperswitch-web:
-    image: docker.juspay.io/juspaydotin/hyperswitch-web:latest
-    pull_policy: always
+      retries: 36
+      start_period: 30s
+  mailpit:
+    image: ${HS_MAILPIT_IMAGE:?Run setup.sh first}
     ports:
-      - "9050:9050"
-    networks:
-      - hyperswitch_net
-    depends_on:
-      hyperswitch-server:
-        condition: service_healthy
+      - "127.0.0.1:${HS_SMTP_PORT:-1025}:1025"
+      - "127.0.0.1:${HS_MAIL_UI_PORT:-8025}:8025"
     environment:
-      - ENABLE_LOGGING=true
-      - SDK_ENV=local
-      - ENV_BACKEND_URL=http://localhost:8080
-
-  hyperswitch-control-center:
-    image: docker.juspay.io/juspaydotin/hyperswitch-control-center:latest
-    pull_policy: always
-    ports:
-      - "9000:9000"
-    environment:
-      - configPath=/tmp/dashboard-config.toml
-      - themeConfigPath=/tmp/dashboard-theme.json
+      MP_DATABASE: /data/mailpit.db
+      MP_MAX_MESSAGES: "5000"
     volumes:
-      - ./config/dashboard.toml:/tmp/dashboard-config.toml
-      - ./config/dashboard_theme.json:/tmp/dashboard-theme.json
-    depends_on:
-      hyperswitch-server:
-        condition: service_healthy
-      hyperswitch-web:
-        condition: service_started
-
-  create-default-user:
-    image: docker.io/curlimages/curl-base:latest
-    container_name: hyperswitch-create-default-user
-    depends_on:
-      hyperswitch-server:
-        condition: service_healthy
-      hyperswitch-control-center:
-        condition: service_started
-    environment:
-      - HYPERSWITCH_SERVER_URL=http://hyperswitch-server:8080
-      - HYPERSWITCH_CONTROL_CENTER_URL=http://hyperswitch-control-center:9000
-    entrypoint:
-      [
-        "/bin/sh",
-        "-c",
-        "apk add --no-cache bash jq && /bin/bash /create_default_user.sh",
-      ]
-    volumes:
-      - ./scripts/create_default_user.sh:/create_default_user.sh
-    networks:
-      - hyperswitch_net
-
-  poststart-hook:
-    image: docker.io/curlimages/curl-base:latest
-    container_name: hyperswitch-poststart-hook
-    depends_on:
-      hyperswitch-server:
-        condition: service_healthy
-    environment:
-      - ONE_CLICK_SETUP=${ONE_CLICK_SETUP:-false}
-    entrypoint:
-      [
-        "/bin/sh",
-        "-c",
-        "apk add --no-cache bash jq && /bin/bash /poststart_hook.sh",
-      ]
-    volumes:
-      - ./scripts/poststart_hook.sh:/poststart_hook.sh
-    networks:
-      - hyperswitch_net
+      - mail_data:/data
+volumes:
+  pg_data:
+  redis_data:
+  router_files:
+  mail_data:
