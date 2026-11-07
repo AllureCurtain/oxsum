@@ -4,6 +4,8 @@ Updated: 2026-11-07
 
 ## In progress
 
+- [ ] [#697](https://github.com/AllureCurtain/oxsum/issues/697) — Rust style normalization: phase-by-phase adoption of the Google Rust Style Guide; the tracking issue carries the phase checklist, phase 0 records the decision, exceptions and baseline.
+
 - [x] [#695](https://github.com/AllureCurtain/oxsum/issues/695) — Reconciled final acceptance and task state; exact candidate `813c788` passed full CI and all candidate jobs, with downloaded artifact checksums verified and limits retained.
 
 - [x] [#688](https://github.com/AllureCurtain/oxsum/issues/688) — Close browser acceptance with real local checkout/call/proof/refund journeys; fix order polling, invitation focus, responsive tables and staff capability states.
