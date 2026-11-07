@@ -17,7 +17,11 @@
 #[path = "support/integration.rs"]
 mod setup;
 
-use oxsum_core::*;
+use oxsum_core::{
+    BillLine, Db, NewUser, SaleChange, SaleChangeRequest, SaleMutationResult, SaleTerms,
+    Settlement, SettlementKind, SettlementRecord, SettlementSale, UsageRecord, Wallet,
+    canonical_sale_snapshot, entry_id_for, sale_snapshot_hash, settlement_key_for, signing_key,
+};
 use serde_json::json;
 use std::collections::BTreeMap;
 use time::OffsetDateTime;

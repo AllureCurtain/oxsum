@@ -1,6 +1,11 @@
 //! A04/A05: profiles and admission blockers never move customer identity or money.
 #![allow(clippy::unwrap_used, clippy::expect_used)]
-use oxsum_core::*;
+use oxsum_core::{
+    BusinessCustomerLifecycle, BusinessCustomerSuspension, BusinessCustomerUpdate, BusinessRole,
+    BusinessSetupRequest, BusinessSetupTokenRequest, BusinessStaffRequest, CustomerState, Db,
+    NewUser, Registration, SessionContext, SessionContextRequest, SetupAuthority, Tenants,
+    WalletError, verify_bundle,
+};
 use uuid::Uuid;
 const PASSWORD: &str = "customer lifecycle fixture password";
 async fn user(db: &Db, name: &str) -> Registration {
@@ -311,7 +316,10 @@ async fn profiles_archive_and_suspension_preserve_identity_and_in_flight_money()
         if admitted.is_ok() {
             wallet.settle(&hold_key, "", 3, day).await.unwrap();
         } else {
-            assert!(matches!(admitted, Err(WalletError::Forbidden(_))));
+            assert!(
+                matches!(admitted, Err(WalletError::Forbidden(_))),
+                "{admitted:?}"
+            );
         }
         assert!(matches!(
             wallet

@@ -1,6 +1,6 @@
 //! A03/A07: an upgrade pins old tasks without guessing internal permission.
 #![allow(clippy::unwrap_used, clippy::expect_used)]
-use oxsum_core::*;
+use oxsum_core::{Db, NewUser, ProviderDestinationPolicy, ProviderNetwork, SecretKey};
 use serde_json::json;
 use sqlx::Executor;
 use uuid::Uuid;

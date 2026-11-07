@@ -349,7 +349,7 @@ async fn a_replayed_hold_answers_the_same_freeze() {
             D,
         )
         .await;
-    assert!(matches!(other, Err(WalletError::Conflict(_))));
+    assert!(matches!(other, Err(WalletError::Conflict(_))), "{other:?}");
     assert!(w.db.open_hold(&first.hold_key).await.unwrap().is_some());
 }
 
@@ -424,7 +424,10 @@ async fn a_release_lets_the_hold_go_at_zero() {
             D,
         )
         .await;
-    assert!(matches!(settled, Err(WalletError::Conflict(_))));
+    assert!(
+        matches!(settled, Err(WalletError::Conflict(_))),
+        "{settled:?}"
+    );
 }
 
 #[tokio::test]
@@ -473,7 +476,10 @@ async fn a_settled_hold_replays_its_outcome() {
     let released =
         w.db.metering_release(&w.tenants, &w.service, w.organization_id, &hold.hold_key, D)
             .await;
-    assert!(matches!(released, Err(WalletError::Conflict(_))));
+    assert!(
+        matches!(released, Err(WalletError::Conflict(_))),
+        "{released:?}"
+    );
 
     // A hold nobody ever took is a plain 404 on either path.
     for call in ["settle", "release"] {
@@ -600,7 +606,10 @@ async fn usage_without_an_event_type_is_refused() {
             D,
         )
         .await;
-    assert!(matches!(refused, Err(WalletError::InvalidInput(_))));
+    assert!(
+        matches!(refused, Err(WalletError::InvalidInput(_))),
+        "{refused:?}"
+    );
 }
 
 #[tokio::test]
@@ -615,7 +624,10 @@ async fn a_dimension_the_price_cannot_bill_is_refused() {
     let refused =
         w.db.metering_hold(&w.tenants, &w.service, w.organization_id, "unp", &event, D)
             .await;
-    assert!(matches!(refused, Err(WalletError::InvalidInput(_))));
+    assert!(
+        matches!(refused, Err(WalletError::InvalidInput(_))),
+        "{refused:?}"
+    );
 
     // A zero rate is a rate, though: this event price's output side is free,
     // so declared output prices at zero rather than refusing — the same
@@ -646,7 +658,10 @@ async fn a_dimension_the_price_cannot_bill_is_refused() {
             D,
         )
         .await;
-    assert!(matches!(free, Err(WalletError::InvalidInput(_))));
+    assert!(
+        matches!(free, Err(WalletError::InvalidInput(_))),
+        "{free:?}"
+    );
 }
 
 #[tokio::test]
@@ -666,7 +681,10 @@ async fn an_unknown_code_or_channel_is_refused() {
         let refused =
             w.db.metering_hold(&w.tenants, &w.service, w.organization_id, "unk", &event, D)
                 .await;
-        assert!(matches!(refused, Err(WalletError::InvalidInput(_))));
+        assert!(
+            matches!(refused, Err(WalletError::InvalidInput(_))),
+            "{refused:?}"
+        );
     }
 }
 
@@ -701,7 +719,10 @@ async fn a_non_event_price_does_not_resolve() {
     let refused =
         w.db.metering_hold(&w.tenants, &w.service, w.organization_id, "chat", &event, D)
             .await;
-    assert!(matches!(refused, Err(WalletError::InvalidInput(_))));
+    assert!(
+        matches!(refused, Err(WalletError::InvalidInput(_))),
+        "{refused:?}"
+    );
 }
 
 #[tokio::test]
@@ -718,7 +739,10 @@ async fn an_insolvent_organization_is_refused() {
             D,
         )
         .await;
-    assert!(matches!(refused, Err(WalletError::InsufficientFunds)));
+    assert!(
+        matches!(refused, Err(WalletError::InsufficientFunds)),
+        "{refused:?}"
+    );
 }
 
 #[tokio::test]
@@ -738,7 +762,10 @@ async fn a_suspended_organization_cannot_hold() {
             D,
         )
         .await;
-    assert!(matches!(refused, Err(WalletError::Forbidden(_))));
+    assert!(
+        matches!(refused, Err(WalletError::Forbidden(_))),
+        "{refused:?}"
+    );
     // The refused hold left nothing for the sweeper to watch.
     assert!(
         w.db.open_hold(&w.hold_key("sus").await)

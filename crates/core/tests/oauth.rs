@@ -210,7 +210,7 @@ async fn an_invite_mode_deployment_refuses_new_accounts() {
         .oauth_login(&identity(&email), false)
         .await
         .expect_err("an unknown identity cannot self-register here");
-    assert!(matches!(error, WalletError::Forbidden(_)));
+    assert!(matches!(error, WalletError::Forbidden(_)), "{error:?}");
 
     // …but a linked or email-matched account still logs in: the mode gates
     // registration, not the credential.
@@ -249,5 +249,8 @@ async fn an_oauth_account_has_no_usable_password() {
         .login(&email, "anything at all")
         .await
         .expect_err("a password the user never set cannot open the account");
-    assert!(matches!(error, WalletError::InvalidCredentials));
+    assert!(
+        matches!(error, WalletError::InvalidCredentials),
+        "{error:?}"
+    );
 }

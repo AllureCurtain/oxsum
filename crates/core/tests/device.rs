@@ -74,9 +74,12 @@ async fn approve_then_poll_delivers_the_key_once() {
 
     // A poll while pending waits; the interval applies to the second visit.
     let first = db.poll_device(&grant.device_code).await.unwrap();
-    assert!(matches!(first, DevicePoll::Pending));
+    assert!(matches!(first, DevicePoll::Pending), "{first:?}");
     let second = db.poll_device(&grant.device_code).await;
-    assert!(matches!(second, Err(PollError::TooFast { .. })));
+    assert!(
+        matches!(second, Err(PollError::TooFast { .. })),
+        "{second:?}"
+    );
 
     db.decide_device_request(&grant.user_code, true, user, org)
         .await
@@ -106,7 +109,7 @@ async fn approve_then_poll_delivers_the_key_once() {
     // A second delivery answers consumed — the secret is never re-served.
     cool_down(&db, &grant.device_code).await;
     let again = db.poll_device(&grant.device_code).await.unwrap();
-    assert!(matches!(again, DevicePoll::Consumed));
+    assert!(matches!(again, DevicePoll::Consumed), "{again:?}");
 }
 
 /// Rewinds `last_poll_at` so the next poll clears the interval.
@@ -131,7 +134,7 @@ async fn a_denied_request_polls_denied() {
         .unwrap();
 
     let poll = db.poll_device(&grant.device_code).await.unwrap();
-    assert!(matches!(poll, DevicePoll::Denied));
+    assert!(matches!(poll, DevicePoll::Denied), "{poll:?}");
 
     // And no key was ever minted for it.
     let keys = db.list_keys(org, KeyScope::All).await.unwrap();
@@ -154,7 +157,7 @@ async fn a_second_verdict_and_a_guessed_code_are_not_found() {
     let again = db
         .decide_device_request(&grant.user_code, true, user, org)
         .await;
-    assert!(matches!(again, Err(WalletError::NotFound(_))));
+    assert!(matches!(again, Err(WalletError::NotFound(_))), "{again:?}");
 
     // Malformed, unknown and decided codes read identically.
     for code in ["notacode", "XXXX-XXXX", &grant.user_code.clone()] {
@@ -164,7 +167,7 @@ async fn a_second_verdict_and_a_guessed_code_are_not_found() {
 
     // Unknown and expired device codes poll identically too.
     let res = db.poll_device("oxd-nope").await;
-    assert!(matches!(res, Err(PollError::NotFound)));
+    assert!(matches!(res, Err(PollError::NotFound)), "{res:?}");
 }
 
 #[tokio::test]
@@ -183,11 +186,11 @@ async fn an_expired_request_is_gone_everywhere() {
     .unwrap();
 
     let res = db.device_request(&grant.user_code).await;
-    assert!(matches!(res, Err(WalletError::NotFound(_))));
+    assert!(matches!(res, Err(WalletError::NotFound(_))), "{res:?}");
     let res = db
         .decide_device_request(&grant.user_code, true, user, org)
         .await;
-    assert!(matches!(res, Err(WalletError::NotFound(_))));
+    assert!(matches!(res, Err(WalletError::NotFound(_))), "{res:?}");
     let res = db.poll_device(&grant.device_code).await;
-    assert!(matches!(res, Err(PollError::NotFound)));
+    assert!(matches!(res, Err(PollError::NotFound)), "{res:?}");
 }

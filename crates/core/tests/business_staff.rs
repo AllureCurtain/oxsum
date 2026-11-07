@@ -1,6 +1,11 @@
 //! A01/A04: real setup and session flows; SQL only for fault/expiry injection.
 #![allow(clippy::unwrap_used, clippy::expect_used)]
-use oxsum_core::*;
+use oxsum_core::{
+    BusinessCapability, BusinessOwnershipRequest, BusinessRegistrationRequest, BusinessRole,
+    BusinessSetupRequest, BusinessSetupTokenRequest, BusinessStaffRequest, Db, LoginOutcome,
+    NewUser, OAuthIdentity, Registration, RegistrationMode, SecretKey, SessionContext,
+    SessionContextRequest, SetupAuthority, WalletError,
+};
 use uuid::Uuid;
 const PASSWORD: &str = "business staff fixture password";
 async fn user(db: &Db, name: &str) -> Registration {

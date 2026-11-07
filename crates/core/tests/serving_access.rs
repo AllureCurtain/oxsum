@@ -1,6 +1,9 @@
 //! A06/A08: one customer/key snapshot controls catalogs and credential opening.
 #![allow(clippy::unwrap_used, clippy::expect_used)]
-use oxsum_core::*;
+use oxsum_core::{
+    Db, KeyConstraints, KeyScope, NewUser, Price, PriceBook, Registration, SecretKey, Variant,
+    WalletError,
+};
 use uuid::Uuid;
 
 async fn fixture() -> Option<Db> {

@@ -67,9 +67,9 @@ async fn a_claim_lives_its_lifecycle() {
 
     // A retry while the turn runs is in flight, and under a different body a mismatch.
     let claim = db.claim_request(org, "k1", &fp_a, "req-2").await.unwrap();
-    assert!(matches!(claim, Claim::InFlight));
+    assert!(matches!(claim, Claim::InFlight), "{claim:?}");
     let claim = db.claim_request(org, "k1", &fp_b, "req-2").await.unwrap();
-    assert!(matches!(claim, Claim::Mismatch));
+    assert!(matches!(claim, Claim::Mismatch), "{claim:?}");
 
     // Completed, the same fingerprint replays the stored answer under the
     // original request id.
@@ -141,7 +141,7 @@ async fn a_settled_usage_row_completes_the_claim() {
         .claim_request(org, "stream", &fingerprint(b"{}"), &request_id)
         .await
         .unwrap();
-    assert!(matches!(claim, Claim::Fresh { .. }));
+    assert!(matches!(claim, Claim::Fresh { .. }), "{claim:?}");
 
     db.record_usage(&UsageRow {
         request_id: request_id.clone(),
