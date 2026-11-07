@@ -43,6 +43,25 @@ is the read-only form.
   own PR. CI reads the branch's version file, so the upgrade PR is formatted by
   the new version while every other PR stays on the old one.
 
+### Lints
+
+The CI `clippy` job runs `cargo clippy --workspace --all-targets -- -D
+warnings`. Workspace lints are declared once in `[workspace.lints]` of the root
+manifest; every member opts in with `[lints] workspace = true`, so a new crate
+inherits them by adding the same table. The current set is:
+
+- `unsafe_code = "forbid"` — no member may add an `unsafe` block.
+- `missing_docs = "warn"` — every public item and module carries `///`/`//!`
+  documentation (exception: `crates/doubleentry` is vendored and has its own
+  layout and lints).
+- `unwrap_used = "warn"` and `expect_used = "warn"` — a panic must be a
+  deliberate, documented decision; a poisoned lock uses a targeted
+  `#[expect(clippy::expect_used, reason = "...")]` instead of an `#[allow]`.
+
+Warnings are errors under CI's `-D warnings`, so a new warning fails the PR even
+when the local `cargo clippy` run only printed it. Run the same command with
+`-D warnings` before pushing.
+
 ### Pre-commit hook (optional)
 
 `.githooks/pre-commit` runs `scripts/fmt-check.sh` (the pinned nightly) plus a *scoped* `cargo clippy`
