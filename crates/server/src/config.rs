@@ -111,10 +111,10 @@ impl std::fmt::Debug for Gateway {
 impl Gateway {
     /// A channel described in code, which is what the tests build.
     #[must_use]
-    pub fn new(base_url: impl Into<String>, api_key: impl Into<String>, book: PriceBook) -> Self {
+    pub fn new(base_url: &str, api_key: &str, book: PriceBook) -> Self {
         Self {
-            base_url: base_url.into().trim_end_matches('/').to_owned(),
-            api_key: api_key.into(),
+            base_url: base_url.trim_end_matches('/').to_owned(),
+            api_key: api_key.to_owned(),
             book,
             destination_policy: Default::default(),
         }
@@ -176,7 +176,7 @@ impl Gateway {
             "OXSUM_UPSTREAM_BASE_URL is not permitted by OXSUM_UPSTREAM_DESTINATION_POLICY"
                 .to_owned()
         })?;
-        let mut gateway = Self::new(base_url, api_key, book);
+        let mut gateway = Self::new(&base_url, &api_key, book);
         gateway.destination_policy = policy;
         Ok(Some(gateway))
     }
@@ -489,8 +489,8 @@ impl Config {
 
     /// Sets the operator token that opens `/api/v1/admin`.
     #[must_use]
-    pub fn with_admin_token(mut self, token: impl Into<String>) -> Self {
-        self.admin_token = Some(token.into());
+    pub fn with_admin_token(mut self, token: &str) -> Self {
+        self.admin_token = Some(token.to_owned());
         self
     }
 
@@ -988,8 +988,8 @@ impl Config {
     /// Sets the public origin. Tests use this; the server reads
     /// `OXSUM_PUBLIC_URL`.
     #[must_use]
-    pub fn with_public_url(mut self, url: impl Into<String>) -> Self {
-        self.public_url = Some(url.into());
+    pub fn with_public_url(mut self, url: &str) -> Self {
+        self.public_url = Some(url.to_owned());
         self
     }
 
@@ -1978,7 +1978,7 @@ mod tests {
     /// A configuration built the way `from_env` builds the operator token.
     fn config_from_token(token: &str) -> Result<Config, String> {
         super::admin_token_of(token.to_owned())
-            .map(|token| Config::new(Signup::Invite, None).with_admin_token(token))
+            .map(|token| Config::new(Signup::Invite, None).with_admin_token(&token))
     }
 
     #[test]
