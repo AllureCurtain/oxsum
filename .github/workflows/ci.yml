@@ -128,10 +128,13 @@ jobs:
         with:
           toolchain: ${{ steps.rustfmt.outputs.version }}
           components: rustfmt
-      - if: needs.filter.outputs.rust == 'true'
+      - name: Check pinned formatting
+        if: needs.filter.outputs.rust == 'true'
         run: scripts/fmt-check.sh
-      - name: Test candidate CI evidence validation
-        run: python3 scripts/test-candidate-ci.py
+      - name: Test candidate evidence validation
+        run: |
+          python3 scripts/test-candidate-ci.py
+          python3 scripts/test-candidate-bundle.py
 
   clippy:
     name: clippy
@@ -170,7 +173,8 @@ jobs:
         uses: mozilla-actions/sccache-action@v0.0.11
       # No database is needed to compile: the tree uses no sqlx::query! macros,
       # so compilation never touches a live database.
-      - if: needs.filter.outputs.rust == 'true'
+      - name: Run strict Clippy
+        if: needs.filter.outputs.rust == 'true'
         run: cargo clippy --workspace --all-targets -- -D warnings
 
   # Publishability of the crates that ship outside the workspace (issue #468):
@@ -226,9 +230,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
-      # A default-branch schedule has no base to diff against, so the step is
-      # skipped there and the job stays a green no-op; both stages are required
-      # checks on every pull request that can affect them.
+      # Manual/nightly runs execute every stage, independently of path filters.
       - uses: dorny/paths-filter@v4
         id: filter
         if: github.event_name == 'push' || github.event_name == 'pull_request'
@@ -243,12 +245,13 @@ jobs:
               - 'crates/verify/**'
               - '.github/workflows/**'
       - name: No wasm stage change
-        if: steps.filter.outputs.stages != 'true'
+        if: steps.filter.outputs.stages != 'true' && github.event_name != 'schedule' && github.event_name != 'workflow_dispatch'
         run: echo "no Dockerfile/wasm change; skipping the stage build"
       - uses: docker/setup-buildx-action@v4
-        if: steps.filter.outputs.stages == 'true'
-      - uses: docker/build-push-action@v7
-        if: steps.filter.outputs.stages == 'true'
+        if: steps.filter.outputs.stages == 'true' || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+      - name: Build the WASM stage
+        uses: docker/build-push-action@v7
+        if: steps.filter.outputs.stages == 'true' || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
         with:
           context: .
           target: wasm
@@ -267,7 +270,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
-      # See `wasm`: a scheduled run has no base to diff against and no-ops here.
+      # Manual/nightly runs execute this stage as well as all Rust suites.
       - uses: dorny/paths-filter@v4
         id: filter
         if: github.event_name == 'push' || github.event_name == 'pull_request'
@@ -280,12 +283,13 @@ jobs:
               - 'crates/server/openapi.yaml'
               - '.github/workflows/**'
       - name: No frontend stage change
-        if: steps.filter.outputs.stages != 'true'
+        if: steps.filter.outputs.stages != 'true' && github.event_name != 'schedule' && github.event_name != 'workflow_dispatch'
         run: echo "no frontend change; skipping the stage build"
       - uses: docker/setup-buildx-action@v4
-        if: steps.filter.outputs.stages == 'true'
-      - uses: docker/build-push-action@v7
-        if: steps.filter.outputs.stages == 'true'
+        if: steps.filter.outputs.stages == 'true' || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+      - name: Build the frontend stage
+        uses: docker/build-push-action@v7
+        if: steps.filter.outputs.stages == 'true' || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
         with:
           context: .
           target: frontend
@@ -330,9 +334,11 @@ jobs:
       # `--lib` only builds the lib test binaries — the heavy integration
       # targets (testcontainers, sqlx test deps) never compile here, which is
       # where most of the job's wall time used to go.
-      - if: needs.filter.outputs.rust == 'true'
+      - name: Run library tests
+        if: needs.filter.outputs.rust == 'true'
         run: cargo test --workspace --lib
-      - if: needs.filter.outputs.rust == 'true'
+      - name: Run documentation tests
+        if: needs.filter.outputs.rust == 'true'
         run: cargo test --workspace --doc
 
   # Build every test binary once, then hand the binaries off to the shard jobs.

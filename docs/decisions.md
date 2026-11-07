@@ -2692,3 +2692,8 @@ never admin routes. Preserve all TLS and public-destination rules when local
 DNS or tunnels fail. Actual Stripe sandbox keys, provider-delivered callbacks
 and the owner merchant selection path remain their own acceptance/software
 work; the presence of a switch key cannot stand in for them.
+## 2026-11-08 — Candidate evidence binds bytes and executed steps (#752)
+
+- A successful job without its required successful steps is insufficient release evidence. Manual/nightly CI builds the WASM/frontend stages, and the candidate gate requires named fmt, Clippy, lib/doc, archive, shard, process-shared and engine execution steps. Old path-filtered runs cannot be grandfathered in.
+- Version-2 candidate manifests distinguish source SHA from workflow revision, Docker configuration ID from archive checksum and registry digest, and bind platform/source labels to the actual saved image. The SDK is copied after the clean consumer verifies it, never repacked. Archive inspection does not extract Docker layers or execute package scripts.
+- Offline validation establishes internal consistency only. Online validation additionally requires the successful exact workflow attempt, its available unexpired bundle, byte-equivalent manifest, and the successful referenced full-CI attempt. Public promotion/deployment is separate; creating a valid local manifest grants no authority to publish it.

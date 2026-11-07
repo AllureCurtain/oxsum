@@ -2,6 +2,13 @@
 
 ## Requirements
 
+- Candidate bundles: `python3 scripts/test-candidate-bundle.py` checks negative
+  byte/provenance fixtures; `python3 scripts/candidate_bundle.py validate
+  <bundle-directory> --sha <sha> --online` checks downloaded artifacts against
+  their successful GitHub candidate and full-CI runs. `--online` needs `gh`;
+  omitting it checks local consistency only. `VERIFY_CONSUMER_OUTPUT=<new-dir>
+  scripts/check-verify-consumer.sh` retains the exact installed SDK tarball.
+
 - Candidate validation: `python3 scripts/test-candidate-ci.py` exercises the
   full-CI evidence gate without credentials. `scripts/check-candidate-ci.py
   --sha <40-character-sha> --repository AllureCurtain/oxsum --output ci.json`

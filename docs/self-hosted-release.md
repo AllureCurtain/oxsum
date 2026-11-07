@@ -24,6 +24,9 @@ chosen candidate, wait for it to finish, then dispatch the candidate gate.
 The validated CI URL, attempt and job verdicts are retained in
 `candidate-ci.json` and linked from the candidate manifest. Fixture tests in
 `test-candidate-ci.py` cover failed, missing, skipped and wrong-SHA evidence.
+Each required job must also carry its named successful execution steps, including
+WASM/frontend builds and library/documentation tests; job-level success cannot
+mask a skipped build. Manual/nightly CI now executes both Docker stages.
 
 ## What gate 1 produces
 
@@ -42,6 +45,7 @@ Per step:
 
 - **fmt / clippy / test** — the same fast tier a PR gates on
   (`scripts/fmt-check.sh`, `cargo clippy --workspace --all-targets`,
+  (`scripts/fmt-check.sh` with the pinned nightly, `cargo clippy --workspace --all-targets -- -D warnings`,
   `cargo test --workspace --lib` + `--doc`).
 - **wasm** — `scripts/build-verify-wasm.sh` compiles `oxsum_verify` for
   wasm32 with the wasm-bindgen CLI pinned to the lockfile's version; the
@@ -53,7 +57,9 @@ Per step:
   `verify-oxsum-bill` tarball, installs it into a clean project outside the
   repo, verifies the genuine minted bundle and rejects the tampered,
   dropped and wrong-org fixtures — the A26/A30 evidence check, offline.
-  The exact tarball it verified uploads as `verify-oxsum-bill-tarball`.
+  The exact tarball it installed and verified is copied via `VERIFY_CONSUMER_OUTPUT`
+  and uploads as `verify-oxsum-bill-tarball`; it is never packed again. The
+  consumer log is retained as evidence.
 - **examples** — `scripts/verify-examples.sh` boots a scratch deployment
   (postgres service + the server built at the promoted SHA) and runs every
   shipped developer example end to end — the A27 fresh-install half.
@@ -64,11 +70,27 @@ Per step:
   **Never pushed**: no registry login exists in this workflow. The tested image
   is exported as `candidate-image.tar.gz`; `docker load` restores the exact
   bytes for repeat validation. `candidate-smoke.log` records the executed run.
-- **manifest** — `candidate-manifest.json` recording the SHA, run URL,
-  image identity, full-CI URL and per-gate verdicts; `SHA256SUMS` over every artifact;
-  `RELEASE-NOTES-DRAFT.md` cut from the candidate's own `openapi.yaml`
-  changelog paragraph for its contract version. All three plus every
-  artifact upload as `candidate-bundle` (90-day retention).
+- **manifest** — version 2 [`candidate-manifest.json`](roadmap/operator-launch/CANDIDATE-FORMAT.md)
+  records source and workflow revisions, run/attempt, required gates, image
+  config ID/platform/source label and SDK name/version/SHA-512 integrity.
+  Artifact sizes/SHA-256 hashes cover every retained input; `SHA256SUMS` also
+  binds the manifest. Image config ID, archive SHA-256 and a future registry
+  manifest digest are explicitly different. The bundle uploads with 90-day retention.
+
+Validate downloaded bytes before any promotion:
+
+```bash
+python3 scripts/candidate_bundle.py validate /path/to/candidate-bundle --sha <40-char-sha>
+python3 scripts/candidate_bundle.py validate /path/to/candidate-bundle --sha <40-char-sha> --online
+```
+
+The offline check rejects mismatched files, source, platform, image layers,
+package metadata and incomplete gates. It is not provenance authentication.
+The online check requires authenticated `gh`, rechecks the named successful
+candidate/full-CI attempts, requires an unexpired `candidate-bundle` artifact,
+downloads it and compares its validated manifest with the local one. Missing,
+expired, unavailable or wrong-run artifacts fail closed. No publishing occurs.
+Version-1 manifests require a new candidate run.
 
 ## What gate 2 proves
 
