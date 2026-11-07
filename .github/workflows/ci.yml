@@ -97,6 +97,8 @@ jobs:
               - 'Cargo.lock'
               - 'crates/**'
               - 'scripts/**'
+              - 'rustfmt-nightly'
+              - 'rustfmt.toml'
               - 'rust-toolchain.toml'
               - '.cargo/**'
               - '.github/workflows/**'
@@ -113,13 +115,21 @@ jobs:
       - name: No Rust change
         if: needs.filter.outputs.rust != 'true'
         run: echo "no Rust-path change; fmt passes vacuously"
-      # The runner's stable toolchain plus rustfmt and clippy.
-      - uses: dtolnay/rust-toolchain@stable
+      # The pinned formatter the repository's scripts read. `imports_granularity`
+      # and `format_macro_matchers` are nightly-only options, so the same
+      # version file must drive the local scripts and this job; `rustfmt.toml`
+      # and `rustfmt-nightly` are the single sources.
+      - name: Read the pinned rustfmt version
+        id: rustfmt
+        if: needs.filter.outputs.rust == 'true'
+        run: echo "version=$(tr -d '[:space:]' < rustfmt-nightly)" >> "$GITHUB_OUTPUT"
+      - uses: dtolnay/rust-toolchain@master
         if: needs.filter.outputs.rust == 'true'
         with:
-          components: rustfmt, clippy
+          toolchain: ${{ steps.rustfmt.outputs.version }}
+          components: rustfmt
       - if: needs.filter.outputs.rust == 'true'
-        run: cargo fmt --all --check
+        run: scripts/fmt-check.sh
       - name: Test candidate CI evidence validation
         run: python3 scripts/test-candidate-ci.py
 
