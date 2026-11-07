@@ -466,7 +466,7 @@ async fn the_environment_seeds_an_empty_database_and_leaves_a_populated_one_alon
     let mut models = BTreeMap::new();
     models.insert("m".to_owned(), price(10, 20, 100));
     let channel = fresh("seeded");
-    let book = PriceBook::new(channel.clone(), models);
+    let book = PriceBook::new(&channel, models);
 
     let seeded = db
         .seed_channel(&book, "https://seeded.example/v1/", "sk-seed", &key())
