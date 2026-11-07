@@ -9,7 +9,7 @@ Read this file on every resume, then reconcile actual main, worktrees, issues/PR
 - Starting and last synchronized main: `0314cbd3d5439adbc904a327a8e16704b344a0af`. No previous task PR/worktree remains. #697 and #724 are complete.
 - N00 has adopted the full contract and opened all work-unit issues; PR #749 passed required CI and local fmt/strict Clippy/coverage checks; Entire Gates awaits real reviewer approval (trail 154). No software unit is complete by adoption.
 - No candidate for this stage has been frozen. Historical candidate `813c788` and baseline CI are references only.
-- Next ready sequence: finish N00 review/integration, N01/N02 entry path, N03 owner setup; N13 is independent. Split units into minimal feature issues where required.
+- Four submitted PRs (#749, #750, #751, #753) pass required code CI; Entire Gates requires genuine reviewer approval. Continue independent software work from current main; no review bypass or candidate completion is implied.
 
 ## Task graph
 
@@ -19,9 +19,9 @@ Statuses distinguish planned, in_progress, implemented, validated, in_review, in
 | --- | --- | --- | --- | --- | --- |
 | N00 [#726](https://github.com/AllureCurtain/oxsum/issues/726) — Rebaseline and adopt the execution contract | baseline | in_review | `.worktrees/operator-launch-contract` / `docs/operator-launch-contract` | [#749](https://github.com/AllureCurtain/oxsum/pull/749) / `9016b2e` | [Baseline](evidence/baseline.md); Entire Gates approvals pending; continue independent implementation |
 | N01 [#727](https://github.com/AllureCurtain/oxsum/issues/727) — Align current product claims and documentation | N00 | planned | — | — | Align current claims without rewriting historical evidence |
-| N02 [#728](https://github.com/AllureCurtain/oxsum/issues/728) — Repair the runnable demo and first-run example | N00 | in_progress | `.worktrees/current-demo` / `fix/current-demo` | — | Replace retired demo authority and unsafe database fallback |
-| N03 [#729](https://github.com/AllureCurtain/oxsum/issues/729) — Owner setup, business profile and operating settings | N00 | in_progress | `.worktrees/owner-browser-setup` / `feat/owner-browser-setup` | [#750](https://github.com/AllureCurtain/oxsum/pull/750) / `fc9c23a` (child #748) | Build/fmt/strict Clippy, 3 focused backend tests and browser new/existing/wrong-email/replay/recovery checks passed; PR CI/review pending. Profile/settings still pending |
-| N04 [#730](https://github.com/AllureCurtain/oxsum/issues/730) — Business provider/channel administration | N03 | planned | — | — | Complete authorized channel and credential editor |
+| N02 [#728](https://github.com/AllureCurtain/oxsum/issues/728) — Repair the runnable demo and first-run example | N00 | in_review | `.worktrees/current-demo` / `fix/current-demo` | [#751](https://github.com/AllureCurtain/oxsum/pull/751) / `66f7dee` | Exact settlement/offline rejection, fresh/existing walkthroughs, isolation tests passed; CI passed; Entire trail 156 awaits reviewer approval |
+| N03 [#729](https://github.com/AllureCurtain/oxsum/issues/729) — Owner setup, business profile and operating settings | N00 | in_progress | `.worktrees/owner-browser-setup` / `feat/owner-browser-setup` | [#750](https://github.com/AllureCurtain/oxsum/pull/750) / `fc9c23a` (child #748) | Build/fmt/strict Clippy, 3 focused backend tests and browser new/existing/wrong-email/replay/recovery checks passed; required CI passed; Entire trail 155 awaits actual reviewer approval. Profile/settings still pending |
+| N04 [#730](https://github.com/AllureCurtain/oxsum/issues/730) — Business provider/channel administration | N03 | in_progress | `.worktrees/business-providers` / `feat/business-providers` | child #754 | Implement owner connection/credential editor against existing contract; model/routing child follows |
 | N05 [#731](https://github.com/AllureCurtain/oxsum/issues/731) — Sale-book creation, publication and assignment | N04 | planned | — | — | Complete exact revision editor and activation/assignment |
 | N06 [#732](https://github.com/AllureCurtain/oxsum/issues/732) — Merchant configuration and payment readiness | N03 | planned | — | — | Complete merchant UI and pinned persistent switch stack |
 | N07 [#733](https://github.com/AllureCurtain/oxsum/issues/733) — Customer invitation and registration controls | N03 | planned | — | — | Complete invitation management and captured mail |
@@ -30,7 +30,7 @@ Statuses distinguish planned, in_progress, implemented, validated, in_review, in
 | N10 [#736](https://github.com/AllureCurtain/oxsum/issues/736) — Complete commercial journeys and targeted repairs | N05–N09,N11 | planned | — | — | Run all commercial cycles and file focused repairs |
 | N11 [#737](https://github.com/AllureCurtain/oxsum/issues/737) — Implement the agreed revenue policy and prove reconciliation | N00 | planned | — | — | Design versioned daily recognition and conservation fixtures |
 | N12 [#738](https://github.com/AllureCurtain/oxsum/issues/738) — Independent evidence delivery and useful verification | N09–N11 | planned | — | — | Make actual exports independently usable offline |
-| N13 [#739](https://github.com/AllureCurtain/oxsum/issues/739) — Promote the validated artifact and deploy by identity | N00 | planned | — | — | Bind promotion and deployment to validated artifact identity |
+| N13 [#739](https://github.com/AllureCurtain/oxsum/issues/739) — Promote the validated artifact and deploy by identity | N00 | in_progress | `.worktrees/candidate-artifact` / `build/candidate-artifact` | [#753](https://github.com/AllureCurtain/oxsum/pull/753) / `be12af2` (child #752) | 22 gate tests, real Docker archive-format fixture, exact packed SDK consumer, actionlint/fmt/strict Clippy passed; CI 42396428383 green; Entire trail 157 awaits review; promotion/deploy child follows |
 | N14 [#740](https://github.com/AllureCurtain/oxsum/issues/740) — Real-provider certification for the selected matrix | N04,N05,N12 | planned | — | — | Bound the harness; verify price/DNS before any attempt |
 | N15 [#741](https://github.com/AllureCurtain/oxsum/issues/741) — Primary PSP sandbox and bounded live certification | N06,N10,N12 | planned | — | — | Complete fixtures now; leave genuine PSP rows pending |
 | N16 [#742](https://github.com/AllureCurtain/oxsum/issues/742) — Capacity, fairness and long-duration operation | N04–N12,N21 | planned | — | — | Prepare controlled workload and environment diagnostics |
@@ -87,7 +87,7 @@ Statuses distinguish planned, in_progress, implemented, validated, in_review, in
 | Item | Current state | Next action / affected gate |
 | --- | --- | --- |
 | E0 local development | ready: toolchain, PostgreSQL 17, isolated worktrees | Serialize heavy Cargo work; preserve other projects/resources |
-| E1 browser/mail fixtures | two isolated owner-setup databases and task-local listeners; mail pending | Create task-owned app/database/secrets, pinned mail capture, desktop/mobile/locales |
+| E1 browser/mail fixtures | two isolated owner-setup databases retained; their listeners stopped; mail pending | Create task-owned app/database/secrets, pinned mail capture, desktop/mobile/locales |
 | E2 DeepSeek | credential privately available; no calls made | N14 verify current pricing, bound/reserve attempts, resolve DNS without weakening public-address policy |
 | E3 Hyperswitch | disposable rebuild authorized; old stack absent | N06 pin compatible services, persistent volumes, fresh keys, consistent HTTPS SDK/API/callback origins |
 | Genuine PSP sandbox | external_pending: usable test credential absent | N15 needs Stripe test-account API credential in the fresh Hyperswitch test connector; fixture tests proceed |
@@ -115,7 +115,10 @@ Use integer CNY millionths in the machine record (`100000` ceiling). Before send
 | --- | --- | --- | --- |
 | 2026-11-08 | Baseline reconciled; #725 and N00–N21 issues created | `0314cbd`; [baseline](evidence/baseline.md); zero attempts/spend | Integrate N00; continue N01/N02/N03/N13 |
 
-| 2026-11-08 | N03.a initial owner browser flow submitted | PR #750 / `fc9c23a`; [development evidence](https://github.com/AllureCurtain/oxsum/blob/fc9c23a/docs/roadmap/operator-launch/evidence/owner-browser-setup.md) | Await checks/review; continue N02 and remaining N03 |
+| 2026-11-08 | N03.a initial owner browser flow submitted | PR #750 / `fc9c23a`; [development evidence](https://github.com/AllureCurtain/oxsum/blob/fc9c23a/docs/roadmap/operator-launch/evidence/owner-browser-setup.md) | CI passed; reviewer pending; remaining N03 profile/settings still required |
+| 2026-11-08 | N02 demo submitted | PR #751 / `66f7dee`; exact 34-minor settlement, offline verification and tamper rejection; zero provider spend | Review pending; no final candidate claim |
+| 2026-11-08 | N13.a candidate byte/provenance gates submitted | PR #753 / `be12af2`; [development evidence](https://github.com/AllureCurtain/oxsum/blob/be12af2/docs/roadmap/operator-launch/evidence/candidate-format.md); CI 42396428383 green | Real review pending; continue promotion/deployment implementation |
+| 2026-11-08 | N04.a connection editor started | Child #754; fresh-main worktree `feat/business-providers` | Implement, browser-check and submit owner authority workflow |
 
 ## Resume procedure
 
