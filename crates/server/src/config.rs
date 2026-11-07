@@ -270,30 +270,8 @@ pub struct WitnessServe {
     pub trust: Vec<WitnessTrust>,
 }
 
-/// The seller branding `GET /api/v1/branding` serves (issue #614, T23): the
-/// display name the portal chrome carries plus the optional logo and accent
-/// color a self-hosted seller dresses its customer pages with. Every field is
-/// a cosmetic override — none of it reaches the ledger, pricing or a proof.
-#[derive(Debug, Clone, serde::Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct Branding {
-    /// The display name, `OXSUM_BUSINESS_NAME` or the compiled-in default.
-    pub name: String,
-    /// An optional logo image URL, `OXSUM_BRAND_LOGO_URL`.
-    pub logo_url: Option<String>,
-    /// An optional `#rrggbb` accent color, `OXSUM_BRAND_ACCENT_COLOR`.
-    pub accent_color: Option<String>,
-}
-
-impl Default for Branding {
-    fn default() -> Self {
-        Self {
-            name: "oxsum".to_owned(),
-            logo_url: None,
-            accent_color: None,
-        }
-    }
-}
+/// Public seller identity defaults, superseded by the owner-managed profile.
+pub type Branding = oxsum_core::PublicBusinessProfile;
 
 /// An environment variable that counts as unset when it is absent or blank.
 fn var(name: &str) -> Option<String> {
@@ -389,11 +367,9 @@ pub struct Config {
     /// open `bill_key_sealed`), a test's stub otherwise. `None` — the default —
     /// schedules no `upstream-bill-sync` pass.
     bill_provider: Option<Arc<dyn oxsum_core::UpstreamBillProvider>>,
-    /// The seller branding the portal serves on `GET /api/v1/branding`
-    /// (issue #614, T23): `OXSUM_BUSINESS_NAME` overrides the display name,
-    /// `OXSUM_BRAND_LOGO_URL` and `OXSUM_BRAND_ACCENT_COLOR` dress the login
-    /// and dashboard chrome. All three optional — a deployment that sets none
-    /// answers the compiled-in default.
+    /// Environment defaults for public seller identity before an owner save.
+    /// The accepted setup name already overrides the environment name; a
+    /// stored profile overrides every default, including explicit nulls.
     branding: Branding,
     /// Whether evidence bundles export `upstreamCostMinor` on usage records,
     /// `OXSUM_EVIDENCE_UPSTREAM_COST` (issue #616). `false` — the default —
@@ -967,10 +943,8 @@ impl Config {
         self.otlp_endpoint.as_deref()
     }
 
-    /// The seller branding the portal serves (issue #614, T23): the display
-    /// name plus the optional logo and accent the `OXSUM_BUSINESS_NAME` /
-    /// `OXSUM_BRAND_*` variables configured, the compiled-in default when they
-    /// did not.
+    /// Unsaved seller identity defaults. Public reads resolve the stored profile
+    /// first; environment values never overwrite an explicitly saved profile.
     #[must_use]
     pub fn branding(&self) -> &Branding {
         &self.branding
@@ -1387,11 +1361,15 @@ fn branding_of() -> Result<Branding, String> {
         })
         .transpose()
         .map_err(|raw| format!("OXSUM_BRAND_ACCENT_COLOR must be a #rrggbb color, got {raw:?}"))?;
-    Ok(Branding {
+    Branding {
         name,
         logo_url,
         accent_color,
-    })
+        contact_email: None,
+        help_url: None,
+    }
+    .validated()
+    .map_err(|error| error.to_string())
 }
 
 /// Parses one `OXSUM_RETENTION_*` variable: a positive day count — `0` would

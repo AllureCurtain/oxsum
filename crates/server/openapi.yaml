@@ -5270,13 +5270,11 @@ paths:
     get:
       summary: The deployment's seller branding
       description: |
-        The public branding the customer portal applies (issue #614, T23): the
-        seller's display name, an optional logo URL and an optional accent
-        color, configured through `OXSUM_BUSINESS_NAME`,
-        `OXSUM_BRAND_LOGO_URL` and `OXSUM_BRAND_ACCENT_COLOR`. No credential —
-        the login and register pages brand themselves before a session exists.
-        Fields the operator never set answer `null`; `name` falls back to the
-        deployment default.
+        Public effective seller identity. An explicitly saved business profile
+        overrides all environment branding, including optional fields saved as
+        null. Before the first save, an initialized business uses its setup name;
+        otherwise name/logo/accent use deployment defaults. Contact/help default
+        to null. This read never changes historical documents, prices or money.
       security: []
       responses:
         "200":
@@ -5870,6 +5868,48 @@ paths:
         "403": { $ref: "#/components/responses/Error" }
         "404": { $ref: "#/components/responses/Error" }
         "409": { $ref: "#/components/responses/Error" }
+  /api/v1/business/profile:
+    get:
+      summary: Read effective business identity and profile revision
+      description: Current personal business session with overviewRead. Defaults resolve identically to public branding; source and revision distinguish unsaved defaults from owner-managed values.
+      security: [{ sessionCookie: [] }]
+      responses:
+        "200":
+          description: Effective profile
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data: { $ref: "#/components/schemas/BusinessProfile" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
+    post:
+      summary: Save the complete owner-managed public profile
+      description: Current profileWrite owner capability and satisfied second factor are checked in the same transaction as revision, audit and immutable result. expectedRevision prevents lost edits; exact retry returns the original profile receipt even after later changes. Changed reuse conflicts. Every optional field must be present; null clears it. No historical document or currency/conversion is changed.
+      security: [{ sessionCookie: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/BusinessProfileRequest" }
+      responses:
+        "200":
+          description: Immutable saved profile receipt
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data: { $ref: "#/components/schemas/BusinessProfileMutation" }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "409": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
   /api/v1/business/customers:
     get:
       x-integration-scope: customersRead
@@ -10604,18 +10644,55 @@ components:
   schemas:
     Branding:
       type: object
-      required: [name, logoUrl, accentColor]
+      additionalProperties: false
+      required: [name, logoUrl, accentColor, contactEmail, helpUrl]
       properties:
         name:
           type: string
-          description: the seller's display name — `OXSUM_BUSINESS_NAME`, or the deployment default when unset
+          minLength: 1
+          maxLength: 80
+          description: Effective public seller name; saved profile, setup name, or deployment default in that order.
         logoUrl:
           type: [string, "null"]
-          description: an optional logo image URL — `OXSUM_BRAND_LOGO_URL`
+          maxLength: 2048
+          description: Optional absolute HTTP(S) image URL without user info or control characters; null clears a saved override.
         accentColor:
           type: [string, "null"]
           pattern: '^#[0-9A-Fa-f]{6}$'
-          description: an optional accent color as `#rrggbb` — `OXSUM_BRAND_ACCENT_COLOR`; the portal maps it onto the `primary` token
+          description: Optional accent color as #rrggbb; null retains the standard palette.
+        contactEmail:
+          type: [string, "null"]
+          format: email
+          maxLength: 320
+          description: Public customer support address, not a secret or an outbound mail configuration.
+        helpUrl:
+          type: [string, "null"]
+          maxLength: 2048
+          description: Public help link; absolute HTTP(S) without user info or control characters.
+    BusinessProfile:
+      type: object
+      required: [businessId, revision, source, updatedAt, branding]
+      properties:
+        businessId: { type: string, format: uuid }
+        revision: { type: integer, format: int64, minimum: 0, maximum: 9007199254740991 }
+        source: { type: string, enum: [defaults, stored] }
+        updatedAt: { type: [string, "null"], format: date-time }
+        branding: { $ref: "#/components/schemas/Branding" }
+    BusinessProfileRequest:
+      type: object
+      additionalProperties: false
+      required: [idempotencyKey, reason, expectedRevision, branding]
+      properties:
+        idempotencyKey: { type: string, minLength: 1, maxLength: 200 }
+        reason: { type: string, minLength: 1, maxLength: 500 }
+        expectedRevision: { type: integer, format: int64, minimum: 0, maximum: 9007199254740991 }
+        branding: { $ref: "#/components/schemas/Branding" }
+    BusinessProfileMutation:
+      type: object
+      required: [id, profile]
+      properties:
+        id: { type: string, format: uuid }
+        profile: { $ref: "#/components/schemas/BusinessProfile" }
     BusinessCustomer:
       type: object
       required: [organizationId, businessId, externalId, name, contactEmail, state, manualSuspendedAt, dunningSuspendedAt, suspended, createdAt]
@@ -10668,7 +10745,7 @@ components:
       enum: [owner, admin, finance, support, viewer]
     BusinessCapability:
       type: string
-      enum: [overviewRead, customersRead, customersWrite, customersSuspend, requestsRead, catalogWrite, routingWrite, providerSecretsWrite, commercialWrite, fundsWrite, refundsWrite, reportsRead, merchantSecretsWrite, staffManage, ownershipTransfer, registrationWrite, integrationsManage]
+      enum: [overviewRead, customersRead, customersWrite, customersSuspend, requestsRead, catalogWrite, routingWrite, providerSecretsWrite, commercialWrite, fundsWrite, refundsWrite, reportsRead, merchantSecretsWrite, staffManage, ownershipTransfer, registrationWrite, integrationsManage, profileWrite]
     BusinessPrincipal:
       type: object
       required: [businessId, userId, role, capabilities]

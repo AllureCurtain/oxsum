@@ -495,6 +495,7 @@ async fn migrating_twice_and_concurrently_is_safe() {
             "budget_threshold_fires".to_owned(),
             "business_migrations".to_owned(),
             "business_mutations".to_owned(),
+            "business_profile_revisions".to_owned(),
             "business_setup_tokens".to_owned(),
             "business_staff".to_owned(),
             "businesses".to_owned(),
