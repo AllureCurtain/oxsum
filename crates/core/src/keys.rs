@@ -7,6 +7,7 @@
 
 use std::collections::BTreeMap;
 use std::fmt::Write as _;
+use std::str::FromStr;
 
 use rand::Rng;
 use serde::{Deserialize, Serialize};
@@ -70,14 +71,7 @@ pub enum BudgetDuration {
 impl BudgetDuration {
     /// Parses the contract's lowercase name for the duration.
     pub fn parse(name: &str) -> Result<Self, WalletError> {
-        match name {
-            "daily" => Ok(Self::Daily),
-            "weekly" => Ok(Self::Weekly),
-            "monthly" => Ok(Self::Monthly),
-            other => Err(WalletError::InvalidInput(format!(
-                "budgetDuration must be daily, weekly or monthly, not {other:?}"
-            ))),
-        }
+        name.parse()
     }
 
     /// The contract's lowercase name, for storage.
@@ -99,6 +93,21 @@ impl BudgetDuration {
             }
             // The first of a real month always exists; the fallback is unreachable.
             Self::Monthly => time::Date::from_calendar_date(on.year(), on.month(), 1).unwrap_or(on),
+        }
+    }
+}
+
+impl FromStr for BudgetDuration {
+    type Err = WalletError;
+
+    fn from_str(name: &str) -> Result<Self, Self::Err> {
+        match name {
+            "daily" => Ok(Self::Daily),
+            "weekly" => Ok(Self::Weekly),
+            "monthly" => Ok(Self::Monthly),
+            other => Err(WalletError::InvalidInput(format!(
+                "budgetDuration must be daily, weekly or monthly, not {other:?}"
+            ))),
         }
     }
 }

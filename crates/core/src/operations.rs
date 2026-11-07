@@ -23,6 +23,7 @@
 //! failover audit.
 
 use sqlx::Row;
+use std::str::FromStr;
 use time::OffsetDateTime;
 use uuid::Uuid;
 
@@ -96,6 +97,23 @@ impl OperationState {
     ///
     /// [`WalletError::InvalidInput`] on an unknown state.
     pub fn parse(stored: &str) -> Result<Self, WalletError> {
+        stored.parse()
+    }
+
+    /// Whether the state is terminal — settled, no more heartbeats.
+    #[must_use]
+    pub fn is_terminal(&self) -> bool {
+        matches!(
+            self,
+            Self::Succeeded | Self::Failed | Self::Cancelled | Self::TimedOut
+        )
+    }
+}
+
+impl FromStr for OperationState {
+    type Err = WalletError;
+
+    fn from_str(stored: &str) -> Result<Self, Self::Err> {
         Ok(match stored {
             "created" => Self::Created,
             "leased" => Self::Leased,
@@ -110,15 +128,6 @@ impl OperationState {
                 )));
             }
         })
-    }
-
-    /// Whether the state is terminal — settled, no more heartbeats.
-    #[must_use]
-    pub fn is_terminal(&self) -> bool {
-        matches!(
-            self,
-            Self::Succeeded | Self::Failed | Self::Cancelled | Self::TimedOut
-        )
     }
 }
 
@@ -154,6 +163,14 @@ impl AttemptStatus {
     ///
     /// [`WalletError::InvalidInput`] on an unknown status.
     pub fn parse(stored: &str) -> Result<Self, WalletError> {
+        stored.parse()
+    }
+}
+
+impl FromStr for AttemptStatus {
+    type Err = WalletError;
+
+    fn from_str(stored: &str) -> Result<Self, Self::Err> {
         Ok(match stored {
             "started" => Self::Started,
             "answered" => Self::Answered,
