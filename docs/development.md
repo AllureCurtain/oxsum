@@ -10,6 +10,7 @@
   [self-hosted-release.md](self-hosted-release.md).
 
 - Rust stable: no toolchain pin — rustup uses whatever `stable` resolves to. The workspace MSRV is `rust-version = "1.98"` in the root manifest; cargo will refuse to build on anything older.
+- Rustfmt: the pinned nightly in `rustfmt-nightly` (currently `nightly-2026-11-01`) with the `rustfmt` component. `scripts/fmt.sh` prints the `rustup toolchain install` command when it is missing. The nightly is needed for `imports_granularity` and `format_macro_matchers`, which stable ignores.
 - Docker: runs local PostgreSQL 17, also used by doubleentry's Postgres tests
 
 On Windows with Git Bash, Git's own `/usr/bin/link` shadows MSVC's `link.exe` and linking fails with `link: missing operand`. Either build inside a VS Developer shell, or export the `vcvars64.bat` environment into the current shell first.
@@ -22,9 +23,29 @@ docker compose up -d
 cargo build --workspace
 ```
 
+### Formatting
+
+Format with `scripts/fmt.sh`, never bare `cargo fmt`. The script reads
+`rustfmt-nightly`, formats only the workspace's own crates and is the same
+entry point the CI `fmt` job and `.githooks/pre-commit` use, so a local run and
+a CI run cannot disagree about the formatter version. `scripts/fmt-check.sh`
+is the read-only form.
+
+- **Why nightly.** `imports_granularity = "Module"` and
+  `format_macro_matchers = true` in `rustfmt.toml` are unstable options; stable
+  rustfmt silently ignores them, so a stable run would pass CI while leaving
+  the import rules unenforced.
+- **Why not `cargo fmt --all`.** `crates/doubleentry` is vendored upstream
+  code and must keep its layout. The script passes an explicit `-p` list and
+  never formats it.
+- **Upgrading.** Change the one line in `rustfmt-nightly`, run
+  `scripts/fmt.sh`, and commit the version bump with the resulting diff as its
+  own PR. CI reads the branch's version file, so the upgrade PR is formatted by
+  the new version while every other PR stays on the old one.
+
 ### Pre-commit hook (optional)
 
-`.githooks/pre-commit` runs `cargo fmt --all --check` plus a *scoped* `cargo clippy`
+`.githooks/pre-commit` runs `scripts/fmt-check.sh` (the pinned nightly) plus a *scoped* `cargo clippy`
 — only the crates the staged files touched, never the whole workspace — so a
 docs-only commit costs seconds, not minutes. Manifest changes (`Cargo.toml`,
 `Cargo.lock`, `.cargo/config.toml`) still lint everything; `web/`, `docs/`,
@@ -470,7 +491,8 @@ upgrade runbook's deliberate migrate. Ledger schemas are untouched by either: do
 | Generative sequences, quick run | `PROPTEST_CASES=50 cargo test -p oxsum-core --test generative` |
 | Real-provider end-to-end check | `cargo test -p oxsum-server --test real_upstream` (needs env vars — see "Real-provider smoke check") |
 | doubleentry's Postgres tests | `cargo test -p doubleentry --features postgres --test postgres` (spins up its own container via testcontainers; `DOUBLEENTRY_DATABASE_URL`/`DATABASE_URL` set → that server instead, no Docker) |
-| Format | `cargo fmt --all` |
+| Format | `scripts/fmt.sh` (pinned nightly; write) |
+| Check formatting | `scripts/fmt-check.sh` |
 | Lint | `cargo clippy --workspace --all-targets` |
 
 ## Web dashboard
@@ -809,7 +831,9 @@ immediately. The local pre-push bar stays at fmt + clippy + the touched crates' 
 stable, no version pin — with the `rustfmt, clippy` components where they are
 needed:
 
-- `fmt`: `cargo fmt --all --check`.
+- `fmt`: `scripts/fmt-check.sh`, using the nightly named in `rustfmt-nightly`
+  (the same file the local scripts read). The job installs that toolchain with
+  its `rustfmt` component; build and clippy jobs stay on stable.
 - `clippy`: `cargo clippy --workspace --all-targets` with `-D warnings`. No database
   is needed to compile: the tree uses no `sqlx::query!` macros, so compilation never
   touches a live database.
@@ -963,7 +987,7 @@ Tailwind v4 theme colors in `web/src/index.css`.
 Before committing, confirm:
 
 - [ ] Branch name matches the branch naming policy above, and the PR links its issue in the title or body where applicable
-- [ ] `cargo fmt --all` and `cargo clippy --workspace --all-targets` produce no warnings
+- [ ] `scripts/fmt-check.sh` and `cargo clippy --workspace --all-targets` produce no warnings
 - [ ] With `DATABASE_URL` set in `.env` or the shell, `cargo test --workspace` passes
 - [ ] Interface changed: `openapi.yaml`, implementation, tests and callers are all in sync
 - [ ] `crates/doubleentry` changed: carries an `oxsum change` comment and an entry in docs/decisions.md
