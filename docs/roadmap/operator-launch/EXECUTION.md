@@ -7,7 +7,7 @@ Read this file on every resume, then reconcile actual main, worktrees, issues/PR
 ## Current state
 
 - Starting and last synchronized main: `0314cbd3d5439adbc904a327a8e16704b344a0af`. No previous task PR/worktree remains. #697 and #724 are complete.
-- N00 has adopted the full contract and opened all work-unit issues; its documentation PR is being prepared after passing local fmt, strict workspace Clippy and N/R/J/link validation. No software unit is complete by adoption.
+- N00 has adopted the full contract and opened all work-unit issues; PR #749 passed required CI and local fmt/strict Clippy/coverage checks; Entire Gates awaits real reviewer approval (trail 154). No software unit is complete by adoption.
 - No candidate for this stage has been frozen. Historical candidate `813c788` and baseline CI are references only.
 - Next ready sequence: finish N00 review/integration, N01/N02 entry path, N03 owner setup; N13 is independent. Split units into minimal feature issues where required.
 
@@ -17,10 +17,10 @@ Statuses distinguish planned, in_progress, implemented, validated, in_review, in
 
 | Unit / owner issue | Depends on | Status | Worktree / branch | PR / commit | Evidence / blocker / next action |
 | --- | --- | --- | --- | --- | --- |
-| N00 [#726](https://github.com/AllureCurtain/oxsum/issues/726) — Rebaseline and adopt the execution contract | baseline | in_review | `.worktrees/operator-launch-contract` / `docs/operator-launch-contract` | — | [Baseline](evidence/baseline.md); Review and integrate contract ledger |
+| N00 [#726](https://github.com/AllureCurtain/oxsum/issues/726) — Rebaseline and adopt the execution contract | baseline | in_review | `.worktrees/operator-launch-contract` / `docs/operator-launch-contract` | [#749](https://github.com/AllureCurtain/oxsum/pull/749) / `9016b2e` | [Baseline](evidence/baseline.md); Entire Gates approvals pending; continue independent implementation |
 | N01 [#727](https://github.com/AllureCurtain/oxsum/issues/727) — Align current product claims and documentation | N00 | planned | — | — | Align current claims without rewriting historical evidence |
-| N02 [#728](https://github.com/AllureCurtain/oxsum/issues/728) — Repair the runnable demo and first-run example | N00 | planned | — | — | Replace retired demo authority and unsafe database fallback |
-| N03 [#729](https://github.com/AllureCurtain/oxsum/issues/729) — Owner setup, business profile and operating settings | N00 | planned | — | — | Split owner browser setup and business settings |
+| N02 [#728](https://github.com/AllureCurtain/oxsum/issues/728) — Repair the runnable demo and first-run example | N00 | in_progress | `.worktrees/current-demo` / `fix/current-demo` | — | Replace retired demo authority and unsafe database fallback |
+| N03 [#729](https://github.com/AllureCurtain/oxsum/issues/729) — Owner setup, business profile and operating settings | N00 | in_progress | `.worktrees/owner-browser-setup` / `feat/owner-browser-setup` | [#750](https://github.com/AllureCurtain/oxsum/pull/750) / `fc9c23a` (child #748) | Build/fmt/strict Clippy, 3 focused backend tests and browser new/existing/wrong-email/replay/recovery checks passed; PR CI/review pending. Profile/settings still pending |
 | N04 [#730](https://github.com/AllureCurtain/oxsum/issues/730) — Business provider/channel administration | N03 | planned | — | — | Complete authorized channel and credential editor |
 | N05 [#731](https://github.com/AllureCurtain/oxsum/issues/731) — Sale-book creation, publication and assignment | N04 | planned | — | — | Complete exact revision editor and activation/assignment |
 | N06 [#732](https://github.com/AllureCurtain/oxsum/issues/732) — Merchant configuration and payment readiness | N03 | planned | — | — | Complete merchant UI and pinned persistent switch stack |
@@ -87,7 +87,7 @@ Statuses distinguish planned, in_progress, implemented, validated, in_review, in
 | Item | Current state | Next action / affected gate |
 | --- | --- | --- |
 | E0 local development | ready: toolchain, PostgreSQL 17, isolated worktrees | Serialize heavy Cargo work; preserve other projects/resources |
-| E1 browser/mail fixtures | software preparation pending | Create task-owned app/database/secrets, pinned mail capture, desktop/mobile/locales |
+| E1 browser/mail fixtures | two isolated owner-setup databases and task-local listeners; mail pending | Create task-owned app/database/secrets, pinned mail capture, desktop/mobile/locales |
 | E2 DeepSeek | credential privately available; no calls made | N14 verify current pricing, bound/reserve attempts, resolve DNS without weakening public-address policy |
 | E3 Hyperswitch | disposable rebuild authorized; old stack absent | N06 pin compatible services, persistent volumes, fresh keys, consistent HTTPS SDK/API/callback origins |
 | Genuine PSP sandbox | external_pending: usable test credential absent | N15 needs Stripe test-account API credential in the fresh Hyperswitch test connector; fixture tests proceed |
@@ -114,6 +114,8 @@ Use integer CNY millionths in the machine record (`100000` ceiling). Before send
 | Date | Event | Source / evidence | Next action |
 | --- | --- | --- | --- |
 | 2026-11-08 | Baseline reconciled; #725 and N00–N21 issues created | `0314cbd`; [baseline](evidence/baseline.md); zero attempts/spend | Integrate N00; continue N01/N02/N03/N13 |
+
+| 2026-11-08 | N03.a initial owner browser flow submitted | PR #750 / `fc9c23a`; [development evidence](https://github.com/AllureCurtain/oxsum/blob/fc9c23a/docs/roadmap/operator-launch/evidence/owner-browser-setup.md) | Await checks/review; continue N02 and remaining N03 |
 
 ## Resume procedure
 
