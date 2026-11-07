@@ -5,7 +5,12 @@
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 #[path = "support/integration.rs"]
 mod setup;
-use oxsum_core::*;
+use oxsum_core::{
+    Db, MerchantCreateRequest, MerchantEventKind, MerchantMode, MerchantMutationResult,
+    MerchantPaymentBinding, MerchantPaymentPurpose, MerchantRail, MerchantSigningContext,
+    MerchantStatusRequest, MerchantVersionInput, MerchantVersionRequest, NewUser, SecretKey,
+    VerifiedMerchantEvent, Wallet, WalletError,
+};
 use uuid::Uuid;
 
 fn secret() -> SecretKey {

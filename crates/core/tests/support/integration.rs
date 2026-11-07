@@ -1,5 +1,9 @@
 #![allow(dead_code)]
-use oxsum_core::*;
+use oxsum_core::{
+    BusinessSetupRequest, BusinessSetupTokenRequest, CreatedIntegrationCredential, Db,
+    IntegrationCredentialRequest, IntegrationScope, NewUser, SessionContext, SessionContextRequest,
+    SetupAuthority,
+};
 use time::{Duration, OffsetDateTime};
 use uuid::Uuid;
 

@@ -245,7 +245,7 @@ async fn settle_rejects_actual_above_hold() {
 
     // The actual may not exceed what the hold reserved: the bound comes from the ledger.
     let err = w.settle("h", "", 2 * ONE, D).await.unwrap_err();
-    assert!(matches!(err, WalletError::InvalidInput(_)));
+    assert!(matches!(err, WalletError::InvalidInput(_)), "{err:?}");
 }
 
 /// A settlement naming a hold that was never taken is refused, and invents nothing.
@@ -1174,7 +1174,7 @@ async fn holds_draw_the_credit_line_after_own_funds() {
     // engine, not by a read-then-write check.
     w.hold("h1", "", 12 * ONE, D).await.unwrap();
     let err = w.hold("h2", "", 4 * ONE, D).await.unwrap_err();
-    assert!(matches!(err, WalletError::InsufficientFunds));
+    assert!(matches!(err, WalletError::InsufficientFunds), "{err:?}");
 
     // The drawn share is the reserved part: 12 held, 5 of it own funds.
     assert_eq!(w.credit_used().await.unwrap(), 7 * ONE);
@@ -1241,7 +1241,7 @@ async fn the_limit_cannot_shrink_below_the_outstanding_draw() {
 
     // 6 is still owed: a limit of 5 would leave the debt larger than the line.
     let err = w.set_credit_limit("cl-2", 5 * ONE, D).await.unwrap_err();
-    assert!(matches!(err, WalletError::InvalidInput(_)));
+    assert!(matches!(err, WalletError::InvalidInput(_)), "{err:?}");
 
     // A limit equal to the debt stands: the line is fully drawn and blocks
     // every further hold.
@@ -1249,7 +1249,7 @@ async fn the_limit_cannot_shrink_below_the_outstanding_draw() {
     assert_eq!(w.credit_limit().await.unwrap(), 6 * ONE);
     assert_eq!(w.credit_used().await.unwrap(), 6 * ONE);
     let err = w.hold("h2", "", ONE, D).await.unwrap_err();
-    assert!(matches!(err, WalletError::InsufficientFunds));
+    assert!(matches!(err, WalletError::InsufficientFunds), "{err:?}");
 }
 
 #[tokio::test]
@@ -1285,10 +1285,10 @@ async fn a_credit_limit_replay_and_a_noop_write_nothing_new() {
 
     // A reused key carrying a different limit is a conflict, not a replay.
     let err = w.set_credit_limit("cl-1", 5 * ONE, D).await.unwrap_err();
-    assert!(matches!(err, WalletError::Conflict(_)));
+    assert!(matches!(err, WalletError::Conflict(_)), "{err:?}");
 
     let err = w.set_credit_limit("cl-3", -ONE, D).await.unwrap_err();
-    assert!(matches!(err, WalletError::InvalidInput(_)));
+    assert!(matches!(err, WalletError::InvalidInput(_)), "{err:?}");
 }
 
 #[tokio::test]

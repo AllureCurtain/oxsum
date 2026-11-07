@@ -206,7 +206,7 @@ async fn a_running_or_malformed_month_is_refused() {
     assert!(statement_period("2026-13").is_err());
     let running = format!("{:04}-{:02}", today().year(), u8::from(today().month()));
     let err = statement_period(&running).unwrap_err();
-    assert!(matches!(err, WalletError::InvalidInput(_)));
+    assert!(matches!(err, WalletError::InvalidInput(_)), "{err:?}");
 }
 
 #[tokio::test]
@@ -440,7 +440,7 @@ async fn a_suspended_statement_still_pays_off() {
 
     // A draft cannot be suspended — it is not issued yet.
     let err = f.db.suspend_statement(draft.id).await.unwrap_err();
-    assert!(matches!(err, WalletError::InvalidInput(_)));
+    assert!(matches!(err, WalletError::InvalidInput(_)), "{err:?}");
 
     let finalized =
         f.db.finalize_statement(draft.id, &f.wallet, today())
@@ -470,7 +470,7 @@ async fn a_suspended_statement_still_pays_off() {
 
     // A paid statement cannot be suspended.
     let err = f.db.suspend_statement(finalized.id).await.unwrap_err();
-    assert!(matches!(err, WalletError::InvalidInput(_)));
+    assert!(matches!(err, WalletError::InvalidInput(_)), "{err:?}");
 }
 
 #[tokio::test]

@@ -1,6 +1,6 @@
 //! A03/A07: adding business routing ownership does not rewrite sealed keys/prices.
 #![allow(clippy::unwrap_used, clippy::expect_used)]
-use oxsum_core::*;
+use oxsum_core::{Db, SecretKey};
 use serde_json::json;
 use sqlx::Executor;
 #[tokio::test]

@@ -196,7 +196,7 @@ async fn a_plan_refuses_a_nonpositive_quota() {
         )
         .await
         .unwrap_err();
-    assert!(matches!(err, WalletError::InvalidInput(_)));
+    assert!(matches!(err, WalletError::InvalidInput(_)), "{err:?}");
 }
 
 // ── bind / cancel ────────────────────────────────────────────────────────────
@@ -425,7 +425,7 @@ async fn a_disabled_plan_refuses_to_bind() {
         .bind_subscription(world.organization_id, plan.plan_id, "admin", None)
         .await
         .unwrap_err();
-    assert!(matches!(err, WalletError::NotFound(_)));
+    assert!(matches!(err, WalletError::NotFound(_)), "{err:?}");
 }
 
 // ── the draw ─────────────────────────────────────────────────────────────────
@@ -571,7 +571,7 @@ async fn an_exhausted_quota_overflows_or_refuses_by_the_plan() {
         .admit_subscription_draw(registration.organization.id, "req-4:hold", 2 * ONE)
         .await
         .unwrap_err();
-    assert!(matches!(err, WalletError::InsufficientFunds));
+    assert!(matches!(err, WalletError::InsufficientFunds), "{err:?}");
 }
 
 #[tokio::test]

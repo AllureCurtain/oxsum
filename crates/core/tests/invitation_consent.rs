@@ -1,6 +1,11 @@
 //! A04/A05/A06: consent, identity preservation and atomic invitation transitions.
 #![allow(clippy::unwrap_used, clippy::expect_used)]
-use oxsum_core::*;
+use oxsum_core::{
+    BusinessRole, BusinessSetupRequest, BusinessSetupTokenRequest, BusinessStaffRequest,
+    CustomerInvitationRequest, Db, InvitationRevokeRequest, Kind, LoginOutcome, MembershipActor,
+    NewUser, Registration, Role, SecretKey, SessionContext, SessionContextRequest, SetupAuthority,
+    TeamInvitationRequest, User, WalletError,
+};
 use serde_json::json;
 use sqlx::Executor;
 const PASSWORD: &str = "customer invitation test password";

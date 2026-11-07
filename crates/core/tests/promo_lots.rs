@@ -8,7 +8,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use oxsum_core::*;
+use oxsum_core::{Db, NewUser, PromoLot, Tenants, Wallet};
 use sqlx::Row;
 use time::{Duration, OffsetDateTime};
 use uuid::Uuid;

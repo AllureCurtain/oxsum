@@ -229,7 +229,7 @@ async fn minting_for_an_unknown_user_is_not_found() {
         .mint_email_token(Uuid::new_v4(), EmailPurpose::Verify)
         .await
         .unwrap_err();
-    assert!(matches!(err, WalletError::NotFound(_)));
+    assert!(matches!(err, WalletError::NotFound(_)), "{err:?}");
 }
 
 #[tokio::test]
@@ -242,7 +242,7 @@ async fn the_verified_flag_marks_and_reads() {
     db.mark_email_verified(user_id).await.unwrap();
 
     let err = db.email_verified(Uuid::new_v4()).await.unwrap_err();
-    assert!(matches!(err, WalletError::NotFound(_)));
+    assert!(matches!(err, WalletError::NotFound(_)), "{err:?}");
 }
 
 #[tokio::test]
