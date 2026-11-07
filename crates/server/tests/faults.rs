@@ -564,6 +564,7 @@ async fn a_racing_duplicate_webhook_classifies_once() {
         amount_minor: 5_000,
         currency: "USD".into(),
         purpose: MerchantPaymentPurpose::Order,
+        hyperswitch_body_id: true,
         provider_payment_id: None,
     })
     .await
@@ -727,116 +728,165 @@ async fn a_statement_sweep_mid_payment_sees_one_transition() {
 
 // ── Refund retry storm ───────────────────────────────────────────────────────
 
-/// A refund whose provider call keeps failing releases its reservation past
-/// `REFUND_MAX_ATTEMPTS` rather than retrying forever: the row lands
-/// `released`, the credit note reverses, and the audit records the release.
-/// Driven through `fail_order_refund`, the seam the retry pass calls.
+/// A retry storm may exhaust automatic attempts, but an unknown external
+/// outcome keeps its exact refundable reservation and issued credit note.
 #[tokio::test]
-async fn a_refund_retry_storm_releases_at_the_attempt_budget() {
+async fn a_refund_retry_storm_retains_the_reservation_at_the_attempt_budget() {
     let w = world_or_skip!(0);
-    // Seed a `provider_pending` refund row directly — the cell tests the
-    // bounded-attempts bookkeeping, not the review path. The order needs a
-    // merchant binding (`merchant_payment_bindings` is the order's FK
-    // parent), so stand up the minimum the schema demands.
-    let refund_id = Uuid::new_v4();
-    let order_id = Uuid::new_v4();
-    let org = Uuid::parse_str(&w.organization_id).unwrap();
-    let business: Option<Uuid> = sqlx::query_scalar(
-        "SELECT business_id FROM oxsum.customer_profiles WHERE organization_id = $1",
+    // This suite already uses the explicit initialized registration fixture;
+    // add its named fixture operator instead of running one-time setup again.
+    let user =
+        w.db.register(oxsum_core::NewUser {
+            email: format!("fault-owner-{}@example.com", Uuid::new_v4()),
+            password: PASSWORD.into(),
+            organization_name: None,
+        })
+        .await
+        .unwrap()
+        .user;
+    sqlx::query("INSERT INTO oxsum.business_staff(business_id,user_id,role) SELECT business_id,$1,'owner' FROM oxsum.businesses WHERE singleton")
+        .bind(user.id).execute(&w.pool).await.unwrap();
+    let owner = support::login(&w.app, &user.email, PASSWORD).await;
+    w.db.switch_session_context(
+        &owner,
+        &oxsum_core::SessionContextRequest {
+            idempotency_key: "fault-context".into(),
+            context: oxsum_core::SessionContext::Business,
+            organization_id: None,
+        },
     )
-    .bind(org)
-    .fetch_optional(&w.pool)
     .await
     .unwrap();
-    let Some(business) = business else {
-        eprintln!("no customer profile business, skipping the refund-storm cell");
-        return;
+    let merchant = w.db.create_merchant(&owner, &serde_json::from_value(json!({
+        "idempotencyKey":"fault-merchant", "reason":"refund retry fault fixture",
+        "name":"fault-switch", "rail":"hyperswitch", "mode":"test", "accountId":"fault-switch",
+        "config":{"apiUrl":"https://sandbox.hyperswitch.io","apiKey":"fault-api-key",
+            "webhookSecret":"fault-webhook-key","publishableKey":"fault-public-key","sdkUrl":"https://sdk.example"}
+    })).unwrap(), &SecretKey::from_bytes([7;32])).await.unwrap();
+    w.db.set_merchant_enabled(
+        &owner,
+        merchant.merchant_id,
+        &serde_json::from_value(json!({
+            "idempotencyKey":"fault-enable", "reason":"fixture", "enabled":true
+        }))
+        .unwrap(),
+    )
+    .await
+    .unwrap();
+    let context =
+        w.db.merchant_signing_context(
+            merchant.merchant_id,
+            merchant.version_id,
+            &SecretKey::from_bytes([7; 32]),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+    let org = Uuid::parse_str(&w.organization_id).unwrap();
+    let order =
+        w.db.create_payment_order(
+            &context,
+            org,
+            &oxsum_core::NewPaymentOrder {
+                purpose: oxsum_core::PaymentOrderPurpose::WalletTopup,
+                display_amount_minor: 100,
+                display_currency: "USD".into(),
+                idempotency_key: "fault-order".into(),
+                purpose_ref: None,
+                promo_minor: 0,
+            },
+            &oxsum_core::OrderRate {
+                mantissa: 1,
+                scale: 0,
+            },
+        )
+        .await
+        .unwrap();
+    w.db.note_order_provider(order.order_id, "fault-payment", &json!({}))
+        .await
+        .unwrap();
+    let event = oxsum_core::VerifiedMerchantEvent {
+        event_id: "fault-paid".into(),
+        kind: oxsum_core::MerchantEventKind::Succeeded,
+        payment_id: Some(order.order_id),
+        provider_payment_id: Some("fault-payment".into()),
+        organization_id: Some(org),
+        provider_account_id: Some(context.account_id.clone()),
+        mode: Some(oxsum_core::MerchantMode::Test),
+        amount_minor: Some(100),
+        currency: Some("USD".into()),
+        refund_id: None,
     };
-
-    // `payment_orders.order_id` references `merchant_payment_bindings.payment_id`,
-    // and the merchant columns are NOT NULL — seed the binding first.
-    let merchant = Uuid::new_v4();
-    let version = Uuid::new_v4();
-    let bound = sqlx::query(
-        "INSERT INTO oxsum.merchant_payment_bindings \
-         (payment_id, business_id, merchant_id, merchant_version_id, organization_id, \
-          purpose, amount_minor, currency, idempotency_key, status) \
-         VALUES ($1, $2, $3, $4, $5, 'order', 1000, 'USD', $6, 'bound') \
-         ON CONFLICT DO NOTHING",
-    )
-    .bind(order_id)
-    .bind(business)
-    .bind(merchant)
-    .bind(version)
-    .bind(org)
-    .bind(format!("bind-{}", Uuid::new_v4().simple()))
-    .execute(&w.pool)
-    .await;
-    if bound.is_err() {
-        eprintln!("merchant_payment_bindings schema differs, skipping the refund cell");
-        return;
-    }
-    let inserted = sqlx::query(
-        "INSERT INTO oxsum.payment_orders \
-         (order_id, business_id, merchant_id, merchant_version_id, organization_id, \
-          purpose, amount_minor, currency, display_currency, display_amount_minor, \
-          rate_mantissa, rate_scale, idempotency_key, status) \
-         VALUES ($1, $2, $3, $4, $5, 'wallet_topup', 1000, 'USD', 'USD', 1000, 1, 0, \
-                 $6, 'paid') \
-         ON CONFLICT DO NOTHING",
-    )
-    .bind(order_id)
-    .bind(business)
-    .bind(merchant)
-    .bind(version)
-    .bind(org)
-    .bind(format!("ord-{}", Uuid::new_v4().simple()))
-    .execute(&w.pool)
-    .await;
-    if inserted.is_err() {
-        eprintln!("payment_orders schema differs, skipping refund-storm cell");
-        return;
-    }
-    let refund = sqlx::query(
-        "INSERT INTO oxsum.refunds \
-         (refund_id, order_id, organization_id, business_id, amount_minor, \
-          display_amount_minor, display_currency, reason, state, request_key) \
-         VALUES ($1, $2, $3, $4, 1000, 1000, 'USD', 'fault-storm', 'provider_pending', \
-                 $5)",
-    )
-    .bind(refund_id)
-    .bind(order_id)
-    .bind(org)
-    .bind(business)
-    .bind(format!("ref-{}", Uuid::new_v4().simple()))
-    .execute(&w.pool)
-    .await;
-    if refund.is_err() {
-        eprintln!("refunds schema differs, skipping refund-storm cell");
-        return;
-    }
-
-    // Storm: keep failing the refund until the budget runs out.
-    let mut last_state = String::new();
-    for _ in 0..8 {
-        let standing =
-            w.db.fail_order_refund(refund_id, "synthetic provider failure")
-                .await
-                .expect("fail_order_refund answers");
-        last_state = standing.state.clone();
-        // Jump next_retry_at so the next pass is due immediately.
-        sqlx::query("UPDATE oxsum.refunds SET next_retry_at=now() WHERE refund_id=$1")
-            .bind(refund_id)
-            .execute(&w.pool)
+    let receipt =
+        w.db.receive_merchant_event(&context, &event, &[47; 32])
             .await
-            .ok();
-        if last_state == "released" {
-            break;
+            .unwrap();
+    assert_eq!(receipt.state, "accepted");
+    w.db.apply_order_event(&receipt).await.unwrap();
+    let wallet = w.tenants.get(&w.tenant_id).await.unwrap();
+    w.db.fulfill_payment_order(order.order_id, &wallet, OffsetDateTime::now_utc().date())
+        .await
+        .unwrap();
+    let refund =
+        w.db.request_order_refund(
+            org,
+            order.order_id,
+            &oxsum_core::NewRefundRequest {
+                amount_minor: None,
+                reason: "fault storm".into(),
+                request_key: "fault-refund".into(),
+                requested_by: None,
+            },
+        )
+        .await
+        .unwrap();
+    w.db.resolve_order_refund(
+        &owner,
+        refund.refund_id,
+        oxsum_core::RefundDecision::Approve,
+        None,
+        "fault-approve",
+    )
+    .await
+    .unwrap();
+    for index in 0..8 {
+        let claimed = w.db.claim_refund_attempt(refund.refund_id).await.unwrap();
+        assert_eq!(claimed.is_some(), index < oxsum_core::REFUND_MAX_ATTEMPTS);
+        if index + 1 < oxsum_core::REFUND_MAX_ATTEMPTS {
+            sqlx::query("UPDATE oxsum.refunds SET next_retry_at=now() WHERE refund_id=$1")
+                .bind(refund.refund_id)
+                .execute(&w.pool)
+                .await
+                .unwrap();
         }
     }
+    let standing =
+        w.db.business_refund(&owner, refund.refund_id)
+            .await
+            .unwrap()
+            .unwrap();
+    assert_eq!(standing.state, "provider_pending");
+    assert_eq!(standing.retry_count, oxsum_core::REFUND_MAX_ATTEMPTS);
+    assert!(standing.next_retry_at.is_none());
     assert_eq!(
-        last_state, "released",
-        "the attempt budget ends released, got {last_state}"
+        w.db.order_refundable_minor(org, order.order_id)
+            .await
+            .unwrap(),
+        Some(0)
+    );
+    assert_eq!(wallet.available().await.unwrap(), 1_000_000);
+    let notes =
+        w.db.business_order_credit_notes(&owner, None, 100)
+            .await
+            .unwrap();
+    assert_eq!(
+        notes
+            .notes
+            .iter()
+            .find(|n| n.refund_id == refund.refund_id)
+            .unwrap()
+            .state,
+        "issued"
     );
 }
 

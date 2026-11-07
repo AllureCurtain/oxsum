@@ -99,6 +99,7 @@ fn binding(
         amount_minor: amount,
         currency: "USD".into(),
         purpose: MerchantPaymentPurpose::Order,
+        hyperswitch_body_id: true,
         provider_payment_id: None,
     }
 }
@@ -485,4 +486,51 @@ async fn business_event_page_is_scoped_and_redacted() {
             .await
             .unwrap();
     assert_eq!(page.events[0].id, stored);
+}
+
+/// Rows inserted by an old writer without the new identity column stay fenced;
+/// unresolved early events rotate behind untried work in the bounded sweep.
+#[tokio::test]
+async fn historical_defaults_and_recovery_paging_preserve_unknown_work() {
+    let Some((db, owner, org, _)) = world().await else {
+        return;
+    };
+    let m = merchant(&db, &owner, "recovery-paging").await;
+    let context = context(&db, &m, m.version_id).await;
+    let id = Uuid::new_v4();
+    sqlx::query("INSERT INTO oxsum.merchant_payment_bindings(payment_id,merchant_id,version_id,organization_id,amount_minor,currency,purpose) VALUES($1,$2,$3,$4,100,'USD','order')")
+        .bind(id).bind(m.merchant_id).bind(m.version_id).bind(org).execute(db.pool()).await.unwrap();
+    assert!(
+        !db.merchant_payment_binding(id)
+            .await
+            .unwrap()
+            .unwrap()
+            .hyperswitch_body_id
+    );
+    let mut ids = Vec::new();
+    for _ in 0..101 {
+        let missing = Uuid::new_v4();
+        let ev = event(
+            missing,
+            &format!("pay_{missing}"),
+            org,
+            &context.account_id,
+            100,
+        );
+        let receipt = db
+            .receive_merchant_event(&context, &ev, &[73; 32])
+            .await
+            .unwrap();
+        assert_eq!(receipt.state, "pending");
+        ids.push(receipt.id);
+    }
+    let first = db.recoverable_merchant_events(100).await.unwrap();
+    assert!(!first.iter().any(|r| r.id == ids[100]));
+    for receipt in first {
+        db.retry_merchant_event(receipt.id).await.unwrap();
+    }
+    let next = db.recoverable_merchant_events(100).await.unwrap();
+    assert!(next.iter().any(|r| r.id == ids[100]));
+    let original = db.merchant_event_data(ids[0]).await.unwrap().unwrap();
+    assert_eq!(original.kind, MerchantEventKind::Succeeded);
 }

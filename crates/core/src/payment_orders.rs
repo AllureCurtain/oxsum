@@ -438,8 +438,8 @@ impl Db {
         // fulfillment books — a separate fact the provider never sees.
         sqlx::query(
             "INSERT INTO oxsum.merchant_payment_bindings\
-             (payment_id,merchant_id,version_id,organization_id,amount_minor,currency,purpose) \
-             VALUES($1,$2,$3,$4,$5,$6,'order')",
+             (payment_id,merchant_id,version_id,organization_id,amount_minor,currency,purpose,hyperswitch_body_id) \
+             VALUES($1,$2,$3,$4,$5,$6,'order',true)",
         )
         .bind(order_id)
         .bind(context.merchant_id)

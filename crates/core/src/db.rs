@@ -393,6 +393,10 @@ const MIGRATIONS: &[(&str, &str)] = &[
         "0105_integration_provision",
         include_str!("../migrations/0105_integration_provision.sql"),
     ),
+    (
+        "0099_hyperswitch_recovery",
+        include_str!("../migrations/0099_hyperswitch_recovery.sql"),
+    ),
 ];
 
 /// Advisory-lock key serialising the migration runner across processes.

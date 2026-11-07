@@ -166,6 +166,7 @@ async fn versioned_webhook_verifies_signature_and_accepts_matching_event() {
         amount_minor: 5000,
         currency: "USD".into(),
         purpose: MerchantPaymentPurpose::Order,
+        hyperswitch_body_id: true,
         provider_payment_id: None,
     })
     .await
@@ -279,6 +280,7 @@ async fn business_events_page_lists_scoped_intake() {
         amount_minor: 2500,
         currency: "USD".into(),
         purpose: MerchantPaymentPurpose::Order,
+        hyperswitch_body_id: true,
         provider_payment_id: None,
     })
     .await

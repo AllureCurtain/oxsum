@@ -63,6 +63,13 @@ struct SwitchStub {
     refund_answers: Arc<Mutex<Vec<String>>>,
     refund_calls: Arc<Mutex<usize>>,
     calls: Arc<Mutex<usize>>,
+    stored: Arc<Mutex<std::collections::HashMap<String, Value>>>,
+    stored_refunds: Arc<Mutex<std::collections::HashMap<String, Value>>>,
+    drop_refund_response: Arc<Mutex<bool>>,
+    refund_read_unavailable: Arc<Mutex<bool>>,
+    refuse_refund: Arc<Mutex<bool>>,
+    posts_after_store: Arc<Mutex<usize>>,
+    mismatched_refund: Arc<Mutex<bool>>,
 }
 
 async fn stub_switch() -> (String, SwitchStub) {
@@ -78,40 +85,55 @@ async fn stub_switch() -> (String, SwitchStub) {
                         .unwrap_or_default()
                         .to_owned();
                     stub.orders.lock().unwrap().push(order);
-                    let (id, secret) = stub
+                    let (_alias, secret) = stub
                         .answers
                         .lock()
                         .unwrap()
                         .first()
                         .cloned()
                         .unwrap_or_else(|| ("pay_armed".into(), "secret_armed".into()));
-                    axum::Json(json!({
-                        "payment_id": id,
-                        "client_secret": secret,
-                        "status": "requires_payment_method",
-                    }))
+                    let id = body["payment_id"].as_str().unwrap().to_owned();
+                    let value = json!({"payment_id":id,"client_secret":secret,"status":"requires_payment_method",
+                        "merchant_id":ACCOUNT,"amount":body["amount"],"currency":body["currency"],"metadata":body["metadata"]});
+                    stub.stored.lock().unwrap().insert(id, value.clone());
+                    axum::Json(value)
                 },
             ),
         )
         .route(
             "/refunds",
             post(
-                |State(stub): State<SwitchStub>, _body: axum::Json<Value>| async move {
+                |State(stub): State<SwitchStub>, body: axum::Json<Value>| async move {
                     *stub.refund_calls.lock().unwrap() += 1;
-                    let id = stub
-                        .refund_answers
-                        .lock()
-                        .unwrap()
-                        .first()
-                        .cloned()
-                        .unwrap_or_else(|| "re_armed".into());
-                    axum::Json(json!({
-                        "refund_id": id,
-                        "status": "pending",
-                    }))
+                    if *stub.refuse_refund.lock().unwrap() { return (StatusCode::BAD_REQUEST, axum::Json(json!({"error":{"code":"IR_13"}}))); }
+                    if stub.refund_answers.lock().unwrap().is_empty() { return (StatusCode::OK, axum::Json(json!({}))); }
+                    let id = body["refund_id"].as_str().unwrap().to_owned();
+                    let mut value = json!({"refund_id":id,"payment_id":body["payment_id"],"status":"pending",
+                        "merchant_id":ACCOUNT,"amount":body["amount"],"currency":"USD","metadata":body["metadata"]});
+                    let mut stored = stub.stored_refunds.lock().unwrap();
+                    if stored.contains_key(&id) {
+                        *stub.posts_after_store.lock().unwrap() += 1;
+                        return (StatusCode::BAD_REQUEST, axum::Json(json!({"error":{"code":"HE_01"}})));
+                    }
+                    stored.insert(id, value.clone());
+                    if *stub.drop_refund_response.lock().unwrap() {
+                        *stub.refund_read_unavailable.lock().unwrap() = true;
+                        return (StatusCode::BAD_GATEWAY, axum::Json(json!({"error":"response lost after commit"})));
+                    }
+                    if *stub.mismatched_refund.lock().unwrap() { value["amount"]=json!(99999); }
+                    (StatusCode::OK, axum::Json(value))
                 },
             ),
         )
+        .route("/payments/{id}", axum::routing::get(|State(stub):State<SwitchStub>, axum::extract::Path(id):axum::extract::Path<String>| async move {
+            let value = stub.stored.lock().unwrap().get(&id).cloned();
+            value.map_or((StatusCode::NOT_FOUND, axum::Json(json!({"error":{"code":"HE_02"}}))), |v| (StatusCode::OK,axum::Json(v)))
+        }))
+        .route("/refunds/{id}", axum::routing::get(|State(stub):State<SwitchStub>, axum::extract::Path(id):axum::extract::Path<String>| async move {
+            if *stub.refund_read_unavailable.lock().unwrap() { return (StatusCode::SERVICE_UNAVAILABLE,axum::Json(json!({}))); }
+            let value = stub.stored_refunds.lock().unwrap().get(&id).cloned();
+            value.map_or((StatusCode::NOT_FOUND, axum::Json(json!({"error":{"code":"HE_02"}}))), |v| (StatusCode::OK,axum::Json(v)))
+        }))
         .with_state(stub.clone());
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
@@ -453,7 +475,10 @@ async fn paid_order(
     .await;
     assert_eq!(status, StatusCode::OK, "{body}");
     let order_id = Uuid::parse_str(body["data"]["order"]["orderId"].as_str().unwrap()).unwrap();
-    let provider = format!("pay_{key}");
+    let provider = body["data"]["providerPaymentId"]
+        .as_str()
+        .unwrap()
+        .to_owned();
     let body_text = succeeded(order_id, account.organization_id, &provider, display_minor);
     let status = post_webhook(
         app,
@@ -548,7 +573,7 @@ async fn a_refund_is_reviewed_then_the_signed_event_settles() {
         order_id,
         account.organization_id,
         &provider,
-        Some("re_1"),
+        Some(&refund_id.to_string()),
         210,
     );
     let status = post_webhook(
@@ -597,7 +622,7 @@ async fn a_refund_is_reviewed_then_the_signed_event_settles() {
         order_id,
         account.organization_id,
         &provider,
-        Some("re_1"),
+        Some(&refund_id.to_string()),
         210,
     );
     post_webhook(
@@ -676,7 +701,7 @@ async fn a_refund_on_spent_credit_never_goes_negative() {
         order_id,
         account.organization_id,
         &provider,
-        Some("re_2"),
+        Some(&refund_id.to_string()),
         210,
     );
     let status = post_webhook(
@@ -745,7 +770,7 @@ async fn partial_refunds_sum_to_the_funded_total() {
             order_id,
             account.organization_id,
             &provider,
-            Some(&format!("re_{key}")),
+            Some(&refund_id),
             display,
         );
         post_webhook(
@@ -835,7 +860,7 @@ async fn a_provider_timeout_retries_then_settles() {
         order_id,
         account.organization_id,
         &provider,
-        Some("re_4"),
+        Some(&refund_id.to_string()),
         70,
     );
     post_webhook(
@@ -916,4 +941,346 @@ async fn a_dispute_is_not_a_refund_and_lost_recharges() {
     // The contested 1_500_000_000 credit is capped at the 500_000_000 drawn —
     // the receivable restored in whole.
     assert_eq!(wallet.credit_used().await.unwrap(), 0);
+}
+
+/// Losing the post-commit response cannot create a second partial refund.
+/// The next worker retrieves the retained body ID, and duplicate events apply once.
+#[tokio::test]
+async fn a_lost_refund_response_retrieves_without_reissuing() {
+    let Some((app, db, stub, merchant, version)) = world().await else {
+        return;
+    };
+    let account = register(&app).await;
+    set_display(&db, account.organization_id).await;
+    let owner = operator(&db, &app).await;
+    let (order, provider, wallet) = paid_order(
+        &app,
+        &db,
+        &stub,
+        merchant,
+        version,
+        &account,
+        "lost-refund",
+        210,
+    )
+    .await;
+    let (status,body)=call(&app,"POST",&format!("/api/v1/orders/{order}/refund-request"),
+        Some(json!({"idempotencyKey":"lost-refund","amountMinor":500_000_000,"reason":"lost response"})),Some(&account.cookie)).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let refund = body["data"]["refundId"].as_str().unwrap().to_owned();
+    *stub.refund_answers.lock().unwrap() = vec!["ready".into()];
+    *stub.drop_refund_response.lock().unwrap() = true;
+    let (status, body) = call(
+        &app,
+        "POST",
+        &format!("/api/v1/business/refunds/{refund}/resolve"),
+        Some(json!({"idempotencyKey":"approve-lost","decision":"approve"})),
+        Some(&owner),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(*stub.refund_calls.lock().unwrap(), 1);
+    assert_eq!(stub.stored_refunds.lock().unwrap().len(), 1);
+    let id = Uuid::parse_str(&refund).unwrap();
+    assert!(
+        db.refund_retry_target(id)
+            .await
+            .unwrap()
+            .unwrap()
+            .refund
+            .provider_refund_id
+            .is_none()
+    );
+    *stub.drop_refund_response.lock().unwrap() = false;
+    *stub.refund_read_unavailable.lock().unwrap() = false;
+    sqlx::query(
+        "UPDATE oxsum.refunds SET next_retry_at=now()-interval '1 second' WHERE refund_id=$1",
+    )
+    .bind(id)
+    .execute(db.pool())
+    .await
+    .unwrap();
+    run_refund_retries(&Db::from_pool(db.pool().clone())).await;
+    assert_eq!(*stub.refund_calls.lock().unwrap(), 1);
+    assert_eq!(*stub.posts_after_store.lock().unwrap(), 0);
+    let standing = db.refund_retry_target(id).await.unwrap().unwrap().refund;
+    assert_eq!(
+        standing.provider_refund_id.as_deref(),
+        Some(refund.as_str())
+    );
+    assert_eq!(standing.retry_count, 2);
+    let raw = refund_event_body(order, account.organization_id, &provider, &refund, 70);
+    for _ in 0..2 {
+        assert_eq!(
+            post_webhook(
+                &app,
+                merchant,
+                version,
+                signed(WEBHOOK_SECRET, &raw),
+                raw.clone()
+            )
+            .await,
+            StatusCode::OK
+        );
+    }
+    assert_eq!(wallet.available().await.unwrap(), 1_000_000_000);
+    assert_eq!(
+        db.refund_retry_target(id)
+            .await
+            .unwrap()
+            .unwrap()
+            .refund
+            .state,
+        "succeeded"
+    );
+}
+
+fn refund_event_body(
+    order: Uuid,
+    org: Uuid,
+    provider: &str,
+    refund_id: &str,
+    amount: i64,
+) -> String {
+    refund(
+        "refund_succeeded",
+        order,
+        org,
+        provider,
+        Some(refund_id),
+        amount,
+    )
+}
+
+/// A pinned pre-insert refusal is safe to release on the first attempt;
+/// a contradictory success response remains reserved for reconciliation.
+#[tokio::test]
+async fn first_refusal_and_mismatched_success_have_distinct_reservation_outcomes() {
+    let Some((app, db, stub, merchant, version)) = world().await else {
+        return;
+    };
+    let account = register(&app).await;
+    set_display(&db, account.organization_id).await;
+    let owner = operator(&db, &app).await;
+    for refused in [true, false] {
+        let (order, _, wallet) = paid_order(
+            &app,
+            &db,
+            &stub,
+            merchant,
+            version,
+            &account,
+            if refused { "refused" } else { "mismatch" },
+            210,
+        )
+        .await;
+        let (_,body)=call(&app,"POST",&format!("/api/v1/orders/{order}/refund-request"),
+            Some(json!({"idempotencyKey":format!("outcome-{refused}"),"amountMinor":500_000_000,"reason":"outcome test"})),Some(&account.cookie)).await;
+        let refund = body["data"]["refundId"].as_str().unwrap();
+        *stub.refund_answers.lock().unwrap() = vec!["ready".into()];
+        *stub.refuse_refund.lock().unwrap() = refused;
+        *stub.mismatched_refund.lock().unwrap() = !refused;
+        let (status, _) = call(
+            &app,
+            "POST",
+            &format!("/api/v1/business/refunds/{refund}/resolve"),
+            Some(json!({"idempotencyKey":format!("outcome-{refused}"),"decision":"approve"})),
+            Some(&owner),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        let standing = db
+            .refund_retry_target(Uuid::parse_str(refund).unwrap())
+            .await
+            .unwrap()
+            .unwrap()
+            .refund;
+        assert_eq!(
+            standing.state,
+            if refused {
+                "released"
+            } else {
+                "provider_pending"
+            }
+        );
+        assert_eq!(wallet.available().await.unwrap(), 1_500_000_000);
+    }
+}
+
+/// A historical operation with a known handle may only be retrieved; an
+/// unbound legacy outcome never gets a new create ID during an upgrade.
+#[tokio::test]
+async fn historical_refund_handles_are_read_only_and_unknowns_are_fenced() {
+    let Some((app, db, stub, merchant, version)) = world().await else {
+        return;
+    };
+    let account = register(&app).await;
+    set_display(&db, account.organization_id).await;
+    let owner = operator(&db, &app).await;
+    let (order, provider, _) =
+        paid_order(&app, &db, &stub, merchant, version, &account, "legacy", 210).await;
+    let (_, body) = call(
+        &app,
+        "POST",
+        &format!("/api/v1/orders/{order}/refund-request"),
+        Some(
+            json!({"idempotencyKey":"legacy","amountMinor":500_000_000,"reason":"legacy fixture"}),
+        ),
+        Some(&account.cookie),
+    )
+    .await;
+    let id = Uuid::parse_str(body["data"]["refundId"].as_str().unwrap()).unwrap();
+    let mut refund = db.refund_retry_target(id).await.unwrap().unwrap().refund;
+    // Construct the in-memory view produced by migration's false default.
+    refund.hyperswitch_body_id = false;
+    let context = db
+        .merchant_signing_context(merchant, version, &sealing_key())
+        .await
+        .unwrap()
+        .unwrap();
+    let http = oxsum_integrations::provider_http::ProviderHttp::default();
+    assert!(
+        oxsum_integrations::merchant_checkout::create_refund(&context, &refund, &provider, &http)
+            .await
+            .is_err()
+    );
+    assert_eq!(*stub.refund_calls.lock().unwrap(), 0);
+    let legacy = "ref_pre_upgrade";
+    refund.provider_refund_id = Some(legacy.into());
+    stub.stored_refunds.lock().unwrap().insert(legacy.into(),json!({
+        "refund_id":legacy,"payment_id":provider,"amount":refund.display_amount_minor,"currency":refund.display_currency,
+        "status":"pending","metadata":{"refund_id":id.to_string(),"order_id":id.to_string()},
+    }));
+    let handle =
+        oxsum_integrations::merchant_checkout::create_refund(&context, &refund, &provider, &http)
+            .await
+            .unwrap();
+    assert_eq!(handle.provider_refund_id, legacy);
+    assert_eq!(*stub.refund_calls.lock().unwrap(), 0);
+    stub.stored_refunds.lock().unwrap().remove(legacy);
+    assert!(
+        oxsum_integrations::merchant_checkout::create_refund(&context, &refund, &provider, &http)
+            .await
+            .is_err()
+    );
+    assert_eq!(*stub.refund_calls.lock().unwrap(), 0);
+    // A malformed or wrongly scoped read cannot become a successful handle.
+    stub.stored_refunds.lock().unwrap().insert(
+        legacy.into(),
+        json!({
+            "refund_id":legacy,"payment_id":"other_payment","amount":refund.display_amount_minor,
+            "currency":refund.display_currency,"status":"succeeded",
+        }),
+    );
+    assert!(
+        oxsum_integrations::merchant_checkout::create_refund(&context, &refund, &provider, &http)
+            .await
+            .is_err()
+    );
+    assert_eq!(*stub.refund_calls.lock().unwrap(), 0);
+    assert_eq!(
+        db.business_refund(&owner, id).await.unwrap().unwrap().state,
+        "requested"
+    );
+}
+
+/// The actual request timeout is bounded; a switch that commits before hanging
+/// is recovered by GET while the local reservation remains provider_pending.
+#[tokio::test]
+async fn a_refund_response_timeout_recovers_without_a_second_create() {
+    let Some((app, db, stub, merchant, version)) = world().await else {
+        return;
+    };
+    let account = register(&app).await;
+    set_display(&db, account.organization_id).await;
+    let owner = operator(&db, &app).await;
+    let (order, provider, _) = paid_order(
+        &app,
+        &db,
+        &stub,
+        merchant,
+        version,
+        &account,
+        "hanging-refund",
+        210,
+    )
+    .await;
+    let (_,body) = call(&app,"POST",&format!("/api/v1/orders/{order}/refund-request"),
+        Some(json!({"idempotencyKey":"timeout","amountMinor":500_000_000,"reason":"timeout fixture"})),Some(&account.cookie)).await;
+    let id = Uuid::parse_str(body["data"]["refundId"].as_str().unwrap()).unwrap();
+    db.resolve_order_refund(
+        &owner,
+        id,
+        oxsum_core::RefundDecision::Approve,
+        None,
+        "timeout-approve",
+    )
+    .await
+    .unwrap();
+    let target = db.claim_refund_attempt(id).await.unwrap().unwrap();
+    let state = Arc::new(Mutex::new((0usize, None::<Value>)));
+    let post_state = state.clone();
+    let get_state = state.clone();
+    let fixture = Router::new().route("/refunds",post(move |body:axum::Json<Value>| {
+        let post_state = post_state.clone();
+        async move {
+            let result = json!({"refund_id":body["refund_id"],"payment_id":body["payment_id"],
+                "amount":body["amount"],"currency":"USD","metadata":body["metadata"],"status":"pending"});
+            {
+                let mut stored = post_state.lock().unwrap();
+                stored.0 += 1;
+                stored.1 = Some(result.clone());
+            }
+            tokio::time::sleep(Duration::from_secs(12)).await;
+            axum::Json(result)
+        }
+    })).route("/refunds/{id}",axum::routing::get(move || {
+        let get_state = get_state.clone();
+        async move {
+            get_state.lock().unwrap().1.clone().map_or(
+                (StatusCode::NOT_FOUND,axum::Json(json!({"error":{"code":"HE_02"}}))),
+                |value| (StatusCode::OK,axum::Json(value)))
+        }
+    }));
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        axum::serve(listener, fixture).await.unwrap();
+    });
+    let mut context = db
+        .merchant_signing_context(merchant, version, &sealing_key())
+        .await
+        .unwrap()
+        .unwrap();
+    context.version.api_url = format!("http://{address}");
+    let http = oxsum_integrations::provider_http::ProviderHttp::default();
+    let started = std::time::Instant::now();
+    let handle = oxsum_integrations::merchant_checkout::create_refund(
+        &context,
+        &target.refund,
+        &provider,
+        &http,
+    )
+    .await
+    .unwrap();
+    assert!(started.elapsed() >= Duration::from_secs(9));
+    assert!(started.elapsed() < Duration::from_secs(20));
+    assert_eq!(handle.provider_refund_id, id.to_string());
+    db.note_refund_provider(id, &handle.provider_refund_id)
+        .await
+        .unwrap();
+    let standing = db.refund_retry_target(id).await.unwrap().unwrap();
+    let replay = oxsum_integrations::merchant_checkout::create_refund(
+        &context,
+        &standing.refund,
+        &provider,
+        &http,
+    )
+    .await
+    .unwrap();
+    assert_eq!(replay.provider_refund_id, handle.provider_refund_id);
+    assert_eq!(state.lock().unwrap().0, 1);
+    assert_eq!(standing.refund.state, "provider_pending");
+    assert_eq!(standing.refund.retry_count, 1);
+    server.abort();
 }

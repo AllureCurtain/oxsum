@@ -1189,3 +1189,15 @@ orders through the existing idempotent fulfillment writer. Customer credit
 therefore becomes available promptly without waiting for daily reconciliation.
 An interrupted pass retries from durable state; the order-derived ledger key
 prevents duplicate credit. Daily reconciliation remains an additional fallback.
+
+
+### A refund awaiting provider reconciliation
+
+A refund can remain `provider_pending` with no `nextRetryAt` after five recovery
+attempts. Its amount is still reserved and its credit note remains issued. Do
+not start another refund to work around a lost response. Finance should retain
+the order, refund and merchant/version IDs, inspect the exact provider operation
+in that merchant account, and arrange a signed terminal event/replay using the
+retained credential version. A missing merchant credential or an HTTP timeout
+does not prove that money was not returned. A historical operation without an
+external ID requires provider-side reconciliation before any new operation.
