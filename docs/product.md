@@ -432,3 +432,11 @@ identity. Customer balances, organization switching and billing sockets mount
 only in customer context. Its **Customer portal** action explicitly returns
 to an existing customer membership; a business-only identity remains a valid
 staff session and is never redirected to login merely for lacking that seat.
+
+Verified payment callbacks durably mark orders paid. The leader-protected
+`payment-fulfillment` job runs at startup and every five seconds (plus the
+worker poll interval), recovering accepted events and draining up to 100 paid
+orders through the existing idempotent fulfillment writer. Customer credit
+therefore becomes available promptly without waiting for daily reconciliation.
+An interrupted pass retries from durable state; the order-derived ledger key
+prevents duplicate credit. Daily reconciliation remains an additional fallback.

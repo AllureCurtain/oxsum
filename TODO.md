@@ -4,6 +4,8 @@ Updated: 2026-11-07
 
 ## In progress
 
+- [ ] [#692](https://github.com/AllureCurtain/oxsum/issues/692) — Fulfill verified paid orders promptly through a dedicated five-second recovery worker instead of waiting for daily reconciliation.
+
 - [x] [#690](https://github.com/AllureCurtain/oxsum/issues/690) — Keep valid staff sessions in the business console; context-aware shell and authentication cache reset; actual owner context round-trip and four backend context/console checks passed.
 
 - [x] [#685](https://github.com/AllureCurtain/oxsum/issues/685) — Reproducible D09 streaming load and accounting conservation: 1,000 accounts, 10,000 keys, 100 peak streams, 5,897 successful requests, zero drift; performance shortfall declared in `evidence/closeout-capacity.md`.

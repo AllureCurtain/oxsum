@@ -70,6 +70,7 @@ pub fn spawn_worker(db: Db, ctx: JobContext) -> tokio::task::JoinHandle<()> {
         let mut periodic = vec![
             kinds::SWEEP_HOLDS,
             kinds::RECONCILE,
+            kinds::PAYMENT_FULFILLMENT,
             kinds::STATEMENTS,
             kinds::RETENTION,
             kinds::USAGE_ANCHORS,
@@ -357,6 +358,9 @@ async fn run_one(
                 flagged = report.flagged,
                 "the upstream-bill-sync pass reconciled the channels"
             );
+        }
+        kinds::PAYMENT_FULFILLMENT => {
+            crate::merchant_payments::recover(db, &tenants).await?;
         }
         kinds::RECONCILE => {
             crate::merchant_payments::recover(db, &tenants).await?;

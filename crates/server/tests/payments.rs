@@ -298,7 +298,7 @@ fn create_body(key: &str, purpose: &str, display_minor: i64) -> Value {
 /// webhook marks `paid`, and the fulfillment read shows the honest mid-state —
 /// then the sweep's grant lands the wallet cash exactly once.
 #[tokio::test]
-async fn a_paid_order_fulfills_once_through_the_sweep() {
+async fn a_paid_order_fulfills_promptly_through_the_worker() {
     let Some((app, db, stub, merchant, version)) = world().await else {
         return;
     };
@@ -377,9 +377,30 @@ async fn a_paid_order_fulfills_once_through_the_sweep() {
         .unwrap();
     assert_eq!(wallet.available().await.unwrap(), 0);
 
-    // The sweep drains the paid-unfulfilled backlog: one grant under the
-    // order-derived ledger key.
-    run_reconcile(&db).await;
+    // Start the actual scheduler: no direct reconciliation call or test-side
+    // SQL forces the fulfillment. A normal live deployment credits promptly.
+    db.enqueue_job(
+        kinds::RECONCILE,
+        time::OffsetDateTime::now_utc() + time::Duration::days(1),
+    )
+    .await
+    .unwrap();
+    let worker = oxsum_server::jobs::spawn_worker(db.clone(), ctx());
+    let completed = tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            if wallet.available().await.unwrap() == 1_500_000_000 {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    })
+    .await;
+    worker.abort();
+    completed.expect("paid order must fulfill without waiting for daily reconciliation");
+    assert_eq!(
+        oxsum_core::next_run(kinds::PAYMENT_FULFILLMENT),
+        Some(time::Duration::seconds(5))
+    );
     let (status, body) = call(
         &app,
         "GET",
@@ -410,14 +431,14 @@ async fn tenant(db: &Db, org: Uuid) -> String {
         .unwrap()
 }
 
-/// Enqueue and run the reconcile pass — the sweep `recover` rides on.
+/// Enqueue the dedicated payment recovery pass; daily reconciliation is not needed.
 async fn run_reconcile(db: &Db) {
     // Same due-row insert the jobs suite uses: `run_at` is server-side now.
     sqlx::query(
         "INSERT INTO oxsum.jobs (kind, run_at) VALUES ($1, now() - interval '1 second') \
          ON CONFLICT DO NOTHING",
     )
-    .bind(kinds::RECONCILE)
+    .bind(kinds::PAYMENT_FULFILLMENT)
     .execute(db.pool())
     .await
     .unwrap();
