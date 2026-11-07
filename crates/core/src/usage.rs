@@ -14,7 +14,7 @@
 //! deleted, and `usage_details.provider_raw` is nulled after the retention
 //! window, both impossible inside an immutable entry description.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -25,6 +25,10 @@ use uuid::Uuid;
 use crate::billing::SettlementKind;
 use crate::db::Db;
 use crate::error::WalletError;
+use crate::heads::USAGE_DAY_DOMAIN;
+use crate::keys::{BudgetDuration, TagScope, TpmScopes};
+use crate::wallet::{BONUS, CREDIT_LINE, FACILITY, WALLET};
+use crate::webhooks::BUDGET_THRESHOLD_CROSSED;
 
 /// The longest a caller-declared end-user id may be (docs/decisions.md: `endUser`
 /// writes freely but bounded).
@@ -665,11 +669,10 @@ impl Db {
                 .fetch_optional(&mut **tx)
                 .await?
                 .flatten();
-                let scopes: Option<crate::keys::TpmScopes> =
-                    scopes.and_then(|v| serde_json::from_value(v).ok());
+                let scopes: Option<TpmScopes> = scopes.and_then(|v| serde_json::from_value(v).ok());
                 if let Some(scopes) = scopes {
                     for (tag, scope) in scopes {
-                        let tag_scope = crate::keys::TagScope { tag, scope };
+                        let tag_scope = TagScope { tag, scope };
                         if let Some(name) = tag_scope.scope_name(&row.usage.tags) {
                             sqlx::query(
                                 "INSERT INTO oxsum.tpm_windows \
@@ -815,7 +818,7 @@ impl Db {
         let (Some(limit), Some(duration)) = (limit, duration) else {
             return Ok(());
         };
-        let duration = crate::keys::BudgetDuration::parse(&duration)?;
+        let duration = BudgetDuration::parse(&duration)?;
         let today = OffsetDateTime::now_utc().date();
         let window_start = duration.period_start(today);
         // Already forecast for this window — one event per key per period.
@@ -840,9 +843,9 @@ impl Db {
              WHERE path = ANY($1)",
         ))
         .bind(vec![
-            crate::wallet::WALLET.to_owned(),
-            crate::wallet::BONUS.to_owned(),
-            crate::wallet::CREDIT_LINE.to_owned(),
+            WALLET.to_owned(),
+            BONUS.to_owned(),
+            CREDIT_LINE.to_owned(),
         ])
         .fetch_all(&mut **tx)
         .await?;
@@ -927,16 +930,16 @@ impl Db {
              WHERE path = ANY($1)"
         ))
         .bind(vec![
-            crate::wallet::WALLET.to_owned(),
-            crate::wallet::BONUS.to_owned(),
-            crate::wallet::CREDIT_LINE.to_owned(),
-            crate::wallet::FACILITY.to_owned(),
+            WALLET.to_owned(),
+            BONUS.to_owned(),
+            CREDIT_LINE.to_owned(),
+            FACILITY.to_owned(),
         ])
         .fetch_all(&mut **tx)
         .await?;
         let pools: Vec<i32> = accounts
             .iter()
-            .filter(|(_, path)| path != crate::wallet::FACILITY)
+            .filter(|(_, path)| path != FACILITY)
             .map(|(index, _)| *index)
             .collect();
         if pools.is_empty() {
@@ -944,11 +947,11 @@ impl Db {
         }
         let facility = accounts
             .iter()
-            .find(|(_, path)| path == crate::wallet::FACILITY)
+            .find(|(_, path)| path == FACILITY)
             .map(|(index, _)| *index);
         let credit_pool = accounts
             .iter()
-            .find(|(_, path)| path == crate::wallet::CREDIT_LINE)
+            .find(|(_, path)| path == CREDIT_LINE)
             .map(|(index, _)| *index);
 
         // `(scope, scope id, window start, limit, committed)` for every scope a
@@ -972,7 +975,7 @@ impl Db {
                 if let Some(limit) = limit {
                     let window_start = duration
                         .as_deref()
-                        .map(crate::keys::BudgetDuration::parse)
+                        .map(BudgetDuration::parse)
                         .transpose()?
                         .map(|duration| duration.period_start(today));
                     let committed = Self::committed_for(
@@ -1093,7 +1096,7 @@ impl Db {
                 let delivery_id = Uuid::new_v4();
                 let payload = crate::webhooks::event_envelope(
                     delivery_id,
-                    crate::webhooks::BUDGET_THRESHOLD_CROSSED,
+                    BUDGET_THRESHOLD_CROSSED,
                     organization,
                     serde_json::json!({
                         "scope": scope,
@@ -1113,7 +1116,7 @@ impl Db {
                 .bind(delivery_id)
                 .bind(endpoint_id)
                 .bind(organization)
-                .bind(crate::webhooks::BUDGET_THRESHOLD_CROSSED)
+                .bind(BUDGET_THRESHOLD_CROSSED)
                 .bind(payload)
                 .execute(&mut **tx)
                 .await?;
@@ -1331,9 +1334,9 @@ impl Db {
     pub async fn anomaly_inputs(
         &self,
         request_ids: &[String],
-    ) -> Result<std::collections::HashMap<String, (Option<i64>, i64)>, WalletError> {
+    ) -> Result<HashMap<String, (Option<i64>, i64)>, WalletError> {
         if request_ids.is_empty() {
-            return Ok(std::collections::HashMap::new());
+            return Ok(HashMap::new());
         }
         // Anomalous kinds, the same set the admin page reviews.
         let rows = sqlx::query(
@@ -1348,7 +1351,7 @@ impl Db {
         .bind(SettlementKind::ANOMALOUS_STRS)
         .fetch_all(self.pool())
         .await?;
-        let mut map = std::collections::HashMap::with_capacity(rows.len());
+        let mut map = HashMap::with_capacity(rows.len());
         for row in &rows {
             use sqlx::Row;
             map.insert(
@@ -1484,7 +1487,7 @@ async fn record_usage_day(
     payload.extend_from_slice(day.to_string().as_bytes());
     payload.extend_from_slice(&count.to_le_bytes());
     payload.extend_from_slice(rows_root.as_bytes());
-    let leaf = doubleentry::Hash::digest(crate::heads::USAGE_DAY_DOMAIN, &payload);
+    let leaf = doubleentry::Hash::digest(USAGE_DAY_DOMAIN, &payload);
     sqlx::query(
         "INSERT INTO oxsum.usage_day_log \
              (tenant_id, end_user, day, entry_count, rows_root, leaf_hash) \

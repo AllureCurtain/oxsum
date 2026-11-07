@@ -25,6 +25,7 @@ use uuid::Uuid;
 
 use crate::db::Db;
 use crate::error::WalletError;
+use crate::orgs::{Kind, Role};
 use crate::sessions::CreatedSession;
 use crate::{keys, orgs, users};
 
@@ -261,14 +262,8 @@ impl Db {
         .map_err(|e| {
             keys::conflict_or_storage(e, "users_email_normalized_key", "email already registered")
         })?;
-        orgs::insert(
-            &mut tx,
-            organization_id,
-            &organization_name,
-            crate::orgs::Kind::Personal,
-        )
-        .await?;
-        orgs::add_member(&mut tx, organization_id, user_id, crate::orgs::Role::Owner).await?;
+        orgs::insert(&mut tx, organization_id, &organization_name, Kind::Personal).await?;
+        orgs::add_member(&mut tx, organization_id, user_id, Role::Owner).await?;
         keys::insert(
             &mut tx,
             organization_id,

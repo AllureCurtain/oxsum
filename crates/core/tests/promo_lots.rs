@@ -5,6 +5,9 @@
 //! refunds. Needs DATABASE_URL; skips without it.
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
+use std::collections::HashMap;
+use std::sync::Arc;
+
 use oxsum_core::*;
 use sqlx::Row;
 use time::{Duration, OffsetDateTime};
@@ -32,7 +35,7 @@ macro_rules! db_or_skip {
 
 /// A migrated database, a registered organization and its wallet — the world
 /// every lot lives in.
-async fn world() -> Option<(Db, Uuid, String, sqlx::PgPool, std::sync::Arc<Wallet>)> {
+async fn world() -> Option<(Db, Uuid, String, sqlx::PgPool, Arc<Wallet>)> {
     let url = url()?;
     let db = Db::connect(&url, 16).await.unwrap();
     db.migrate().await.unwrap();
@@ -189,16 +192,14 @@ async fn a_hold_pins_the_soonest_expiring_lots_first() {
     wallet.hold("h1", "hold", 4 * ONE, D).await.unwrap();
     let rows = draws(&pool, "h1").await;
     assert_eq!(rows.len(), 2);
-    let pinned: std::collections::HashMap<Uuid, i64> =
-        rows.iter().map(|(l, a, _, _)| (*l, *a)).collect();
+    let pinned: HashMap<Uuid, i64> = rows.iter().map(|(l, a, _, _)| (*l, *a)).collect();
     assert_eq!(pinned.get(&sooner.lot_id), Some(&(2 * ONE)));
     assert_eq!(pinned.get(&later.lot_id), Some(&(2 * ONE)));
     assert!(!pinned.contains_key(&never.lot_id));
 
     // The lots' unreserved remainders dropped by what the hold pinned.
     let lots = db.promo_lots(org, false).await.unwrap();
-    let by_id: std::collections::HashMap<Uuid, PromoLot> =
-        lots.into_iter().map(|l| (l.lot_id, l)).collect();
+    let by_id: HashMap<Uuid, PromoLot> = lots.into_iter().map(|l| (l.lot_id, l)).collect();
     assert_eq!(by_id[&sooner.lot_id].remaining_minor, 0);
     assert_eq!(by_id[&later.lot_id].remaining_minor, ONE);
     assert_eq!(by_id[&never.lot_id].remaining_minor, 4 * ONE);

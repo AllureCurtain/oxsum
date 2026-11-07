@@ -16,6 +16,8 @@
 //! for the same reason `model_fallbacks` is its own table: config changes, the
 //! ledger only accrues.
 
+use std::collections::HashSet;
+
 use serde::{Deserialize, Serialize};
 use sqlx::Row;
 use time::OffsetDateTime;
@@ -173,7 +175,7 @@ impl Db {
     ) -> Result<Experiment, WalletError> {
         validate_experiment(name, variants)?;
         let access = self.serving_access(org_id, None).await?;
-        let served: std::collections::HashSet<_> = self
+        let served: HashSet<_> = self
             .catalog_for_access(&access)
             .await?
             .into_iter()

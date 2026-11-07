@@ -1,4 +1,6 @@
 //! Provider destination rules, shared by configuration and every outbound caller.
+use std::collections::HashSet;
+
 use crate::WalletError;
 use serde::{Deserialize, Serialize};
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
@@ -50,7 +52,7 @@ impl ProviderDestinationPolicy {
             }
             _ => {}
         }
-        let mut seen = std::collections::HashSet::new();
+        let mut seen = HashSet::new();
         if self
             .allowed_ips
             .iter()

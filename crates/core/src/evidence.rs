@@ -46,6 +46,8 @@ use crate::error::WalletError;
 use crate::wallet::Wallet;
 use doubleentry::{Entry, EntryId, Hash};
 
+use crate::wallet::SCALE;
+
 fn invalid(message: &str) -> WalletError {
     WalletError::InvalidInput(message.into())
 }
@@ -268,7 +270,7 @@ pub struct EvidenceScope {
 #[serde(rename_all = "camelCase")]
 pub struct EvidenceEntryBundle {
     /// The entry, balanced — serialized as doubleentry's wire encoding.
-    pub entry: Entry<doubleentry::Balanced, { crate::wallet::SCALE }>,
+    pub entry: Entry<doubleentry::Balanced, { SCALE }>,
     /// The content hash the Merkle log commits, lowercase hex.
     pub content_hash: String,
     /// The entry's inclusion proof into `head`.

@@ -6,10 +6,14 @@
 //! organizations, memberships, API keys — lives in the single `oxsum` schema, created and
 //! versioned here. The two never mix.
 
+use std::time::Duration;
+
 use sqlx::postgres::PgPoolOptions;
 use sqlx::{Acquire, ConnectOptions, PgConnection, PgPool};
 
 use crate::error::WalletError;
+use crate::pools::SharedAffinity;
+use crate::routing::SharedRouteStats;
 
 /// The schema holding oxsum's own tables.
 pub const SCHEMA: &str = "oxsum";
@@ -401,17 +405,17 @@ pub struct Db {
     pool: PgPool,
     /// The process-local conversation→credential memory (issue #444): a cache
     /// warmer for the pool's pick, `Arc`-shared across `Db`'s cheap clones.
-    pub(crate) affinity: crate::pools::SharedAffinity,
+    pub(crate) affinity: SharedAffinity,
     /// The process-local per-channel upstream-health window (issue #499): the
     /// routing hint `route_order` reads and the relay writes — `Arc`-shared
     /// across `Db`'s cheap clones so a request's pick and its attempt's sample
     /// meet in the one store.
-    pub(crate) route_stats: crate::routing::SharedRouteStats,
+    pub(crate) route_stats: SharedRouteStats,
 }
 
 /// How long a checkout may wait for a free connection before failing. See
 /// `Db::connect`.
-const ACQUIRE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+const ACQUIRE_TIMEOUT: Duration = Duration::from_secs(5);
 
 impl Db {
     /// Connects the one pool this process uses for everything.
@@ -428,11 +432,11 @@ impl Db {
     pub async fn connect(database_url: &str, max_connections: u32) -> Result<Self, WalletError> {
         let options: sqlx::postgres::PgConnectOptions = database_url.parse()?;
         let options = options
-            .log_slow_statements(log::LevelFilter::Warn, std::time::Duration::from_secs(10))
+            .log_slow_statements(log::LevelFilter::Warn, Duration::from_secs(10))
             .application_name("oxsum");
         let pool = PgPoolOptions::new()
             .max_connections(max_connections)
-            .acquire_slow_threshold(std::time::Duration::from_secs(10))
+            .acquire_slow_threshold(Duration::from_secs(10))
             // Bound how long a checkout may wait for a free connection: under
             // load the pool fills and requests must fail fast (surfacing as a
             // pool-timeout error the gateway maps) instead of queueing behind

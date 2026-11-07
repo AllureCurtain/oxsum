@@ -32,6 +32,7 @@ use uuid::Uuid;
 
 use crate::error::WalletError;
 use crate::wallet::{Receipt, Wallet};
+use crate::webhooks::DEPOSIT_CREDITED;
 
 /// The rail `POST /api/v1/topups/x402` writes under.
 pub const RAIL_X402: &str = "x402";
@@ -467,7 +468,7 @@ impl crate::Db {
             Self::enqueue_event(
                 &mut tx,
                 organization_id,
-                crate::webhooks::DEPOSIT_CREDITED,
+                DEPOSIT_CREDITED,
                 serde_json::json!({
                     "rail": RAIL_X402,
                     "paymentRef": payment.payment_ref,

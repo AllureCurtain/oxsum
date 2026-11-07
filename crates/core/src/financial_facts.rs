@@ -37,6 +37,8 @@
 //! overwrite — it writes the correcting entry, line or row and re-runs the
 //! exception's check; it does not mutate a money column in place.
 
+use std::collections::{BTreeSet, HashMap};
+
 use serde::{Deserialize, Serialize};
 use sqlx::Row;
 use sqlx::postgres::PgRow;
@@ -490,13 +492,11 @@ impl Db {
     /// the distinct `(channel, model, version)` prices, then `itemize` per
     /// row — the discount-free total is what `rated` sums.
     async fn rate_rows(&self, rows: &[RatedRow]) -> Result<i64, WalletError> {
-        let mut wanted: std::collections::BTreeSet<(String, String, i64)> =
-            std::collections::BTreeSet::new();
+        let mut wanted: BTreeSet<(String, String, i64)> = BTreeSet::new();
         for row in rows {
             wanted.insert((row.channel.clone(), row.model.clone(), row.price_version));
         }
-        let mut prices: std::collections::HashMap<(String, String, i64), crate::Price> =
-            std::collections::HashMap::new();
+        let mut prices: HashMap<(String, String, i64), crate::Price> = HashMap::new();
         for (channel, model, version) in wanted {
             if let Some(model_price) =
                 crate::channels::price_row(self.pool(), &channel, &model, Some(version)).await?

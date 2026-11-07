@@ -1,5 +1,8 @@
 //! A03: upgrade a genuine pre-business schema without moving customer ledgers.
 #![allow(clippy::unwrap_used, clippy::expect_used)]
+use std::sync::Arc;
+use std::time::Instant;
+
 use oxsum_core::{Db, NewUser, SecretKey, Tenants, WalletError, signing_key, verify_bundle};
 use serde_json::{Value, json};
 use sqlx::Executor;
@@ -276,7 +279,7 @@ async fn ownership_upgrade_preserves_history_and_maps_new_customers_without_staf
     assert_eq!(mapped, ownership.business.id);
     // A 1,000-customer identity smoke uses the real insertion trigger. Unused
     // customers must not eagerly create 1,000 physical ledger schemas.
-    let start = std::time::Instant::now();
+    let start = Instant::now();
     sqlx::query("INSERT INTO oxsum.organizations (organization_id,tenant_id,name,kind) SELECT id,replace(id::text,'-',''),'capacity-'||n,'personal' FROM (SELECT gen_random_uuid() id,n FROM generate_series(1,1000) n) s").execute(db.pool()).await.unwrap();
     let preview = db.business_migration_preview().await.unwrap();
     assert!(preview.already_mapped);
@@ -293,7 +296,7 @@ async fn ownership_upgrade_preserves_history_and_maps_new_customers_without_staf
         .get(&registered.organization.tenant_id)
         .await
         .unwrap();
-    assert!(std::sync::Arc::ptr_eq(&w, &wallet));
+    assert!(Arc::ptr_eq(&w, &wallet));
     eprintln!(
         "1,000 customer mapping smoke: {:?}; ledger schemas remain 1",
         start.elapsed()

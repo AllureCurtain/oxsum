@@ -40,6 +40,7 @@ use sqlx::Row;
 use time::OffsetDateTime;
 use uuid::Uuid;
 
+use crate::channels::{LAST4, SecretKey};
 use crate::db::Db;
 use crate::error::WalletError;
 
@@ -291,11 +292,11 @@ impl Db {
         &self,
         channel: &str,
         api_key: &str,
-        key: &crate::channels::SecretKey,
+        key: &SecretKey,
     ) -> Result<ChannelCredential, WalletError> {
         let api_key = crate::channels::credential_text(api_key)?;
         let sealed = key.seal(api_key)?;
-        let last4 = crate::channels::last_chars(api_key, crate::channels::LAST4);
+        let last4 = crate::channels::last_chars(api_key, LAST4);
         let mut tx = self.pool().begin().await?;
         crate::channels::lock_configuration(&mut tx).await?;
         let row = sqlx::query(
@@ -323,7 +324,7 @@ impl Db {
         tx.commit().await?;
         Ok(ChannelCredential {
             credential_id: row.try_get("credential_id")?,
-            api_key_last4: crate::channels::last_chars(api_key, crate::channels::LAST4),
+            api_key_last4: crate::channels::last_chars(api_key, LAST4),
             position: i64::from(row.try_get::<i32, _>("position")?),
             status: "active".to_owned(),
             cooldown_until: None,

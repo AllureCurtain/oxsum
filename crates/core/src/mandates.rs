@@ -26,6 +26,7 @@ use sqlx::Row;
 use time::OffsetDateTime;
 use uuid::Uuid;
 
+use crate::channels::SecretKey;
 use crate::db::Db;
 use crate::error::WalletError;
 use crate::sessions::KeyScope;
@@ -282,7 +283,7 @@ impl Db {
         required_policies: Option<Vec<String>>,
         not_before: Option<OffsetDateTime>,
         not_after: OffsetDateTime,
-        secret: &crate::channels::SecretKey,
+        secret: &SecretKey,
     ) -> Result<Option<CreatedMandate>, WalletError> {
         self.create_mandate_authorized(
             organization_id,
@@ -310,7 +311,7 @@ impl Db {
         required_policies: Option<Vec<String>>,
         not_before: Option<OffsetDateTime>,
         not_after: OffsetDateTime,
-        secret: &crate::channels::SecretKey,
+        secret: &SecretKey,
     ) -> Result<Option<CreatedMandate>, WalletError> {
         self.create_mandate_authorized(
             principal.organization().id,
@@ -338,7 +339,7 @@ impl Db {
         required_policies: Option<Vec<String>>,
         not_before: Option<OffsetDateTime>,
         not_after: OffsetDateTime,
-        secret: &crate::channels::SecretKey,
+        secret: &SecretKey,
         principal: Option<&crate::Principal>,
     ) -> Result<Option<CreatedMandate>, WalletError> {
         // One transaction for the whole mint: the seed is lazily written under
@@ -581,7 +582,7 @@ impl Db {
     pub async fn mandate_verifying_key(
         &self,
         key_id: &Uuid,
-        secret: &crate::channels::SecretKey,
+        secret: &SecretKey,
     ) -> Result<Option<VerifyingKey>, WalletError> {
         let seed_sealed: Option<Vec<u8>> =
             sqlx::query_scalar("SELECT mandate_signing_seed FROM oxsum.api_keys WHERE key_id = $1")

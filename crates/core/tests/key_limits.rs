@@ -10,6 +10,9 @@
 
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
+use std::sync::Arc;
+use std::time::Duration;
+
 use oxsum_core::{
     ActingKey, BudgetDuration, Db, KeyConstraints, KeyScope, NewUser, Tenants, Wallet, WalletError,
 };
@@ -60,7 +63,7 @@ async fn db(url: &str, max_connections: u32) -> Db {
 
 /// A user with a funded wallet, and the acting key of their first API key.
 struct World {
-    wallet: std::sync::Arc<Wallet>,
+    wallet: Arc<Wallet>,
     key: ActingKey,
     secret: String,
     creator: Uuid,
@@ -961,7 +964,7 @@ async fn queued_holds_do_not_pin_the_pool() {
     // is the probes, not a wait.
     let mut overlaps = 0u32;
     for _ in 0..10 {
-        tokio::time::sleep(std::time::Duration::from_millis(60)).await;
+        tokio::time::sleep(Duration::from_millis(60)).await;
         let busy = pool.size() - pool.num_idle() as u32;
         if busy > 1 {
             overlaps += 1;

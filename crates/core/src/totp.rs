@@ -31,6 +31,7 @@ use subtle::ConstantTimeEq;
 use time::OffsetDateTime;
 use uuid::Uuid;
 
+use crate::channels::SecretKey;
 use crate::db::Db;
 use crate::error::WalletError;
 use crate::sessions::CreatedSession;
@@ -272,7 +273,7 @@ impl Db {
         &self,
         user_id: Uuid,
         presented: &str,
-        secret: &crate::channels::SecretKey,
+        secret: &SecretKey,
     ) -> Result<Vec<String>, WalletError> {
         let mut tx = self.pool().begin().await?;
         crate::business_staff::lock_business(&mut tx).await?;
@@ -323,7 +324,7 @@ impl Db {
         &self,
         user_id: Uuid,
         presented: &str,
-        secret: &crate::channels::SecretKey,
+        secret: &SecretKey,
     ) -> Result<(), WalletError> {
         let mut tx = self.pool().begin().await?;
         crate::business_staff::lock_business(&mut tx).await?;
@@ -396,7 +397,7 @@ impl Db {
         &self,
         challenge_token: &str,
         presented: &str,
-        secret: &crate::channels::SecretKey,
+        secret: &SecretKey,
     ) -> Result<CreatedSession, WalletError> {
         let mut tx = self.pool().begin().await?;
         crate::business_staff::lock_business(&mut tx).await?;

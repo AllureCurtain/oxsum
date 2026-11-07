@@ -11,7 +11,7 @@
 //! ([`SecretKey`]): the database holds a nonce and a ciphertext, never the key, and a dump of
 //! `oxsum.channels` cannot call upstream.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 
 use aes_gcm::aead::{Aead, KeyInit};
 use aes_gcm::{Aes256Gcm, Key, Nonce};
@@ -24,9 +24,12 @@ use time::OffsetDateTime;
 use url::Url;
 use uuid::Uuid;
 
-use crate::billing::{Price, PriceBook};
+use crate::adapters::OPENAI;
+use crate::billing::{BillingMode, Price, PriceBook};
+use crate::cache::SETTINGS_KEY;
 use crate::db::Db;
 use crate::error::WalletError;
+use crate::pools::{ChannelCredential, PoolCredential};
 use crate::routing::RouteStats;
 
 /// The longest a channel name may be; it appears in the admin URL path.
@@ -194,7 +197,7 @@ pub struct Channel {
     /// ordered by `position`, each showing only its last four plus the health
     /// state the pick reads. An empty pool is a channel that cannot serve —
     /// `set_channel` never leaves one, but a direct table edit could.
-    pub credentials: Vec<crate::pools::ChannelCredential>,
+    pub credentials: Vec<ChannelCredential>,
     /// The last four of the admin billing credential (issue #283), `None` when
     /// the channel carries none — the read-back an operator uses to confirm a
     /// billing key is attached without ever seeing it.
@@ -293,7 +296,7 @@ pub struct Serving {
     /// attempts: the conversation's sticky hit leads, then least-recently-used.
     /// Empty when every credential sits out — a serving the gateway can still
     /// route to but cannot call, which is an upstream failure like any other.
-    pub credentials: Vec<crate::pools::PoolCredential>,
+    pub credentials: Vec<PoolCredential>,
     /// The channel's `settings` blob, for [`crate::CachePolicy::of`] — carried
     /// so a route check needs no second read.
     pub settings: serde_json::Value,
@@ -565,7 +568,7 @@ impl Db {
     ) -> Result<(), WalletError> {
         if let Some(policy) = policy {
             crate::CachePolicy::of(Some(&serde_json::json!({
-                crate::cache::SETTINGS_KEY: policy
+                SETTINGS_KEY: policy
             })))?;
         }
         let mut tx = self.pool().begin().await?;
@@ -895,14 +898,12 @@ impl Db {
         model: &str,
         fallbacks: &[String],
     ) -> Result<(), WalletError> {
-        let served: std::collections::HashSet<String> =
-            self.served_models().await?.into_iter().collect();
-        let aliased: std::collections::HashSet<String> =
-            sqlx::query_scalar("SELECT alias FROM oxsum.model_aliases")
-                .fetch_all(self.pool())
-                .await?
-                .into_iter()
-                .collect();
+        let served: HashSet<String> = self.served_models().await?.into_iter().collect();
+        let aliased: HashSet<String> = sqlx::query_scalar("SELECT alias FROM oxsum.model_aliases")
+            .fetch_all(self.pool())
+            .await?
+            .into_iter()
+            .collect();
         // A name resolves if it is a priced model or a registered alias — an
         // alias resolves to a channel's upstream model, so it is servable by
         // definition even without a price row of its own.
@@ -1145,12 +1146,12 @@ impl Db {
         connection: &mut sqlx::PgConnection,
         channel_id: Uuid,
         key: &SecretKey,
-    ) -> Result<Vec<crate::pools::PoolCredential>, WalletError> {
+    ) -> Result<Vec<PoolCredential>, WalletError> {
         crate::pools::healthy_credentials(connection, channel_id)
             .await?
             .into_iter()
             .map(|(credential_id, sealed, position, last_used_at)| {
-                Ok(crate::pools::PoolCredential {
+                Ok(PoolCredential {
                     credential_id,
                     api_key: key.open(&sealed)?,
                     position,
@@ -1367,7 +1368,7 @@ impl Db {
         api_key: &str,
         key: &SecretKey,
     ) -> Result<bool, WalletError> {
-        self.seed_channel_as(book, base_url, api_key, crate::adapters::OPENAI, key)
+        self.seed_channel_as(book, base_url, api_key, OPENAI, key)
             .await
     }
 
@@ -1805,7 +1806,7 @@ pub(crate) fn price_from_row(row: &sqlx::postgres::PgRow) -> Result<Price, Walle
             .map_err(|error| {
                 WalletError::Misconfigured(format!("stored upstream prices: {error}"))
             })?,
-        mode: crate::billing::BillingMode::parse(&mode).ok_or_else(|| {
+        mode: BillingMode::parse(&mode).ok_or_else(|| {
             WalletError::Misconfigured(format!("a stored price has unknown mode {mode:?}"))
         })?,
         rules: rules

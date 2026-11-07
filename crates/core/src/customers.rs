@@ -8,6 +8,9 @@ use sqlx::{Postgres, Row, Transaction};
 use time::OffsetDateTime;
 use uuid::Uuid;
 
+use crate::wallet::ORG_ADMISSION_LOCK;
+use crate::webhooks::ORG_SUSPENDED;
+
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct BusinessCustomer {
@@ -93,7 +96,7 @@ async fn customer(
 }
 async fn admission_lock(tx: &mut Transaction<'_, Postgres>, id: Uuid) -> Result<(), WalletError> {
     sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1 || $2::text,0))")
-        .bind(crate::wallet::ORG_ADMISSION_LOCK)
+        .bind(ORG_ADMISSION_LOCK)
         .bind(id.to_string())
         .execute(&mut **tx)
         .await?;
@@ -285,7 +288,7 @@ impl Db {
             Self::enqueue_event(
                 &mut tx,
                 id,
-                crate::webhooks::ORG_SUSPENDED,
+                ORG_SUSPENDED,
                 json!({"organizationId":id,"reason":"archived"}),
             )
             .await?;
@@ -339,7 +342,7 @@ impl Db {
             Self::enqueue_event(
                 &mut tx,
                 id,
-                crate::webhooks::ORG_SUSPENDED,
+                ORG_SUSPENDED,
                 json!({"organizationId":id,"reason":"manual"}),
             )
             .await?;

@@ -45,6 +45,8 @@
 //!   root its anchor committed: a late settlement or a hand edit rewrote a leaf
 //!   the ledger had already fixed (issue #340)
 
+use std::collections::BTreeMap;
+
 use serde::Serialize;
 use sqlx::Row;
 use time::OffsetDateTime;
@@ -284,8 +286,7 @@ impl Db {
             .bind(day)
             .fetch_all(self.pool())
             .await?;
-            let mut by_customer: std::collections::BTreeMap<String, Vec<Vec<u8>>> =
-                std::collections::BTreeMap::new();
+            let mut by_customer: BTreeMap<String, Vec<Vec<u8>>> = BTreeMap::new();
             for (end_user, leaf) in leaves {
                 by_customer.entry(end_user).or_default().push(leaf);
             }

@@ -22,7 +22,7 @@
 //! the way a dead one sheds attempts.
 
 use std::collections::HashMap;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use crate::db::Db;
@@ -201,7 +201,7 @@ impl RouteStats {
 
 /// `Arc`-shared so [`Db`]'s cheap clones all reach the one window — the same
 /// sharing [`crate::pools::SharedAffinity`] uses for the affinity map.
-pub type SharedRouteStats = std::sync::Arc<RouteStats>;
+pub type SharedRouteStats = Arc<RouteStats>;
 
 impl Db {
     /// The routing-health store every pick reads and every attempt writes.

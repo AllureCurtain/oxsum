@@ -26,11 +26,13 @@
 //! moderation callout: a screening endpoint that is down must not admit an
 //! unscreened prompt, and refusing before the hold costs the caller nothing.
 
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use regex::RegexSet;
 use uuid::Uuid;
 
+use crate::channels::SecretKey;
 use crate::db::Db;
 use crate::error::WalletError;
 
@@ -262,7 +264,7 @@ impl Db {
     /// or read in the clear. `Ok(None)` means the policy keeps none.
     pub fn open_guardrail_secret(
         policy: &GuardrailPolicy,
-        secret: &crate::channels::SecretKey,
+        secret: &SecretKey,
     ) -> Result<Option<String>, WalletError> {
         policy
             .secret_sealed
@@ -402,9 +404,9 @@ pub trait Guardrail: Send + Sync {
 #[derive(Default)]
 pub struct GuardrailSet {
     /// Every policy by name — the impls `for_turn` resolves bindings against.
-    policies: std::collections::HashMap<String, Arc<dyn Guardrail>>,
+    policies: HashMap<String, Arc<dyn Guardrail>>,
     /// `scope`/`target` → the ordered policy names that scope runs.
-    bindings: std::collections::HashMap<(String, String), Vec<String>>,
+    bindings: HashMap<(String, String), Vec<String>>,
 }
 
 impl GuardrailSet {
@@ -459,7 +461,7 @@ impl GuardrailSet {
         names.extend(mandate_required.iter().map(String::as_str));
         // De-duplicate preserving order — a policy bound on both the channel
         // and the key runs once, not twice.
-        let mut seen = std::collections::HashSet::new();
+        let mut seen = HashSet::new();
         names
             .into_iter()
             .filter(|name| seen.insert(*name))

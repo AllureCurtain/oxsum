@@ -19,6 +19,7 @@ use doubleentry::witness::{KeyName, NoteError, SignedTreeHead};
 use doubleentry::{ConsistencyProof, Hash, TreeHead};
 use time::OffsetDateTime;
 
+use crate::billing::Price;
 use crate::channels::ModelPrice;
 use crate::error::WalletError;
 
@@ -207,7 +208,7 @@ struct PriceRowV1<'a> {
     model: &'a str,
     version: i64,
     weight: i64,
-    price: &'a crate::billing::Price,
+    price: &'a Price,
 }
 
 /// Renders the canonical row bytes for `channel`'s `price` record.

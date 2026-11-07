@@ -36,6 +36,7 @@ use uuid::Uuid;
 use crate::business_staff as authority;
 use crate::db::Db;
 use crate::error::WalletError;
+use crate::plans::SoldPlan;
 
 fn invalid(message: &str) -> WalletError {
     WalletError::InvalidInput(message.into())
@@ -700,7 +701,7 @@ impl Db {
         wallet: &crate::Wallet,
         plan_row: &PgRow,
         period: &ClosingPeriod,
-        sold: &crate::plans::SoldPlan,
+        sold: &SoldPlan,
         on: time::Date,
     ) -> Result<Option<Uuid>, WalletError> {
         let customer_plan_id: Uuid = plan_row.try_get("customer_plan_id")?;
