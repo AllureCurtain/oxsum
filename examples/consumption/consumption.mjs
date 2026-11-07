@@ -9,7 +9,6 @@
  *
  *   OXSUM_BASE_URL=http://127.0.0.1:3000 \
  *   OXSUM_ADMIN_TOKEN=<the deployment's OXSUM_ADMIN_TOKEN> \
- *   OXSUM_MODEL=<a priced model the gateway serves, default from /v1/models> \
  *   node consumption.mjs
  *
  * The admin token is required for the two deployment-authority steps — the
@@ -40,35 +39,16 @@
  */
 
 import { createServer } from "node:http";
+import { configureFixtureRoute, createClient, HttpError, provisionCustomer, sessionOf } from "./bootstrap.mjs";
 
 const BASE = (process.env.OXSUM_BASE_URL ?? "http://127.0.0.1:3000").replace(
   /\/+$/,
   "",
 );
 const ADMIN_TOKEN = process.env.OXSUM_ADMIN_TOKEN;
-const MODEL_ENV = process.env.OXSUM_MODEL;
-const CUSTOMER_EMAIL = `customer-${crypto.randomUUID().slice(0, 8)}@example.test`;
-const CUSTOMER_PASSWORD = "customer-password-001";
 const TOPUP_MINOR = 10_000_000; // 10 credits — enough for several demo turns.
 const CHANNEL_NAME = `example-${crypto.randomUUID().slice(0, 8)}`;
-const STUB_MODEL = "example-chat";
-
-if (!ADMIN_TOKEN) {
-  console.error("Set OXSUM_ADMIN_TOKEN to the deployment's admin token.");
-  process.exit(2);
-}
-{
-  const parsed = new URL(BASE);
-  const loopback = ["localhost", "127.0.0.1", "::1"].includes(parsed.hostname);
-  if (parsed.username || parsed.password || parsed.search || parsed.hash) {
-    console.error("OXSUM_BASE_URL must not carry credentials, query or fragment");
-    process.exit(2);
-  }
-  if (parsed.protocol !== "https:" && !(parsed.protocol === "http:" && loopback)) {
-    console.error("Use HTTPS, or HTTP on loopback for an isolated test.");
-    process.exit(2);
-  }
-}
+const STUB_MODEL = `example-chat-${crypto.randomUUID().slice(0, 8)}`;
 
 let failures = 0;
 function report(label, ok, detail) {
@@ -77,147 +57,17 @@ function report(label, ok, detail) {
   return ok;
 }
 
-class HttpError extends Error {
-  constructor(status, body) {
-    super(`HTTP ${status}: ${JSON.stringify(body)}`);
-    this.status = status;
-    this.body = body;
-  }
-}
-
-async function call(path, { method = "GET", token, session, body } = {}) {
-  const headers = {};
-  if (body !== undefined) headers["content-type"] = "application/json";
-  if (token) headers.authorization = `Bearer ${token}`;
-  if (session) headers.cookie = `oxsum_session=${session}`;
-  const response = await fetch(BASE + path, {
-    method,
-    headers,
-    body: body === undefined ? undefined : JSON.stringify(body),
-    redirect: "manual",
-  });
-  const text = await response.text();
-  const json = text ? JSON.parse(text) : null;
-  if (!response.ok) throw new HttpError(response.status, json ?? text);
-  return { json, setCookie: response.headers.get("set-cookie") };
-}
-
-const key = () => `consumption-${crypto.randomUUID()}`;
-const sessionOf = (res) =>
-  (res.setCookie ?? "").split(";")[0].replace(/^oxsum_session=/, "");
+const call = createClient(BASE);
 
 async function main() {
-  // 1 — owner setup: the deployment may already be initialized (the seeded
-  // demo), in which case the token mint is refused and we log the owner in.
-  let ownerSession;
-  const ownerEmail = `owner-${crypto.randomUUID().slice(0, 8)}@example.test`;
-  const ownerPassword = "owner-password-0001";
-  const mint = await call("/api/v1/admin/business/setup-tokens", {
-    method: "POST",
-    token: ADMIN_TOKEN,
-    body: { idempotencyKey: key(), ownerEmail },
-  }).catch((e) => e);
-  if (mint instanceof HttpError && mint.status === 409) {
-    // A business already exists — the walkthrough needs its owner's session,
-    // which on a seeded demo is the documented login.
-    const login = await call("/api/v1/auth/login", {
-      method: "POST",
-      body: {
-        email: process.env.OXSUM_OWNER_EMAIL ?? "admin@oxsum.local",
-        password: process.env.OXSUM_OWNER_PASSWORD ?? "admin-password",
-      },
-    }).catch((e) => e);
-    if (login instanceof HttpError) {
-      report("owner login on an initialized business", false, login.message);
-      process.exit(1);
-    }
-    ownerSession = sessionOf(login);
-    report("business already initialized; owner logged in", true);
-  } else if (mint instanceof HttpError) {
-    report("setup-token mint", false, mint.message);
-    process.exit(1);
-  } else {
-    const setupToken = mint.json.data.token;
-    const reg = await call("/api/v1/business/setup/register", {
-      method: "POST",
-      body: {
-        token: setupToken,
-        businessName: "Consumption Example Co.",
-        email: ownerEmail,
-        password: ownerPassword,
-      },
-    });
-    report("business owner registered via setup token", reg.json.data.registration !== null);
-    const login = await call("/api/v1/auth/login", {
-      method: "POST",
-      body: { email: ownerEmail, password: ownerPassword },
-    });
-    ownerSession = sessionOf(login);
-  }
-
-  // Owner sessions act in business context.
-  await call("/api/v1/session/context", {
-    method: "POST",
-    session: ownerSession,
-    body: { idempotencyKey: key(), context: "business" },
+  const setup = await provisionCustomer(call, {
+    adminToken: ADMIN_TOKEN, amountMinor: TOPUP_MINOR,
+    ownerEmail: process.env.OXSUM_OWNER_EMAIL,
+    ownerPassword: process.env.OXSUM_OWNER_PASSWORD,
   });
-
-  // 2 — invite a customer; the reservation carries the new organization id.
-  const invite = await call("/api/v1/business/customer-invitations", {
-    method: "POST",
-    session: ownerSession,
-    body: {
-      idempotencyKey: key(),
-      email: CUSTOMER_EMAIL,
-      name: "Consumption Example Customer",
-      externalId: `ext-${crypto.randomUUID().slice(0, 8)}`,
-      reason: "consumption walkthrough",
-    },
-  });
-  const invitation = invite.json.data;
-  report(
-    "customer invitation reserves the organization",
-    typeof invitation.token === "string" && typeof invitation.organizationId === "string",
-    `organizationId=${invitation.organizationId}`,
-  );
-
-  // 3 — the customer redeems; the answer carries its one-shown key secret.
-  const redeem = await call("/api/v1/invitations/redeem", {
-    method: "POST",
-    body: {
-      token: invitation.token,
-      email: CUSTOMER_EMAIL,
-      password: CUSTOMER_PASSWORD,
-    },
-  });
-  const registration = redeem.json.data;
-  const customerKey = registration.apiKey?.secret;
-  report(
-    "customer redeems and receives its API key",
-    typeof customerKey === "string" && customerKey.length > 0,
-    `organization=${registration.organization?.id}`,
-  );
-
-  // 4 — the deployment records a manual receipt: the admin-token call that
-  // stands in for a payment rail on an isolated deployment.
-  const receipt = await call(
-    `/api/v1/admin/organizations/${registration.organization.id}/manual-receipts`,
-    {
-      method: "POST",
-      token: ADMIN_TOKEN,
-      body: {
-        idempotencyKey: key(),
-        amountMinor: TOPUP_MINOR,
-        reference: `consumption-example-${crypto.randomUUID()}`,
-        reason: "consumption walkthrough top-up",
-      },
-    },
-  );
-  report(
-    "manual receipt credits the wallet",
-    receipt.json.data?.amount === String(TOPUP_MINOR) ||
-      receipt.json.data !== undefined,
-  );
+  const { ownerSession, ownerEmail, ownerPassword, registration } = setup;
+  const customerKey = registration.apiKey.secret;
+  report("owner consent, customer invitation and exact local receipt replay", true);
 
   // 5 — provision a reachable upstream: the seeded demo channel points at
   // 127.0.0.1:9 on purpose so seeded traffic cannot leak, so the walkthrough
@@ -266,58 +116,15 @@ async function main() {
   await new Promise((resolve) => stub.listen(0, "127.0.0.1", resolve));
   const stubPort = stub.address().port;
   try {
-    const channel = await call("/api/v1/business/channels", {
-      method: "POST",
-      session: ownerSession,
-      body: {
-        idempotencyKey: key(),
-        reason: "consumption example loopback upstream",
-        config: {
-          name: CHANNEL_NAME,
-          baseUrl: `http://127.0.0.1:${stubPort}/v1`,
-          protocol: "openai",
-          apiKeys: ["example-key-0001"],
-          destinationPolicy: {
-            network: "internal",
-            allowedIps: ["127.0.0.1"],
-          },
-        },
-      },
+    await configureFixtureRoute(call, {
+      ownerSession, organizationId: registration.organization.id,
+      channelName: CHANNEL_NAME, model: STUB_MODEL,
+      upstream: `http://127.0.0.1:${stubPort}/v1`,
+      price: { mode: "chat", inputPricePerMillion: 1_000,
+        outputPricePerMillion: 2_000, maxOutputTokens: 1_024 },
     });
-    report(
-      "channel to the loopback stub is created",
-      channel.json.data !== undefined,
-      CHANNEL_NAME,
-    );
-
-    const price = await call(
-      `/api/v1/business/channels/${CHANNEL_NAME}/prices`,
-      {
-        method: "POST",
-        session: ownerSession,
-        body: {
-          idempotencyKey: key(),
-          reason: "consumption example chat price",
-          config: {
-            model: STUB_MODEL,
-            weight: 100,
-            price: {
-              mode: "chat",
-              inputPricePerMillion: 1_000,
-              outputPricePerMillion: 2_000,
-              maxOutputTokens: 1_024,
-            },
-          },
-        },
-      },
-    );
-    report(
-      "a chat price is appended for the stub model",
-      price.json.data !== undefined,
-      STUB_MODEL,
-    );
-
-    const model = MODEL_ENV ?? STUB_MODEL;
+    report("loopback route and explicit customer sale assignment", true);
+    const model = STUB_MODEL;
     const served = await call("/v1/models", { token: customerKey });
     report(
       "the priced model is served on the gateway",
@@ -354,7 +161,7 @@ async function main() {
     // records take the consumption key.
     const customerLogin = await call("/api/v1/auth/login", {
       method: "POST",
-      body: { email: CUSTOMER_EMAIL, password: CUSTOMER_PASSWORD },
+      body: { email: setup.customerEmail, password: setup.customerPassword },
     });
     const customerSession = sessionOf(customerLogin);
     const bal = await call("/api/v1/balance", { session: customerSession });
@@ -401,10 +208,9 @@ async function main() {
         `HTTP ${mintBundle.status}`,
       );
 
-      // The day the turn booked closed at the start of this UTC day, so the
-      // fully-ended span is yesterday — on a seeded database that span holds
-      // the seeded history; on a fresh one it mints an empty-day bundle, and
-      // either way the verifier exercises the real download path.
+      // This freshly invited customer had no turns yesterday. This empty
+      // closed-day bundle exercises the export path, not today's bill.
+      // demo/demo.py verifies its immediate settlement separately.
       const yesterday = new Date(Date.now() - 86400_000)
         .toISOString()
         .slice(0, 10);
@@ -479,7 +285,7 @@ async function main() {
   // owner it logged in as).
   console.log(`OXSUM_CUSTOMER_ID=${registration.organization.id}`);
   console.log(`OXSUM_CUSTOMER_KEY=${customerKey}`);
-  if (ownerEmail && !(mint instanceof HttpError)) {
+  if (setup.createdOwner) {
     console.log(`OXSUM_OWNER_EMAIL=${ownerEmail}`);
     console.log(`OXSUM_OWNER_PASSWORD=${ownerPassword}`);
   }

@@ -1,7 +1,7 @@
 # Consumption example
 
-A single-file Node walkthrough (`consumption.mjs`, Node ≥ 20.16) that drives
-the whole customer journey against a **live** deployment and asserts each
+A Node walkthrough (`consumption.mjs`, Node ≥ 20.16) that drives
+the whole customer journey against an explicitly selected **isolated test** deployment and asserts each
 step out loud. It depends on the `verify-oxsum-bill` package for the final
 offline check — install the packed tarball (`scripts/check-verify-consumer.sh`
 builds one, or `npm install ../../web/verify-sdk` after a build).
@@ -11,7 +11,7 @@ builds one, or `npm install ../../web/verify-sdk` after a build).
 1. **Owner setup.** Mints a setup token under the deployment's admin token
    and registers the business owner — or, on an already-initialized
    deployment, logs the owner named by `OXSUM_OWNER_EMAIL`/`OXSUM_OWNER_PASSWORD`
-   in (defaulting to the seeded demo's `admin@oxsum.local`/`admin-password`).
+   in. An initialized deployment requires both credentials explicitly; there is no seeded-password fallback.
    `/api/v1/business/*` calls take the owner's session in business context.
 2. **Invite a customer.** `POST /api/v1/business/customer-invitations`
    reserves the customer UUID and returns the one-shown token.
@@ -25,7 +25,7 @@ builds one, or `npm install ../../web/verify-sdk` after a build).
    script serves its own `node:http` stub on 127.0.0.1 and registers a
    channel to it — `POST /api/v1/business/channels` with an explicit
    `internal` destination policy — plus a chat price through
-   `POST /api/v1/business/channels/{name}/prices`.
+   `POST /api/v1/business/channels/{name}/prices`. It publishes a sale book and explicitly assigns it to this customer.
 6. **Call the gateway.** `POST /v1/chat/completions` under the customer's
    `oxs-` key; asserts `usage` comes back.
 7. **Read back.** `GET /api/v1/balance` (session) shows the settled charge;
@@ -45,8 +45,7 @@ OXSUM_ADMIN_TOKEN=<the deployment's admin token> \
 node consumption.mjs
 ```
 
-`OXSUM_MODEL` pins the model the gateway call asks for; unset, the script
-uses the stub model it priced. The run's last lines export
+The script always uses the local stub model it priced; it cannot select a paid model. The run's last lines export
 `OXSUM_CUSTOMER_ID`/`OXSUM_CUSTOMER_KEY` (and `OXSUM_OWNER_*` when it
 registered the business itself) so a caller — `scripts/verify-examples.sh`
 does — can feed the fresh customer to the scoped-management example.
@@ -58,11 +57,13 @@ substitute and is documented as the stub. Payment-order coverage lives in
 [`../webhook-tools`](../webhook-tools/README.md), which drives a merchant's
 signed event intake end to end.
 
+The owner/customer/funding bootstrap is shared with `demo/demo.py` through `bootstrap.mjs`. For a fresh database, an SDK stream and verification of that same immediate settlement after the server stops, use the README demo command. The closed-day bundle below is empty for a newly created customer and does **not** verify the turn just made.
+
 ## What a run proves
 
 - Invitation → registration → first key is atomic and key-secret-once.
 - The consumption key alone reaches `/v1/*`, `/api/v1/billing-records`,
-  `/api/v1/balance` reads — no session needed for the machine surface.
+  safe catalog and evidence reads. Balance requires the customer session.
 - The admin token and the customer credential are different authorities: the
   customer could not have minted its own membership or funds.
 - The evidence bundle verifies offline against the key the bundle publishes —

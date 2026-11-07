@@ -37,6 +37,7 @@ Updated: 2026-11-08
 - [ ] [#748](https://github.com/AllureCurtain/oxsum/issues/748) — N03.a: Initial owner browser consent and setup recovery implemented; local/browser checks passed, review pending.
 
 - [ ] [#754](https://github.com/AllureCurtain/oxsum/issues/754) — Owner provider connection and credential editor (N04.a): implemented with generated contracts, build/strict Clippy, 11 backend checks and isolated-listener replay/rotation checks; browser acceptance pending.
+- [ ] [#728](https://github.com/AllureCurtain/oxsum/issues/728) — N02: Isolated current-authority demo and shared bootstrap implemented; exact settlement/offline rejection/isolation checks passed, review pending.
 
 - [x] [#723](https://github.com/AllureCurtain/oxsum/issues/723) — Serialized promo writers on the ledger append advisory lock before their promo row locks, fixing the post-merge hold/expiry deadlock; integrated in PR #724.
 
