@@ -111,6 +111,24 @@ replaying it does not send again. A deliberate new check is a new attempt.
 Channel model prices describe provider cost; customers use separate sale terms.
 Admin staff can read the redacted channel list; finance/support/viewer cannot
 open it, and only owners can change connections/credentials or run HEAD checks.
+## Business identity and customer help
+
+As the business owner, open **Business → Business profile**. Review the public
+name, contact email, help page, logo and accent, then choose **Edit profile**.
+The contact address and help link appear on the login page and both portals.
+They are public; they do not configure outgoing mail or confirm that mail works.
+Use an absolute HTTP(S) URL without embedded passwords. Leave optional fields
+blank to clear them, and use a dark accent that keeps white button text readable.
+
+The first save stores all fields together. Later environment changes cannot
+overwrite them. Before saving, the page identifies unsaved setup/deployment
+defaults. Other staff can read the profile; only the owner sees the editor.
+
+A concurrent edit refuses the stale draft. Review the latest profile after
+**Discard draft and reload**, then reopen the editor. For a network failure,
+keep the draft open and retry unchanged to recover the same operation. Editing
+any field starts a new operation; discarding loses that draft's retry identity.
+Changing a public name does not rewrite old bills, currency or payment terms.
 
 ## Dashboard
 

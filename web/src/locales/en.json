@@ -1456,7 +1456,8 @@
       "plans": "Plans",
       "staff": "Staff",
       "integrations": "Integrations",
-      "audit": "Audit"
+      "audit": "Audit",
+      "profile": "Business profile"
     },
     "roles": {
       "owner": "Owner",
@@ -1881,6 +1882,29 @@
       "next": "Next page",
       "upsertHelp": "This operation sets a connection by its unique name. If that name already exists, its entire credential pool is replaced. An endpoint or protocol change also clears its billing credential. To preserve an existing pool, cancel and edit that connection from the list.",
       "close": "Close"
+    },
+    "profile": {
+      "title": "Business profile",
+      "intro": "One public identity for login and customer/staff portals. Only the business owner can save it. Profile changes do not change billing, currency or historical documents.",
+      "current": "Current public identity",
+      "edit": "Edit profile",
+      "name": "Business name",
+      "contact": "Public contact email",
+      "publicContact": "Shown to customers. This does not configure email delivery. Leave blank to clear.",
+      "help": "Help URL",
+      "logo": "Logo URL",
+      "urlHelp": "An absolute HTTP(S) URL without embedded credentials. Leave blank to clear.",
+      "accent": "Accent color",
+      "accentHelp": "Optional #rrggbb. Use a dark color with readable white button text; leave blank for the standard palette.",
+      "saveHelp": "Editing revision {{revision}}. Saving fixes the complete profile in the database, including empty optional fields; future environment changes cannot overwrite it.",
+      "retryHelp": "Draft preserved. Retry unchanged to recover the same operation. If another editor changed the profile, discard and reload before reviewing a new draft.",
+      "discard": "Discard draft and reload",
+      "saved": "Profile saved. Current identity has been requested again; historical documents are unchanged.",
+      "defaults": "Unsaved defaults: the setup name and deployment branding. Revision {{revision}}.",
+      "stored": "Owner-managed profile. Revision {{revision}}. Environment branding no longer overrides these values.",
+      "reload": "Reload",
+      "notSet": "Not configured",
+      "helpLink": "Contact and help"
     }
   },
   "setup": {

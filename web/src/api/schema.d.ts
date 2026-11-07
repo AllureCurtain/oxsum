@@ -7083,13 +7083,11 @@ export interface paths {
         };
         /**
          * The deployment's seller branding
-         * @description The public branding the customer portal applies (issue #614, T23): the
-         *     seller's display name, an optional logo URL and an optional accent
-         *     color, configured through `OXSUM_BUSINESS_NAME`,
-         *     `OXSUM_BRAND_LOGO_URL` and `OXSUM_BRAND_ACCENT_COLOR`. No credential —
-         *     the login and register pages brand themselves before a session exists.
-         *     Fields the operator never set answer `null`; `name` falls back to the
-         *     deployment default.
+         * @description Public effective seller identity. An explicitly saved business profile
+         *     overrides all environment branding, including optional fields saved as
+         *     null. Before the first save, an initialized business uses its setup name;
+         *     otherwise name/logo/accent use deployment defaults. Contact/help default
+         *     to null. This read never changes historical documents, prices or money.
          */
         get: {
             parameters: {
@@ -7910,6 +7908,84 @@ export interface paths {
         get: operations["businessContext"];
         put?: never;
         post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/business/profile": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Read effective business identity and profile revision
+         * @description Current personal business session with overviewRead. Defaults resolve identically to public branding; source and revision distinguish unsaved defaults from owner-managed values.
+         */
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Effective profile */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            data: components["schemas"]["BusinessProfile"];
+                        };
+                    };
+                };
+                401: components["responses"]["Error"];
+                403: components["responses"]["Error"];
+                500: components["responses"]["Error"];
+            };
+        };
+        put?: never;
+        /**
+         * Save the complete owner-managed public profile
+         * @description Current profileWrite owner capability and satisfied second factor are checked in the same transaction as revision, audit and immutable result. expectedRevision prevents lost edits; exact retry returns the original profile receipt even after later changes. Changed reuse conflicts. Every optional field must be present; null clears it. No historical document or currency/conversion is changed.
+         */
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": components["schemas"]["BusinessProfileRequest"];
+                };
+            };
+            responses: {
+                /** @description Immutable saved profile receipt */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            data: components["schemas"]["BusinessProfileMutation"];
+                        };
+                    };
+                };
+                400: components["responses"]["Error"];
+                401: components["responses"]["Error"];
+                403: components["responses"]["Error"];
+                409: components["responses"]["Error"];
+                500: components["responses"]["Error"];
+            };
+        };
         delete?: never;
         options?: never;
         head?: never;
@@ -14968,12 +15044,42 @@ export type webhooks = Record<string, never>;
 export interface components {
     schemas: {
         Branding: {
-            /** @description the seller's display name — `OXSUM_BUSINESS_NAME`, or the deployment default when unset */
+            /** @description Effective public seller name; saved profile, setup name, or deployment default in that order. */
             name: string;
-            /** @description an optional logo image URL — `OXSUM_BRAND_LOGO_URL` */
+            /** @description Optional absolute HTTP(S) image URL without user info or control characters; null clears a saved override. */
             logoUrl: string | null;
-            /** @description an optional accent color as `#rrggbb` — `OXSUM_BRAND_ACCENT_COLOR`; the portal maps it onto the `primary` token */
+            /** @description Optional accent color as */
             accentColor: string | null;
+            /**
+             * Format: email
+             * @description Public customer support address, not a secret or an outbound mail configuration.
+             */
+            contactEmail: string | null;
+            /** @description Public help link; absolute HTTP(S) without user info or control characters. */
+            helpUrl: string | null;
+        };
+        BusinessProfile: {
+            /** Format: uuid */
+            businessId: string;
+            /** Format: int64 */
+            revision: number;
+            /** @enum {string} */
+            source: "defaults" | "stored";
+            /** Format: date-time */
+            updatedAt: string | null;
+            branding: components["schemas"]["Branding"];
+        };
+        BusinessProfileRequest: {
+            idempotencyKey: string;
+            reason: string;
+            /** Format: int64 */
+            expectedRevision: number;
+            branding: components["schemas"]["Branding"];
+        };
+        BusinessProfileMutation: {
+            /** Format: uuid */
+            id: string;
+            profile: components["schemas"]["BusinessProfile"];
         };
         BusinessCustomer: {
             /** Format: uuid */
@@ -15022,7 +15128,7 @@ export interface components {
         /** @enum {string} */
         BusinessRole: "owner" | "admin" | "finance" | "support" | "viewer";
         /** @enum {string} */
-        BusinessCapability: "overviewRead" | "customersRead" | "customersWrite" | "customersSuspend" | "requestsRead" | "catalogWrite" | "routingWrite" | "providerSecretsWrite" | "commercialWrite" | "fundsWrite" | "refundsWrite" | "reportsRead" | "merchantSecretsWrite" | "staffManage" | "ownershipTransfer" | "registrationWrite" | "integrationsManage";
+        BusinessCapability: "overviewRead" | "customersRead" | "customersWrite" | "customersSuspend" | "requestsRead" | "catalogWrite" | "routingWrite" | "providerSecretsWrite" | "commercialWrite" | "fundsWrite" | "refundsWrite" | "reportsRead" | "merchantSecretsWrite" | "staffManage" | "ownershipTransfer" | "registrationWrite" | "integrationsManage" | "profileWrite";
         BusinessPrincipal: {
             /** Format: uuid */
             businessId: string;

@@ -135,3 +135,11 @@ checkout.
 straight from core, plus the two overview figures no endpoint carried.
 
 Invitation consent (#634): Members creates bound invitation links for both new and existing users. `/app/invite` previews the offered customer role, retains the one-time registration key and supports explicit signed-in acceptance. Password/TOTP login preserves the invitation return path. Browser desktop/mobile/keyboard evidence remains pending; the configured Turnstile widget is part of T23 portal completion.
+
+Business profile (#756): `/app/business#business/profile` reads the effective
+seller identity; `profileWrite` permits the owner editor. Complete replacements
+carry the displayed revision, reason and a stable retry key. Explicit nulls
+clear optional fields, and saved values supersede deployment defaults. Login
+and both portal contexts share the public contact/help identity. Frontend build
+and backend coverage passed; browser layout/keyboard/locale acceptance remains
+pending in [the evidence record](../docs/roadmap/operator-launch/evidence/business-profile.md).

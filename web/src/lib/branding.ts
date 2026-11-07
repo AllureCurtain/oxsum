@@ -5,11 +5,9 @@
 // whole component layer follows without a prop thread. A deployment that
 // configures nothing leaves the tokens at their compiled-in values.
 
-export interface Branding {
-  name: string;
-  logoUrl: string | null;
-  accentColor: string | null;
-}
+import type { components } from "../api/schema";
+
+export type Branding = components["schemas"]["Branding"];
 
 /** `#rrggbb` → `[r, g, b]` channel triple, or `null` on a malformed value the
  * server's validation would already have refused. */

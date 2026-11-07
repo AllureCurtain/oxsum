@@ -2730,3 +2730,23 @@ runner's independent verifier exercises retained genuine fixtures after its
 server and database stop. The absent witness is reported separately; this gate
 does not claim a fresh closed-day export contains the call just made or that
 local signed callbacks are real payment-provider certification.
+## 2026-11-08 — Persist public business identity after explicit owner save (#756)
+
+- Supersedes T23's environment-only identity decision above: business owners
+  now manage the public identity through their own session, as accepted in N03.
+- Store the profile on `oxsum.businesses` with a monotonically increasing
+  revision; revision zero means unsaved defaults. This distinguishes explicit
+  null clearing from environment fallback without per-field precedence flags.
+- The accepted owner-setup name is authoritative for initialized businesses.
+  Unsaved logo/accent retain environment defaults. An explicit full save fixes
+  every value; environment changes never overwrite it. No boot-time job writes
+  or races the owner, and migration preserves existing customer/ledger data.
+- Reuse the business lock/current TOTP authority and immutable mutation audit.
+  Add a narrowly named owner-only `profileWrite` capability. Require the expected
+  revision and retain each save result to make stale edits and lost responses
+  deterministic. Historical bills and money configuration remain independent.
+- Public branding now requires a database read; failure returns an error rather
+  than showing another deployment identity. URL/color/email validation also
+  applies to environment branding at boot. No new service or framework is used.
+- Currency/conversion configuration and funded-history guards remain the next
+  N03 child; this profile API cannot change them.

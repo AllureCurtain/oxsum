@@ -36,6 +36,7 @@ import {
   useSwitchContext,
 } from "../api/hooks";
 import { ApiError } from "../api/client";
+import { BusinessContact } from "./BusinessContact";
 import { applyBranding } from "../lib/branding";
 import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
@@ -313,6 +314,7 @@ function BusinessShell() {
         {switchContext.error instanceof ApiError ? <Banner tone="error">{switchContext.error.message}</Banner> : null}
         <Outlet />
       </main>
+      <BusinessContact />
     </div>
   );
 }
@@ -495,6 +497,7 @@ function CustomerShell() {
         <main className="flex-1 px-4 py-4 sm:px-6 sm:py-6">
           <Outlet />
         </main>
+        <BusinessContact />
       </div>
     </div>
   );

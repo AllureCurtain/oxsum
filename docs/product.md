@@ -478,3 +478,20 @@ orders through the existing idempotent fulfillment writer. Customer credit
 therefore becomes available promptly without waiting for daily reconciliation.
 An interrupted pass retries from durable state; the order-derived ledger key
 prevents duplicate credit. Daily reconciliation remains an additional fallback.
+
+## Persistent business identity (#756, N03.b)
+
+The business owner edits name, public contact email, help URL, logo and accent
+under **Business → Business profile**. All staff can read the effective profile;
+only the explicit `profileWrite` capability can change it. The public branding
+endpoint and both portal contexts resolve the same values. Contact/help are
+public information, not SMTP credentials or proof of email delivery.
+
+Before the first explicit save, an initialized business uses the name accepted
+at owner setup, with environment logo/accent defaults; an uninitialized business
+uses the deployment name too. A saved profile takes precedence for every field,
+including nulls, so restarts or environment edits cannot silently undo a clear.
+Full replacements require the expected revision, audit reason and idempotency
+key. Exact replay returns the original save receipt after rechecking current
+owner/session/second-factor authority. Changes do not relabel funded accounts,
+change currency/conversion, or rewrite historical evidence and documents.
