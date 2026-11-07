@@ -4,12 +4,10 @@
 //! production router and the authorized manual-receipt API instead.
 #![allow(dead_code)]
 
-use axum::{
-    Json, Router,
-    extract::State,
-    http::{HeaderMap, StatusCode},
-    routing::post,
-};
+use axum::extract::State;
+use axum::http::{HeaderMap, StatusCode};
+use axum::routing::post;
+use axum::{Json, Router};
 use oxsum_core::{Db, Tenants, WalletError};
 use oxsum_server::{BillingEvent, Config, Metrics};
 use serde::Deserialize;
@@ -306,7 +304,8 @@ pub fn credential(
 
 /// Obtain a real personal session through the production password login route.
 pub async fn login(app: &Router, email: &str, password: &str) -> String {
-    use axum::{body::Body, http::Request};
+    use axum::body::Body;
+    use axum::http::Request;
     use tower::ServiceExt;
     let response = app
         .clone()

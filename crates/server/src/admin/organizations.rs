@@ -7,13 +7,10 @@ use serde::{Deserialize, Serialize};
 use time::OffsetDateTime;
 use uuid::Uuid;
 
+use crate::admin::{decode_organization_cursor, double_option, encode_organization_cursor, record};
 use crate::error::{ApiError, ApiJson, ApiQuery};
 use crate::routes::{ApiResult, ok};
-use crate::{
-    AppState,
-    admin::{decode_organization_cursor, double_option, encode_organization_cursor, record},
-    today,
-};
+use crate::{AppState, today};
 
 /// An organization as the organizations endpoint answers it: identity, kind, headcount,
 /// and what its wallet shows.

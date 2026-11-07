@@ -28,7 +28,8 @@
 //! step), and a staff void appends reversing lines and the mirroring entry.
 //! The line table refuses UPDATE/DELETE outright.
 
-use sqlx::{Postgres, Row, Transaction, postgres::PgRow};
+use sqlx::postgres::PgRow;
+use sqlx::{Postgres, Row, Transaction};
 use time::OffsetDateTime;
 use uuid::Uuid;
 

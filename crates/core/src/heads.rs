@@ -22,9 +22,10 @@ use time::OffsetDateTime;
 use crate::channels::ModelPrice;
 use crate::error::WalletError;
 
-pub use doubleentry::witness::KeyName as WitnessKeyName;
 pub use doubleentry::witness::signing::{Cosigner, SigningKey as HeadSigningKey, VerifyingKey};
-pub use doubleentry::witness::{MemoryWitnessStore, Origin, Witness, WitnessError, WitnessStore};
+pub use doubleentry::witness::{
+    KeyName as WitnessKeyName, MemoryWitnessStore, Origin, Witness, WitnessError, WitnessStore,
+};
 
 /// The key name the operator signs tree heads under.
 ///

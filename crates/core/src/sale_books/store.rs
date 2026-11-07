@@ -1,7 +1,8 @@
 use super::*;
 use crate::Db;
 use serde_json::json;
-use sqlx::{Row, postgres::PgRow};
+use sqlx::Row;
+use sqlx::postgres::PgRow;
 
 const SCHEDULES: &str = "SELECT s.*, COALESCE(e.effective_until,s.scheduled_until) AS effective_until FROM oxsum.sale_schedules s LEFT JOIN oxsum.sale_schedule_ends e USING (schedule_id)";
 fn book(row: &PgRow) -> Result<SaleBook, WalletError> {

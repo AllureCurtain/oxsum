@@ -8,11 +8,9 @@
 mod setup;
 #[path = "support/mod.rs"]
 mod support;
-use axum::{
-    Router,
-    body::Body,
-    http::{Request, StatusCode},
-};
+use axum::Router;
+use axum::body::Body;
+use axum::http::{Request, StatusCode};
 use hmac::{KeyInit, Mac, SimpleHmac};
 use http_body_util::BodyExt;
 use oxsum_core::*;

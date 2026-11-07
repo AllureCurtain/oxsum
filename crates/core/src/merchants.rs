@@ -1,9 +1,12 @@
 //! Business merchant authority and encrypted immutable signing configurations.
-use crate::business_staff as authority;
-use crate::{BusinessCapability, Db, ProviderDestinationPolicy, SecretKey, WalletError};
+use crate::{
+    BusinessCapability, Db, ProviderDestinationPolicy, SecretKey, WalletError,
+    business_staff as authority,
+};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
-use sqlx::{Postgres, Row, Transaction, postgres::PgRow};
+use sqlx::postgres::PgRow;
+use sqlx::{Postgres, Row, Transaction};
 use time::OffsetDateTime;
 use uuid::Uuid;
 

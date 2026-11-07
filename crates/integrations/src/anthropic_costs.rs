@@ -175,10 +175,9 @@ mod tests {
     #![allow(clippy::unwrap_used)]
 
     use super::*;
-    use axum::Json;
-    use axum::Router;
     use axum::http::HeaderMap;
     use axum::routing::get;
+    use axum::{Json, Router};
     use oxsum_core::UpstreamBillProvider;
     use uuid::Uuid;
 

@@ -28,8 +28,7 @@ use oxsum_core::{
     settlement_key_for, verify_bundle, verify_charge,
 };
 use proptest::prelude::*;
-use sqlx::PgPool;
-use sqlx::Row;
+use sqlx::{PgPool, Row};
 use time::macros::date;
 
 const D: time::Date = date!(2026 - 10 - 01);

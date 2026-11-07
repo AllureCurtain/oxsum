@@ -2,11 +2,9 @@
 //! authority can record a uniquely referenced manual receipt. No fixture route.
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
-use axum::{
-    Router,
-    body::Body,
-    http::{Request, StatusCode},
-};
+use axum::Router;
+use axum::body::Body;
+use axum::http::{Request, StatusCode};
 use http_body_util::BodyExt;
 use oxsum_core::{Db, NewUser, Tenants};
 use oxsum_server::{Config, Signup};

@@ -1,9 +1,7 @@
 //! Fresh invite-only installation has a complete initial-owner path.
 #![allow(clippy::unwrap_used, clippy::expect_used)]
-use axum::{
-    body::Body,
-    http::{Request, StatusCode},
-};
+use axum::body::Body;
+use axum::http::{Request, StatusCode};
 use http_body_util::BodyExt;
 use oxsum_core::{BusinessSetupTokenRequest, Db, SetupAuthority};
 use oxsum_server::{Config, Signup};

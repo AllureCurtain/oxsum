@@ -1,9 +1,7 @@
 //! Deployment-only ownership inspection. Staff setup/capabilities are separate
 //! from customer membership and are introduced by the business authority task.
-use crate::{
-    AppState,
-    routes::{ApiResult, ok},
-};
+use crate::AppState;
+use crate::routes::{ApiResult, ok};
 use axum::extract::{Path, State};
 use uuid::Uuid;
 

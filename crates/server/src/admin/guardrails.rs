@@ -22,9 +22,10 @@ use oxsum_core::{
 };
 use serde::Deserialize;
 
+use crate::AppState;
+use crate::admin::record;
 use crate::error::{ApiError, ApiJson};
 use crate::routes::{ApiResult, ok};
-use crate::{AppState, admin::record};
 
 /// The body of `PUT …/guardrail-policies/{name}`: the kind and its own config
 /// object. `apiKey` is the `moderation` kind's bearer — sealed on write, never

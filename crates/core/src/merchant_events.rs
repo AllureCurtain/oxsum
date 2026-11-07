@@ -1,9 +1,12 @@
 //! Durable authenticated merchant inbox and pre-request expected payment terms.
-use crate::business_staff as authority;
-use crate::{BusinessCapability, Db, MerchantMode, MerchantSigningContext, WalletError};
+use crate::{
+    BusinessCapability, Db, MerchantMode, MerchantSigningContext, WalletError,
+    business_staff as authority,
+};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
-use sqlx::{Postgres, Row, Transaction, postgres::PgRow};
+use sqlx::postgres::PgRow;
+use sqlx::{Postgres, Row, Transaction};
 use uuid::Uuid;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]

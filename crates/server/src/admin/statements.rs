@@ -7,13 +7,10 @@ use oxsum_core::{Seal, audit_action};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
+use crate::admin::{parse_month, record};
 use crate::error::{ApiError, ApiJson, ApiQuery};
 use crate::routes::{ApiResult, ok};
-use crate::{
-    AppState,
-    admin::{parse_month, record},
-    today,
-};
+use crate::{AppState, today};
 
 /// One organization's closing record for a sealed period, as the closings endpoint
 /// answers it.

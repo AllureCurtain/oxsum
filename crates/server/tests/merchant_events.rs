@@ -5,11 +5,9 @@
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 #[path = "../../core/tests/support/integration.rs"]
 mod setup;
-use axum::{
-    Router,
-    body::Body,
-    http::{HeaderMap, Request, StatusCode},
-};
+use axum::Router;
+use axum::body::Body;
+use axum::http::{HeaderMap, Request, StatusCode};
 use hmac::{KeyInit, Mac, SimpleHmac};
 use http_body_util::BodyExt;
 use oxsum_core::*;

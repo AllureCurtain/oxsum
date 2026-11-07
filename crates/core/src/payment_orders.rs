@@ -15,11 +15,14 @@
 //! `invoice_repayment` repays a drawn receivable — no purpose may both grant
 //! quota and wallet cash.
 
-use crate::business_staff as authority;
-use crate::{BusinessCapability, Db, MerchantEventKind, MerchantEventReceipt, WalletError};
+use crate::{
+    BusinessCapability, Db, MerchantEventKind, MerchantEventReceipt, WalletError,
+    business_staff as authority,
+};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
-use sqlx::{Postgres, Row, Transaction, postgres::PgRow};
+use sqlx::postgres::PgRow;
+use sqlx::{Postgres, Row, Transaction};
 use time::OffsetDateTime;
 use uuid::Uuid;
 

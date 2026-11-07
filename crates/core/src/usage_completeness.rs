@@ -15,8 +15,7 @@
 //! customer's history — a range proof would shrink it and is a later
 //! optimization, not a correctness change.
 
-use std::collections::BTreeMap;
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 
 use sqlx::Row;
 use uuid::Uuid;

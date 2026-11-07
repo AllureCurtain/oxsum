@@ -2,16 +2,15 @@
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 #[path = "../../core/tests/support/integration.rs"]
 mod setup;
-use axum::{
-    Router,
-    body::Body,
-    http::{Request, StatusCode},
-};
+use axum::Router;
+use axum::body::Body;
+use axum::http::{Request, StatusCode};
 use http_body_util::BodyExt;
 use oxsum_core::*;
 use oxsum_server::{Config, Signup};
 use serde_json::{Value, json};
-use time::{Duration, OffsetDateTime, format_description::well_known::Rfc3339};
+use time::format_description::well_known::Rfc3339;
+use time::{Duration, OffsetDateTime};
 use tower::ServiceExt;
 use uuid::Uuid;
 async fn call(

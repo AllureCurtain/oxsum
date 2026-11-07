@@ -285,8 +285,7 @@ pub async fn set_registration_fixture(pool: &sqlx::PgPool, open: bool) {
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
-    use super::replace_database;
-    use super::sweep_stale_unchecked;
+    use super::{replace_database, sweep_stale_unchecked};
 
     #[test]
     fn replaces_the_database_keeping_the_rest() {

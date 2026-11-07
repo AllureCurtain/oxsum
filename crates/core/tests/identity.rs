@@ -9,8 +9,7 @@
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
 use oxsum_core::{Db, KeyConstraints, KeyScope, NewUser, Tenants, WalletError};
-use sqlx::PgPool;
-use sqlx::Row;
+use sqlx::{PgPool, Row};
 use uuid::Uuid;
 
 const ONE: i64 = 1_000_000;
