@@ -1,1 +1,2 @@
-openai
+openai>=2,<3
+psycopg[binary]>=3.2,<4

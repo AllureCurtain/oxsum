@@ -37,40 +37,22 @@ Every tenant head is cosigned by an independent witness — a second oxsum proce
 
 ## Demo
 
-`demo/demo.py` runs the whole flow end to end with the official OpenAI Python SDK pointed at oxsum — no real provider, no API key. The script starts a scripted mock upstream and an oxsum server itself, registers a demo user, tops up 100 credits, runs one billed chat turn, and prints the settlement entry's billing record and its inclusion proof:
+`demo/demo.py` runs an isolated local flow through the official OpenAI Python SDK: deployment-authorized owner consent, an invited customer, a synthetic manual receipt, explicit customer sale terms, one streamed stub response, and a verified settlement. It uses a unique disposable PostgreSQL database and **fails if it cannot create one**. It never uses the provisioning database for application data, reads no `.env`, and contacts no paid provider or PSP.
+
+Prerequisites: Python 3.10+, Rust, Node 20.16+, npm, PostgreSQL 17 with a `CREATEDB` role, the `wasm32-unknown-unknown` Rust target and the matching `wasm-bindgen` CLI (see [development requirements](docs/development.md#requirements)). The command builds the server and verifier; Cargo's configured shared target directory is respected.
 
 ```bash
-pip install -r demo/requirements.txt
-docker compose up -d            # PostgreSQL, if it is not already running
-python3 demo/demo.py
+python3 -m venv /tmp/oxsum-demo-venv
+/tmp/oxsum-demo-venv/bin/pip install -r demo/requirements.txt
+docker compose up -d            # local PostgreSQL, if needed
+/tmp/oxsum-demo-venv/bin/python demo/demo.py
 ```
 
-Abridged transcript (ids and hashes differ per run):
+The provisioning connection defaults to `postgres://postgres:postgres@127.0.0.1:5432/postgres`. Set `DATABASE_URL` in the process for another local cluster; it is used only to create/drop this run's random database. The application receives only its new database URL and generated keys, with all inherited `OXSUM_*` configuration removed. No database privilege failure permits a fallback or a channel-table reset.
 
-```
-== 1. Register and top up ==
-   registered demo-…@example.com (organization 'demo'); the API key is shown once
-   balance before top-up: 0 minor units
-   topped up 100000000 minor units (100 credits)
-   top-up entry: 7dcf20b9-…
-   content hash (keep for verification): 45b88ddd…
-   proof bundle: entry 7dcf20b9-…, tree head size 1, root 6c5b0d8b…
+The deterministic turn reports 23 input and 11 output tokens at one minor unit per token: the charge is exactly **34**, the available balance is **99,999,966**, and no reservation remains. The retained hash, pre-turn head/key, signed supply/sale bindings, consistency proof and new head go into the printed evidence directory (`--output <new-directory>` chooses it). The key is retained from this local fixture; it is not an independently attested operator identity.
 
-== 2. One billed chat turn through the OpenAI SDK ==
-   balance before the turn: 100000000 minor units
-   upstream said: "Holds are oxsum's way of saying 'reserved'."
-   x-oxsum-request-id: fca1ed85-…
-
-== 3. The turn's settlement entry and its proof ==
-   hold key req-fca1ed85-…:hold -> settlement entry c055f9d6-…
-   billing record: {"request": "fca1ed85-…", "channel": "demo-…", "model": "demo-chat",
-     "priceVersion": 1, "kind": "usage", "inputTokens": 23, "outputTokens": 11,
-     "inputPrice": 1000000, "outputPrice": 1000000, "charged": 34, "freeze": 118}
-   proof bundle: tree head size 3, root b0e9ac48…
-   balance after the turn: 99999966 minor units (charged 34)
-```
-
-Both proof bundles are checkable on the `/verify` page against their content hashes (the check runs on the server). The demo prefers its own `oxsum_demo` database (created when the `DATABASE_URL` role may create databases) and otherwise uses `DATABASE_URL` directly.
+After stopping the server and dropping its own database, the script installs the locally packed `verify-oxsum-bill` tarball in a clean directory outside the repository and runs the maintained [offline consumer](examples/verify-consumer). Bill, signature and history checks must pass; altered content/hash/key/archived-head checks must fail. A required failure exits nonzero. The tarball, checksums, sanitized evidence and verification log remain available. This proves an immediate entry, not a closed-period report, independent witness, real payment or real-provider certification.
 
 The dashboard surfaces the same flow: a top-up on **Top up** (manual, Stripe, Airwallex, Hyperswitch or a redeem code — the Hyperswitch tab mounts the switch's Unified Checkout in place), billed turns on **Requests** and aggregated on **Usage**, the ledger entries with their proof bundles on **Bills**, and the verification itself on **`/verify`**:
 
