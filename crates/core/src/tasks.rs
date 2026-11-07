@@ -14,6 +14,7 @@
 //! cost one upstream question each tick.
 
 use sqlx::Row;
+use std::str::FromStr;
 use time::{Date, OffsetDateTime};
 use uuid::Uuid;
 
@@ -58,6 +59,14 @@ impl TaskKind {
     ///
     /// [`WalletError::InvalidInput`] on an unknown kind.
     pub fn parse(stored: &str) -> Result<Self, WalletError> {
+        stored.parse()
+    }
+}
+
+impl FromStr for TaskKind {
+    type Err = WalletError;
+
+    fn from_str(stored: &str) -> Result<Self, Self::Err> {
         Ok(match stored {
             "image" => Self::Image,
             "video" => Self::Video,
@@ -108,6 +117,20 @@ impl TaskState {
     ///
     /// [`WalletError::InvalidInput`] on an unknown state.
     pub fn parse(stored: &str) -> Result<Self, WalletError> {
+        stored.parse()
+    }
+
+    /// Whether the state is terminal — settled, no more polls.
+    #[must_use]
+    pub fn is_terminal(&self) -> bool {
+        matches!(self, Self::Succeeded | Self::Failed | Self::Cancelled)
+    }
+}
+
+impl FromStr for TaskState {
+    type Err = WalletError;
+
+    fn from_str(stored: &str) -> Result<Self, Self::Err> {
         Ok(match stored {
             "submitted" => Self::Submitted,
             "running" => Self::Running,
@@ -120,12 +143,6 @@ impl TaskState {
                 )));
             }
         })
-    }
-
-    /// Whether the state is terminal — settled, no more polls.
-    #[must_use]
-    pub fn is_terminal(&self) -> bool {
-        matches!(self, Self::Succeeded | Self::Failed | Self::Cancelled)
     }
 }
 

@@ -12,6 +12,7 @@
 //! `oxsum.channels` cannot call upstream.
 
 use std::collections::{BTreeMap, HashSet};
+use std::str::FromStr;
 
 use aes_gcm::aead::{Aead, KeyInit};
 use aes_gcm::{Aes256Gcm, Key, Nonce};
@@ -80,17 +81,7 @@ impl SecretKey {
     /// Names the variable and what is wrong with it, so a deployment that mistyped it can fix it
     /// without reading the source.
     pub fn parse(text: &str) -> Result<Self, String> {
-        let trimmed = text.trim();
-        let bytes = BASE64
-            .decode(trimmed)
-            .map_err(|error| format!("OXSUM_SECRET_KEY is not base64: {error}"))?;
-        let key: [u8; KEY_BYTES] = bytes.try_into().map_err(|bytes: Vec<u8>| {
-            format!(
-                "OXSUM_SECRET_KEY must decode to {KEY_BYTES} bytes, got {}",
-                bytes.len()
-            )
-        })?;
-        Ok(Self(key))
+        text.parse()
     }
 
     /// A key from raw bytes: what a test builds, and what a deployment that would rather generate
@@ -172,6 +163,24 @@ impl SecretKey {
         String::from_utf8(opened).map_err(|_| {
             WalletError::Misconfigured("a stored upstream credential is not text".into())
         })
+    }
+}
+
+impl FromStr for SecretKey {
+    type Err = String;
+
+    fn from_str(text: &str) -> Result<Self, Self::Err> {
+        let trimmed = text.trim();
+        let bytes = BASE64
+            .decode(trimmed)
+            .map_err(|error| format!("OXSUM_SECRET_KEY is not base64: {error}"))?;
+        let key: [u8; KEY_BYTES] = bytes.try_into().map_err(|bytes: Vec<u8>| {
+            format!(
+                "OXSUM_SECRET_KEY must decode to {KEY_BYTES} bytes, got {}",
+                bytes.len()
+            )
+        })?;
+        Ok(Self(key))
     }
 }
 

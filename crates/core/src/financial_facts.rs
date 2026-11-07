@@ -38,6 +38,7 @@
 //! exception's check; it does not mutate a money column in place.
 
 use std::collections::{BTreeSet, HashMap};
+use std::str::FromStr;
 
 use serde::{Deserialize, Serialize};
 use sqlx::Row;
@@ -116,6 +117,14 @@ impl TimeBasis {
     /// # Errors
     /// [`WalletError::InvalidInput`] on an unknown basis.
     pub fn parse(value: &str) -> Result<Self, WalletError> {
+        value.parse()
+    }
+}
+
+impl FromStr for TimeBasis {
+    type Err = WalletError;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
         match value {
             "booking" => Ok(Self::Booking),
             "service" => Ok(Self::Service),
