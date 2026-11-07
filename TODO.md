@@ -1,8 +1,37 @@
 # TODO
 
-Updated: 2026-11-07
+Updated: 2026-11-08
 
 ## In progress
+
+### Operator launch (#725)
+
+[Contract and execution evidence](docs/roadmap/operator-launch/EXECUTION.md) track the accepted N00–N21 scope.
+
+- [ ] [#725](https://github.com/AllureCurtain/oxsum/issues/725) — Complete operator/customer and embedded adoption software and available acceptance.
+- [ ] [#726](https://github.com/AllureCurtain/oxsum/issues/726) — N00: Rebaseline and adopt the execution contract.
+- [ ] [#727](https://github.com/AllureCurtain/oxsum/issues/727) — N01: Align current product claims and documentation.
+- [ ] [#728](https://github.com/AllureCurtain/oxsum/issues/728) — N02: Repair the runnable demo and first-run example.
+- [ ] [#729](https://github.com/AllureCurtain/oxsum/issues/729) — N03: Owner setup, business profile and operating settings.
+- [ ] [#730](https://github.com/AllureCurtain/oxsum/issues/730) — N04: Business provider/channel administration.
+- [ ] [#731](https://github.com/AllureCurtain/oxsum/issues/731) — N05: Sale-book creation, publication and assignment.
+- [ ] [#732](https://github.com/AllureCurtain/oxsum/issues/732) — N06: Merchant configuration and payment readiness.
+- [ ] [#733](https://github.com/AllureCurtain/oxsum/issues/733) — N07: Customer invitation and registration controls.
+- [ ] [#734](https://github.com/AllureCurtain/oxsum/issues/734) — N08: Staff invitations and role lifecycle.
+- [ ] [#735](https://github.com/AllureCurtain/oxsum/issues/735) — N09: Journey-specific readiness and first bill.
+- [ ] [#736](https://github.com/AllureCurtain/oxsum/issues/736) — N10: Complete commercial journeys and targeted repairs.
+- [ ] [#737](https://github.com/AllureCurtain/oxsum/issues/737) — N11: Implement the agreed revenue policy and prove reconciliation.
+- [ ] [#738](https://github.com/AllureCurtain/oxsum/issues/738) — N12: Independent evidence delivery and useful verification.
+- [ ] [#739](https://github.com/AllureCurtain/oxsum/issues/739) — N13: Promote the validated artifact and deploy by identity.
+- [ ] [#740](https://github.com/AllureCurtain/oxsum/issues/740) — N14: Real-provider certification for the selected matrix.
+- [ ] [#741](https://github.com/AllureCurtain/oxsum/issues/741) — N15: Primary PSP sandbox and bounded live certification.
+- [ ] [#742](https://github.com/AllureCurtain/oxsum/issues/742) — N16: Capacity, fairness and long-duration operation.
+- [ ] [#743](https://github.com/AllureCurtain/oxsum/issues/743) — N17: Operator diagnostics, upgrade and restore.
+- [ ] [#744](https://github.com/AllureCurtain/oxsum/issues/744) — N18: Final integrated candidate acceptance.
+- [ ] [#745](https://github.com/AllureCurtain/oxsum/issues/745) — N19: Two independent operator pilots.
+- [ ] [#746](https://github.com/AllureCurtain/oxsum/issues/746) — N20: Publication and deployment, if selected.
+- [ ] [#747](https://github.com/AllureCurtain/oxsum/issues/747) — N21: Complete embedded application integration.
+
 
 - [x] [#723](https://github.com/AllureCurtain/oxsum/issues/723) — Serialized promo writers on the ledger append advisory lock before their promo row locks, fixing the post-merge hold/expiry deadlock; integrated in PR #724.
 
