@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # oxsum scoped pre-commit hook (issue #387).
 #
-#   fmt:   cargo fmt --all --check              — always, it's seconds even workspace-wide
+#   fmt:   scripts/fmt-check.sh                — pinned nightly; seconds even workspace-wide
 #   clippy: scoped to the crates the staged files touched — one crate's lint is seconds,
 #           a workspace run is minutes and is why people reach for --no-verify
 #
@@ -23,8 +23,8 @@ STAGED=$(git diff --cached --name-only --diff-filter=ACMR)
 [ -z "$STAGED" ] && exit 0
 
 echo "pre-commit: fmt"
-if ! cargo fmt --all --check; then
-    echo "  fmt failed — run 'cargo fmt --all' to fix" >&2
+if ! scripts/fmt-check.sh; then
+    echo "  fmt failed — run 'scripts/fmt.sh' to fix" >&2
     exit 1
 fi
 
