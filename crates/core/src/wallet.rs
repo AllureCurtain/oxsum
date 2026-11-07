@@ -2280,7 +2280,10 @@ impl Wallet {
     ) -> Result<tokio::sync::OwnedSemaphorePermit, WalletError> {
         let lock_key = limit_lock_key(&self.tenant_id, key_id);
         let semaphore = {
-            let mut queues = self.key_queue.lock().unwrap_or_else(|e| e.into_inner());
+            // A poisoned lock means another thread panicked mid-update; handing
+            // out permits from half-updated queue state would be worse.
+            #[expect(clippy::expect_used, reason = "a poisoned lock must panic")]
+            let mut queues = self.key_queue.lock().expect("key queue mutex poisoned");
             queues
                 .entry(lock_key)
                 .or_insert_with(|| Arc::new(tokio::sync::Semaphore::new(KEY_QUEUE_WIDTH)))
