@@ -1,8 +1,10 @@
 # TODO
 
-Updated: 2026-11-06
+Updated: 2026-11-07
 
 ## In progress
+
+- [ ] [#684](https://github.com/AllureCurtain/oxsum/issues/684) — Restore archived integration and migration checks: implemented runtime executable resolution and the reconciliation schema inventory; relocated archive 19/19 and workspace 1,779 checks passed; PR integration pending.
 
 ### Self-hosted release (#591)
 
