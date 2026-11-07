@@ -9,6 +9,7 @@ import {
   RedeemInvitation,
   Register,
   ResetPassword,
+  Setup,
   VerifyEmail,
 } from "./pages/auth";
 import { Billing, BillingStatement } from "./pages/Billing";
@@ -36,6 +37,7 @@ export function App() {
       <Route path="/login" element={<Login />} />
       <Route path="/register" element={<Register />} />
       <Route path="/invite" element={<RedeemInvitation />} />
+      <Route path="/setup" element={<Setup />} />
       <Route path="/forgot-password" element={<ForgotPassword />} />
       <Route path="/reset-password" element={<ResetPassword />} />
       <Route path="/verify-email" element={<VerifyEmail />} />

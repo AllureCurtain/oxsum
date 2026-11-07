@@ -4,6 +4,12 @@ For callers integrating with oxsum; no technical internals. Field details live i
 
 Each self-hosted deployment belongs to one business. Your organization is your personal or team customer billing account; its existing keys, balance and bill evidence continue to work after the ownership upgrade. Being an organization owner does not make you business staff. API fields such as `organizationId` keep their existing names.
 
+## Accept initial business ownership
+
+The deployer gives the intended owner a short-lived setup token. Open `/app/setup`, enter the token and business name, and explicitly accept ownership. New users register with the invited email and a password; existing users sign in first, including their normal second factor, and accept as the displayed identity. The token is kept only in the current page, so paste it again after leaving or refreshing.
+
+On success, sign in and open business setup. Customer registration stays invitation-only. If a response was lost, reopen setup while signed in to check your business access. An invalid, expired or wrong-email token grants nothing; ask the deployer for a new token only when setup is still incomplete. A personal customer consumption key returned during registration is separate from business authority.
+
 ## Get an account and a key
 
 Purpose: get a user, an organization to hold credits, and a credential to call the API with.

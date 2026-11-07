@@ -8,3 +8,4 @@ export { ResetPassword } from "./ResetPassword";
 export { VerifyEmail } from "./VerifyEmail";
 export { Device } from "./Device";
 export { RedeemInvitation } from "./RedeemInvitation";
+export { Setup } from "./Setup";

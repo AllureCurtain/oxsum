@@ -1826,5 +1826,32 @@
       "colDetail": "Detail",
       "empty": "No audit entries."
     }
+  },
+  "setup": {
+    "title": "Initialize your business",
+    "completeTitle": "Business setup",
+    "intro": "Accept the deployment invitation to become the business owner. Public registration never grants business ownership.",
+    "token": "Setup token",
+    "tokenHint": "Paste the token privately supplied by the deployer. It expires after 30 minutes and is kept only on this page.",
+    "businessName": "Business name",
+    "emailHint": "Use the exact email address the deployer invited.",
+    "identity": "Accepting as {{email}}",
+    "existingAccount": "Already have an account? Sign in first",
+    "consent": "I am the intended recipient and accept responsibility as this business’s owner.",
+    "accept": "Accept business ownership",
+    "accepting": "Accepting ownership…",
+    "invalidToken": "This token is unknown, expired, already used, or intended for another email. Check the invited address or ask the deployer for a new token.",
+    "conflict": "The business may already be initialized, or this email already has an account. Sign in with the intended account and reopen this page to inspect your access.",
+    "networkError": "The result could not be read. Your inputs are still here. Sign in and reopen setup to check whether acceptance succeeded before trying again.",
+    "recovery": "Refreshing or leaving this page clears the token and draft. If a response was lost, sign in with the intended account and return here. An existing owner can open the business console; a new setup token is only needed if setup is still incomplete.",
+    "created": "{{name}} is initialized with invitation-only customer registration.",
+    "alreadyStaff": "Your signed-in account already has business access.",
+    "completeHint": "Continue in business context to configure supply, sale terms, collection and customers.",
+    "firstKey": "Show the one-time personal customer key",
+    "firstKeyHint": "This is a consumption key for your personal customer account, not a business administrator credential. You can manage or replace it later from that account.",
+    "openBusiness": "Open business setup",
+    "signInContinue": "Sign in to continue setup",
+    "identityUnavailable": "Your sign-in state could not be checked. Retry before submitting ownership acceptance.",
+    "retryIdentity": "Check sign-in state again"
   }
 }
