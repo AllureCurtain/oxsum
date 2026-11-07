@@ -1,8 +1,13 @@
 # Release status
 
-Updated: 2026-11-06. Contract issue: [#591](https://github.com/AllureCurtain/oxsum/issues/591).
+Updated: 2026-11-07. Contract issue: [#591](https://github.com/AllureCurtain/oxsum/issues/591).
 
-Implementation: **software complete through T30**. Release: **external-pending** — every software task T00–T30 is integrated; the remaining gates (A31 merchant/provider certification, independent pilots, publication) are external actions with named prerequisites, per the G4/G5 rule in ACCEPTANCE.md. No production-ready claim is made.
+Implementation: **T00–T30 integrated, with closeout fixes**. Release:
+**not promoted**. The closeout corrected archived integration execution,
+candidate evidence, session-context handling, payment fulfillment and the
+browser journey. Functional checks and external certification are separate;
+D09's measured throughput/overhead misses its target. No production-ready
+claim is made.
 
 | Task | Issue | State | Depends on |
 | --- | --- | --- | --- |
@@ -12,7 +17,7 @@ Implementation: **software complete through T30**. Release: **external-pending**
 | T03 — Business staff, setup and session contexts | [#594](https://github.com/AllureCurtain/oxsum/issues/594) | integrated (PR #631, #632) | T01, T02 |
 | T04 — Customer profile and team lifecycle | [#595](https://github.com/AllureCurtain/oxsum/issues/595) | integrated (PR #635, #636) | T02, T03 |
 | T05 — Scoped consumption and integration credentials | [#596](https://github.com/AllureCurtain/oxsum/issues/596) | integrated (PR #639, #640) | T03, T04 |
-| T06 — Business-owned provider configuration | [#597](https://github.com/AllureCurtain/oxsum/issues/597) | integrated (PR #643, #646, #650) | T02, T03 |
+| T06 — Business-owned provider configuration | [#597](https://github.com/AllureCurtain/oxsum/issues/597) | integrated (PR #643, #646) | T02, T03 |
 | T07 — Model catalog and private serving context | [#598](https://github.com/AllureCurtain/oxsum/issues/598) | integrated (PR #647, #653) | T05, T06 |
 | T08 — Versioned customer sale books | [#599](https://github.com/AllureCurtain/oxsum/issues/599) | integrated (PR #652) | T02, T04, T06 |
 | T09 — Bind sale terms into evidence | [#600](https://github.com/AllureCurtain/oxsum/issues/600) | integrated (PR #657) | T08 |
@@ -35,26 +40,47 @@ Implementation: **software complete through T30**. Release: **external-pending**
 | T26 — Supported integrations and developer examples | [#617](https://github.com/AllureCurtain/oxsum/issues/617) | integrated (PR #674) | T05–T25 |
 | T27 — Cross-cutting fault, isolation and capacity hardening | [#618](https://github.com/AllureCurtain/oxsum/issues/618) | integrated (PR #672) | T13–T25 |
 | T28 — Self-hosted installation, upgrade and restore | [#619](https://github.com/AllureCurtain/oxsum/issues/619) | integrated (PR #669) | T02–T21 ops |
-| T29 — Release artifact and candidate gates | [#620](https://github.com/AllureCurtain/oxsum/issues/620) | integrated (PR #675) | T25, T26, T28 |
-| T30 — Final integrated acceptance and launch materials | [#621](https://github.com/AllureCurtain/oxsum/issues/621) | in progress on `feat/final-acceptance` | T23–T29 |
+| T29 — Release artifact and candidate gates | [#620](https://github.com/AllureCurtain/oxsum/issues/620) | integrated (PR #675, #687) | T25, T26, T28 |
+| T30 — Final integrated acceptance and launch materials | [#621](https://github.com/AllureCurtain/oxsum/issues/621) | integrated (PR #676; closeout #695) | T23–T29 |
 | T31 — External certification and promotion gates | [#622](https://github.com/AllureCurtain/oxsum/issues/622) | external-pending | T30 |
 
 ## Acceptance
 
-`ACCEPTANCE-RESULTS.md` records the A01–A31 matrix on the integrated
-candidate (`45e4b22`): A01–A30 pass on executed and cited evidence, A31
-external-pending. Known gaps are stated there — chiefly the unmeasured D09
-normalized load shape and the unrun live smoke, both release limitations,
-not hidden failures.
+[ACCEPTANCE-RESULTS.md](ACCEPTANCE-RESULTS.md) separates executed automated
+checks, scoped browser journeys, capacity measurements and external evidence.
+The earlier blanket A01–A30 pass was invalid: candidate `930794c` had failed
+full CI, the old read-only soak mislabeled its extrema as percentiles, and
+five screenshots did not exercise payment or staff workflows.
 
-## External gates
+Closeout PRs: [#686](https://github.com/AllureCurtain/oxsum/pull/686)
+(archived tests), [#687](https://github.com/AllureCurtain/oxsum/pull/687)
+(candidate gating/image startup), [#689](https://github.com/AllureCurtain/oxsum/pull/689)
+(capacity/conservation), [#691](https://github.com/AllureCurtain/oxsum/pull/691)
+(session shell), [#693](https://github.com/AllureCurtain/oxsum/pull/693)
+(payment worker), [#694](https://github.com/AllureCurtain/oxsum/pull/694)
+(browser defects/evidence). Final candidate evidence is in
+[evidence/closeout-candidate.md](evidence/closeout-candidate.md).
 
-- Merchant sandbox/live certification: pending authorized merchant credentials and specific transaction authorization.
-- Real paid provider certification: pending credentials and paid-call authorization.
-- Two independent pilots: pending actual operators and contact authorization.
-- Publication/live deployment: pending the reviewed candidate and a separate user authorization.
-- npm publication of `verify-oxsum-bill`: pending a G5 decision; the packed-tarball path is the verified distribution today.
+## Remaining release gates and limitations
+
+- D09 measured 5,897 successful requests, zero failures/drift and 100 peak
+  streams across 1,000 accounts/10,000 keys. Admission was 19.657/s and p95
+  overhead upper bound 113.421 ms: the >=20/s and <100 ms targets were not
+  achieved. Four-vCPU and long-duration capacity are not certified.
+- Browser evidence covers the listed customer/payment/refund/staff paths;
+  it does not certify every plan, dispute or receivables UI workflow.
+- Merchant capture/refund certification needs working credentials and
+  separately authorized real-money transactions. Local signed callbacks
+  and ledger reversal do not prove PSP money movement.
+- One historical DeepSeek nonstreaming call passed; remaining supported
+  real-provider protocols and examples still need certification.
+- Two independent pilots, publication/live deployment and npm publication
+  remain pending. Candidate validation and no-push artifact preparation are
+  authorized software work, not publication.
 
 ## Evidence
 
-Use the fields in [ACCEPTANCE.md](ACCEPTANCE.md). No skipped database suite counts as passed. Per-task evidence lives in `evidence/`; the integrated matrix is `ACCEPTANCE-RESULTS.md`.
+Use the fields in [ACCEPTANCE.md](ACCEPTANCE.md). No skipped database suite
+counts as passed. Per-task evidence lives in `evidence/`; the integrated
+matrix is `ACCEPTANCE-RESULTS.md` and promotion decisions are in
+[RELEASE-CHECKLIST.md](RELEASE-CHECKLIST.md).

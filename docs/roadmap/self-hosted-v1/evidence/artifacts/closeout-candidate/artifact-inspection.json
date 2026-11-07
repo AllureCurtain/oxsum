@@ -1,0 +1,34 @@
+{
+  "candidateSha": "813c788613f9f2a737562493c3b305ca1aaff5c1",
+  "candidateRun": 42338752086,
+  "bundleArtifactId": 13560927830,
+  "bundleZipSha256": "baee85d8b8712bf29595eaca7a7ab8220187bdc0c0edea61b78ae7ed956cc924",
+  "bundleZipBytes": 47993248,
+  "verifiedChecksums": 15,
+  "imageArchiveSha256": "99be4081cc4e8faaea81ebcd8aed98281466a5a0430e63e8c6ef0f7fc8cbee27",
+  "imageArchiveConfigDigest": "sha256:aa26a3c6df62082285155b78f4e0a0a2d25eb3d2d053bc578e75c894de7052df",
+  "imageArchitecture": "amd64",
+  "imageOs": "linux",
+  "imageRepoTags": [
+    "ghcr.io/allurecurtain/oxsum:sha-813c788613f9f2a737562493c3b305ca1aaff5c1"
+  ],
+  "imageIndex": {
+    "schemaVersion": 2,
+    "mediaType": "application/vnd.oci.image.index.v1+json",
+    "manifests": [
+      {
+        "mediaType": "application/vnd.oci.image.manifest.v1+json",
+        "digest": "sha256:ab431efdcfcb0089578893ad64691b577f6308e6e3a1a3e1c0f94cc33113f180",
+        "size": 867,
+        "annotations": {
+          "io.containerd.image.name": "ghcr.io/allurecurtain/oxsum:sha-813c788613f9f2a737562493c3b305ca1aaff5c1",
+          "org.opencontainers.image.created": "2026-11-07T04:40:13Z",
+          "org.opencontainers.image.ref.name": "sha-813c788613f9f2a737562493c3b305ca1aaff5c1"
+        }
+      }
+    ]
+  },
+  "bundleExpiresAt": "2027-02-05T04:30:30Z",
+  "result": "all checksums and candidate identities passed",
+  "ociManifestConfigAndLayerDigests": "verified"
+}

@@ -2,17 +2,19 @@
 
 Issue: [#622](https://github.com/AllureCurtain/oxsum/issues/622). Scope: the
 T31 items that can run without third-party authorization — the candidate-gate
-dispatch, a local soak, a browser-pixel journey, and the Airwallex demo
-receive/refund chain — executed on the integrated candidate. Environment:
+dispatch, a local soak, a browser-pixel journey, and a manually prepared Airwallex
+webhook/ledger-reversal experiment — executed on the integrated candidate. Environment:
 `local-isolated`, macOS arm64, PostgreSQL 17 in Docker (`oxsum-postgres-1`),
 a throwaway `oxsum_soak` database seeded with `oxsum seed` (`OXSUM_DEMO_SEED=true`
 opt-in), `target/debug/oxsum` built from `8d241dd` (T26 merge; the candidate SHA
 under test was `45b2f40`/`c5f5070`).
 
-These runs close the *locally executable* half of T31's work list. The items
-that by contract need outside authorization remain external-pending and are
-enumerated in `RELEASE-CHECKLIST.md` §External actions — nothing below claims
-them.
+This is historical evidence with restricted scope. It does not close all
+locally executable acceptance: [closeout-capacity.md](closeout-capacity.md),
+[closeout-browser.md](closeout-browser.md) and
+[closeout-candidate.md](closeout-candidate.md) supersede its A28/A25/A30
+claims. The payment experiment below manually seeds the provider reference
+and locally signs its event; no provider capture or refund is demonstrated.
 
 ## 1. Candidate-gate dispatch (A30 executed half)
 
@@ -60,11 +62,12 @@ in `artifacts/`:
 | `04-verify-example.png` | "Try an example bill" fills the public fixture | proof bundle + content hash populated |
 | `05-verify-result.png` | click Verify | **"The bill verifies."** — content hash recomputes, inclusion proof links to the tree head, charge recomputes from usage+rates, price bound to the signed checkpoint |
 
-This upgrades A25's evidence from contract-level to a recorded pixel journey:
-the console-adjacent customer surfaces render and the browser verifier
-completes a genuine check end to end.
+These five screenshots prove only those rendered states and verification of
+the public example fixture. They do not prove billed customer evidence,
+checkout, refunds, staff permissions, mobile or keyboard workflows. The
+broader scoped journey is in [closeout-browser.md](closeout-browser.md).
 
-## 4. Airwallex demo receive/refund chain (A31 item 1, as far as the environment allows)
+## 4. Airwallex demo intent and simulated receive/ledger-reversal experiment
 
 `.env` carries a real Airwallex *demo* credential set
 (`api-demo.airwallex.com` / `checkout-demo.airwallex.com`, `x-client-id` +
@@ -86,7 +89,7 @@ completes a genuine check end to end.
   demo account does not have native-API `confirm` enabled — a real charge
   would need the hosted `checkout-demo` page, which the fake-IP DNS also
   diverts.
-- **The in-repo half of the rail was exercised end to end.** The deposit row
+- **The manually prepared receive/ledger-reversal path ran.** The deposit row
   (`pending`) from the failed create was completed by inserting the real
   intent id into `meta.airwallexIntentId` + `merchant_payment_refs` —
   simulating exactly the state a successful `create` would have left — then:
@@ -107,10 +110,11 @@ completes a genuine check end to end.
 ## 5. What remains external-pending (unchanged)
 
 - Merchant sandbox **plus low-value live** payment/refund certification —
-  the demo leg above stops at provider-side capture; live needs authorized
+  the demo leg above never performs provider-side capture; live needs authorized
   real-money credentials.
-- Real-provider certified examples — needs provider credentials + paid-call
-  authorization.
+- Remaining real-provider certified examples — one later DeepSeek
+  nonstreaming call is recorded in [T31-followup.md](T31-followup.md); other
+  protocols/scenarios still need credentials and paid-call authorization.
 - Two independent pilot operators — there is no authorized outside operator;
   the contract forbids simulating one. `ONBOARDING-DRYRUN.md` is the document
   a pilot would follow.
@@ -123,6 +127,7 @@ completes a genuine check end to end.
 All four runs used the developer machine's own network, which carries a
 fake-IP DNS layer (FlClash/clash-verge). Where that layer rewrote a provider
 hostname into a non-public reservation, the product's destination policy did
-what it is specified to do and refused; the workaround used the provider's
-own API over the system proxy for the provider-side step and the in-repo
-webhook for the receive side. No gate was weakened to obtain these results.
+what it is specified to do and refused; the provider API over the system
+proxy created an intent only. The later
+receive path was manually seeded and locally signed; it cannot be substituted
+for PSP certification. The destination guard itself was not weakened.

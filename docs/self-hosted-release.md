@@ -102,21 +102,28 @@ per-surface verdicts.
 | Same-SHA image passes full gates | gates 0+1: heavy tier on main, fast tier + wasm + frontend + image in `release-candidate.yml` |
 | Startup/version/readiness | gate 2 steps 1–3 |
 | Customer + business surfaces | gate 2 steps 4–5 |
-| Browser verifier positive + negative | gate 1 `verify-consumer` job + gate 2 step 6 (`check-verify-consumer.sh`) |
+| Browser verifier positive + negative | Interactive built-UI evidence is recorded separately in `docs/roadmap/self-hosted-v1/evidence/closeout-browser.md`; the consumer jobs run the same WASM verifier under Node, not a browser |
 | Clean consumer of the packed artifact | `verify-oxsum-bill-tarball` — the exact `.tgz` the consumer installed |
 | Checksums/provenance/notes | `candidate-bundle`: `SHA256SUMS`, `candidate-manifest.json`, `RELEASE-NOTES-DRAFT.md` |
 | No publication claim | nothing in the gate pushes; the manifest is evidence, not a release |
 
 ## Promoting a candidate
 
-Only after gates 0–2 are green on the same SHA:
+Only after gates 0–2 are green on the same SHA and the release checklist's
+external/limitation decisions are satisfied:
 
 1. Review `candidate-bundle` from the gate-1 run — the manifest names the
    exact commit every gate ran against.
 2. Draft the release notes from `RELEASE-NOTES-DRAFT.md`.
-3. `gh workflow run release.yml -f image_tag=v<x.y.z>` — publishes
-   `latest`, `sha-<sha>` and the version tag to GHCR. This is the first
-   step that pushes anything, and it stays a human decision.
+3. After explicit publication authorization, select a branch/tag whose
+   resolved commit is exactly the approved SHA and dispatch
+   `gh workflow run release.yml --ref <reviewed-ref> -f image_tag=v<x.y.z>`.
+   This workflow rebuilds its selected ref; `image_tag` is only an output
+   label, not a source selector, and it does not promote the saved tar
+   byte-for-byte. Verify the selected ref and resulting image SHA/digest.
+   An unqualified dispatch against a moving main can publish different code.
+   This publishes `latest`, `sha-<sha>` and the version tag to GHCR; no such
+   dispatch is part of candidate validation.
 4. Deploy stays separate: `deploy.yml` calls `release.yml` and adds the
    deploy job — a separately authorized, manual action (gate 4/G5 in
    ACCEPTANCE.md).

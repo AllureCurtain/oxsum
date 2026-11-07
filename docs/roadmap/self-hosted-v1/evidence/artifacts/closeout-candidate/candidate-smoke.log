@@ -1,0 +1,30 @@
+
+== candidate image: ghcr.io/allurecurtain/oxsum:sha-813c788613f9f2a737562493c3b305ca1aaff5c1 ==
+
+== 1. oxsum --check-config ==
+{
+  "ok": true,
+  "signup": "invite"
+}
+
+== 2. postgres up + oxsum --migrate-only ==
+[2m2026-11-07T04:41:47.290475Z[0m [32m INFO[0m [2moxsum[0m[2m:[0m database pool ready [3mmax_connections[0m[2m=[0m20
+schema migrated to 0097_evidence_bundles
+
+== 3. oxsum up, /readyz + /healthz + /api/v1/version ==
+version: {"data":{"gitSha":"813c788613f9f2a737562493c3b305ca1aaff5c1","schemaVersion":"0097_evidence_bundles","version":"0.1.0"}}
+
+== 4. business init + owner session + business-context read ==
+business principal: {"data":{"businessId":"f214d8d2-2f8b-41de-a747-805a2bb75fb7","userId":"7cef0625-bb6e-4893-a569-1bc5d0a58531","role":"owner","capabilities":["overviewRead","customersRead","customersWrite","customersSuspend","requestsRead","catalogWrite","routingWrite","providerSecretsWrite","commercialWrite","fundsWrite","refundsWrite","reportsRead","merchantSecretsWrite","staffManage","ownershipTransfer","registrationWrite","integrationsManage"]}}
+
+== 5. staff-issued customer invitation ==
+customer invitation issued (staff → customer surface exercised)
+
+== 6. consumer check skipped (SMOKE_SKIP_CONSUMER=1) ==
+
+== SMOKE PASSED ==
+image:        ghcr.io/allurecurtain/oxsum:sha-813c788613f9f2a737562493c3b305ca1aaff5c1
+version:      {"data":{"gitSha":"813c788613f9f2a737562493c3b305ca1aaff5c1","schemaVersion":"0097_evidence_bundles","version":"0.1.0"}}
+business:     owner registered, session switched, /api/v1/business answered
+customer:     staff invitation issued
+teardown:     compose project oxsum-candidate-smoke-14849 + volume removed

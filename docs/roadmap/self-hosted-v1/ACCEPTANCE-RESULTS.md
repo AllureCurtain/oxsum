@@ -1,20 +1,42 @@
-# Final acceptance results — T30
+# Acceptance results — integrated closeout
 
-- Issue: [#621](https://github.com/AllureCurtain/oxsum/issues/621). Contract: [ACCEPTANCE.md](ACCEPTANCE.md) (scenarios A01–A31, financial invariants, promotion gates G1–G5).
-- Candidate under acceptance: `main` at `45e4b22` (T29 merge) — the release-candidate workflow and smoke script are integrated; the matrix below covers the full integrated software. The T29 *candidate run* itself is a maintainer dispatch (gate 2 in `docs/self-hosted-release.md`), not something this acceptance executes.
-- Environment for locally executed checks: `local-isolated`, macOS arm64, Rust stable, PostgreSQL 17 in Docker (`oxsum-postgres-1`), per-suite `oxsum_test_*` scratch databases. No live provider or payment credential was used; every external dependency ran its stub/harness path.
-- Verdict summary: **A01–A30 pass on integrated evidence, and A30's candidate gate is now fully green on a real SHA (run `42240437323` on `930794c`, 10/10 jobs, candidate-bundle produced); A31 external-pending.** No unresolved money, permission or isolation defect is open. This is not a production-ready claim — G4/G5 remain unexercised by policy.
+Updated 2026-11-07. Issues [#621](https://github.com/AllureCurtain/oxsum/issues/621),
+[#695](https://github.com/AllureCurtain/oxsum/issues/695). Contract:
+[ACCEPTANCE.md](ACCEPTANCE.md).
 
-## What was executed for this matrix (2026-11-06, this worktree)
+The pinned code candidate is `813c788613f9f2a737562493c3b305ca1aaff5c1`
+(PR #694 merge). This evidence update changes documentation only; later main
+commits must not silently replace the pinned candidate. Full checks, image
+identity and artifact links are recorded in
+[evidence/closeout-candidate.md](evidence/closeout-candidate.md).
 
-| Check | Command | Result |
-| --- | --- | --- |
-| Formatting | `cargo fmt --all --check` | pass — clean tree |
-| Shell syntax | `bash -n` over `verify-examples.sh`, `check-verify-consumer.sh`, `check-config.sh` | pass |
-| Journey suites | `cargo nextest run -p oxsum-server --test business_console --test examples_surface --test install_ops --test evidence_bundles` | **22 passed, 0 failed, 1 skipped** — the skip is `evidence_bundles::dump_v2_fixture`, `#[ignore]`-marked fixture regeneration, not a test |
-| Clean consumer | `scripts/check-verify-consumer.sh` | pass — `verify-oxsum-bill@0.1.0` packs, installs clean, verifies the genuine v2 bundle, rejects tampered / missing-row / wrong-org / wrong-key / wrong-archived-head mutations; `fetch was disabled and never called` |
+The previous blanket **A01–A30 pass is withdrawn**. Its candidate `930794c`
+had failed full CI [42240404235](https://github.com/AllureCurtain/oxsum/actions/runs/42240404235)
+even though candidate workflow 42240437323 was green. That old workflow did
+not enforce full CI or boot the image. The original read-only soak provided
+neither valid percentiles nor charged-call conservation, and its five browser
+screenshots did not exercise payment/staff workflows.
 
-The heavy tier (three nextest shards, process-shared `generative`/`seed`/`jobs`, doubleentry Postgres conformance) runs per-push on `main` — the candidate SHA inherits its last post-merge run rather than a re-run here; the T29 runbook names it gate 0.
+Automated functional coverage, scoped browser results, capacity targets and
+external certification are distinct. **D09 misses its performance target;
+A31 remains external-pending.** The rows below describe the evidence's scope,
+not an assertion that every supported deployment or external service is certified.
+
+## Executed closeout checks
+
+| Check | Environment and observed result |
+| --- | --- |
+| Relocated archive regression | Local PostgreSQL 17, original executable hidden: install/ownership tests **19/19**; full workspace then **1,779 passed**, five ignored; #686 |
+| Payment recovery regression | Real scratch DBs: payment/refund/event/job selection **30/30**; full workspace selection excluding process-shared suites **1,780 passed**, six ignored; strict workspace Clippy; #693 |
+| Browser | Built React UI and real server/DB with declared local model/payment stubs; scoped workflow/screenshots and exact accounting in [closeout-browser.md](evidence/closeout-browser.md); #691/#693/#694 |
+| Capacity | Real TCP streaming, 1,000 billing accounts, 10,000 keys, 100 peak streams, five minutes; **5,897 successes, zero failures, zero drift**, performance target missed; [closeout-capacity.md](evidence/closeout-capacity.md); #689 |
+| Exact code candidate | Full CI, independent packaged verifier and no-push image startup: [closeout-candidate.md](evidence/closeout-candidate.md) |
+
+The first attempted payment regression while local PostgreSQL was stopped
+returned early in the old DB harness. That run is discarded; only the rerun
+with actual scratch-database creation counts. Ignored fixture-generation and
+opt-in load tests are not passes. Final CI separately executes the three
+integration shards, process-shared suites and engine Postgres conformance.
 
 ## Scenario matrix results
 
@@ -31,12 +53,12 @@ The heavy tier (three nextest shards, process-shared `generative`/`seed`/`jobs`,
 | A09 Prices | pass | `business_prices.rs`, `terms.rs` — precedence/scheduling/overlap/discount/rounding/overflow/immutability |
 | A10 Entry/price proofs | pass | `usage_reports.rs`, `witness.rs`, `evidence_bundles.rs` (11 `oxsum_verify` + 9 HTTP tests); packed consumer rejects altered rate/amount/funding/customer/signer |
 | A11 Operation recovery | pass | `coordinated.rs`, `requests.rs`, `tasks.rs` — same-fingerprint replay, changed-input conflict, crash-before/after commit, no blind retransmission |
-| A12 Ledger transaction | pass | T11 (PR #658) one-ledger transaction API + `heads.rs`, `journals.rs` — fault rollback leaves no entry/leaf/outbox; replay once; doubleentry Postgres conformance runs post-merge on `main` |
+| A12 Ledger transaction | pass | T11 (PR #658) one-ledger transaction API + `heads.rs`, `journals.rs` — fault rollback leaves no entry/leaf/outbox; replay once; 33 engine Postgres conformance tests executed in final manual CI |
 | A13 Zero-cost usage | pass | `entitlement.rs`, plan-coverage cells in `plans.rs` — covered request succeeds on zero wallet, no fabricated purchased hold; receipt not revenue |
 | A14 Bounds and day close | pass | `coordinated.rs`, `sweep.rs`, `usage.rs` — concurrent-key caps, cancellation explicit, sealed period immune to delayed projection |
-| A15 Protocol matrix | pass (stub surfaces); external-pending (real providers) | `chat_flow.rs`, `gateway.rs`, `apis.rs`, `metering` suites; `real_upstream*.rs` are opt-in and require provider credentials — external half of A15 listed under external actions |
+| A15 Protocol matrix | pass (stub surfaces); external-pending (real providers) | `chat_flow.rs`, `gateway.rs`, `apis.rs`, `metering` suites; `real_upstream*.rs` are opt-in and require provider credentials — one historical DeepSeek nonstreaming call has evidence in T31-followup.md; streaming/retry/fallback and remaining real providers are unverified |
 | A16 Payment trust | pass | `webhooks.rs`, `merchant_events.rs`, `stripe.rs`, `hyperswitch.rs`, `airwallex.rs`, `x402.rs` — wrong signature/merchant/currency/amount/customer refused; duplicate/reordered callback once; rotation |
-| A17 Order fulfillment | pass | `payment_orders` flow in `merchant_events.rs`/`webhooks.rs` — paid-unfulfilled recovery, body-change conflict, no re-charge, purpose isolation, redirect never credits |
+| A17 Order fulfillment | pass | `payment_orders` flow in `merchant_events.rs`/`webhooks.rs` — paid-unfulfilled recovery, body-change conflict, no re-charge, purpose isolation, redirect never credits; #693 scheduler regression covers startup/five-second recovery even when daily reconciliation is scheduled tomorrow |
 | A18 Refund | pass (stub); external-pending (provider money-out) | `refunds.rs` + `faults.rs::a_refund_retry_storm_releases_at_the_attempt_budget` — bounded totals, concurrent consume safe, reservation release, money-out once |
 | A19 Corrections/disputes | pass | `refunds.rs`, `journals.rs`, dispute cells — originals retained, promo not cash-refunded, distinct dispute/write-off/refund audits |
 | A20 Grants | pass | `promo_lots.rs` + `faults.rs` promo pin/expiry cell — conservation under race, legacy bonus reconciled, bundle replay once |
@@ -44,22 +66,35 @@ The heavy tier (three nextest shards, process-shared `generative`/`seed`/`jobs`,
 | A22 Plan accounting | pass | `journals.rs`, `plan_statements.rs` — deferred/earned conservation, integer remainder, replay-once recognition, quota not extra fee |
 | A23 Credit/statements | pass | `plan_statements.rs`, `statements.rs`, `bills.rs` — credit bounds, finalize once, immutable snapshot, partial allocation, overdue restore only for dunning suspension |
 | A24 Reports | pass | `financial_facts.rs` — customer totals reconcile to business sum, plan not double-counted, unknown vs zero cost, provider/day granularity, replay same facts |
-| A25 Browser journeys | pass | `business_console.rs` (3 journeys), `browser_contract.rs`, `spa.rs`, `dashboard.rs`, `branding.rs`; console/portal sections all mounted behind capabilities; T23 portal + T24 console exercised via HTTP contract + built frontend (`frontend` CI job builds `web/dist` every PR); **pixel journey recorded** — `evidence/T31-partial.md` §3 + `evidence/artifacts/01–05.png` (login → overview → billing → `/verify` "The bill verifies.") |
-| A26 Independent evidence | pass | `evidence_bundles.rs`, `verify` crate 11 tests, `check-verify-consumer.sh` re-run above — genuine verifies offline; tampered/missing/wrong-origin rejected; `scope.excluded` names honest limits |
-| A27 Integrations | pass (local); external-pending (certified-provider examples) | `examples_surface.rs` (3/3), `verify-examples.sh` full run green on T26 (consumption 14, scoped-management 11, webhook-tools all rails), `docs/integrations.md` + `docs/unsupported.md` cite proving suites; real-provider example calls need credentials |
-| A28 Fault/capacity | pass with declared gap | `evidence/T27.md` — 17 cells green, measured schema-count/fairness/cache figures; **5-min soak executed** on dev hardware (`evidence/T31-partial.md` §2 + `evidence/artifacts/soak-2026-11-06.log`: 3 648 req, 0 fail, p50 5 ms / p99 206 ms, clean); **residue: normalized D09 shape (1,000 customers / 100 streams) still unmeasured at target scale** — scoped as release limitation, see RELEASE-CHECKLIST |
+| A25 Browser journeys | scoped pass | [closeout-browser.md](evidence/closeout-browser.md): owner/context and staff appointment, API-prepared invitation with browser registration, two stub purchases, key, billed stream, actual exported bill accepted/wrong hash rejected, customer/finance refund decisions, support denials, mobile/keyboard/error/empty states. Ten inspected screenshots. Setup/provider provisioning was API-driven; plan/dispute/receivables browser cycles and a complete accessibility audit remain unexecuted. |
+| A26 Independent evidence | pass | `evidence_bundles.rs`, `verify` crate 11 tests, mandatory candidate `check-verify-consumer.sh` plus the candidate SDK verifying the browser journey's actual retained bill — genuine verifies offline; tampered/missing/wrong-origin rejected; `scope.excluded` names honest limits |
+| A27 Integrations | pass (local); external-pending (certified-provider examples) | `examples_surface.rs` (3/3), `verify-examples.sh` rerun on the exact candidate (consumption, scoped-management and webhook tools), `docs/integrations.md` + `docs/unsupported.md` cite proving suites; real-provider example calls need credentials |
+| A28 Fault/capacity | functional pass; performance target missed | [T27.md](evidence/T27.md) fault suites plus [closeout-capacity.md](evidence/closeout-capacity.md). Actual 1,000-account/10,000-key/100-stream workload: 5,897/0 successful/failed, drift 0, open holds 0. Admission 19.657/s, p95 overhead upper bound 113.421 ms misses >=20/s and <100 ms. Development hardware, not 4-vCPU certification. |
 | A29 Install/restore | pass | `install_ops.rs` 7/7 — fresh install, previous-version fixture upgrade, cross-database backup/restore preserves state+keys, bad config diagnosed; runbooks `docs/self-hosted-install.md`, `docs/self-hosted-upgrade.md` |
-| A30 Candidate artifact | pass | `release-candidate.yml` landed at merge `45e4b22`; **fully green dispatch executed** — run `42240437323` on `930794c`: all ten jobs (resolve, fmt, clippy, test, wasm, frontend, verify-consumer, examples, image, manifest+bundle) `success`, `candidate-bundle` artifact produced (manifest + SHA256SUMS + RELEASE-NOTES-DRAFT + wasm/tarball/web-dist/dockerbuild). Reached green after three dispatched runs each surfaced and fixed one latent defect — release-asset 404 (#677 crates.io install), missing sccache/pack ordering (#679), a `${{ }}` expression typo (#681). Live smoke `release-candidate-smoke.sh` remains an operator step. `evidence/T31-partial.md` §1 + `evidence/T31-followup.md`. No publication claim |
+| A30 Candidate artifact | executed artifact checks; scoped browser evidence | [closeout-candidate.md](evidence/closeout-candidate.md): exact-SHA full CI including all heavy jobs and engine conformance, packed consumer, image startup/version equality, exported image and manifest/checksums, no publication. The interactive browser session used incrementally corrected local builds, documented under A25; it was not a complete journey against the final Docker image. |
 | A31 External launch | external-pending | By contract A31 evidence must come from authorized outsiders; prerequisites enumerated in RELEASE-CHECKLIST §External actions |
 
-## Financial invariants — status
+## Financial invariants and limits
 
-All invariants hold on the integrated candidate, enforced at the ledger layer and re-asserted by the fault matrix: journal balance conservation, capped charge = funding allocation sum, entitlement distinct from cash, one fulfillment per payment purpose, refunds bounded incl. pending, grant conservation `remaining + reserved ≤ grant` (T27 correction), closed history immutable (trigger-enforced on `invoice_journals`/`plan_statements`), analytics rebuild without money changes, v1 proof semantics intact (version dispatch, `WrongVersion`).
+The named ledger/domain suites assert conservation, capped funding allocation,
+entitlement separation, idempotent payment fulfillment, bounded refunds and
+immutable closed history. The measured streaming run additionally reconciles
+each wallet, all operation/usage charges and zero remaining reservations.
+The browser fixture independently reconciles 3,000,000 purchased minus
+2,000,000 refunded minus eight usage units to 999,992 available, zero reserved.
+These are executed checks within their fixtures, not a proof over all future
+production executions.
 
-## Known gaps and non-claims
+## Non-claims
 
-- **D09 normalized load is unmeasured at target scale.** T27's per-unit figures (11+26 catalog objects per tenant schema, p99 259 ms fairness bound on a 16-conn pool) are real; the 1,000-customer/100-stream shape is a projection, not a measurement. `scripts/soak.sh` exists unrunnable-to-completion locally. Recorded as a release limitation, not a hidden failure.
-- **Browser-journey evidence upgraded to pixel-level** (2026-11-06). `evidence/T31-partial.md` §3 records a driven journey — login → overview → billing empty-state → `/verify` with a genuine bill verifying in the browser — with screenshots under `evidence/artifacts/`. The console/portal surfaces are now exercised both through the API contract and through a rendered client.
-- **The soak ran to completion on development hardware** (2026-11-06). `evidence/T31-partial.md` §2 records 300 s / 3 648 requests / 0 failures / p99 206 ms against a live seeded deployment; the normalized D09 target shape stays a stated limitation.
-- **No payment rail has moved real money.** A16–A18 cover trust boundaries and stub/provider-sandbox paths exhaustively; live certification is A31's job and stays external-pending.
-- **`verify-oxsum-bill` is unpublished on npm.** The packed-tarball path is the verified distribution; publication is a G5 action.
+- D09 throughput/overhead targets were not achieved; four-vCPU and prolonged
+  production-load behavior remain unmeasured. The raw JSON/log is retained.
+- Browser scope is listed explicitly in A25. API tests and a successful UI
+  build do not establish all browser workflows or full accessibility.
+- No closeout payment moved money through a real PSP. The older Airwallex
+  experiment manually inserted a provider reference, submitted a locally
+  signed webhook and reversed the ledger; provider capture/refund did not run.
+- The historical DeepSeek result is one nonstreaming call. It does not close
+  the multi-provider/protocol certified-example matrix.
+- No independent pilot was simulated, and this work publishes no release,
+  container image or npm package and performs no live deployment.
