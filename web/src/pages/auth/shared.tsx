@@ -2,6 +2,7 @@ import { useEffect, type ReactNode } from "react";
 import { ApiError } from "../../api/client";
 import { useBranding } from "../../api/hooks";
 import { SURFACE } from "../../components/ui";
+import { BusinessContact } from "../../components/BusinessContact";
 import { applyBranding } from "../../lib/branding";
 
 /**
@@ -42,6 +43,7 @@ export function AuthCard(props: { title: string; children: ReactNode }) {
         <div className={`${SURFACE} p-6`}>
           <h1 className="text-xl font-semibold">{props.title}</h1>
           <div className="mt-4">{props.children}</div>
+          <BusinessContact />
         </div>
       </div>
     </main>

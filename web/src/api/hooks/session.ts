@@ -1,5 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api } from "../client";
+import type { components } from "../schema";
 import type {
   AuthMethods,
   SessionInfo,
@@ -134,7 +135,7 @@ export function useBranding() {
   return useQuery({
     queryKey: ["branding"],
     queryFn: () =>
-      api<{ name: string; logoUrl: string | null; accentColor: string | null }>("/branding"),
+      api<components["schemas"]["Branding"]>("/branding"),
     staleTime: 300_000,
     retry: false,
   });

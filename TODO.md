@@ -44,6 +44,7 @@ Updated: 2026-11-08
 - [ ] [#752](https://github.com/AllureCurtain/oxsum/issues/752) — N13.a: Version-2 candidate byte/provenance gate implemented; local tests and consumer passed, CI/review pending.
 - [ ] [#760](https://github.com/AllureCurtain/oxsum/issues/760) — Bind Hyperswitch payment/refund retries to durable body identities, reconcile lost responses and retain ambiguous reservations after bounded recovery; implemented and locally validated, review pending.
 - [ ] [#769](https://github.com/AllureCurtain/oxsum/issues/769) — Isolate the complete developer-example runner and retain exact artifact evidence; implemented with eight isolation checks and complete artifact walkthrough, integration/review pending.
+- [ ] [#756](https://github.com/AllureCurtain/oxsum/issues/756) — Persistent owner-managed profile implemented; frontend build, strict Clippy and full workspace 1,810 tests passed. Review/integration and browser acceptance remain; see [evidence](docs/roadmap/operator-launch/evidence/business-profile.md).
 
 - [x] [#723](https://github.com/AllureCurtain/oxsum/issues/723) — Serialized promo writers on the ledger append advisory lock before their promo row locks, fixing the post-merge hold/expiry deadlock; integrated in PR #724.
 

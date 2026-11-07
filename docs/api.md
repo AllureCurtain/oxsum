@@ -487,10 +487,11 @@ The SPA's dashboard pages read these (issue #234); all are session or key scoped
 | `DELETE /api/v1/org/usage-reports/links/{linkId}` | revoke a link, idempotently |
 
 One public read sits outside that scope: `GET /api/v1/branding` answers the
-deployment's seller branding `{name, logoUrl, accentColor}` (issue #614) with
-no credential — the login and register pages brand themselves before a session
-exists. It is a pure config read off `OXSUM_BUSINESS_NAME`/`OXSUM_BRAND_*`,
-cosmetic only; nothing it serves reaches pricing, the ledger or a proof.
+effective seller identity `{name, logoUrl, accentColor, contactEmail, helpUrl}`
+(#614/#756) with no credential. It resolves the owner-managed business profile,
+or setup/deployment defaults before the first save. Nothing it serves changes
+pricing, the ledger, currency or historical proofs. See Business identity and
+public branding below for precedence, revisions and failure behavior.
 
 ## Change process
 
@@ -593,3 +594,27 @@ A period close writes two documents in one transaction: the accounting journal a
 - `POST /api/v1/business/statements/{statementId}/release-review` — the staff release-review under `fundsWrite` `{idempotencyKey, action, reason}`: `extendGrace` walks `pastDue → issued` (re-opens the grace window and lifts the dunning suspension), `void` cancels the statement with reversing lines. A `statement.release` `finance_audit` row records the actor and reason; a replayed key answers the standing statement.
 
 Overdue handling: the `statement-past-due` job (leader-elected, minute cadence) flips `issued` statements whose `dueAt` passed to `pastDue`, and past the binding's `graceDays` (default 7) stamps `customer_plans.dunning_suspended_at` — the wallet-side admission gate the hold path reads (a suspended plan still serves subscription quota, which is already paid for; new wallet draws refuse). A payment clearing the statement lifts the suspension in the reconcile's own transaction. `credit_limit_minor` on the binding caps the wallet-side overage a plan-bound turn may hold: `admit_subscription_draw` refuses when `outstanding + thisOverage > creditLimitMinor`, where `outstanding` is the open statements' remaining plus current holds — `NULL` is unlimited and subscription-drawn quota never counts. `GET /api/v1/org/plan` answers `credit` — `{creditLimitMinor, outstandingMinor, nextDueAt}` — beside the binding.
+
+## Business identity and public branding (#756)
+
+`GET /api/v1/business/profile` requires a current personal business session with
+`overviewRead`; `POST` requires `profileWrite` (owner only). Machine credentials
+are refused even alongside a session. A write supplies `idempotencyKey`, `reason`,
+`expectedRevision` and the complete `branding` object: `name`, `logoUrl`,
+`accentColor`, `contactEmail`, `helpUrl`. Every optional field must be present;
+null clears it. Unsupported fields, executable URLs, URL user info/control
+characters, malformed email and non-hex CSS colors are refused.
+
+A stale revision is 409 without side effects. Exact retry under the same actor
+and key returns its immutable `{id, profile}` receipt, even after a later save;
+changed reuse is 409. Replays recheck current owner and TOTP authority. Clients
+must re-read after success instead of treating an old receipt as the current
+profile. Configuration, revision, immutable receipt and `admin_audit` commit
+in the same transaction.
+
+The public `/branding` read now resolves from the database. Revision zero uses
+the accepted setup name when initialized, otherwise deployment name defaults;
+logo/accent remain deployment defaults and contact/help are null. A stored
+profile wins wholesale, including explicit nulls. Database failures are not
+masked with a different environment identity. No amount, price, history,
+currency or conversion changes through these endpoints.

@@ -347,3 +347,14 @@ advances that timestamp without rewriting the immutable event. A refund conflict
 is logged by receipt ID and does not abort other customers' recovery. Compatibility
 failure reports retain reservations as well: an error string or an exhausted
 budget never establishes that a provider did not create a refund (#760).
+### Business public identity
+
+`business_profile` owns the seller profile and revision alongside the singleton
+business row. It uses the existing business lock, current capability check,
+mutation idempotency and immutable audit transaction. The profile revision
+receipt is immutable so a lost-response replay can return the exact old result
+without overwriting subsequent edits. HTTP public branding resolves the same
+profile as the staff read and applies deployment defaults only before a save.
+The UI uses generated contract types, re-reads current state after writes and
+renders one contact/help component on authentication and both portal shells.
+No ledger, invoice snapshot or customer currency is a profile dependency.

@@ -13,3 +13,5 @@ export * from "./reports";
 export * from "./orders";
 export * from "./business";
 export * from "./providers";
+
+export * from "./profile";

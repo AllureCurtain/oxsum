@@ -26,6 +26,7 @@ import {
   type BusinessCapability,
 } from "../api/hooks";
 import { Badge, Banner, Card, PageState } from "../components/ui";
+import { BusinessProfileSection } from "./business/profile";
 import { BusinessSetup } from "./business/setup";
 import { BusinessCustomers } from "./business/customers";
 import { BusinessChannels, BusinessPrices } from "./business/catalog";
@@ -55,6 +56,7 @@ const SECTION_GROUPS: { group: string; items: Section[] }[] = [
   {
     group: "operations",
     items: [
+      { key: "profile", labelKey: "profile", Icon: Wrench, cap: "overviewRead" },
       { key: "setup", labelKey: "setup", Icon: ListChecks, cap: "overviewRead" },
       { key: "customers", labelKey: "customers", Icon: Users, cap: "customersRead" },
       { key: "payments", labelKey: "payments", Icon: Wallet, cap: "reportsRead" },
@@ -100,6 +102,8 @@ function sectionFromHash(hash: string): string | null {
 
 function SectionBody({ name }: { name: string }) {
   switch (name) {
+    case "profile":
+      return <BusinessProfileSection />;
     case "setup":
       return <BusinessSetup />;
     case "customers":
