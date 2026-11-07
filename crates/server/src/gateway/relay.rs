@@ -33,7 +33,6 @@ use serde_json::Value;
 use tokio::sync::broadcast;
 
 use crate::billing::BillingEvent;
-use crate::today;
 
 /// How much forwarded text is kept for the local estimate.
 ///
@@ -1188,7 +1187,7 @@ impl Plan {
                         &self.hold_key,
                         &description,
                         wallet_charge,
-                        today(),
+                        crate::today(),
                     )
                     .await
             } else {
@@ -1199,7 +1198,7 @@ impl Plan {
                         &description,
                         Some(&actor),
                         correlation.as_deref(),
-                        today(),
+                        crate::today(),
                     )
                     .await
             };

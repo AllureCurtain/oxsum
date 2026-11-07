@@ -5,7 +5,7 @@
 //! commits before any provider call, and the signed `refund_*`/`dispute_*`
 //! webhook is the only source of terminal truth: this surface can never mark
 //! a refund succeeded.
-use super::business::personal_token;
+
 use super::{ApiResult, ok};
 use crate::AppState;
 use crate::error::{ApiError, ApiJson, ApiQuery};
@@ -88,7 +88,7 @@ pub(crate) async fn business_refunds(
     ok(state
         .db
         .business_refunds(
-            &personal_token(&headers)?,
+            &super::business::personal_token(&headers)?,
             page.after,
             page.limit.unwrap_or(50),
         )
@@ -103,7 +103,7 @@ pub(crate) async fn business_refund(
 ) -> ApiResult<OrderRefund> {
     let refund = state
         .db
-        .business_refund(&personal_token(&headers)?, refund_id)
+        .business_refund(&super::business::personal_token(&headers)?, refund_id)
         .await?
         .ok_or_else(ApiError::not_found)?;
     ok(refund)
@@ -130,7 +130,7 @@ pub(crate) async fn resolve_refund(
     let (refund, needs_provider_call) = state
         .db
         .resolve_order_refund(
-            &personal_token(&headers)?,
+            &super::business::personal_token(&headers)?,
             refund_id,
             r.decision,
             r.reason.as_deref(),
@@ -213,7 +213,7 @@ pub(crate) async fn business_credit_notes(
     ok(state
         .db
         .business_order_credit_notes(
-            &personal_token(&headers)?,
+            &super::business::personal_token(&headers)?,
             page.after,
             page.limit.unwrap_or(50),
         )
@@ -229,7 +229,7 @@ pub(crate) async fn business_disputes(
     ok(state
         .db
         .business_disputes(
-            &personal_token(&headers)?,
+            &super::business::personal_token(&headers)?,
             page.after,
             page.limit.unwrap_or(50),
         )
@@ -254,7 +254,7 @@ pub(crate) async fn business_audit(
     ok(state
         .db
         .business_finance_audit(
-            &personal_token(&headers)?,
+            &super::business::personal_token(&headers)?,
             page.after,
             page.action.as_deref(),
             page.limit.unwrap_or(50),
@@ -298,7 +298,7 @@ pub(crate) async fn resolve_dispute(
         .db
         .resolve_order_dispute(
             &wallet,
-            &personal_token(&headers)?,
+            &super::business::personal_token(&headers)?,
             dispute_id,
             r.resolution,
             r.reason.as_deref(),

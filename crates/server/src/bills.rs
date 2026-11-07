@@ -21,7 +21,6 @@ use oxsum_core::Principal;
 use oxsum_web::{BillView, csv, json};
 
 use crate::AppState;
-use crate::auth::session_cookie_value;
 
 /// The CSV export: the page's rows, header first.
 pub async fn export_csv(State(state): State<AppState>, headers: HeaderMap) -> Response {
@@ -59,7 +58,7 @@ async fn rows(state: &AppState, headers: &HeaderMap) -> Result<Vec<BillView>, Re
     if crate::auth::has_machine_credential(headers) {
         return Err(Refusal::unauthorized());
     }
-    let Some(token) = session_cookie_value(headers) else {
+    let Some(token) = crate::auth::session_cookie_value(headers) else {
         return Err(Refusal::unauthorized());
     };
     let principal = state

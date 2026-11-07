@@ -6,7 +6,6 @@ use oxsum_core::{Channel, ModelPrice, Price, audit_action};
 use serde::{Deserialize, Serialize};
 
 use crate::AppState;
-use crate::admin::record;
 use crate::error::{ApiError, ApiJson};
 use crate::routes::{ApiResult, ok};
 
@@ -151,7 +150,7 @@ pub(crate) async fn set(
         .into_iter()
         .find(|channel| channel.name == request.name)
         .ok_or(ApiError::Internal)?;
-    record(
+    crate::admin::record(
         &state,
         audit_action::CHANNEL_SET,
         Some(channel.name.clone()),
@@ -207,7 +206,7 @@ pub(crate) async fn append(
         .db
         .append_price(&name, &request.model, price, request.weight.unwrap_or(100))
         .await?;
-    record(
+    crate::admin::record(
         &state,
         audit_action::CHANNEL_PRICE_APPEND,
         Some(name),
@@ -285,7 +284,7 @@ pub(crate) async fn set_alias(
             }
             _ => ApiError::from(error),
         })?;
-    record(
+    crate::admin::record(
         &state,
         audit_action::CHANNEL_ALIAS_SET,
         Some(name),
@@ -312,7 +311,7 @@ pub(crate) async fn delete_alias(
     if !state.db.delete_alias(&name, &alias).await? {
         return Err(ApiError::not_found());
     }
-    record(
+    crate::admin::record(
         &state,
         audit_action::CHANNEL_ALIAS_DELETE,
         Some(name),
@@ -367,7 +366,7 @@ pub(crate) async fn add_credential(
             }
             _ => ApiError::from(error),
         })?;
-    record(
+    crate::admin::record(
         &state,
         audit_action::CHANNEL_CREDENTIAL_ADD,
         Some(name),
@@ -397,7 +396,7 @@ pub(crate) async fn set_credential_status(
     {
         return Err(ApiError::not_found());
     }
-    record(
+    crate::admin::record(
         &state,
         audit_action::CHANNEL_CREDENTIAL_STATUS,
         Some(name),
@@ -422,7 +421,7 @@ pub(crate) async fn drop_credential(
     if !state.db.drop_credential(&name, credential_id).await? {
         return Err(ApiError::not_found());
     }
-    record(
+    crate::admin::record(
         &state,
         audit_action::CHANNEL_CREDENTIAL_DROP,
         Some(name),

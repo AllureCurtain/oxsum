@@ -11,7 +11,6 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use crate::AppState;
-use crate::admin::record;
 use crate::error::{ApiError, ApiJson, ApiQuery};
 use crate::routes::{ApiResult, ok};
 
@@ -89,7 +88,7 @@ pub(crate) async fn set_group(
         .db
         .put_group(organization_id, &name, &request.channel_ids)
         .await?;
-    record(
+    crate::admin::record(
         &state,
         audit_action::GROUP_SET,
         Some(format!("{organization_id}/{name}")),
@@ -110,7 +109,7 @@ pub(crate) async fn delete_group(
     if !state.db.delete_group(organization_id, &name).await? {
         return Err(ApiError::not_found());
     }
-    record(
+    crate::admin::record(
         &state,
         audit_action::GROUP_DELETE,
         Some(format!("{organization_id}/{name}")),

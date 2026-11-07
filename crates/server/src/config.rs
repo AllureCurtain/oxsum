@@ -1447,7 +1447,7 @@ fn mailer_of() -> Result<Option<crate::mail::Mailer>, String> {
             );
         }
     };
-    crate::mail::Mailer::new(&smtp_url, &from, &public_url).map(Some)
+    crate::mail::Mailer::try_new(&smtp_url, &from, &public_url).map(Some)
 }
 
 /// Parses the GitHub OAuth configuration: `OXSUM_GITHUB_CLIENT_ID`,

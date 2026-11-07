@@ -13,7 +13,6 @@ use serde::Deserialize;
 use uuid::Uuid;
 
 use crate::AppState;
-use crate::admin::record;
 use crate::error::{ApiError, ApiJson};
 use crate::routes::{ApiResult, ok};
 
@@ -84,7 +83,7 @@ pub(crate) async fn set_plan(
             request.sort_order,
         )
         .await?;
-    record(
+    crate::admin::record(
         &state,
         audit_action::SUBSCRIPTION_PLAN_SET,
         Some(name),
@@ -132,7 +131,7 @@ pub(crate) async fn bind(
             request.stripe_subscription_id.as_deref(),
         )
         .await?;
-    record(
+    crate::admin::record(
         &state,
         audit_action::SUBSCRIPTION_BIND,
         Some(subscription.subscription_id.to_string()),
@@ -159,7 +158,7 @@ pub(crate) async fn cancel(
     if !ended {
         return Err(ApiError::not_found());
     }
-    record(
+    crate::admin::record(
         &state,
         audit_action::SUBSCRIPTION_CANCEL,
         Some(organization_id.to_string()),

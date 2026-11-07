@@ -15,8 +15,6 @@
 use oxsum_core::OAuthIdentity;
 use serde::Deserialize;
 
-use crate::oauth::urlencoded;
-
 /// A configured OIDC provider from `OXSUM_OIDC_PROVIDERS`: the issuer (which
 /// owns the `sub` namespace and the discovery document), the client pair, and
 /// this deployment's public origin the callback URL is built from.
@@ -220,12 +218,12 @@ impl OidcProvider {
         Ok(format!(
             "{}?response_type=code&client_id={}&redirect_uri={}&scope={}&state={}&nonce={}&code_challenge={}&code_challenge_method=S256",
             discovery.authorization_endpoint,
-            urlencoded(&self.client_id),
-            urlencoded(&self.callback_url()),
-            urlencoded("openid email profile"),
-            urlencoded(state),
-            urlencoded(nonce),
-            urlencoded(pkce_challenge),
+            crate::oauth::urlencoded(&self.client_id),
+            crate::oauth::urlencoded(&self.callback_url()),
+            crate::oauth::urlencoded("openid email profile"),
+            crate::oauth::urlencoded(state),
+            crate::oauth::urlencoded(nonce),
+            crate::oauth::urlencoded(pkce_challenge),
         ))
     }
 

@@ -1,5 +1,5 @@
 //! Staff transport for sale books. Core owns authority, timelines and exact rating.
-use super::business::personal_token;
+
 use crate::AppState;
 use crate::error::{ApiJson, ApiQuery};
 use crate::routes::{ApiResult, ok};
@@ -26,7 +26,7 @@ pub(crate) async fn books(
     ok(state
         .db
         .sale_books(
-            &personal_token(&headers)?,
+            &super::business::personal_token(&headers)?,
             page.after,
             page.limit.unwrap_or(50),
         )
@@ -39,7 +39,7 @@ pub(crate) async fn history(
 ) -> ApiResult<SaleBookHistory> {
     ok(state
         .db
-        .sale_book_history(&personal_token(&headers)?, id)
+        .sale_book_history(&super::business::personal_token(&headers)?, id)
         .await?)
 }
 pub(crate) async fn customer(
@@ -49,7 +49,7 @@ pub(crate) async fn customer(
 ) -> ApiResult<Vec<SaleSchedule>> {
     ok(state
         .db
-        .customer_sale_terms(&personal_token(&headers)?, id)
+        .customer_sale_terms(&super::business::personal_token(&headers)?, id)
         .await?)
 }
 pub(crate) async fn change(
@@ -59,7 +59,7 @@ pub(crate) async fn change(
 ) -> ApiResult<SaleMutationResult> {
     ok(state
         .db
-        .change_sale_terms(&personal_token(&headers)?, &request)
+        .change_sale_terms(&super::business::personal_token(&headers)?, &request)
         .await?)
 }
 pub(crate) async fn preview(
@@ -69,6 +69,6 @@ pub(crate) async fn preview(
 ) -> ApiResult<SalePricePreview> {
     ok(state
         .db
-        .preview_sale_price(&personal_token(&headers)?, &request)
+        .preview_sale_price(&super::business::personal_token(&headers)?, &request)
         .await?)
 }

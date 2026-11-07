@@ -5,7 +5,7 @@
 //! (`/api/v1/business/statements`, `ReportsRead`) and runs release-review
 //! under `FundsWrite` — extend the grace window or void the statement with
 //! reversing lines, every release audited in `finance_audit`.
-use super::business::personal_token;
+
 use super::{ApiResult, ok};
 use crate::AppState;
 use crate::error::{ApiError, ApiJson, ApiQuery};
@@ -76,7 +76,7 @@ pub(crate) async fn business_statements(
     ok(state
         .db
         .business_plan_statements(
-            &personal_token(&headers)?,
+            &super::business::personal_token(&headers)?,
             page.state.as_deref(),
             page.organization_id,
             page.after,
@@ -93,7 +93,7 @@ pub(crate) async fn business_statement(
 ) -> ApiResult<PlanStatementDetail> {
     let statement = state
         .db
-        .business_plan_statement(&personal_token(&headers)?, statement_id)
+        .business_plan_statement(&super::business::personal_token(&headers)?, statement_id)
         .await?
         .ok_or_else(ApiError::not_found)?;
     ok(statement)
@@ -122,7 +122,7 @@ pub(crate) async fn release_review(
     ok(state
         .db
         .release_statement_review(
-            &personal_token(&headers)?,
+            &super::business::personal_token(&headers)?,
             statement_id,
             &r.action,
             &r.reason,

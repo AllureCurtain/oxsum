@@ -23,7 +23,6 @@ use oxsum_core::{
 use serde::Deserialize;
 
 use crate::AppState;
-use crate::admin::record;
 use crate::error::{ApiError, ApiJson};
 use crate::routes::{ApiResult, ok};
 
@@ -144,7 +143,7 @@ pub(crate) async fn set_policy(
             secret_sealed.as_deref(),
         )
         .await?;
-    record(
+    crate::admin::record(
         &state,
         audit_action::GUARDRAIL_POLICY_SET,
         Some(name),
@@ -164,7 +163,7 @@ pub(crate) async fn delete_policy(
     if !state.db.delete_guardrail_policy(&name).await? {
         return Err(ApiError::not_found());
     }
-    record(
+    crate::admin::record(
         &state,
         audit_action::GUARDRAIL_POLICY_DELETE,
         Some(name),
@@ -217,7 +216,7 @@ pub(crate) async fn set_binding(
         .db
         .set_guardrail_binding(&scope, &target, &request.policies)
         .await?;
-    record(
+    crate::admin::record(
         &state,
         audit_action::GUARDRAIL_BINDING_SET,
         Some(format!("{scope}/{target}")),
@@ -242,7 +241,7 @@ pub(crate) async fn delete_binding(
     if !state.db.delete_guardrail_binding(&scope, &target).await? {
         return Err(ApiError::not_found());
     }
-    record(
+    crate::admin::record(
         &state,
         audit_action::GUARDRAIL_BINDING_DELETE,
         Some(format!("{scope}/{target}")),

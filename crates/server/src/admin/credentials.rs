@@ -6,7 +6,6 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use crate::AppState;
-use crate::admin::record;
 use crate::error::{ApiError, ApiJson};
 use crate::routes::{ApiResult, ok};
 
@@ -35,7 +34,7 @@ pub(crate) async fn revoke_service_credential(
         .revoke_service_credential(credential_id)
         .await?
         .ok_or_else(ApiError::not_found)?;
-    record(
+    crate::admin::record(
         &state,
         audit_action::SERVICE_CREDENTIAL_REVOKE,
         Some(credential_id.to_string()),
@@ -74,7 +73,7 @@ pub(crate) async fn reset_password(
         .db
         .reset_password(user_id, &request.new_password)
         .await?;
-    record(
+    crate::admin::record(
         &state,
         audit_action::USER_PASSWORD_RESET,
         Some(user_id.to_string()),

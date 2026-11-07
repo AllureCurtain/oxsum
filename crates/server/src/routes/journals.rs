@@ -4,7 +4,7 @@
 //! (`/api/v1/business/journals`, `ReportsRead`) and voids under `FundsWrite`
 //! — a correction that appends reversing lines and the mirroring ledger entry,
 //! never an edit or a delete.
-use super::business::personal_token;
+
 use super::{ApiResult, ok};
 use crate::AppState;
 use crate::error::{ApiError, ApiJson, ApiQuery};
@@ -77,7 +77,7 @@ pub(crate) async fn business_journals(
     ok(state
         .db
         .business_journals(
-            &personal_token(&headers)?,
+            &super::business::personal_token(&headers)?,
             page.state.as_deref(),
             page.customer_plan_id,
             page.period_index,
@@ -95,7 +95,7 @@ pub(crate) async fn business_journal(
 ) -> ApiResult<InvoiceJournalDetail> {
     let journal = state
         .db
-        .business_journal(&personal_token(&headers)?, journal_id)
+        .business_journal(&super::business::personal_token(&headers)?, journal_id)
         .await?
         .ok_or_else(ApiError::not_found)?;
     ok(journal)
@@ -117,7 +117,7 @@ pub(crate) async fn void_journal(
     Path(journal_id): Path<Uuid>,
     ApiJson(r): ApiJson<VoidJournalBody>,
 ) -> ApiResult<InvoiceJournalDetail> {
-    let token = personal_token(&headers)?;
+    let token = super::business::personal_token(&headers)?;
     // The reversal posts to the journal organization's ledger; resolve the
     // wallet from the journal's own row before the staff check runs — the
     // same order the dispute resolve uses.

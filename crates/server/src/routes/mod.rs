@@ -18,7 +18,6 @@ use tower_http::timeout::TimeoutLayer;
 use uuid::Uuid;
 
 use crate::AppState;
-use crate::auth::require_principal;
 use crate::error::ApiError;
 
 mod auth;
@@ -239,7 +238,7 @@ pub fn router(state: AppState) -> Router {
         .route("/log/sale-head", get(log::log_sale_head))
         .layer(middleware::from_fn_with_state(
             state.clone(),
-            require_principal,
+            crate::auth::require_principal,
         ));
 
     // No credential: signup while the deployment allows it, and the login/logout pair.

@@ -13,7 +13,6 @@ use oxsum_core::audit_action;
 use serde::{Deserialize, Serialize};
 
 use crate::AppState;
-use crate::admin::record;
 use crate::error::{ApiError, ApiJson};
 use crate::routes::{ApiResult, ok};
 
@@ -47,7 +46,7 @@ pub(crate) async fn set_fallbacks(
     ApiJson(request): ApiJson<FallbackChain>,
 ) -> ApiResult<FallbackChain> {
     state.db.set_fallbacks(&model, &request.fallbacks).await?;
-    record(
+    crate::admin::record(
         &state,
         audit_action::MODEL_FALLBACK_SET,
         Some(model.clone()),
@@ -71,7 +70,7 @@ pub(crate) async fn delete_fallbacks(
     if !state.db.clear_fallbacks(&model).await? {
         return Err(ApiError::not_found());
     }
-    record(
+    crate::admin::record(
         &state,
         audit_action::MODEL_FALLBACK_DELETE,
         Some(model),

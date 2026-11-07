@@ -14,6 +14,7 @@ use axum::Router;
 use axum::http::{StatusCode, Uri, header};
 use axum::response::{Html, IntoResponse, Response};
 use axum::routing::get;
+
 use rust_embed::Embed;
 
 /// The built React app, embedded — `../../web/dist` relative to this crate.
