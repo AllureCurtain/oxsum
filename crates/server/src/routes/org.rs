@@ -1,3 +1,5 @@
+//! Organization, membership and team routes.
+
 use axum::extract::{Extension, Path, State};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;

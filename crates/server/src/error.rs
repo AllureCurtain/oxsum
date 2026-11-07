@@ -1,3 +1,5 @@
+//! Maps core errors onto the API's HTTP status and error codes.
+
 use axum::Json;
 use axum::extract::rejection::JsonRejection;
 use axum::extract::{FromRequest, FromRequestParts, OptionalFromRequest, Query, Request};

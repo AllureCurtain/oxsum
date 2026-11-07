@@ -28,7 +28,7 @@ const DELIVERY_CONCURRENCY: usize = 8;
 
 /// Delivers every due webhook row; the return count is for tests and logs.
 ///
-/// Each row is attempted independently, up to [`DELIVERY_CONCURRENCY`] at a
+/// Each row is attempted independently, up to `DELIVERY_CONCURRENCY` at a
 /// time: one slow receiver never blocks the batch, and a row another pass
 /// already finished is a no-op update.
 pub async fn deliver_due(

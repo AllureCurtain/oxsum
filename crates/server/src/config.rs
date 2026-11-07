@@ -24,7 +24,10 @@ use crate::stripe::Stripe;
 /// arrives first create an account; `open` is what a demo or a private instance wants.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Signup {
+    /// Registration is invitation-only — the default, so a public instance does
+    /// not let whoever arrives first create an account.
     Invite,
+    /// Anyone may register — the demo or private-instance shape.
     Open,
 }
 
@@ -178,6 +181,9 @@ impl Gateway {
         Ok(Some(gateway))
     }
 
+    /// The provider network policy the channel's requests must satisfy, from
+    /// `OXSUM_UPSTREAM_DESTINATION_POLICY`. Every request the gateway builds for
+    /// this channel is checked against it before it is sent.
     pub fn destination_policy(&self) -> &oxsum_core::ProviderDestinationPolicy {
         &self.destination_policy
     }
@@ -399,6 +405,9 @@ pub struct Config {
 }
 
 impl Config {
+    /// The minimal configuration: a signup policy and an optional bootstrap
+    /// channel, with every optional integration, rail and feature switched off
+    /// and the built-in defaults in place.
     #[must_use]
     pub fn new(signup: Signup, gateway: Option<Gateway>) -> Self {
         Self {
@@ -702,6 +711,9 @@ impl Config {
     pub fn merchant_bootstraps(&self) -> &[oxsum_core::MerchantBootstrap] {
         &self.merchant_bootstraps
     }
+    /// Adds one explicit merchant bootstrap for a payment rail: its merchant
+    /// account id, mode and destination policy. An operator-supplied bootstrap,
+    /// never populated from a webhook body or a client payment request.
     #[must_use]
     pub fn with_merchant_bootstrap(mut self, input: oxsum_core::MerchantBootstrap) -> Self {
         self.merchant_bootstraps.push(input);
@@ -845,7 +857,7 @@ impl Config {
     /// The display unit an organization with no override of its own renders
     /// (issue #257): the org's stored `display_currency` pair when set, else
     /// the deployment's `OXSUM_DISPLAY_*` default, else `None` — credits only.
-    /// Returns the owned [`Display`]; the conversion is a cheap struct, so a
+    /// Returns the owned [`std::fmt::Display`]; the conversion is a cheap struct, so a
     /// per-request rebuild beats a borrowed cache an org override would
     /// invalidate anyway.
     #[must_use]

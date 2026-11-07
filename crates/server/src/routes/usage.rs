@@ -1,3 +1,5 @@
+//! Usage, budget and billing-record routes.
+
 use axum::extract::{Extension, State};
 use serde::{Deserialize, Serialize};
 

@@ -40,7 +40,13 @@ use topcoat::router::Router;
 /// the pages that read them.
 #[derive(Debug, Clone)]
 pub struct WebConfig {
+    /// The operator's head-signing seed, `OXSUM_HEAD_SIGNING_KEY`. `None` when
+    /// the deployment signs no tree heads, in which case `/verify` publishes no
+    /// key to check a usage report against.
     pub head_seed: Option<[u8; 32]>,
+    /// The pinned witness keys the bill page embeds so a customer's browser can
+    /// check cosignatures without a session. Empty when the deployment pins
+    /// none.
     pub witness_keys: Vec<WitnessPin>,
 }
 
@@ -50,9 +56,14 @@ pub struct WebConfig {
 #[derive(Debug, Clone, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct WitnessPin {
+    /// The witness endpoint this pin applies to, as `OXSUM_WITNESS_URLS` names it.
     pub witness_url: String,
+    /// The name the witness's cosignature lines carry (`— <name> <blob>`).
     pub key_name: String,
+    /// The Ed25519 verifying key, hex.
     pub public_key: String,
+    /// The cosignature selector — `SHA-256(name || '\n' || 0x04 || public)`'s
+    /// first four bytes, hex.
     pub key_hash: String,
 }
 

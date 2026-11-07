@@ -1,3 +1,5 @@
+//! The `oxsum` binary: configuration, database open and the HTTP server.
+
 use std::net::SocketAddr;
 use std::time::Duration;
 

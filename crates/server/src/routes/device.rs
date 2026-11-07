@@ -1,3 +1,5 @@
+//! The device-authorization flow: code issue, approval and token exchange.
+
 use axum::extract::{Extension, State};
 use serde::{Deserialize, Serialize};
 use time::OffsetDateTime;
