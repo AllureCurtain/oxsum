@@ -1,0 +1,18 @@
+{
+  "formatVersion": 1,
+  "verifiedAt": "2026-11-08",
+  "source": {"repository": "https://github.com/juspay/hyperswitch.git", "tag": "v1.129.0", "commit": "cf913c5aaa226e102b257a81a3a53ac841bf45bd"},
+  "images": {
+    "router": "docker.juspay.io/juspaydotin/hyperswitch-router:v1.129.0-standalone@sha256:dbbc78845ac1c6dd3cdcc6bd00de11646351b37e2173cca5f32dd723a8021dea",
+    "sdk": "docker.juspay.io/juspaydotin/hyperswitch-web:v0.135.0@sha256:e9188fc789f4fd81a2d99f0c28c1c8cdfc9b5c2940a5fac2bf4b1ef9dd35cbea",
+    "controlCenter": "docker.juspay.io/juspaydotin/hyperswitch-control-center:v1.39.0@sha256:19a4c9c15b89865798b9730445cd5a1e84820896d6383c3eed97ad6e61ce18b0",
+    "postgres": "docker.io/postgres:17-alpine@sha256:3540c0362c809df084ffac0ae69fe794515f9de92692f02178bcdce0ef0302ac",
+    "redis": "docker.io/redis:7-alpine@sha256:c5d34a98396a4775e223c74e929162c35c5a2182901ba26b50ade939941ce14b",
+    "mailpit": "docker.io/axllent/mailpit:v1.29.0@sha256:0f93f36075f5f6fe428655d94299dda59b9a533d3fe9ce62909a72ac6fe455a9"
+  },
+  "diesel": {
+    "version": "2.3.5",
+    "arm64": {"target": "aarch64-unknown-linux-gnu", "sha256": "5b342939a95fb5dfec2f65fd8006e6e44e9d7e79a246e644ad42ce28f2e9ddec"},
+    "amd64": {"target": "x86_64-unknown-linux-gnu", "sha256": "264d6f71426d9cf25ce389d1669ef9a18df0bc8f1807736be76a757843ee1645"}
+  }
+}

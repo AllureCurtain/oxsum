@@ -2665,3 +2665,30 @@ Implementation, focused issues/PRs and normal protected green merges are authori
 - A demo invocation creates one random database or stops. It never falls back to the provisioning database, retries startup by clearing tables, or loads a checkout's `.env`. A private temporary working directory blocks dotenv discovery; generated application keys and filtered environment prevent accidental provider, mail or merchant activation. Python psycopg supplies database creation/drop without assuming a local `psql` binary or a particular Docker container.
 - Owner consent, customer invitation, manual fixture funding and explicit sale assignment share the maintained Node example's bootstrap. The Python entry point remains the official OpenAI SDK streaming example. Its funding is a synthetic receipt, never a PSP observation; the model route is constrained to the loopback stub.
 - Verification happens after the server and database are gone, using the built npm tarball installed outside the workspace. The immediate settlement's retained content hash, pre-turn key/head and signed price/sale bindings must verify; altered inputs must fail. Closed-period/witness evidence stays a separate scope. The local key is retained before use but is not an independent trust source.
+## 2026-11-08 — Pin and isolate the disposable payment switch (#757)
+
+The previous local sidecar combined a moving source clone with moving images,
+shared demo credentials and a PostgreSQL 17 volume mounted above its data
+directory. Rebuild the explicitly disposable fixture as a random task-owned
+Compose project, pin all image digests and source/migrations/config at one
+verified snapshot, and checksum the architecture-specific Diesel tool. Keep
+PostgreSQL at `/var/lib/postgresql/data`, Redis AOF, router files and captured
+mail in named volumes. No automatic volume deletion or source reset is part
+of setup. Persist private generated encryption/admin/merchant identity before
+network mutations and reconcile one-time keys on retry.
+
+Use the pinned router's supported Superposition file fallback for this local
+fixture; it avoids a moving or unpersisted demo policy service. Retain the
+upstream `dirty` build metadata and immutable digest honestly. Remove obsolete
+copied configuration and shared-password seed scripts; render the exact
+upstream files at prepare time. This is not a production Hyperswitch topology.
+
+The dummy `paypal_test` connector exercises the actual switch's payment/refund
+API but does not constitute external PSP certification. API-only smoke uses
+locally signed event fixtures with explicit provenance. Public SDK acceptance
+requires both configured SDK/backend HTTPS origins and actual browser traffic.
+Temporary proxies allow only assets/client operations or one exact callback,
+never admin routes. Preserve all TLS and public-destination rules when local
+DNS or tunnels fail. Actual Stripe sandbox keys, provider-delivered callbacks
+and the owner merchant selection path remain their own acceptance/software
+work; the presence of a switch key cannot stand in for them.
