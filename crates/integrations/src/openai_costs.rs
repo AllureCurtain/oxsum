@@ -196,11 +196,9 @@ mod tests {
 mod destination_tests {
     #![allow(clippy::unwrap_used, clippy::expect_used)]
     use super::*;
-    use axum::{
-        Json, Router,
-        http::{HeaderMap, StatusCode},
-        routing::get,
-    };
+    use axum::http::{HeaderMap, StatusCode};
+    use axum::routing::get;
+    use axum::{Json, Router};
     use std::sync::{Arc, Mutex};
     #[tokio::test]
     async fn openai_bills_use_the_approved_endpoint_and_do_not_follow_redirects() {

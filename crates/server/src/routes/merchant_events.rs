@@ -1,14 +1,11 @@
 //! Merchant callback transport. Signature verification precedes normalization.
-use super::{ApiResult, business::personal_token, ok};
-use crate::{
-    AppState,
-    error::{ApiError, ApiQuery},
-};
-use axum::{
-    body::Bytes,
-    extract::{Path, State},
-    http::{HeaderMap, StatusCode},
-};
+use super::business::personal_token;
+use super::{ApiResult, ok};
+use crate::AppState;
+use crate::error::{ApiError, ApiQuery};
+use axum::body::Bytes;
+use axum::extract::{Path, State};
+use axum::http::{HeaderMap, StatusCode};
 use oxsum_core::{MerchantEventPage, MerchantRail, MerchantSigningContext};
 use oxsum_integrations::merchant_events;
 use serde::Deserialize;

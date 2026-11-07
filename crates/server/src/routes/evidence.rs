@@ -10,7 +10,8 @@
 //! stored bytes in, and the 410 a dead token earns.
 
 use axum::extract::{Extension, Path, State};
-use axum::http::{HeaderValue, StatusCode, header::CONTENT_TYPE};
+use axum::http::header::CONTENT_TYPE;
+use axum::http::{HeaderValue, StatusCode};
 use axum::response::{IntoResponse, Response};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;

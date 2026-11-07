@@ -7,15 +7,11 @@
 //! binding (`/api/v1/business/customers/{id}/plan`), each behind its
 //! capability — a personal session token, never an organization's key.
 use super::{ApiResult, ok};
-use crate::{
-    AppState,
-    error::{ApiError, ApiJson},
-};
-use axum::{
-    Extension,
-    extract::{Path, State},
-    http::HeaderMap,
-};
+use crate::AppState;
+use crate::error::{ApiError, ApiJson};
+use axum::Extension;
+use axum::extract::{Path, State};
+use axum::http::HeaderMap;
 use oxsum_core::{
     BusinessCapability, CustomerPlan, NewSoldPlan, PeriodAuthorization, PeriodKind, PlanPeriod,
     Principal, SoldPlan,

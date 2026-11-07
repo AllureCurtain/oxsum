@@ -1,9 +1,7 @@
 //! Deployment ownership reads cannot be reached by customer credentials.
 #![allow(clippy::unwrap_used, clippy::expect_used)]
-use axum::{
-    body::Body,
-    http::{Request, StatusCode},
-};
+use axum::body::Body;
+use axum::http::{Request, StatusCode};
 use http_body_util::BodyExt;
 use oxsum_core::{Db, NewUser};
 use oxsum_server::{Config, Signup};

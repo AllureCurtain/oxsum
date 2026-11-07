@@ -6,10 +6,8 @@
 #[path = "support/binary.rs"]
 mod binary;
 
-use axum::{
-    body::Body,
-    http::{Request, StatusCode},
-};
+use axum::body::Body;
+use axum::http::{Request, StatusCode};
 use http_body_util::BodyExt;
 use oxsum_core::Db;
 use oxsum_server::{Config, Signup};

@@ -5,16 +5,13 @@
 //! (`/api/v1/business/statements`, `ReportsRead`) and runs release-review
 //! under `FundsWrite` — extend the grace window or void the statement with
 //! reversing lines, every release audited in `finance_audit`.
-use super::{ApiResult, business::personal_token, ok};
-use crate::{
-    AppState,
-    error::{ApiError, ApiJson, ApiQuery},
-};
-use axum::{
-    Extension,
-    extract::{Path, State},
-    http::HeaderMap,
-};
+use super::business::personal_token;
+use super::{ApiResult, ok};
+use crate::AppState;
+use crate::error::{ApiError, ApiJson, ApiQuery};
+use axum::Extension;
+use axum::extract::{Path, State};
+use axum::http::HeaderMap;
 use oxsum_core::{PlanStatementDetail, PlanStatementPage, Principal};
 use serde::Deserialize;
 use uuid::Uuid;

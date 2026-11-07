@@ -11,16 +11,13 @@
 //! `financial_facts` read scoped to the caller's organization, so the
 //! customer's total and the business's sum for that organization are one
 //! figure by construction, never two totals that could disagree.
-use super::{ApiResult, business::personal_token, ok, parse_day};
-use crate::{
-    AppState,
-    error::{ApiError, ApiJson, ApiQuery},
-};
-use axum::{
-    Extension,
-    extract::{Path, State},
-    http::HeaderMap,
-};
+use super::business::personal_token;
+use super::{ApiResult, ok, parse_day};
+use crate::AppState;
+use crate::error::{ApiError, ApiJson, ApiQuery};
+use axum::Extension;
+use axum::extract::{Path, State};
+use axum::http::HeaderMap;
 use oxsum_core::{
     CostCoverage, FinancialFacts, Principal, ReconciliationException, ReconciliationRepair,
     ReconciliationRun, TimeBasis,

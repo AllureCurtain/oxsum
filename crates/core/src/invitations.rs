@@ -6,15 +6,16 @@ use rand::Rng;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use sha2::{Digest, Sha256};
-use sqlx::{Postgres, Row, Transaction, postgres::PgRow};
+use sqlx::postgres::PgRow;
+use sqlx::{Postgres, Row, Transaction};
 use time::OffsetDateTime;
 use uuid::Uuid;
 
-use crate::business_staff as authority;
-use crate::keys;
 use crate::orgs::{self, Kind, Role};
 use crate::users::{self, NewUser, Registration, User};
-use crate::{BusinessCapability, BusinessMutationResult, Db, WalletError};
+use crate::{
+    BusinessCapability, BusinessMutationResult, Db, WalletError, business_staff as authority, keys,
+};
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]

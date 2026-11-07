@@ -1,9 +1,7 @@
 //! Initial owner consent is separate from customer organization ownership.
-use crate::{
-    AppState,
-    error::{ApiError, ApiJson},
-    routes::{ApiResult, ok},
-};
+use crate::AppState;
+use crate::error::{ApiError, ApiJson};
+use crate::routes::{ApiResult, ok};
 use axum::extract::State;
 use axum::http::HeaderMap;
 

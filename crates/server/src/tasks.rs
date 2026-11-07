@@ -25,10 +25,9 @@ use oxsum_core::{
 use serde_json::{Value, json};
 use uuid::Uuid;
 
-use crate::AppState;
 use crate::auth::require_key_gateway;
 use crate::gateway::error::{FREEZE_MINOR, GatewayError, REQUEST_ID};
-use crate::today;
+use crate::{AppState, today};
 
 /// The task surface, nested under `/v1` by [`crate::routes`].
 pub fn router(state: AppState) -> Router<AppState> {

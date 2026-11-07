@@ -8,8 +8,8 @@
 
 use axum::Router;
 use axum::extract::{Path, Request};
-use axum::http::header::{CACHE_CONTROL, REFERRER_POLICY};
-use axum::http::{HeaderValue, StatusCode, Uri, header::LOCATION};
+use axum::http::header::{CACHE_CONTROL, LOCATION, REFERRER_POLICY};
+use axum::http::{HeaderValue, StatusCode, Uri};
 use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Response};
 use axum::routing::get;

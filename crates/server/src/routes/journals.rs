@@ -4,16 +4,13 @@
 //! (`/api/v1/business/journals`, `ReportsRead`) and voids under `FundsWrite`
 //! — a correction that appends reversing lines and the mirroring ledger entry,
 //! never an edit or a delete.
-use super::{ApiResult, business::personal_token, ok};
-use crate::{
-    AppState,
-    error::{ApiError, ApiJson, ApiQuery},
-};
-use axum::{
-    Extension,
-    extract::{Path, State},
-    http::HeaderMap,
-};
+use super::business::personal_token;
+use super::{ApiResult, ok};
+use crate::AppState;
+use crate::error::{ApiError, ApiJson, ApiQuery};
+use axum::Extension;
+use axum::extract::{Path, State};
+use axum::http::HeaderMap;
 use oxsum_core::{InvoiceJournalDetail, InvoiceJournalPage, Principal};
 use serde::Deserialize;
 use uuid::Uuid;

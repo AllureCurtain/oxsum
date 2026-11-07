@@ -21,13 +21,12 @@ mod support;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use axum::Json;
-use axum::Router;
 use axum::body::Body;
 use axum::extract::State;
 use axum::http::{Request, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::routing::post;
+use axum::{Json, Router};
 use http_body_util::BodyExt;
 use oxsum_core::{Db, SecretKey, Tenants};
 use oxsum_server::{Config, Signup};

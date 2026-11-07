@@ -28,7 +28,8 @@
 //! this_overage > credit_limit_minor`, where `outstanding` is the open
 //! statements' remaining plus the pools' current holds.
 
-use sqlx::{Postgres, Row, Transaction, postgres::PgRow};
+use sqlx::postgres::PgRow;
+use sqlx::{Postgres, Row, Transaction};
 use time::OffsetDateTime;
 use uuid::Uuid;
 

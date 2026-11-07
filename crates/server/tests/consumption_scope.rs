@@ -2,11 +2,9 @@
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 mod support;
 
-use axum::{
-    Router,
-    body::Body,
-    http::{HeaderMap, Request, StatusCode},
-};
+use axum::Router;
+use axum::body::Body;
+use axum::http::{HeaderMap, Request, StatusCode};
 use futures_util::StreamExt;
 use http_body_util::BodyExt;
 use oxsum_core::{Db, KeyConstraints, NewUser, OpenHold, Principal, Tenants};
@@ -490,7 +488,8 @@ async fn member_socket_filters_snapshot_and_events_and_rechecks_revocation() {
     let addr = listener.local_addr().unwrap();
     let app = w.app.clone();
     let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
-    use tokio_tungstenite::tungstenite::{Message, client::IntoClientRequest};
+    use tokio_tungstenite::tungstenite::Message;
+    use tokio_tungstenite::tungstenite::client::IntoClientRequest;
     let mut req = format!("ws://{addr}/ws/billing")
         .into_client_request()
         .unwrap();

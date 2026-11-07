@@ -1,8 +1,8 @@
 //! Business-scoped provider configuration, with atomic authority, replay and audit.
+use crate::channels::{self, LAST4, MAX_WEIGHT, credential_text, last_chars};
 use crate::{
     BusinessCapability, Channel, Db, ModelAlias, ModelPrice, Price, SecretKey, WalletError,
     business_staff as authority,
-    channels::{self, LAST4, MAX_WEIGHT, credential_text, last_chars},
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};

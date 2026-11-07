@@ -27,8 +27,7 @@
 //! 6. On a signing deployment the head's note verifies under the published
 //!    key — the same check `verify_signed_head` runs.
 
-use doubleentry::{Balanced, Draft, Entry, InclusionProof};
-use doubleentry::{Hash, TreeHead};
+use doubleentry::{Balanced, Draft, Entry, Hash, InclusionProof, TreeHead};
 
 use crate::{HeadError, PublishedKey, verify_signed_head};
 
@@ -701,7 +700,7 @@ mod tests {
         let money_proof = log.inclusion_proof_at(1, head.size).unwrap();
 
         let note = operator.sign(head, ORIGIN);
-        let bundle_id = Uuid::from_bytes([0xAB; 16]).to_string();
+        let bundle_id = Uuid::from_bytes([0xab; 16]).to_string();
         let anchor_log_index = 0i64;
 
         let mut artifacts = serde_json::Map::new();

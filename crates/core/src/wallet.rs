@@ -8,9 +8,8 @@ use doubleentry::{
 };
 use sha2::{Digest, Sha256};
 use sqlx::PgPool;
-use time::Date;
-use time::OffsetDateTime;
 use time::macros::date;
+use time::{Date, OffsetDateTime};
 use uuid::Uuid;
 
 use crate::billing::{Settlement, SettlementKind, SettlementRecord};

@@ -10,10 +10,8 @@
 //! session and is not accepted here. A socket only ever receives its own organization's
 //! events.
 
-use axum::extract::{
-    FromRequestParts, State,
-    ws::{Message, WebSocket, WebSocketUpgrade},
-};
+use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
+use axum::extract::{FromRequestParts, State};
 use axum::http::request::Parts;
 use axum::response::Response;
 use futures_util::SinkExt;

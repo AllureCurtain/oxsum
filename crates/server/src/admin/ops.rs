@@ -11,13 +11,10 @@ use serde::{Deserialize, Serialize};
 use time::OffsetDateTime;
 use uuid::Uuid;
 
+use crate::admin::{decode_organization_cursor, encode_organization_cursor, record};
 use crate::error::{ApiError, ApiJson, ApiQuery};
 use crate::routes::{ApiResult, ok};
-use crate::{
-    AppState,
-    admin::{decode_organization_cursor, encode_organization_cursor, record},
-    today,
-};
+use crate::{AppState, today};
 
 /// The audit query string: the page size, where the walk resumes, and an
 /// optional exact action to narrow to.

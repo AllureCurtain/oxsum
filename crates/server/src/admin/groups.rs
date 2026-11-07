@@ -10,9 +10,10 @@ use oxsum_core::audit_action;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
+use crate::AppState;
+use crate::admin::record;
 use crate::error::{ApiError, ApiJson, ApiQuery};
 use crate::routes::{ApiResult, ok};
-use crate::{AppState, admin::record};
 
 /// One group as the admin API answers it.
 #[derive(Serialize)]

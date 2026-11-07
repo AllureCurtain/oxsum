@@ -18,8 +18,7 @@ use axum::extract::{MatchedPath, Request, State};
 use axum::http::header::CONTENT_TYPE;
 use axum::middleware::Next;
 use axum::response::{IntoResponse, Response};
-use metrics::Recorder as _;
-use metrics::{Key, KeyName, Label, Level, Metadata};
+use metrics::{Key, KeyName, Label, Level, Metadata, Recorder as _};
 use metrics_exporter_prometheus::{PrometheusBuilder, PrometheusHandle, PrometheusRecorder};
 
 use crate::AppState;

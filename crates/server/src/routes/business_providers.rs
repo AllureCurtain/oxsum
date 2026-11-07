@@ -1,14 +1,10 @@
 //! Business provider transport. Authority and all mutation rules live in core.
 use super::business::personal_token;
-use crate::{
-    AppState,
-    error::{ApiError, ApiJson, ApiQuery},
-    routes::{ApiResult, ok},
-};
-use axum::{
-    extract::{Path, State},
-    http::HeaderMap,
-};
+use crate::AppState;
+use crate::error::{ApiError, ApiJson, ApiQuery};
+use crate::routes::{ApiResult, ok};
+use axum::extract::{Path, State};
+use axum::http::HeaderMap;
 use oxsum_core::*;
 use serde::Deserialize;
 use uuid::Uuid;

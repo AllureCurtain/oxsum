@@ -11,11 +11,9 @@
 mod setup;
 mod support;
 
-use axum::{
-    Router,
-    body::Body,
-    http::{Request, StatusCode},
-};
+use axum::Router;
+use axum::body::Body;
+use axum::http::{Request, StatusCode};
 use http_body_util::BodyExt;
 use oxsum_core::{Db, NewUser, SecretKey};
 use oxsum_server::{Config, Signup};

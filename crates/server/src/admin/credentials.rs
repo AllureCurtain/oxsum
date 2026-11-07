@@ -5,9 +5,10 @@ use oxsum_core::audit_action;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
+use crate::AppState;
+use crate::admin::record;
 use crate::error::{ApiError, ApiJson};
 use crate::routes::{ApiResult, ok};
-use crate::{AppState, admin::record};
 
 /// Every legacy service credential, newest first; disabled metadata only.
 pub(crate) async fn service_credentials(

@@ -2,14 +2,12 @@
 //! environment proxy, no redirects, and no caller-controlled absolute target.
 use oxsum_core::ProviderDestinationPolicy;
 use reqwest::{Client, Method, RequestBuilder};
-use std::{
-    collections::VecDeque,
-    future::Future,
-    net::{IpAddr, SocketAddr},
-    pin::Pin,
-    sync::{Arc, Mutex},
-    time::Duration,
-};
+use std::collections::VecDeque;
+use std::future::Future;
+use std::net::{IpAddr, SocketAddr};
+use std::pin::Pin;
+use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 /// Error categories contain no provider URL, credential, DNS answer or body.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -172,12 +170,10 @@ impl ProviderHttp {
 mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used)]
     use super::*;
-    use axum::{
-        Router,
-        extract::State,
-        http::{HeaderMap, StatusCode, Uri},
-        routing::any,
-    };
+    use axum::Router;
+    use axum::extract::State;
+    use axum::http::{HeaderMap, StatusCode, Uri};
+    use axum::routing::any;
     use oxsum_core::ProviderNetwork;
     use std::sync::atomic::{AtomicUsize, Ordering};
 

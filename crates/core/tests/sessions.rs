@@ -10,8 +10,7 @@ use oxsum_core::{
     ActingKey, CreatedSession, Db, KeyConstraints, KeyPrincipal, KeyScope, NewUser, Principal,
     WalletError,
 };
-use sqlx::PgPool;
-use sqlx::Row;
+use sqlx::{PgPool, Row};
 use uuid::Uuid;
 
 const PASSWORD: &str = "correct horse battery staple";
