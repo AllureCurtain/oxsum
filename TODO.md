@@ -4,6 +4,8 @@ Updated: 2026-11-07
 
 ## In progress
 
+- [x] [#723](https://github.com/AllureCurtain/oxsum/issues/723) — Serialized promo writers on the ledger append advisory lock before their promo row locks, fixing the post-merge hold/expiry deadlock; integrated in PR #724.
+
 - [x] [#697](https://github.com/AllureCurtain/oxsum/issues/697) — Rust style normalization: phases 0–11 adopted the Google Rust Style Guide workspace-wide. Pinned nightly formatting, explicit imports, `FromStr` for every `Result` parser, `#[non_exhaustive]` verify API, workspace `missing_docs`, poisoned-lock panics, borrowed application parameters, and the verify/gateway module splits. Decisions and exceptions are in the 2026-11-07 entry of `docs/decisions.md`.
 
 - [x] [#695](https://github.com/AllureCurtain/oxsum/issues/695) — Reconciled final acceptance and task state; exact candidate `813c788` passed full CI and all candidate jobs, with downloaded artifact checksums verified and limits retained.
