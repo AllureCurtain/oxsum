@@ -39,3 +39,8 @@ all writes retain unchanged-intent retry identity and require an audit reason.
 Retained ignored evidence: `local-notes/operator-launch/sales-listener-three/`.
 This is local provider simulation, not inference or payment certification.
 Strict workspace Clippy and 11 focused PostgreSQL sale-book/signed-head/router tests pass. CI, actual browser save/conflict/mobile/keyboard flows and genuine reviewer approval remain pending at this checkpoint.
+
+CI follow-up: the Node sale-input tests were initially inserted in the WASM job,
+whose path filter does not cover all UI-only edits. They now run in the frontend
+job under its frontend filter. Local Node checks and actionlint passed; the
+updated workflow requires a new PR CI result. No product code changed.
