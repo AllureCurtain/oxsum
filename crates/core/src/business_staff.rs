@@ -72,6 +72,7 @@ impl BusinessRole {
             | C::StaffManage
             | C::OwnershipTransfer
             | C::RegistrationWrite
+            | C::ProfileWrite
             | C::IntegrationsManage => self == Self::Owner,
         }
     }
@@ -124,6 +125,8 @@ pub enum BusinessCapability {
     RegistrationWrite,
     /// Manage business integrations.
     IntegrationsManage,
+    /// Change the public business identity and help settings.
+    ProfileWrite,
 }
 impl BusinessCapability {
     /// Every capability, in a stable order.
@@ -145,6 +148,7 @@ impl BusinessCapability {
         Self::OwnershipTransfer,
         Self::RegistrationWrite,
         Self::IntegrationsManage,
+        Self::ProfileWrite,
     ];
 }
 /// The authenticated staff member acting in one business.

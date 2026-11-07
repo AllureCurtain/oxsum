@@ -18,7 +18,6 @@ use tower_http::timeout::TimeoutLayer;
 use uuid::Uuid;
 
 use crate::AppState;
-use crate::config::Branding;
 use crate::error::ApiError;
 
 mod auth;
@@ -26,6 +25,7 @@ pub(crate) mod billing;
 mod business;
 mod business_invitations;
 mod business_prices;
+mod business_profile;
 mod business_providers;
 mod device;
 mod evidence;
@@ -263,6 +263,10 @@ pub fn router(state: AppState) -> Router {
             get(business::context).post(business::select_context),
         )
         .route("/business", get(business::business))
+        .route(
+            "/business/profile",
+            get(business_profile::get).post(business_profile::save),
+        )
         .route("/business/sale-books", get(business_prices::books))
         .route(
             "/business/sale-books/{book_id}",
@@ -491,7 +495,7 @@ pub fn router(state: AppState) -> Router {
         .route("/auth/totp", post(auth::totp_login))
         // The seller branding (issue #614, T23): a public cosmetic read — the
         // login and register pages brand themselves before any session exists.
-        .route("/branding", get(branding))
+        .route("/branding", get(business_profile::branding))
         // OAuth is a browser redirect, not a JSON endpoint: the provider sends
         // the browser here, so both answers are `Location` headers, and every
         // failure lands back on /login rather than on an error body.
@@ -650,14 +654,6 @@ pub(crate) fn ok<T>(data: T) -> ApiResult<T> {
     Ok(Json(Data { data }))
 }
 
-/// `GET /api/v1/branding` (issue #614, T23): the seller branding the customer
-/// portal applies — a pure config read, so no credential and no store. Every
-/// field is cosmetic: none of it reaches pricing, the ledger or a proof.
-async fn branding(
-    axum::extract::State(state): axum::extract::State<AppState>,
-) -> ApiResult<Branding> {
-    ok(state.config.branding().clone())
-}
 /// Who a login authenticated, as the API presents it: the user, the organization the
 /// session acts as, the role in it, and the session itself.
 #[derive(Serialize)]

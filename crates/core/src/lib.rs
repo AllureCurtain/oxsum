@@ -12,6 +12,7 @@ mod anomaly;
 mod audit;
 mod billing;
 mod business;
+mod business_profile;
 mod business_providers;
 mod business_setup;
 mod business_staff;
@@ -102,6 +103,9 @@ pub use billing::{
 };
 pub use business::{
     Business, BusinessMigration, BusinessMigrationPreview, BusinessOwnership, CustomerProfile,
+};
+pub use business_profile::{
+    BusinessProfile, BusinessProfileMutation, BusinessProfileRequest, PublicBusinessProfile,
 };
 pub use business_providers::{
     BusinessChannelPage, ProviderAliasInput, ProviderBillKeyInput, ProviderCacheInput,
