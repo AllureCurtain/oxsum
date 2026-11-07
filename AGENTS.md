@@ -172,6 +172,53 @@ Issue-driven, one PR per minimal feature; once `main` exists, all task developme
 
 All project documentation, code comments, and commit messages are written in English: README (optionally plus a README.zh-CN.md), `///` doc comments, internal `//` comments, openapi.yaml descriptions, UI copy, commit messages, and docs/ — everything. The only exception would be a Chinese README variant, if ever added.
 
+## Rust style
+
+The applicable parts of the [Google Rust Style Guide](https://google.github.io/styleguide/rustguide.html),
+the [Rust API Guidelines](https://rust-lang.github.io/api-guidelines/) and the
+[Rust Style Guide](https://doc.rust-lang.org/nightly/style-guide/) are the
+workspace standard. `[chrome]` and `[Fuchsia]` rules are not adopted. The full
+decision, including every deliberate exception, is the 2026-11-07 entry in
+`docs/decisions.md`.
+
+- **Imports.** No glob imports in production code; `use super::*;` is allowed
+  only inside an inline `#[cfg(test)]` module. One `use` imports one module, and
+  rustfmt groups and sorts them (`imports_granularity = "Module"`).
+- **Names.** Import an unambiguous type (`Arc`, `Duration`, `HashMap`, …) rather
+  than writing its full path. Common or ambiguous names stay qualified:
+  `serde_json::Value`, `serde_json::Map`, `std::fmt::{Formatter, Result}`,
+  `std::io::Error`.
+- **Functions.** Call top-level functions through their module
+  (`password_auth::verify_password`), not a bare imported name. A fallible
+  constructor is `try_new`, not `new`.
+- **Borrowing.** Parameters borrow (`Option<&T>`, `&str`, `&[T]`) instead of
+  taking `&Option<T>` or a smart-pointer wrapper. Application code names
+  `&str`/`String` rather than `impl Into<String>`.
+- **Types.** A parser that already returns `Result` also implements `FromStr`;
+  an `Option`-returning parser keeps its inherent `parse`. Public enums and
+  public-field structs in the publishable `oxsum-verify` crate are
+  `#[non_exhaustive]` with constructors.
+- **Concurrency.** Never read a poisoned mutex's interior; our code uses
+  `.expect(...)` with context. `crates/doubleentry` is vendored and exempt from
+  this and from every formatting or restructuring rule.
+- **Modules.** A non-leaf module declares, re-exports and holds a little glue;
+  implementation lives in leaf modules. Keep public paths stable with
+  re-exports.
+- **Documentation.** Every public item and every module has `///`/`//!` docs.
+  `missing_docs` is a workspace lint.
+
+Check a change with:
+
+```bash
+cargo fmt --all --check
+cargo clippy --workspace --all-targets -- -D warnings
+cargo nextest run -p <crate>   # the crates the change touched
+```
+
+Cross-crate changes also run `cargo nextest run --workspace`; `oxsum-verify`
+changes also run
+`cargo check -p oxsum-verify --target wasm32-unknown-unknown --features wasm`.
+
 ## Hard rules
 
 - Interface fields are defined by `crates/server/openapi.yaml`. Change the contract first, then the implementation.
