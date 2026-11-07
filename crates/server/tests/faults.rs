@@ -13,6 +13,7 @@
 
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
+use std::time::Instant;
 mod support;
 
 use std::sync::Arc;
@@ -1190,7 +1191,7 @@ async fn a_busy_tenant_does_not_starve_the_quiet_ones() {
     // Baseline: the quiet tenant's hold latency uncontended.
     let mut baseline = Vec::new();
     for i in 0..5 {
-        let start = std::time::Instant::now();
+        let start = Instant::now();
         quiet
             .hold(&format!("quiet-base-{i}"), "", 1_000, day)
             .await
@@ -1213,7 +1214,7 @@ async fn a_busy_tenant_does_not_starve_the_quiet_ones() {
     // While the hot tenant churns, the quiet tenant keeps working.
     let mut contended = Vec::new();
     for i in 0..8 {
-        let start = std::time::Instant::now();
+        let start = Instant::now();
         quiet
             .hold(&format!("quiet-load-{i}"), "", 1_000, day)
             .await

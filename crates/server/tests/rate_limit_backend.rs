@@ -9,6 +9,7 @@
 
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
+use std::time::Instant;
 mod support;
 
 use axum::body::Body;
@@ -297,7 +298,7 @@ async fn the_postgres_backend_refuses_the_second_request_in_the_minute() {
 async fn two_backend_handles_share_the_window_the_app_writes() {
     let world = world_or_skip!();
     let key = Uuid::parse_str(&world.key_id).unwrap();
-    let now = std::time::Instant::now();
+    let now = Instant::now();
     // The app's own backend and a "second instance's" over the same pool count
     // one window.
     let instance = oxsum_core::PostgresRateLimiter::new(world.pool.clone());

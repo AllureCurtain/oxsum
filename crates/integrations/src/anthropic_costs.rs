@@ -22,10 +22,14 @@
 //! call or an unreadable body all answer `None` — the coverage-gap answer every
 //! provider gives, recorded rather than read as a zero.
 
+use std::time::Duration;
+
 use serde::Deserialize;
 use time::Date;
 
 use oxsum_core::{ChannelBilling, DailyBill, UpstreamBillProvider};
+
+use crate::provider_http::ProviderHttp;
 
 /// The admin API version the request pins — Anthropic's header-versioned
 /// contract, independent of the `v1` path prefix the base URL carries.
@@ -36,7 +40,7 @@ const ANTHROPIC_VERSION: &str = "2023-06-01";
 /// OpenAI provider keeps.
 #[derive(Debug)]
 pub struct AnthropicBillProvider {
-    http: crate::provider_http::ProviderHttp,
+    http: ProviderHttp,
 }
 
 /// One day's bucket as the cost report answers it. `starting_at`/`ending_at`
@@ -90,7 +94,7 @@ struct CostReportPage {
 impl AnthropicBillProvider {
     /// Builds the provider around the shared HTTP client the job carries.
     #[must_use]
-    pub fn new(http: crate::provider_http::ProviderHttp) -> Self {
+    pub fn new(http: ProviderHttp) -> Self {
         Self { http }
     }
 
@@ -130,7 +134,7 @@ impl AnthropicBillProvider {
             // `/v1/messages` surface uses the same way.
             .header("x-api-key", key)
             .header("anthropic-version", ANTHROPIC_VERSION)
-            .timeout(std::time::Duration::from_secs(30))
+            .timeout(Duration::from_secs(30))
             .send()
             .await
             .ok()?;

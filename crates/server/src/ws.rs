@@ -10,6 +10,8 @@
 //! session and is not accepted here. A socket only ever receives its own organization's
 //! events.
 
+use std::time::Duration;
+
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
 use axum::extract::{FromRequestParts, State};
 use axum::http::request::Parts;
@@ -104,7 +106,7 @@ async fn push_billing(
             return;
         }
     }
-    let mut validity = tokio::time::interval(std::time::Duration::from_secs(30));
+    let mut validity = tokio::time::interval(Duration::from_secs(30));
     validity.tick().await;
     loop {
         tokio::select! {

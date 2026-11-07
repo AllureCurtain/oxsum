@@ -4,7 +4,7 @@
 
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use oxsum_core::{
@@ -513,14 +513,14 @@ struct StubBillProvider {
     /// `None` means the provider answered nothing (a coverage gap).
     billed: Option<i64>,
     /// How many channels the pass asked — the coverage check.
-    calls: std::sync::Mutex<usize>,
+    calls: Mutex<usize>,
 }
 
 impl StubBillProvider {
     fn answering(billed: i64) -> Self {
         Self {
             billed: Some(billed),
-            calls: std::sync::Mutex::new(0),
+            calls: Mutex::new(0),
         }
     }
 }
@@ -745,7 +745,7 @@ async fn upstream_bill_sync_no_provider_answer_records_a_gap() {
         bill_provider: Some((
             Arc::new(StubBillProvider {
                 billed: None,
-                calls: std::sync::Mutex::new(0),
+                calls: Mutex::new(0),
             }),
             secret,
         )),

@@ -8,6 +8,7 @@ use uuid::Uuid;
 use oxsum_core::{Principal, SignedHead, WalletError, signing_key};
 
 use crate::error::{ApiError, ApiJson, ApiQuery};
+use crate::hyperswitch::WebhookEvent;
 use crate::routes::{ApiResult, ok, verify_url, wallet};
 use crate::{AppState, today};
 
@@ -945,7 +946,7 @@ pub(crate) async fn hyperswitch_legacy_webhook(
     if !switch.verify_signature(signature, &body) {
         return Err(ApiError::Unauthorized);
     }
-    let event: crate::hyperswitch::WebhookEvent = serde_json::from_slice(&body)
+    let event: WebhookEvent = serde_json::from_slice(&body)
         .map_err(|e| ApiError::Validation(format!("unreadable event: {e}")))?;
     let payload: serde_json::Value = serde_json::from_slice(&body)
         .map_err(|e| ApiError::Validation(format!("unreadable event: {e}")))?;

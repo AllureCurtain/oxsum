@@ -18,6 +18,7 @@ use tower_http::timeout::TimeoutLayer;
 use uuid::Uuid;
 
 use crate::AppState;
+use crate::config::Branding;
 use crate::error::ApiError;
 
 mod auth;
@@ -650,7 +651,7 @@ pub(crate) fn ok<T>(data: T) -> ApiResult<T> {
 /// field is cosmetic: none of it reaches pricing, the ledger or a proof.
 async fn branding(
     axum::extract::State(state): axum::extract::State<AppState>,
-) -> ApiResult<crate::config::Branding> {
+) -> ApiResult<Branding> {
     ok(state.config.branding().clone())
 }
 /// Who a login authenticated, as the API presents it: the user, the organization the

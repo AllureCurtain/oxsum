@@ -4,9 +4,18 @@
 //! a request is handled. Everything else the server needs is an environment variable read
 //! once at startup, in main.rs.
 
+use std::sync::Arc;
 use std::time::Duration;
 
 use oxsum_core::{DEFAULT_HOLD_TIMEOUT, PriceBook, SecretKey};
+
+use crate::airwallex::Airwallex;
+use crate::antibot::Turnstile;
+use crate::hyperswitch::Hyperswitch;
+use crate::mail::Mailer;
+use crate::oauth::GitHub;
+use crate::oidc::OidcProvider;
+use crate::stripe::Stripe;
 
 /// Whether this deployment lets people register themselves.
 ///
@@ -287,24 +296,24 @@ pub struct Config {
     hold_timeout: Duration,
     session_cookie_secure: bool,
     signup_bonus_minor: i64,
-    mailer: Option<crate::mail::Mailer>,
-    github: Option<crate::oauth::GitHub>,
+    mailer: Option<Mailer>,
+    github: Option<GitHub>,
     /// The configured OIDC providers from `OXSUM_OIDC_PROVIDERS` (issue #504):
     /// one entry per enterprise IdP the deployment federates logins to. Empty —
     /// the default — mounts no OIDC login and the `{provider}` route 404s like
     /// every unknown provider.
-    oidc_providers: Vec<crate::oidc::OidcProvider>,
-    turnstile: Option<crate::antibot::Turnstile>,
-    stripe: Option<crate::stripe::Stripe>,
+    oidc_providers: Vec<OidcProvider>,
+    turnstile: Option<Turnstile>,
+    stripe: Option<Stripe>,
     /// The Airwallex deposit rail (issue #285): the credential pair plus
     /// webhook secret when the `OXSUM_AIRWALLEX_*` set is complete, `None` —
     /// the default — when the deployment takes no Airwallex payments.
-    airwallex: Option<crate::airwallex::Airwallex>,
+    airwallex: Option<Airwallex>,
     /// The Hyperswitch deposit rail (issue #319): the API key, the business
     /// profile's webhook hash key and the browser publishable key when the
     /// `OXSUM_HYPERSWITCH_*` set is complete, `None` — the default — when the
     /// deployment takes no switch payments.
-    hyperswitch: Option<crate::hyperswitch::Hyperswitch>,
+    hyperswitch: Option<Hyperswitch>,
     merchant_bootstraps: Vec<oxsum_core::MerchantBootstrap>,
     /// The deployment's public origin, `OXSUM_PUBLIC_URL` — required by the
     /// mailer and the OAuth client, optional on its own: the device grant
@@ -350,13 +359,13 @@ pub struct Config {
     /// complete, else the Ed25519 stand-in `OXSUM_X402_VERIFYING_KEY` pins.
     /// `None` — the default — runs no rail and `POST /api/v1/topups/x402`
     /// answers 503.
-    x402: Option<std::sync::Arc<dyn oxsum_core::RailVerifier>>,
+    x402: Option<Arc<dyn oxsum_core::RailVerifier>>,
     /// The provider the `upstream-bill-sync` job asks for each channel's daily
     /// billed cost (issue #283): the OpenAI Costs impl when
     /// `OXSUM_UPSTREAM_BILL_SYNC` is enabled (and `OXSUM_SECRET_KEY` present to
     /// open `bill_key_sealed`), a test's stub otherwise. `None` — the default —
     /// schedules no `upstream-bill-sync` pass.
-    bill_provider: Option<std::sync::Arc<dyn oxsum_core::UpstreamBillProvider>>,
+    bill_provider: Option<Arc<dyn oxsum_core::UpstreamBillProvider>>,
     /// The seller branding the portal serves on `GET /api/v1/branding`
     /// (issue #614, T23): `OXSUM_BUSINESS_NAME` overrides the display name,
     /// `OXSUM_BRAND_LOGO_URL` and `OXSUM_BRAND_ACCENT_COLOR` dress the login
@@ -413,7 +422,7 @@ impl Config {
     /// a lone key is a startup error, because a half-configured check only
     /// fails inside a registration.
     #[must_use]
-    pub fn with_turnstile(mut self, turnstile: crate::antibot::Turnstile) -> Self {
+    pub fn with_turnstile(mut self, turnstile: Turnstile) -> Self {
         self.turnstile = Some(turnstile);
         self
     }
@@ -423,7 +432,7 @@ impl Config {
     /// `OXSUM_PUBLIC_URL` together — a subset is a startup error, because a
     /// half-configured provider only fails inside a callback.
     #[must_use]
-    pub fn with_github(mut self, github: crate::oauth::GitHub) -> Self {
+    pub fn with_github(mut self, github: GitHub) -> Self {
         self.github = Some(github);
         self
     }
@@ -432,7 +441,7 @@ impl Config {
     /// `OXSUM_MAIL_FROM` and `OXSUM_PUBLIC_URL` together — any subset is a
     /// startup error, because a half-configured mailer only fails at send time.
     #[must_use]
-    pub fn with_mailer(mut self, mailer: crate::mail::Mailer) -> Self {
+    pub fn with_mailer(mut self, mailer: Mailer) -> Self {
         self.mailer = Some(mailer);
         self
     }
@@ -627,7 +636,7 @@ impl Config {
     /// surface then behaves as documented — registration sends nothing, forgot
     /// is indistinguishable, and `verify/request` alone reports the absence.
     #[must_use]
-    pub fn mailer(&self) -> Option<&crate::mail::Mailer> {
+    pub fn mailer(&self) -> Option<&Mailer> {
         self.mailer.as_ref()
     }
 
@@ -635,7 +644,7 @@ impl Config {
     /// configured — in which case the start endpoint answers 404 and the
     /// callback redirects home, and the login page draws no GitHub button.
     #[must_use]
-    pub fn github(&self) -> Option<&crate::oauth::GitHub> {
+    pub fn github(&self) -> Option<&GitHub> {
         self.github.as_ref()
     }
 
@@ -644,13 +653,13 @@ impl Config {
     /// no OIDC login; the login page draws no buttons and the `{provider}`
     /// routes 404 like every unknown provider.
     #[must_use]
-    pub fn oidc_providers(&self) -> &[crate::oidc::OidcProvider] {
+    pub fn oidc_providers(&self) -> &[OidcProvider] {
         &self.oidc_providers
     }
 
     /// One configured provider by its `oidc:{name}` route name, or `None`.
     #[must_use]
-    pub fn oidc_provider(&self, route_name: &str) -> Option<&crate::oidc::OidcProvider> {
+    pub fn oidc_provider(&self, route_name: &str) -> Option<&OidcProvider> {
         self.oidc_providers
             .iter()
             .find(|p| crate::oidc::provider_name(p.name()) == route_name)
@@ -658,7 +667,7 @@ impl Config {
 
     /// For tests: a provider list in place of the environment's.
     #[must_use]
-    pub fn with_oidc_providers(mut self, providers: Vec<crate::oidc::OidcProvider>) -> Self {
+    pub fn with_oidc_providers(mut self, providers: Vec<OidcProvider>) -> Self {
         self.oidc_providers = providers;
         self
     }
@@ -667,7 +676,7 @@ impl Config {
     /// two registration surfaces then run unchecked, exactly as before the
     /// check existed.
     #[must_use]
-    pub fn turnstile(&self) -> Option<&crate::antibot::Turnstile> {
+    pub fn turnstile(&self) -> Option<&Turnstile> {
         self.turnstile.as_ref()
     }
 
@@ -687,7 +696,7 @@ impl Config {
     /// `POST /api/v1/topups/stripe` answers 503 and `POST
     /// /api/v1/webhooks/stripe` answers 404.
     #[must_use]
-    pub fn stripe(&self) -> Option<&crate::stripe::Stripe> {
+    pub fn stripe(&self) -> Option<&Stripe> {
         self.stripe.as_ref()
     }
 
@@ -695,7 +704,7 @@ impl Config {
     /// `OXSUM_STRIPE_SECRET_KEY`, `OXSUM_STRIPE_WEBHOOK_SECRET` and
     /// `OXSUM_PUBLIC_URL` together — a subset is a startup error.
     #[must_use]
-    pub fn with_stripe(mut self, stripe: crate::stripe::Stripe) -> Self {
+    pub fn with_stripe(mut self, stripe: Stripe) -> Self {
         self.stripe = Some(stripe);
         self
     }
@@ -706,7 +715,7 @@ impl Config {
     /// `POST /api/v1/topups/airwallex` answers 503 and
     /// `POST /api/v1/webhooks/airwallex` answers 404.
     #[must_use]
-    pub fn airwallex(&self) -> Option<&crate::airwallex::Airwallex> {
+    pub fn airwallex(&self) -> Option<&Airwallex> {
         self.airwallex.as_ref()
     }
 
@@ -714,7 +723,7 @@ impl Config {
     /// `OXSUM_AIRWALLEX_*` set plus `OXSUM_PUBLIC_URL` together — a subset is
     /// a startup error.
     #[must_use]
-    pub fn with_airwallex(mut self, airwallex: crate::airwallex::Airwallex) -> Self {
+    pub fn with_airwallex(mut self, airwallex: Airwallex) -> Self {
         self.airwallex = Some(airwallex);
         self
     }
@@ -725,7 +734,7 @@ impl Config {
     /// `POST /api/v1/topups/hyperswitch` answers 503 and
     /// `POST /api/v1/webhooks/hyperswitch` answers 404.
     #[must_use]
-    pub fn hyperswitch(&self) -> Option<&crate::hyperswitch::Hyperswitch> {
+    pub fn hyperswitch(&self) -> Option<&Hyperswitch> {
         self.hyperswitch.as_ref()
     }
 
@@ -733,7 +742,7 @@ impl Config {
     /// `OXSUM_HYPERSWITCH_*` set plus `OXSUM_PUBLIC_URL` together — a subset is
     /// a startup error.
     #[must_use]
-    pub fn with_hyperswitch(mut self, hyperswitch: crate::hyperswitch::Hyperswitch) -> Self {
+    pub fn with_hyperswitch(mut self, hyperswitch: Hyperswitch) -> Self {
         self.hyperswitch = Some(hyperswitch);
         self
     }
@@ -754,7 +763,7 @@ impl Config {
     /// `OXSUM_X402_*` environment.
     #[must_use]
     pub fn with_x402(mut self, verifier: impl oxsum_core::RailVerifier + 'static) -> Self {
-        self.x402 = Some(std::sync::Arc::new(verifier));
+        self.x402 = Some(Arc::new(verifier));
         self
     }
 
@@ -794,7 +803,7 @@ impl Config {
     /// #283), or `None` when `OXSUM_UPSTREAM_BILL_SYNC` is off — the job is
     /// only scheduled when `Some`.
     #[must_use]
-    pub fn bill_provider(&self) -> Option<&std::sync::Arc<dyn oxsum_core::UpstreamBillProvider>> {
+    pub fn bill_provider(&self) -> Option<&Arc<dyn oxsum_core::UpstreamBillProvider>> {
         self.bill_provider.as_ref()
     }
 
@@ -900,7 +909,7 @@ impl Config {
         mut self,
         provider: impl oxsum_core::UpstreamBillProvider + 'static,
     ) -> Self {
-        self.bill_provider = Some(std::sync::Arc::new(provider));
+        self.bill_provider = Some(Arc::new(provider));
         self
     }
 
@@ -1271,7 +1280,7 @@ fn rate_limit_backend_of() -> Result<RateLimitBackend, String> {
 /// first fetch, inside the worker.
 fn bill_provider_of(
     secret: Option<&SecretKey>,
-) -> Result<Option<std::sync::Arc<dyn oxsum_core::UpstreamBillProvider>>, String> {
+) -> Result<Option<Arc<dyn oxsum_core::UpstreamBillProvider>>, String> {
     let enabled = var("OXSUM_UPSTREAM_BILL_SYNC")
         .map(|raw| match raw.trim().to_ascii_lowercase().as_str() {
             "true" | "1" => Ok(true),
@@ -1292,12 +1301,12 @@ fn bill_provider_of(
                 .into(),
         );
     }
-    Ok(Some(std::sync::Arc::new(
+    Ok(Some(Arc::new(
         oxsum_integrations::bill_providers::CompositeBillProvider::new(vec![
-            std::sync::Arc::new(oxsum_integrations::openai_costs::OpenAiBillProvider::new(
+            Arc::new(oxsum_integrations::openai_costs::OpenAiBillProvider::new(
                 oxsum_integrations::provider_http::ProviderHttp::default(),
             )),
-            std::sync::Arc::new(
+            Arc::new(
                 oxsum_integrations::anthropic_costs::AnthropicBillProvider::new(
                     oxsum_integrations::provider_http::ProviderHttp::default(),
                 ),
@@ -1430,7 +1439,7 @@ fn hold_timeout_of(raw: String) -> Result<Duration, String> {
 /// `OXSUM_PUBLIC_URL`. All three or none — a subset is a startup error, because
 /// a half-configured mailer only fails at send time, inside a request, where the
 /// operator is not watching.
-fn mailer_of() -> Result<Option<crate::mail::Mailer>, String> {
+fn mailer_of() -> Result<Option<Mailer>, String> {
     let smtp_url = var("OXSUM_SMTP_URL");
     let from = var("OXSUM_MAIL_FROM");
     let public_url = var("OXSUM_PUBLIC_URL");
@@ -1447,7 +1456,7 @@ fn mailer_of() -> Result<Option<crate::mail::Mailer>, String> {
             );
         }
     };
-    crate::mail::Mailer::try_new(&smtp_url, &from, &public_url).map(Some)
+    Mailer::try_new(&smtp_url, &from, &public_url).map(Some)
 }
 
 /// Parses the GitHub OAuth configuration: `OXSUM_GITHUB_CLIENT_ID`,
@@ -1456,7 +1465,7 @@ fn mailer_of() -> Result<Option<crate::mail::Mailer>, String> {
 /// alongside, because a pair without it can only fail inside the callback.
 /// `OXSUM_GITHUB_WEB_URL` and `OXSUM_GITHUB_API_URL` override the provider's
 /// base URLs; nothing but a test points them anywhere else.
-fn github_of() -> Result<Option<crate::oauth::GitHub>, String> {
+fn github_of() -> Result<Option<GitHub>, String> {
     let client_id = var("OXSUM_GITHUB_CLIENT_ID");
     let client_secret = var("OXSUM_GITHUB_CLIENT_SECRET");
     if client_id.is_none() && client_secret.is_none() {
@@ -1476,7 +1485,7 @@ fn github_of() -> Result<Option<crate::oauth::GitHub>, String> {
     let web_url = var("OXSUM_GITHUB_WEB_URL").unwrap_or_else(|| "https://github.com".to_owned());
     let api_url =
         var("OXSUM_GITHUB_API_URL").unwrap_or_else(|| "https://api.github.com".to_owned());
-    Ok(Some(crate::oauth::GitHub::new(
+    Ok(Some(GitHub::new(
         client_id,
         client_secret,
         public_url,
@@ -1492,7 +1501,7 @@ fn github_of() -> Result<Option<crate::oauth::GitHub>, String> {
 /// it can only fail inside the callback, so a set list plus a missing origin is
 /// a startup error, not a login-time one. An absent list parses to `[]` — no
 /// OIDC login, the `{provider}` routes 404.
-fn oidc_providers_of(public_url: Option<&str>) -> Result<Vec<crate::oidc::OidcProvider>, String> {
+fn oidc_providers_of(public_url: Option<&str>) -> Result<Vec<OidcProvider>, String> {
     let Some(raw) = var("OXSUM_OIDC_PROVIDERS") else {
         return Ok(Vec::new());
     };
@@ -1531,7 +1540,7 @@ fn oidc_providers_of(public_url: Option<&str>) -> Result<Vec<crate::oidc::OidcPr
                     entry.name
                 ));
             }
-            Ok(crate::oidc::OidcProvider::new(
+            Ok(OidcProvider::new(
                 entry.name,
                 entry.issuer,
                 entry.client_id,
@@ -1548,7 +1557,7 @@ fn oidc_providers_of(public_url: Option<&str>) -> Result<Vec<crate::oidc::OidcPr
 /// `OXSUM_PUBLIC_URL` is required alongside: checkout redirects are built on
 /// it. `OXSUM_STRIPE_API_URL` overrides the API origin; nothing but a test
 /// points it anywhere else.
-fn stripe_of() -> Result<Option<crate::stripe::Stripe>, String> {
+fn stripe_of() -> Result<Option<Stripe>, String> {
     let secret_key = var("OXSUM_STRIPE_SECRET_KEY");
     let webhook_secret = var("OXSUM_STRIPE_WEBHOOK_SECRET");
     if secret_key.is_none() && webhook_secret.is_none() {
@@ -1566,7 +1575,7 @@ fn stripe_of() -> Result<Option<crate::stripe::Stripe>, String> {
     };
     let api_url =
         var("OXSUM_STRIPE_API_URL").unwrap_or_else(|| "https://api.stripe.com".to_owned());
-    Ok(Some(crate::stripe::Stripe::new(
+    Ok(Some(Stripe::new(
         secret_key,
         webhook_secret,
         api_url,
@@ -1581,7 +1590,7 @@ fn stripe_of() -> Result<Option<crate::stripe::Stripe>, String> {
 /// intent's `return_url` is built on it. `OXSUM_AIRWALLEX_API_URL` and
 /// `OXSUM_AIRWALLEX_CHECKOUT_URL` override the API and hosted-page origins;
 /// nothing but a test points them anywhere else.
-fn airwallex_of() -> Result<Option<crate::airwallex::Airwallex>, String> {
+fn airwallex_of() -> Result<Option<Airwallex>, String> {
     let client_id = var("OXSUM_AIRWALLEX_CLIENT_ID");
     let api_key = var("OXSUM_AIRWALLEX_API_KEY");
     let webhook_secret = var("OXSUM_AIRWALLEX_WEBHOOK_SECRET");
@@ -1610,7 +1619,7 @@ fn airwallex_of() -> Result<Option<crate::airwallex::Airwallex>, String> {
         .max_tls_version(reqwest::tls::Version::TLS_1_2)
         .build()
         .map_err(|e| format!("airwallex http client: {e}"))?;
-    Ok(Some(crate::airwallex::Airwallex::new(
+    Ok(Some(Airwallex::new(
         client_id,
         api_key,
         webhook_secret,
@@ -1629,7 +1638,7 @@ fn airwallex_of() -> Result<Option<crate::airwallex::Airwallex>, String> {
 /// `OXSUM_HYPERSWITCH_BASE_URL` overrides the switch origin (the hosted
 /// sandbox by default); only a self-hosted deployment, or a test standing in a
 /// stub, points it elsewhere.
-fn hyperswitch_of() -> Result<Option<crate::hyperswitch::Hyperswitch>, String> {
+fn hyperswitch_of() -> Result<Option<Hyperswitch>, String> {
     let api_key = var("OXSUM_HYPERSWITCH_API_KEY");
     let webhook_secret = var("OXSUM_HYPERSWITCH_WEBHOOK_SECRET");
     let publishable_key = var("OXSUM_HYPERSWITCH_PUBLISHABLE_KEY");
@@ -1654,7 +1663,7 @@ fn hyperswitch_of() -> Result<Option<crate::hyperswitch::Hyperswitch>, String> {
     // on its hyperswitch-web port (issue #320).
     let sdk_url = var("OXSUM_HYPERSWITCH_SDK_URL")
         .unwrap_or_else(|| "https://beta.hyperswitch.io/v1".to_owned());
-    Ok(Some(crate::hyperswitch::Hyperswitch::new(
+    Ok(Some(Hyperswitch::new(
         api_key,
         webhook_secret,
         base_url,
@@ -1677,7 +1686,7 @@ fn hyperswitch_of() -> Result<Option<crate::hyperswitch::Hyperswitch>, String> {
 /// A facilitator URL beside a stray subset of its set is a startup error; the
 /// stand-in key is ignored when the facilitator is configured (the real rail
 /// wins, never a silent fallback).
-fn x402_of() -> Result<Option<std::sync::Arc<dyn oxsum_core::RailVerifier>>, String> {
+fn x402_of() -> Result<Option<Arc<dyn oxsum_core::RailVerifier>>, String> {
     let url = var("OXSUM_X402_FACILITATOR_URL");
     let network = var("OXSUM_X402_NETWORK");
     let asset = var("OXSUM_X402_ASSET");
@@ -1694,7 +1703,7 @@ fn x402_of() -> Result<Option<std::sync::Arc<dyn oxsum_core::RailVerifier>>, Str
             asset,
             pay_to,
         );
-        return Ok(Some(std::sync::Arc::new(verifier)));
+        return Ok(Some(Arc::new(verifier)));
     }
     if present > 0 {
         return Err(
@@ -1707,7 +1716,7 @@ fn x402_of() -> Result<Option<std::sync::Arc<dyn oxsum_core::RailVerifier>>, Str
         return Ok(None);
     };
     oxsum_core::Ed25519RailVerifier::from_hex(&key)
-        .map(|v| Some(std::sync::Arc::new(v) as std::sync::Arc<dyn oxsum_core::RailVerifier>))
+        .map(|v| Some(Arc::new(v) as Arc<dyn oxsum_core::RailVerifier>))
         .map_err(|error| error.to_string())
 }
 
@@ -1721,10 +1730,10 @@ fn x402_of() -> Result<Option<std::sync::Arc<dyn oxsum_core::RailVerifier>>, Str
 /// the single-binary default.
 fn rails_intent_of(
     raw: Option<&str>,
-    stripe: Option<&crate::stripe::Stripe>,
-    airwallex: Option<&crate::airwallex::Airwallex>,
-    hyperswitch: Option<&crate::hyperswitch::Hyperswitch>,
-    x402: Option<&std::sync::Arc<dyn oxsum_core::RailVerifier>>,
+    stripe: Option<&Stripe>,
+    airwallex: Option<&Airwallex>,
+    hyperswitch: Option<&Hyperswitch>,
+    x402: Option<&Arc<dyn oxsum_core::RailVerifier>>,
 ) -> Result<(), String> {
     let Some(raw) = raw else {
         return Ok(());
@@ -1772,10 +1781,7 @@ fn rails_intent_of(
 /// that cannot send its verification mail only fails inside the request, the
 /// failure shape this check exists to move to boot. `false`/`0` and absence
 /// declare nothing and check nothing.
-fn self_register_intent_of(
-    raw: Option<&str>,
-    mailer: Option<&crate::mail::Mailer>,
-) -> Result<(), String> {
+fn self_register_intent_of(raw: Option<&str>, mailer: Option<&Mailer>) -> Result<(), String> {
     let Some(raw) = raw else {
         return Ok(());
     };
@@ -1798,7 +1804,7 @@ fn self_register_intent_of(
 /// startup error, because a half-configured check only fails inside a
 /// registration. `OXSUM_TURNSTILE_VERIFY_URL` overrides the siteverify
 /// endpoint; nothing but a test points it anywhere else.
-fn turnstile_of() -> Result<Option<crate::antibot::Turnstile>, String> {
+fn turnstile_of() -> Result<Option<Turnstile>, String> {
     let site_key = var("OXSUM_TURNSTILE_SITE_KEY");
     let secret_key = var("OXSUM_TURNSTILE_SECRET_KEY");
     if site_key.is_none() && secret_key.is_none() {
@@ -1813,17 +1819,15 @@ fn turnstile_of() -> Result<Option<crate::antibot::Turnstile>, String> {
     };
     let verify_url = var("OXSUM_TURNSTILE_VERIFY_URL")
         .unwrap_or_else(|| "https://challenges.cloudflare.com/turnstile/v0/siteverify".to_owned());
-    Ok(Some(crate::antibot::Turnstile::new(
-        site_key, secret_key, verify_url,
-    )))
+    Ok(Some(Turnstile::new(site_key, secret_key, verify_url)))
 }
 
 /// Environment credentials need explicit merchant identity and mode before
 /// they can start new payments. This is a one-time bootstrap, not an override.
 fn merchant_bootstraps_of(
-    stripe: Option<&crate::stripe::Stripe>,
-    airwallex: Option<&crate::airwallex::Airwallex>,
-    hyperswitch: Option<&crate::hyperswitch::Hyperswitch>,
+    stripe: Option<&Stripe>,
+    airwallex: Option<&Airwallex>,
+    hyperswitch: Option<&Hyperswitch>,
 ) -> Result<Vec<oxsum_core::MerchantBootstrap>, String> {
     let mut result = Vec::new();
     for (prefix, configured) in [

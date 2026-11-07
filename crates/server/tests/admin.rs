@@ -9,6 +9,7 @@
 
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
+use std::collections::HashSet;
 mod support;
 
 use axum::Router;
@@ -719,7 +720,7 @@ async fn the_organizations_list_paginates_oldest_first() {
     }
     assert!(seen.len() >= 2, "at least two organizations were paged");
     assert_eq!(
-        seen.iter().collect::<std::collections::HashSet<_>>().len(),
+        seen.iter().collect::<HashSet<_>>().len(),
         seen.len(),
         "no organization twice: {seen:?}"
     );

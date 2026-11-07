@@ -5,6 +5,8 @@ use crate::routes::{ApiResult, ok};
 use axum::extract::{Path, State};
 use uuid::Uuid;
 
+use crate::error::ApiJson;
+
 pub(crate) async fn ownership(
     State(state): State<AppState>,
 ) -> ApiResult<oxsum_core::BusinessOwnership> {
@@ -24,7 +26,7 @@ pub(crate) async fn customer(
 
 pub(crate) async fn setup_token(
     State(state): State<AppState>,
-    crate::error::ApiJson(request): crate::error::ApiJson<oxsum_core::BusinessSetupTokenRequest>,
+    ApiJson(request): ApiJson<oxsum_core::BusinessSetupTokenRequest>,
 ) -> ApiResult<oxsum_core::BusinessSetupToken> {
     ok(state
         .db

@@ -8,7 +8,7 @@ use oxsum_core::{
 };
 
 use crate::AppState;
-use crate::error::{ApiError, ApiJson};
+use crate::error::{ApiError, ApiJson, ApiQuery};
 use crate::routes::auth::{require_bot_check, send_verification};
 use crate::routes::{ApiResult, SessionInfo, double_option_i64, double_option_uuid, ok, person};
 
@@ -91,7 +91,7 @@ pub(crate) struct PromoLotsQuery {
 pub(crate) async fn promo_lots(
     State(state): State<AppState>,
     Extension(principal): Extension<Principal>,
-    crate::error::ApiQuery(query): crate::error::ApiQuery<PromoLotsQuery>,
+    ApiQuery(query): ApiQuery<PromoLotsQuery>,
 ) -> ApiResult<Vec<oxsum_core::PromoLot>> {
     ok(state
         .db

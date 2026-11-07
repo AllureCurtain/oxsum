@@ -19,6 +19,7 @@
 //! soon as it reads the terminator.
 
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use axum::body::Bytes;
 use axum::http::{HeaderMap, HeaderValue};
@@ -33,6 +34,7 @@ use serde_json::Value;
 use tokio::sync::broadcast;
 
 use crate::billing::BillingEvent;
+use crate::metrics::Metrics;
 
 /// How much forwarded text is kept for the local estimate.
 ///
@@ -98,14 +100,14 @@ struct Plan {
     /// Where billing progress goes: the dashboard's live holds section.
     billing: broadcast::Sender<BillingEvent>,
     /// The registry the settlement counters record into: same one `/metrics` renders.
-    metrics: crate::metrics::Metrics,
+    metrics: Metrics,
     /// When the turn's hold was taken — the `turn_seconds` histogram's start,
     /// and the request-log row's `total_ms` base (issue #505).
-    started: std::time::Instant,
+    started: Instant,
     /// The first upstream byte's arrival — the request-log row's `ttft_ms`:
     /// `Some` once upstream answered its first chunk, `None` on a whole-body
     /// read or a refusal that never reached upstream (issue #505).
-    first_byte: Option<std::time::Instant>,
+    first_byte: Option<Instant>,
     /// The channel that served the request, and the price version it was priced by. Both go into the
     /// settlement, so a bill says which version priced it and not only at what price. A failover
     /// swaps them for the route that answered (`Turn::reroute`, issue #168).
@@ -347,7 +349,7 @@ impl Turn {
         key_id: uuid::Uuid,
         attribution: Attribution,
         adapter: &'static dyn UsageAdapter,
-        metrics: crate::metrics::Metrics,
+        metrics: Metrics,
         span: tracing::Span,
         mandate: Option<PresentedMandate>,
         subscription: oxsum_core::SubscriptionAdmission,
@@ -366,7 +368,7 @@ impl Turn {
                 tenant_id: tenant_id.to_owned(),
                 billing,
                 metrics,
-                started: std::time::Instant::now(),
+                started: Instant::now(),
                 first_byte: None,
                 channel: serving.channel.clone(),
                 version: serving.version,
@@ -482,8 +484,7 @@ impl Turn {
             return;
         };
         self.heartbeat = Some(tokio::spawn(async move {
-            let mut interval =
-                tokio::time::interval(std::time::Duration::from_secs(HEARTBEAT_SECS));
+            let mut interval = tokio::time::interval(Duration::from_secs(HEARTBEAT_SECS));
             // The first tick is immediate — skip it: the lease was just bound.
             interval.tick().await;
             loop {
@@ -651,7 +652,7 @@ impl Turn {
         // The first upstream byte is the row's ttft — set once, on the chunk
         // that opens the stream (issue #505).
         if plan.first_byte.is_none() {
-            plan.first_byte = Some(std::time::Instant::now());
+            plan.first_byte = Some(Instant::now());
         }
         let terminated = plan.frames.observe(chunk, plan.adapter);
         if terminated {

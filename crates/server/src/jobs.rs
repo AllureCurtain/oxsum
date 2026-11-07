@@ -11,6 +11,7 @@
 //! `dead`, where it stands as the `jobs_dead` drift class's evidence while the
 //! kind is re-enqueued on the dead cooldown.
 
+use std::sync::Arc;
 use std::time::Duration;
 
 use oxsum_core::{
@@ -56,10 +57,7 @@ pub struct JobContext {
     /// `upstream-bill-sync` pass asks for each channel's daily billed cost —
     /// plus the sealing key `billable_channels` opens `bill_key_sealed` under.
     /// `None` — no provider impl or no sealing key — schedules no bill pass.
-    pub bill_provider: Option<(
-        std::sync::Arc<dyn oxsum_core::UpstreamBillProvider>,
-        SecretKey,
-    )>,
+    pub bill_provider: Option<(Arc<dyn oxsum_core::UpstreamBillProvider>, SecretKey)>,
 }
 
 /// The background task: startup enqueues whatever periodic kinds have nothing
@@ -612,7 +610,7 @@ async fn witness_offer(
             .http
             .post(&add)
             .header("content-type", "text/plain")
-            .timeout(std::time::Duration::from_secs(10))
+            .timeout(Duration::from_secs(10))
             .body(body.clone())
             .send()
             .await

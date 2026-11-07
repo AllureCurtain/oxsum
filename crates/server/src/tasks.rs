@@ -12,6 +12,8 @@
 //! `tasks` channel serves is refused the same `model_not_served` a chat
 //! request for an unserved model takes.
 
+use std::time::{Duration, Instant};
+
 use axum::body::Bytes;
 use axum::extract::{Extension, Path, State};
 use axum::http::{HeaderMap, StatusCode};
@@ -26,6 +28,7 @@ use serde_json::{Value, json};
 use uuid::Uuid;
 
 use crate::AppState;
+use crate::gateway::MANDATE_HEADER;
 use crate::gateway::error::{FREEZE_MINOR, GatewayError, REQUEST_ID};
 
 /// The task surface, nested under `/v1` by [`crate::routes`].
@@ -146,7 +149,7 @@ async fn submit_inner(
         })?;
     // This generic adapter has no signed-mandate settlement binding. Reject a
     // presented mandate explicitly instead of treating it as unrestricted use.
-    if headers.contains_key(crate::gateway::MANDATE_HEADER) {
+    if headers.contains_key(MANDATE_HEADER) {
         return Err(GatewayError::InvalidMandate);
     }
     // The idempotency claim rides the body fingerprint the gateway surfaces
@@ -231,10 +234,7 @@ async fn submit_inner(
     ] {
         if let Some(rpm) = rpm
             && rpm > 0
-            && let Err(limited) =
-                state
-                    .rate_limiter
-                    .admit(id, rpm as u32, std::time::Instant::now())
+            && let Err(limited) = state.rate_limiter.admit(id, rpm as u32, Instant::now())
         {
             crate::metrics::rate_limited(&state.metrics, "gateway");
             return Err(GatewayError::RateLimited {
@@ -426,7 +426,7 @@ async fn submit_inner(
     let upstream = match call
         .bearer_auth(&credential.api_key)
         .json(&forwarded)
-        .timeout(std::time::Duration::from_secs(30))
+        .timeout(Duration::from_secs(30))
         .send()
         .await
     {
@@ -606,7 +606,7 @@ async fn cancel(
     {
         let _ = call
             .bearer_auth(api_key)
-            .timeout(std::time::Duration::from_secs(10))
+            .timeout(Duration::from_secs(10))
             .send()
             .await;
     }

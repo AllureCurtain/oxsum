@@ -1,8 +1,12 @@
 //! Bridge the durable merchant inbox to the core legacy-deposit adapter and to
 //! the T15 payment-order ledger.
+use std::sync::Arc;
+
 use oxsum_core::{
     Db, MerchantEventKind, MerchantEventReceipt, MerchantPaymentPurpose, Tenants, WalletError,
 };
+
+use crate::error::ApiError;
 /// Apply a verified event to the payment order it names: marks `paid` (never
 /// fulfilled — that is [`recover`]'s separate step) or a terminal
 /// `failed`/`expired`, and parks a term mismatch in `needs_attention`. The
@@ -67,7 +71,7 @@ async fn order_wallet(
     db: &Db,
     tenants: &Tenants,
     organization: uuid::Uuid,
-) -> Result<Option<std::sync::Arc<oxsum_core::Wallet>>, WalletError> {
+) -> Result<Option<Arc<oxsum_core::Wallet>>, WalletError> {
     let tenant: Option<String> =
         sqlx::query_scalar("SELECT tenant_id FROM oxsum.organizations WHERE organization_id=$1")
             .bind(organization)
@@ -171,7 +175,7 @@ pub(crate) async fn checkout(
     rail: oxsum_core::MerchantRail,
     key: &str,
     amount: i64,
-) -> Result<serde_json::Value, crate::error::ApiError> {
+) -> Result<serde_json::Value, ApiError> {
     use crate::error::ApiError;
     let secret = state.config.secret().ok_or_else(|| {
         ApiError::ServiceUnavailable("merchant encryption is not configured".into())

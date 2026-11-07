@@ -18,6 +18,7 @@
 
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
+use std::time::Duration;
 #[path = "../../core/tests/support/integration.rs"]
 mod integration;
 mod support;
@@ -990,7 +991,7 @@ async fn a_postbyte_disconnect_cancels_but_still_prices() {
         if operation.get::<String, _>("state") == "cancelled" {
             break;
         }
-        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        tokio::time::sleep(Duration::from_millis(20)).await;
     }
     let operation = world.operation(&request_id).await;
     assert_eq!(operation.get::<String, _>("state"), "cancelled");

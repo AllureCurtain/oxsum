@@ -10,6 +10,7 @@
 
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
+use std::time::Instant;
 mod support;
 
 use std::collections::HashMap;
@@ -4828,7 +4829,7 @@ async fn a_retry_after_beyond_the_bound_is_not_waited() {
         },
     );
 
-    let started = std::time::Instant::now();
+    let started = Instant::now();
     let response = chat(&world.app, &world.key, simple(&world.model("ok"))).await;
     let id = request_id(&response);
     let (status, _) = json_of(response).await;

@@ -12,6 +12,8 @@
 //! and `{success, transaction, payer, network, error_reason}` out of settle —
 //! snake_case on the settle wire, exactly as the facilitator serves it.
 
+use std::time::Duration;
+
 use serde::{Deserialize, Serialize};
 
 /// A configured facilitator endpoint. `Config` holds it inside
@@ -98,7 +100,7 @@ impl Facilitator {
                 payment_payload,
                 payment_requirements,
             })
-            .timeout(std::time::Duration::from_secs(15))
+            .timeout(Duration::from_secs(15))
             .send()
             .await
             .map_err(|e| FacilitatorError(format!("verify request failed: {e}")))?
@@ -124,7 +126,7 @@ impl Facilitator {
             })
             // Settle waits on a chain receipt; the timeout is generous beside
             // verify's, bounded so a stuck RPC cannot hold the request forever.
-            .timeout(std::time::Duration::from_secs(60))
+            .timeout(Duration::from_secs(60))
             .send()
             .await
             .map_err(|e| FacilitatorError(format!("settle request failed: {e}")))?
