@@ -1094,3 +1094,8 @@ See [the measured D09 result](roadmap/self-hosted-v1/evidence/closeout-capacity.
 for performance limits and the distinction between admitted rate and throughput
 including the final stream drain. Background job retry/failure coverage remains
 in `faults.rs`; this test does not run a job worker.
+
+The `payment-fulfillment` periodic job drains accepted payment events and up to
+100 paid orders every five seconds, under a per-kind leader lock. A worker's
+five-second polling interval adds scheduling latency; this is separate from
+daily reconciliation. Inspect the normal jobs surface for retries or dead runs.

@@ -439,3 +439,11 @@ uses live, capability-filtered reads and follows its section links; denied
 financial reports are hidden from support. Customer checkout polls the order
 through fulfillment without remounting an unchanged payment widget. Narrow
 tables preserve access to every column and action through local scrolling.
+
+Verified payment callbacks durably mark orders paid. The leader-protected
+`payment-fulfillment` job runs at startup and every five seconds (plus the
+worker poll interval), recovering accepted events and draining up to 100 paid
+orders through the existing idempotent fulfillment writer. Customer credit
+therefore becomes available promptly without waiting for daily reconciliation.
+An interrupted pass retries from durable state; the order-derived ledger key
+prevents duplicate credit. Daily reconciliation remains an additional fallback.

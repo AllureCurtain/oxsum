@@ -1125,3 +1125,11 @@ unchanged. On narrow screens, scroll inside a data table to reach amounts and
 row actions; the table region can receive keyboard focus. The staff setup
 checklist lists only steps the current role can read. Customer detail shows
 financial tables only to staff with reporting authority.
+
+Verified payment callbacks durably mark orders paid. The leader-protected
+`payment-fulfillment` job runs at startup and every five seconds (plus the
+worker poll interval), recovering accepted events and draining up to 100 paid
+orders through the existing idempotent fulfillment writer. Customer credit
+therefore becomes available promptly without waiting for daily reconciliation.
+An interrupted pass retries from durable state; the order-derived ledger key
+prevents duplicate credit. Daily reconciliation remains an additional fallback.
