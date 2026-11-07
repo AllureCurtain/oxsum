@@ -2705,3 +2705,28 @@ bounded inbox scan by the existing last-attempt timestamp so retained unresolved
 events do not starve later customers. Historical refund metadata sometimes used
 the refund UUID as `order_id`; accept only that exact alias on migration-fenced
 rows while rejecting other supplied customer/payment/order contradictions.
+
+## 2026-11-08 — One provisioning authority for developer examples (#769)
+
+The example runner previously created a database through a discovered local
+Docker container while composing the application's URL from `DATABASE_URL`,
+and always dropped through Docker. Those could name different servers. It also
+inherited deployment variables, printed temporary credentials and installed SDK
+dependencies directly into source examples.
+
+The shell entry now delegates to a Python runner using psycopg for one explicit
+provisioning connection. It creates and drops only its random database through
+that same connection. Runtime environments omit deployment/provider/mail/proxy
+settings, an empty `.env` terminates dotenv lookup, and each run generates secrets
+and a loopback port. No demo seed or fixed-password fallback is needed. Consumers
+and SDK builds live in temporary copies; supplied binary and SDK bytes are frozen
+and hashed before use. Errors, essential skips and cleanup failures are failures.
+A mode-0700 evidence directory retains mode-0600 logs and a sanitized manifest.
+
+The maintained shared consumption bootstrap is supplied by PR #751. Integration
+must include that PR before the default clean-checkout command can pass; explicit
+`--examples-root` records source hashes for testing that dependency now. The
+runner's independent verifier exercises retained genuine fixtures after its
+server and database stop. The absent witness is reported separately; this gate
+does not claim a fresh closed-day export contains the call just made or that
+local signed callbacks are real payment-provider certification.

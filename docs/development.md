@@ -1137,10 +1137,45 @@ walkthroughs live beside the existing examples:
 - `examples/webhook-tools/` — `sign-and-replay`, `dedup-check` and
   `retry-storm` against the versioned merchant intake.
 
-`scripts/verify-examples.sh` is the gate: it builds the server, boots a fresh
-scratch database, seeds it, runs every example against the real listener and
-exits non-zero on any assertion failure — the same seam the release candidate
-gate (issue #620) wraps.
+`scripts/verify-examples.sh` builds the server and SDK, provisions a random scratch
+PostgreSQL database through the explicitly selected admin connection, and runs
+all examples on a loopback listener with generated owner credentials. It never
+loads the checkout's `.env`, seeds a default password, falls back to an ordinary
+database, or changes example dependencies in the source checkout.
+
+```bash
+python3 -m venv .venv-examples
+.venv-examples/bin/pip install -r scripts/verify-examples-requirements.txt
+PYTHON=.venv-examples/bin/python scripts/verify-examples.sh
+```
+
+Prerequisites: PostgreSQL 17 with CREATEDB authority, Node 22+, Rust, the wasm32
+target and the lockfile-matched `wasm-bindgen` CLI. The default provisioning URL
+is the local Compose postgres database. `--database-url` (or exported
+`DATABASE_URL`) selects one explicit endpoint; only `sslmode` is accepted as a
+URL query option. Creation and removal use the same connection. The supplied
+database is never used by the application. A failed create starts no listener;
+a failed cleanup is a failed run with the owned database name retained.
+
+Use `--binary /path/to/oxsum --sdk-tarball /path/to/package.tgz` to exercise exact
+existing artifact bytes without rebuilding. The runner copies both before use
+and records their SHA-256 digests. `--examples-root /path/to/checkout` selects
+maintained example sources (including the shared consent bootstrap); the
+default is this checkout. `--output /new/private/directory` retains a sanitized
+`result.json`, source-file hashes, the SDK tarball and private logs. Logs may
+contain disposable credentials and remain mode 0600 in a mode 0700 directory;
+console output contains assertion counts only.
+
+Any failed or skipped essential assertion fails the runner. The only allowed
+skip is the fixture's explicitly absent witness signature, separately counted.
+The server and scratch database are stopped/removed before the independent
+consumer verifies its retained fixture. The fresh customer's closed-day bundle
+is empty; verifying the immediate new settlement belongs to `demo/demo.py`.
+All funding and callback traffic here are local fixtures, not payment-provider
+certification. The release-candidate gate uses the same runner.
+
+Isolation failure-path checks:
+`python3 -m unittest discover -s scripts -p test_verify_examples.py`.
 
 ### Business provider authority tests (#641)
 
