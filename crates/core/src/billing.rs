@@ -1912,9 +1912,9 @@ pub struct PriceBook {
 impl PriceBook {
     /// Builds a book around models already in hand.
     #[must_use]
-    pub fn new(channel: impl Into<String>, models: BTreeMap<String, Price>) -> Self {
+    pub fn new(channel: &str, models: BTreeMap<String, Price>) -> Self {
         Self {
-            channel: channel.into(),
+            channel: channel.to_owned(),
             models,
         }
     }
