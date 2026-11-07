@@ -827,9 +827,10 @@ and `clippy --all-targets` still compiles every test target — a type or borrow
 cannot merge. The price is explicit: an integration or database failure can reach
 `main` and surface only after the merge, so a red `main` is fixed forward or reverted
 immediately. The local pre-push bar stays at fmt + clippy + the touched crates' tests
-(issue #370). The toolchain comes from `dtolnay/rust-toolchain@stable` — the runner's
-stable, no version pin — with the `rustfmt, clippy` components where they are
-needed:
+(issue #370). Build, test and clippy jobs use `dtolnay/rust-toolchain@stable` —
+the runner's stable, no version pin — with the components they need. The `fmt`
+job is the exception: it installs the exact nightly named in `rustfmt-nightly`,
+so the formatter matches the one the local scripts run:
 
 - `fmt`: `scripts/fmt-check.sh`, using the nightly named in `rustfmt-nightly`
   (the same file the local scripts read). The job installs that toolchain with
