@@ -422,7 +422,7 @@ function SwitchCheckout({ session }: { session: OrderCheckoutSession }) {
       elementRef.current?.unmount();
       elementRef.current = null;
     };
-  }, [session, t]);
+  }, [session.sdkUrl, session.clientSecret, session.publishableKey, t]);
 
   return (
     <div className="flex flex-col gap-2">

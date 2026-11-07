@@ -4,7 +4,9 @@ Updated: 2026-11-07
 
 ## In progress
 
-- [ ] [#692](https://github.com/AllureCurtain/oxsum/issues/692) — Fulfill verified paid orders promptly through a dedicated five-second recovery worker instead of waiting for daily reconciliation.
+- [x] [#688](https://github.com/AllureCurtain/oxsum/issues/688) — Close browser acceptance with real local checkout/call/proof/refund journeys; fix order polling, invitation focus, responsive tables and staff capability states.
+
+- [x] [#692](https://github.com/AllureCurtain/oxsum/issues/692) — Fulfill verified paid orders promptly through a dedicated five-second recovery worker instead of waiting for daily reconciliation.
 
 - [x] [#690](https://github.com/AllureCurtain/oxsum/issues/690) — Keep valid staff sessions in the business console; context-aware shell and authentication cache reset; actual owner context round-trip and four backend context/console checks passed.
 

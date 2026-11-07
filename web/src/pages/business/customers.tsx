@@ -104,7 +104,7 @@ function CustomerPlanCard({ customer }: { customer: BusinessCustomer }) {
   const { t } = useTranslation();
   const display = useDisplay();
   const plan = useCustomerPlan(customer.organizationId);
-  const plans = useBusinessPlans();
+  const plans = useBusinessPlans(useCapability(useBusiness().data, "catalogWrite"));
   const bind = useBindCustomerPlan(customer.organizationId);
   const cancel = useCancelCustomerPlan(customer.organizationId);
   const [target, setTarget] = useState("");
@@ -210,9 +210,10 @@ function CustomerDetail({ customer, onBack }: { customer: BusinessCustomer; onBa
   const biz = useBusiness().data;
   const canWrite = useCapability(biz, "customersWrite");
   const canSuspend = useCapability(biz, "customersSuspend");
+  const canReports = useCapability(biz, "reportsRead");
   const detail = useBusinessCustomer(customer.organizationId);
-  const statements = useBusinessStatements({ organizationId: customer.organizationId });
-  const orders = useBusinessOrders({ organizationId: customer.organizationId });
+  const statements = useBusinessStatements({ organizationId: customer.organizationId }, canReports);
+  const orders = useBusinessOrders({ organizationId: customer.organizationId }, canReports);
   const update = useUpdateCustomer(customer.organizationId);
   const lifecycle = useCustomerLifecycle(customer.organizationId);
   const suspension = useCustomerSuspension(customer.organizationId);
@@ -302,6 +303,7 @@ function CustomerDetail({ customer, onBack }: { customer: BusinessCustomer; onBa
 
       <CustomerPlanCard customer={c} />
 
+      {canReports ? <>
       {/* statements */}
       <Card title={t("biz.customers.statements")}>
         <TableShell
@@ -345,6 +347,7 @@ function CustomerDetail({ customer, onBack }: { customer: BusinessCustomer; onBa
           ) : null}
         </TableShell>
       </Card>
+      </> : null}
     </div>
   );
 }

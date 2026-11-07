@@ -1,4 +1,5 @@
 import * as React from "react";
+import { useTranslation } from "react-i18next";
 import { cn } from "../../lib/utils";
 
 // ---------------------------------------------------------------------------
@@ -99,18 +100,15 @@ const TableShell = React.forwardRef<
     sticky?: boolean;
   }
 >(({ className, head, children, density = "normal", loading, sticky = true, ...props }, ref) => {
+  const { t } = useTranslation();
   const cols = head.map(colMeta);
   return (
-    <div ref={ref} data-slot="table-shell" className={cn("overflow-x-clip", className)} {...props}>
+    <div ref={ref} data-slot="table-shell" role="region" aria-label={t("common.table")} tabIndex={0} className={cn("overflow-x-auto lg:overflow-x-clip", className)} {...props}>
       <table className="w-full border-collapse text-[13px]">
-        {/* `overflow-x-clip`, not `-auto`: a scroll container here would become
-            the sticky `<thead>`'s scroll ancestor and pin it inside the div,
-            so the header scrolled away with the body instead of holding under
-            the topbar. `clip` trims any overflow without forming a scroll
-            context, letting the thead stick against the viewport. Columns rely
-            on `truncate`/`max-w-40`, so nothing legitimately overflows. */}
+        {/* Narrow screens scroll the full set of columns and row actions.
+            Desktop retains viewport-sticky headers without a scroll ancestor. */}
         <thead
-          className={sticky ? "sticky z-sticky bg-surface" : undefined}
+          className={sticky ? "lg:sticky z-sticky bg-surface" : undefined}
           style={sticky ? { top: "var(--topbar-h)" } : undefined}
         >
           <tr className="border-b border-line text-[11.5px] font-semibold uppercase tracking-wider text-muted shadow-[inset_0_-1px_0_var(--color-line)]">

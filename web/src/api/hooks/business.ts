@@ -143,8 +143,9 @@ export function useCapability(
 // Customers
 // ---------------------------------------------------------------------------
 
-export function useBusinessCustomers(after?: string) {
+export function useBusinessCustomers(after?: string, enabled = true) {
   return useQuery({
+    enabled,
     queryKey: ["biz-customers", after ?? null],
     queryFn: () => api<BusinessCustomerPage>(`/business/customers${qs({ after })}`),
   });
@@ -236,8 +237,9 @@ export function useCancelCustomerPlan(organizationId: string) {
 // Plans (sold catalogue)
 // ---------------------------------------------------------------------------
 
-export function useBusinessPlans() {
+export function useBusinessPlans(enabled = true) {
   return useQuery({
+    enabled,
     queryKey: ["biz-plans"],
     queryFn: () => api<SoldPlan[]>("/business/plans"),
   });
@@ -279,8 +281,9 @@ export function useBusinessOrders(filter: {
   purpose?: string;
   status?: string;
   after?: string;
-}) {
+}, enabled = true) {
   return useQuery({
+    enabled,
     queryKey: ["biz-orders", filter],
     queryFn: () =>
       api<PaymentOrderPage>(
@@ -392,8 +395,9 @@ export function useResolveDispute() {
 // Statements + journals (receivables)
 // ---------------------------------------------------------------------------
 
-export function useBusinessStatements(filter: { organizationId?: string; customerPlanId?: string; after?: string }) {
+export function useBusinessStatements(filter: { organizationId?: string; customerPlanId?: string; after?: string }, enabled = true) {
   return useQuery({
+    enabled,
     queryKey: ["biz-statements", filter],
     queryFn: () =>
       api<PlanStatementPage>(
@@ -616,8 +620,9 @@ export function useSaleBookHistory(bookId: string | undefined) {
 // Merchants + integration credentials + staff + merchant events
 // ---------------------------------------------------------------------------
 
-export function useMerchants(after?: string) {
+export function useMerchants(after?: string, enabled = true) {
   return useQuery({
+    enabled,
     queryKey: ["biz-merchants", after ?? null],
     queryFn: () => api<MerchantPage>(`/business/merchants${qs({ after })}`),
   });
@@ -659,8 +664,9 @@ export function useRevokeIntegrationCredential() {
   });
 }
 
-export function useBusinessStaff() {
+export function useBusinessStaff(enabled = true) {
   return useQuery({
+    enabled,
     queryKey: ["biz-staff"],
     queryFn: () => api<BusinessStaff[]>("/business/staff"),
   });

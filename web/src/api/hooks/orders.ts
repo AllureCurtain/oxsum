@@ -35,6 +35,10 @@ export function useOrder(orderId: string | undefined) {
     queryKey: ["order", orderId],
     queryFn: () => api<PaymentOrder>(`/orders/${orderId}`),
     enabled: Boolean(orderId),
+    refetchInterval: (query) => {
+      const status = query.state.data?.status;
+      return status === "created" || status === "provider_pending" || status === "paid" ? 2_000 : false;
+    },
   });
 }
 
