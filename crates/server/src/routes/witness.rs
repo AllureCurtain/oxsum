@@ -13,6 +13,8 @@
 //! `OXSUM_WITNESS_SIGNING_KEY` has no witness, and the route is not mounted —
 //! a submission lands on the same 404 every unknown path does.
 
+use std::time::{SystemTime, UNIX_EPOCH};
+
 use axum::body::Bytes;
 use axum::extract::State;
 use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
@@ -99,8 +101,8 @@ pub(crate) async fn add_checkpoint(
     let store = MemoryWitnessStore::from_heads([(origin.clone(), known)]);
     let key = signing_key(serve)?;
     let mut cosigner = Cosigner::new(Witness::new(store), key);
-    let at = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
+    let at = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
         .map(|d| d.as_secs())
         .unwrap_or_default();
     let signature = cosigner

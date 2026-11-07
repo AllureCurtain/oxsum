@@ -6,6 +6,8 @@
 //! The fields it does act on are taken out and validated once, so the rest of the request
 //! path never has to pick apart JSON.
 
+use std::collections::BTreeMap;
+
 use oxsum_core::{
     ANTHROPIC, Attribution, BillingMode, GEMINI, MAX_CONTEXT_NAME, MAX_END_USER, MAX_TAG, MAX_TAGS,
     OPENAI,
@@ -858,7 +860,7 @@ fn gemini_ceiling(body: &Map<String, Value>) -> Result<Option<i64>, GatewayError
 /// tags under the same bounds as OpenAI's `metadata` — strings only, ten
 /// entries, 64 characters a side. There is no end-user slot on this surface.
 fn gemini_attribution(body: &Map<String, Value>) -> Result<Attribution, GatewayError> {
-    let mut tags = std::collections::BTreeMap::new();
+    let mut tags = BTreeMap::new();
     match body.get("labels") {
         None | Some(Value::Null) => {}
         Some(Value::Object(labels)) => {
@@ -960,7 +962,7 @@ fn attribution_of(body: &Map<String, Value>) -> Result<Attribution, GatewayError
         }
         Some(_) => return Err(param("user", "user must be a string")),
     };
-    let mut tags = std::collections::BTreeMap::new();
+    let mut tags = BTreeMap::new();
     match body.get("metadata") {
         None | Some(Value::Null) => {}
         Some(Value::Object(metadata)) => {

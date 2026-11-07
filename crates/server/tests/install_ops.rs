@@ -3,6 +3,7 @@
 //! backup/restore script pair run against real scratch databases.
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
+use std::time::Duration;
 #[path = "support/binary.rs"]
 mod binary;
 
@@ -144,7 +145,7 @@ async fn readyz_distinguishes_migrated_unmigrated_and_stale() {
     // the failure readiness exists to report (503), while /healthz answers.
     let dead_pool = sqlx::postgres::PgPoolOptions::new()
         .max_connections(2)
-        .acquire_timeout(std::time::Duration::from_secs(5))
+        .acquire_timeout(Duration::from_secs(5))
         .connect_lazy("postgres://postgres:postgres@127.0.0.1:1/oxsum_unreachable")
         .unwrap();
     let dead = Db::from_pool(dead_pool);

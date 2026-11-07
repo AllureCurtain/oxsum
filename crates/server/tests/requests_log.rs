@@ -8,6 +8,7 @@
 
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
+use std::time::Duration;
 mod support;
 
 use axum::body::Body;
@@ -294,7 +295,7 @@ async fn a_settled_turn_writes_a_request_log_row() {
             row = found.clone();
             break;
         }
-        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        tokio::time::sleep(Duration::from_millis(50)).await;
     }
     assert_ne!(row, Value::Null, "no request-log row for the settled turn");
     assert_eq!(row["modelServed"], world.model);
@@ -342,7 +343,7 @@ async fn a_refused_admission_logs_a_refused_row() {
             row = found.clone();
             break;
         }
-        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        tokio::time::sleep(Duration::from_millis(50)).await;
     }
     assert_ne!(
         row,
@@ -371,7 +372,7 @@ async fn the_filters_narrow_the_read() {
         {
             break;
         }
-        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        tokio::time::sleep(Duration::from_millis(50)).await;
     }
 
     // The model filter returns the row; a foreign model returns none of it.
@@ -430,7 +431,7 @@ async fn a_member_sees_only_their_own_rows_and_admin_reads_all() {
             admin_row = found.clone();
             break;
         }
-        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        tokio::time::sleep(Duration::from_millis(50)).await;
     }
     assert_ne!(admin_row, Value::Null, "the admin read missed the row");
     assert_eq!(admin_row["organizationId"], world.organization_id);
@@ -495,7 +496,7 @@ async fn the_cursor_walks_the_log_without_repeating_a_row() {
         }) {
             break;
         }
-        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        tokio::time::sleep(Duration::from_millis(50)).await;
     }
 
     // Page one with limit=1 must hand back a cursor; page two must not repeat

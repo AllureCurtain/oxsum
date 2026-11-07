@@ -1,4 +1,5 @@
 use std::net::SocketAddr;
+use std::time::Duration;
 
 use oxsum_core::Db;
 use oxsum_server::Config;
@@ -188,7 +189,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 /// comfortably under a supervisor's kill timeout (`docker stop` defaults to 10 s
 /// of SIGTERM grace before SIGKILL, Kubernetes 30 s, so a stream still in flight
 /// gets a real chance to settle).
-const SHUTDOWN_GRACE: std::time::Duration = std::time::Duration::from_secs(9);
+const SHUTDOWN_GRACE: Duration = Duration::from_secs(9);
 
 /// The drain's deadline: starts counting only once a shutdown signal has arrived —
 /// every signal listener tokio registers receives the event, so this second

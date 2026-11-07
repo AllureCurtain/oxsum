@@ -10,6 +10,8 @@
 //! Gemini's, or the input-only embeddings/rerank shapes — and each serves only the channels
 //! that declare its protocol, priced under the surface's own billing mode.
 
+use crate::billing::BillingEvent;
+use std::collections::{BTreeMap, HashSet};
 pub(crate) mod error;
 mod relay;
 mod request;
@@ -114,7 +116,7 @@ async fn models(
         .serving_access(organization.id, Some(key.key_id))
         .await?;
     let catalog = state.db.catalog_for_access(&access).await?;
-    let mut listed = std::collections::BTreeMap::new();
+    let mut listed = BTreeMap::new();
     // The core catalog orders equal public names by weight, after permission
     // filtering. No denied route can provide this row's channel identity.
     for route in catalog {
@@ -832,7 +834,7 @@ async fn run(
     // chain is dropped — `set_fallbacks` refuses a self-loop at write time, but
     // a multi-hop cycle (`a→b→c→a`) only closes at resolve time.
     let mut model_chain: Vec<String> = vec![request.model.clone()];
-    let mut seen: std::collections::HashSet<String> = [request.model.clone()].into_iter().collect();
+    let mut seen: HashSet<String> = [request.model.clone()].into_iter().collect();
     for fallback in state
         .db
         .fallbacks_for(&request.model)
@@ -847,10 +849,9 @@ async fn run(
     let discount_percent = discount?.map(i64::from);
     if let Some(rpm) = access.requests_per_minute
         && rpm > 0
-        && let Err(limited) =
-            state
-                .rate_limiter
-                .admit(organization.id, rpm as u32, std::time::Instant::now())
+        && let Err(limited) = state
+            .rate_limiter
+            .admit(organization.id, rpm as u32, Instant::now())
     {
         crate::metrics::rate_limited(&state.metrics, "gateway");
         return Err(GatewayError::RateLimited {
@@ -865,10 +866,9 @@ async fn run(
     // is a new request (the id is minted here), so it rightly spends another slot.
     if let Some(rpm) = key.requests_per_minute
         && rpm > 0
-        && let Err(limited) =
-            state
-                .rate_limiter
-                .admit(key.key_id, rpm as u32, std::time::Instant::now())
+        && let Err(limited) = state
+            .rate_limiter
+            .admit(key.key_id, rpm as u32, Instant::now())
     {
         crate::metrics::rate_limited(&state.metrics, "gateway");
         return Err(GatewayError::RateLimited {
@@ -1598,16 +1598,14 @@ async fn run(
     // The dashboard's live section sees the turn from here: the hold is taken, upstream is
     // next. Best-effort — a missed event is a missed live update, not lost state.
     crate::metrics::hold(&state.metrics, &primary.channel, &request.model);
-    let _ = state
-        .billing
-        .send(crate::billing::BillingEvent::TurnStarted {
-            key_id: key.key_id,
-            tenant_id: organization.tenant_id.clone(),
-            request_id: request_id.to_owned(),
-            model: request.model.clone(),
-            channel: primary.channel.clone(),
-            freeze_minor: freeze,
-        });
+    let _ = state.billing.send(BillingEvent::TurnStarted {
+        key_id: key.key_id,
+        tenant_id: organization.tenant_id.clone(),
+        request_id: request_id.to_owned(),
+        model: request.model.clone(),
+        channel: primary.channel.clone(),
+        freeze_minor: freeze,
+    });
     // The attempt loop: a retriable failure before any answer bytes —
     // unreachable, 429, or 5xx — rotates to the next attempt under the same
     // hold. The attempts walk the flattened chain (issue #500): the requested

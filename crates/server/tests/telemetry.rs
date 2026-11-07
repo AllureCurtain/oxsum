@@ -9,7 +9,7 @@
 
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 use axum::Router;
 use axum::body::Bytes;
@@ -21,17 +21,14 @@ struct Collector {
     bodies: Mutex<Vec<Vec<u8>>>,
 }
 
-async fn collect(
-    state: axum::extract::State<std::sync::Arc<Collector>>,
-    body: Bytes,
-) -> &'static str {
+async fn collect(state: axum::extract::State<Arc<Collector>>, body: Bytes) -> &'static str {
     state.bodies.lock().unwrap().push(body.to_vec());
     ""
 }
 
 /// A loopback collector: returns its bound port and the received bodies.
-async fn collector() -> (u16, std::sync::Arc<Collector>) {
-    let state = std::sync::Arc::new(Collector {
+async fn collector() -> (u16, Arc<Collector>) {
+    let state = Arc::new(Collector {
         bodies: Mutex::new(Vec::new()),
     });
     let app = Router::new()

@@ -20,6 +20,8 @@
 //! string and the SDK completes the handshake against `client_secret`, which
 //! the intent answer returns beside it.
 
+use std::sync::Arc;
+
 use hmac::{KeyInit, Mac, SimpleHmac};
 use serde::Deserialize;
 use sha2::Sha256;
@@ -54,7 +56,7 @@ pub struct Airwallex {
     http: reqwest::Client,
     /// The minted bearer token and when it stops being accepted — cached on
     /// the client so a burst of intents costs one login, not one per intent.
-    token: std::sync::Arc<tokio::sync::Mutex<Option<Token>>>,
+    token: Arc<tokio::sync::Mutex<Option<Token>>>,
 }
 
 /// A bearer token `/api/v1/authentication/login` answered: the value and the
@@ -152,7 +154,7 @@ impl Airwallex {
             checkout_url: checkout_url.trim_end_matches('/').to_owned(),
             public_url: public_url.trim_end_matches('/').to_owned(),
             http,
-            token: std::sync::Arc::new(tokio::sync::Mutex::new(None)),
+            token: Arc::new(tokio::sync::Mutex::new(None)),
         }
     }
 

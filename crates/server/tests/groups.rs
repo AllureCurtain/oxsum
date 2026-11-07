@@ -12,6 +12,8 @@
 
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
+use std::sync::{Arc, Mutex};
+use std::time::Duration;
 mod support;
 
 use axum::Router;
@@ -37,8 +39,8 @@ const OPERATOR_TOKEN: &str = "operator-token-0123456789";
 /// test's failover walks to its next route.
 #[derive(Clone, Default)]
 struct Script {
-    seen: std::sync::Arc<std::sync::Mutex<Vec<String>>>,
-    fail: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    seen: Arc<Mutex<Vec<String>>>,
+    fail: Arc<std::sync::atomic::AtomicBool>,
 }
 
 async fn start_upstream(script: Script) -> String {
@@ -859,7 +861,7 @@ async fn cached_answer_on_a_forbidden_channel_cannot_be_served_or_charged() {
     );
     // Wait for the normal asynchronous cache write, bounded by an observable row.
     let channel_id: uuid::Uuid = world.chan_a_id.parse().unwrap();
-    tokio::time::timeout(std::time::Duration::from_secs(5), async {
+    tokio::time::timeout(Duration::from_secs(5), async {
         loop {
             let count: i64 = sqlx::query_scalar("SELECT count(*) FROM oxsum.cached_responses WHERE organization_id = $1 AND channel_id = $2")
                 .bind(world.org_id.parse::<uuid::Uuid>().unwrap()).bind(channel_id).fetch_one(&world.pool).await.unwrap();

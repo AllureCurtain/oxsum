@@ -15,17 +15,21 @@
 //! API is a second implementation (the issue's PR 2), and a channel speaking
 //! anything else has no provider to ask.
 
+use std::time::Duration;
+
 use serde::Deserialize;
 use time::Date;
 
 use oxsum_core::{ChannelBilling, DailyBill, UpstreamBillProvider};
+
+use crate::provider_http::ProviderHttp;
 
 /// The client over `OXSUM_*`-independent coordinates — a base URL and the HTTP
 /// stack the caller already holds, so a test can stand a stub at the URL. The
 /// billing credential arrives per-call on the [`ChannelBilling`], not held here.
 #[derive(Debug)]
 pub struct OpenAiBillProvider {
-    http: crate::provider_http::ProviderHttp,
+    http: ProviderHttp,
 }
 
 /// One day's bucket as the Costs API answers it. `results` aggregates whatever
@@ -71,7 +75,7 @@ struct CostsPage {
 impl OpenAiBillProvider {
     /// Builds the provider around the shared HTTP client the job carries.
     #[must_use]
-    pub fn new(http: crate::provider_http::ProviderHttp) -> Self {
+    pub fn new(http: ProviderHttp) -> Self {
         Self { http }
     }
 
@@ -100,7 +104,7 @@ impl OpenAiBillProvider {
                 ("bucket_width", "1d".into()),
             ])
             .bearer_auth(key)
-            .timeout(std::time::Duration::from_secs(30))
+            .timeout(Duration::from_secs(30))
             .send()
             .await
             .ok()?;

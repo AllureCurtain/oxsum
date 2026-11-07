@@ -5,6 +5,7 @@ use uuid::Uuid;
 use oxsum_core::{Consistency, HeadSigningKey, KeyPublication, Principal, SignedHead, signing_key};
 
 use crate::AppState;
+use crate::config::WitnessKey;
 use crate::error::{ApiError, ApiQuery};
 use crate::routes::{ApiResult, ok, wallet};
 
@@ -170,7 +171,7 @@ impl WitnessCheckpointRes {
     /// Builds the response: the stored checkpoint plus the deployment's pinned
     /// keyset, which lives on `Config` rather than the row — the pins are a
     /// deployment claim, not per-organization data.
-    fn with_keys(c: oxsum_core::WitnessCheckpoint, keys: &[crate::config::WitnessKey]) -> Self {
+    fn with_keys(c: oxsum_core::WitnessCheckpoint, keys: &[WitnessKey]) -> Self {
         Self {
             head_size: c.head_size,
             note: c.note,

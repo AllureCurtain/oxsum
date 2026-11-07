@@ -1,5 +1,7 @@
 //! Business provider transport. Authority and all mutation rules live in core.
 
+use std::time::Duration;
+
 use crate::AppState;
 use crate::error::{ApiError, ApiJson, ApiQuery};
 use crate::routes::{ApiResult, ok};
@@ -66,11 +68,7 @@ pub(crate) async fn connection_check(
             "gemini" => call.header("x-goog-api-key", key),
             _ => call.bearer_auth(key),
         };
-        match call
-            .timeout(std::time::Duration::from_secs(10))
-            .send()
-            .await
-        {
+        match call.timeout(Duration::from_secs(10)).send().await {
             Ok(response) => {
                 let status = response.status();
                 let category = if status.is_success() || status.as_u16() == 405 {

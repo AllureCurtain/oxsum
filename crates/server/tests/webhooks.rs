@@ -4,6 +4,7 @@
 
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
+use std::time::Duration;
 mod support;
 
 use std::sync::atomic::{AtomicU16, Ordering};
@@ -350,7 +351,7 @@ async fn a_due_delivery_arrives_signed() {
         if delivery["status"] != "sending" {
             break;
         }
-        tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+        tokio::time::sleep(Duration::from_millis(250)).await;
     }
     assert_eq!(delivery["status"], "delivered", "{delivery}");
     assert_eq!(delivery["attempts"], 1);
@@ -418,7 +419,7 @@ async fn a_refusing_receiver_reschedules() {
         if delivery["status"] != "sending" {
             break;
         }
-        tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+        tokio::time::sleep(Duration::from_millis(250)).await;
     }
     assert_eq!(delivery["status"], "pending", "{delivery}");
     assert_eq!(delivery["attempts"], 1);

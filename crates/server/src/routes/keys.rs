@@ -1,3 +1,6 @@
+use std::collections::BTreeMap;
+use std::time::Instant;
+
 use axum::extract::{Extension, Path, State};
 use axum::http::HeaderMap;
 use serde::Deserialize;
@@ -11,6 +14,7 @@ use oxsum_core::{
 
 use crate::AppState;
 use crate::error::{ApiError, ApiJson, ApiQuery};
+use crate::gateway::MANDATE_HEADER;
 use crate::routes::{ApiResult, ok};
 
 #[derive(Deserialize)]
@@ -293,7 +297,7 @@ pub(crate) async fn key_entitlement(
             "estimate must be a positive amount in minor units".into(),
         )));
     }
-    let mut tags = std::collections::BTreeMap::new();
+    let mut tags = BTreeMap::new();
     for pair in &query.tag {
         let Some((name, value)) = pair.split_once(':') else {
             return Err(ApiError::from(WalletError::InvalidInput(
@@ -307,10 +311,7 @@ pub(crate) async fn key_entitlement(
     // the blob can fail is the `mandate_invalid` verdict, not an HTTP error:
     // the caller is asking *why* a delegate cannot call, and a blob that does
     // not verify *is* the answer.
-    let mandate = match headers
-        .get(crate::gateway::MANDATE_HEADER)
-        .and_then(|v| v.to_str().ok())
-    {
+    let mandate = match headers.get(MANDATE_HEADER).and_then(|v| v.to_str().ok()) {
         Some(blob) => {
             let verifying = match state.config.secret() {
                 Some(secret) => state.db.mandate_verifying_key(&key_id, secret).await?,
@@ -361,7 +362,7 @@ pub(crate) async fn key_entitlement(
         (limit > 0).then(|| {
             match state
                 .rate_limiter
-                .peek(key_id, limit as u32, std::time::Instant::now())
+                .peek(key_id, limit as u32, Instant::now())
             {
                 Ok(allowance) => RpmVerdict {
                     limit: allowance.limit,

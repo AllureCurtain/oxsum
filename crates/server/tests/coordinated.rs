@@ -16,6 +16,7 @@
 
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
+use std::collections::HashMap;
 mod support;
 
 use std::sync::{Arc, Mutex};
@@ -73,7 +74,7 @@ enum Answer {
 /// The upstream's state: what to answer, and what it saw.
 #[derive(Clone, Default)]
 struct Script {
-    answers: Arc<Mutex<std::collections::HashMap<String, Answer>>>,
+    answers: Arc<Mutex<HashMap<String, Answer>>>,
     seen: Arc<Mutex<Vec<Value>>>,
 }
 

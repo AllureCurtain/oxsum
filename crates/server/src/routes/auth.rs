@@ -11,6 +11,7 @@ use oxsum_core::{CreatedSession, LoginOutcome, NewUser, Registration};
 
 use crate::AppState;
 use crate::error::{ApiError, ApiJson, ApiQuery};
+use crate::oauth::PROVIDER;
 use crate::routes::{ApiResult, Data, SessionInfo, clear_session_cookie, ok, session_cookie};
 
 #[derive(Deserialize)]
@@ -355,7 +356,7 @@ pub(crate) async fn oauth_start(
     State(state): State<AppState>,
     Path(provider): Path<String>,
 ) -> Result<Response, ApiError> {
-    if provider == crate::oauth::PROVIDER {
+    if provider == PROVIDER {
         let Some(github) = state.config.github() else {
             return Err(ApiError::NotFound("not found".into()));
         };
@@ -428,7 +429,7 @@ async fn oauth_finish(
     // The identity comes from the provider's own leg: GitHub's access-token +
     // userinfo, or the OIDC `id_token` verified against the consumed state's
     // PKCE verifier and nonce.
-    let identity = if provider == crate::oauth::PROVIDER {
+    let identity = if provider == PROVIDER {
         let Some(github) = state.config.github() else {
             return Err("provider not configured".to_owned());
         };

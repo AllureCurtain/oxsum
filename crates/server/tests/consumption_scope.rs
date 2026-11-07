@@ -1,5 +1,6 @@
 //! T05/A01/A06: the production router enforces consumption and member record scope.
 #![allow(clippy::unwrap_used, clippy::expect_used)]
+use std::time::Duration;
 mod support;
 
 use axum::Router;
@@ -514,12 +515,11 @@ async fn member_socket_filters_snapshot_and_events_and_rechecks_revocation() {
             })
             .unwrap();
     }
-    let Message::Text(text) =
-        tokio::time::timeout(std::time::Duration::from_secs(3), socket.next())
-            .await
-            .unwrap()
-            .unwrap()
-            .unwrap()
+    let Message::Text(text) = tokio::time::timeout(Duration::from_secs(3), socket.next())
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap()
     else {
         panic!("event")
     };
@@ -534,7 +534,7 @@ async fn member_socket_filters_snapshot_and_events_and_rechecks_revocation() {
             output_chars: 1,
         })
         .unwrap();
-    let after = tokio::time::timeout(std::time::Duration::from_secs(3), socket.next())
+    let after = tokio::time::timeout(Duration::from_secs(3), socket.next())
         .await
         .unwrap();
     assert!(!matches!(after, Some(Ok(Message::Text(_)))));

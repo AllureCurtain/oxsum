@@ -5,6 +5,8 @@ use crate::routes::{ApiResult, ok};
 use axum::extract::State;
 use axum::http::HeaderMap;
 
+use crate::error::ApiQuery;
+
 pub(crate) async fn accept_setup(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -118,7 +120,7 @@ pub(crate) struct CustomerQuery {
 pub(crate) async fn customers(
     State(state): State<AppState>,
     headers: HeaderMap,
-    crate::error::ApiQuery(query): crate::error::ApiQuery<CustomerQuery>,
+    ApiQuery(query): ApiQuery<CustomerQuery>,
 ) -> ApiResult<oxsum_core::BusinessCustomerPage> {
     if crate::auth::has_machine_credential(&headers) {
         let service = integration(&state, &headers).await?;
@@ -220,7 +222,7 @@ async fn integration(
 pub(crate) async fn integration_credentials(
     State(state): State<AppState>,
     headers: HeaderMap,
-    crate::error::ApiQuery(query): crate::error::ApiQuery<CustomerQuery>,
+    ApiQuery(query): ApiQuery<CustomerQuery>,
 ) -> ApiResult<oxsum_core::IntegrationCredentialPage> {
     ok(state
         .db
