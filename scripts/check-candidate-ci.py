@@ -12,6 +12,16 @@ REQUIRED_JOBS = {"fmt", "clippy", "test", "wasm", "frontend", "build-tests",
                  "test-extras", *(f"test-shard ({i}/3)" for i in range(1, 4))}
 ENGINE_STEP = "Run doubleentry's Postgres conformance suite"
 SHARED_STEP = "Run the process-shared suites"
+REQUIRED_STEPS = {
+    "fmt": {"Check pinned formatting"},
+    "clippy": {"Run strict Clippy"},
+    "test": {"Run library tests", "Run documentation tests"},
+    "wasm": {"Build the WASM stage"},
+    "frontend": {"Build the frontend stage"},
+    "build-tests": {"Archive the test binaries"},
+    "test-extras": {SHARED_STEP, ENGINE_STEP},
+    **{f"test-shard ({i}/3)": {f"Run the workspace test suites (shard {i}/3)"} for i in range(1, 4)},
+}
 
 
 def validate(run, jobs, sha):
@@ -25,10 +35,11 @@ def validate(run, jobs, sha):
         job = by_name.get(name, {})
         if job.get("status") != "completed" or job.get("conclusion") != "success":
             return f"required job did not pass: {name}"
-    steps = {step["name"]: step for step in by_name["test-extras"].get("steps", [])}
-    for name in (SHARED_STEP, ENGINE_STEP):
-        if steps.get(name, {}).get("conclusion") != "success":
-            return f"required step did not execute successfully: {name}"
+    for job_name, names in REQUIRED_STEPS.items():
+        steps = {step["name"]: step for step in by_name[job_name].get("steps", [])}
+        for name in sorted(names):
+            if steps.get(name, {}).get("conclusion") != "success":
+                return f"required step did not execute successfully: {job_name}/{name}"
     return None
 
 
@@ -72,7 +83,8 @@ def main():
                     "attempt": run["run_attempt"], "conclusion": "success",
                     "jobs": {j["name"]: j["conclusion"] for j in jobs
                              if j["name"] in REQUIRED_JOBS},
-                    "postgres_conformance": "success", "process_shared": "success"}
+                    "postgres_conformance": "success", "process_shared": "success",
+                    "executed_steps": {name: sorted(steps) for name, steps in REQUIRED_STEPS.items()}}
         args.output.write_text(json.dumps(evidence, indent=2) + "\n")
         print(f"Full candidate CI passed: {run['html_url']}")
         return 0

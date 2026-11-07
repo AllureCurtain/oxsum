@@ -77,4 +77,12 @@ echo "== Verifying the exported evidence offline =="
 )
 
 echo
+# Retain the already installed and verified bytes, never a second npm pack.
+if [ -n "${VERIFY_CONSUMER_OUTPUT:-}" ]; then
+    mkdir -p "$VERIFY_CONSUMER_OUTPUT"
+    destination="$VERIFY_CONSUMER_OUTPUT/$(basename "$TARBALL")"
+    [ ! -e "$destination" ] || { echo "refusing to overwrite $destination" >&2; exit 1; }
+    cp "$TARBALL" "$destination"
+    cmp "$TARBALL" "$destination"
+fi
 echo "verify-oxsum-bill@$VERSION: clean install and offline verification passed."
