@@ -1071,3 +1071,26 @@ Run `cargo nextest run -p oxsum-core --test serving_access -p oxsum-server --tes
 ### Merchant encryption startup check
 
 Business merchant versions use the existing `OXSUM_SECRET_KEY` AES-GCM key. The server refuses startup when any current or historical merchant credential cannot open, or when merchant rows exist without the key. Preserve this key with database backups: rotated historical signing contexts still need it. Merchant settings saves validate structure and destination syntax locally and make no external request. Core and router regression tests are `cargo nextest run -p oxsum-core -p oxsum-server --test merchants`; they use isolated scratch databases and no real merchant credentials or payment calls.
+
+## Isolated streaming capacity measurement
+
+`DATABASE_URL=postgres://postgres:postgres@127.0.0.1:5432/postgres scripts/soak.sh`
+runs the small, explicitly ignored `capacity` suite against a per-run scratch
+database. `scripts/soak.sh --d09` selects 1,000 independent customer billing
+accounts, 10,000 keys, 100 concurrent five-second stub streams and 20 scheduled
+admissions/second for five minutes. No existing customer database or real
+provider is used. The script requires a database and fails rather than skipping.
+
+Override `SOAK_CUSTOMERS`, `SOAK_KEYS_PER_CUSTOMER`, `SOAK_CONCURRENCY`,
+`SOAK_RATE`, `SOAK_SECONDS`, `SOAK_STREAM_MS`, or `SOAK_POOL` as needed; record
+every override and host/DB resources with the result. `SOAK_REPORT` saves JSON.
+Serialize heavy builds and other load tests while measuring. The harness checks
+every operation, usage charge and wallet balance against seven minor units per
+request, and requires zero open holds and reservations without running a cleanup
+sweeper. Percentiles use nearest rank. Total latency minus the scripted upstream
+delay is an overhead upper bound, not a pure gateway CPU measurement.
+
+See [the measured D09 result](roadmap/self-hosted-v1/evidence/closeout-capacity.md)
+for performance limits and the distinction between admitted rate and throughput
+including the final stream drain. Background job retry/failure coverage remains
+in `faults.rs`; this test does not run a job worker.

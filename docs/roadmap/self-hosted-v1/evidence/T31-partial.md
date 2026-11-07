@@ -33,27 +33,18 @@ them.
 - Re-dispatch on `c5f5070` tracks the fix's first green run; the manifest job
   is `skipped` when a gate job fails, which is the designed short-circuit.
 
-## 2. Soak (A28 measured, development hardware)
+## 2. Historical read-only soak (superseded for A28)
 
-`scripts/soak.sh` was run to completion against a live `oxsum` on the seeded
-demo database. One documented variant: the script's `authorization: Bearer`
-probe was changed to `cookie: oxsum_session=` because a consumption API key is
-structurally forbidden from `GET /api/v1/balance` (`Personal` capability —
-`crates/core/src/customer_authority.rs`). The drift probe's intent — "the
-balance read still answers 200 and holds do not grow unboundedly" — is served
-identically by a session credential; a `SOAK_AUTH=cookie|bearer` flag would
-upstream this without changing the measurement.
+The 2026-11-06 log records 3,648 successful reads of `/balance`, `/usage`,
+`/org` and `/holds` over 300 seconds on a seeded local deployment. The old
+script labeled the minimum and maximum as p50 and p99; those percentile
+claims are invalid. An HTTP 200 balance read and bounded hold list do not
+prove accounting conservation, and the workload created no streaming charges.
+Do not use this log as D09 capacity or zero-drift acceptance.
 
-- Driver: `SOAK_SECONDS=300 BASE=http://127.0.0.1:3010` (session credential),
-  four reads (`/balance`, `/usage`, `/org`, `/holds`) at ~20 ops/s.
-- Result (`artifacts/soak-2026-11-06.log`): **300 s, 3 648 requests, 0
-  failures, p50 5 ms, p99 206 ms, `soak: clean`** — balance answered 200 at
-  the end and the holds list stayed bounded, so no leaked reservation
-  accumulated.
-- What this does *not* measure: the D09 1,000-customer / 10,000-key /
-  100-stream shape on declared 4 vCPU hardware. That remains the stated
-  limitation in `RELEASE-CHECKLIST.md`; this run is the per-deployment sanity
-  figure on a laptop, not the normalized target.
+[The closeout measurement](closeout-capacity.md) replaces it with real HTTP
+streaming calls at the normalized account/key/concurrency shape and exact
+per-wallet, operation, usage and hold reconciliation.
 
 ## 3. Browser journey (A25 pixel evidence)
 
