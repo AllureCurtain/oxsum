@@ -128,7 +128,8 @@ info:
     provider call — `amountMinor`/`rate` are never request fields — `paid` is
     established only by the signed merchant webhook, a paid-but-mismatched event
     parks in `needsAttention`, and `GET /{id}/fulfillment` reads the honest
-    paid-unfulfilled mid-state the recovery sweep drains.
+    paid-unfulfilled mid-state the dedicated payment-fulfillment worker drains
+    at startup and every five seconds; daily reconciliation remains a fallback.
     `GET /api/v1/business/payment-reconciliation` reports paid against fulfilled.
 
     0.112.0 binds resolved customer sale terms into bill evidence: a v14 settlement

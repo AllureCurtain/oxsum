@@ -32,6 +32,8 @@ pub mod kinds {
     pub const DELIVER_WEBHOOKS: &str = "deliver-webhooks";
     /// The scheduled `Db::reconcile` scan — drift the on-demand endpoint also reads.
     pub const RECONCILE: &str = "reconcile";
+    /// Promptly recover accepted merchant events and fulfill paid orders.
+    pub const PAYMENT_FULFILLMENT: &str = "payment-fulfillment";
     /// The month that just ended: `close_month`, its draft statements, and the
     /// overdue flip — the period's aggregation job.
     pub const STATEMENTS: &str = "statements";
@@ -143,6 +145,7 @@ pub fn requires_leader(kind: &str) -> bool {
             | EXPIRE_LOTS
             | STATEMENT_PAST_DUE
             | RECONCILE
+            | PAYMENT_FULFILLMENT
             | RECONCILE_FINANCIAL
     )
 }
@@ -217,6 +220,7 @@ pub fn next_run(kind: &str) -> Option<Duration> {
         SWEEP_HOLDS => Duration::seconds(60),
         DELIVER_WEBHOOKS => Duration::seconds(30),
         POLL_TASKS => Duration::seconds(30),
+        PAYMENT_FULFILLMENT => Duration::seconds(5),
         RECONCILE | STATEMENTS | RETENTION | SYNC_UPSTREAM_PRICES | UPSTREAM_BILL_SYNC
         | USAGE_ANCHORS => Duration::days(1),
         // Anchoring is hourly: often enough that a head ages at most an hour

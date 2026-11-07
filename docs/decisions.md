@@ -2608,3 +2608,14 @@ stack, and its version must equal the requested SHA. A temporary project
 directory keeps operator configuration untouched. The tested image is exported
 for download together with its smoke log; it is never published. This
 supersedes the T29 choice to leave live smoke entirely to the operator.
+
+## 2026-11-07 — Prompt payment fulfillment retains the durable worker boundary (#692)
+
+The browser checkout exercise showed signed success leaving an order paid
+until the next daily reconcile. Add a leader-required `payment-fulfillment`
+kind with a five-second cadence and the existing bounded merchant recovery
+pass. Keep callbacks short and preserve the observable paid/fulfilled state
+boundary instead of moving wallet writes into the provider HTTP callback.
+The real scheduler regression postpones daily reconcile, then requires the
+payment worker to credit a signed order within ten seconds. Existing mismatch,
+duplicate, bundle and refund tests continue to cover the shared writer.

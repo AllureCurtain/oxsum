@@ -1118,3 +1118,11 @@ sections, without requesting customer balances or opening a customer billing
 socket. Use **Customer portal** to select the existing customer membership
 again. A staff identity without a customer membership sees the backend's
 refusal and remains in the console; it does not gain a customer account.
+
+Verified payment callbacks durably mark orders paid. The leader-protected
+`payment-fulfillment` job runs at startup and every five seconds (plus the
+worker poll interval), recovering accepted events and draining up to 100 paid
+orders through the existing idempotent fulfillment writer. Customer credit
+therefore becomes available promptly without waiting for daily reconciliation.
+An interrupted pass retries from durable state; the order-derived ledger key
+prevents duplicate credit. Daily reconciliation remains an additional fallback.
