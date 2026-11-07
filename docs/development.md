@@ -1143,3 +1143,11 @@ The `payment-fulfillment` periodic job drains accepted payment events and up to
 100 paid orders every five seconds, under a per-kind leader lock. A worker's
 five-second polling interval adds scheduling latency; this is separate from
 daily reconciliation. Inspect the normal jobs surface for retries or dead runs.
+
+
+Job due-time fixtures must use PostgreSQL `clock_timestamp()` when exercising
+`claim_due_jobs`, whose due predicate uses the database's clock. A host-current
+instant can still be in the future on a Docker/remote database. The failure
+fixture checks the returned backoff against a database instant before failure,
+then deliberately makes its own row due with SQL for the next attempt. It keeps
+the production due predicate and five-attempt budget unchanged (#770).

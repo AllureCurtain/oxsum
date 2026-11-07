@@ -31,7 +31,7 @@ Updated: 2026-11-08
 - [ ] [#745](https://github.com/AllureCurtain/oxsum/issues/745) — N19: Two independent operator pilots.
 - [ ] [#746](https://github.com/AllureCurtain/oxsum/issues/746) — N20: Publication and deployment, if selected.
 - [ ] [#747](https://github.com/AllureCurtain/oxsum/issues/747) — N21: Complete embedded application integration.
-
+- [ ] [#770](https://github.com/AllureCurtain/oxsum/issues/770) — Anchor job failure fixtures to the database clock; implemented;38 jobs/faults checks and five repeated regression runs passed, review pending.
 
 - [x] [#723](https://github.com/AllureCurtain/oxsum/issues/723) — Serialized promo writers on the ledger append advisory lock before their promo row locks, fixing the post-merge hold/expiry deadlock; integrated in PR #724.
 

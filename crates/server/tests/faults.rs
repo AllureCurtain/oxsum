@@ -405,9 +405,13 @@ async fn a_failed_job_backs_off_then_dies_and_the_kind_recovers() {
     let kind = format!("fault-job-{}", &Uuid::new_v4().simple().to_string()[..8]);
     // Enqueue an unknown kind: the worker fails it, the claim/fail cycle is
     // the matrix cell — leader re-arm and retry storm both ride this seam.
-    w.db.enqueue_job(&kind, OffsetDateTime::now_utc())
+    // The claim predicate uses PostgreSQL time. A host clock ahead of the
+    // database can make a host-current instant legitimately not due yet.
+    let due: OffsetDateTime = sqlx::query_scalar("SELECT clock_timestamp()")
+        .fetch_one(&w.pool)
         .await
-        .expect("enqueued");
+        .unwrap();
+    w.db.enqueue_job(&kind, due).await.expect("enqueued");
 
     for attempt in 1..=5 {
         let jobs = w.db.claim_due_jobs(4).await.expect("claims due");
@@ -415,6 +419,10 @@ async fn a_failed_job_backs_off_then_dies_and_the_kind_recovers() {
         let Some(job) = job else {
             panic!("attempt {attempt}: the job must be claimable");
         };
+        let before_failure: OffsetDateTime = sqlx::query_scalar("SELECT clock_timestamp()")
+            .fetch_one(&w.pool)
+            .await
+            .unwrap();
         let outcome =
             w.db.fail_job(job.job_id, job.claimed_at, "synthetic fault")
                 .await
@@ -424,8 +432,8 @@ async fn a_failed_job_backs_off_then_dies_and_the_kind_recovers() {
             match outcome {
                 oxsum_core::JobOutcome::Rescheduled(next) => {
                     assert!(
-                        next > OffsetDateTime::now_utc(),
-                        "backoff pushes run_at out"
+                        next > before_failure,
+                        "backoff pushes run_at beyond the database's failure instant"
                     );
                 }
                 oxsum_core::JobOutcome::Dead => panic!("attempt {attempt}: died before budget"),
