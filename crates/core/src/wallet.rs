@@ -2229,6 +2229,11 @@ impl Wallet {
             // to exactly them — never a re-scan. The draw decrement and the
             // pending debit commit or roll back together (issue #609).
             if split.promo > 0 {
+                // The pin writes `promo_lots`, so the append lock precedes it
+                // — the global order is append advisory lock first, promo row
+                // locks second (issue #723). No promo share means no promo
+                // row, so the engine's append takes the lock on its own.
+                self.lock_append_in(&mut tx).await?;
                 self.pin_promo_draws_in(&mut tx, idem_key, split.promo)
                     .await?;
             }
@@ -2972,6 +2977,13 @@ impl Wallet {
         // the release's pending credits are what let the burn's settled debit
         // keep the pool's `FundedReservations` invariant.
         let mut tx = self.store.pool().begin().await?;
+        // `consume_promo_draws_in` locks promo_draws and promo_lots rows; the
+        // append lock goes first so the settlement cannot invert against a
+        // hold pinning those rows under the same lock (issue #723). A hold
+        // with no promo share has no promo rows to lock.
+        if promo_held > 0 {
+            self.lock_append_in(&mut tx).await?;
+        }
         let burn = self
             .consume_promo_draws_in(&mut tx, hold_key, promo_held, actual_minor)
             .await?;
@@ -3103,6 +3115,11 @@ impl Wallet {
         // charged part debits the lots the hold named, the released part
         // returns to them — or burns to `Equity:PromoExpiry` for a closed lot.
         // The burn posts after the release's pending credits, like `settle`'s.
+        // The append lock precedes the draw and lot row locks (issue #723);
+        // it is re-entrant, so the append below takes it again.
+        if promo_held > 0 {
+            self.lock_append_in(tx).await?;
+        }
         let burn = self
             .consume_promo_draws_in(tx, hold_key, promo_held, actual_minor)
             .await?;
@@ -3886,7 +3903,9 @@ impl Wallet {
         let on = OffsetDateTime::now_utc().date();
         let mut tx = self.store.pool().begin().await?;
         // The lot row and the ledger move are one transaction: the grant
-        // cannot exist without the projection that names it.
+        // cannot exist without the projection that names it. The append lock
+        // precedes the lot insert like every other promo writer (issue #723).
+        self.lock_append_in(&mut tx).await?;
         let lot_id = Uuid::new_v4();
         sqlx::query(
             "INSERT INTO oxsum.promo_lots\
@@ -4143,6 +4162,10 @@ impl Wallet {
         on: Date,
     ) -> Result<(Uuid, Receipt), WalletError> {
         let amt = positive(minor)?;
+        // The grant inserts a promo_lots row; the append lock goes first so a
+        // hold scanning the organization's lots cannot hold the append lock
+        // while waiting on this grant's uncommitted row (issue #723).
+        self.lock_append_in(tx).await?;
         // Replay first: the standing lot answers with its own id and the entry
         // id its grant landed under — the anchors make the pair a fact.
         if let Some(row) = sqlx::query(
@@ -5334,6 +5357,30 @@ impl Wallet {
             content_hash: r.content_hash,
             is_new: r.is_new,
         })
+    }
+
+    /// Takes the ledger's append advisory lock inside `tx`.
+    ///
+    /// Every transaction that writes `oxsum.promo_lots` or `oxsum.promo_draws`
+    /// takes this lock before its first promo row lock (issue #723). The hold
+    /// path already does — `hold_inner` pre-claims it, `hold_for_key` calls
+    /// this helper before pinning — and expiry, cancellation, settlement,
+    /// granting and the legacy migration call it for the same reason: the
+    /// global order is append advisory lock first, promo row locks second, so
+    /// a hold waiting on a lot row can never cycle with a writer waiting on
+    /// the append lock.
+    ///
+    /// The lock is transaction-scoped and re-entrant: the engine's own
+    /// `append_in_tx` takes it again once the row work is done.
+    pub(crate) async fn lock_append_in(
+        &self,
+        tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    ) -> Result<(), WalletError> {
+        sqlx::query("SELECT pg_advisory_xact_lock($1)")
+            .bind(self.store.append_lock())
+            .execute(&mut **tx)
+            .await?;
+        Ok(())
     }
 
     /// [`append`](Self::append) inside the caller's transaction (issue #602):

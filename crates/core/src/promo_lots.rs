@@ -164,6 +164,11 @@ impl Db {
         on: time::Date,
     ) -> Result<PromoLot, WalletError> {
         let mut tx = self.pool().begin().await?;
+        // The lot row is locked below and the burn appends in the same
+        // transaction; the append lock goes first so the order matches every
+        // hold's promo pin — append advisory lock, then promo row locks
+        // (issue #723).
+        wallet.lock_append_in(&mut tx).await?;
         let row = sqlx::query(
             "SELECT remaining_minor, closed_at FROM oxsum.promo_lots WHERE lot_id = $1 FOR UPDATE",
         )
@@ -258,6 +263,11 @@ impl Db {
         on: time::Date,
     ) -> Result<bool, WalletError> {
         let mut tx = self.pool().begin().await?;
+        // The close locks the lot row and burns in the same transaction. The
+        // append lock precedes the row lock so an expiry can never hold the
+        // row a hold's pin waits for while itself waiting on the append lock
+        // (issue #723).
+        wallet.lock_append_in(&mut tx).await?;
         let row = sqlx::query(
             "SELECT remaining_minor, closed_at FROM oxsum.promo_lots WHERE lot_id = $1 FOR UPDATE",
         )
