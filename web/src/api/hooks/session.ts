@@ -29,8 +29,12 @@ export function useLogin() {
     // only the `SessionInfo` arm should invalidate and navigate away.
     mutationFn: (body: { email: string; password: string }) =>
       api<SessionInfo | SessionContextInfo | TotpRequired>("/auth/login", { method: "POST", body }),
-    onSuccess: (data) => {
-      if (!("requiresTotp" in data)) client.invalidateQueries();
+    onSuccess: async (data) => {
+      if ("requiresTotp" in data) return;
+      await client.cancelQueries();
+      client.clear();
+      if ("organization" in data) client.setQueryData(["session"], data);
+      else client.setQueryData(["session-context"], data);
     },
   });
 }
@@ -43,7 +47,12 @@ export function useTotpLogin() {
   return useMutation({
     mutationFn: (body: TotpLoginRequest) =>
       api<SessionInfo | SessionContextInfo>("/auth/totp", { method: "POST", body }),
-    onSuccess: () => client.invalidateQueries(),
+    onSuccess: async (data) => {
+      await client.cancelQueries();
+      client.clear();
+      if ("organization" in data) client.setQueryData(["session"], data);
+      else client.setQueryData(["session-context"], data);
+    },
   });
 }
 

@@ -102,7 +102,12 @@ export function useSwitchContext() {
         method: "POST",
         body: { idempotencyKey: idem(), context },
       }),
-    onSuccess: () => client.invalidateQueries(),
+    onSuccess: async (data) => {
+      // Cancel reads under the previous authority before mounting the new one.
+      await client.cancelQueries();
+      client.removeQueries({ predicate: (query) => query.queryKey[0] !== "session-context" });
+      client.setQueryData(["session-context"], data);
+    },
   });
 }
 

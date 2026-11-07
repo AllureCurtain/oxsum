@@ -426,3 +426,9 @@ A merchant belongs to the Business, with stable provider account identity, rail 
 Each rotation supplies a complete version, encrypts its API/signing credentials with `OXSUM_SECRET_KEY`, and selects it for future checkout. Prior versions remain immutable so an in-flight operation keeps its merchant/signing context. Disablement stops future selection without erasing callback history. Version status `locallyValidated` confirms only field, mode-prefix and destination-policy checks; saving performs no provider call and does not certify live or sandbox payments. No plaintext credentials or ciphertexts appear in read responses or audit.
 
 This configuration foundation does not redirect legacy checkout automatically. Scoped event intake and environment bootstrap are T14.b (#649); purpose-specific orders and customer checkout follow in T15/T16. Their completion is required before these settings collect customer money.
+
+The staff business console authenticates through the context-aware session
+identity. Customer balances, organization switching and billing sockets mount
+only in customer context. Its **Customer portal** action explicitly returns
+to an existing customer membership; a business-only identity remains a valid
+staff session and is never redirected to login merely for lacking that seat.
