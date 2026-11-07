@@ -246,7 +246,11 @@ impl UsageRecord {
                 "reasoningTokens cannot exceed outputTokens".into(),
             ));
         }
-        validate_attribution(&self.end_user, &self.tags, &self.service_tier)?;
+        validate_attribution(
+            self.end_user.as_deref(),
+            &self.tags,
+            self.service_tier.as_deref(),
+        )?;
         if let Some(event_type) = &self.event_type
             && event_type.len() > MAX_CONTEXT_NAME
         {
@@ -265,9 +269,9 @@ impl UsageRecord {
 ///
 /// Names the offending field with its bound.
 pub fn validate_attribution(
-    end_user: &Option<String>,
+    end_user: Option<&str>,
     tags: &BTreeMap<String, String>,
-    service_tier: &Option<String>,
+    service_tier: Option<&str>,
 ) -> Result<(), WalletError> {
     if let Some(end_user) = end_user
         && end_user.len() > MAX_END_USER

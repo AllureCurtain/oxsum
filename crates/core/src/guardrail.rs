@@ -235,7 +235,7 @@ impl Db {
     /// protect. `None`/empty passes — requiring no policy is always valid.
     pub async fn require_guardrail_policies(
         &self,
-        policies: &Option<Vec<String>>,
+        policies: Option<&[String]>,
     ) -> Result<(), WalletError> {
         let Some(policies) = policies else {
             return Ok(());

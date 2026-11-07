@@ -1,8 +1,14 @@
-use super::*;
-use crate::Db;
-use serde_json::json;
-use sqlx::Row;
+use crate::{
+    BusinessCapability, Db, SaleBook, SaleBookHistory, SaleBookPage, SaleChange, SaleChangeRequest,
+    SaleDraft, SaleModelMap, SaleMutationResult, SalePreviewRequest, SalePreviewSource, SalePrice,
+    SalePricePreview, SalePriceSnapshot, SaleSchedule, SaleTerms, SaleVersion, WalletError,
+    business_staff as authority,
+};
+use serde_json::{Value, json};
 use sqlx::postgres::PgRow;
+use sqlx::{Postgres, Row, Transaction};
+use time::OffsetDateTime;
+use uuid::Uuid;
 
 const SCHEDULES: &str = "SELECT s.*, COALESCE(e.effective_until,s.scheduled_until) AS effective_until FROM oxsum.sale_schedules s LEFT JOIN oxsum.sale_schedule_ends e USING (schedule_id)";
 fn book(row: &PgRow) -> Result<SaleBook, WalletError> {
@@ -22,7 +28,7 @@ fn schedule(row: &PgRow) -> Result<SaleSchedule, WalletError> {
         version: row.try_get("version")?,
         terms: row
             .try_get::<Option<Value>, _>("terms")?
-            .map(stored)
+            .map(super::stored)
             .transpose()?,
         effective_from: row.try_get("effective_from")?,
         scheduled_until: row.try_get("scheduled_until")?,
@@ -40,7 +46,7 @@ async fn owned_book(
         .bind(id)
         .fetch_optional(&mut **tx)
         .await?
-        .ok_or_else(missing)?;
+        .ok_or_else(super::missing)?;
     book(&row)
 }
 async fn customer(
@@ -50,7 +56,7 @@ async fn customer(
 ) -> Result<(), WalletError> {
     let exists: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM oxsum.customer_profiles WHERE business_id=$1 AND organization_id=$2)").bind(business).bind(org).fetch_one(&mut **tx).await?;
     if !exists {
-        return Err(missing());
+        return Err(super::missing());
     }
     Ok(())
 }
@@ -66,7 +72,7 @@ async fn owned_schedule(
     .bind(id)
     .fetch_optional(&mut **tx)
     .await?
-    .ok_or_else(missing)?;
+    .ok_or_else(super::missing)?;
     schedule(&row)
 }
 async fn version(
@@ -75,11 +81,11 @@ async fn version(
     id: Uuid,
     number: i64,
 ) -> Result<SaleVersion, WalletError> {
-    let row=sqlx::query("SELECT v.version,v.draft_revision,v.published_at,d.models FROM oxsum.sale_versions v JOIN oxsum.sale_drafts d ON d.book_id=v.book_id AND d.revision=v.draft_revision WHERE v.business_id=$1 AND v.book_id=$2 AND v.version=$3").bind(business).bind(id).bind(number).fetch_optional(&mut **tx).await?.ok_or_else(missing)?;
+    let row=sqlx::query("SELECT v.version,v.draft_revision,v.published_at,d.models FROM oxsum.sale_versions v JOIN oxsum.sale_drafts d ON d.book_id=v.book_id AND d.revision=v.draft_revision WHERE v.business_id=$1 AND v.book_id=$2 AND v.version=$3").bind(business).bind(id).bind(number).fetch_optional(&mut **tx).await?.ok_or_else(super::missing)?;
     Ok(SaleVersion {
         version: row.try_get("version")?,
         draft_revision: row.try_get("draft_revision")?,
-        models: stored(row.try_get("models")?)?,
+        models: super::stored(row.try_get("models")?)?,
         published_at: row.try_get("published_at")?,
     })
 }
@@ -93,7 +99,7 @@ async fn end(
         || until < current.effective_from
         || current.scheduled_until.is_some_and(|old| until > old)
     {
-        return Err(invalid(
+        return Err(super::invalid(
             "a schedule end cannot be backdated, precede its start or extend its original end",
         ));
     }
@@ -129,7 +135,7 @@ async fn add_schedule(
             .effective_until
             .is_some_and(|until| until <= next.effective_from)
     {
-        return Err(invalid(
+        return Err(super::invalid(
             "sale windows must start now or later and end strictly after their start",
         ));
     }
@@ -143,7 +149,7 @@ async fn add_schedule(
         terms.validate()?;
     }
     if let Some(model) = &next.model {
-        model_name(model)?;
+        super::model_name(model)?;
     }
     if let Some(id) = replaces {
         let current = owned_schedule(tx, business, id).await?;
@@ -174,7 +180,7 @@ fn new_schedule(
     until: Option<OffsetDateTime>,
     now: OffsetDateTime,
 ) -> Result<SaleSchedule, WalletError> {
-    let until = until.map(instant).transpose()?;
+    let until = until.map(super::instant).transpose()?;
     Ok(SaleSchedule {
         id: Uuid::new_v4(),
         kind: kind.into(),
@@ -183,7 +189,7 @@ fn new_schedule(
         book_id: None,
         version: None,
         terms: None,
-        effective_from: instant(start.unwrap_or(now))?,
+        effective_from: super::instant(start.unwrap_or(now))?,
         scheduled_until: until,
         effective_until: until,
         created_at: now,
@@ -199,7 +205,7 @@ impl Db {
         authority::validate(&request.idempotency_key, Some(&request.reason))?;
         let mut tx = self.pool().begin().await?;
         let business = authority::lock_business(&mut tx).await?;
-        let actor = read_authority(&mut tx, business, token).await?;
+        let actor = super::read_authority(&mut tx, business, token).await?;
         let capability = if let SaleChange::EndSchedule { schedule_id, .. } = &request.change {
             if owned_schedule(&mut tx, business, *schedule_id).await?.kind == "default" {
                 BusinessCapability::CatalogWrite
@@ -245,7 +251,7 @@ impl Db {
         let (resource_id, revision) = match &request.change {
             SaleChange::CreateBook { name } => {
                 if name.trim() != name || name.is_empty() || name.chars().count() > 200 {
-                    return Err(invalid(
+                    return Err(super::invalid(
                         "book name must contain 1 to 200 characters without surrounding whitespace",
                     ));
                 }
@@ -272,7 +278,7 @@ impl Db {
                 models,
             } => {
                 owned_book(&mut tx, business, *book_id).await?;
-                validate_models(models)?;
+                super::types::validate_models(models)?;
                 let current: i64 = sqlx::query_scalar(
                     "SELECT COALESCE(max(revision),0) FROM oxsum.sale_drafts WHERE book_id=$1",
                 )
@@ -284,7 +290,7 @@ impl Db {
                 }
                 let next = current
                     .checked_add(1)
-                    .ok_or_else(|| invalid("sale revision exhausted"))?;
+                    .ok_or_else(|| super::invalid("sale revision exhausted"))?;
                 sqlx::query(
                     "INSERT INTO oxsum.sale_drafts (book_id,revision,models) VALUES ($1,$2,$3)",
                 )
@@ -307,8 +313,8 @@ impl Db {
                 .bind(draft_revision)
                 .fetch_optional(&mut *tx)
                 .await?
-                .ok_or_else(missing)?;
-                validate_models(&stored(models)?)?;
+                .ok_or_else(super::missing)?;
+                super::types::validate_models(&super::stored(models)?)?;
                 let published:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM oxsum.sale_versions WHERE book_id=$1 AND draft_revision=$2)").bind(book_id).bind(draft_revision).fetch_one(&mut *tx).await?;
                 if published {
                     return Err(WalletError::Conflict(
@@ -323,7 +329,7 @@ impl Db {
                 .await?;
                 let next = current
                     .checked_add(1)
-                    .ok_or_else(|| invalid("sale version exhausted"))?;
+                    .ok_or_else(|| super::invalid("sale version exhausted"))?;
                 sqlx::query("INSERT INTO oxsum.sale_versions (business_id,book_id,version,draft_revision) VALUES ($1,$2,$3,$4)").bind(business).bind(book_id).bind(next).bind(draft_revision).execute(&mut *tx).await?;
                 (*book_id, Some(next))
             }
@@ -381,7 +387,7 @@ impl Db {
                 effective_until,
             } => {
                 let current = owned_schedule(&mut tx, business, *schedule_id).await?;
-                end(&mut tx, &current, instant(*effective_until)?, now).await?;
+                end(&mut tx, &current, super::instant(*effective_until)?, now).await?;
                 (*schedule_id, None)
             }
         };
@@ -411,11 +417,11 @@ impl Db {
         limit: i64,
     ) -> Result<SaleBookPage, WalletError> {
         if !(1..=100).contains(&limit) {
-            return Err(invalid("limit must be 1..=100"));
+            return Err(super::invalid("limit must be 1..=100"));
         }
         let mut tx = self.pool().begin().await?;
         let business = authority::lock_business(&mut tx).await?;
-        read_authority(&mut tx, business, token).await?;
+        super::read_authority(&mut tx, business, token).await?;
         let rows=sqlx::query("SELECT * FROM oxsum.sale_books WHERE business_id=$1 AND ($2::uuid IS NULL OR book_id>$2) ORDER BY book_id LIMIT $3").bind(business).bind(after).bind(limit+1).fetch_all(&mut *tx).await?;
         let mut books = rows.iter().map(book).collect::<Result<Vec<_>, _>>()?;
         let more = books.len() > limit as usize;
@@ -435,7 +441,7 @@ impl Db {
     ) -> Result<SaleBookHistory, WalletError> {
         let mut tx = self.pool().begin().await?;
         let business = authority::lock_business(&mut tx).await?;
-        read_authority(&mut tx, business, token).await?;
+        super::read_authority(&mut tx, business, token).await?;
         let book = owned_book(&mut tx, business, id).await?;
         let rows=sqlx::query("SELECT revision,models,created_at FROM oxsum.sale_drafts WHERE book_id=$1 ORDER BY revision").bind(id).fetch_all(&mut *tx).await?;
         let drafts = rows
@@ -443,7 +449,7 @@ impl Db {
             .map(|r| {
                 Ok(SaleDraft {
                     revision: r.try_get("revision")?,
-                    models: stored(r.try_get("models")?)?,
+                    models: super::stored(r.try_get("models")?)?,
                     created_at: r.try_get("created_at")?,
                 })
             })
@@ -455,7 +461,7 @@ impl Db {
                 Ok(SaleVersion {
                     version: r.try_get("version")?,
                     draft_revision: r.try_get("draft_revision")?,
-                    models: stored(r.try_get("models")?)?,
+                    models: super::stored(r.try_get("models")?)?,
                     published_at: r.try_get("published_at")?,
                 })
             })
@@ -477,7 +483,7 @@ impl Db {
     ) -> Result<Vec<SaleSchedule>, WalletError> {
         let mut tx = self.pool().begin().await?;
         let business = authority::lock_business(&mut tx).await?;
-        read_authority(&mut tx, business, token).await?;
+        super::read_authority(&mut tx, business, token).await?;
         customer(&mut tx, business, org).await?;
         let rows=sqlx::query(&format!("{SCHEDULES} WHERE s.business_id=$1 AND s.organization_id=$2 ORDER BY s.effective_from,s.schedule_id")).bind(business).bind(org).fetch_all(&mut *tx).await?;
         let schedules = rows.iter().map(schedule).collect::<Result<Vec<_>, _>>()?;
@@ -491,13 +497,13 @@ impl Db {
     ) -> Result<SalePricePreview, WalletError> {
         let mut tx = self.pool().begin().await?;
         let business = authority::lock_business(&mut tx).await?;
-        read_authority(&mut tx, business, token).await?;
+        super::read_authority(&mut tx, business, token).await?;
         customer(&mut tx, business, request.organization_id).await?;
-        model_name(&request.model)?;
+        super::model_name(&request.model)?;
         let now: OffsetDateTime = sqlx::query_scalar("SELECT clock_timestamp()")
             .fetch_one(&mut *tx)
             .await?;
-        let at = instant(request.at.unwrap_or(now))?;
+        let at = super::instant(request.at.unwrap_or(now))?;
         let mut snapshot = match &request.source {
             SalePreviewSource::Effective => {
                 resolve(
@@ -511,9 +517,9 @@ impl Db {
             }
             SalePreviewSource::Draft { book_id, revision } => {
                 owned_book(&mut tx, business, *book_id).await?;
-                let row=sqlx::query("SELECT models,created_at FROM oxsum.sale_drafts WHERE book_id=$1 AND revision=$2").bind(book_id).bind(revision).fetch_optional(&mut *tx).await?.ok_or_else(missing)?;
-                let mut models: SaleModelMap = stored(row.try_get("models")?)?;
-                let terms = models.remove(&request.model).ok_or_else(missing)?;
+                let row=sqlx::query("SELECT models,created_at FROM oxsum.sale_drafts WHERE book_id=$1 AND revision=$2").bind(book_id).bind(revision).fetch_optional(&mut *tx).await?.ok_or_else(super::missing)?;
+                let mut models: SaleModelMap = super::stored(row.try_get("models")?)?;
+                let terms = models.remove(&request.model).ok_or_else(super::missing)?;
                 SalePriceSnapshot {
                     business_id: business,
                     organization_id: request.organization_id,
@@ -532,9 +538,9 @@ impl Db {
             }
             SalePreviewSource::Legacy { channel, version } => {
                 if *version < 1 || *version > i64::from(i32::MAX) {
-                    return Err(invalid("legacy version must be 1..=2147483647"));
+                    return Err(super::invalid("legacy version must be 1..=2147483647"));
                 }
-                let row=sqlx::query("SELECT p.* FROM oxsum.channel_prices p JOIN oxsum.channels c USING (channel_id) WHERE c.business_id=$1 AND c.name=$2 AND p.model=$3 AND p.version=$4").bind(business).bind(channel).bind(&request.model).bind(*version as i32).fetch_optional(&mut *tx).await?.ok_or_else(missing)?;
+                let row=sqlx::query("SELECT p.* FROM oxsum.channel_prices p JOIN oxsum.channels c USING (channel_id) WHERE c.business_id=$1 AND c.name=$2 AND p.model=$3 AND p.version=$4").bind(business).bind(channel).bind(&request.model).bind(*version as i32).fetch_optional(&mut *tx).await?.ok_or_else(super::missing)?;
                 let terms = SaleTerms {
                     price: SalePrice::legacy(crate::channels::price_from_row(&row)?)?,
                     discount_percent: 0,
@@ -572,11 +578,11 @@ impl Db {
     ) -> Result<SalePriceSnapshot, WalletError> {
         let mut tx = self.pool().begin().await?;
         if authority::lock_business(&mut tx).await? != business {
-            return Err(missing());
+            return Err(super::missing());
         }
         customer(&mut tx, business, org).await?;
-        model_name(model)?;
-        let result = resolve(&mut tx, business, org, model, instant(at)?).await?;
+        super::model_name(model)?;
+        let result = resolve(&mut tx, business, org, model, super::instant(at)?).await?;
         tx.commit().await?;
         Ok(result)
     }
@@ -661,18 +667,25 @@ impl Db {
         }
         // By terms: re-resolve what was in force and sign the fresh snapshot.
         let (Some(org), Some(model)) = (organization_id, model) else {
-            return Err(invalid(
+            return Err(super::invalid(
                 "sale-head needs a digest or organizationId and model",
             ));
         };
         let mut tx = self.pool().begin().await?;
         let business = authority::lock_business(&mut tx).await?;
         customer(&mut tx, business, org).await?;
-        model_name(model)?;
+        super::model_name(model)?;
         let now: OffsetDateTime = sqlx::query_scalar("SELECT clock_timestamp()")
             .fetch_one(&mut *tx)
             .await?;
-        let snapshot = resolve(&mut tx, business, org, model, instant(at.unwrap_or(now))?).await?;
+        let snapshot = resolve(
+            &mut tx,
+            business,
+            org,
+            model,
+            super::instant(at.unwrap_or(now))?,
+        )
+        .await?;
         tx.commit().await?;
         let canonical = crate::canonical_sale_snapshot(&snapshot)?;
         let signed =

@@ -18,7 +18,6 @@ use time::{Date, OffsetDateTime};
 use uuid::Uuid;
 
 use crate::billing::{MeteredSettlement, SettlementKind};
-use crate::channels::price_row;
 use crate::db::Db;
 use crate::error::WalletError;
 use crate::tenants::Tenants;
@@ -489,7 +488,7 @@ pub async fn settle_task(
     // so a missing row falls back to latest rather than refusing the row's
     // terminal write.
     let pinned = db.open_hold(&task.hold_key).await?.map(|h| h.price_version);
-    let priced = price_row(db.pool(), &task.channel, &task.model, pinned)
+    let priced = crate::channels::price_row(db.pool(), &task.channel, &task.model, pinned)
         .await?
         .ok_or_else(|| WalletError::InvalidInput(format!("no price for {}", task.model)))?;
 

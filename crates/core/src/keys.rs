@@ -467,7 +467,7 @@ impl Db {
         constraints.validate()?;
         // A required policy must resolve before the key is written — see
         // `update_key_constraints` for the rule.
-        self.require_guardrail_policies(&constraints.required_policies)
+        self.require_guardrail_policies(constraints.required_policies.as_deref())
             .await?;
         let mut tx = self.pool().begin().await?;
         if let Some(principal) = principal {
@@ -609,7 +609,7 @@ impl Db {
         // A required policy must resolve: a name no `guardrail_policies` row
         // holds would silently unguard the turn it claims to protect, so the
         // write refuses before it lands rather than store a dangling name.
-        self.require_guardrail_policies(&constraints.required_policies)
+        self.require_guardrail_policies(constraints.required_policies.as_deref())
             .await?;
         let mut tx = self.pool().begin().await?;
         if let Some(principal) = principal {
