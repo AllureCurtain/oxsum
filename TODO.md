@@ -1,10 +1,11 @@
 # TODO
 
-Updated: 2026-11-06
+Updated: 2026-11-07
 
 ## In progress
 
 - [ ] [#620](https://github.com/AllureCurtain/oxsum/issues/620) — Candidate validation follow-up: require executed full CI on the exact SHA, smoke the built image, and retain the image and evidence without publication.
+- [x] [#684](https://github.com/AllureCurtain/oxsum/issues/684) — Restore archived integration and migration checks: integrated in PR #686; relocated archive 19/19 and workspace 1,779 checks passed.
 
 ### Self-hosted release (#591)
 

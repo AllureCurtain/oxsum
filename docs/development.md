@@ -95,6 +95,13 @@ oxsum-server --test statements` is the check.
 
 ### Test database isolation
 
+Server integration tests that launch `oxsum` use
+`crates/server/tests/support/binary.rs`: nextest's runtime executable path
+takes precedence over Cargo's build-time path. CI extracts test archives into
+a different directory, so `env!("CARGO_BIN_EXE_oxsum")` alone is not portable.
+Use `cargo nextest archive` followed by `cargo nextest run --archive-file`
+when changing these subprocess tests (issue #684).
+
 Each integration-test suite (`crates/server/tests/*.rs`, `crates/core/tests/*.rs`)
 gets its own scratch PostgreSQL database, so suites never share mutable state
 and repeated runs cannot accumulate residue (issue #226). The helper lives in
