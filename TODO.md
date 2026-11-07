@@ -34,6 +34,8 @@ Updated: 2026-11-08
 - [ ] [#770](https://github.com/AllureCurtain/oxsum/issues/770) — Anchor job failure fixtures to the database clock; implemented;38 jobs/faults checks and five repeated regression runs passed, review pending.
 - [x] [#785](https://github.com/AllureCurtain/oxsum/issues/785) — Scoped application provisioning credentials (N21.a): `customersProvision` lets an integration credential mint namespace-bounded service-managed customer accounts via `POST /business/customers`; identity stays immutable, idempotency is the `externalId` namespace key, and a provision-only grant starts with an empty allowlist. Migration `0105`; contract `openapi.yaml` first.
 
+- [ ] [#748](https://github.com/AllureCurtain/oxsum/issues/748) — N03.a: Initial owner browser consent and setup recovery implemented; local/browser checks passed, review pending.
+
 - [x] [#723](https://github.com/AllureCurtain/oxsum/issues/723) — Serialized promo writers on the ledger append advisory lock before their promo row locks, fixing the post-merge hold/expiry deadlock; integrated in PR #724.
 
 - [x] [#697](https://github.com/AllureCurtain/oxsum/issues/697) — Rust style normalization: phases 0–11 adopted the Google Rust Style Guide workspace-wide. Pinned nightly formatting, explicit imports, `FromStr` for every `Result` parser, `#[non_exhaustive]` verify API, workspace `missing_docs`, poisoned-lock panics, borrowed application parameters, and the verify/gateway module splits. Decisions and exceptions are in the 2026-11-07 entry of `docs/decisions.md`.

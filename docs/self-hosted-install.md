@@ -157,24 +157,15 @@ curl -s -X POST http://127.0.0.1:3000/api/v1/admin/business/setup-tokens \
 
 The `token` is the invitation; it expires and it is shown once.
 
-### 5.2 Register the owner and name the business
+### 5.2 Accept ownership in the browser
 
-```bash
-curl -s -X POST http://127.0.0.1:3000/api/v1/business/setup/register \
-  -H "content-type: application/json" \
-  -d '{"token":"<setup-token>",
-       "businessName":"<OXSUM_BUSINESS_NAME from deploy/.env>",
-       "email":"owner@example.com",
-       "password":"<a real password>"}'
-```
+Open `http://127.0.0.1:3000/app/setup`. Supply the setup token privately to the intended owner; do not put it in a link, screenshot or log. The token is email-bound, expires after 30 minutes and can initialize the business only once.
 
-```json
-{"data":{"ownership":{...},"registration":{...}}}
-```
+A new owner enters the business name, invited email and a password of at least 12 characters, then explicitly accepts ownership. An existing user chooses **Already have an account? Sign in first**, completes the normal password/TOTP flow, and returns to setup to paste the token and accept as the displayed identity. Public signup never selects an owner.
 
-The owner logs into `http://127.0.0.1:3000/app` with that email and
-password. From there the dashboard walks the setup checklist — channels,
-prices, registration policy.
+After acceptance, sign in if necessary and select **Open business setup** to enter business context. Customer registration remains invitation-only. The form keeps its draft on an error; refreshing or leaving intentionally clears the token. If the response was lost, sign in with the intended account and reopen `/app/setup`: a current staff membership offers the console without repeating setup. If setup is still incomplete and the token expired, the deployer mints another token with a new idempotency key.
+
+The API equivalents remain `POST /api/v1/business/setup/register` for a new identity and session-cookie `POST /api/v1/business/setup` for an existing user. The browser uses these same endpoints and their authority rules; see [API conventions](api.md#initial-business-owner-consent-629).
 
 ### 5.3 Optional: merchant payment rails
 

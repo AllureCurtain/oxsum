@@ -31,6 +31,10 @@ The piece must let a first-time visitor walk this path in minutes:
 
 `/app/getting-started` (issue #559) turns that path into a checklist: five steps — a priced upstream channel, spendable credit, an API key, a settled request, and a live customer report link — each with the responsible role, the screen that completes it, and a state read from the deployment on every load rather than a stored checkbox. The Overview shows a progress card until all five are met; the page itself stays reachable after that. It explains the deliberate boundaries too: the test turn is a real billable request, reports cover only fully ended UTC days, and the customer's verification happens in their browser, not on this page.
 
+## Initial owner browser setup (shipped, #748)
+
+`/app/setup` accepts the deployment-minted email-bound token through the existing new-user registration or personal-session consent endpoint. It shows the current identity, requires explicit consent, preserves draft fields on errors, and keeps the secret out of URLs and persistent browser storage. Existing users sign in through the normal password/TOTP flow and return to setup. A signed-in staff member can recover a lost acceptance response by opening the console; no token replay can initialize an already-owned business. Registration stays invite-only. Setup does not claim that provider, price, merchant or customer configuration is already complete.
+
 ## Roles
 
 | Role | Who | Can do | Status |
