@@ -444,7 +444,7 @@ Model lists and prices reflect the customer's actual tier and the consumption ke
 
 ## Customer sale terms (#599)
 
-Business staff can prepare reusable sale books, save immutable draft revisions, publish exact versions and schedule default or customer terms through the API. The reusable book is the commercial price group; an existing consumption request group still only restricts channels. A customer has at most one active book assignment. Each model resolves by customer override, assigned book, then default book, with missing models falling through and explicit zero prices retained. Supplier acquisition costs never appear in a sale term.
+Business staff can prepare reusable sale books, save immutable draft revisions, publish exact versions and schedule default or customer terms through the Business Prices editor or API. The reusable book is the commercial price group; an existing consumption request group still only restricts channels. A customer has at most one active book assignment. Each model resolves by customer override, assigned book, then default book, with missing models falling through and explicit zero prices retained. Supplier acquisition costs never appear in a sale term.
 
 Publishing alone does not activate a version. Assignments/defaults pin published versions with nonoverlapping UTC `[from, to)` windows. A replacement ends the old schedule and starts the new one atomically; historical rows and previously resolved snapshots remain intact. One selected percentage discount applies to the full integer price numerator before a single upward rounding to minor units. Staff previews reject unknown/unpriced dimensions rather than promising a partial price. Owner/admin manage book contents/defaults; owner/finance manage individual customer terms. All mutations require a reason and an idempotency key with atomic audit.
 
@@ -495,3 +495,16 @@ Full replacements require the expected revision, audit reason and idempotency
 key. Exact replay returns the original save receipt after rechecking current
 owner/session/second-factor authority. Changes do not relabel funded accounts,
 change currency/conversion, or rewrite historical evidence and documents.
+
+### Sale-book operator workflow (#731)
+
+The Business Prices editor creates named books, saves an expected draft revision,
+publishes a selected immutable revision, and separately schedules a default or
+customer assignment. Finance can manage customer assignments and model overrides;
+owner/admin can edit and publish catalog terms. It shows complete default history,
+customer windows and effective UTC state, with confirmed end/cancel actions.
+Customer preview distinguishes effective resolution from a draft comparison and
+shows exact line items, selected terms and charge without provider traffic.
+Unchanged retries retain an idempotency key; validation/network conflicts retain
+the form. Exact decimal parsing refuses amounts the browser cannot represent as
+safe integer minor units rather than rounding them.

@@ -1253,3 +1253,13 @@ preserve identity/amount. The runner changes only in-memory routing, leaves
 the persistent stack configuration intact, and shuts down its proxy/listener
 and own database. No real PSP or model is called; provider-delivered callbacks
 and browser checkout remain distinct acceptance.
+### Sale editor verification (#731)
+
+Run `node --experimental-strip-types --test web/tests/sale-draft.test.ts` on
+Node 22+ for exact money/rule round trips, bounds, invalid precision and UTC
+half-open schedule boundaries. Build with `npm --prefix web run build`.
+`cargo nextest run -p oxsum-core --test sale_books --test sale_heads -p oxsum-server --test business_prices`
+checks authority, concurrent revisions/windows, pinned snapshots, signed sale
+binding and all production-router operations. Browser acceptance additionally
+requires creating, publishing and activating a book, two customer assignments,
+a retained draft after conflict and a call whose exported charge matches preview.

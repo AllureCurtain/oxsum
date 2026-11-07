@@ -2750,3 +2750,22 @@ local signed callbacks are real payment-provider certification.
   applies to environment branding at boot. No new service or framework is used.
 - Currency/conversion configuration and funded-history guards remain the next
   N03 child; this profile API cannot change them.
+## 2026-11-08 — Explicit sale-book publication and activation in the portal (#731)
+
+The existing sale-book contract already carries optimistic draft revisions,
+immutable publications, UTC windows, scoped replacements and customer previews.
+Expose those same operations in the Business Prices section without a second
+pricing engine. Separate save, publish and activate actions; select published
+versions explicitly and show effective versus scheduled/ended/canceled history.
+Owner/admin manage catalog terms; owner/finance manage customer assignments and
+model overrides. Read authority stays separate from mutation capability.
+
+Parse user credit decimals with BigInt before converting to bounded safe integer
+minor units. Preserve every existing conditional/cache/reasoning/per-request
+field when loading a draft. Keep exact API microsecond timestamps in window
+comparisons; local timezone conversion and JavaScript millisecond truncation
+would mislabel a boundary. Refuse stored out-of-range values instead of silently
+rounding them. The preview endpoint remains the pricing authority and performs
+no model request. A lost-response retry retains its original idempotency key;
+a changed payload creates a new intent. Existing admitted snapshot and signed
+sale-proof semantics are unchanged.
