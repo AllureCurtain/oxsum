@@ -15,7 +15,7 @@
 //! takes effect on the next request — no version pinned to a hold, because a
 //! hold names a channel, never a group.
 
-use std::collections::HashSet;
+use std::collections::{BTreeSet, HashSet};
 
 use sqlx::Row;
 use uuid::Uuid;
@@ -112,7 +112,7 @@ impl Db {
         let channel_ids: Vec<Uuid> = channel_ids
             .iter()
             .copied()
-            .collect::<std::collections::BTreeSet<_>>()
+            .collect::<BTreeSet<_>>()
             .into_iter()
             .collect();
         let mut tx = self.pool().begin().await?;

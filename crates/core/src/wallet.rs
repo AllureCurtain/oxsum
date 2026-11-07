@@ -1,3 +1,7 @@
+use std::collections::{BTreeMap, HashMap};
+use std::sync::{Arc, Mutex};
+use std::time::Duration;
+
 use doubleentry::account::AccountRegistry;
 use doubleentry::storage::postgres::{PostgresError, PostgresStore};
 use doubleentry::{
@@ -13,15 +17,19 @@ use time::{Date, OffsetDateTime};
 use uuid::Uuid;
 
 use crate::billing::{Settlement, SettlementKind, SettlementRecord};
+use crate::entitlement::{EntitlementMandate, EntitlementRead};
 use crate::error::{WalletError, invalid};
+use crate::evidence::{EVIDENCE_BUNDLE_DOCUMENT, EvidenceEntryBundle};
 use crate::heads::{
     Consistency, HeadSigningKey, STATEMENT_ANCHOR_DOCUMENT, SignedHead, USAGE_ANCHOR_DOCUMENT,
     USAGE_REPORT_DOCUMENT, canonical_price_row, origin_for, sign_head, sign_price_head,
     sign_sale_checkpoint,
 };
 use crate::keys::{ActingKey, BudgetDuration};
+use crate::mandates::PresentedMandate;
 use crate::proof::ProofBundle;
 use crate::usage::UsageRecord;
+use crate::usage_reports::{ReportEntryBundle, UsageReportRow};
 
 /// Money precision: 6 decimal places; 1 credit = 1_000_000 minor, fine enough for per-token pricing.
 ///
@@ -125,7 +133,7 @@ const KEY_QUEUE_WIDTH: usize = 1;
 /// The queued hold costs nothing — no connection — so the budget is the
 /// caller's patience, not the pool's; it matches `ACQUIRE_TIMEOUT` so a refused
 /// queue-wait surfaces on the same timescale a refused checkout did.
-const KEY_QUEUE_WAIT: std::time::Duration = std::time::Duration::from_secs(5);
+const KEY_QUEUE_WAIT: Duration = Duration::from_secs(5);
 
 /// How many times `open` re-reads the account table after a racing opener
 /// committed it mid-bootstrap. The winner's write is one statement batch, so a
@@ -141,7 +149,7 @@ const LOCK_WAIT_ATTEMPTS: usize = 250;
 
 /// How long a hold that lost the append-lock claim sleeps before re-checking —
 /// async time, so the wait costs no connection.
-const LOCK_WAIT_BACKOFF: std::time::Duration = std::time::Duration::from_millis(20);
+const LOCK_WAIT_BACKOFF: Duration = Duration::from_millis(20);
 
 /// How one amount divides across the funded pools — promo first (it is the
 /// money that can expire), then the bonus pool, the purchased wallet, and the
@@ -240,9 +248,7 @@ pub struct Wallet {
     /// Keyed by the same [`limit_lock_key`] hash the advisory lock takes, so the
     /// queue and the lock serialize the same set of callers; the semaphore's job is
     /// only to keep the waiting off the pool — the lock remains the real arbiter.
-    key_queue: std::sync::Arc<
-        std::sync::Mutex<std::collections::HashMap<i64, std::sync::Arc<tokio::sync::Semaphore>>>,
-    >,
+    key_queue: Arc<Mutex<HashMap<i64, Arc<tokio::sync::Semaphore>>>>,
 }
 
 /// Receipt of one posting. `content_hash` is what the user keeps to verify the bill later.
@@ -494,7 +500,7 @@ impl Wallet {
 
             policy: LedgerPolicy::default(),
             tenant_id: tenant_id.to_owned(),
-            key_queue: std::sync::Arc::default(),
+            key_queue: Arc::default(),
         };
         Ok(wallet)
     }
@@ -607,7 +613,7 @@ impl Wallet {
 
             policy: LedgerPolicy::default(),
             tenant_id: tenant_id.to_owned(),
-            key_queue: std::sync::Arc::default(),
+            key_queue: Arc::default(),
         };
         wallet.reclassify_grants().await?;
         wallet.migrate_legacy_bonus().await?;
@@ -1923,7 +1929,7 @@ impl Wallet {
         description: &str,
         minor: i64,
         on: Date,
-        mandate: Option<&crate::mandates::PresentedMandate>,
+        mandate: Option<&PresentedMandate>,
     ) -> Result<Receipt, WalletError> {
         positive(minor)?;
         let description = description_of(description)?;
@@ -2277,9 +2283,7 @@ impl Wallet {
             let mut queues = self.key_queue.lock().unwrap_or_else(|e| e.into_inner());
             queues
                 .entry(lock_key)
-                .or_insert_with(|| {
-                    std::sync::Arc::new(tokio::sync::Semaphore::new(KEY_QUEUE_WIDTH))
-                })
+                .or_insert_with(|| Arc::new(tokio::sync::Semaphore::new(KEY_QUEUE_WIDTH)))
                 .clone()
         };
         let permit = tokio::time::timeout(KEY_QUEUE_WAIT, semaphore.acquire_owned())
@@ -2604,9 +2608,9 @@ impl Wallet {
         scope: crate::KeyScope,
         model: Option<&str>,
         estimate: Option<i64>,
-        tags: &std::collections::BTreeMap<String, String>,
-        mandate: Option<&crate::entitlement::EntitlementMandate>,
-    ) -> Result<Option<crate::entitlement::EntitlementRead>, WalletError> {
+        tags: &BTreeMap<String, String>,
+        mandate: Option<&EntitlementMandate>,
+    ) -> Result<Option<EntitlementRead>, WalletError> {
         use crate::entitlement::{EntitlementRead, MandateVerdict};
         let mut conn = self.store.pool().acquire().await?;
         // The scope clause is the key list's: `Own` narrows to keys the member
@@ -4563,12 +4567,12 @@ impl Wallet {
     pub async fn usage_report_bundle(
         &self,
         marker_id: EntryId,
-        rows: &[crate::usage_reports::UsageReportRow],
+        rows: &[UsageReportRow],
         key: Option<&HeadSigningKey>,
     ) -> Result<
         (
-            crate::usage_reports::ReportEntryBundle,
-            Vec<crate::usage_reports::ReportEntryBundle>,
+            ReportEntryBundle,
+            Vec<ReportEntryBundle>,
             doubleentry::TreeHead,
             Option<SignedHead>,
         ),
@@ -4583,7 +4587,7 @@ impl Wallet {
                 "the usage-report marker is gone from the ledger".into(),
             ));
         };
-        let marker = crate::usage_reports::ReportEntryBundle {
+        let marker = ReportEntryBundle {
             proof: self
                 .store
                 .prove_inclusion_at(stored.require_index().map_err(invalid)?, head.size)
@@ -4604,7 +4608,7 @@ impl Wallet {
                     "a usage-report row's hash disagrees with the ledger".into(),
                 ));
             }
-            entries.push(crate::usage_reports::ReportEntryBundle {
+            entries.push(ReportEntryBundle {
                 proof: self
                     .store
                     .prove_inclusion_at(stored.require_index().map_err(invalid)?, head.size)
@@ -4631,13 +4635,13 @@ impl Wallet {
         &self,
         entry_id: EntryId,
         head: doubleentry::TreeHead,
-    ) -> Result<crate::usage_reports::ReportEntryBundle, WalletError> {
+    ) -> Result<ReportEntryBundle, WalletError> {
         let Some(stored) = self.store.get(entry_id).await? else {
             return Err(WalletError::InvalidInput(
                 "the anchored entry is gone from the ledger".into(),
             ));
         };
-        Ok(crate::usage_reports::ReportEntryBundle {
+        Ok(ReportEntryBundle {
             proof: self
                 .store
                 .prove_inclusion_at(stored.require_index().map_err(invalid)?, head.size)
@@ -4679,8 +4683,7 @@ impl Wallet {
             OffsetDateTime::now_utc().date(),
         )
         .with_document(
-            DocumentRef::new(crate::evidence::EVIDENCE_BUNDLE_DOCUMENT, manifest_digest)
-                .map_err(invalid)?,
+            DocumentRef::new(EVIDENCE_BUNDLE_DOCUMENT, manifest_digest).map_err(invalid)?,
         )
         .with_description(description_of(description_json)?)
         .debit(self.adjustments, minor, currency())
@@ -4727,14 +4730,14 @@ impl Wallet {
     ) -> Result<
         (
             doubleentry::TreeHead,
-            crate::evidence::EvidenceEntryBundle,
-            Vec<crate::evidence::EvidenceEntryBundle>,
+            EvidenceEntryBundle,
+            Vec<EvidenceEntryBundle>,
         ),
         WalletError,
     > {
         let head = self.store.head().await?;
         let marker = self.entry_bundle(marker_id, head).await?;
-        let marker = crate::evidence::EvidenceEntryBundle {
+        let marker = EvidenceEntryBundle {
             entry: marker.entry,
             content_hash: marker.content_hash,
             proof: marker.proof,
@@ -4744,7 +4747,7 @@ impl Wallet {
         let mut entries = Vec::with_capacity(ids.len());
         for (entry_id, for_kind, for_id) in ids {
             let bundle = self.entry_bundle(*entry_id, head).await?;
-            entries.push(crate::evidence::EvidenceEntryBundle {
+            entries.push(EvidenceEntryBundle {
                 entry: bundle.entry,
                 content_hash: bundle.content_hash,
                 proof: bundle.proof,

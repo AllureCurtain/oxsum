@@ -5,6 +5,7 @@ use serde::Deserialize;
 use sqlx::Row;
 use uuid::Uuid;
 
+use crate::audit_action::MANUAL_RECEIPT_AUTHORIZED;
 use crate::{Db, Receipt, Tenants, WalletError};
 
 /// The trusted caller, supplied only after deployment authentication. Customer
@@ -98,7 +99,7 @@ impl Db {
             "amountMinor": request.amount_minor,
         }))
         .bind(&key)
-        .bind(crate::audit_action::MANUAL_RECEIPT_AUTHORIZED)
+        .bind(MANUAL_RECEIPT_AUTHORIZED)
         .execute(&mut *tx)
         .await?;
         tx.commit().await?;

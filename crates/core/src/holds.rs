@@ -19,9 +19,11 @@ use uuid::Uuid;
 use crate::billing::BillLine;
 use crate::db::Db;
 use crate::error::WalletError;
+use crate::operations::{METERING_SURFACE, OperationState, SWEEPER_OWNER};
 use crate::tenants::Tenants;
-use crate::usage::{UsageRecord, UsageRow};
+use crate::usage::{CostBasis, CountsProvenance, UsageRecord, UsageRow};
 use crate::wallet::{Wallet, entry_id_for, settlement_key_for};
+use crate::webhooks::ANOMALY_DETECTED;
 use crate::{Settlement, SettlementKind};
 
 /// One gateway hold the sweeper is watching: everything the swept settlement's record needs, so
@@ -432,7 +434,7 @@ pub async fn sweep_stale_holds(
                         if let Ok(organization) = Uuid::parse_str(&hold.tenant_id) {
                             db.notify_event(
                                 organization,
-                                crate::webhooks::ANOMALY_DETECTED,
+                                ANOMALY_DETECTED,
                                 serde_json::json!({
                                     "requestId": hold.request_id,
                                     "model": hold.model,
@@ -471,11 +473,7 @@ pub async fn sweep_stale_holds(
     // terminal.
     for operation in db.operations_past_lease(64).await? {
         if !db
-            .claim_operation(
-                operation.operation_id,
-                crate::operations::SWEEPER_OWNER,
-                300,
-            )
+            .claim_operation(operation.operation_id, SWEEPER_OWNER, 300)
             .await?
         {
             continue;
@@ -509,8 +507,8 @@ pub async fn sweep_stale_holds(
             && let Err(error) = db
                 .settle_operation(
                     operation.operation_id,
-                    crate::operations::SWEEPER_OWNER,
-                    crate::operations::OperationState::TimedOut,
+                    SWEEPER_OWNER,
+                    OperationState::TimedOut,
                     0,
                     "swept",
                 )
@@ -658,16 +656,14 @@ async fn sweep_metered_operation(db: &Db, hold: &OpenHold) {
         .operation_by_fingerprint(organization_id, &hold.hold_key)
         .await
     {
-        Ok(Some(operation)) if operation.surface == crate::operations::METERING_SURFACE => {
-            operation
-        }
+        Ok(Some(operation)) if operation.surface == METERING_SURFACE => operation,
         _ => return,
     };
     if let Err(error) = db
         .settle_operation(
             operation.operation_id,
             "sweeper",
-            crate::operations::OperationState::TimedOut,
+            OperationState::TimedOut,
             0,
             "swept",
         )
@@ -705,14 +701,14 @@ async fn record_swept_usage(db: &Db, wallet: &Wallet, hold: &OpenHold) -> Result
             },
             // The watch row timed out: nothing reported and nothing was
             // counted — every provenance column stays NULL.
-            counts: crate::usage::CountsProvenance::None,
+            counts: CountsProvenance::None,
             charged_minor: 0,
             freeze_minor: hold.freeze_minor,
             // The watch row carries no price, so a swept turn's upstream cost is
             // untracked rather than zero — `upstream_cost_minor` stays NULL and
             // the basis is `missing` (issue #604).
             upstream_cost_minor: None,
-            cost_basis: crate::usage::CostBasis::Missing,
+            cost_basis: CostBasis::Missing,
             upstream_attempts: 1,
         },
         available,

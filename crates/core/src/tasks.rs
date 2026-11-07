@@ -20,8 +20,9 @@ use uuid::Uuid;
 use crate::billing::{MeteredSettlement, SettlementKind};
 use crate::db::Db;
 use crate::error::WalletError;
+use crate::operations::OperationState;
 use crate::tenants::Tenants;
-use crate::usage::{CountsProvenance, UsageRecord, UsageRow};
+use crate::usage::{CostBasis, CountsProvenance, UsageRecord, UsageRow};
 use crate::wallet::{entry_id_for, settlement_key_for};
 
 /// A task's billing class — what the submission declared. `custom` covers
@@ -575,9 +576,9 @@ pub async fn settle_task(
     // raced sweeper-or-second-poll settle `AlreadySettled`, not an error; a
     // failed write is logged like the usage row's, never the settle's failure.
     let operation_state = match outcome.state {
-        TaskState::Succeeded => crate::operations::OperationState::Succeeded,
-        TaskState::Failed => crate::operations::OperationState::Failed,
-        TaskState::Cancelled => crate::operations::OperationState::Cancelled,
+        TaskState::Succeeded => OperationState::Succeeded,
+        TaskState::Failed => OperationState::Failed,
+        TaskState::Cancelled => OperationState::Cancelled,
         _ => unreachable!("settle_task is terminal-only"),
     };
     if let Err(error) = db
@@ -613,10 +614,8 @@ pub async fn settle_task(
         _ => None,
     };
     let cost_basis = match outcome.state {
-        TaskState::Succeeded if upstream_cost_minor.is_some() => {
-            crate::usage::CostBasis::RealAttempt
-        }
-        _ => crate::usage::CostBasis::Missing,
+        TaskState::Succeeded if upstream_cost_minor.is_some() => CostBasis::RealAttempt,
+        _ => CostBasis::Missing,
     };
 
     let row = UsageRow {

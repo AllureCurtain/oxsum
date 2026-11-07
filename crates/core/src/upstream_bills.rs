@@ -30,6 +30,7 @@ use sqlx::Row as _;
 use time::Date;
 use uuid::Uuid;
 
+use crate::channels::SecretKey;
 use crate::db::Db;
 use crate::error::WalletError;
 use crate::webhooks::ANOMALY_DETECTED;
@@ -156,7 +157,7 @@ impl Db {
     /// credential is a misconfiguration to surface, not a day to silently skip.
     pub async fn billable_channels(
         &self,
-        key: &crate::channels::SecretKey,
+        key: &SecretKey,
     ) -> Result<Vec<ChannelBilling>, WalletError> {
         let rows = sqlx::query(
             "SELECT channel_id, name, protocol, base_url, bill_key_sealed, settings \

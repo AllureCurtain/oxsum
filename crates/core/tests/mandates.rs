@@ -12,6 +12,8 @@
 
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
+use std::sync::Arc;
+
 use oxsum_core::{
     Db, KeyConstraints, KeyScope, NewUser, SecretKey, Tenants, Wallet, WalletError, parse_presented,
 };
@@ -60,7 +62,7 @@ async fn db(url: &str) -> Db {
 
 /// A user with a funded wallet, and the acting key of their first API key.
 struct World {
-    wallet: std::sync::Arc<Wallet>,
+    wallet: Arc<Wallet>,
     key: oxsum_core::ActingKey,
     organization_id: Uuid,
 }

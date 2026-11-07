@@ -19,6 +19,9 @@ use crate::db::Db;
 use crate::error::WalletError;
 use crate::orgs::{self, Organization};
 use crate::sessions::{KeyScope, Principal};
+use crate::usage::MAX_TAG;
+use crate::wallet::{BONUS, CREDIT_LINE, WALLET};
+use crate::webhooks::BudgetForecast;
 
 /// Every secret starts with this, so secret scanners and users can recognize one.
 const SECRET_MARK: &str = "oxs-";
@@ -308,10 +311,10 @@ impl KeyConstraints {
 /// several tags but each tag carries one scope — the object shape enforces it.
 fn validate_tpm_scopes(scopes: &TpmScopes) -> Result<(), WalletError> {
     for (tag, scope) in scopes {
-        if tag.trim().is_empty() || tag.len() > crate::usage::MAX_TAG {
+        if tag.trim().is_empty() || tag.len() > MAX_TAG {
             return Err(WalletError::InvalidInput(format!(
                 "a tokensPerMinuteScopes tag is a tag name, 1..={} bytes",
-                crate::usage::MAX_TAG
+                MAX_TAG
             )));
         }
         if scope.cap() <= 0 {
@@ -320,11 +323,11 @@ fn validate_tpm_scopes(scopes: &TpmScopes) -> Result<(), WalletError> {
             )));
         }
         if let TpmScope::Concrete { concrete, .. } = scope
-            && (concrete.is_empty() || concrete.len() > crate::usage::MAX_TAG)
+            && (concrete.is_empty() || concrete.len() > MAX_TAG)
         {
             return Err(WalletError::InvalidInput(format!(
                 "tokensPerMinuteScopes.{tag}.concrete is a tag value, 1..={} bytes",
-                crate::usage::MAX_TAG
+                MAX_TAG
             )));
         }
     }
@@ -763,7 +766,7 @@ impl Db {
         &self,
         organization_id: Uuid,
         scope: KeyScope,
-    ) -> Result<Vec<crate::webhooks::BudgetForecast>, WalletError> {
+    ) -> Result<Vec<BudgetForecast>, WalletError> {
         // The keys this caller may see, constrained like `list_keys`: the scope is part
         // of the lookup, so a member reads only their own keys' forecasts.
         let keys: Vec<(Uuid, i64, String)> = match scope {
@@ -819,9 +822,9 @@ impl Db {
             "SELECT account_index FROM \"{ledger}\".accounts WHERE path = ANY($1)",
         ))
         .bind(vec![
-            crate::wallet::WALLET.to_owned(),
-            crate::wallet::BONUS.to_owned(),
-            crate::wallet::CREDIT_LINE.to_owned(),
+            WALLET.to_owned(),
+            BONUS.to_owned(),
+            CREDIT_LINE.to_owned(),
         ])
         .fetch_all(self.pool())
         .await?;

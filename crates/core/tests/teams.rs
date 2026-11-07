@@ -12,6 +12,8 @@
 
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
+use std::sync::Arc;
+
 use oxsum_core::{
     Db, KeyConstraints, MembershipActor, NewUser, Role, Tenants, Wallet, WalletError,
 };
@@ -46,7 +48,7 @@ struct World {
     db: Db,
     organization_id: Uuid,
     owner: Uuid,
-    wallet: std::sync::Arc<Wallet>,
+    wallet: Arc<Wallet>,
     key: oxsum_core::ActingKey,
 }
 

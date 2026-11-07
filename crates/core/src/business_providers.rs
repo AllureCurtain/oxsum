@@ -1,4 +1,6 @@
 //! Business-scoped provider configuration, with atomic authority, replay and audit.
+use std::collections::HashSet;
+
 use crate::channels::{self, LAST4, MAX_WEIGHT, credential_text, last_chars};
 use crate::{
     BusinessCapability, Channel, Db, ModelAlias, ModelPrice, Price, SecretKey, WalletError,
@@ -8,6 +10,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use sqlx::{Postgres, Row, Transaction};
 use uuid::Uuid;
+
+use crate::cache::SETTINGS_KEY;
 
 #[derive(Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -106,7 +110,7 @@ fn cache_policy(policy: &Value) -> Result<(), WalletError> {
                 .into(),
         ));
     }
-    crate::CachePolicy::of(Some(&json!({crate::cache::SETTINGS_KEY:policy})))
+    crate::CachePolicy::of(Some(&json!({SETTINGS_KEY:policy})))
         .map_err(|_| WalletError::InvalidInput("invalid cache policy".into()))?;
     Ok(())
 }
@@ -121,7 +125,7 @@ fn redacted_endpoint(value: &str) -> String {
     url.to_string().trim_end_matches('/').to_owned()
 }
 fn redacted_settings(settings: &Value) -> Value {
-    let mut result = match settings.get(crate::cache::SETTINGS_KEY) {
+    let mut result = match settings.get(SETTINGS_KEY) {
         Some(policy) => {
             let mut safe = serde_json::Map::new();
             for field in ["enabled", "ttlSeconds", "excludeSystem"] {
@@ -132,7 +136,7 @@ fn redacted_settings(settings: &Value) -> Value {
                     safe.insert(field.into(), v.clone());
                 }
             }
-            json!({crate::cache::SETTINGS_KEY:safe})
+            json!({SETTINGS_KEY:safe})
         }
         None => json!({}),
     };
@@ -828,7 +832,7 @@ async fn fallbacks(
             "at most 16 fallback models are allowed".into(),
         ));
     }
-    let mut names = std::collections::HashSet::new();
+    let mut names = HashSet::new();
     for fallback in fallbacks {
         let name = channels::model_name(fallback)?;
         if name == model || !names.insert(name) || !model_owned(tx, business, name).await? {

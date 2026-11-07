@@ -25,6 +25,7 @@ use crate::db::Db;
 use crate::error::WalletError;
 use crate::keys::ActingKey;
 use crate::orgs::{self, MembershipActor, Organization, Role};
+use crate::totp::LoginOutcome;
 use crate::users::User;
 
 /// The session cookie's name. Carried in `openapi.yaml` as the `sessionCookie` scheme.
@@ -196,11 +197,7 @@ impl Db {
     /// A confirmed `user_totp` row turns the answer into
     /// [`crate::totp::LoginOutcome::TotpRequired`]: the session is not minted
     /// here — `verify_totp` mints it once the second factor lands (issue #504).
-    pub async fn login(
-        &self,
-        email: &str,
-        password: &str,
-    ) -> Result<crate::totp::LoginOutcome, WalletError> {
+    pub async fn login(&self, email: &str, password: &str) -> Result<LoginOutcome, WalletError> {
         let normalized = email.trim().to_lowercase();
         let row = sqlx::query(
             "SELECT user_id, email, password_hash, \
@@ -242,9 +239,9 @@ impl Db {
             let challenge_token = self
                 .mint_totp_challenge_in_transaction(&mut tx, user.id)
                 .await?;
-            crate::totp::LoginOutcome::TotpRequired { challenge_token }
+            LoginOutcome::TotpRequired { challenge_token }
         } else {
-            crate::totp::LoginOutcome::Session(Box::new(
+            LoginOutcome::Session(Box::new(
                 self.session_for_in_transaction(&mut tx, user.id).await?,
             ))
         };

@@ -25,6 +25,8 @@
 //! reads and reconcile paths persist it, no scheduler is required for a document
 //! that only needs to be right when looked at.
 
+use std::collections::BTreeSet;
+
 use doubleentry::Hash;
 use serde::Serialize;
 use sqlx::Row;
@@ -37,7 +39,11 @@ use crate::heads::{
     StatementRollupLine, StatementRollupV1, canonical_statement_rollup, statement_rollup_hash,
     statement_window_hash,
 };
-use crate::wallet::Wallet;
+use crate::orgs::AdminOrganization;
+use crate::wallet::{ORG_ADMISSION_LOCK, Wallet};
+use crate::webhooks::{
+    ORG_SUSPENDED, STATEMENT_FINALIZED, STATEMENT_OVERDUE, STATEMENT_STATUS_UPDATED,
+};
 
 // `due_date` serializes as a bare `YYYY-MM-DD` — the contract's `format: date`.
 time::serde::format_description!(due_date_format, Date, "[year]-[month]-[day]");
@@ -294,9 +300,7 @@ impl Db {
     /// # Errors
     ///
     /// Storage failures surface as [`WalletError`].
-    pub async fn billable_organizations(
-        &self,
-    ) -> Result<Vec<crate::orgs::AdminOrganization>, WalletError> {
+    pub async fn billable_organizations(&self) -> Result<Vec<AdminOrganization>, WalletError> {
         let rows = sqlx::query(
             "SELECT o.organization_id, o.name, o.tenant_id, o.kind, o.created_at, \
              o.payment_terms_days, o.tier, COALESCE(o.suspended_at,o.dunning_suspended_at,(SELECT c.archived_at FROM oxsum.customer_profiles c WHERE c.organization_id=o.organization_id AND c.state='archived')) AS suspended_at, \
@@ -439,7 +443,7 @@ impl Db {
     /// storage failures surface as [`WalletError`].
     pub async fn generate_statement(
         &self,
-        organization: &crate::orgs::AdminOrganization,
+        organization: &AdminOrganization,
         wallet: &Wallet,
         period: &StatementPeriod,
     ) -> Result<Option<Statement>, WalletError> {
@@ -781,7 +785,7 @@ impl Db {
             Self::enqueue_event(
                 &mut tx,
                 existing.organization_id,
-                crate::webhooks::STATEMENT_FINALIZED,
+                STATEMENT_FINALIZED,
                 serde_json::json!({
                     "statementId": statement_id,
                     "period": existing.period,
@@ -846,7 +850,7 @@ impl Db {
             Self::enqueue_event(
                 &mut tx,
                 existing.organization_id,
-                crate::webhooks::STATEMENT_STATUS_UPDATED,
+                STATEMENT_STATUS_UPDATED,
                 serde_json::json!({
                     "statementId": statement_id,
                     "period": existing.period,
@@ -945,7 +949,7 @@ impl Db {
                     Self::enqueue_event(
                         &mut tx,
                         organization_id,
-                        crate::webhooks::STATEMENT_OVERDUE,
+                        STATEMENT_OVERDUE,
                         serde_json::json!({
                             "statementId": statement.id,
                             "period": statement.period,
@@ -959,7 +963,7 @@ impl Db {
                 Self::enqueue_event(
                     &mut tx,
                     organization_id,
-                    crate::webhooks::STATEMENT_STATUS_UPDATED,
+                    STATEMENT_STATUS_UPDATED,
                     serde_json::json!({
                         "statementId": statement.id,
                         "period": statement.period,
@@ -1111,7 +1115,7 @@ impl Db {
         .bind(today)
         .fetch_all(self.pool())
         .await?;
-        let mut suspended_orgs = std::collections::BTreeSet::new();
+        let mut suspended_orgs = BTreeSet::new();
         let mut suspended = 0i64;
         for row in &lapsing {
             use sqlx::Row;
@@ -1123,7 +1127,7 @@ impl Db {
             // the flag while its own row still moves to `suspended`.
             let mut tx = self.pool().begin().await?;
             sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1 || $2::text, 0))")
-                .bind(crate::wallet::ORG_ADMISSION_LOCK)
+                .bind(ORG_ADMISSION_LOCK)
                 .bind(organization_id.to_string())
                 .execute(&mut *tx)
                 .await?;
@@ -1144,7 +1148,7 @@ impl Db {
                 Self::enqueue_event(
                     &mut tx,
                     organization_id,
-                    crate::webhooks::ORG_SUSPENDED,
+                    ORG_SUSPENDED,
                     serde_json::json!({
                         "organizationId": organization_id,
                         "reason": "dunning",
@@ -1166,7 +1170,7 @@ impl Db {
                 Self::enqueue_event(
                     &mut tx,
                     organization_id,
-                    crate::webhooks::STATEMENT_STATUS_UPDATED,
+                    STATEMENT_STATUS_UPDATED,
                     serde_json::json!({
                         "statementId": statement_id,
                         "period": row.try_get::<String, _>("period")?,
@@ -1208,7 +1212,7 @@ impl Db {
             let organization_id: Uuid = row.try_get("organization_id")?;
             let mut tx = self.pool().begin().await?;
             sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1 || $2::text, 0))")
-                .bind(crate::wallet::ORG_ADMISSION_LOCK)
+                .bind(ORG_ADMISSION_LOCK)
                 .bind(organization_id.to_string())
                 .execute(&mut *tx)
                 .await?;

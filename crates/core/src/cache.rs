@@ -17,6 +17,8 @@
 //! proves reuse against: "this answer was the one the upstream produced for
 //! entry X at time T" is a statement the verifier can check.
 
+use std::collections::BTreeMap;
+
 use serde::Serialize;
 use serde_json::Value;
 use sqlx::Row;
@@ -120,7 +122,7 @@ pub struct ResponseCacheContext<'a> {
 fn canonical(value: Value) -> Value {
     match value {
         Value::Object(map) => {
-            let sorted: std::collections::BTreeMap<_, _> = map.into_iter().collect();
+            let sorted: BTreeMap<_, _> = map.into_iter().collect();
             Value::Object(sorted.into_iter().map(|(k, v)| (k, canonical(v))).collect())
         }
         Value::Array(items) => Value::Array(items.into_iter().map(canonical).collect()),

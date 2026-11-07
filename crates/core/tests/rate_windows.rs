@@ -10,6 +10,8 @@
 
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
+use std::time::Duration;
+
 use oxsum_core::{Db, PostgresRateLimiter, RateLimiter};
 use sqlx::PgPool;
 use std::time::Instant;
@@ -133,7 +135,7 @@ async fn a_hit_ages_out_on_the_server_clock() {
     // The window frees when the hit is 60s old on the server's clock — the test
     // sleeps the real duration, not a stubbed Instant, because the backend's
     // timeline is the database's `now()`.
-    tokio::time::sleep(std::time::Duration::from_secs(61)).await;
+    tokio::time::sleep(Duration::from_secs(61)).await;
     instance_b
         .admit(key, 1, now)
         .expect("the aged hit freed the shared slot");

@@ -20,10 +20,13 @@ use time::OffsetDateTime;
 use url::Url;
 use uuid::Uuid;
 
+use crate::billing::SettlementKind;
 use crate::channels::SecretKey;
 use crate::db::Db;
 use crate::error::WalletError;
+use crate::keys::BudgetDuration;
 use crate::tasks::{TASK_FAILED, TASK_SUCCEEDED};
+use crate::wallet::Wallet;
 
 /// A request's settlement landed — the `request.settled` of the event catalog
 /// in docs/decisions.md, opt-in per endpoint because per-request traffic is
@@ -146,7 +149,7 @@ pub struct BudgetForecast {
 /// credit-only); `committed >= limit` is already over and projects to today.
 #[must_use]
 pub fn forecast_exhaustion(
-    duration: crate::keys::BudgetDuration,
+    duration: BudgetDuration,
     window_start: time::Date,
     today: time::Date,
     committed_minor: i64,
@@ -156,9 +159,9 @@ pub fn forecast_exhaustion(
         return None;
     }
     let window_days = match duration {
-        crate::keys::BudgetDuration::Daily => 1,
-        crate::keys::BudgetDuration::Weekly => 7,
-        crate::keys::BudgetDuration::Monthly => {
+        BudgetDuration::Daily => 1,
+        BudgetDuration::Weekly => 7,
+        BudgetDuration::Monthly => {
             // The month's real length — a 31-day month burns slower per day.
             days_in_month(today)
         }
@@ -957,11 +960,7 @@ impl Db {
     /// self-funded wallet's 402 is ordinary insufficient funds, not a credit
     /// event. Errors are logged, not propagated: the 402 the caller is about to
     /// answer is the fact that matters.
-    pub async fn notify_credit_limit_exceeded(
-        &self,
-        organization: Uuid,
-        wallet: &crate::wallet::Wallet,
-    ) {
+    pub async fn notify_credit_limit_exceeded(&self, organization: Uuid, wallet: &Wallet) {
         match wallet.credit_limit().await {
             Ok(limit) if limit > 0 => {
                 if let Err(error) = self
@@ -996,7 +995,7 @@ impl Db {
     pub(crate) async fn enqueue_anomaly(
         tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
         tenant_id: &str,
-        kind: crate::billing::SettlementKind,
+        kind: SettlementKind,
         data: Value,
     ) -> Result<(), WalletError> {
         use crate::billing::SettlementKind;

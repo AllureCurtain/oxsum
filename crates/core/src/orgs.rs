@@ -20,7 +20,8 @@ use uuid::Uuid;
 use crate::db::Db;
 use crate::display::DisplayCurrency;
 use crate::error::WalletError;
-use crate::wallet::ListPage;
+use crate::wallet::{ListPage, ORG_ADMISSION_LOCK};
+use crate::webhooks::ORG_SUSPENDED;
 
 /// Whether an organization is one person's or a team's. product.md: a personal
 /// organization flips to `team` when its first member joins; the ledger does not move.
@@ -731,7 +732,7 @@ impl Db {
     ) -> Result<bool, WalletError> {
         let mut tx = self.pool().begin().await?;
         sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1 || $2::text, 0))")
-            .bind(crate::wallet::ORG_ADMISSION_LOCK)
+            .bind(ORG_ADMISSION_LOCK)
             .bind(organization_id.to_string())
             .execute(&mut *tx)
             .await?;
@@ -751,7 +752,7 @@ impl Db {
             Self::enqueue_event(
                 &mut tx,
                 organization_id,
-                crate::webhooks::ORG_SUSPENDED,
+                ORG_SUSPENDED,
                 serde_json::json!({ "organizationId": organization_id }),
             )
             .await?;

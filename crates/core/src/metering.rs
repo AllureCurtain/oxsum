@@ -16,6 +16,8 @@
 //! credential as the ledger entry's actor, so the log answers "which service
 //! reported this" the way a key hold names its key.
 
+use std::sync::Arc;
+
 use crate::integration_credentials::{IntegrationScope, require_integration};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -24,14 +26,17 @@ use sqlx::Row;
 use time::Date;
 use uuid::Uuid;
 
-use crate::billing::{MeteredSettlement, SettlementKind, hold_description};
+use crate::billing::{BillLine, MeteredSettlement, SettlementKind, hold_description};
 use crate::db::Db;
 use crate::error::WalletError;
 use crate::holds::OpenHold;
 use crate::integration_credentials::ActingService;
+use crate::operations::{
+    METERED_OUTCOME, METERING_SURFACE, NewOperation, OperationSettle, OperationState,
+};
 use crate::tenants::Tenants;
-use crate::usage::UsageRecord;
-use crate::wallet::{entry_id_for, settlement_key_for};
+use crate::usage::{CostBasis, CountsProvenance, UsageRecord, UsageRow};
+use crate::wallet::{Wallet, entry_id_for, settlement_key_for};
 
 /// What a metering `hold` or one-shot `settlement` names: the price to resolve
 /// and the usage the event is bounded by — or settled at.
@@ -297,7 +302,7 @@ async fn metered_wallet(
     db: &Db,
     tenants: &Tenants,
     organization_id: Uuid,
-) -> Result<(String, std::sync::Arc<crate::wallet::Wallet>), WalletError> {
+) -> Result<(String, Arc<Wallet>), WalletError> {
     let organization = db.organization_by_id(organization_id).await?;
     let wallet = tenants.get(&organization.tenant_id).await?;
     Ok((organization.tenant_id, wallet))
@@ -307,12 +312,7 @@ async fn metered_wallet(
 /// pair a gateway turn writes; a failed write is drift for the reconciler, not
 /// a reason to retry the charge. The wallet is in hand to read the post-settle
 /// balance `balance.low` thresholds judge against.
-async fn record_metered_usage(
-    db: &Db,
-    wallet: &crate::wallet::Wallet,
-    row: &crate::usage::UsageRow,
-    hold_key: &str,
-) {
+async fn record_metered_usage(db: &Db, wallet: &Wallet, row: &UsageRow, hold_key: &str) {
     let available = wallet.available().await.ok();
     if let Err(error) = db.record_usage_balanced(row, available).await {
         tracing::error!(%error, hold_key, "recording the metered event's usage row failed");
@@ -326,7 +326,7 @@ async fn record_metered_usage(
 /// answer every metering endpoint shares: the entry id derives from the hold's
 /// key, so the read is one probe.
 async fn committed_outcome(
-    wallet: &crate::wallet::Wallet,
+    wallet: &Wallet,
     hold_key: &str,
 ) -> Result<Option<MeteredOutcome>, WalletError> {
     Ok(wallet
@@ -346,7 +346,7 @@ async fn committed_outcome(
 /// plain conflict.
 async fn settled_outcome(
     db: &Db,
-    wallet: &crate::wallet::Wallet,
+    wallet: &Wallet,
     hold_key: &str,
     expected: &[SettlementKind],
 ) -> Result<MeteredOutcome, WalletError> {
@@ -374,7 +374,7 @@ enum Watched {
 /// anything else was never this organization's hold.
 async fn watched(
     db: &Db,
-    wallet: &crate::wallet::Wallet,
+    wallet: &Wallet,
     hold_key: &str,
     tenant_id: &str,
 ) -> Result<Watched, WalletError> {
@@ -415,11 +415,11 @@ impl Db {
         version: i64,
     ) {
         let inserted = self
-            .insert_operation(&crate::operations::NewOperation {
+            .insert_operation(&NewOperation {
                 operation_id: Uuid::new_v4(),
                 organization_id,
                 key_id: None,
-                surface: crate::operations::METERING_SURFACE.to_owned(),
+                surface: METERING_SURFACE.to_owned(),
                 fingerprint: hold_key.to_owned(),
                 bound_minor: freeze,
                 model: billable_code.to_owned(),
@@ -455,7 +455,7 @@ impl Db {
         &self,
         organization_id: Uuid,
         hold_key: &str,
-        state: crate::operations::OperationState,
+        state: OperationState,
         charged: i64,
     ) {
         let operation = match self
@@ -478,15 +478,15 @@ impl Db {
                 METERING_OWNER,
                 state,
                 charged,
-                crate::operations::METERED_OUTCOME,
+                METERED_OUTCOME,
             )
             .await
         {
-            Ok(crate::operations::OperationSettle::Settled) => {}
-            Ok(crate::operations::OperationSettle::AlreadySettled) => {
+            Ok(OperationSettle::Settled) => {}
+            Ok(OperationSettle::AlreadySettled) => {
                 tracing::info!(hold_key, "the metered operation was already terminal");
             }
-            Ok(crate::operations::OperationSettle::LeaseLost) => {
+            Ok(OperationSettle::LeaseLost) => {
                 tracing::warn!(hold_key, "the metered operation's lease was lost");
             }
             Err(error) => {
@@ -710,7 +710,7 @@ impl Db {
         record_metered_usage(
             self,
             &wallet,
-            &crate::usage::UsageRow {
+            &UsageRow {
                 request_id: hold_key.to_owned(),
                 tenant_id,
                 key_id: None,
@@ -723,7 +723,7 @@ impl Db {
                 status: "settled".to_owned(),
                 failure_reason: None,
                 usage: usage.clone(),
-                counts: crate::usage::CountsProvenance::Provider {
+                counts: CountsProvenance::Provider {
                     input: usage.input_tokens,
                     output: usage.output_tokens,
                 },
@@ -734,9 +734,9 @@ impl Db {
                 // #604): `real_attempt` when the price priced it, `missing`
                 // when it carried no `upstream` block.
                 cost_basis: if upstream_cost.is_some() {
-                    crate::usage::CostBasis::RealAttempt
+                    CostBasis::RealAttempt
                 } else {
-                    crate::usage::CostBasis::Missing
+                    CostBasis::Missing
                 },
                 upstream_attempts: 0,
             },
@@ -746,7 +746,7 @@ impl Db {
         self.settle_metered_operation(
             organization_id,
             hold_key,
-            crate::operations::OperationState::Succeeded,
+            OperationState::Succeeded,
             charged,
         )
         .await;
@@ -798,12 +798,12 @@ impl Db {
         // Zero units at the pinned rates, like a swept record: the lines name
         // the price the hold carried even though nothing billed.
         let lines = [
-            crate::billing::BillLine {
+            BillLine {
                 item: "input".into(),
                 units: 0,
                 price_per_m: watch.input_price,
             },
-            crate::billing::BillLine {
+            BillLine {
                 item: "output".into(),
                 units: 0,
                 price_per_m: watch.output_price,
@@ -834,7 +834,7 @@ impl Db {
         record_metered_usage(
             self,
             &wallet,
-            &crate::usage::UsageRow {
+            &UsageRow {
                 request_id: hold_key.to_owned(),
                 tenant_id,
                 key_id: None,
@@ -847,7 +847,7 @@ impl Db {
                 status: "settled".to_owned(),
                 failure_reason: None,
                 usage: usage.clone(),
-                counts: crate::usage::CountsProvenance::Provider {
+                counts: CountsProvenance::Provider {
                     input: usage.input_tokens,
                     output: usage.output_tokens,
                 },
@@ -856,7 +856,7 @@ impl Db {
                 // A released hold ran no billable work: the platform's cost is
                 // untracked, not a fabricated zero (issue #604).
                 upstream_cost_minor: None,
-                cost_basis: crate::usage::CostBasis::Missing,
+                cost_basis: CostBasis::Missing,
                 upstream_attempts: 0,
             },
             hold_key,
@@ -865,13 +865,8 @@ impl Db {
         // A released hold ends the operation without serving: `failed`, the
         // same terminal a released customer hold takes, so the metering row
         // reads like a customer turn that billed nothing (issue #604).
-        self.settle_metered_operation(
-            organization_id,
-            hold_key,
-            crate::operations::OperationState::Failed,
-            0,
-        )
-        .await;
+        self.settle_metered_operation(organization_id, hold_key, OperationState::Failed, 0)
+            .await;
         Ok(MeteredOutcome {
             charged_minor: 0,
             kind: SettlementKind::Released,
@@ -1013,7 +1008,7 @@ impl Db {
         record_metered_usage(
             self,
             &wallet,
-            &crate::usage::UsageRow {
+            &UsageRow {
                 request_id: hold_key.to_owned(),
                 tenant_id,
                 key_id: None,
@@ -1026,7 +1021,7 @@ impl Db {
                 status: "settled".to_owned(),
                 failure_reason: None,
                 usage: event.usage.clone(),
-                counts: crate::usage::CountsProvenance::Provider {
+                counts: CountsProvenance::Provider {
                     input: event.usage.input_tokens,
                     output: event.usage.output_tokens,
                 },
@@ -1037,9 +1032,9 @@ impl Db {
                 // #604): `real_attempt` when the price priced it, `missing`
                 // when it carried no `upstream` block.
                 cost_basis: if upstream_cost.is_some() {
-                    crate::usage::CostBasis::RealAttempt
+                    CostBasis::RealAttempt
                 } else {
-                    crate::usage::CostBasis::Missing
+                    CostBasis::Missing
                 },
                 upstream_attempts: 0,
             },
@@ -1049,7 +1044,7 @@ impl Db {
         self.settle_metered_operation(
             organization_id,
             &hold_key,
-            crate::operations::OperationState::Succeeded,
+            OperationState::Succeeded,
             charged,
         )
         .await;

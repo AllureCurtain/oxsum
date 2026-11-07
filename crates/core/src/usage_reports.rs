@@ -35,6 +35,8 @@ use crate::heads::{UsageReportV1, canonical_usage_report, usage_report_subset_ha
 use crate::wallet::{SCALE, Wallet};
 use doubleentry::{Balanced, Entry, InclusionProof};
 
+use crate::usage::MAX_END_USER;
+
 /// One entry in a usage report's bundle — the entry itself, its recorded
 /// content hash, and its inclusion proof into the bundle's head. The route
 /// serializes this verbatim into the report's `marker`/`entries` wire shape.
@@ -167,7 +169,7 @@ impl crate::Db {
         from: time::Date,
         to: time::Date,
     ) -> Result<UsageReport, WalletError> {
-        if end_user.is_empty() || end_user.len() > crate::usage::MAX_END_USER {
+        if end_user.is_empty() || end_user.len() > MAX_END_USER {
             return Err(WalletError::InvalidInput(
                 "endUser is required and at most 128 characters".into(),
             ));

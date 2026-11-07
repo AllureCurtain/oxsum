@@ -23,6 +23,7 @@ use uuid::Uuid;
 use crate::db::Db;
 use crate::error::WalletError;
 use crate::wallet::{Receipt, Wallet};
+use crate::webhooks::{DEPOSIT_CREDITED, DEPOSIT_DISPUTED, DEPOSIT_REVERSED};
 
 /// Every redemption code starts with this, so the value is recognizable in logs.
 const CODE_MARK: &str = "oxr-";
@@ -106,7 +107,7 @@ impl Db {
             Self::enqueue_event(
                 &mut tx,
                 organization_id,
-                crate::webhooks::DEPOSIT_CREDITED,
+                DEPOSIT_CREDITED,
                 serde_json::json!({
                     "rail": RAIL_MANUAL,
                     "paymentRef": idempotency_key,
@@ -367,7 +368,7 @@ impl Db {
             Self::enqueue_event(
                 &mut tx,
                 organization_id,
-                crate::webhooks::DEPOSIT_CREDITED,
+                DEPOSIT_CREDITED,
                 serde_json::json!({
                     "rail": RAIL_STRIPE,
                     "paymentRef": payment_ref,
@@ -641,7 +642,7 @@ impl Db {
             Self::enqueue_event(
                 &mut tx,
                 organization_id,
-                crate::webhooks::DEPOSIT_CREDITED,
+                DEPOSIT_CREDITED,
                 serde_json::json!({
                     "rail": RAIL_AIRWALLEX,
                     "paymentRef": payment_ref,
@@ -893,7 +894,7 @@ impl Db {
             Self::enqueue_event(
                 &mut tx,
                 organization_id,
-                crate::webhooks::DEPOSIT_CREDITED,
+                DEPOSIT_CREDITED,
                 serde_json::json!({
                     "rail": RAIL_HYPERSWITCH,
                     "paymentRef": payment_ref,
@@ -1127,7 +1128,7 @@ impl Db {
             Self::enqueue_event(
                 &mut tx,
                 organization_id,
-                crate::webhooks::DEPOSIT_CREDITED,
+                DEPOSIT_CREDITED,
                 serde_json::json!({
                     "rail": RAIL_REDEMPTION,
                     "paymentRef": code_id.to_string(),
@@ -1363,7 +1364,7 @@ impl Db {
             Self::enqueue_event(
                 &mut tx,
                 organization_id,
-                crate::webhooks::DEPOSIT_REVERSED,
+                DEPOSIT_REVERSED,
                 serde_json::json!({
                     "paymentRef": row.try_get::<String, _>("payment_ref")?,
                     "amountMinor": amount_minor,
@@ -1604,7 +1605,7 @@ impl Db {
             Self::enqueue_event(
                 &mut tx,
                 organization_id,
-                crate::webhooks::DEPOSIT_DISPUTED,
+                DEPOSIT_DISPUTED,
                 serde_json::json!({
                     "rail": RAIL_HYPERSWITCH,
                     "depositId": deposit_id,

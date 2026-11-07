@@ -24,7 +24,7 @@ use doubleentry::MerkleLog;
 
 use crate::db::Db;
 use crate::error::WalletError;
-use crate::usage_reports::UsageReportRow;
+use crate::usage_reports::{ReportEntryBundle, UsageReportRow};
 use crate::{EntryId, Hash, Tenants};
 
 /// The bundle's completeness half, serialized into the report's wire shape.
@@ -50,7 +50,7 @@ pub struct CompletenessBundle {
 #[serde(rename_all = "camelCase")]
 pub struct CompletenessAnchor {
     /// The anchor entry, its recorded hash and its inclusion in the bundle head.
-    pub entry: crate::usage_reports::ReportEntryBundle,
+    pub entry: ReportEntryBundle,
     /// The anchored UTC day, ISO `YYYY-MM-DD`.
     pub day: String,
     /// The sorted-map root over every customer's head, hex.

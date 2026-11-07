@@ -19,10 +19,11 @@ use std::sync::Arc;
 
 use time::{Duration, OffsetDateTime};
 
+use crate::adapters::GEMINI;
 use crate::billing::{Settlement, hold_description};
 use crate::error::{WalletError, invalid};
 use crate::holds::OpenHold;
-use crate::usage::{UsageRecord, UsageRow};
+use crate::usage::{CostBasis, CountsProvenance, UsageRecord, UsageRow};
 use crate::wallet::{entry_id_for, settlement_key_for};
 use crate::{
     ActingKey, ApiKey, CatalogModel, Db, KeyConstraints, Member, MembershipActor, NewDiscount,
@@ -195,14 +196,8 @@ impl Db {
                 .await?;
             let gemini_book =
                 PriceBook::from_json(DEMO_GEMINI_CHANNEL, DEMO_GEMINI_MODELS).map_err(invalid)?;
-            self.seed_channel_as(
-                &gemini_book,
-                DEMO_BASE_URL,
-                DEMO_API_KEY,
-                crate::adapters::GEMINI,
-                key,
-            )
-            .await?;
+            self.seed_channel_as(&gemini_book, DEMO_BASE_URL, DEMO_API_KEY, GEMINI, key)
+                .await?;
             catalog = self.catalog().await?;
         }
         let staging = self
@@ -550,7 +545,7 @@ impl Db {
                 status: "settled".to_owned(),
                 failure_reason: None,
                 usage: usage.clone(),
-                counts: crate::usage::CountsProvenance::Provider {
+                counts: CountsProvenance::Provider {
                     input: usage.input_tokens,
                     output: usage.output_tokens,
                 },
@@ -560,9 +555,9 @@ impl Db {
                 // A seeded turn replays a real attempt's usage report (issue
                 // #604): `missing` when the price carries no upstream block.
                 cost_basis: if upstream_cost_minor.is_some() {
-                    crate::usage::CostBasis::RealAttempt
+                    CostBasis::RealAttempt
                 } else {
-                    crate::usage::CostBasis::Missing
+                    CostBasis::Missing
                 },
                 upstream_attempts: 1,
             },
