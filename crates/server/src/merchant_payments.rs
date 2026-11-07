@@ -158,7 +158,15 @@ pub(crate) async fn recover(db: &Db, tenants: &Tenants) -> Result<(), WalletErro
     for event in db.recoverable_merchant_events(100).await? {
         let event = db.retry_merchant_event(event.id).await?;
         apply_legacy_event(db, tenants, &event).await?;
-        apply_order_event(db, tenants, &event).await?;
+        match apply_order_event(db, tenants, &event).await {
+            Ok(()) => {}
+            Err(WalletError::Conflict(_)) => {
+                // A verified but unresolved refund must remain available for
+                // reconciliation without blocking another customer's event.
+                tracing::warn!(receipt_id = %event.id, "merchant event requires reconciliation");
+            }
+            Err(error) => return Err(error),
+        }
     }
     // Paid orders still short of fulfillment are the sweep's other half: a
     // crash between the grant and the fulfillment row leaves a paid order this

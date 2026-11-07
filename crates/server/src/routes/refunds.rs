@@ -146,13 +146,13 @@ pub(crate) async fn resolve_refund(
 /// The PSP half of an approval: the reservation already commits, so the call
 /// issues against the order's provider payment — the refund id is the
 /// provider's idempotency key. A transport failure leaves the row
-/// `provider_pending` for the retry pass; a definite refusal releases the
-/// reservation.
+/// `provider_pending` for bounded recovery. Only a proven first-attempt refusal
+/// may release without a signed terminal event.
 async fn issue_provider_refund(state: &AppState, refund: &OrderRefund) -> Result<(), ApiError> {
     let secret = state.config.secret().ok_or_else(|| {
         ApiError::ServiceUnavailable("merchant encryption is not configured".into())
     })?;
-    let Some(target) = state.db.refund_retry_target(refund.refund_id).await? else {
+    let Some(target) = state.db.claim_refund_attempt(refund.refund_id).await? else {
         return Ok(());
     };
     let Some(context) = state
@@ -160,26 +160,15 @@ async fn issue_provider_refund(state: &AppState, refund: &OrderRefund) -> Result
         .merchant_signing_context(target.merchant_id, target.merchant_version_id, secret)
         .await?
     else {
-        state
-            .db
-            .fail_order_refund(refund.refund_id, "merchant is gone")
-            .await?;
         return Ok(());
     };
     let Some(provider_payment) = target.provider_payment_id.as_deref() else {
-        state
-            .db
-            .fail_order_refund(refund.refund_id, "no provider payment bound")
-            .await?;
         return Ok(());
     };
     match oxsum_integrations::merchant_checkout::create_refund(
         &context,
-        refund.refund_id,
+        &target.refund,
         provider_payment,
-        refund.display_amount_minor,
-        &refund.display_currency,
-        &refund.reason,
         &state.provider_http,
     )
     .await
@@ -191,13 +180,10 @@ async fn issue_provider_refund(state: &AppState, refund: &OrderRefund) -> Result
                 .await?;
             // The reservation stays pending on the signed event; the retry
             // pass's next attempt is the liveness probe a missing webhook gets.
-            state.db.retry_order_refund(refund.refund_id).await?;
         }
-        Err(_) => {
-            state
-                .db
-                .fail_order_refund(refund.refund_id, "provider refund call failed")
-                .await?;
+        Err(oxsum_integrations::merchant_checkout::RefundRequestError::Unknown) => {}
+        Err(oxsum_integrations::merchant_checkout::RefundRequestError::Refused) => {
+            state.db.refuse_claimed_refund(refund.refund_id).await?;
         }
     }
     Ok(())

@@ -19336,7 +19336,10 @@ export interface components {
             providerRefundId: string | null;
             /** @description provider attempts so far */
             retryCount: number;
-            /** Format: date-time */
+            /**
+             * Format: date-time
+             * @description Next bounded provider recovery attempt. Null while provider_pending means automatic recovery stopped and reconciliation is required; the reserved amount and issued note remain held.
+             */
             nextRetryAt: string | null;
             /**
              * Format: uuid

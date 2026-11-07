@@ -63,7 +63,12 @@ info:
     contested record that is deliberately not a refund — a `lost` dispute
     re-charges the drawn receivable under its own ledger key. The
     `refund-retries` job re-issues due reservations inside a bounded attempt
-    budget. `GET /api/v1/business/refunds{,/{id}}`,
+    budget. Unknown outcomes retain their reservation after that budget: a
+    `provider_pending` refund with `nextRetryAt: null` needs reconciliation,
+    not another blind refund. Hyperswitch uses a durable body `refund_id`
+    and retrieves it before retrying; a known legacy handle is retrieval-only,
+    and an unbound historical operation is never assigned a new identity.
+    `GET /api/v1/business/refunds{,/{id}}`,
     `GET /api/v1/business/credit-notes` and
     `GET /api/v1/business/disputes` are the finance surfaces.
 
@@ -14644,7 +14649,7 @@ components:
         state: { type: string, enum: [requested, declined, provider_pending, succeeded, failed, released] }
         providerRefundId: { type: [string, "null"], description: the provider's refund id once issued — the dedup the refund_* events name }
         retryCount: { type: integer, description: provider attempts so far }
-        nextRetryAt: { type: [string, "null"], format: date-time }
+        nextRetryAt: { type: [string, "null"], format: date-time, description: "Next bounded provider recovery attempt. Null while provider_pending means automatic recovery stopped and reconciliation is required; the reserved amount and issued note remain held." }
         noteId: { type: [string, "null"], format: uuid, description: the credit note an approval issued }
         createdAt: { type: string, format: date-time }
         updatedAt: { type: string, format: date-time }

@@ -66,6 +66,10 @@ struct SwitchStub {
     answers: Arc<Mutex<Vec<(String, String)>>>,
     calls: Arc<Mutex<usize>>,
     fail: Arc<Mutex<bool>>,
+    wrong_id: Arc<Mutex<bool>>,
+    drop_response: Arc<Mutex<bool>>,
+    reads_unavailable: Arc<Mutex<bool>>,
+    stored: Arc<Mutex<std::collections::HashMap<String, Value>>>,
 }
 
 async fn stub_switch() -> (String, SwitchStub) {
@@ -88,7 +92,7 @@ async fn stub_switch() -> (String, SwitchStub) {
                         .to_owned();
                     stub.orders.lock().unwrap().push(order);
                     let mut armed = stub.answers.lock().unwrap();
-                    let (id, secret) = if armed.len() > 1 {
+                    let (_alias, secret) = if armed.len() > 1 {
                         armed.remove(0)
                     } else {
                         armed
@@ -96,17 +100,24 @@ async fn stub_switch() -> (String, SwitchStub) {
                             .cloned()
                             .unwrap_or_else(|| ("pay_armed".into(), "secret_armed".into()))
                     };
-                    (
-                        StatusCode::OK,
-                        axum::Json(json!({
-                            "payment_id": id,
-                            "client_secret": secret,
-                            "status": "requires_payment_method",
-                        })),
-                    )
+                    let id = if *stub.wrong_id.lock().unwrap() { "pay_shared".to_owned() }
+                        else { body["payment_id"].as_str().unwrap().to_owned() };
+                    let value = json!({"payment_id":id,"client_secret":secret,"status":"requires_payment_method",
+                        "merchant_id":ACCOUNT,"amount":body["amount"],"currency":body["currency"],"metadata":body["metadata"]});
+                    stub.stored.lock().unwrap().insert(id, value.clone());
+                    if *stub.drop_response.lock().unwrap() {
+                        *stub.reads_unavailable.lock().unwrap() = true;
+                        return (StatusCode::BAD_GATEWAY,axum::Json(json!({"error":"response lost after commit"})));
+                    }
+                    (StatusCode::OK, axum::Json(value))
                 },
             ),
         )
+        .route("/payments/{id}", axum::routing::get(|State(stub):State<SwitchStub>, axum::extract::Path(id):axum::extract::Path<String>| async move {
+            if *stub.reads_unavailable.lock().unwrap() { return (StatusCode::SERVICE_UNAVAILABLE, axum::Json(json!({}))); }
+            let value = stub.stored.lock().unwrap().get(&id).cloned();
+            value.map_or((StatusCode::NOT_FOUND, axum::Json(json!({"error":{"code":"HE_02"}}))), |v| (StatusCode::OK,axum::Json(v)))
+        }))
         .with_state(stub.clone());
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
@@ -223,14 +234,14 @@ async fn post_webhook(
 /// A Hyperswitch `payment_succeeded` event naming the pinned local order and
 /// customer — the shape `normalize` reads (`metadata.payment_id`,
 /// `metadata.organization_id`, the charged `amount`/`currency`).
-fn succeeded(order: Uuid, org: Uuid, provider: &str, amount: i64) -> String {
+fn succeeded(order: Uuid, org: Uuid, _provider: &str, amount: i64) -> String {
     json!({
         "merchant_id": ACCOUNT,
         "event_id": format!("evt_{}", Uuid::new_v4().simple()),
         "event_type": "payment_succeeded",
         "livemode": false,
         "content": {"type":"payment_details","object":{
-            "payment_id": provider,
+            "payment_id": order.to_string(),
             "amount": amount,
             "currency": USD,
             "metadata": {"payment_id": order, "order_id": order, "organization_id": org}
@@ -318,7 +329,7 @@ async fn a_paid_order_fulfills_promptly_through_the_worker() {
     let order_id = Uuid::parse_str(body["data"]["order"]["orderId"].as_str().unwrap()).unwrap();
     assert_eq!(
         body["data"]["providerPaymentId"].as_str().unwrap(),
-        "pay_ord_1"
+        body["data"]["order"]["orderId"].as_str().unwrap()
     );
     assert_eq!(
         body["data"]["clientSecret"].as_str().unwrap(),
@@ -500,7 +511,7 @@ async fn a_replayed_create_returns_the_same_checkout() {
     assert_eq!(body["data"]["clientSecret"].as_str().unwrap(), secret);
     assert_eq!(
         body["data"]["providerPaymentId"].as_str().unwrap(),
-        "pay_ord_2"
+        body["data"]["order"]["orderId"].as_str().unwrap()
     );
     // Still exactly one upstream payment call.
     assert_eq!(*stub.calls.lock().unwrap(), 1);
@@ -598,7 +609,8 @@ async fn a_provider_payment_id_cannot_bind_two_orders() {
     .await;
     assert_eq!(status, StatusCode::OK);
 
-    // A second order the provider answers with the same payment id: binding it
+    *stub.wrong_id.lock().unwrap() = true;
+    // A second order the provider answers with a conflicting payment id: binding it
     // through `merchant_payment_refs` conflicts — the create refuses rather
     // than let one provider charge fund two orders.
     let (status, _body) = call(
@@ -609,7 +621,7 @@ async fn a_provider_payment_id_cannot_bind_two_orders() {
         Some(&account.cookie),
     )
     .await;
-    assert_eq!(status, StatusCode::CONFLICT);
+    assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
 }
 
 /// A business-context session for the operator reads: the user registers, the
@@ -767,7 +779,7 @@ async fn the_checkout_session_recovers_the_live_handles() {
     assert_eq!(status, StatusCode::OK, "{body}");
     assert_eq!(
         body["data"]["providerPaymentId"].as_str().unwrap(),
-        "pay_sess"
+        order_id.to_string()
     );
     assert_eq!(
         body["data"]["clientSecret"].as_str().unwrap(),
@@ -862,7 +874,7 @@ async fn a_failed_provider_call_recovers_through_the_session() {
     assert_eq!(status, StatusCode::OK, "{body}");
     assert_eq!(
         body["data"]["providerPaymentId"].as_str().unwrap(),
-        "pay_rec"
+        order_id.to_string()
     );
     assert_eq!(body["data"]["status"].as_str().unwrap(), "provider_pending");
     // Two upstream calls total — the failed first and the recovery. The
@@ -904,7 +916,7 @@ async fn a_failed_event_surfaces_failed_not_pending() {
         "event_type": "payment_failed",
         "livemode": false,
         "content": {"type":"payment_details","object":{
-            "payment_id": "pay_fail",
+            "payment_id": order_id.to_string(),
             "amount": 210,
             "currency": USD,
             "metadata": {"payment_id": order_id, "order_id": order_id, "organization_id": account.organization_id}
@@ -990,7 +1002,7 @@ async fn a_duplicate_callback_replays_to_the_same_state() {
         "event_type": "payment_succeeded",
         "livemode": false,
         "content": {"type":"payment_details","object":{
-            "payment_id": "pay_dup",
+            "payment_id": order_id.to_string(),
             "amount": 210,
             "currency": USD,
             "metadata": {"payment_id": order_id, "order_id": order_id, "organization_id": account.organization_id}
@@ -1051,7 +1063,7 @@ async fn a_repeated_browser_submission_returns_the_standing_checkout() {
         assert_eq!(status, StatusCode::OK, "{body}");
         assert_eq!(
             body["data"]["providerPaymentId"].as_str().unwrap(),
-            "pay_dbl"
+            body["data"]["order"]["orderId"].as_str().unwrap()
         );
     }
     assert_eq!(*stub.calls.lock().unwrap(), 1);
@@ -1350,4 +1362,138 @@ async fn the_business_order_view_lists_across_customers() {
     )
     .await;
     assert_eq!(status, StatusCode::FORBIDDEN);
+}
+
+/// A successful external create whose response disappears is recovered by its
+/// body ID after restart, without another external create.
+#[tokio::test]
+async fn a_lost_checkout_response_recovers_the_existing_body_identity() {
+    let Some((app, db, stub, _, _)) = world().await else {
+        return;
+    };
+    let account = register(&app).await;
+    set_display(&db, account.organization_id).await;
+    *stub.drop_response.lock().unwrap() = true;
+    let payload = create_body("lost-response", "walletTopup", 210);
+    let (status, _) = call(
+        &app,
+        "POST",
+        "/api/v1/orders",
+        Some(payload.clone()),
+        Some(&account.cookie),
+    )
+    .await;
+    assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+    assert_eq!(stub.stored.lock().unwrap().len(), 1);
+    assert_eq!(*stub.calls.lock().unwrap(), 1);
+    *stub.drop_response.lock().unwrap() = false;
+    *stub.reads_unavailable.lock().unwrap() = false;
+    let (status, body) = call(
+        &app,
+        "POST",
+        "/api/v1/orders",
+        Some(payload),
+        Some(&account.cookie),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(*stub.calls.lock().unwrap(), 1);
+    let order = Uuid::parse_str(body["data"]["order"]["orderId"].as_str().unwrap()).unwrap();
+    let reopened = Db::from_pool(db.pool().clone());
+    let binding = reopened
+        .merchant_payment_binding(order)
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(binding.hyperswitch_body_id);
+    assert_eq!(
+        binding.provider_payment_id.as_deref(),
+        Some(order.to_string().as_str())
+    );
+    assert_eq!(body["data"]["order"]["status"], "provider_pending");
+    assert!(sqlx::query("UPDATE oxsum.merchant_payment_bindings SET hyperswitch_body_id=false WHERE payment_id=$1")
+        .bind(order).execute(db.pool()).await.is_err());
+}
+
+/// An old payment without an external handle remains fenced. A known old
+/// handle is read-only, including when its provider record is unavailable.
+#[tokio::test]
+async fn historical_payments_cannot_create_a_new_external_operation() {
+    let Some((app, db, stub, merchant, version)) = world().await else {
+        return;
+    };
+    let account = register(&app).await;
+    set_display(&db, account.organization_id).await;
+    let (status, body) = call(
+        &app,
+        "POST",
+        "/api/v1/orders",
+        Some(create_body("historical-payment", "walletTopup", 210)),
+        Some(&account.cookie),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let id = Uuid::parse_str(body["data"]["order"]["orderId"].as_str().unwrap()).unwrap();
+    let mut binding = db.merchant_payment_binding(id).await.unwrap().unwrap();
+    binding.hyperswitch_body_id = false;
+    let provider_id = binding.provider_payment_id.take().unwrap();
+    let context = db
+        .merchant_signing_context(merchant, version, &sealing_key())
+        .await
+        .unwrap()
+        .unwrap();
+    let http = oxsum_integrations::provider_http::ProviderHttp::default();
+    let urls = oxsum_integrations::merchant_checkout::ReturnUrls::default();
+    assert!(
+        oxsum_integrations::merchant_checkout::create_order(
+            &context,
+            &binding,
+            "historical",
+            &http,
+            "https://app.example",
+            &urls
+        )
+        .await
+        .is_err()
+    );
+    binding.provider_payment_id = Some(provider_id.clone());
+    let result = oxsum_integrations::merchant_checkout::create_order(
+        &context,
+        &binding,
+        "historical",
+        &http,
+        "https://app.example",
+        &urls,
+    )
+    .await
+    .unwrap();
+    assert_eq!(result.provider_payment_id, provider_id);
+    let mut value = stub.stored.lock().unwrap().remove(&provider_id).unwrap();
+    assert!(
+        oxsum_integrations::merchant_checkout::create_order(
+            &context,
+            &binding,
+            "historical",
+            &http,
+            "https://app.example",
+            &urls
+        )
+        .await
+        .is_err()
+    );
+    value["metadata"]["organization_id"] = json!(Uuid::new_v4());
+    stub.stored.lock().unwrap().insert(provider_id, value);
+    assert!(
+        oxsum_integrations::merchant_checkout::create_order(
+            &context,
+            &binding,
+            "historical",
+            &http,
+            "https://app.example",
+            &urls
+        )
+        .await
+        .is_err()
+    );
+    assert_eq!(*stub.calls.lock().unwrap(), 1);
 }

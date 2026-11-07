@@ -43,6 +43,7 @@ fn sealing_key() -> SecretKey {
 struct SwitchStub {
     deposits: Arc<Mutex<Vec<String>>>,
     refunds: Arc<Mutex<Vec<Value>>>,
+    stored: Arc<Mutex<std::collections::HashMap<String, Value>>>,
     answer_id: Arc<Mutex<String>>,
     answer_secret: Arc<Mutex<String>>,
     /// The refund id/status `POST /refunds` answers, and an optional refusal
@@ -69,11 +70,11 @@ async fn stub_switch() -> (String, SwitchStub) {
                         .unwrap_or_default()
                         .to_owned();
                     stub.deposits.lock().unwrap().push(deposit);
-                    axum::Json(json!({
-                        "payment_id": *stub.answer_id.lock().unwrap(),
-                        "client_secret": *stub.answer_secret.lock().unwrap(),
-                        "status": "requires_payment_method",
-                    }))
+                    let id = body["payment_id"].as_str().unwrap().to_owned();
+                    let value = json!({"payment_id":id,"client_secret":*stub.answer_secret.lock().unwrap(),"status":"requires_payment_method",
+                        "merchant_id":"merchant_test","amount":body["amount"],"currency":body["currency"],"metadata":body["metadata"]});
+                    stub.stored.lock().unwrap().insert(id, value.clone());
+                    axum::Json(value)
                 },
             ),
         )
@@ -92,6 +93,10 @@ async fn stub_switch() -> (String, SwitchStub) {
                 },
             ),
         )
+        .route("/payments/{id}", axum::routing::get(|State(stub):State<SwitchStub>, axum::extract::Path(id):axum::extract::Path<String>| async move {
+            let value = stub.stored.lock().unwrap().get(&id).cloned();
+            value.map_or((StatusCode::NOT_FOUND, axum::Json(json!({"error":{"code":"HE_02"}}))), |v| (StatusCode::OK,axum::Json(v)))
+        }))
         .with_state(stub.clone());
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
@@ -235,7 +240,7 @@ async fn the_intent_creates_a_payment_and_answers_the_handles() {
     )
     .await;
     assert_eq!(status, StatusCode::OK, "{body}");
-    assert_eq!(body["data"]["paymentId"].as_str().unwrap(), "pay_test_123");
+    assert_eq!(body["data"]["paymentId"], body["data"]["depositId"]);
     assert_eq!(
         body["data"]["clientSecret"].as_str().unwrap(),
         "pay_test_123_secret"
@@ -288,7 +293,7 @@ async fn a_replayed_intent_answers_the_same_handles() {
     .await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(body["data"]["clientSecret"].as_str().unwrap(), first);
-    assert_eq!(body["data"]["paymentId"].as_str().unwrap(), "pay_test_123");
+    assert_eq!(body["data"]["paymentId"], body["data"]["depositId"]);
     // The replay answers the SDK origin too — the widget mounts from it.
     assert_eq!(
         body["data"]["sdkUrl"].as_str().unwrap(),
@@ -302,7 +307,7 @@ async fn a_replayed_intent_answers_the_same_handles() {
 /// delivery (same `event_id`) credits nothing on top.
 #[tokio::test]
 async fn a_payment_succeeded_webhook_credits_once() {
-    let Some((app, _db, _stub)) = world().await else {
+    let Some((app, _db, stub)) = world().await else {
         return;
     };
     let key = register_session(&app).await;
@@ -325,7 +330,7 @@ async fn a_payment_succeeded_webhook_credits_once() {
         "content": {
             "type": "payment_details",
             "object": {
-                "payment_id": "pay_test_123",
+                "payment_id": stub.deposits.lock().unwrap().last().unwrap().clone(),
                 "amount": 5000,
                 "currency": "USD",
                 "status": "succeeded",
@@ -351,7 +356,7 @@ async fn a_payment_succeeded_webhook_credits_once() {
 /// A tampered signature is refused — the HMAC is the webhook's only credential.
 #[tokio::test]
 async fn a_tampered_signature_is_refused() {
-    let Some((app, _db, _stub)) = world().await else {
+    let Some((app, _db, stub)) = world().await else {
         return;
     };
     let key = register_session(&app).await;
@@ -370,7 +375,7 @@ async fn a_tampered_signature_is_refused() {
     let event = json!({
         "event_id": "evt_bad",
         "event_type": "payment_succeeded",
-        "content": {"type": "payment_details", "object": {"payment_id": "pay_test_123", "amount": 1000}}
+        "content": {"type": "payment_details", "object": {"payment_id": stub.deposits.lock().unwrap().last().unwrap().clone(), "amount": 1000}}
     });
     let (headers, body) = signed_webhook("wrong-secret", &event.to_string());
     assert_eq!(
@@ -427,7 +432,7 @@ async fn an_unconfigured_deployment_refuses_cleanly() {
 /// lands exactly once under the deposit's own amount.
 #[tokio::test]
 async fn a_cancelled_payment_is_revived_only_by_authoritative_success() {
-    let Some((app, _db, _stub)) = world().await else {
+    let Some((app, _db, stub)) = world().await else {
         return;
     };
     let key = register_session(&app).await;
@@ -446,7 +451,7 @@ async fn a_cancelled_payment_is_revived_only_by_authoritative_success() {
     let event = json!({
         "event_id": "evt_cancel",
         "event_type": "payment_cancelled",
-        "content": {"type": "payment_details", "object": {"payment_id": "pay_test_123"}}
+        "content": {"type": "payment_details", "object": {"payment_id": stub.deposits.lock().unwrap().last().unwrap().clone()}}
     });
     let (headers, body) = signed_webhook(WEBHOOK_SECRET, &event.to_string());
     assert_eq!(post_webhook(&app, headers, body).await, StatusCode::OK);
@@ -457,7 +462,7 @@ async fn a_cancelled_payment_is_revived_only_by_authoritative_success() {
     let event = json!({
         "event_id": "evt_late",
         "event_type": "payment_succeeded",
-        "content": {"type": "payment_details", "object": {"payment_id": "pay_test_123", "amount": 2000, "currency": "USD"}}
+        "content": {"type": "payment_details", "object": {"payment_id": stub.deposits.lock().unwrap().last().unwrap().clone(), "amount": 2000, "currency": "USD"}}
     });
     let (headers, body) = signed_webhook(WEBHOOK_SECRET, &event.to_string());
     assert_eq!(post_webhook(&app, headers, body).await, StatusCode::OK);
@@ -486,7 +491,7 @@ async fn an_unknown_payment_is_still_acknowledged() {
 /// the wallet never moves on a mismatch.
 #[tokio::test]
 async fn an_amount_mismatch_never_credits() {
-    let Some((app, db, _stub)) = world().await else {
+    let Some((app, db, stub)) = world().await else {
         return;
     };
     let key = register_session(&app).await;
@@ -505,7 +510,7 @@ async fn an_amount_mismatch_never_credits() {
     let event = json!({
         "event_id": "evt_mismatch",
         "event_type": "payment_succeeded",
-        "content": {"type": "payment_details", "object": {"payment_id": "pay_test_123", "amount": 9999, "currency": "USD"}}
+        "content": {"type": "payment_details", "object": {"payment_id": stub.deposits.lock().unwrap().last().unwrap().clone(), "amount": 9999, "currency": "USD"}}
     });
     let (headers, body) = signed_webhook(WEBHOOK_SECRET, &event.to_string());
     assert_eq!(post_webhook(&app, headers, body).await, StatusCode::OK);
@@ -588,7 +593,7 @@ async fn a_reversal_issues_the_switch_refund() {
     let event = json!({
         "event_id": "evt_credit_ref1",
         "event_type": "payment_succeeded",
-        "content": {"type": "payment_details", "object": {"payment_id": "pay_test_123", "amount": 4000, "currency": "USD"}}
+        "content": {"type": "payment_details", "object": {"payment_id": stub.deposits.lock().unwrap().last().unwrap().clone(), "amount": 4000, "currency": "USD"}}
     });
     let (headers, body) = signed_webhook(WEBHOOK_SECRET, &event.to_string());
     assert_eq!(post_webhook(&app, headers, body).await, StatusCode::OK);
@@ -610,7 +615,10 @@ async fn a_reversal_issues_the_switch_refund() {
     // deposit id in metadata.
     let refunds = stub.refunds.lock().unwrap().clone();
     assert_eq!(refunds.len(), 1);
-    assert_eq!(refunds[0]["payment_id"].as_str().unwrap(), "pay_test_123");
+    assert_eq!(
+        refunds[0]["payment_id"].as_str().unwrap(),
+        stub.deposits.lock().unwrap().last().unwrap()
+    );
     assert_eq!(refunds[0]["amount"].as_i64().unwrap(), 4000);
     assert_eq!(
         refunds[0]["metadata"]["deposit_id"].as_str().unwrap(),
@@ -653,7 +661,7 @@ async fn a_refused_refund_is_recorded_and_retried() {
     let event = json!({
         "event_id": "evt_credit_ref2",
         "event_type": "payment_succeeded",
-        "content": {"type": "payment_details", "object": {"payment_id": "pay_test_123", "amount": 2000, "currency": "USD"}}
+        "content": {"type": "payment_details", "object": {"payment_id": stub.deposits.lock().unwrap().last().unwrap().clone(), "amount": 2000, "currency": "USD"}}
     });
     let (headers, body) = signed_webhook(WEBHOOK_SECRET, &event.to_string());
     assert_eq!(post_webhook(&app, headers, body).await, StatusCode::OK);
@@ -712,7 +720,7 @@ async fn a_refund_webhook_settles_the_standing() {
     let event = json!({
         "event_id": "evt_credit_ref3",
         "event_type": "payment_succeeded",
-        "content": {"type": "payment_details", "object": {"payment_id": "pay_test_123", "amount": 1500, "currency": "USD"}}
+        "content": {"type": "payment_details", "object": {"payment_id": stub.deposits.lock().unwrap().last().unwrap().clone(), "amount": 1500, "currency": "USD"}}
     });
     let (headers, body) = signed_webhook(WEBHOOK_SECRET, &event.to_string());
     assert_eq!(post_webhook(&app, headers, body).await, StatusCode::OK);
@@ -736,7 +744,7 @@ async fn a_refund_webhook_settles_the_standing() {
         "event_type": "refund_succeeded",
         "content": {"type": "refund_details", "object": {
             "refund_id": "ref_test_9",
-            "payment_id": "pay_test_123",
+            "payment_id": stub.deposits.lock().unwrap().last().unwrap().clone(),
             "status": "succeeded",
             "amount": 1500
         }}
@@ -767,7 +775,7 @@ async fn a_refund_webhook_settles_the_standing() {
 /// A `dispute_opened` webhook records the dispute timestamp on the deposit.
 #[tokio::test]
 async fn a_dispute_opened_is_recorded() {
-    let Some((app, _db, _stub)) = admin_world().await else {
+    let Some((app, _db, stub)) = admin_world().await else {
         return;
     };
     let key = register_session(&app).await;
@@ -785,7 +793,7 @@ async fn a_dispute_opened_is_recorded() {
     let event = json!({
         "event_id": "evt_credit_disp1",
         "event_type": "payment_succeeded",
-        "content": {"type": "payment_details", "object": {"payment_id": "pay_test_123", "amount": 5000, "currency": "USD"}}
+        "content": {"type": "payment_details", "object": {"payment_id": stub.deposits.lock().unwrap().last().unwrap().clone(), "amount": 5000, "currency": "USD"}}
     });
     let (headers, body) = signed_webhook(WEBHOOK_SECRET, &event.to_string());
     assert_eq!(post_webhook(&app, headers, body).await, StatusCode::OK);
@@ -795,7 +803,7 @@ async fn a_dispute_opened_is_recorded() {
         "event_id": "evt_dispute",
         "event_type": "dispute_opened",
         "content": {"type": "dispute_details", "object": {
-            "payment_id": "pay_test_123",
+            "payment_id": stub.deposits.lock().unwrap().last().unwrap().clone(),
             "dispute_id": "disp_abc",
             "amount": 5000,
             "currency": "USD"

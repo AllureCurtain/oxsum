@@ -45,7 +45,7 @@ pub const REFUND_MAX_ATTEMPTS: i32 = 5;
 /// The retry backoff in seconds by attempt number (1-based, clamped at the
 /// table's end): short enough for a transient PSP timeout, long enough that a
 /// rail outage isn't hammered.
-const REFUND_RETRY_DELAYS_SECS: [i64; 5] = [30, 120, 300, 900, 3600];
+const REFUND_RETRY_DELAYS_SECS: [i64; 5] = [60, 120, 300, 900, 3600];
 
 fn invalid(message: &str) -> WalletError {
     WalletError::InvalidInput(message.into())
@@ -85,6 +85,10 @@ pub struct OrderRefund {
     /// `requested → provider_pending → succeeded | failed | released`; the
     /// request's other exit is `declined`.
     pub state: String,
+    /// New Hyperswitch requests use their immutable local refund UUID in the body.
+    /// Historical requests must only retrieve their already-known handle.
+    #[serde(skip_serializing)]
+    pub hyperswitch_body_id: bool,
     /// PSP-side refund reference, once the provider assigns one.
     pub provider_refund_id: Option<String>,
     /// Provider attempts made so far for a `provider_pending` refund.
@@ -222,7 +226,7 @@ pub struct OrderCreditNotePage {
 // issues exactly one) so every read carries `note_id` without a second query.
 const REFUND_SELECT: &str = "SELECT r.refund_id,r.order_id,r.organization_id,r.business_id,\
      r.amount_minor,r.display_amount_minor,r.display_currency,r.reason,r.state,\
-     r.provider_refund_id,r.provider_payment_id,r.retry_count,r.next_retry_at,\
+     r.provider_refund_id,r.provider_payment_id,r.retry_count,r.next_retry_at,r.hyperswitch_body_id,\
      r.requested_by,r.resolved_by,r.audit_ref,r.request_key,r.created_at,r.updated_at,\
      n.credit_note_id AS note_id \
      FROM oxsum.refunds r \
@@ -239,6 +243,7 @@ fn refund_from_row(row: &PgRow) -> Result<OrderRefund, WalletError> {
         reason: row.try_get("reason")?,
         state: row.try_get("state")?,
         provider_refund_id: row.try_get("provider_refund_id")?,
+        hyperswitch_body_id: row.try_get("hyperswitch_body_id")?,
         retry_count: row.try_get("retry_count")?,
         business_id: row.try_get("business_id")?,
         resolved_by: row.try_get("resolved_by")?,
@@ -249,8 +254,6 @@ fn refund_from_row(row: &PgRow) -> Result<OrderRefund, WalletError> {
     })
 }
 
-/// The order columns a refund decision reads: the frozen terms, the lifecycle
-/// and the merchant coordinates the PSP call needs.
 /// The order columns a refund decision reads: the frozen terms, the
 /// lifecycle, the business it audits under, and the merchant coordinates the
 /// PSP call needs.
@@ -306,9 +309,8 @@ async fn refund_in(
 }
 
 /// What one order has already refunded or reserved: succeeded refunds plus
-/// the provider_pending reservations still holding a bound — `requested`
-/// rows don't count until a resolution reserves them, and declined/failed/
-/// released rows have freed theirs.
+/// the requested/provider_pending reservations still holding a bound.
+/// Declined, failed and released rows have freed theirs.
 async fn committed_minor_in(
     tx: &mut Transaction<'_, Postgres>,
     order_id: Uuid,
@@ -477,8 +479,8 @@ impl Db {
             "INSERT INTO oxsum.refunds\
              (refund_id,order_id,organization_id,business_id,amount_minor,\
               display_amount_minor,display_currency,reason,state,provider_payment_id,\
-              requested_by,request_key) \
-             VALUES($1,$2,$3,$4,$5,$6,$7,$8,'requested',$9,$10,$11)",
+              requested_by,request_key,hyperswitch_body_id) \
+             VALUES($1,$2,$3,$4,$5,$6,$7,$8,'requested',$9,$10,$11,true)",
         )
         .bind(refund_id)
         .bind(order_id)
@@ -707,8 +709,8 @@ impl Db {
     /// stays `provider_pending` — the signed webhook is the only terminal
     /// truth — but the provider's own id is what the `refund_*` events name,
     /// and a PSP that already answers `succeeded` lets the success event's
-    /// dedup settle it. `refund_id` doubles as the provider's idempotency
-    /// key, so a re-issued call can never mint a second refund.
+    /// dedup settle it. New Hyperswitch requests pin the refund UUID in the
+    /// provider body; known historical handles are retrieval-only.
     pub async fn note_refund_provider(
         &self,
         refund_id: Uuid,
@@ -729,63 +731,38 @@ impl Db {
         Ok(())
     }
 
-    /// Marks a provider call's outcome without a terminal answer: a timeout
-    /// or transport failure leaves `provider_pending` and schedules the next
-    /// attempt on the backoff; a definite refusal past the attempt budget is
-    /// `Self::release_order_refund`'s job — this only reschedules.
+    /// Reschedules an ambiguous or acknowledged provider outcome within a
+    /// bounded recovery budget. Exhaustion stops automatic calls but keeps the
+    /// reservation and issued note intact until an authenticated terminal event.
     pub async fn retry_order_refund(&self, refund_id: Uuid) -> Result<(), WalletError> {
         sqlx::query(
-            "UPDATE oxsum.refunds SET retry_count=retry_count+1,\
-             next_retry_at=now() + ($2::bigint * interval '1 second'),updated_at=now() \
-             WHERE refund_id=$1 AND state='provider_pending' \
-               AND retry_count + 1 < $3",
+            "UPDATE oxsum.refunds SET retry_count=LEAST(retry_count+1,$3),\
+             next_retry_at=CASE WHEN retry_count+1 < $3 THEN now() + \
+               (($2::bigint[])[LEAST(retry_count+1,$3)] * interval '1 second') ELSE NULL END,\
+             updated_at=now() WHERE refund_id=$1 AND state='provider_pending'",
         )
         .bind(refund_id)
-        .bind(REFUND_RETRY_DELAYS_SECS[0])
+        .bind(REFUND_RETRY_DELAYS_SECS.as_slice())
         .bind(REFUND_MAX_ATTEMPTS)
         .execute(self.pool())
         .await?;
         Ok(())
     }
 
-    /// Schedules the next provider attempt inside the attempt budget, or
-    /// releases the reservation when the budget ran out — the
-    /// definite-failure exit: `released` frees the bound and `reverses` the
-    /// standing credit note, with the audit trail recording why.
+    /// Records a failed compatibility caller's attempt conservatively. A
+    /// transport error or exhausted budget cannot prove that no refund exists,
+    /// so this never releases money. New callers claim before I/O and use
+    /// [`Self::refuse_claimed_refund`] only for a proven first-attempt refusal.
     pub async fn fail_order_refund(
         &self,
         refund_id: Uuid,
-        error: &str,
+        _error: &str,
     ) -> Result<OrderRefund, WalletError> {
-        let mut tx = self.pool().begin().await?;
-        let Some(existing) = refund_in(&mut tx, refund_id).await? else {
-            return Err(WalletError::NotFound("unknown refund".into()));
-        };
-        if existing.state != "provider_pending" {
-            tx.commit().await?;
-            return Ok(existing);
-        }
-        if existing.retry_count + 1 < REFUND_MAX_ATTEMPTS {
-            let delay = REFUND_RETRY_DELAYS_SECS
-                [(existing.retry_count as usize + 1).min(REFUND_RETRY_DELAYS_SECS.len() - 1)];
-            sqlx::query(
-                "UPDATE oxsum.refunds SET retry_count=retry_count+1,\
-                 next_retry_at=now() + ($2::bigint * interval '1 second'),updated_at=now() \
-                 WHERE refund_id=$1",
-            )
-            .bind(refund_id)
-            .bind(delay)
-            .execute(&mut *tx)
-            .await?;
-        } else {
-            self.release_refund_in(&mut tx, &existing, Some(error))
-                .await?;
-        }
-        let standing = refund_in(&mut tx, refund_id)
+        self.retry_order_refund(refund_id).await?;
+        self.refund_retry_target(refund_id)
             .await?
-            .ok_or_else(|| invalid("the refund did not land"))?;
-        tx.commit().await?;
-        Ok(standing)
+            .map(|target| target.refund)
+            .ok_or_else(|| WalletError::NotFound("unknown refund".into()))
     }
 
     /// Releases a refund's reservation inside the caller's transaction:
@@ -1036,40 +1013,48 @@ impl Db {
         Ok(())
     }
 
-    /// The refund an event names: its own `provider_refund_id` when the event
-    /// carries one, else the order's live `provider_pending` row — a rail
-    /// that reports only the payment settles the reservation it already has.
+    /// Resolves only inside the authenticated order and exact refund terms.
+    /// New Hyperswitch body IDs allow an early event to find its own refund;
+    /// an unknown supplied ID never falls back to another partial reservation.
     async fn find_refund_for_event(
         &self,
         tx: &mut Transaction<'_, Postgres>,
         event: &crate::VerifiedMerchantEvent,
         receipt: &MerchantEventReceipt,
     ) -> Result<Option<OrderRefund>, WalletError> {
-        if let Some(provider_refund) = event.refund_id.as_deref() {
-            let row = sqlx::query(&format!(
-                "{REFUND_SELECT} WHERE r.provider_refund_id=$1 FOR UPDATE OF r"
-            ))
-            .bind(provider_refund)
-            .fetch_optional(&mut **tx)
-            .await?;
-            if let Some(row) = row {
-                return refund_from_row(&row).map(Some);
-            }
-        }
-        // Fall back to the order the binding classified: one live
-        // provider_pending refund on it is the reservation this event
-        // settles.
         let Some(order_id) = receipt.payment_id else {
             return Ok(None);
         };
-        let row = sqlx::query(&format!(
-            "{REFUND_SELECT} WHERE r.order_id=$1 AND r.state='provider_pending' \
-             ORDER BY r.created_at LIMIT 1 FOR UPDATE OF r"
-        ))
-        .bind(order_id)
-        .fetch_optional(&mut **tx)
-        .await?;
-        row.as_ref().map(refund_from_row).transpose()
+        let rows = if let Some(provider_refund) = event.refund_id.as_deref() {
+            sqlx::query(&format!(
+                "{REFUND_SELECT} WHERE r.order_id=$1 AND (r.provider_refund_id=$2 OR \
+                 (r.provider_refund_id IS NULL AND r.hyperswitch_body_id AND r.refund_id::text=$2)) FOR UPDATE OF r"
+            )).bind(order_id).bind(provider_refund).fetch_all(&mut **tx).await?
+        } else {
+            sqlx::query(&format!(
+                "{REFUND_SELECT} WHERE r.order_id=$1 AND r.state='provider_pending' FOR UPDATE OF r"
+            ))
+            .bind(order_id)
+            .fetch_all(&mut **tx)
+            .await?
+        };
+        // A legacy payment-only event is usable only with one unambiguous
+        // reservation. Amount, currency and customer must still agree.
+        if rows.len() != 1 {
+            return Err(WalletError::Conflict(
+                "refund event has no unique reservation; reconcile it".into(),
+            ));
+        }
+        let refund = refund_from_row(&rows[0])?;
+        if event.organization_id != Some(refund.organization_id)
+            || event.amount_minor != Some(refund.display_amount_minor)
+            || event.currency.as_deref() != Some(refund.display_currency.as_str())
+        {
+            return Err(WalletError::Conflict(
+                "refund event terms differ from the reservation".into(),
+            ));
+        }
+        Ok(Some(refund))
     }
 
     /// The `refund_failed` arm: the PSP's definite refusal releases the
@@ -1155,10 +1140,8 @@ impl Db {
     }
 
     /// The retry sweep's work list: `provider_pending` refunds whose next
-    /// attempt is due, in bounded pages. The refund's own row serializes a
-    /// re-issue against the event path, so two workers racing one refund can
-    /// never mint a second provider call — the provider idempotency key is
-    /// the refund id.
+    /// attempt is due, in bounded pages. This read does not acquire a lease:
+    /// callers must use [`Self::claim_refund_attempt`] before provider I/O.
     pub async fn due_refund_retries(&self, limit: i64) -> Result<Vec<OrderRefund>, WalletError> {
         if !(1..=100).contains(&limit) {
             return Err(invalid("limit must be 1..100"));
@@ -1171,6 +1154,44 @@ impl Db {
         .fetch_all(self.pool())
         .await?;
         rows.iter().map(refund_from_row).collect()
+    }
+
+    /// Claims one due recovery attempt before network I/O. The row lease and
+    /// attempt budget survive a process crash; concurrent workers cannot spend
+    /// the same attempt. Exhaustion retains the reservation for reconciliation.
+    pub async fn claim_refund_attempt(
+        &self,
+        refund_id: Uuid,
+    ) -> Result<Option<RefundRetryTarget>, WalletError> {
+        let changed = sqlx::query(
+            "UPDATE oxsum.refunds SET retry_count=retry_count+1,\
+             next_retry_at=CASE WHEN retry_count+1 < $2 THEN now() + \
+             (($3::bigint[])[retry_count+1] * interval '1 second') ELSE NULL END,updated_at=now() \
+             WHERE refund_id=$1 AND state='provider_pending' AND next_retry_at<=now() AND retry_count<$2"
+        ).bind(refund_id).bind(REFUND_MAX_ATTEMPTS).bind(REFUND_RETRY_DELAYS_SECS.as_slice())
+            .execute(self.pool()).await?.rows_affected();
+        if changed == 0 {
+            return Ok(None);
+        }
+        self.refund_retry_target(refund_id).await
+    }
+
+    /// Releases a first claimed attempt only when the adapter proves a refusal
+    /// before creation. Later refusals cannot disprove an earlier lost response.
+    pub async fn refuse_claimed_refund(&self, refund_id: Uuid) -> Result<bool, WalletError> {
+        let mut tx = self.pool().begin().await?;
+        let Some(refund) = refund_in(&mut tx, refund_id).await? else {
+            return Ok(false);
+        };
+        let release = refund.state == "provider_pending"
+            && refund.retry_count == 1
+            && refund.provider_refund_id.is_none();
+        if release {
+            self.release_refund_in(&mut tx, &refund, Some("provider refused before creation"))
+                .await?;
+        }
+        tx.commit().await?;
+        Ok(release)
     }
 
     /// Everything a refund's PSP retry needs: the refund plus its order's

@@ -203,3 +203,29 @@ The evidence endpoints the examples and SDK consume:
 revoked, exhausted or unknown token all answer 410 indistinguishably), and
 `GET /api/v1/org/statements/{statementId}/evidence` for the statement-scoped bundle
 (issue #616; proofs in `crates/server/tests/evidence_bundles.rs`).
+
+### Hyperswitch v1 retry identity (#760)
+
+The pinned v1.129.0 API uses body `payment_id` and `refund_id`, not an assumed
+`idempotency-key` header, to identify creates. Oxsum persists the local UUID
+identity policy before I/O and first GETs that exact ID with the pinned
+merchant/version credentials. The precise `HE_02` not-found response permits a
+new create; generic proxy 404s, authentication errors and malformed responses
+do not. Duplicates and dropped responses recover by GET plus exact identity,
+amount, currency and local metadata checks. Refund responses omit merchant ID
+in this version; credential scope and the pinned payment ID establish it, and
+a supplied conflicting account is rejected. No read alone settles the wallet.
+
+The upgrade leaves old rows marked as historical. Existing handles are read
+only; historical unbound operations cannot silently acquire a fresh external
+identity. New workers claim a bounded durable attempt lease; a missing terminal
+event retains the refund amount after automatic retries stop. `IR_13` is a
+verified pre-insert rejection in this version, but it can release only on the
+first attempt, before any earlier uncertain call. Signed refund events must
+match the order, refund identity, customer, amount and currency. An unfamiliar
+refund ID cannot select another partial refund on the same payment.
+
+This guarantee covers purpose-scoped payment orders and merchant-bound checkout.
+The older deployment-admin deposit reversal adapter remains a distinct legacy
+path; its retry conversion is tracked separately in #763 and is not certified by these
+order tests. Real PSP certification remains separate from local switch evidence.

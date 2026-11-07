@@ -520,7 +520,7 @@ async fn a_failed_refund_releases_the_reservation() {
         org,
         &account,
         None,
-        84,
+        refund.display_amount_minor,
     );
     let receipt = db
         .receive_merchant_event(&ctx, &ev, &[6u8; 32])
@@ -554,10 +554,10 @@ async fn a_failed_refund_releases_the_reservation() {
     assert_eq!(note.state, "reversed");
 }
 
-/// The retry budget's definite-failure exit: a refund that fails past its
-/// attempt budget releases — never an infinite loop.
+/// Compatibility failure reports also retain an ambiguous reservation when
+/// the bounded automatic attempt budget is exhausted.
 #[tokio::test]
-async fn the_retry_budget_releases_definite_failures() {
+async fn compatibility_failures_cannot_release_an_ambiguous_refund() {
     let Some((db, owner, org, tenant)) = world().await else {
         return;
     };
@@ -590,12 +590,23 @@ async fn the_retry_budget_releases_definite_failures() {
     let mut last = refund.clone();
     for _ in 0..REFUND_MAX_ATTEMPTS {
         last = db
-            .fail_order_refund(refund.refund_id, "provider unreachable")
+            .fail_order_refund(
+                refund.refund_id,
+                "transport failure after possible creation",
+            )
             .await
             .unwrap();
     }
-    assert_eq!(last.state, "released");
-    // Nothing left due.
+    assert_eq!(last.state, "provider_pending");
+    assert_eq!(last.retry_count, REFUND_MAX_ATTEMPTS);
+    assert!(last.next_retry_at.is_none());
+    assert_eq!(
+        db.order_refundable_minor(org, order.order_id)
+            .await
+            .unwrap(),
+        Some(1_200_000_000)
+    );
+    // Nothing left due; the reservation and note remain available to reconcile.
     assert!(db.due_refund_retries(10).await.unwrap().is_empty());
 }
 
@@ -782,5 +793,278 @@ async fn a_lost_dispute_beyond_the_draw_is_refused() {
         )
         .await
         .is_err()
+    );
+}
+
+/// A claimed attempt survives restart, excludes another worker, and never
+/// returns funds merely because the external outcome remains unknown.
+#[tokio::test]
+async fn ambiguous_recovery_is_bounded_and_preserves_the_refundable_reservation() {
+    let Some((db, owner, org, tenant)) = world().await else {
+        return;
+    };
+    let (ctx, order, wallet, account) =
+        paid_order(&db, &owner, org, &tenant, "unknown-recovery", 210).await;
+    let refund = db
+        .request_order_refund(
+            org,
+            order.order_id,
+            &NewRefundRequest {
+                amount_minor: Some(300_000_000),
+                reason: "unknown external outcome".into(),
+                request_key: "unknown-recovery".into(),
+                requested_by: None,
+            },
+        )
+        .await
+        .unwrap();
+    db.resolve_order_refund(
+        &owner,
+        refund.refund_id,
+        RefundDecision::Approve,
+        None,
+        "approve-unknown",
+    )
+    .await
+    .unwrap();
+    let reopened = Db::from_pool(db.pool().clone());
+    for index in 1..=REFUND_MAX_ATTEMPTS {
+        let (first, second) = tokio::join!(
+            db.claim_refund_attempt(refund.refund_id),
+            reopened.claim_refund_attempt(refund.refund_id)
+        );
+        let first = first.unwrap();
+        let second = second.unwrap();
+        assert_eq!(
+            usize::from(first.is_some()) + usize::from(second.is_some()),
+            1
+        );
+        let claimed = first.or(second).unwrap();
+        assert_eq!(claimed.refund.retry_count, index);
+        assert_eq!(claimed.refund.state, "provider_pending");
+        assert_eq!(
+            claimed.refund.next_retry_at.is_none(),
+            index == REFUND_MAX_ATTEMPTS
+        );
+        if index > 1 {
+            assert!(!db.refuse_claimed_refund(refund.refund_id).await.unwrap());
+        }
+        if index < REFUND_MAX_ATTEMPTS {
+            sqlx::query("UPDATE oxsum.refunds SET next_retry_at=now()-interval '1 second' WHERE refund_id=$1")
+                .bind(refund.refund_id).execute(db.pool()).await.unwrap();
+        }
+    }
+    assert!(
+        db.claim_refund_attempt(refund.refund_id)
+            .await
+            .unwrap()
+            .is_none()
+    );
+    assert!(
+        !db.due_refund_retries(100)
+            .await
+            .unwrap()
+            .iter()
+            .any(|r| r.refund_id == refund.refund_id)
+    );
+    assert_eq!(
+        db.order_refundable_minor(org, order.order_id)
+            .await
+            .unwrap(),
+        Some(1_200_000_000)
+    );
+    assert_eq!(wallet.available().await.unwrap(), 1_500_000_000);
+    let notes = db
+        .business_order_credit_notes(&owner, None, 100)
+        .await
+        .unwrap();
+    assert_eq!(
+        notes
+            .notes
+            .iter()
+            .find(|n| n.refund_id == refund.refund_id)
+            .unwrap()
+            .state,
+        "issued"
+    );
+    // A late signed success uses its durable body ID even without an HTTP handle.
+    let ev = refund_event(
+        MerchantEventKind::RefundSucceeded,
+        order.order_id,
+        "pay_unknown-recovery",
+        org,
+        &account,
+        Some(&refund.refund_id.to_string()),
+        refund.display_amount_minor,
+    );
+    let receipt = db
+        .receive_merchant_event(&ctx, &ev, &[63; 32])
+        .await
+        .unwrap();
+    db.apply_refund_event(&wallet, &receipt, time::OffsetDateTime::now_utc().date())
+        .await
+        .unwrap();
+    db.apply_refund_event(&wallet, &receipt, time::OffsetDateTime::now_utc().date())
+        .await
+        .unwrap();
+    assert_eq!(wallet.available().await.unwrap(), 1_200_000_000);
+    assert_eq!(
+        db.business_refund(&owner, refund.refund_id)
+            .await
+            .unwrap()
+            .unwrap()
+            .state,
+        "succeeded"
+    );
+}
+
+/// A valid signature for one payment cannot select a different refund or
+/// silently replace its exact amount with a wrong or missing value.
+#[tokio::test]
+async fn refund_events_cannot_cross_orders_or_reprice_partial_refunds() {
+    let Some((db, owner, org, tenant)) = world().await else {
+        return;
+    };
+    let (ctx, order, wallet, account) =
+        paid_order(&db, &owner, org, &tenant, "refund-isolation", 210).await;
+    let refund = db
+        .request_order_refund(
+            org,
+            order.order_id,
+            &NewRefundRequest {
+                amount_minor: Some(300_000_000),
+                reason: "exact terms".into(),
+                request_key: "isolation".into(),
+                requested_by: None,
+            },
+        )
+        .await
+        .unwrap();
+    db.resolve_order_refund(
+        &owner,
+        refund.refund_id,
+        RefundDecision::Approve,
+        None,
+        "approve-isolation",
+    )
+    .await
+    .unwrap();
+    // A second paid order uses the same customer and merchant. Reusing its
+    // known refund ID must not select it through the first order's receipt.
+    let other = db
+        .create_payment_order(
+            &ctx,
+            org,
+            &new_order(PaymentOrderPurpose::WalletTopup, "isolation-other", 210),
+            &rate(),
+        )
+        .await
+        .unwrap();
+    db.note_order_provider(
+        other.order_id,
+        "pay_isolation-other",
+        &serde_json::json!({}),
+    )
+    .await
+    .unwrap();
+    let paid = succeeded_event(other.order_id, "pay_isolation-other", org, &account, 210);
+    let receipt = db
+        .receive_merchant_event(&ctx, &paid, &[65; 32])
+        .await
+        .unwrap();
+    db.apply_order_event(&receipt).await.unwrap();
+    db.fulfill_payment_order(
+        other.order_id,
+        &wallet,
+        time::OffsetDateTime::now_utc().date(),
+    )
+    .await
+    .unwrap();
+    let other_refund = db
+        .request_order_refund(
+            org,
+            other.order_id,
+            &NewRefundRequest {
+                amount_minor: Some(300_000_000),
+                reason: "other order".into(),
+                request_key: "other-refund".into(),
+                requested_by: None,
+            },
+        )
+        .await
+        .unwrap();
+    db.resolve_order_refund(
+        &owner,
+        other_refund.refund_id,
+        RefundDecision::Approve,
+        None,
+        "approve-other",
+    )
+    .await
+    .unwrap();
+    db.note_refund_provider(other_refund.refund_id, "ref_other_order")
+        .await
+        .unwrap();
+    for (provider_id, amount, currency) in [
+        ("ref_other_order".into(), refund.display_amount_minor, "USD"),
+        (
+            Uuid::new_v4().to_string(),
+            refund.display_amount_minor,
+            "USD",
+        ),
+        (
+            refund.refund_id.to_string(),
+            refund.display_amount_minor + 1,
+            "USD",
+        ),
+        (
+            refund.refund_id.to_string(),
+            refund.display_amount_minor,
+            "EUR",
+        ),
+    ] {
+        let mut ev = refund_event(
+            MerchantEventKind::RefundSucceeded,
+            order.order_id,
+            "pay_refund-isolation",
+            org,
+            &account,
+            Some(&provider_id),
+            amount,
+        );
+        ev.currency = Some(currency.into());
+        let receipt = db
+            .receive_merchant_event(&ctx, &ev, &[64; 32])
+            .await
+            .unwrap();
+        assert!(
+            db.apply_refund_event(&wallet, &receipt, time::OffsetDateTime::now_utc().date())
+                .await
+                .is_err()
+        );
+    }
+    assert_eq!(wallet.available().await.unwrap(), 3_000_000_000);
+    assert_eq!(
+        db.business_refund(&owner, other_refund.refund_id)
+            .await
+            .unwrap()
+            .unwrap()
+            .state,
+        "provider_pending"
+    );
+    assert_eq!(
+        db.business_refund(&owner, refund.refund_id)
+            .await
+            .unwrap()
+            .unwrap()
+            .state,
+        "provider_pending"
+    );
+    assert!(
+        sqlx::query("UPDATE oxsum.refunds SET hyperswitch_body_id=false WHERE refund_id=$1")
+            .bind(refund.refund_id)
+            .execute(db.pool())
+            .await
+            .is_err()
     );
 }

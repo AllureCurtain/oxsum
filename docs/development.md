@@ -1103,7 +1103,6 @@ Check `/api/v1/admin/business`: initialization should be non-null and the migrat
 
 Use `cargo nextest run -p oxsum-core -p oxsum-server -E 'binary(business_staff) or binary(business_setup) or binary(oidc) or binary(oauth) or binary(totp)'` for setup, context, policy and second-factor boundaries. These suites create isolated PostgreSQL databases and use real setup/session APIs. Legacy HTTP suites call the scratch-only `oxsum_testkit::set_registration_fixture` when their purpose assumes open registration; it refuses databases outside the test prefix and is never linked into production policy handling. New installs must complete owner setup and set registration policy before following public signup examples.
 
-
 ### Customer lifecycle validation (#633)
 
 Focused checks: `cargo nextest run -p oxsum-core --test customer_lifecycle --test customer_upgrade --test dunning --test suspension` and `cargo nextest run -p oxsum-server --test customer_lifecycle --test suspension`. Customer tests exercise real setup and session authority, archive/admission races, independent reasons, audit rollback and historical proof preservation in isolated PostgreSQL. The HTTP suite sends actual gateway calls to a loopback provider before/after restoration; no paid call is required.
@@ -1111,7 +1110,6 @@ Focused checks: `cargo nextest run -p oxsum-core --test customer_lifecycle --tes
 ### Customer invitation upgrade and checks (#634)
 
 Migration 0076 extends existing links without changing their IDs, hashes or expiry. It adds nullable pending-customer terms and business ownership, then keeps the original organization/profile identity trigger compatible with signup/team/demo paths. Existing links remain single-use; the current API requires idempotency keys for new links and direct member POSTs return 403. No new environment setting is required. Run core `invitation_consent` and `invitation_upgrade`, server `invitation_consent` and the existing invitations/members/email/antibot suites against testkit scratch databases. The new creation/revoke endpoints send no mail unless the team request explicitly supplies `email`; tests use a local SMTP stub.
-
 
 ### Scoped integration smoke client (#638)
 
@@ -1124,7 +1122,6 @@ Run it against isolated test funds first. The production-router test
 client against loopback PostgreSQL-backed fixtures and checks replay/isolation.
 See the [example runbook](../examples/scoped-integration/README.md) for issuance,
 required event prices and exact negative cases. No paid provider is called.
-
 
 ### Developer examples and the fresh-install gate (#617)
 
@@ -1145,11 +1142,9 @@ scratch database, seeds it, runs every example against the real listener and
 exits non-zero on any assertion failure — the same seam the release candidate
 gate (issue #620) wraps.
 
-
 ### Business provider authority tests (#641)
 
 `cargo nextest run -p oxsum-core --test business_providers --test provider_upgrade --test channels -p oxsum-server --test business_providers --test admin` exercises real setup/session authority, atomic audit faults, replay/rotation, pool concurrency across business and recovery paths, foreign configuration and pre-0078 provider preservation. Use isolated PostgreSQL 17 testkit databases. No provider call is made on configuration save. The focused command does not replace cross-crate workspace/shared-process gates or T06.b destination-policy tests.
-
 
 ### Provider destination policy (#642)
 
@@ -1204,3 +1199,22 @@ instant can still be in the future on a Docker/remote database. The failure
 fixture checks the returned backoff against a database instant before failure,
 then deliberately makes its own row due with SQL for the next attempt. It keeps
 the production due predicate and five-attempt budget unchanged (#770).
+### Local payment recovery fault smoke
+
+After preparing the pinned stack in `infra/hyperswitch/` (#757), pass its tool
+directory and the exact binary to the isolated fault runner (#760):
+
+```bash
+python3 scripts/hyperswitch-recovery-smoke.py \
+  --sandbox /absolute/path/to/infra/hyperswitch \
+  --binary /absolute/path/to/oxsum
+```
+
+It requires the dummy-only local merchant, starts a loopback fault proxy, and
+uses the stack's isolated smoke database/listener. Both successful switch
+create responses are dropped; oxsum must recover by GET without reissuing.
+An explicit duplicate refund is also refused by the switch and repeated reads
+preserve identity/amount. The runner changes only in-memory routing, leaves
+the persistent stack configuration intact, and shuts down its proxy/listener
+and own database. No real PSP or model is called; provider-delivered callbacks
+and browser checkout remain distinct acceptance.

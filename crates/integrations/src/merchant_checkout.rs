@@ -1,8 +1,11 @@
 //! Credential-bearing compatibility checkout through a pinned merchant version.
 use crate::provider_http::ProviderHttp;
-use oxsum_core::{MerchantPaymentBinding, MerchantRail, MerchantSigningContext};
+use oxsum_core::{MerchantPaymentBinding, MerchantRail, MerchantSigningContext, OrderRefund};
 use reqwest::Method;
 use serde_json::{Value, json};
+use std::time::Duration;
+
+mod hyperswitch;
 #[derive(Debug, Clone, Copy)]
 pub struct MerchantCheckoutError;
 pub struct MerchantCheckoutHandle {
@@ -39,19 +42,12 @@ pub async fn create(
     let policy = &context.version.destination_policy;
     let result = match context.rail {
         MerchantRail::Hyperswitch => {
-            let response=http.request(Method::POST,base,policy,&["payments"]).await.map_err(|_|MerchantCheckoutError)?
-                .header("api-key",context.api_key()).header("idempotency-key",payment.payment_id.to_string())
-                .json(&json!({"amount":payment.amount_minor,"currency":payment.currency,"confirm":false,"capture_method":"automatic","description":"oxsum credits","return_url":format!("{}/app/topup?hyperswitch=return",public_url.trim_end_matches('/')),"metadata":metadata}))
-                .send().await.map_err(|_|MerchantCheckoutError)?;
-            if !response.status().is_success() {
-                return Err(MerchantCheckoutError);
-            }
-            let result: Value = response.json().await.map_err(|_| MerchantCheckoutError)?;
-            MerchantCheckoutHandle {
-                provider_payment_id: field(&result, "payment_id")?,
-                client_secret: Some(field(&result, "client_secret")?),
-                checkout_url: None,
-            }
+            hyperswitch::payment(context, payment, http, json!({
+                "amount": payment.amount_minor, "currency": payment.currency,
+                "confirm": false, "capture_method": "automatic", "description": "oxsum credits",
+                "return_url": format!("{}/app/topup?hyperswitch=return", public_url.trim_end_matches('/')),
+                "metadata": metadata,
+            })).await?
         }
         MerchantRail::Stripe => {
             let response = http
@@ -237,14 +233,27 @@ pub struct RefundHandle {
     pub status: String,
 }
 
+/// A sanitized provider outcome; unknown results never free a reservation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RefundRequestError {
+    /// A verified refusal before an operation was created.
+    Refused,
+    /// The external result is unknown, unavailable or contradicts pinned terms.
+    Unknown,
+}
+impl From<MerchantCheckoutError> for RefundRequestError {
+    fn from(_: MerchantCheckoutError) -> Self {
+        Self::Unknown
+    }
+}
+
 /// Issues a refund against a payment order's provider payment (issue #608):
 /// the cash half of a correction, requested only after the durable
 /// `provider_pending` reservation commits — a crash between the reservation
 /// and this call leaves a retryable row, never a lost refund.
 ///
-/// `refund_id` is the `oxsum.refunds` row's UUID, used as the provider's
-/// idempotency key: a retried or recovered call can never mint a second
-/// refund. `provider_payment_id` is the payment the order was charged under;
+/// `refund` is the durable reservation. New Hyperswitch operations use its
+/// UUID in the actual body identity field and retrieve it before any retry. `provider_payment_id` is the payment the order was charged under;
 /// `amount_minor`/`currency` are the fiat terms the refund carries (the
 /// display figure the order pinned — the credit take-back is a separate
 /// ledger fact the provider never sees). The refund's own `metadata.refund_id`
@@ -253,46 +262,27 @@ pub struct RefundHandle {
 ///
 /// # Errors
 ///
-/// `MerchantCheckoutError` on a transport failure, a non-2xx answer, or a
-/// body with no recognizable refund id — the caller records it as a retryable
-/// `provider_pending`, never silent.
+/// [`RefundRequestError`] separates verified pre-creation refusals from unknown
+/// outcomes. Unknown transport/status/body results retain the reservation.
 pub async fn create_refund(
     context: &MerchantSigningContext,
-    refund_id: uuid::Uuid,
+    refund: &OrderRefund,
     provider_payment_id: &str,
-    amount_minor: i64,
-    currency: &str,
-    reason: &str,
     http: &ProviderHttp,
-) -> Result<RefundHandle, MerchantCheckoutError> {
-    let metadata = json!({"refund_id":refund_id,"order_id":refund_id});
+) -> Result<RefundHandle, RefundRequestError> {
+    if context.rail != MerchantRail::Hyperswitch && refund.provider_refund_id.is_some() {
+        return Err(RefundRequestError::Unknown);
+    }
+    let refund_id = refund.refund_id;
+    let amount_minor = refund.display_amount_minor;
+    let currency = &refund.display_currency;
+    let reason = &refund.reason;
+    let metadata = json!({"refund_id":refund_id,"order_id":refund.order_id,"payment_id":refund.order_id,"organization_id":refund.organization_id});
     let base = &context.version.api_url;
     let policy = &context.version.destination_policy;
     let result = match context.rail {
         MerchantRail::Hyperswitch => {
-            let response = http
-                .request(Method::POST, base, policy, &["refunds"])
-                .await
-                .map_err(|_| MerchantCheckoutError)?
-                .header("api-key", context.api_key())
-                .header("idempotency-key", refund_id.to_string())
-                .json(&json!({
-                    "payment_id": provider_payment_id,
-                    "amount": amount_minor,
-                    "reason": reason,
-                    "metadata": metadata,
-                }))
-                .send()
-                .await
-                .map_err(|_| MerchantCheckoutError)?;
-            if !response.status().is_success() {
-                return Err(MerchantCheckoutError);
-            }
-            let result: Value = response.json().await.map_err(|_| MerchantCheckoutError)?;
-            RefundHandle {
-                provider_refund_id: field(&result, "refund_id")?,
-                status: result["status"].as_str().unwrap_or("pending").to_owned(),
-            }
+            return hyperswitch::refund(context, refund, provider_payment_id, http, metadata).await;
         }
         MerchantRail::Stripe => {
             let response = http
@@ -306,11 +296,12 @@ pub async fn create_refund(
                     ("amount", amount_minor.to_string()),
                     ("metadata[refund_id]", refund_id.to_string()),
                 ])
+                .timeout(Duration::from_secs(10))
                 .send()
                 .await
                 .map_err(|_| MerchantCheckoutError)?;
             if !response.status().is_success() {
-                return Err(MerchantCheckoutError);
+                return Err(RefundRequestError::Unknown);
             }
             let result: Value = response.json().await.map_err(|_| MerchantCheckoutError)?;
             RefundHandle {
@@ -333,11 +324,12 @@ pub async fn create_refund(
                     context.client_id().ok_or(MerchantCheckoutError)?,
                 )
                 .header("x-api-key", context.api_key())
+                .timeout(Duration::from_secs(10))
                 .send()
                 .await
                 .map_err(|_| MerchantCheckoutError)?;
             if !login.status().is_success() {
-                return Err(MerchantCheckoutError);
+                return Err(RefundRequestError::Unknown);
             }
             let login: Value = login.json().await.map_err(|_| MerchantCheckoutError)?;
             let token = field(&login, "token")?;
@@ -371,11 +363,12 @@ pub async fn create_refund(
                 .map_err(|_| MerchantCheckoutError)?
                 .bearer_auth(token)
                 .json(&body)
+                .timeout(Duration::from_secs(10))
                 .send()
                 .await
                 .map_err(|_| MerchantCheckoutError)?;
             if !response.status().is_success() {
-                return Err(MerchantCheckoutError);
+                return Err(RefundRequestError::Unknown);
             }
             let result: Value = response.json().await.map_err(|_| MerchantCheckoutError)?;
             RefundHandle {
@@ -413,22 +406,18 @@ pub async fn create_order(
     let base = &context.version.api_url;
     let policy = &context.version.destination_policy;
     let result = match context.rail {
-        MerchantRail::Hyperswitch => {
-            let return_url = urls.resolve(public_url, payment.payment_id, "&hyperswitch=return");
-            let response=http.request(Method::POST,base,policy,&["payments"]).await.map_err(|_|MerchantCheckoutError)?
-                .header("api-key",context.api_key()).header("idempotency-key",payment.payment_id.to_string())
-                .json(&json!({"amount":payment.amount_minor,"currency":payment.currency,"confirm":false,"capture_method":"automatic","description":description,"return_url":return_url,"metadata":metadata}))
-                .send().await.map_err(|_|MerchantCheckoutError)?;
-            if !response.status().is_success() {
-                return Err(MerchantCheckoutError);
-            }
-            let result: Value = response.json().await.map_err(|_| MerchantCheckoutError)?;
-            MerchantCheckoutHandle {
-                provider_payment_id: field(&result, "payment_id")?,
-                client_secret: Some(field(&result, "client_secret")?),
-                checkout_url: None,
-            }
-        }
+        MerchantRail::Hyperswitch => hyperswitch::payment(
+            context,
+            payment,
+            http,
+            json!({
+                "amount": payment.amount_minor, "currency": payment.currency,
+                "confirm": false, "capture_method": "automatic", "description": description,
+                "return_url": urls.resolve(public_url, payment.payment_id, "&hyperswitch=return"),
+                "metadata": metadata,
+            }),
+        )
+        .await?,
         MerchantRail::Stripe => {
             let success_url = urls.resolve(public_url, payment.payment_id, "&session=success");
             let cancel_url = urls.resolve_cancel(public_url, payment.payment_id);

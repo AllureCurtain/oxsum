@@ -86,6 +86,9 @@ pub struct MerchantPaymentBinding {
     pub currency: String,
     /// Whether this is an order or a legacy deposit.
     pub purpose: MerchantPaymentPurpose,
+    /// Whether a new Hyperswitch operation pins its body identity before I/O.
+    /// False preserves historical operations whose outcome may be unknown.
+    pub hyperswitch_body_id: bool,
     /// Provider payment identifier once one has been observed.
     pub provider_payment_id: Option<String>,
 }
@@ -138,6 +141,7 @@ fn binding(row: &PgRow) -> Result<MerchantPaymentBinding, WalletError> {
             "legacyDeposit" => MerchantPaymentPurpose::LegacyDeposit,
             _ => return Err(invalid("invalid stored merchant payment purpose")),
         },
+        hyperswitch_body_id: row.try_get("hyperswitch_body_id")?,
         provider_payment_id: row.try_get("provider_payment_id")?,
     })
 }
@@ -296,6 +300,7 @@ impl Db {
                 || existing.amount_minor != payment.amount_minor
                 || existing.currency != payment.currency
                 || existing.purpose != payment.purpose
+                || existing.hyperswitch_body_id != payment.hyperswitch_body_id
             {
                 return Err(WalletError::Conflict(
                     "expected payment terms changed".into(),
@@ -309,7 +314,7 @@ impl Db {
                 "merchant is not enabled for this customer's new payments".into(),
             ));
         }
-        sqlx::query("INSERT INTO oxsum.merchant_payment_bindings(payment_id,merchant_id,version_id,organization_id,amount_minor,currency,purpose) VALUES($1,$2,$3,$4,$5,$6,$7)").bind(payment.payment_id).bind(payment.merchant_id).bind(payment.version_id).bind(payment.organization_id).bind(payment.amount_minor).bind(&payment.currency).bind(payment.purpose.as_str()).execute(&mut *tx).await?;
+        sqlx::query("INSERT INTO oxsum.merchant_payment_bindings(payment_id,merchant_id,version_id,organization_id,amount_minor,currency,purpose,hyperswitch_body_id) VALUES($1,$2,$3,$4,$5,$6,$7,$8)").bind(payment.payment_id).bind(payment.merchant_id).bind(payment.version_id).bind(payment.organization_id).bind(payment.amount_minor).bind(&payment.currency).bind(payment.purpose.as_str()).bind(payment.hyperswitch_body_id).execute(&mut *tx).await?;
         tx.commit().await?;
         Ok(())
     }
@@ -448,7 +453,9 @@ impl Db {
         sqlx::query("UPDATE oxsum.merchant_event_inbox SET state='applied',updated_at=now() WHERE receipt_id=$1 AND state='accepted'").bind(id).execute(self.pool()).await?;
         Ok(())
     }
-    /// Recovery selects only retained pending/accepted work, in bounded pages.
+    /// Recovery selects retained pending/accepted work, least recently tried
+    /// first. Retrying updates `updated_at`, so unresolved events cannot
+    /// permanently starve later customers behind the bounded page.
     pub async fn recoverable_merchant_events(
         &self,
         limit: i64,
@@ -456,7 +463,7 @@ impl Db {
         if !(1..=100).contains(&limit) {
             return Err(invalid("limit must be 1..100"));
         }
-        let rows=sqlx::query("SELECT * FROM oxsum.merchant_event_inbox WHERE state IN ('pending','accepted') ORDER BY received_at LIMIT $1").bind(limit).fetch_all(self.pool()).await?;
+        let rows=sqlx::query("SELECT * FROM oxsum.merchant_event_inbox WHERE state IN ('pending','accepted') ORDER BY updated_at,receipt_id LIMIT $1").bind(limit).fetch_all(self.pool()).await?;
         rows.iter().map(receipt).collect()
     }
     /// Returns the normalized verified event stored for a receipt, or `None` if
@@ -698,7 +705,7 @@ impl Db {
         }
         let id = Uuid::new_v4();
         sqlx::query("INSERT INTO oxsum.deposits(deposit_id,organization_id,rail,payment_ref,amount_minor,status) VALUES($1,$2,$3,$4,$5,'pending')").bind(id).bind(organization).bind(context.rail.as_str()).bind(key).bind(amount).execute(&mut *tx).await?;
-        sqlx::query("INSERT INTO oxsum.merchant_payment_bindings(payment_id,merchant_id,version_id,organization_id,amount_minor,currency,purpose) VALUES($1,$2,$3,$4,$5,'USD','legacyDeposit')").bind(id).bind(context.merchant_id).bind(context.version.id).bind(organization).bind(amount).execute(&mut *tx).await?;
+        sqlx::query("INSERT INTO oxsum.merchant_payment_bindings(payment_id,merchant_id,version_id,organization_id,amount_minor,currency,purpose,hyperswitch_body_id) VALUES($1,$2,$3,$4,$5,'USD','legacyDeposit',true)").bind(id).bind(context.merchant_id).bind(context.version.id).bind(organization).bind(amount).execute(&mut *tx).await?;
         tx.commit().await?;
         Ok(LegacyMerchantCheckout {
             payment: MerchantPaymentBinding {
@@ -709,6 +716,7 @@ impl Db {
                 amount_minor: amount,
                 currency: "USD".into(),
                 purpose: MerchantPaymentPurpose::LegacyDeposit,
+                hyperswitch_body_id: true,
                 provider_payment_id: None,
             },
             client_secret: None,

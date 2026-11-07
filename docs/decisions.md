@@ -94,7 +94,6 @@ New decisions go on top. Overturned decisions are never deleted; mark them "Supe
   - `DESCRIPTION_VERSION` is now 11; v11 descriptions parse everywhere v10 did plus the `guardrail` shape.
   - Pinned by `crates/core/src/guardrail.rs` unit tests (compile, resolve, most-restrictive) and `crates/server/tests/guardrails.rs` (pre-call block before the hold, a flag settling on the record, a moderation endpoint's own verdict refusing, a response-side block refunding the hold, the PII flag, the mandate subset refusal, a dangling `requiredPolicies` and an uncompilable regex refused at write).
 
-
 - Status: Adopted. Extends "Per-key rate limits consume at admission; the holds cap counts the ledger" (issue #130) — the seam that entry reserved ("a shared backend slots behind when the deployment goes multi-instance") now has its second implementation, and `memory` stays the default the deferred list already anticipated.
 - Background: a single binary gets the whole `requestsPerMinute` story from `SlidingWindow`, but a deployment behind a load balancer running several oxsum instances let each process keep its own window — `per_minute` was really `per_minute × instances`, and a busy key double-admitted in proportion to the replica count.
 - Decision:
@@ -360,7 +359,6 @@ A usage report that names a metered dimension no `PriceSet` covers — `toolCall
   - **Quoting every CSV field**: valid CSV, but it makes every row harder to read for no gain, and it hides the escaping rule instead of pinning it.
   - **Filtering the list by member role now**: product.md wants members to see only their own requests, but a session's hold carries no key attribution, so a role filter would empty the page for exactly the sessions the page belongs to. It stays planned with the rest of #54.
 - Implementation notes: `crates/core/src/wallet.rs` (`SettledEntry`, `settled_entries`, `is_settlement`, `settled_charge`), `crates/web/src/bills.rs` (the row type, both exports and their unit tests), `crates/web/src/api.rs` (`get_bills`), `crates/web/src/app.rs` (the `/dashboard/bills` page and its nav entry), `crates/server/src/bills.rs` (the two download routes) wired in `crates/server/src/routes.rs`, and `crates/server/tests/bills.rs`: the page lists both settlements and neither the hold nor the top-up, the CSV's header and rows (money an integer, newest first, nothing quoted), the JSON's field names and integer money, the two exports row for row, the 401s without a session, and one organization never seeing another's bills.
-
 
 - Status: Adopted. Implemented 2026-10-03, closing issue #65.
 - Background: `cargo run -p oxsum-server` — the command AGENTS.md and docs/development.md tell a developer to use — served pages that never hydrated. leptos decides the wasm file name when *leptos* is compiled: `HydrationScripts` appends `_bg` unless `LEPTOS_OUTPUT_NAME` is set (`leptos-0.8.21/src/hydration/mod.rs`), and only `cargo leptos build`/`serve` set that variable — for the wasm half and the server half alike. The site, in turn, is written by cargo-leptos, which renames wasm-bindgen's `oxsum_bg.wasm` to `oxsum.wasm` "for backward compatibility with leptos' `HydrationScripts`". So a server built by cargo-leptos (and the release image, which builds that way) is consistent, and a server built by plain cargo is not: its markup asked for `/pkg/oxsum_bg.wasm`, the site holds `pkg/oxsum.wasm`, the module import 404'd and every page stayed exactly as the server had rendered it. No router-level test could see it, because every route the tests asked answered 200 — the same shape as issues #44 and #46.
@@ -960,7 +958,6 @@ A usage report that names a metered dimension no `PriceSet` covers — `toolCall
   - An `oxsum.anomalies` table written at settle time: a parallel store of ledger facts, one more thing to disagree with the books.
   - Flagging `upstream_error`/`upstream_unreachable` rows too: they are failures, not anomalies in the sense this page exists for — nothing was charged, so nothing was lost.
 
-
 ## 2026-10-03 Monthly closing is doubleentry's period seal (issue #57)
 
 - Status: Adopted
@@ -1272,7 +1269,6 @@ The judgment calls:
 - **Retention is batched and windowed.** `OXSUM_RETENTION_PROVIDER_RAW_DAYS` (7) nulls `usage_details.provider_raw` — the privacy window, since the raw payload may carry prompt fragments — while the normalized columns stay forever; `OXSUM_RETENTION_DELIVERIES_DAYS` (30) drops terminal deliveries; `OXSUM_RETENTION_JOBS_DAYS` (90) drops finished job rows; expired `idempotency_records` go with their own `expires_at`. Each rule takes at most 10k rows a pass, so the daily cadence drains a backlog without one giant transaction.
 
 Pinned by `crates/core/tests/jobs.rs` (enqueue idempotency, the lease's claim-once and reclaim-after-lapse, claim-stamp fencing, the backoff-to-dead path, `jobs_dead` drift, the retention rules) and `crates/server/tests/jobs.rs` (a stale hold swept through `run_due` with the next run chained, a kind retrying to dead and recovering on the cooldown, an unknown kind failing its run without killing the worker, a retention pass's chain).
-
 
 ## 2026-10-12 — One model to many channels: weights lead, failover follows (roadmap P8-2, issue #168)
 
@@ -1832,7 +1828,6 @@ The deferred-scope list promoted model aliases when the next-phase plan made "on
 - **`upstreamModel` is metadata, not a price input — v8's rule mirrors `upstreamAttempts`'s.** `verify_charge` recomputes a v8 record exactly as v7 and only binds the field's *shape*: present means a non-empty string, anything else (empty, non-string, `null`) is a mismatch. The name enters the content hash so a bill proves which model answered, but the arithmetic never reads it — an alias changes routing and audit, never pricing semantics.
 - **Aliases are configuration, hard-deleted; bills keep the name.** `DELETE …/aliases/{alias}` removes the row outright — the alias lives in `oxsum`, not in any ledger, so there is nothing to retain versioned. A settled bill that names the alias keeps it in its description, which is the record that matters.
 
-
 ## 2026-10-21 — A bill link is a capability token, not an end-user account (issue #300)
 
 The downstream customer a usage report is about holds nothing: no session, no key, no account. Three ways to give them the bill were considered — a real end-user account (rejected: a third authentication system, with its own password reset, abuse surface and support burden, for a page that shows one bill), a URL carrying the bundle inline (rejected: bills get large, and a URL that carries the data leaks it into logs, referrers and mail archives), and a random capability token (chosen).
@@ -1844,7 +1839,6 @@ The downstream customer a usage report is about holds nothing: no session, no ke
 - **`last_used_at` is touched on resolution, and is not a delivery receipt.** It tells the operator the customer opened the bill; a mail client prefetching the link would touch it too, so it is evidence of access, not of reading.
 - **The link resolves without a session; the page that consumes it is separate.** This issue ships the capability only — the `/bill/{token}` page is the next piece, and keeping the two apart means the security model (token TTL, revocation, 404 shape) is settled before any customer-facing HTML exists.
 
-
 ## 2026-10-22 — The bill page is server-rendered, scriptless and one 404 (issue #302)
 
 The customer a share link belongs to holds no account, so `/bill/{token}` is the page the capability opens. It is deliberately the same shape as `/verify`, not a React route: the numbers come from the ledger, the operator key and head are printed beside them, and a customer can read the bill with JavaScript disabled.
@@ -1854,7 +1848,6 @@ The customer a share link belongs to holds no account, so `/bill/{token}` is the
 - **Headers are part of the design.** `Referrer-Policy: no-referrer` keeps the token out of any outbound link; `X-Robots-Tag: noindex` keeps a bill out of search engines; `Cache-Control: private, no-store` keeps a shared cache from handing one customer's bill to the next request. A middleware on the page fallback sets them, so a future page inherits the rule instead of remembering it.
 - **No third-party script, and no script at all in the floor.** The page runs nothing; the browser verifier is the next step and will be the only script, served from the binary like `/verify.js`.
 - **Two scopes, one renderer.** A report link renders its one frozen report; a customer link lists every report issued to them, one section each. The per-report token is still the narrowest capability, so the customer link is the organization's deliberate choice.
-
 
 ## 2026-10-22 — The bill verifier runs in the browser over the bundle the page embeds (issue #305)
 
@@ -1866,7 +1859,6 @@ The bill page rendered the frozen report but could not prove it: the customer st
 - **No JavaScript is still a bill.** The page renders the figures and the key without the script; the button simply does nothing. The check is progressive enhancement, not the page.
 - **What it proves is stated, and what it does not.** The verdict names membership, the subset fold, the marker binding and the head signature, and says completeness remains the organization's claim.
 
-
 ## 2026-10-22 — The bill link is mailed at creation, because that is when the token exists (issue #315)
 
 The database keeps only the token's hash, so a link can be mailed exactly once: in the response to the mint. Waiting — a later "send" button, a job, an email log — would need the plaintext at rest, which is the one thing the design refuses.
@@ -1875,7 +1867,6 @@ The database keeps only the token's hash, so a link can be mailed exactly once: 
 - **No mailer is a refusal, not a silent skip.** A deployment without `OXSUM_SMTP_URL`, `OXSUM_MAIL_FROM` and `OXSUM_PUBLIC_URL` answers 400 when an address is asked for: minting a link the operator believes was mailed is worse than refusing.
 - **A send failure keeps the link.** The token is in the response either way, so the operator can pass it on by hand; turning the mint into an error would invite a retry and a second link.
 - **The mail is as sensitive as the bill.** It goes to the address the operator named, carries the `/bill/{token}` capability and the completeness caveat, and is not a generic notification.
-
 
 ## 2026-10-22 — The payment layer is the full Hyperswitch switch, not prism (issue #317)
 
@@ -1901,7 +1892,6 @@ Consequences:
 
 Sources: [Hyperswitch webhooks](https://docs.hyperswitch.io/integration-guide/webhooks), [prism product overview](https://docs.hyperswitch.io/integrations/prism/prism), [prism README](https://github.com/juspay/hyperswitch-prism), [local Docker setup](https://docs.hyperswitch.io/self-hosting/want-to-explore/readme-1/unified-local-setup-using-docker).
 
-
 ## 2026-10-22 — The bill page checks the witnesses itself, from the bundle (issue #328)
 
 The customer's page already proves inclusion and the operator's signature. A witness is the third party that makes a fork detectable, and until now only the dashboard's log page checked it — the party the witnesses exist for could not see them.
@@ -1913,7 +1903,6 @@ The customer's page already proves inclusion and the operator's signature. A wit
 
 Pinned by `crates/server/tests/usage_reports.rs` (the report names the pinset and the origin, carries the stored note, and the bill page embeds all three) plus the verify crate's `verify_witnesses` tests for the cryptography. Contract `openapi.yaml` 0.75.0.
 
-
 ## 2026-10-22 — The seed creates its own demo channel when the catalog is empty (issue #330)
 
 The demo world is the product's first impression — `docker compose up`, `oxsum seed`, a login — and on a database with no catalog it was writing top-ups and no history: the seeded turns need a price book to bill under, so an empty catalog meant zero turns and no statement.
@@ -1924,7 +1913,6 @@ The demo world is the product's first impression — `docker compose up`, `oxsum
 - **The rerun stays a no-op.** The demo email is still the idempotency anchor; the second run reports "already seeded" and writes nothing, even though the channel now exists.
 
 Pinned by `crates/core/tests/seed.rs` (a database with no catalog, seeded with the key, has turns, a statement and both demo models; the rerun writes nothing).
-
 
 ## 2026-10-22 — Completeness gets its own commitment: a per-customer day log anchored in the ledger (issue #336)
 
@@ -1945,7 +1933,6 @@ A report proves the shown rows are in the ledger and fold to the committed subse
 **Rejected.** *Per-month sums from the statement rollup*: a swapped row with the same charge passes, and the rollup is per channel/model, not per customer. *A single global MMR over all settlements*: inclusion of the shown rows is already proven; the gap is "all rows for this customer", which a global log cannot distinguish from someone else's rows. *Trusting the organization's count*: that is the gap itself. *Committing at report mint*: the organization would choose the subset after seeing what the customer might check.
 
 **Shipped note (stage 3, issue #339).** The bundle carries the customer's **whole** day log up to the anchor day, not a span range plus bounding leaves: the head is the fold of every leaf, so showing them all is the simplest honest proof that none is missing, and the verifier rebuilds each day's leaf from the rows the proof assigns to that day (a row moved to another day changes both leaves). A range proof would shrink the bundle and is a later optimization, not a correctness change; unanchored history stays claim-only, and the report says which it is.
-
 
 **Shipped note (stage 4, issue #340).** A day the anchor committed is sealed: Wallet::settle refuses a booking date that falls in an anchored day with 409 DAY_SEALED, so the leaf the anchor fixed cannot be rewritten after the fact. The reconciliation gains nchored_day_altered — the check that the seal held (a bypassed write or a hand edit shows there). History anchored before the rule keeps its claim; there is no backfill that re-anchors a mutable source, and the seal is a write rule, not a repair.
 
@@ -2083,7 +2070,6 @@ The Airwallex rail is now sandbox-verified end-to-end at the API and webhook lay
 - Decision: `docs/transparency-log-v1.md` writes the protocol down — terminology, every wire shape field-by-field, the hash domains, and each verification algorithm as implementor-independent pseudocode, plus the trust model and a versioning rule. `oxsum-verify` is now a reference implementation of a named spec rather than the spec itself, and the crate README, the `verify-oxsum-bill` package README and `docs/proofs.md` all point at the document.
 - Why a spec before the component: the next artifact is a `<verify-bill>` web component on top of the npm SDK, and a component built against an unwritten protocol hard-codes whatever the implementation happened to do that day. Naming the wire `v1` gives both the SDK and any third-party verifier a fixed target — and gives a future incompatible change a version to bump against.
 - Rejected: *leaving the serde structs as the spec* — an implementation is not a contract; there is no way to tell which field orders and defaults are load-bearing. *Documenting inside openapi.yaml* — the proof objects are not request/response API; they are portable artifacts a verifier carries away, and the spec's audience is the verifier's author, not the API caller.
-
 
 ## 2026-11-01 — The Gemini surface lands on the adapter seam; one credential spelling for AI Studio and Vertex (issue #494)
 
@@ -2227,7 +2213,6 @@ The Airwallex rail is now sandbox-verified end-to-end at the API and webhook lay
 - Why not trust the new wrapper API without fixtures: the fixture is a genuine settlement captured from an isolated in-process app with a signed head and a signed price link; the example asserts the positive verdicts and four rejections (tampered content, wrong hash, wrong operator key, wrong archived head), and the check fails if any of them stops behaving. The capture test itself was temporary and is not committed.
 - Pinned by `scripts/check-verify-consumer.sh`: it builds the wasm, packs the tarball, asserts `dist/`, the wasm module and both licenses are present, installs the tarball into a temporary project outside the repository, and runs the example offline. The package remains unpublished; publication is a separate maintainer step.
 
-
 ## 2026-11-05 — Adopt the self-hosted operating release contract (issue #591)
 
 - Status: Adopted specification; implementation and validation remain tracked separately in `docs/roadmap/self-hosted-v1/STATUS.md`.
@@ -2237,7 +2222,6 @@ The Airwallex rail is now sandbox-verified end-to-end at the API and webhook lay
 - Compatibility: keep IDs, balances, postings, tenant origins, old proof formats and legacy period policies. Unsafe customer self-credit/raw settlement is deliberately removed, documented as a breaking authority correction. Customer registration never creates staff authority. Cache remains customer scoped.
 - Rejected: seller organizations replacing customer identities, a duplicate customer wallet layer, hosted seller marketplace, oxsum-project payment collection, and interpreting existing quota rollover or deposit reversal as proof of a complete commercial lifecycle.
 - Validation: A01–A31 in the tracked contract. Unit green and adopted specification do not establish completion. Baseline PR CI runs only the fast tier; perform relevant isolated runtime checks before risky merges, then T29 supplies candidate gate alignment. Publication, live deployment/data migration, paid calls and independent-pilot contact require separate authorization; never run Deploy as implementation validation.
-
 
 ## 2026-11-05 — Retire customer self-credit; authorize manual receipts before money (#624)
 
@@ -2278,7 +2262,6 @@ The Airwallex rail is now sandbox-verified end-to-end at the API and webhook lay
 - Existing TOTP is reused. Business access requires the session to have satisfied a confirmed factor; OAuth-only/older sessions cannot bypass it. A confirmed factor cannot be silently replaced by re-enrollment. Login rechecks the verified hash under the business lock, and TOTP consumption/session creation is atomic with respect to reset. Pending challenges die on password reset. Personal security settings remain accessible without customer membership.
 - The capability matrix is deny-by-default; future customer/provider/merchant services must apply these core transaction guards. No wholesale admin-router delegation or fake operator audit identity is added. Business UI remains T24; release status remains incomplete until all tasks and external gates finish.
 
-
 ## 2026-11-05 — Customer identity is immutable; admission reasons are independent (#633)
 
 - Preserve customer external ID, organization ID, business mapping, keys and ledger identity. Profile name/contact are editable metadata; archive/restore never deletes history or moves in-flight operations. The external reference is assigned at creation/migration, not renamed after use.
@@ -2294,7 +2277,6 @@ The Airwallex rail is now sandbox-verified end-to-end at the API and webhook lay
 - Creation uses scoped idempotency receipts. Plaintext tokens are returned once and stored only as hashes; retries return the original ID and null token, never resend email. Revoke and accept race to one terminal result. Expiry/revocation releases only pending external-ID reservations. Audit failure rolls back every local effect.
 - Compatibility: OpenAPI 0.104.0 requires `idempotencyKey` for team invitation creation; existing unspent links remain redeemable. Legacy direct-add clients must adopt invitations. No user receives staff, funds, or a new selected context through acceptance. Browser QA remains pending the existing Ego TaskSpace recovery gate; configured anti-bot widget completion remains T23's portal work.
 
-
 ## 2026-11-05 — Consumption keys have spending and own-evidence authority (#637)
 
 - Evidence: API keys previously resolved to organization-wide key/evidence authority, raw entry/proof/request-log reads omitted member filters, sockets retained an initial organization grant, and replay/cache could disclose responses across sibling keys. These conflict with T05/A01/A06.
@@ -2305,7 +2287,6 @@ The Airwallex rail is now sandbox-verified end-to-end at the API and webhook lay
 
 - Auxiliary evidence review found that `/verify?sample` selected the first customer named `Acme Demo`, so an ordinary same-named account could publish its latest settled bill. The example now embeds the existing public offline-consumer fixture and explicitly labels its origin. It performs no database lookup. Tests cover offline verification and non-disclosure of a same-named customer’s real settlement.
 
-
 ## 2026-11-05 — Explicit business integration grants (T05.b, #638)
 
 - Replace legacy global service issuance with owner-only business-context issuance, explicit customersRead/meteringWrite scopes, selected customer IDs and mandatory bounded expiry. Reuse the existing service actor provenance without making integrations consumption keys or personal identities. Authenticated actor fields are private and every core operation rechecks current grants.
@@ -2314,7 +2295,6 @@ The Airwallex rail is now sandbox-verified end-to-end at the API and webhook lay
 - The existing global open_holds and usage_records keys made caller-selected metering keys/event labels collide between customers. Derive opaque hold identity from credential/customer/idempotency, keep eventId only as a settlement label, and use scoped operation identity for projection and sweeper rows.
 - Persist immutable authorization terms before money effects, including original operation/body, owned event price, discount and freeze. Bind the finalization body once. This closes sibling credential/customer and changed-body replay leaks while preserving historical records. A committed authorization may finish after revocation; the next request cannot. T10–T13 still own coordinated billing operation recovery and zero-charge admission; this authorization record is not a claim those tasks are done.
 - Validation covers owner/role/context, expiry/revoke, one-time secret races, audit failure rollback, pre-0077 upgrade, selected customer pagination, sibling holds, changed replay, event label collisions and production HTTP credentials. No ledger engine change.
-
 
 ## 2026-11-05 — Business provider configuration uses atomic authority and receipts (T06.a, #641)
 
@@ -2325,7 +2305,6 @@ The Airwallex rail is now sandbox-verified end-to-end at the API and webhook lay
 - Reads filter ownership before pagination and child lookup; secrets are encrypted and only tails are displayed. Stored provider error text and unknown settings fields are excluded from business responses. Legacy endpoint userinfo/query/fragment are redacted. New request types do not implement Debug; provider runtime credential/billing/probe/Serving Debug output redacts key material and endpoint details. Strict cache fields and explicit price inputs avoid hidden config or absent-rate assumptions.
 - Source review found that route resolution fetched connection and credentials through separate pool reads, permitting mixed versions during rotation. Direct and alias resolution now use one short read-only repeatable-read snapshot for aliases, prices, endpoint and pool. No network call occurs inside it. A concurrent rotation/read test checks matching endpoint and key generations; legacy in-flight snapshots remain unchanged.
 - T06.b #642 is required for destination/DNS/redirect enforcement and explicit connection tests across provider callers; this authority child alone does not satisfy A07 or close T06. T07 supplies serving-context/catalog restrictions, T08 the sale-book separation, and T24 the console. No capability, certification or release readiness is inferred from this intermediate API.
-
 
 ## 2026-11-06 — Provider calls pin validated destinations (T06.b, #642)
 
@@ -2370,14 +2349,12 @@ Merchant ownership and provider account identity live separately from immutable 
 
 Use the existing AES-GCM `SecretKey` for the complete credential envelope, with a keyed mutation fingerprint for exact retry comparison. Owner authority, immutable mutation result and redacted audit share one transaction under the business lock. Redacted read capability is `ReportsRead`; `MerchantSecretsWrite` remains owner-only. A configuration save validates rail fields, known mode prefixes and the shared destination-policy syntax but makes no provider request; `locallyValidated` must not be represented as external certification. Hyperswitch with Stripe remains the primary contract; direct Stripe/Airwallex remain compatibility rails. Scoped callback intake/bootstrap is a required separate child (#649); purpose-specific payment fulfillment remains T15.
 
-
 ## 2026-11-06 — Customer sale terms sign as their own evidence (T09, #600)
 
 - A sale-priced bill binds *customer* terms, never the wholesale channel catalog: the supplier-side `price` checkpoint attests rates the customer never agreed to and must never see. The resolved `SalePriceSnapshot` hashes into a canonical `SaleSnapshotV1` row under the `oxsum/sale-catalog/v1` domain — `{v, businessId, organizationId, model, source, scheduleId, bookId, version, draftRevision, legacyChannel, effectiveFrom, effectiveUntil, terms}` — binding the customer, the book/draft/legacy provenance, the effective window, and the `SalePrice` (which cannot carry `upstream` costs) plus `discountPercent`. The business keys the origin `oxsum/sale-catalog/<businessId>`; the resolution instant `at` stays out of the hash as display context, the same split the snapshot's own fields make between proof-sensitive identity and read-time detail.
 - The digest is content-addressed, so `oxsum.sale_snapshot_digests` (migration 0082) stores the canonical row once, keyed by it, idempotent on re-resolution — there is no snapshot table to drift and no second rendering a verifier could disagree with. `receipt_proof` reads the `sale.digest` the v14 settlement commits, serves the stored row verbatim, and signs it as a checkpoint under the same `OXSUM_HEAD_SIGNING_KEY`, `size` = the book version, `root` = the digest. `GET /api/v1/log/sale-head` re-signs the same note on demand by `digest`, or re-resolves the live terms by `(organizationId, model, at)`; a customer reads only its own terms.
 - Settlement description schema v14 adds the optional `sale` block `{digest}`; the gateway writes it only once coordinated settlement resolves sale terms (T12), so today's wholesale-priced turns omit it and keep the `price` binding. `oxsum_verify::verify_sale_head` reports `NotSalePriced` for a record committing no digest — a wholesale checkpoint must never be read as proving customer sale terms — and `verify_bill` adds a `sale` sentence only then. Older bundles and versions verify unchanged; the verify crate stays wasm32-clean and the SDK gains `verifySaleHead` beside `verifyPriceHead`.
 - A10 coverage: old and new positive fixtures plus altered price, discount, rate, customer, digest and signer failures in `oxsum_verify`'s `sale_heads` module, an end-to-end digest→record→sign→bundle→verify run in `crates/core/tests/sale_heads.rs`, and the independent pure-verifier build (wasm32 target) confirmed. T10–T13 still owe the gateway wiring that writes `sale` into live settlements; this PR ships the evidence machinery and the contract, not the serving switch.
-
 
 ## 2026-11-06 — The operation is the durable parent of every billable turn (T10, #601)
 
@@ -2386,7 +2363,6 @@ Use the existing AES-GCM `SecretKey` for the complete credential envelope, with 
 - `request_attempts` is separate because a turn can try several upstreams and only one settles: one row per try keeps the failover audit (which channel was asked, how it refused) beside the winning `answered` row that carries the billed `usage_json`, where a single mutable "attempts" blob on the parent would rewrite itself on every retry and lose the history the row exists to keep.
 - The operation binds the hold it spends under (`hold_key`, `req-<id>:hold`), so the sweeper's second pass — `operations_past_lease` → `claim_operation` → the same `sweep_one` → `timed_out` at 0 — recovers a stranded turn through the identical ledger path the `open_holds` pass uses; rows written before the table existed keep sweeping on the old `opened_at` criterion, which is the backward-compat half.
 - Replay dedup rides the unique `(organization_id, fingerprint)`: `insert_operation` is `ON CONFLICT DO NOTHING` plus a re-read, so a retried request inside its idempotency window re-reads the same operation rather than minting a second. Every operation write is best-effort — a lost row traces a warning and never fails the request, the same doctrine `request_log` already keeps.
-
 
 ## 2026-11-06 — A borrowed-transaction append for the Postgres backend (T11, #602)
 
@@ -2697,3 +2673,35 @@ work; the presence of a switch key cannot stand in for them.
 - A successful job without its required successful steps is insufficient release evidence. Manual/nightly CI builds the WASM/frontend stages, and the candidate gate requires named fmt, Clippy, lib/doc, archive, shard, process-shared and engine execution steps. Old path-filtered runs cannot be grandfathered in.
 - Version-2 candidate manifests distinguish source SHA from workflow revision, Docker configuration ID from archive checksum and registry digest, and bind platform/source labels to the actual saved image. The SDK is copied after the clean consumer verifies it, never repacked. Archive inspection does not extract Docker layers or execute package scripts.
 - Offline validation establishes internal consistency only. Online validation additionally requires the successful exact workflow attempt, its available unexpired bundle, byte-equivalent manifest, and the successful referenced full-CI attempt. Public promotion/deployment is separate; creating a valid local manifest grants no authority to publish it.
+## 2026-11-08 — Preserve external identity and uncertain refund bounds (#760)
+
+Pinned Hyperswitch v1.129.0 source proves that `payment_id`/`refund_id` in the
+body identify duplicate creates; a header alone is insufficient. Persist a
+new-operation opt-in on expected payment bindings and refund rows. Migration
+0099 leaves historical rows false and keeps the SQL default false for older
+writers; new code opts in explicitly. 0098 is reserved by the independent
+business-profile PR. Old immutable bindings are never rewritten to imply that
+a previous call used a body ID. Known old handles can be retrieved; an unbound
+old operation requires reconciliation instead of a new create.
+
+Retrieve before create, validate exact terms and local metadata, and retrieve
+again after duplicates or lost responses. Use the existing destination-policy
+client, ten-second total HTTP limits and no response/secret-bearing errors.
+The first recovery lease is 60 seconds, longer than the bounded read/create/read
+exchange plus DNS; each of five attempts is claimed atomically before I/O. A
+crash spends its claim and retains the reservation. Exhaustion clears the due
+time but does not release funds or reverse an issued note. Only a proven first
+pre-insert refusal or authenticated terminal evidence can release it.
+
+The audit also found that a supplied unknown refund ID fell back to the first
+pending refund, and provider refund IDs were looked up without the order. Both
+are unsafe for repeated partial refunds. Scope lookup to the authenticated
+order and exact amount/currency/customer; missing IDs require exactly one
+unambiguous reservation, and supplied unknown IDs remain for reconciliation.
+
+The compatibility `fail_order_refund` entry point must also retain ambiguous
+reservations; an error string cannot serve as proof of non-creation. Rotate the
+bounded inbox scan by the existing last-attempt timestamp so retained unresolved
+events do not starve later customers. Historical refund metadata sometimes used
+the refund UUID as `order_id`; accept only that exact alias on migration-fenced
+rows while rejecting other supplied customer/payment/order contradictions.

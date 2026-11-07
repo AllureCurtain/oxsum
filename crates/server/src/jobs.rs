@@ -1044,18 +1044,10 @@ struct RefundRetryReport {
     released: usize,
 }
 
-/// The `refund-retries` pass (issue #608): for each due `provider_pending`
-/// refund, re-issue the PSP call — the refund id is the provider's
-/// idempotency key, so a re-issue can never mint a second refund — then
-/// record the handle it answered, reschedule a transient failure on the
-/// backoff, or release the reservation when the attempt budget ran out. A
-/// signed `refund_*` event landing between calls settles the row; the
-/// retry's own re-read respects it.
-///
-/// Unleadered like `poll-tasks`: the provider idempotency key serializes two
-/// workers on one refund, so a duplicated pass is a wasted call, never a
-/// second refund. The batch is bounded per pass so a backlog drains over
-/// ticks.
+/// Claims each due refund before I/O, then retrieves or safely creates the
+/// pinned external operation. The durable bounded lease survives crashes and
+/// excludes concurrent workers. Unknown outcomes remain reserved even after
+/// automatic retries stop; a signed terminal event is still recoverable.
 async fn retry_due_refunds(
     db: &Db,
     secret: &SecretKey,
@@ -1067,33 +1059,25 @@ async fn retry_due_refunds(
         ..RefundRetryReport::default()
     };
     for refund in due {
-        let Some(target) = db.refund_retry_target(refund.refund_id).await? else {
+        let Some(target) = db.claim_refund_attempt(refund.refund_id).await? else {
             continue;
         };
         let Some(context) = db
             .merchant_signing_context(target.merchant_id, target.merchant_version_id, secret)
             .await?
         else {
-            // A merchant that vanished mid-flight leaves the reservation
-            // forever pending — release it as a definite failure.
-            db.fail_order_refund(refund.refund_id, "merchant is gone")
-                .await?;
-            report.released += 1;
+            // Missing configuration does not disprove an external operation.
+            report.retried += 1;
             continue;
         };
         let Some(provider_payment) = target.provider_payment_id.as_deref() else {
-            db.fail_order_refund(refund.refund_id, "no provider payment bound")
-                .await?;
-            report.released += 1;
+            report.retried += 1;
             continue;
         };
         match oxsum_integrations::merchant_checkout::create_refund(
             &context,
-            refund.refund_id,
+            &target.refund,
             provider_payment,
-            refund.display_amount_minor,
-            &refund.display_currency,
-            &refund.reason,
             &http,
         )
         .await
@@ -1101,19 +1085,15 @@ async fn retry_due_refunds(
             Ok(handle) => {
                 db.note_refund_provider(refund.refund_id, &handle.provider_refund_id)
                     .await?;
-                // A synchronous `succeeded` answer still waits for the signed
-                // event — the webhook is the only terminal truth — but the
-                // reservation no longer needs retries: push the next attempt
-                // out to the sweep's own cadence via a long backoff, from
-                // which a missing event eventually releases it.
-                db.retry_order_refund(refund.refund_id).await?;
+                // Acknowledgment retains the precommitted recovery schedule.
+                // Only a signed terminal event settles or releases funds.
                 report.retried += 1;
             }
-            Err(_) => {
-                let standing = db
-                    .fail_order_refund(refund.refund_id, "provider refund call failed")
-                    .await?;
-                if standing.state == "released" {
+            Err(oxsum_integrations::merchant_checkout::RefundRequestError::Unknown) => {
+                report.retried += 1;
+            }
+            Err(oxsum_integrations::merchant_checkout::RefundRequestError::Refused) => {
+                if db.refuse_claimed_refund(refund.refund_id).await? {
                     report.released += 1;
                 } else {
                     report.retried += 1;

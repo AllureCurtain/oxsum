@@ -41,6 +41,7 @@ Updated: 2026-11-08
 - [ ] [#728](https://github.com/AllureCurtain/oxsum/issues/728) — N02: Isolated current-authority demo and shared bootstrap implemented; exact settlement/offline rejection/isolation checks passed, review pending.
 - [ ] [#757](https://github.com/AllureCurtain/oxsum/issues/757) — Pinned isolated Hyperswitch stack and private merchant bootstrap implemented; startup/persistence passed, local order/refund smoke in progress; HTTPS/browser/PSP acceptance remains separate.
 - [ ] [#752](https://github.com/AllureCurtain/oxsum/issues/752) — N13.a: Version-2 candidate byte/provenance gate implemented; local tests and consumer passed, CI/review pending.
+- [ ] [#760](https://github.com/AllureCurtain/oxsum/issues/760) — Bind Hyperswitch payment/refund retries to durable body identities, reconcile lost responses and retain ambiguous reservations after bounded recovery; implemented and locally validated, review pending.
 
 - [x] [#723](https://github.com/AllureCurtain/oxsum/issues/723) — Serialized promo writers on the ledger append advisory lock before their promo row locks, fixing the post-merge hold/expiry deadlock; integrated in PR #724.
 
