@@ -57,6 +57,7 @@ fn artifact_digest(kind: &str, canonical_json: &str) -> Hash {
 /// trust failure, so a reader names what is wrong instead of only that
 /// something is.
 #[derive(Debug, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum EvidenceError {
     /// The bundle, a hex field, or the canonical manifest could not be parsed.
     Malformed(String),

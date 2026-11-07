@@ -51,6 +51,7 @@ const SETTLEMENT_KINDS: &[&str] = &[
 
 /// What recomputing a settlement description's charge concluded.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum ChargeCheck {
     /// The description is not a settlement's — a hold, an adjustment, an empty
     /// string — so there is no charge to recompute. Not a failure.

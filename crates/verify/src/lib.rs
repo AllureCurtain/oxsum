@@ -11,6 +11,8 @@
 //! content hash — depends on it. The writer (`oxsum-core`) and every verifier
 //! must agree on it, and one definition leaves no room for drift.
 
+#![warn(missing_docs)]
+
 use doubleentry::{Balanced, Draft, Entry, InclusionProof, MerkleAccumulator};
 
 mod charge;
@@ -34,14 +36,40 @@ pub const SCALE: u8 = 6;
 /// only settlements — holds, top-ups and adjustments carry none — and because a
 /// deployment with no `OXSUM_HEAD_SIGNING_KEY` serves the proof without it.
 #[derive(Debug, Clone, serde::Serialize)]
+#[non_exhaustive]
 pub struct ProofBundle {
+    /// The entry source as stored, in the shape the content hash covers.
     pub entry: Entry<Balanced, SCALE>,
+    /// The signed tree head the proof was taken against.
     pub head: TreeHead,
+    /// The inclusion proof from the entry to `head`.
     pub proof: InclusionProof,
+    /// The signed price binding, when the entry settled against a priced channel.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub price: Option<PriceLink>,
+    /// The signed sale binding, when the settlement priced under a sale book.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub sale: Option<SaleLink>,
+}
+
+impl ProofBundle {
+    /// Assembles a bundle from its parts.
+    #[must_use]
+    pub fn new(
+        entry: Entry<Balanced, SCALE>,
+        head: TreeHead,
+        proof: InclusionProof,
+        price: Option<PriceLink>,
+        sale: Option<SaleLink>,
+    ) -> Self {
+        Self {
+            entry,
+            head,
+            proof,
+            price,
+            sale,
+        }
+    }
 }
 
 /// The signed link between a bill's price and the operator's catalog.
@@ -52,6 +80,7 @@ pub struct ProofBundle {
 /// Self-contained — the verifier never asks the server for a second opinion.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
+#[non_exhaustive]
 pub struct PriceLink {
     /// The channel the price belongs to.
     pub channel: String,
@@ -72,6 +101,105 @@ pub struct PriceLink {
     pub key_hash: String,
 }
 
+impl PriceLink {
+    /// Starts a builder for a price link.
+    #[must_use]
+    pub fn builder() -> PriceLinkBuilder {
+        PriceLinkBuilder::default()
+    }
+}
+
+/// Builds a [`PriceLink`]. Every setter is optional until [`build`](Self::build),
+/// which panics if a field is missing — the eight fields together are the link.
+#[derive(Debug, Default)]
+pub struct PriceLinkBuilder {
+    channel: Option<String>,
+    model: Option<String>,
+    version: Option<i64>,
+    row: Option<String>,
+    note: Option<String>,
+    key_name: Option<String>,
+    public_key: Option<String>,
+    key_hash: Option<String>,
+}
+
+impl PriceLinkBuilder {
+    /// Sets the channel.
+    #[must_use]
+    pub fn channel(mut self, channel: impl Into<String>) -> Self {
+        self.channel = Some(channel.into());
+        self
+    }
+
+    /// Sets the model.
+    #[must_use]
+    pub fn model(mut self, model: impl Into<String>) -> Self {
+        self.model = Some(model.into());
+        self
+    }
+
+    /// Sets the price version.
+    #[must_use]
+    pub fn version(mut self, version: i64) -> Self {
+        self.version = Some(version);
+        self
+    }
+
+    /// Sets the canonical row bytes.
+    #[must_use]
+    pub fn row(mut self, row: impl Into<String>) -> Self {
+        self.row = Some(row.into());
+        self
+    }
+
+    /// Sets the checkpoint note.
+    #[must_use]
+    pub fn note(mut self, note: impl Into<String>) -> Self {
+        self.note = Some(note.into());
+        self
+    }
+
+    /// Sets the signing key name.
+    #[must_use]
+    pub fn key_name(mut self, key_name: impl Into<String>) -> Self {
+        self.key_name = Some(key_name.into());
+        self
+    }
+
+    /// Sets the Ed25519 public key, hex.
+    #[must_use]
+    pub fn public_key(mut self, public_key: impl Into<String>) -> Self {
+        self.public_key = Some(public_key.into());
+        self
+    }
+
+    /// Sets the note key hash, hex.
+    #[must_use]
+    pub fn key_hash(mut self, key_hash: impl Into<String>) -> Self {
+        self.key_hash = Some(key_hash.into());
+        self
+    }
+
+    /// Finishes the link.
+    ///
+    /// # Panics
+    ///
+    /// Panics if any field was not set.
+    #[must_use]
+    pub fn build(self) -> PriceLink {
+        PriceLink {
+            channel: required_field(self.channel, "channel"),
+            model: required_field(self.model, "model"),
+            version: required_field(self.version, "version"),
+            row: required_field(self.row, "row"),
+            note: required_field(self.note, "note"),
+            key_name: required_field(self.key_name, "keyName"),
+            public_key: required_field(self.public_key, "publicKey"),
+            key_hash: required_field(self.key_hash, "keyHash"),
+        }
+    }
+}
+
 /// The signed link between a bill's sale terms and the operator's sale catalog.
 ///
 /// The customer-facing counterpart of [`PriceLink`] (issue #600): when a
@@ -85,6 +213,7 @@ pub struct PriceLink {
 /// supplier cost. Self-contained — the verifier never asks the server twice.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
+#[non_exhaustive]
 pub struct SaleLink {
     /// The customer organization the sale terms priced.
     pub organization_id: String,
@@ -105,6 +234,105 @@ pub struct SaleLink {
     pub public_key: String,
     /// The 4-byte selector this key's note signatures carry, lowercase hex.
     pub key_hash: String,
+}
+
+impl SaleLink {
+    /// Starts a builder for a sale link.
+    #[must_use]
+    pub fn builder() -> SaleLinkBuilder {
+        SaleLinkBuilder::default()
+    }
+}
+
+/// Builds a [`SaleLink`]. Every setter is optional until [`build`](Self::build),
+/// which panics if a field is missing — the eight fields together are the link.
+#[derive(Debug, Default)]
+pub struct SaleLinkBuilder {
+    organization_id: Option<String>,
+    model: Option<String>,
+    digest: Option<String>,
+    row: Option<String>,
+    note: Option<String>,
+    key_name: Option<String>,
+    public_key: Option<String>,
+    key_hash: Option<String>,
+}
+
+impl SaleLinkBuilder {
+    /// Sets the customer organization id.
+    #[must_use]
+    pub fn organization_id(mut self, organization_id: impl Into<String>) -> Self {
+        self.organization_id = Some(organization_id.into());
+        self
+    }
+
+    /// Sets the model.
+    #[must_use]
+    pub fn model(mut self, model: impl Into<String>) -> Self {
+        self.model = Some(model.into());
+        self
+    }
+
+    /// Sets the snapshot digest, lowercase hex.
+    #[must_use]
+    pub fn digest(mut self, digest: impl Into<String>) -> Self {
+        self.digest = Some(digest.into());
+        self
+    }
+
+    /// Sets the canonical row bytes.
+    #[must_use]
+    pub fn row(mut self, row: impl Into<String>) -> Self {
+        self.row = Some(row.into());
+        self
+    }
+
+    /// Sets the checkpoint note.
+    #[must_use]
+    pub fn note(mut self, note: impl Into<String>) -> Self {
+        self.note = Some(note.into());
+        self
+    }
+
+    /// Sets the signing key name.
+    #[must_use]
+    pub fn key_name(mut self, key_name: impl Into<String>) -> Self {
+        self.key_name = Some(key_name.into());
+        self
+    }
+
+    /// Sets the Ed25519 public key, hex.
+    #[must_use]
+    pub fn public_key(mut self, public_key: impl Into<String>) -> Self {
+        self.public_key = Some(public_key.into());
+        self
+    }
+
+    /// Sets the note key hash, hex.
+    #[must_use]
+    pub fn key_hash(mut self, key_hash: impl Into<String>) -> Self {
+        self.key_hash = Some(key_hash.into());
+        self
+    }
+
+    /// Finishes the link.
+    ///
+    /// # Panics
+    ///
+    /// Panics if any field was not set.
+    #[must_use]
+    pub fn build(self) -> SaleLink {
+        SaleLink {
+            organization_id: required_field(self.organization_id, "organizationId"),
+            model: required_field(self.model, "model"),
+            digest: required_field(self.digest, "digest"),
+            row: required_field(self.row, "row"),
+            note: required_field(self.note, "note"),
+            key_name: required_field(self.key_name, "keyName"),
+            public_key: required_field(self.public_key, "publicKey"),
+            key_hash: required_field(self.key_hash, "keyHash"),
+        }
+    }
 }
 
 /// Verifies a bill on the client, without trusting the server.
@@ -144,6 +372,7 @@ pub fn verify_bundle(json: &str, expected_hash: &Hash) -> Result<bool, serde_jso
 /// are empty on a fail.
 #[derive(Debug, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
+#[non_exhaustive]
 pub struct BillVerdict {
     /// The verdict's machine name: `"pass"`, `"chargeMismatch"` or `"fail"`.
     pub verdict: &'static str,
@@ -276,6 +505,7 @@ pub fn verify_bill(json: &str, expected_hash: &Hash) -> Result<BillVerdict, serd
 
 /// What checking a signed tree head — or a consistency proof anchored by one — can
 #[derive(Debug, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum HeadError {
     /// The note text, the published key, or a hex field could not be parsed.
     Malformed(String),
@@ -321,12 +551,21 @@ impl std::fmt::Display for HeadError {
     }
 }
 
+/// Unwraps a builder field, naming the missing one in the panic.
+fn required_field<T>(value: Option<T>, field: &str) -> T {
+    match value {
+        Some(value) => value,
+        None => panic!("link builder is missing {field}"),
+    }
+}
+
 impl std::error::Error for HeadError {}
 
 /// The operator's published tree-head key, as a signed-head response carries it.
 ///
 /// The wire spells the Ed25519 key and its selector as hex; both are decoded here so the
 /// caller passes the response through untouched.
+#[non_exhaustive]
 pub struct PublishedKey<'a> {
     /// The name the operator signs under (`oxsum/tree-heads`).
     pub key_name: &'a str,
@@ -334,6 +573,18 @@ pub struct PublishedKey<'a> {
     pub public_key: &'a str,
     /// The note key hash: which signature line on the note is this key's, hex.
     pub key_hash: &'a str,
+}
+
+impl<'a> PublishedKey<'a> {
+    /// Borrows the three strings a signed-head check needs.
+    #[must_use]
+    pub const fn new(key_name: &'a str, public_key: &'a str, key_hash: &'a str) -> Self {
+        Self {
+            key_name,
+            public_key,
+            key_hash,
+        }
+    }
 }
 
 /// Verifies an operator-signed tree head.
@@ -413,6 +664,7 @@ pub fn verify_consistency(
 /// What checking a witness's cosignature over an anchored checkpoint can fail
 /// with — the failures a reader can act differently on, one per variant.
 #[derive(Debug, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum WitnessVerdict {
     /// The note parses and the pinned key verifies a `cosignature/v1` line over
     /// the checkpoint body. `at` is the timestamp inside the signed message —
@@ -469,6 +721,7 @@ impl std::error::Error for WitnessVerdict {}
 /// verifier configured itself proves a real third party vouched; a pin the
 /// *server* served is evidence only under the same trust as the operator's own
 /// published key.
+#[non_exhaustive]
 pub struct WitnessPin<'a> {
     /// The witness endpoint URL, as `OXSUM_WITNESS_URLS` names it.
     pub witness_url: &'a str,
@@ -481,13 +734,40 @@ pub struct WitnessPin<'a> {
     pub key_hash: &'a str,
 }
 
+impl<'a> WitnessPin<'a> {
+    /// Borrows the four strings a witness check needs.
+    #[must_use]
+    pub const fn new(
+        witness_url: &'a str,
+        key_name: &'a str,
+        public_key: &'a str,
+        key_hash: &'a str,
+    ) -> Self {
+        Self {
+            witness_url,
+            key_name,
+            public_key,
+            key_hash,
+        }
+    }
+}
+
 /// One stored cosignature, as `GET /api/v1/log/checkpoint` serves it.
+#[non_exhaustive]
 pub struct WitnessNote<'a> {
     /// The witness endpoint this note came back from.
     pub witness_url: &'a str,
     /// The cosigned C2SP note text — the checkpoint body plus the witness's
     /// signature line.
     pub note: &'a str,
+}
+
+impl<'a> WitnessNote<'a> {
+    /// Borrows the endpoint URL and the cosigned note.
+    #[must_use]
+    pub const fn new(witness_url: &'a str, note: &'a str) -> Self {
+        Self { witness_url, note }
+    }
 }
 
 /// Checks one witness cosignature against the checkpoint it claims to vouch.
@@ -577,6 +857,7 @@ pub fn verify_witnesses<'a>(
 /// fail with. Mirrors [`HeadError`]: each variant is one distinct trust failure,
 /// so a page can say what is wrong instead of only that something is.
 #[derive(Debug, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum PriceError {
     /// The `price` field, the note, or a hex field could not be parsed.
     Malformed(String),
@@ -747,6 +1028,7 @@ pub fn verify_price_head(json: &str) -> Result<(), PriceError> {
 /// can fail with. Mirrors [`PriceError`]: each variant is one distinct trust
 /// failure, so a page can say what is wrong instead of only that something is.
 #[derive(Debug, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum SaleError {
     /// The `sale` field, the settlement's `sale` digest, the note, or a hex field
     /// could not be parsed.
@@ -939,6 +1221,7 @@ pub fn verify_sale_head(json: &str) -> Result<(), SaleError> {
 /// each variant is one distinct trust failure, so a page can say what is wrong
 /// instead of only that something is.
 #[derive(Debug, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum AnchorError {
     /// The anchor object, the note, a hex field, or the served window/rollup
     /// inputs could not be parsed.
@@ -1089,6 +1372,7 @@ struct StatementWire {
 /// What [`verify_statement_anchor`] needs beyond the detail response itself:
 /// the covered entries' content hashes, the head the anchor's position implies,
 /// and where the check is pointed.
+#[non_exhaustive]
 pub struct StatementAnchorCheck<'a> {
     /// The covered entries' `contentHash` hex strings in log order —
     /// `contentHash` per `GET /api/v1/entries/{id}/proof` or the dashboard's
@@ -1104,6 +1388,22 @@ pub struct StatementAnchorCheck<'a> {
     /// The tenant's ledger origin, `oxsum/ledgers/<tenant>` — the same string
     /// `GET /api/v1/log/head` answers.
     pub expected_origin: &'a str,
+}
+
+impl<'a> StatementAnchorCheck<'a> {
+    /// Borrows the covered hashes, the expected head and the ledger origin.
+    #[must_use]
+    pub const fn new(
+        window_hashes: &'a [&'a str],
+        expected_head: &'a TreeHead,
+        expected_origin: &'a str,
+    ) -> Self {
+        Self {
+            window_hashes,
+            expected_head,
+            expected_origin,
+        }
+    }
 }
 
 /// Verifies a statement's log anchor against the detail response (issue #221).
@@ -1247,6 +1547,7 @@ pub fn verify_statement_anchor(
 /// What checking a usage report can fail with — one variant per distinct trust
 /// failure, so a page names what is wrong instead of only that something is.
 #[derive(Debug, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum UsageReportError {
     /// The bundle, the marker's description, or a hex field could not be parsed.
     Malformed(String),
