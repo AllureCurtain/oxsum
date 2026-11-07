@@ -1170,13 +1170,34 @@ Your model list and price catalog show routes allowed by your customer tier. A c
 
 ### Prepare customer sale books
 
-Select business context and use the [sale-book API](api.md#customer-sale-books-apiv1businesssale-books-599). Owner/admin creates a named book, saves its full model map with `expectedRevision: 0` for the first draft, and publishes that exact draft revision. Later edits save a new revision; the previous publication is unchanged. Each model has customer rates and one optional percentage discount. Provider costs belong to provider configuration and are refused here.
+Open **Business → Prices** in business context, or use the [sale-book API](api.md#customer-sale-books-apiv1businesssale-books-599). Owner/admin creates a named book, saves its full model map with `expectedRevision: 0` for the first draft, and publishes that exact draft revision. Later edits save a new revision; the previous publication is unchanged. Each model has customer rates and one optional percentage discount. Provider costs belong to provider configuration and are refused here.
 
 Schedule a published version as the business default, or have owner/finance assign a version to one customer. Owner/finance may override an individual customer model. Previews use the override, then the assigned book, then the default for a missing model. Supply normalized usage to see line items, the matched conditional rule, the selected terms and the final integer charge. A draft preview can compare a proposed change before publishing.
 
 Use a future `effectiveFrom` to schedule a change. `replaces` ends an existing schedule of the same scope at that instant and starts its replacement atomically. To cancel a future schedule, append an `endSchedule` at its start. Saves cannot backdate or overlap terms. Save each mutation's idempotency key; retry the same request after a connection failure instead of issuing a new change. An already ended schedule cannot be extended or have its end rewritten.
 
-These API controls currently prepare and preview sale terms. Gateway adoption and signed customer evidence follow in T09–T13; the console's `/app/business` prices section mounts the book list and history. Existing gateway billing continues using its original channel price versions until that integration.
+The editor shows the loaded draft revision and retains its input on conflicts or
+network failures. Retry an unchanged intent with the same form; changing its
+payload creates a new action identity. Loading the latest saved draft asks before
+replacing local edits. Rates are entered in credits with at most six fractional
+digits, parsed exactly into integer minor units. Blank optional cache/reasoning
+rates use their documented base-rate fallback; explicit zero stays free.
+Conditional matches replace the complete rate set and are edited separately.
+
+Publication names the exact saved draft. It does not activate prices. Use
+**Activation and customer terms** to select an immutable version, UTC start/end
+and any schedule to replace. The dropdown includes defaults from other books;
+customer selection loads its assignments and model overrides. Ending/canceling
+a schedule confirms the named window. All boundaries display UTC; an open-ended
+window is only active after its start, and its end is exclusive.
+
+The preview shows the selected customer, model, instant, source, book/version,
+schedule, condition, discount and exact charge. Compare two customers to confirm
+intentional differences. A successful preview sends no model request and does
+not reserve funds. Gateway admission pins its resolved sale snapshot; later
+edits cannot reprice an already admitted turn. Exported settlement evidence
+carries the associated signed sale binding. Historical channel-priced entries
+keep their original pricing identities.
 
 ### Configure a business payment merchant
 

@@ -143,3 +143,9 @@ clear optional fields, and saved values supersede deployment defaults. Login
 and both portal contexts share the public contact/help identity. Frontend build
 and backend coverage passed; browser layout/keyboard/locale acceptance remains
 pending in [the evidence record](../docs/roadmap/operator-launch/evidence/business-profile.md).
+
+The Business Prices editor supports exact decimal model/conditional-rate drafts,
+revision-bound saves and publication, default/customer schedules, model overrides,
+confirmed schedule end/cancel and customer/draft preview. Pure financial input
+checks run with `node --experimental-strip-types --test tests/sale-draft.test.ts`.
+Browser evidence is tracked separately in the operator-launch execution ledger.
