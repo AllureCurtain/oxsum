@@ -135,6 +135,11 @@ jobs:
         run: |
           python3 scripts/test-candidate-ci.py
           python3 scripts/test-candidate-bundle.py
+      - name: Test isolated example runner failure paths
+        run: |
+          python3 -m venv /tmp/oxsum-example-test-venv
+          /tmp/oxsum-example-test-venv/bin/pip install -r scripts/verify-examples-requirements.txt
+          /tmp/oxsum-example-test-venv/bin/python -m unittest discover -s scripts -p test_verify_examples.py
 
   clippy:
     name: clippy
