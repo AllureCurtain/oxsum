@@ -30,15 +30,19 @@
 #
 # The heavy tier (the three nextest shards + process-shared suites against
 # real PostgreSQL) deliberately stays in ci.yml: a promoted SHA must be a main
-# commit, which the post-merge push run already gated — duplicating ~30 runner
-# minutes here buys nothing. The runbook (docs/self-hosted-release.md) names
-# the post-merge CI run as gate 0 for exactly this reason.
+# commit. resolve validates a successful, fully executed ci.yml run on that
+# exact SHA, including engine conformance. Missing/skipped/red evidence fails
+# closed; the referenced run and image smoke log travel with the bundle.
 #
 # Nothing here publishes: no registry login, `push: false`, no npm publish, no
 # deploy trigger, no secrets. `release.yml` remains the publish half and
 # `deploy.yml` the deploy half — both manual-only, both untouched by a gate.
 
 name: Release candidate
+
+permissions:
+  contents: read
+  actions: read
 
 on:
   workflow_dispatch:
@@ -74,14 +78,21 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       sha: ${{ steps.pin.outputs.sha }}
+      ci_run_url: ${{ steps.full-ci.outputs.run_url }}
     steps:
       - uses: actions/checkout@v7
         with:
           fetch-depth: 0
       - name: Pin and validate the candidate
         id: pin
+        env:
+          REQUESTED_SHA: ${{ inputs.sha }}
         run: |
-          sha="${{ inputs.sha }}"
+          sha="$REQUESTED_SHA"
+          if ! [[ "$sha" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "::error::candidate must be a full lowercase commit SHA"
+            exit 1
+          fi
           if ! git cat-file -e "${sha}^{commit}" 2>/dev/null; then
             echo "::error::${sha} is not a commit in this repository"
             exit 1
@@ -93,6 +104,26 @@ jobs:
           full="$(git rev-parse "$sha")"
           echo "candidate: $full"
           echo "sha=$full" >> "$GITHUB_OUTPUT"
+      - name: Check out the candidate's gate helpers
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ steps.pin.outputs.sha }}
+      - name: Test full-CI evidence validation
+        run: python3 scripts/test-candidate-ci.py
+      - name: Require executed full CI on the candidate SHA
+        id: full-ci
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CANDIDATE_SHA: ${{ steps.pin.outputs.sha }}
+        run: |
+          python3 scripts/check-candidate-ci.py --sha "$CANDIDATE_SHA" \
+            --repository "$GITHUB_REPOSITORY" --output candidate-ci.json
+          echo "run_url=$(python3 -c 'import json; print(json.load(open("candidate-ci.json"))["run_url"])')" >> "$GITHUB_OUTPUT"
+      - uses: actions/upload-artifact@v7
+        with:
+          name: candidate-full-ci
+          path: candidate-ci.json
+          retention-days: 90
 
   fmt:
     name: fmt
@@ -335,7 +366,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 90
     outputs:
-      digest: ${{ steps.build.outputs.digest }}
+      digest: ${{ steps.identity.outputs.digest }}
     steps:
       - uses: actions/checkout@v7
         with:
@@ -354,24 +385,48 @@ jobs:
           file: ./Dockerfile
           push: false
           load: true
-          tags: oxsum-candidate:sha-${{ needs.resolve.outputs.sha }}
+          tags: ghcr.io/allurecurtain/oxsum:sha-${{ needs.resolve.outputs.sha }}
           build-args: |
             GIT_SHA=${{ needs.resolve.outputs.sha }}
           cache-from: type=gha,scope=candidate
           cache-to: type=gha,mode=max,scope=candidate
       - name: Record the image digest
+        id: identity
         run: |
-          digest="$(docker inspect --format='{{index .RepoDigests 0}}' oxsum-candidate:sha-${{ needs.resolve.outputs.sha }} 2>/dev/null || true)"
+          digest="$(docker inspect --format='{{index .RepoDigests 0}}' ghcr.io/allurecurtain/oxsum:sha-${{ needs.resolve.outputs.sha }} 2>/dev/null || true)"
           # A locally loaded image has no RepoDigests (digests are registry
           # facts); the build id is what identifies this exact build output.
           if [ -z "$digest" ]; then
-            digest="$(docker image inspect --format='{{.Id}}' oxsum-candidate:sha-${{ needs.resolve.outputs.sha }})"
+            digest="$(docker image inspect --format='{{.Id}}' ghcr.io/allurecurtain/oxsum:sha-${{ needs.resolve.outputs.sha }})"
           fi
           echo "image identity: $digest"
           echo "digest=$digest" >> "$GITHUB_OUTPUT"
-          # Same-sha sanity: the baked version answers the promoted commit.
-          docker run --rm --entrypoint sh oxsum-candidate:sha-${{ needs.resolve.outputs.sha }} \
-            -c 'test -x /usr/local/bin/oxsum && echo "binary present"'
+      - name: Smoke the exact candidate image
+        env:
+          OXSUM_IMAGE_TAG: sha-${{ needs.resolve.outputs.sha }}
+          SMOKE_EXPECTED_SHA: ${{ needs.resolve.outputs.sha }}
+          SMOKE_BUILD: "0"
+          # The mandatory verify-consumer job validates the same SHA's packed
+          # artifact. Avoid compiling a second consumer in this Docker job.
+          SMOKE_SKIP_CONSUMER: "1"
+        run: bash scripts/release-candidate-smoke.sh | tee candidate-smoke.log
+      - name: Export the tested image without publishing
+        env:
+          CANDIDATE_SHA: ${{ needs.resolve.outputs.sha }}
+        run: docker save "ghcr.io/allurecurtain/oxsum:sha-$CANDIDATE_SHA" | gzip > candidate-image.tar.gz
+      - uses: actions/upload-artifact@v7
+        with:
+          name: candidate-image
+          path: candidate-image.tar.gz
+          compression-level: 0
+          retention-days: 30
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: candidate-smoke
+          path: candidate-smoke.log
+          if-no-files-found: ignore
+          retention-days: 90
 
   # Everything the gate produced, folded into one manifest with SHA-256s —
   # the object a release manager reviews before touching release.yml.
@@ -432,9 +487,10 @@ jobs:
             echo "    \"frontend_build\": \"passed\","
             echo "    \"verify_consumer\": \"passed\","
             echo "    \"developer_examples\": \"passed\","
-            echo "    \"image_build\": \"passed\""
+            echo "    \"image_build\": \"passed\","
+            echo "    \"image_smoke\": \"passed\""
             echo "  },"
-            echo "  \"heavy_tier\": \"main post-merge CI run on this SHA (ci.yml shards)\","
+            echo "  \"heavy_tier\": \"${{ needs.resolve.outputs.ci_run_url }}\","
             echo "  \"artifacts\": \"see SHA256SUMS\""
             echo "}"
           } > candidate-manifest.json

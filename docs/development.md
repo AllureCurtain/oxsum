@@ -2,6 +2,13 @@
 
 ## Requirements
 
+- Candidate validation: `python3 scripts/test-candidate-ci.py` exercises the
+  full-CI evidence gate without credentials. `scripts/check-candidate-ci.py
+  --sha <40-character-sha> --repository AllureCurtain/oxsum --output ci.json`
+  requires authenticated `gh` and refuses absent, failed or skipped heavy
+  checks. The release workflow runs the image smoke automatically; see
+  [self-hosted-release.md](self-hosted-release.md).
+
 - Rust stable: no toolchain pin — rustup uses whatever `stable` resolves to. The workspace MSRV is `rust-version = "1.98"` in the root manifest; cargo will refuse to build on anything older.
 - Docker: runs local PostgreSQL 17, also used by doubleentry's Postgres tests
 

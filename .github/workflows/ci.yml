@@ -120,6 +120,8 @@ jobs:
           components: rustfmt, clippy
       - if: needs.filter.outputs.rust == 'true'
         run: cargo fmt --all --check
+      - name: Test candidate CI evidence validation
+        run: python3 scripts/test-candidate-ci.py
 
   clippy:
     name: clippy
