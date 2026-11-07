@@ -5,7 +5,6 @@
 //! the personal organization, the owner membership and the first API key. A user without an
 //! organization, or an organization without its owner, cannot exist.
 
-use password_auth::{generate_hash, verify_password};
 use serde::Serialize;
 use sqlx::Row;
 use uuid::Uuid;
@@ -82,7 +81,7 @@ impl Db {
         validate_password(&new.password)?;
         let organization_name = organization_name(new.organization_name.as_deref(), &email)?;
 
-        let password_hash = generate_hash(&new.password);
+        let password_hash = password_auth::generate_hash(&new.password);
         let mut tx = self.pool().begin().await?;
         let registration =
             insert_registration(&mut tx, email, &organization_name, &password_hash).await?;
@@ -96,7 +95,7 @@ impl Db {
         let email = validate_email(&new.email)?;
         validate_password(&new.password)?;
         let organization_name = organization_name(new.organization_name.as_deref(), &email)?;
-        let password_hash = generate_hash(&new.password);
+        let password_hash = password_auth::generate_hash(&new.password);
         let mut tx = self.pool().begin().await?;
         crate::business_staff::require_open_registration(&mut tx).await?;
         let registration =
@@ -114,7 +113,7 @@ impl Db {
         validate_password(password)?;
         // Hashing runs before the transaction opens, same as register: argon2 is
         // deliberately slow and must not hold a connection.
-        let password_hash = generate_hash(password);
+        let password_hash = password_auth::generate_hash(password);
 
         let mut tx = self.pool().begin().await?;
         // Match staff mutation/deletion ordering before updating the user and sessions.
@@ -205,7 +204,7 @@ impl Db {
             .await?
             .ok_or_else(|| WalletError::NotFound("no such user".into()))?;
         let password_hash: String = row.try_get("password_hash")?;
-        if verify_password(password, &password_hash).is_err() {
+        if password_auth::verify_password(password, &password_hash).is_err() {
             return Err(WalletError::InvalidCredentials);
         }
 

@@ -1,7 +1,9 @@
-use super::*;
-use crate::{BillLine, Price, RuleMatch, UsageRecord};
+use crate::{BillLine, BusinessCapability, Price, RuleMatch, UsageRecord, WalletError};
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use std::collections::BTreeMap;
+use time::OffsetDateTime;
+use uuid::Uuid;
 
 /// A sale price cannot contain supplier costs, including inside conditional rules.
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -25,13 +27,13 @@ impl<'de> Deserialize<'de> for SalePrice {
             ));
         }
         let price: Price = serde_json::from_value(value).map_err(serde::de::Error::custom)?;
-        Self::new(price).map_err(serde::de::Error::custom)
+        Self::try_new(price).map_err(serde::de::Error::custom)
     }
 }
 impl SalePrice {
-    pub fn new(price: Price) -> Result<Self, WalletError> {
+    pub fn try_new(price: Price) -> Result<Self, WalletError> {
         if price.upstream.is_some() || price.rules.iter().any(|r| r.price.upstream.is_some()) {
-            return Err(invalid("supplier costs are not sale terms"));
+            return Err(super::invalid("supplier costs are not sale terms"));
         }
         if price.rules.len() > 100
             || price
@@ -39,7 +41,7 @@ impl SalePrice {
                 .iter()
                 .any(|r| r.cond.service_tier.as_ref().is_some_and(|t| t.len() > 64))
         {
-            return Err(invalid("sale rules exceed their limits"));
+            return Err(super::invalid("sale rules exceed their limits"));
         }
         price.validate().map_err(WalletError::InvalidInput)?;
         Ok(Self(price))
@@ -53,7 +55,7 @@ impl SalePrice {
         for rule in &mut price.rules {
             rule.price.upstream = None;
         }
-        Self::new(price)
+        Self::try_new(price)
     }
 }
 
@@ -67,7 +69,7 @@ pub struct SaleTerms {
 impl SaleTerms {
     pub fn validate(&self) -> Result<(), WalletError> {
         if !(0..=100).contains(&self.discount_percent) {
-            return Err(invalid("discountPercent must be 0..=100"));
+            return Err(super::invalid("discountPercent must be 0..=100"));
         }
         Ok(())
     }
@@ -75,10 +77,10 @@ impl SaleTerms {
 pub type SaleModelMap = BTreeMap<String, SaleTerms>;
 pub(super) fn validate_models(models: &SaleModelMap) -> Result<(), WalletError> {
     if models.is_empty() || models.len() > 500 {
-        return Err(invalid("a sale book needs 1 to 500 models"));
+        return Err(super::invalid("a sale book needs 1 to 500 models"));
     }
     for (model, terms) in models {
-        model_name(model)?;
+        super::model_name(model)?;
         terms.validate()?;
     }
     Ok(())
@@ -281,10 +283,12 @@ impl<'de> Deserialize<'de> for SalePreviewUsage {
     }
 }
 impl SalePreviewUsage {
-    pub fn new(usage: UsageRecord) -> Result<Self, WalletError> {
+    pub fn try_new(usage: UsageRecord) -> Result<Self, WalletError> {
         usage.validate()?;
         if usage.usage_details.is_some() || usage.end_user.is_some() || !usage.tags.is_empty() {
-            return Err(invalid("preview usage accepts normalized dimensions only"));
+            return Err(super::invalid(
+                "preview usage accepts normalized dimensions only",
+            ));
         }
         Ok(Self(usage))
     }
@@ -359,14 +363,14 @@ impl SalePriceSnapshot {
         self.terms.validate()?;
         usage.validate()?;
         if usage.usage_details.is_some() {
-            return Err(invalid(
+            return Err(super::invalid(
                 "sale rating requires normalized dimensions, not provider details",
             ));
         }
         let price = self.terms.price.price();
         let unpriced = price.unpriced_dimensions(usage);
         if !unpriced.is_empty() {
-            return Err(invalid(&format!(
+            return Err(super::invalid(&format!(
                 "unpriced sale dimensions: {}",
                 unpriced.join(", ")
             )));

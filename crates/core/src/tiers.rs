@@ -18,7 +18,6 @@ use uuid::Uuid;
 
 use crate::db::Db;
 use crate::error::WalletError;
-use crate::keys::validate_model_allowlist;
 
 /// The longest a tier name may be: a slug like `enterprise` or `partner-2026`.
 const MAX_TIER: usize = 40;
@@ -142,7 +141,7 @@ impl Db {
             ));
         }
         if let Some(models) = &model_allowlist {
-            validate_model_allowlist(models)?;
+            crate::keys::validate_model_allowlist(models)?;
         }
         let row = sqlx::query(
             "INSERT INTO oxsum.tier_profiles (name, requests_per_minute, model_allowlist) \

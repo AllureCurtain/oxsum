@@ -25,7 +25,6 @@ use time::Date;
 use uuid::Uuid;
 
 use crate::billing::{MeteredSettlement, SettlementKind, hold_description};
-use crate::channels::event_price;
 use crate::db::Db;
 use crate::error::WalletError;
 use crate::holds::OpenHold;
@@ -151,7 +150,7 @@ async fn authorize_start(
             .map_err(|_| WalletError::Misconfigured("unreadable metering authorization".into()));
     }
     check_event(event)?;
-    let price = event_price(
+    let price = crate::channels::event_price(
         &mut tx,
         service.business_id,
         &event.channel,

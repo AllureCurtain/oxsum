@@ -37,7 +37,6 @@ use crate::heads::{
     StatementRollupLine, StatementRollupV1, canonical_statement_rollup, statement_rollup_hash,
     statement_window_hash,
 };
-use crate::orgs::malformed;
 use crate::wallet::Wallet;
 
 // `due_date` serializes as a bare `YYYY-MM-DD` — the contract's `format: date`.
@@ -57,7 +56,7 @@ impl StatementStatus {
         match raw {
             "draft" => Ok(Self::Draft),
             "finalized" => Ok(Self::Finalized),
-            other => Err(malformed("statements.status", other)),
+            other => Err(crate::orgs::malformed("statements.status", other)),
         }
     }
 
@@ -91,7 +90,7 @@ impl PaymentStatus {
             "paid" => Ok(Self::Paid),
             "overdue" => Ok(Self::Overdue),
             "suspended" => Ok(Self::Suspended),
-            other => Err(malformed("statements.payment_status", other)),
+            other => Err(crate::orgs::malformed("statements.payment_status", other)),
         }
     }
 

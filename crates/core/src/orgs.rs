@@ -20,7 +20,6 @@ use uuid::Uuid;
 use crate::db::Db;
 use crate::display::DisplayCurrency;
 use crate::error::WalletError;
-use crate::keys::conflict_or_storage;
 use crate::wallet::ListPage;
 
 /// Whether an organization is one person's or a team's. product.md: a personal
@@ -1051,7 +1050,7 @@ pub(crate) async fn add_member(
     .fetch_one(&mut **tx)
     .await
     .map_err(|e| {
-        conflict_or_storage(
+        crate::keys::conflict_or_storage(
             e,
             "memberships_pkey",
             "that account is already a member of this organization",

@@ -14,7 +14,6 @@ use std::fmt::Write as _;
 use std::sync::LazyLock;
 use std::time::Duration;
 
-use password_auth::verify_password;
 use rand::Rng;
 use serde::Serialize;
 use sha2::{Digest, Sha256};
@@ -214,7 +213,7 @@ impl Db {
         let Some(row) = row else {
             // No such account: burn one hash verification anyway, then fail like a wrong
             // password. The result is discarded; the cost is the point.
-            let _: Result<(), _> = verify_password(password, DUMMY_HASH.as_str());
+            let _: Result<(), _> = password_auth::verify_password(password, DUMMY_HASH.as_str());
             return Err(WalletError::InvalidCredentials);
         };
         let user = User {
@@ -223,7 +222,7 @@ impl Db {
             email_verified: row.try_get("email_verified")?,
         };
         let password_hash: String = row.try_get("password_hash")?;
-        if verify_password(password, &password_hash).is_err() {
+        if password_auth::verify_password(password, &password_hash).is_err() {
             return Err(WalletError::InvalidCredentials);
         }
         let mut tx = self.pool().begin().await?;

@@ -301,7 +301,7 @@ async fn draft_edits_publish_and_replacement_never_rewrite_a_pinned_snapshot() {
                     book_id: book,
                     revision: 2,
                 },
-                usage: SalePreviewUsage::new(UsageRecord::tokens(2, 0).unwrap()).unwrap(),
+                usage: SalePreviewUsage::try_new(UsageRecord::tokens(2, 0).unwrap()).unwrap(),
             },
         )
         .await
@@ -657,7 +657,7 @@ async fn explicit_legacy_snapshot_preserves_version_identity_and_removes_all_sup
                     channel: channel.clone(),
                     version: 1,
                 },
-                usage: SalePreviewUsage::new(UsageRecord {
+                usage: SalePreviewUsage::try_new(UsageRecord {
                     input_tokens: 1,
                     service_tier: Some("priority".into()),
                     ..Default::default()
@@ -836,8 +836,9 @@ fn unknown_dimensions_cost_fields_ambiguous_rules_and_numeric_overflow_are_refus
     };
     assert!(large.discounted_minor(1).is_err());
     assert!(terms(1, 101).validate().is_err());
-    let json =
-        serde_json::to_value(SalePreviewUsage::new(UsageRecord::tokens(1, 1).unwrap()).unwrap())
-            .unwrap();
+    let json = serde_json::to_value(
+        SalePreviewUsage::try_new(UsageRecord::tokens(1, 1).unwrap()).unwrap(),
+    )
+    .unwrap();
     assert!(serde_json::from_value::<SalePreviewUsage>(json).is_ok());
 }
