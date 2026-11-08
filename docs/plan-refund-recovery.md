@@ -57,3 +57,10 @@ analysis. Retain the error and evidence for explicit correction; do not modify
 posted entries, suppress triggers, insert fabricated payment rows, or issue a
 second PSP refund to work around it. Daily recognition and policy migration are
 separate work under N11.
+
+
+A later chargeback also records its full cash amount. Only the still-collected
+part of the original bill restores customer debt; any part already refunded
+becomes explicit review suspense. `dispute.resolve` retains that exact split.
+The same rule applies if the callback and dispute resolution race, or if a
+voided bill already owes a refund payable.

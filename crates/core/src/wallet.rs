@@ -1365,20 +1365,41 @@ impl Wallet {
         Ok(Some(old))
     }
 
-    /// Original source entries, read through this transaction's snapshot.
+    /// Original source credits, read through this transaction's snapshot.
     pub(crate) async fn plan_source_credit_in(
         &self,
         tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
         key: &str,
         path: &str,
     ) -> Result<i64, WalletError> {
+        self.plan_source_minor_in(tx, key, path, "C").await
+    }
+
+    /// Actual debit allocation in a source-linked entry.
+    pub(crate) async fn plan_source_debit_in(
+        &self,
+        tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+        key: &str,
+        path: &str,
+    ) -> Result<i64, WalletError> {
+        self.plan_source_minor_in(tx, key, path, "D").await
+    }
+
+    async fn plan_source_minor_in(
+        &self,
+        tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+        key: &str,
+        path: &str,
+        direction: &str,
+    ) -> Result<i64, WalletError> {
         let sql = format!(
-            "SELECT COALESCE(SUM(p.amount_minor),0)::bigint FROM ledger_{}.postings p JOIN ledger_{}.accounts a ON a.account_index=p.account_index JOIN ledger_{}.entries e ON e.entry_id=p.entry_id WHERE p.entry_id=$1 AND a.path=$2 AND p.layer='settled' AND p.direction='C' AND e.log_index IS NOT NULL",
+            "SELECT COALESCE(SUM(p.amount_minor),0)::bigint FROM ledger_{}.postings p JOIN ledger_{}.accounts a ON a.account_index=p.account_index JOIN ledger_{}.entries e ON e.entry_id=p.entry_id WHERE p.entry_id=$1 AND a.path=$2 AND p.layer='settled' AND p.direction=$3 AND e.log_index IS NOT NULL",
             self.tenant_id, self.tenant_id, self.tenant_id
         );
         Ok(sqlx::query_scalar(&sql)
             .bind(entry_id_for(key).as_uuid())
             .bind(path)
+            .bind(direction)
             .fetch_one(&mut **tx)
             .await?)
     }
@@ -1472,40 +1493,46 @@ impl Wallet {
         self.append_in(tx, draft).await
     }
 
-    /// Restores a plan-fee receivable a lost dispute clawed back: `debit
-    /// Receivables / credit Cash` — the chargeback's mirror, under the same
-    /// `dispute-recharge/<dispute_id>` key family the wallet-funded arm uses,
-    /// so the ledger reads a contested-charge restoration, never a voluntary
-    /// repayment, and a retried settle replays the standing entry.
+    /// Record the full observed chargeback cash. Only original collected funds
+    /// restore debt; a voided bill draws its payable and excess is review suspense.
+    #[allow(clippy::too_many_arguments)]
     pub(crate) async fn plan_journal_dispute_recharge_in(
         &self,
         tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
-        journal_id: &uuid::Uuid,
-        dispute_id: &uuid::Uuid,
-        minor: i64,
+        journal_id: &Uuid,
+        dispute_id: &Uuid,
+        cash_minor: i64,
+        receivable_minor: i64,
+        payable_minor: i64,
         on: Date,
     ) -> Result<Receipt, WalletError> {
-        let amt = positive(minor)?;
+        let amt = positive(cash_minor)?;
+        let suspense = cash_minor
+            .checked_sub(receivable_minor)
+            .and_then(|v| v.checked_sub(payable_minor))
+            .filter(|v| *v >= 0)
+            .ok_or_else(|| invalid("invalid chargeback source allocation"))?;
         let key = format!("dispute-recharge/{dispute_id}");
         let entry_id = entry_id_for(&key);
         if let Some(stored) = self.store.get(entry_id).await? {
             return Ok(stored_receipt(&stored));
         }
-        let draft = Entry::<Draft, SCALE>::new(entry_id, idem(&key)?, on)
-            .with_description(description_of(&format!(
-                "plan fee journal {journal_id}: dispute recharge"
-            ))?)
-            .debit(self.receivables, amt, currency())
-            .credit(self.cash, amt, currency());
-        match self.append_in(tx, draft).await {
-            Err(WalletError::Conflict(_)) => match self.store.get(entry_id).await? {
-                Some(stored) => Ok(stored_receipt(&stored)),
-                None => Err(WalletError::Conflict(format!(
-                    "idempotency key {key:?} is already taken"
-                ))),
-            },
-            other => other,
+        let mut draft=Entry::<Draft,SCALE>::new(entry_id,idem(&key)?,on)
+            .with_description(description_of(&format!("plan fee journal {journal_id}: chargeback cash {cash_minor}, receivable {receivable_minor}, payable {payable_minor}, review suspense {suspense}"))?)
+            .credit(self.cash,amt,currency());
+        for (account, minor) in [
+            (self.receivables, receivable_minor),
+            (self.refund_payable, payable_minor),
+            (self.adjustments, suspense),
+        ] {
+            if minor < 0 {
+                return Err(invalid("negative chargeback allocation"));
+            }
+            if minor > 0 {
+                draft = draft.debit(account, Credits::from_minor(minor), currency());
+            }
         }
+        self.append_in(tx, draft).await
     }
 
     /// The reversal a staff void posts: every line's leg reversed in one entry

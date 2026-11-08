@@ -482,3 +482,10 @@ note is recoverable before close; close refuses unresolved legacy sources.
 Multiple ambiguous legacy allocations or combined legacy-refund/void histories
 require explicit finance review. No migration rewrites ledger entries or
 customer documents. See [the recovery runbook](plan-refund-recovery.md).
+
+Refund and lost-dispute writers share the subscription/plan lock and preserve
+both external cash facts in either order. Chargebacks read their original entry
+on replay even after the journal becomes posted. Debt restoration is bounded by
+the remaining applied payment; voided bills draw their source refund payable.
+Any excess has an explicit suspense debit and review amount in the dispute
+resolution audit. No cash result is clipped to a journal's remaining payment.

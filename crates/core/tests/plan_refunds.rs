@@ -758,3 +758,164 @@ async fn recovery_rejects_unconfirmed_or_wrong_wallet_sources_without_writes() {
         .is_err()
     );
 }
+
+async fn disputed(w: &World, amount: i64) -> Uuid {
+    let ev = VerifiedMerchantEvent {
+        event_id: Uuid::new_v4().to_string(),
+        kind: MerchantEventKind::Dispute,
+        payment_id: Some(w.order.order_id),
+        provider_payment_id: Some(format!("pay_{}", w.order.order_id)),
+        organization_id: Some(w.org),
+        provider_account_id: Some(w.context.account_id.clone()),
+        mode: Some(MerchantMode::Test),
+        amount_minor: Some(amount),
+        currency: Some("USD".into()),
+        refund_id: Some(format!("case_{}", Uuid::new_v4())),
+    };
+    let receipt =
+        w.db.receive_merchant_event(&w.context, &ev, &[83; 32])
+            .await
+            .unwrap();
+    apply(w, &receipt).await;
+    sqlx::query_scalar("SELECT dispute_id FROM oxsum.disputes WHERE order_id=$1")
+        .bind(w.order.order_id)
+        .fetch_one(w.db.pool())
+        .await
+        .unwrap()
+}
+async fn lose(w: &World, dispute: Uuid) {
+    w.db.resolve_order_dispute(
+        &w.wallet,
+        &w.owner,
+        dispute,
+        oxsum_core::DisputeResolution::Lost,
+        Some("confirmed chargeback fixture"),
+        &format!("loss-{dispute}"),
+        OffsetDateTime::now_utc().date(),
+    )
+    .await
+    .unwrap();
+}
+#[tokio::test]
+async fn refunds_before_chargebacks_record_full_cash_and_only_remaining_customer_debt() {
+    for refund in [1_000_000, FEE] {
+        let Some(w) = world(true).await else { return };
+        close(&w).await;
+        // Dispute amounts are ledger minor in this recorded finance source.
+        let d = disputed(&w, FEE).await;
+        refunded(&w, refund).await;
+        lose(&w, d).await;
+        lose(&w, d).await;
+        assert_eq!(net(&w, "Assets:Cash").await, refund);
+        assert_eq!(net(&w, "Assets:Receivables").await, -(FEE - refund));
+        assert_eq!(net(&w, "Equity:Adjustments").await, -refund);
+        let j =
+            w.db.plan_journals(w.org, None, 50)
+                .await
+                .unwrap()
+                .journals
+                .remove(0);
+        assert_eq!(j.settled_minor, 0);
+        let audit: serde_json::Value = sqlx::query_scalar(
+            "SELECT detail FROM oxsum.finance_audit WHERE action='dispute.resolve' AND target=$1",
+        )
+        .bind(d.to_string())
+        .fetch_one(w.db.pool())
+        .await
+        .unwrap();
+        assert_eq!(audit["rechargedMinor"], FEE - refund);
+        assert_eq!(audit["unallocatedMinor"], refund);
+        assert_eq!(audit["requiresReview"], true);
+    }
+}
+#[tokio::test]
+async fn a_refund_racing_a_lost_dispute_never_loses_the_second_cash_outflow() {
+    let Some(w) = world(true).await else { return };
+    close(&w).await;
+    let d = disputed(&w, FEE).await;
+    let r = reserve(&w, 1_000_000).await;
+    let e = event(&w, &r, MerchantEventKind::RefundSucceeded).await;
+    let ((), ()) = tokio::join!(apply(&w, &e), lose(&w, d));
+    assert_eq!(net(&w, "Assets:Cash").await, 1_000_000);
+    assert_eq!(net(&w, "Equity:Adjustments").await, -1_000_000);
+    let j =
+        w.db.plan_journals(w.org, None, 50)
+            .await
+            .unwrap()
+            .journals
+            .remove(0);
+    assert_eq!(j.settled_minor, 0);
+    assert_eq!(net(&w, "Assets:Receivables").await, -j.total_minor);
+    let before = w.wallet.log_size().await.unwrap();
+    apply(&w, &e).await;
+    lose(&w, d).await;
+    assert_eq!(w.wallet.log_size().await.unwrap(), before);
+}
+
+#[tokio::test]
+async fn a_partial_chargeback_then_refund_keeps_the_restored_debt_visible() {
+    let Some(w) = world(true).await else { return };
+    let j = close(&w).await;
+    let d = Uuid::new_v4();
+    sqlx::query("INSERT INTO oxsum.disputes(dispute_id,order_id,organization_id,merchant_id,provider_dispute_id,amount_minor,currency,state) VALUES($1,$2,$3,$4,$5,1500000,'USD','opened')")
+        .bind(d).bind(w.order.order_id).bind(w.org).bind(w.context.merchant_id).bind(d.to_string()).execute(w.db.pool()).await.unwrap();
+    w.db.recharge_journal_dispute(
+        &w.wallet,
+        w.order.order_id,
+        d,
+        1_500_000,
+        OffsetDateTime::now_utc().date(),
+    )
+    .await
+    .unwrap();
+    let r = refunded(&w, 2_000_000).await;
+    let a = allocation(&w, r.refund_id).await;
+    assert_eq!(
+        (a.earned_minor, a.unallocated_minor),
+        (1_000_000, 1_000_000)
+    );
+    let journal =
+        w.db.plan_journal(w.org, j.journal_id)
+            .await
+            .unwrap()
+            .unwrap()
+            .journal;
+    assert_eq!((journal.total_minor, journal.settled_minor), (1_500_000, 0));
+    let ss =
+        w.db.plan_statements(w.org, None, 50)
+            .await
+            .unwrap()
+            .statements;
+    assert_eq!(
+        ss.iter()
+            .filter(|s| s.state != PlanStatementState::Void)
+            .map(|s| s.total_minor - s.paid_minor)
+            .sum::<i64>(),
+        1_500_000
+    );
+    assert_eq!(net(&w, "Assets:Cash").await, 1_000_000);
+    assert_eq!(net(&w, "Assets:Receivables").await, -1_500_000);
+}
+
+#[tokio::test]
+async fn a_void_then_refund_then_chargeback_consumes_only_the_remaining_payable() {
+    let Some(w) = world(true).await else { return };
+    let j = close(&w).await;
+    let d = disputed(&w, FEE).await;
+    w.db.void_invoice_journal(
+        &w.owner,
+        &w.wallet,
+        j.journal_id,
+        "void before cash outcomes",
+        &Uuid::new_v4().to_string(),
+        OffsetDateTime::now_utc().date(),
+    )
+    .await
+    .unwrap();
+    refunded(&w, 1_000_000).await;
+    lose(&w, d).await;
+    assert_eq!(net(&w, "Assets:Cash").await, 1_000_000);
+    assert_eq!(net(&w, "Liabilities:RefundPayable").await, 0);
+    assert_eq!(net(&w, "Assets:Receivables").await, 0);
+    assert_eq!(net(&w, "Equity:Adjustments").await, -1_000_000);
+}
