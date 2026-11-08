@@ -321,6 +321,32 @@ async fn inspect_source_in(
         .bind(order).bind(refund).fetch_all(&mut **tx).await?;
     for previous in refunds {
         let id: Uuid = previous.try_get("refund_id")?;
+        // A later return cannot consume source at the old return's boundary,
+        // regardless of its later allocation or recovery state.
+        let return_id = *crate::entry_id_for(&format!("order-refund/{id}")).as_uuid();
+        let position: Option<i64> = sqlx::query_scalar(&format!(
+            "SELECT log_index FROM ledger_{tenant}.entries WHERE entry_id=$1"
+        ))
+        .bind(return_id)
+        .fetch_optional(&mut **tx)
+        .await?
+        .flatten();
+        if before.is_some_and(|upper| position.is_some_and(|position| position >= upper)) {
+            match crate::nonplan_refunds::return_entry_in(
+                tx,
+                wallet,
+                id,
+                previous.try_get("amount_minor")?,
+            )
+            .await
+            {
+                Ok(Some(_)) => continue,
+                Ok(None) | Err(WalletError::Conflict(_)) => {
+                    return Ok(proof.uncertain("priorRefundEffectUnproven"));
+                }
+                Err(error) => return Err(error),
+            }
+        }
         let effect = match crate::nonplan_refunds::effect_in(tx, wallet, id).await {
             Ok(effect) => effect,
             Err(WalletError::Conflict(_)) => {
@@ -332,16 +358,19 @@ async fn inspect_source_in(
             if refund.is_some()
                 && previous.try_get::<i16, _>("cash_policy_version")? == 1
                 && previous.try_get::<String, _>("state")? != "succeeded"
-                && crate::nonplan_refunds::return_entry_in(
+            {
+                match crate::nonplan_refunds::return_entry_in(
                     tx,
                     wallet,
                     id,
                     previous.try_get("amount_minor")?,
                 )
-                .await?
-                .is_none()
-            {
-                continue;
+                .await
+                {
+                    Ok(None) => continue,
+                    Ok(Some(_)) | Err(WalletError::Conflict(_)) => {}
+                    Err(error) => return Err(error),
+                }
             }
             return Ok(proof.uncertain("priorRefundHistory"));
         };
@@ -370,13 +399,14 @@ async fn inspect_source_in(
         if cash > 0
             && let Some(upper) = before
         {
-            let position: i64 = sqlx::query_scalar(&format!(
+            let position: Option<i64> = sqlx::query_scalar(&format!(
                 "SELECT log_index FROM ledger_{tenant}.entries WHERE entry_id=$1"
             ))
             .bind(crate::entry_id_for(&format!("dispute-recharge/{prior_id}")).as_uuid())
-            .fetch_one(&mut **tx)
-            .await?;
-            if position >= upper {
+            .fetch_optional(&mut **tx)
+            .await?
+            .flatten();
+            if position.is_some_and(|position| position >= upper) {
                 continue;
             }
         }

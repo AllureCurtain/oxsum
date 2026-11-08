@@ -22,6 +22,7 @@ pub(crate) async fn effect_in(
     };
     let effect: NonplanRefundEffect =
         serde_json::from_value(row.try_get("effect")?).map_err(error::invalid)?;
+    let retained_source: serde_json::Value = row.try_get("source")?;
     if row.try_get::<String, _>("tenant_id")? != wallet.tenant_id()
         || effect.refund_id != refund
         || effect.policy != "nonplan-refund-v1"
@@ -34,6 +35,21 @@ pub(crate) async fn effect_in(
         || effect.event_receipt_id != row.try_get::<Uuid, _>("event_receipt_id")?
         || effect.cash_entry_id != row.try_get::<Uuid, _>("cash_entry_id")?
         || effect.cash_entry_hash != row.try_get::<String, _>("cash_entry_hash")?
+        || effect.cash_booking_date != row.try_get::<Date, _>("cash_booking_date")?.to_string()
+        || effect.correction_entry_id != row.try_get::<Option<Uuid>, _>("correction_entry_id")?
+        || effect.correction_entry_hash
+            != row.try_get::<Option<String>, _>("correction_entry_hash")?
+        || effect.legacy_recovery != row.try_get::<bool, _>("legacy_recovery")?
+        || evidence::revision(&retained_source)? != row.try_get::<String, _>("source_revision")?
+        || retained_source["refund"]["refundId"] != json!(refund)
+        || retained_source["refund"]["orderId"] != json!(effect.order_id)
+        || retained_source["refund"]["organizationId"] != json!(effect.organization_id)
+        || retained_source["refund"]["businessId"] != json!(row.try_get::<Uuid, _>("business_id")?)
+        || retained_source["event"]["receiptId"] != json!(effect.event_receipt_id)
+        || retained_source["original"]["entryId"] != json!(effect.original_funding_entry_id)
+        || retained_source["original"]["contentHash"] != json!(effect.original_funding_entry_hash)
+        || retained_source["original"]["reviewReasons"] != json!(effect.review_reasons)
+        || effect.requires_review != !effect.review_reasons.is_empty()
     {
         return Err(evidence::review("retained allocation metadata differs"));
     }
@@ -265,8 +281,8 @@ pub(super) async fn commit_in(
     // The approval state remains a separate fact. An unapproved request does not
     // turn into staff consent, but its effect prevents any later payout attempt.
     if source.state == "provider_pending" {
-        sqlx::query("UPDATE oxsum.refunds SET state='succeeded',next_retry_at=NULL,updated_at=now() WHERE refund_id=$1")
-            .bind(source.refund_id).execute(&mut **tx).await?;
+        sqlx::query("UPDATE oxsum.refunds SET state='succeeded',provider_refund_id=COALESCE(provider_refund_id,$2),next_retry_at=NULL,updated_at=now() WHERE refund_id=$1")
+            .bind(source.refund_id).bind(report.source["event"]["normalized"]["refundId"].as_str()).execute(&mut **tx).await?;
     }
     if source.note_state.as_deref() == Some("issued") {
         sqlx::query("UPDATE oxsum.credit_notes SET state='applied',entry_id=$2,updated_at=now() WHERE credit_note_id=$1")

@@ -11,10 +11,11 @@
 //!   credit note naming the order it corrects; decline lands `declined`.
 //! - The **provider's answer** arrives through `merchant_event_inbox`'s
 //!   `refund_succeeded`/`refund_failed`/`dispute` kinds: the signed event is
-//!   the only source of terminal truth. `refund_succeeded` books the wallet
-//!   take-back (`debit Wallet, credit Cash` — `FundedReservations` refuses it
-//!   when the customer already spent the credit, and the compensation is then
-//!   recorded on the audit trail, never silently negative); `refund_failed`
+//!   source of actual Cash facts. Non-plan `refund_succeeded` retains complete
+//!   Cash once, debiting only proven original Wallet funding and explicit
+//!   Adjustments suspense for the remainder. Old terminal approval states stay
+//!   unchanged and the separate immutable effect prevents another payout.
+//!   Historical missing or wrong-source Cash needs explicit recovery; `refund_failed`
 //!   releases the reservation. A PSP timeout leaves `provider_pending` for
 //!   the `refund-retries` job to re-issue inside a bounded attempt budget.
 //!
@@ -42,8 +43,8 @@ use sqlx::{Postgres, Row, Transaction};
 use time::OffsetDateTime;
 use uuid::Uuid;
 
-/// How many provider attempts a `provider_pending` refund gets before the
-/// reservation releases — the definite-failure exit, never an infinite loop.
+/// Provider attempts before automatic retries stop. The reservation remains
+/// until a proven refusal releases it or confirmed cash consumes it.
 pub const REFUND_MAX_ATTEMPTS: i32 = 5;
 /// The retry backoff in seconds by attempt number (1-based, clamped at the
 /// table's end): short enough for a transient PSP timeout, long enough that a
@@ -871,8 +872,8 @@ impl Db {
     /// Applies a classified merchant event to the refund it names — the
     /// `refund_succeeded`/`refund_failed`/`dispute` half of
     /// [`Self::apply_order_event`]'s family. The signed event is the only
-    /// terminal truth: `refund_succeeded` books the wallet take-back and
-    /// lands `succeeded`; `refund_failed` releases the reservation; a
+    /// cash truth: `refund_succeeded` records full Cash against original
+    /// source or review suspense; `refund_failed` releases the reservation; a
     /// `dispute` opens its own contested record. The event is marked applied
     /// exactly once, whatever it did — a duplicate or a refund that already
     /// settled answers the standing state.
@@ -911,12 +912,9 @@ impl Db {
 
     /// The `refund_succeeded` arm: find the refund the provider id names —
     /// the order's own row when the event carries no `refund_id` (a rail that
-    /// echoes only the payment) — and book the wallet take-back under the
-    /// refund-derived ledger key. A refund the customer already spent refuses
-    /// at the ledger (`InsufficientFunds`): the refund still lands
-    /// `succeeded` — the PSP's answer is fact — and the audit detail records
-    /// the unbooked compensation the ledger could not carry, never a
-    /// negative wallet.
+    /// echoes only the payment) — and retain full Cash under the refund-derived
+    /// ledger key. Plan and non-plan source policies own their atomic effects;
+    /// an old non-plan effect requires the explicit historical recovery path.
     async fn settle_order_refund(
         &self,
         wallet: &crate::Wallet,
@@ -956,8 +954,8 @@ impl Db {
         };
         // Terminal states are immutable by the row guard: a late success on a
         // `released`/`failed` refund can only be recorded — the money came
-        // back anyway, so the take-back entry (booked above, idempotent) and
-        // the audit detail are the whole settlement. Non-terminal states
+        // back anyway, so the atomic plan allocation and audit retain it.
+        // Non-terminal states
         // land `succeeded`.
         if !matches!(
             current.state.as_str(),
