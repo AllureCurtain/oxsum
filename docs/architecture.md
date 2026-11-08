@@ -2,8 +2,8 @@
 
 Business setup readiness (#843) lives in `crates/core/src/business_readiness.rs`.
 The HTTP adapter passes only the current personal token, the process encryption
-key and public-return-URL presence. A repeatable-read transaction rechecks current
-business authority, serializes with business configuration changes and derives
+key and public-return-URL presence. The business-locked transaction rechecks current
+authority after acquiring the lock, serializes with configuration changes and derives
 five actor-scoped facts without writes or external probes. Provider credential
 health uses the gateway's pool filter; alias shadowing follows the catalog;
 default sale terms must be effective and match usable chat supply. Collection

@@ -90,24 +90,32 @@ async fn usable_models_in(
     .fetch_all(&mut **tx)
     .await?;
     let mut models = BTreeSet::new();
+    let mut unreadable_models = BTreeSet::new();
     let mut checked_channel = None;
     let mut usable = false;
+    let mut unreadable = false;
     for row in rows {
         let channel: Uuid = row.try_get("channel_id")?;
         if checked_channel != Some(channel) {
             let credentials = pools::healthy_credentials(tx, channel).await?;
             // A lost encryption key is an unmet configuration fact. Never
             // return credential bytes or cryptographic errors to this read.
-            usable = !credentials.is_empty()
-                && credentials
-                    .iter()
-                    .all(|(_, sealed, _, _)| secret.open(sealed).is_ok());
+            unreadable = credentials
+                .iter()
+                .any(|(_, sealed, _, _)| secret.open(sealed).is_err());
+            usable = !credentials.is_empty() && !unreadable;
             checked_channel = Some(channel);
         }
         if usable {
             models.insert(row.try_get("public_model")?);
         }
+        if unreadable {
+            // Admission opens every candidate before selecting one. A second
+            // route's unreadable credential cannot be hidden by a healthy one.
+            unreadable_models.insert(row.try_get::<String, _>("public_model")?);
+        }
     }
+    models.retain(|model| !unreadable_models.contains(model));
     Ok(models)
 }
 
@@ -180,9 +188,6 @@ impl Db {
         public_url_configured: bool,
     ) -> Result<BusinessReadiness, WalletError> {
         let mut tx = self.pool().begin().await?;
-        sqlx::query("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ")
-            .execute(&mut *tx)
-            .await?;
         let business = authority::lock_business(&mut tx).await?;
         let actor = authority::require_capability(
             &mut tx,
