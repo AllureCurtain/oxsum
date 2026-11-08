@@ -8,10 +8,10 @@
 -- Every constraint below exists because dropping it breaks a stated guarantee.
 -- Where that is not obvious, it is spelled out.
 --
--- Idempotent: re-applying it is a no-op, because a backend is restarted far more
--- often than it is created.
-
-BEGIN;
+-- oxsum change (not upstream): PostgresStore::migrate applies these exact bytes
+-- and records their revision in one transaction. Reopening that revision skips
+-- DDL: replacing triggers while an active append has read their tables can
+-- deadlock. Actual schema upgrades require drained writers.
 
 -- ── ledger identity ─────────────────────────────────────────────────────────
 --
@@ -33,9 +33,16 @@ CREATE TABLE IF NOT EXISTS ledger_meta (
     only_row        INTEGER     PRIMARY KEY,
     ledger_id       TEXT        NOT NULL,
     created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+    -- oxsum change (not upstream): stamped only by a complete migration.
+    schema_revision TEXT,
 
     CONSTRAINT ledger_meta_single_row CHECK (only_row = 1)
 );
+
+-- oxsum change (not upstream): ledgers created before revision tracking have
+-- the same identity row without this field. Its addition and the final stamp
+-- commit with all the DDL, so a failed upgrade cannot claim a current schema.
+ALTER TABLE ledger_meta ADD COLUMN IF NOT EXISTS schema_revision TEXT;
 
 -- ── accounts ────────────────────────────────────────────────────────────────
 --
@@ -524,8 +531,6 @@ CREATE TABLE IF NOT EXISTS checkpoints (
     CONSTRAINT checkpoints_layer CHECK (layer IN ('settled', 'pending')),
     CONSTRAINT checkpoints_root_width CHECK (octet_length(tree_root) = 32)
 );
-
-COMMIT;
 
 -- ── operational notes ───────────────────────────────────────────────────────
 --

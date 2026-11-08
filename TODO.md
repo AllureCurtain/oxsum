@@ -4,6 +4,8 @@ Updated: 2026-11-09
 
 ## In progress
 
+- [ ] [#867](https://github.com/AllureCurtain/oxsum/issues/867) — Prevent a current wallet reopen from reapplying ledger DDL over an active settlement; atomic canonical schema revision and independent-pool regression prepared, runtime validation pending.
+
 - [x] [#862](https://github.com/AllureCurtain/oxsum/issues/862) — Pool exhaustion deadline regression integrated in PR #864 (`e53e303a`); 17 PostgreSQL fault checks, strict Clippy and independent review passed.
 
 - [ ] [#841](https://github.com/AllureCurtain/oxsum/issues/841) — Implement complete non-plan refund Cash, exact original-source allocation, late cash/payout fences, customer/finance effect projections and explicit historical preview/apply. Implemented with exact preview/apply, original Cash-day reporting and awaited fulfillment source release; 69 focused core, 40 HTTP, eight executable CLI and two parser checks passed. Complete run passed 2,035/2,037: its table-inventory omission is fixed with 11 identity passes; the existing gateway DDL race remains #867. Strict Clippy and independent review passed; normal PR integration pending.

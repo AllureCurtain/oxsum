@@ -553,7 +553,11 @@ yet, each in one transaction together with its row in `oxsum._migrations`, under
 advisory lock so two starting processes cannot race. A failed migration refuses to boot.
 `oxsum --migrate-only` runs the same pass and exits — the deploy `oxsum-migrate` step and the
 upgrade runbook's deliberate migrate. Ledger schemas are untouched by either: doubleentry's
-`migrate` creates `ledger_<tenant_id>` on first use.
+`migrate` creates `ledger_<tenant_id>` on first use. It records the complete applied ledger
+schema revision in `ledger_meta` with the DDL in one transaction. Independent wallet opens
+check that revision under the migration lock and skip current DDL; ownership checks,
+account rules and lazy wallet data migrations still run. Missing or changed ledger
+revisions require the upgrade runbook's stop/drain boundary.
 
 ## Commands
 
@@ -770,13 +774,19 @@ file order, each file in one transaction with its `oxsum._migrations` row, under
 a database-wide advisory lock so two booting processes cannot race. Ledger
 schemas are lazier: doubleentry's `migrate` creates `ledger_<tenant_id>` the
 first time a wallet is opened — including at restore time, when a wallet opens
-on a schema that is already there and the check is a no-op.
+on a schema that is already there. A matching full canonical revision skips
+DDL. A missing or different revision reapplies it atomically with the revision
+stamp. The marker records applied bytes; it is not an audit of arbitrary
+manual database changes, which remain unsupported. An old binary does not
+understand this new skip rule.
 
-For an upgrade, that means: stop the old binary (or let the advisory lock queue
-the new boot behind a draining one), start the new binary, watch the log for the
+For an upgrade, that means: stop and drain every old binary and worker before
+starting any newer migrator or server, then watch the log for the
 migration lines. A migration that fails refuses the boot and rolls its
 transaction back, so a bad migration file cannot leave a half-applied schema —
 but it does leave the service down; test upgrades on a restored dump first.
+The application migration lock does not drain serving traffic, and a real
+ledger upgrade must not overlap an older writer's active settlement.
 
 ### Upgrade and rollback
 

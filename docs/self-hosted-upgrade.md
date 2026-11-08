@@ -41,6 +41,8 @@ binary will migrate to.
 $EDITOR deploy/.env          # OXSUM_IMAGE_REF=ghcr.io/allurecurtain/oxsum@sha256:<verified-digest>
 
 docker compose --env-file deploy/.env -f deploy/docker-compose.core.yml pull
+# Stop and drain every serving replica/worker before any migration runs.
+docker compose --env-file deploy/.env -f deploy/docker-compose.core.yml stop oxsum
 docker compose --env-file deploy/.env -f deploy/docker-compose.core.yml run --rm oxsum-migrate
 # expect: schema migrated to <new version>
 
@@ -48,9 +50,19 @@ docker compose --env-file deploy/.env -f deploy/docker-compose.core.yml up -d
 docker compose --env-file deploy/.env -f deploy/docker-compose.core.yml ps
 ```
 
-`up -d` recreates `oxsum` on the new image; the running container drains on
-SIGTERM (in-flight requests settle, the drain is bounded at nine seconds),
-then the new binary starts against an already-current schema.
+`stop oxsum` sends SIGTERM; in-flight requests settle and the drain is bounded
+at nine seconds. Wait for every old serving replica and worker to exit before
+running the new migrator. `up -d` then creates `oxsum` on the new image against
+the migrated application schema.
+
+Ledger schemas still migrate lazily on first wallet use. Each successful engine
+migration records the complete canonical schema revision with its DDL in one
+transaction. A second wallet instance on the same revision checks ownership
+and skips DDL, so reopening it cannot replace triggers underneath a settlement.
+A missing or changed revision still performs a real ledger upgrade. Stop/drain
+is required for that transition: the application migration lock does not fence
+an old writer, and mixed-version rolling upgrades are unsupported. This marker
+does not certify manual schema changes or compatibility with an older binary.
 
 Verify:
 

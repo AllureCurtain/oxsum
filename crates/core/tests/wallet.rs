@@ -398,6 +398,13 @@ async fn opening_a_wallet_tightens_a_ledger_written_under_the_old_rule() {
     .execute(&pool)
     .await
     .unwrap();
+    // The simulated older engine did not record today's canonical schema.
+    sqlx::query(&format!(
+        "UPDATE ledger_{tenant}.ledger_meta SET schema_revision = NULL"
+    ))
+    .execute(&pool)
+    .await
+    .unwrap();
 
     let w = Wallet::open(pool.clone(), &tenant).await.unwrap();
     let stored: Vec<String> = sqlx::query_scalar(&format!(
@@ -499,6 +506,91 @@ async fn reopening_a_tenant_keeps_its_books() {
         .unwrap();
     let reopened = Wallet::open(pool.clone(), &name).await.unwrap();
     assert_eq!(reopened.available().await.unwrap(), 7 * ONE);
+}
+
+/// A second process's cold wallet cache must not run current-version DDL over
+/// a settlement that has already read ledger tables on its own transaction.
+#[tokio::test]
+async fn a_cold_wallet_reopen_does_not_interrupt_an_atomic_settlement() {
+    let url = db_or_skip!();
+    let first_pool = pool(&url).await;
+    let name = fresh("reopen_settle");
+    let first = Tenants::new(first_pool.clone());
+    let wallet = first.get(&name).await.unwrap();
+    wallet.top_up("fund", 100, D).await.unwrap();
+    wallet.hold("held", "", 60, D).await.unwrap();
+
+    let mut settlement = first_pool.begin().await.unwrap();
+    // These are the relation locks an outstanding-hold read retains before
+    // appending. Keep them controlled until the independent reopen returns.
+    let entries: i64 = sqlx::query_scalar(&format!(
+        "SELECT count(DISTINCT e.entry_id) FROM ledger_{name}.entries e \
+         JOIN ledger_{name}.postings p USING (entry_id)"
+    ))
+    .fetch_one(&mut *settlement)
+    .await
+    .unwrap();
+    assert!(entries >= 2);
+    let second_pool = sqlx::postgres::PgPoolOptions::new()
+        .max_connections(1)
+        .after_connect(|connection, _| {
+            Box::pin(async move {
+                // An accidental DDL lock must fail while the reader is held;
+                // this is a lock-order assertion, not a larger sleep budget.
+                sqlx::query("SET lock_timeout = '500ms'")
+                    .execute(connection)
+                    .await?;
+                Ok(())
+            })
+        })
+        .connect(&url)
+        .await
+        .unwrap();
+    let second = Tenants::new(second_pool.clone());
+    let reopened = tokio::time::timeout(std::time::Duration::from_secs(3), second.get(&name))
+        .await
+        .expect("a current reopen does not wait for settlement relation locks")
+        .expect("a current reopen needs no exclusive table locks");
+
+    let receipt = wallet
+        .settle_in(&mut settlement, "held", "charged forty", 40, D)
+        .await
+        .unwrap();
+    assert_eq!(reopened.reserved().await.unwrap(), 60);
+    assert_eq!(reopened.settled().await.unwrap(), 100);
+    assert!(
+        reopened
+            .receipt_proof(receipt.entry_id, None)
+            .await
+            .unwrap()
+            .is_none()
+    );
+    settlement.rollback().await.unwrap();
+    assert_eq!(reopened.reserved().await.unwrap(), 60);
+    let mut settlement = first_pool.begin().await.unwrap();
+    let retried = wallet
+        .settle_in(&mut settlement, "held", "charged forty", 40, D)
+        .await
+        .unwrap();
+    assert_eq!(retried.entry_id, receipt.entry_id);
+    settlement.commit().await.unwrap();
+    assert_eq!(reopened.reserved().await.unwrap(), 0);
+    assert_eq!(reopened.settled().await.unwrap(), 60);
+    let proof = reopened
+        .receipt_proof(receipt.entry_id, None)
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(
+        verify_bundle(
+            &serde_json::to_string(&proof).unwrap(),
+            &receipt.content_hash
+        )
+        .unwrap()
+    );
+    assert_eq!(proof.entry.description().as_str(), "charged forty");
+    assert_eq!(proof.entry.content_hash(), receipt.content_hash);
+    second_pool.close().await;
 }
 
 /// Several new tenants migrating an empty database for the first time must not hit

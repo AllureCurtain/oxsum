@@ -40,7 +40,6 @@
 //! wrong number in a report.
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::future::Future;
 
 use sqlx::postgres::{PgConnectOptions, PgPoolOptions};
 use sqlx::{PgPool, Postgres, Row, Transaction};
@@ -73,6 +72,13 @@ use crate::storage::{
 
 /// The reference DDL, applied by [`PostgresStore::migrate`].
 pub const SCHEMA: &str = include_str!("../../schema/postgres.sql");
+
+/// oxsum change (not upstream): the extension is part of the applied revision.
+const EXTENSION_SCHEMA: &str = "CREATE EXTENSION IF NOT EXISTS btree_gist";
+
+/// oxsum change (not upstream): all first opens share the extension catalog;
+/// transaction ownership also releases this lock on failure or cancellation.
+const MIGRATE_LOCK: i64 = 0x6f78_7375_6d6d_6967;
 
 /// The schema [`PostgresStore`] places its tables in unless told otherwise.
 ///
@@ -588,24 +594,26 @@ impl<const P: u8> PostgresStore<P> {
         Ok(out)
     }
 
-    /// Applies [`SCHEMA`].
+    /// Applies [`SCHEMA`] when its complete revision has not already committed.
+    ///
+    /// oxsum change (not upstream): a current reopen validates ledger ownership
+    /// without reapplying DDL over active appends. Missing or changed revisions
+    /// still migrate; actual upgrades require callers to drain existing writers.
     ///
     /// # Errors
     ///
     /// Returns any error the database raises.
     pub async fn migrate(&self) -> Result<(), PostgresError> {
-        // Create the schema before checking for it, so a correctly configured
-        // database that has never seen this crate migrates. Quoted so a schema name
-        // needing quoting is not silently folded to lower case or split on a dot.
-        //
-        // oxsum change (not upstream): both statements run in one pinned transaction.
-        // That is what the check below means now — `current_schema()` is where an
-        // unqualified CREATE TABLE lands, asked of the transaction that will run the
-        // DDL, rather than of whatever `search_path` the pool's connections happened
-        // to be configured with. A `SET LOCAL` to a schema that does not exist yet is
-        // legal and leaves `current_schema()` NULL, which is why creating the schema
-        // above happens first.
+        // oxsum change (not upstream): check the revision only after taking the
+        // database-wide migration lock. Two cold processes must not both decide
+        // to reapply it. DDL, ledger identity and revision stamp share this one
+        // transaction and one pool slot; no manual BEGIN/COMMIT or session lock
+        // may survive a cancelled migration.
         let mut tx = self.begin().await?;
+        sqlx::query("SELECT pg_advisory_xact_lock($1)")
+            .bind(MIGRATE_LOCK)
+            .execute(&mut *tx)
+            .await?;
         sqlx::query(&format!(
             "CREATE SCHEMA IF NOT EXISTS \"{}\"",
             self.schema.replace('"', "\"\"")
@@ -623,36 +631,53 @@ impl<const P: u8> PostgresStore<P> {
                 found: current.unwrap_or_default(),
             });
         }
-        tx.commit().await?;
 
-        // The DDL needs the pin too, on a connection of its own: the reference schema
-        // opens and closes its own transaction, so the transaction it must be pinned
-        // inside is opened around it. See `ExecuteSchema for PgPool`.
-        self.pool.execute_schema(&self.schema).await?;
+        let mut revision = blake3::Hasher::new();
+        revision.update(b"doubleentry/postgres/schema-revision/v1\0");
+        revision.update(EXTENSION_SCHEMA.as_bytes());
+        revision.update(b"\0");
+        revision.update(SCHEMA.as_bytes());
+        let revision = revision.finalize().to_hex().to_string();
+        let has_meta: bool = sqlx::query_scalar("SELECT to_regclass('ledger_meta') IS NOT NULL")
+            .fetch_one(&mut *tx)
+            .await?;
+        if has_meta {
+            // JSON extraction also reads pre-revision identity rows: a missing
+            // field answers NULL without querying a nonexistent SQL column.
+            if let Some(row) = sqlx::query(
+                "SELECT ledger_id, to_jsonb(m)->>'schema_revision' AS revision \
+                 FROM ledger_meta m WHERE only_row = 1",
+            )
+            .fetch_optional(&mut *tx)
+            .await?
+            {
+                let found: String = row.try_get("ledger_id")?;
+                if found != self.ledger.as_str() {
+                    return Err(PostgresError::WrongLedger {
+                        expected: self.ledger.clone(),
+                        found: LedgerId::new(found)
+                            .map_err(|e| PostgresError::malformed(e.to_string()))?,
+                    });
+                }
+                if row.try_get::<Option<String>, _>("revision")?.as_deref() == Some(revision.as_str()) {
+                    tx.commit().await?;
+                    return Ok(());
+                }
+            }
+        }
 
-        // One database, one ledger. Claim it on first use and refuse it
-        // afterwards if it belongs to someone else — pointing two ledgers at one
-        // database would merge two logs, two index spaces, and two seal chains
-        // into one, silently.
-        let mut tx = self.begin().await?;
+        // The reference SQL has no transaction boundaries: all DDL and this
+        // stamp roll back together if any statement or final commit fails.
+        sqlx::Executor::execute(&mut *tx, EXTENSION_SCHEMA).await?;
+        sqlx::Executor::execute(&mut *tx, SCHEMA).await?;
         sqlx::query(
-            "INSERT INTO ledger_meta (only_row, ledger_id) VALUES (1, $1) \
-             ON CONFLICT (only_row) DO NOTHING",
+            "INSERT INTO ledger_meta (only_row, ledger_id, schema_revision) VALUES (1, $1, $2) \
+             ON CONFLICT (only_row) DO UPDATE SET schema_revision = EXCLUDED.schema_revision",
         )
         .bind(self.ledger.as_str())
+        .bind(revision)
         .execute(&mut *tx)
         .await?;
-
-        let found: String = sqlx::query("SELECT ledger_id FROM ledger_meta WHERE only_row = 1")
-            .fetch_one(&mut *tx)
-            .await?
-            .try_get("ledger_id")?;
-        if found != self.ledger.as_str() {
-            return Err(PostgresError::WrongLedger {
-                expected: self.ledger.clone(),
-                found: LedgerId::new(found).map_err(|e| PostgresError::malformed(e.to_string()))?,
-            });
-        }
         tx.commit().await?;
         Ok(())
     }
@@ -1588,81 +1613,6 @@ fn build_stored_entry<const P: u8>(
         entry,
         content_hash: stored_hash,
     })
-}
-
-/// Applies the schema. Kept as a trait so the query text stays next to it.
-trait ExecuteSchema {
-    /// oxsum change (not upstream): takes the schema to pin. Upstream reads it from
-    /// the pool's connection options; there is one shared pool now, so it is passed.
-    fn execute_schema(
-        &self,
-        schema: &str,
-    ) -> impl Future<Output = Result<(), PostgresError>> + Send;
-}
-
-/// Advisory-lock key serialising `migrate` across every ledger in one database.
-///
-/// oxsum change (not upstream): see `ExecuteSchema for PgPool`.
-const MIGRATE_LOCK: i64 = 0x6f78_7375_6d6d_6967;
-
-impl ExecuteSchema for PgPool {
-    async fn execute_schema(&self, schema: &str) -> Result<(), PostgresError> {
-        // oxsum change (not upstream): `CREATE EXTENSION IF NOT EXISTS` is not safe
-        // under concurrency — two ledgers migrating an empty database at once both
-        // pass the existence check and the loser fails on `pg_extension`'s unique
-        // index. The extension is database-wide, so the lock is too.
-        //
-        // Session-scoped on one dedicated connection rather than transaction-scoped:
-        // SCHEMA carries its own BEGIN/COMMIT, which would end an enclosing
-        // transaction and drop a transaction-level lock half way through.
-        let mut conn = self.acquire().await?;
-        let conn: &mut sqlx::PgConnection = &mut conn;
-        sqlx::query("SELECT pg_advisory_lock($1)")
-            .bind(MIGRATE_LOCK)
-            .execute(&mut *conn)
-            .await?;
-        // oxsum change (not upstream): pin the ledger's schema for the DDL. The
-        // reference schema opens its own transaction, so a `SET LOCAL` issued before
-        // it would sit outside any transaction block and be ignored — PostgreSQL only
-        // warns, and the tables would land in whatever schema the pooled connection
-        // happened to resolve to. The transaction is therefore opened here and closed
-        // here, whatever the DDL does with a transaction of its own.
-        sqlx::query("BEGIN").execute(&mut *conn).await?;
-        sqlx::query(&set_local_search_path(schema))
-            .execute(&mut *conn)
-            .await?;
-        // `btree_gist` backs the non-overlapping period constraint.
-        let applied = apply_schema(conn).await;
-        // The DDL commits its own transaction when it succeeds, in which case this
-        // COMMIT only warns that there is none in progress; when it fails, the
-        // aborted transaction needs the rollback before this connection can run
-        // anything else — the unlock below included.
-        let ended = sqlx::query(if applied.is_ok() {
-            "COMMIT"
-        } else {
-            "ROLLBACK"
-        })
-        .execute(&mut *conn)
-        .await;
-        // Unlock before surfacing the migration's own result, so a failed
-        // migration does not return the connection to the pool still locked.
-        let unlocked = sqlx::query("SELECT pg_advisory_unlock($1)")
-            .bind(MIGRATE_LOCK)
-            .execute(&mut *conn)
-            .await;
-        applied?;
-        ended?;
-        unlocked?;
-        Ok(())
-    }
-}
-
-/// The extension and the schema, on one connection. A free function with an
-/// explicit connection type so the `Send` bound on `execute_schema` resolves.
-async fn apply_schema(conn: &mut sqlx::PgConnection) -> Result<(), sqlx::Error> {
-    sqlx::Executor::execute(&mut *conn, "CREATE EXTENSION IF NOT EXISTS btree_gist").await?;
-    sqlx::Executor::execute(&mut *conn, SCHEMA).await?;
-    Ok(())
 }
 
 impl<const P: u8> LedgerStore<P> for PostgresStore<P> {

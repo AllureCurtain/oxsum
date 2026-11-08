@@ -3436,3 +3436,34 @@ controlled regression pauses that cleanup and observes the PostgreSQL advisory
 lock from another pool; it fails before this fix and passes with awaited release.
 Worker refund claims treat source contention as no acquired lease, preserving
 their bounded retry contract without consuming a provider attempt.
+
+## 2026-11-09 — Skip current ledger DDL on independent wallet opens (#867)
+
+The full CI run on `4fc5581a` exposed a production lock inversion: an independent
+wallet open reapplied the ledger's trigger DDL while the gateway's borrowed
+settlement transaction retained relation locks from its hold read. PostgreSQL
+aborted the settlement's append with `40P01`. Retrying only the opener cannot
+recover the losing settlement, and taking an append lock in the migrator alone
+would still invert against a transaction that already read ledger relations.
+
+The vendored PostgreSQL engine now owns a `ledger_meta.schema_revision` field.
+The revision is BLAKE3 over a versioned domain, the extension DDL and the complete
+canonical PostgreSQL schema bytes. Under the existing database-wide migration
+lock, a matching revision checks ledger identity and returns without replacing
+constraints, triggers or views. Missing, NULL or different revisions apply the
+full schema. Identity validation happens before touching a foreign ledger.
+Wallet account tightening and lazy data migrations retain their existing paths.
+
+The schema SQL no longer opens or commits its own transaction. One SQLx-owned
+transaction now owns the migration advisory lock, schema pin, complete DDL,
+identity and revision stamp. Any failure, including the final stamp, rolls all
+of them back. Cancellation releases the transaction lock through ordinary
+connection cleanup. This supersedes the older session-lock/nested-BEGIN
+migration mechanism recorded above; no extra pooled connection is required.
+
+This is a record of applied schema bytes, not a certification of manual database
+changes. A real revision transition requires stopping and draining every old
+server and worker before starting the new version; the ordinary application
+migration lock is not a live-writer fence. An old binary does not honor this
+marker, and mixed-version rolling upgrade safety is not claimed. Old ledger
+schemas without the field upgrade through the same atomic path.
