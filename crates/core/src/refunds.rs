@@ -265,6 +265,7 @@ struct RefundOrder {
     display_currency: String,
     provider_payment_id: Option<String>,
     status: String,
+    purpose: String,
 }
 
 fn refund_order(row: &PgRow) -> Result<RefundOrder, WalletError> {
@@ -276,11 +277,12 @@ fn refund_order(row: &PgRow) -> Result<RefundOrder, WalletError> {
         display_currency: row.try_get("display_currency")?,
         provider_payment_id: row.try_get("provider_payment_id")?,
         status: row.try_get("status")?,
+        purpose: row.try_get("purpose")?,
     })
 }
 
 const REFUND_ORDER_COLS: &str = "business_id,organization_id,amount_minor,\
-     display_amount_minor,display_currency,provider_payment_id,status";
+     display_amount_minor,display_currency,provider_payment_id,status,purpose";
 
 async fn refund_order_in(
     tx: &mut Transaction<'_, Postgres>,
@@ -457,6 +459,11 @@ impl Db {
                 order.status
             )));
         }
+        if order.purpose == "bundle" && order.status != "fulfilled" {
+            return Err(WalletError::Conflict(
+                "bundle fulfillment must complete before a refund can be requested".into(),
+            ));
+        }
         let committed = committed_minor_in(&mut tx, order_id).await?;
         let refundable = order.amount_minor - committed;
         let amount = request.amount_minor.unwrap_or(refundable);
@@ -512,7 +519,8 @@ impl Db {
     ) -> Result<Option<i64>, WalletError> {
         let row = sqlx::query(
             "SELECT amount_minor FROM oxsum.payment_orders \
-             WHERE order_id=$1 AND organization_id=$2 AND status IN ('paid','fulfilled')",
+             WHERE order_id=$1 AND organization_id=$2 AND status IN ('paid','fulfilled') \
+               AND (purpose <> 'bundle' OR status='fulfilled')",
         )
         .bind(order_id)
         .bind(organization)
@@ -637,6 +645,11 @@ impl Db {
                 let order = refund_order_in(&mut tx, existing.order_id)
                     .await?
                     .ok_or_else(|| invalid("the refund's order is gone"))?;
+                if order.purpose == "bundle" && order.status != "fulfilled" {
+                    return Err(WalletError::Conflict(
+                        "bundle fulfillment must complete before refund approval".into(),
+                    ));
+                }
                 let committed =
                     committed_minor_in(&mut tx, existing.order_id).await? - existing.amount_minor; // the request's own reservation counts too
                 if committed + existing.amount_minor > order.amount_minor {
@@ -887,6 +900,21 @@ impl Db {
                 .fetch_optional(self.pool())
                 .await?;
         let plan_fee = purpose.as_deref() == Some("plan_period");
+        if purpose.as_deref() == Some("bundle") {
+            // Cancel before the terminal mark. A crash retries this idempotent
+            // burn before recording success, and held releases burn later too.
+            let lot: Option<Uuid> = sqlx::query_scalar(
+                "SELECT lot_id FROM oxsum.promo_lots WHERE organization_id=$1 \
+                 AND source='bundle_promo' AND source_ref=$2",
+            )
+            .bind(refund.organization_id)
+            .bind(refund.order_id.to_string())
+            .fetch_optional(self.pool())
+            .await?;
+            if let Some(lot) = lot {
+                self.cancel_promo_lot(wallet, lot, on).await?;
+            }
+        }
         // The ledger append runs outside any held row lock, keyed on the
         // refund id: a retried or recovered settle replays the standing entry.
         // `FundedReservations` refuses a take-back the purchased pool cannot

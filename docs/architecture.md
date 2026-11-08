@@ -401,3 +401,29 @@ but success cannot be downgraded. Neither outcome posts another ledger reversal.
 Unknown/pending operations stop being due at exhaustion and retain their
 identity for a late authenticated outcome. No historical refund is reissued
 with current environment credentials.
+## Published bundle authority (#774)
+
+`bundles.rs` owns immutable business offer versions and reasoned mutation receipts.
+Migration 0102 adds `bundle_offers`, `bundle_offer_mutations` and the immutable
+`payment_orders.bundle_offer` snapshot. Publication, retirement and new order
+selection serialize on the business row before the order lock. The insert trigger
+also refuses old application writers that omit or alter a new bundle snapshot.
+No legacy order is assigned invented commercial authority during migration.
+Legacy pending bundles remain visible in history/reconciliation, but the automatic
+fulfillment queue excludes them so they cannot block unrelated valid payments.
+
+The bundle arm derives purchased/promo amounts and the exact conversion from its
+selected offer. Its purchased ledger entry and promotional lot have separate,
+deterministic identities; the fulfillment and outbox commit only after both
+legs finish. A crash between effects replays existing effects. A delayed promo
+is granted and, when already due by the database clock, expired in one transaction
+under the append lock so no admission can spend it between those steps. Its expiry
+is always the immutable paid instant plus the sold lifetime.
+
+Bundle refund review waits for completed fulfillment, preventing a later grant
+from recreating refunded promotion. A trusted refund success cancels the lot
+before the refund terminal mark; retrying the cancellation is idempotent. Open
+hold draws retain their existing reservation and their unused release burns into
+the closed lot. Promotion never contributes to the refundable purchased amount.
+The existing refund correlation/recovery fixes have their own PRs and must be
+integrated and revalidated together before candidate acceptance.

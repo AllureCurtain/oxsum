@@ -297,6 +297,9 @@ jobs:
       - name: Test exact sale editor inputs
         if: steps.filter.outputs.stages == 'true'
         run: node --experimental-strip-types --test web/tests/sale-draft.test.ts
+      - name: Test exact money inputs
+        if: steps.filter.outputs.stages == 'true'
+        run: node --experimental-strip-types --test web/tests/money.test.ts
       - uses: docker/setup-buildx-action@v4
         if: steps.filter.outputs.stages == 'true' || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
       - name: Build the frontend stage

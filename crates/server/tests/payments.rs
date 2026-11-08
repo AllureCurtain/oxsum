@@ -1099,12 +1099,34 @@ async fn the_order_list_filters_by_purpose_and_status() {
     )
     .await;
     assert_eq!(status, StatusCode::OK);
+    let owner = operator(&db, &app).await;
+    let offer = db
+        .publish_bundle(
+            &owner,
+            &oxsum_core::BundlePublishRequest {
+                idempotency_key: Uuid::new_v4().to_string(),
+                reason: "bundle filter fixture".into(),
+                bundle_id: None,
+                expected_version: 0,
+                terms: oxsum_core::BundleTerms {
+                    name: "filter bundle".into(),
+                    display_currency: USD.into(),
+                    display_amount_minor: 500,
+                    purchased_minor: 5_000_000,
+                    promo_minor: 50_000_000,
+                    promo_lifetime_days: Some(30),
+                },
+            },
+        )
+        .await
+        .unwrap();
     let (status, _body) = call(
         &app,
         "POST",
         "/api/v1/orders",
         Some(json!({
             "idempotencyKey": "ord-flt-2",
+            "purposeRef": offer.offer.bundle_version_id,
             "rail": "hyperswitch",
             "purpose": "bundle",
             "displayAmountMinor": 500,
@@ -1640,4 +1662,192 @@ async fn collection_terms_ignore_display_tampering_and_reject_mismatched_quotes(
     .await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(replayed["data"]["order"]["amountMinor"], 1_500_000_000_i64);
+}
+
+#[tokio::test]
+async fn published_bundle_endpoints_reject_customer_grants_before_provider_io() {
+    let Some((app, db, stub, _, _)) = world().await else {
+        return;
+    };
+    let customer = register(&app).await;
+    let owner = operator(&db, &app).await;
+    let publish = json!({"idempotencyKey":"bundle-publish-http","reason":"bundle HTTP fixture","bundleId":null,"expectedVersion":0,"terms":{"name":"Local bundle","displayCurrency":"USD","displayAmountMinor":500,"purchasedMinor":5_000_000,"promoMinor":1_000_000,"promoLifetimeDays":30}});
+    assert_eq!(
+        call(
+            &app,
+            "POST",
+            "/api/v1/business/bundles",
+            Some(publish.clone()),
+            Some(&customer.cookie)
+        )
+        .await
+        .0,
+        StatusCode::FORBIDDEN
+    );
+    let (status, body) = call(
+        &app,
+        "POST",
+        "/api/v1/business/bundles",
+        Some(publish.clone()),
+        Some(&owner),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(
+        call(
+            &app,
+            "POST",
+            "/api/v1/business/bundles",
+            Some(publish),
+            Some(&owner)
+        )
+        .await
+        .1,
+        body
+    );
+    let id = body["data"]["offer"]["bundleVersionId"].as_str().unwrap();
+    let (status, catalog) =
+        call(&app, "GET", "/api/v1/bundles", None, Some(&customer.cookie)).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(catalog["data"].as_array().unwrap().len(), 1);
+    assert_eq!(
+        call(&app, "GET", "/api/v1/business/bundles", None, Some(&owner))
+            .await
+            .0,
+        StatusCode::OK
+    );
+    let base = json!({"idempotencyKey":"bundle-http-order","rail":"hyperswitch","purpose":"bundle","purposeRef":id,"displayCurrency":"USD","displayAmountMinor":500});
+    let mut bad = base.clone();
+    bad["promoMinor"] = json!(9_000_000);
+    assert_eq!(
+        call(
+            &app,
+            "POST",
+            "/api/v1/orders",
+            Some(bad),
+            Some(&customer.cookie)
+        )
+        .await
+        .0,
+        StatusCode::CONFLICT
+    );
+    assert_eq!(*stub.calls.lock().unwrap(), 0);
+    let (status, order) = call(
+        &app,
+        "POST",
+        "/api/v1/orders",
+        Some(base.clone()),
+        Some(&customer.cookie),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{order}");
+    assert_eq!(order["data"]["order"]["amountMinor"], 5_000_000);
+    assert_eq!(order["data"]["order"]["promoMinor"], 1_000_000);
+    let retire = json!({"idempotencyKey":"bundle-retire-http","reason":"stop new sales"});
+    assert_eq!(
+        call(
+            &app,
+            "POST",
+            &format!("/api/v1/business/bundles/{id}/retire"),
+            Some(retire),
+            Some(&owner)
+        )
+        .await
+        .0,
+        StatusCode::OK
+    );
+    assert_eq!(
+        call(
+            &app,
+            "POST",
+            "/api/v1/orders",
+            Some(base.clone()),
+            Some(&customer.cookie)
+        )
+        .await
+        .1,
+        order
+    );
+    assert_eq!(*stub.calls.lock().unwrap(), 1);
+    let mut new = base;
+    new["idempotencyKey"] = json!("bundle-new-retired");
+    assert_eq!(
+        call(
+            &app,
+            "POST",
+            "/api/v1/orders",
+            Some(new),
+            Some(&customer.cookie)
+        )
+        .await
+        .0,
+        StatusCode::NOT_FOUND
+    );
+    assert_eq!(*stub.calls.lock().unwrap(), 1);
+}
+
+#[tokio::test]
+async fn a_legacy_pending_bundle_cannot_resume_checkout_or_fulfill() {
+    let Some((app, db, stub, merchant, version)) = world().await else {
+        return;
+    };
+    let customer = register(&app).await;
+    let id = Uuid::new_v4();
+    // Reproduce an already migrated legacy row. The separate core upgrade test
+    // applies the real migration to old rows; here only the new-insert guard is
+    // suspended inside this isolated test transaction to exercise the HTTP fence.
+    let mut tx = db.pool().begin().await.unwrap();
+    sqlx::query("ALTER TABLE oxsum.payment_orders DISABLE TRIGGER payment_order_bundle_valid")
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+    sqlx::query("INSERT INTO oxsum.payment_orders(order_id,business_id,merchant_id,merchant_version_id,organization_id,purpose,amount_minor,currency,display_currency,display_amount_minor,rate_mantissa,rate_scale,promo_minor,idempotency_key,status,checkout) VALUES($1,oxsum.default_business_id(),$2,$3,$4,'bundle',5000000,'USD','USD',500,1,0,1000000,'legacy-http','created','{\"clientSecret\":\"legacy-secret\"}')")
+        .bind(id).bind(merchant).bind(version).bind(customer.organization_id).execute(&mut *tx).await.unwrap();
+    sqlx::query("ALTER TABLE oxsum.payment_orders ENABLE TRIGGER payment_order_bundle_valid")
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+    for status in ["created", "provider_pending", "paid"] {
+        sqlx::query("UPDATE oxsum.payment_orders SET status=$2 WHERE order_id=$1")
+            .bind(id)
+            .bind(status)
+            .execute(db.pool())
+            .await
+            .unwrap();
+        let (status, body) = call(
+            &app,
+            "GET",
+            &format!("/api/v1/orders/{id}/checkout-session"),
+            None,
+            Some(&customer.cookie),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CONFLICT, "{body}");
+        assert!(body["data"]["clientSecret"].is_null());
+        assert_eq!(
+            call(
+                &app,
+                "GET",
+                &format!("/api/v1/orders/{id}"),
+                None,
+                Some(&customer.cookie)
+            )
+            .await
+            .0,
+            StatusCode::OK,
+            "history remains readable"
+        );
+    }
+    let wallet = Tenants::new(db.pool().clone())
+        .get(&tenant(&db, customer.organization_id).await)
+        .await
+        .unwrap();
+    assert!(
+        db.fulfill_payment_order(id, &wallet, time::OffsetDateTime::now_utc().date())
+            .await
+            .is_err()
+    );
+    assert_eq!(wallet.available().await.unwrap(), 0);
+    assert_eq!(*stub.calls.lock().unwrap(), 0);
 }

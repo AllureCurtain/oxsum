@@ -33,6 +33,7 @@ import { BusinessCustomers } from "./business/customers";
 import { BusinessChannels } from "./business/catalog";
 import { BusinessPrices } from "./business/sales";
 import { BusinessPlans } from "./business/plans";
+import { BusinessBundles } from "./business/bundles";
 import { BusinessPayments } from "./business/payments";
 import { BusinessRefunds, BusinessDisputes } from "./business/refunds";
 import { BusinessReceivables, BusinessStatements } from "./business/statements";
@@ -82,6 +83,7 @@ const SECTION_GROUPS: { group: string; items: Section[] }[] = [
       { key: "channels", labelKey: "channels", Icon: Network, cap: "catalogWrite" },
       { key: "prices", labelKey: "prices", Icon: Tags, cap: "overviewRead" },
       { key: "plans", labelKey: "plans", Icon: Layers, cap: "catalogWrite" },
+      { key: "bundles", labelKey: "bundles", Icon: Layers, cap: "overviewRead" },
     ],
   },
   {
@@ -133,6 +135,8 @@ function SectionBody({ name }: { name: string }) {
       return <BusinessPrices />;
     case "plans":
       return <BusinessPlans />;
+    case "bundles":
+      return <BusinessBundles />;
     case "staff":
       return <BusinessStaffSection />;
     case "integrations":

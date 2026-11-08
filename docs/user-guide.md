@@ -548,6 +548,34 @@ only; the facilitator configuration is what production runs.
 
 Note: the unit is minor, 1 credit = 1_000_000.
 
+## Publish and buy a credit bundle
+
+Owners and finance staff open **Business → Credit bundles**, choose **Publish
+bundle**, and enter a name, fiat price/currency, purchased credits, promotional
+credits and an optional validity in days. Money fields reject excess decimal
+precision instead of rounding. Review the amounts and reason before publication.
+Prices must have an exact currency-per-credit ratio representable with at most
+eight decimal places; an incompatible ratio is rejected with a field error.
+
+To change a price, select the existing offer family and publish a new version.
+Previous versions remain on sale until you explicitly retire them. Retirement
+confirms the named version and reason; orders already created retain their sold
+terms. The history displays both on-sale and retired versions.
+
+Customers select **Orders → New → Bundle**, then a published version. Price,
+purchased credit, promotion and validity are shown before checkout. Confirmed
+payment starts promotional validity; a delayed fulfillment or refresh never
+restarts it. The order detail retains the sold snapshot after retirement.
+Promotional credit cannot become a cash refund. A partial or full confirmed
+refund cancels the remaining promotion, including unused promotional amounts
+released by an in-flight request. Refund review waits until bundle fulfillment
+completes. A failed or declined refund does not itself cancel promotion.
+
+An old pending bundle with no published offer snapshot is readable but cannot
+resume checkout or grant credit. Ask the operator to resolve that historic intent;
+the upgrade does not guess its terms. Already fulfilled legacy bundles keep their
+original grants and purchased refund eligibility.
+
 ## Paying for one AI call
 
 There are two ways to pay: let the gateway do both halves for you, or drive the hold and the

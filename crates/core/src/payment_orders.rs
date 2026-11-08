@@ -108,6 +108,8 @@ pub struct PaymentOrder {
     pub purpose_ref: Option<Uuid>,
     /// A `bundle` order's promo lot, in credit-minor; 0 for single-leg purposes.
     pub promo_minor: i64,
+    /// Immutable published offer snapshot; absent on legacy/non-bundle orders.
+    pub bundle_offer: Option<crate::BundleOffer>,
     /// Provider-side payment identifier once the provider supplied one.
     pub provider_payment_id: Option<String>,
     /// The checkout handles the provider answered, so a replayed create returns
@@ -203,13 +205,13 @@ pub struct NewPaymentOrder {
     /// ISO 4217 code of the fiat currency the customer is quoted in.
     pub display_currency: String,
     /// The purpose's argument: the plan a `plan_period` activates, the
-    /// receivable an `invoice_repayment` settles. `None` for wallet_topup/bundle.
+    /// receivable an `invoice_repayment` settles, or the published bundle version.
+    /// `None` for wallet top-up.
     pub purpose_ref: Option<Uuid>,
     /// Caller-supplied key that makes repeated creates return the same order.
     pub idempotency_key: String,
-    /// A `bundle` order's promo part: purchased credit is `amount_minor`, the
-    /// separate promo lot is this many extra credit-minor. `0` for the purposes
-    /// with no second leg.
+    /// Deprecated assertion: zero or the selected offer's promotional credit.
+    /// The offer, never this field, supplies the granted quantity.
     pub promo_minor: i64,
 }
 
@@ -261,6 +263,11 @@ fn order(row: &PgRow) -> Result<PaymentOrder, WalletError> {
         rate_scale: row.try_get::<i32, _>("rate_scale")? as u32,
         purpose_ref: row.try_get("purpose_ref")?,
         promo_minor: row.try_get("promo_minor")?,
+        bundle_offer: row
+            .try_get::<Option<serde_json::Value>, _>("bundle_offer")?
+            .map(serde_json::from_value)
+            .transpose()
+            .map_err(|_| WalletError::Misconfigured("invalid order bundle snapshot".into()))?,
         provider_payment_id: row.try_get("provider_payment_id")?,
         checkout: row.try_get("checkout")?,
         source: row.try_get("source")?,
@@ -326,7 +333,7 @@ const ORDER_STATUSES: &[&str] = &[
 
 const ORDER_COLS: &str = "order_id,merchant_id,merchant_version_id,organization_id,\
      purpose,amount_minor,currency,display_currency,display_amount_minor,\
-     rate_mantissa,rate_scale,purpose_ref,promo_minor,provider_payment_id,checkout,source,evidence,status,created_at,paid_at";
+     rate_mantissa,rate_scale,purpose_ref,promo_minor,bundle_offer,provider_payment_id,checkout,source,evidence,status,created_at,paid_at";
 
 impl Db {
     /// Creates a payment order: pins the expected payment under the order's own
@@ -356,13 +363,19 @@ impl Db {
         {
             return Err(invalid("invalid payment order terms"));
         }
-        if new.promo_minor < 0 {
-            return Err(invalid("a bundle promo amount cannot be negative"));
+        if new.promo_minor < 0
+            || (new.purpose != PaymentOrderPurpose::Bundle && new.promo_minor != 0)
+        {
+            return Err(invalid(
+                "promotional credit requires a published bundle offer",
+            ));
         }
         // Purpose-specific validation: a plan period needs its plan, an invoice
         // repayment needs the receivable it settles.
         match new.purpose {
-            PaymentOrderPurpose::PlanPeriod | PaymentOrderPurpose::InvoiceRepayment
+            PaymentOrderPurpose::Bundle
+            | PaymentOrderPurpose::PlanPeriod
+            | PaymentOrderPurpose::InvoiceRepayment
                 if new.purpose_ref.is_none() =>
             {
                 return Err(invalid("this payment order purpose needs a reference"));
@@ -401,6 +414,11 @@ impl Db {
                     "payment order terms changed for the same idempotency key".into(),
                 ));
             }
+            if new.promo_minor != 0 && new.promo_minor != standing.promo_minor {
+                return Err(WalletError::Conflict(
+                    "bundle promotion assertion changed on replay".into(),
+                ));
+            }
             tx.commit().await?;
             return Ok(standing);
         }
@@ -422,20 +440,52 @@ impl Db {
                 "merchant is not enabled for this customer's new payments".into(),
             ));
         }
-        let display = crate::collection_terms::rate_in(
-            &mut tx,
-            business,
-            &new.display_currency,
-            new.expected_collection_revision,
-        )
-        .await?;
-        let amount_minor = display
-            .to_credit_minor(new.display_amount_minor)
-            .filter(|amount| *amount > 0)
-            .ok_or_else(|| invalid("collection amount does not rate to a credit figure"))?;
-        let rate = OrderRate {
-            mantissa: display.rate_mantissa(),
-            scale: display.rate_scale(),
+        let bundle = if new.purpose == PaymentOrderPurpose::Bundle {
+            let offered = crate::bundles::available_in(
+                &mut tx,
+                business,
+                new.purpose_ref
+                    .ok_or_else(|| invalid("bundle version is required"))?,
+            )
+            .await?;
+            if offered.terms.display_currency != new.display_currency
+                || offered.terms.display_amount_minor != new.display_amount_minor
+                || (new.promo_minor != 0 && new.promo_minor != offered.terms.promo_minor)
+            {
+                return Err(WalletError::Conflict(
+                    "checkout does not match the selected published bundle".into(),
+                ));
+            }
+            Some(offered)
+        } else {
+            None
+        };
+        let (amount_minor, promo_minor, rate) = if let Some(bundle) = &bundle {
+            (
+                bundle.terms.purchased_minor,
+                bundle.terms.promo_minor,
+                bundle.terms.rate()?,
+            )
+        } else {
+            let display = crate::collection_terms::rate_in(
+                &mut tx,
+                business,
+                &new.display_currency,
+                new.expected_collection_revision,
+            )
+            .await?;
+            let amount = display
+                .to_credit_minor(new.display_amount_minor)
+                .filter(|amount| *amount > 0)
+                .ok_or_else(|| invalid("collection amount does not rate to a credit figure"))?;
+            (
+                amount,
+                0,
+                OrderRate {
+                    mantissa: display.rate_mantissa(),
+                    scale: display.rate_scale(),
+                },
+            )
         };
         let order_id = Uuid::new_v4();
         // The expected payment: the provider will charge the display (fiat)
@@ -459,8 +509,8 @@ impl Db {
             "INSERT INTO oxsum.payment_orders\
              (order_id,business_id,merchant_id,merchant_version_id,organization_id,\
               purpose,amount_minor,currency,display_currency,display_amount_minor,\
-              rate_mantissa,rate_scale,purpose_ref,promo_minor,idempotency_key,status) \
-             VALUES($1,$2,$3,$4,$5,$6,$7,'USD',$8,$9,$10,$11,$12,$13,$14,'created')",
+              rate_mantissa,rate_scale,purpose_ref,promo_minor,idempotency_key,status,bundle_offer) \
+             VALUES($1,$2,$3,$4,$5,$6,$7,'USD',$8,$9,$10,$11,$12,$13,$14,'created',$15)",
         )
         .bind(order_id)
         .bind(business)
@@ -474,8 +524,9 @@ impl Db {
         .bind(rate.mantissa as i64)
         .bind(rate.scale as i32)
         .bind(new.purpose_ref)
-        .bind(new.promo_minor)
+        .bind(promo_minor)
         .bind(&new.idempotency_key)
+        .bind(bundle.as_ref().map(|offer|serde_json::json!(offer)))
         .execute(&mut *tx)
         .await?;
         let created = order_in(&mut tx, order_id)
@@ -917,8 +968,9 @@ impl Db {
         Ok(())
     }
 
-    /// Recovery's work list: `paid` orders that have not yet fulfilled, plus
-    /// `needs_attention` discrepancies the report surfaces, in bounded pages.
+    /// Recovery's work list: `paid` orders that can fulfill automatically.
+    /// Legacy bundles without trusted terms remain visible in reconciliation
+    /// but cannot occupy the bounded worker queue and block unrelated payments.
     /// Paid-unfulfilled is the sweep's backlog; a restart re-scans it and the
     /// fulfillment's own idempotency makes the retry a single grant.
     pub async fn unfulfilled_payment_orders(
@@ -930,7 +982,8 @@ impl Db {
         }
         let rows = sqlx::query(&format!(
             "SELECT {ORDER_COLS} FROM oxsum.payment_orders \
-             WHERE status='paid' ORDER BY created_at LIMIT $1"
+             WHERE status='paid' AND (purpose <> 'bundle' OR bundle_offer IS NOT NULL) \
+             ORDER BY created_at LIMIT $1"
         ))
         .bind(limit)
         .fetch_all(self.pool())
@@ -978,8 +1031,8 @@ impl Db {
 
     /// Fulfills a `paid` order: runs the one grant its purpose allows, records
     /// the fulfillment and its outbox row, and moves the order to `fulfilled` —
-    /// so the grant, the fulfillment record and the dispatch land or roll back
-    /// together.
+    /// using deterministic effect identities across recovery. The fulfillment
+    /// record and its dispatch commit together after all grant legs complete.
     ///
     /// The purpose is re-read off the locked order row and dispatched
     /// exhaustively by [`Self::grant_order`], so no order may both grant quota
@@ -999,7 +1052,8 @@ impl Db {
         on: time::Date,
     ) -> Result<PaymentFulfillment, WalletError> {
         let mut tx = self.pool().begin().await?;
-        // Serialize the order's fulfillment: two workers cannot both grant it.
+        // Serialize the status read; replayable effects survive releasing this
+        // transaction before their independent ledger transactions.
         sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1,0))")
             .bind(format!("payment-order-fulfill:{order_id}"))
             .execute(&mut *tx)
@@ -1020,13 +1074,22 @@ impl Db {
                 existing.status
             )));
         }
-        // The grant runs outside the transaction's held row lock but inside the
-        // order's advisory lock: the ledger append is itself idempotent under
-        // the order-derived key.
+        let tenant: String = sqlx::query_scalar(
+            "SELECT tenant_id FROM oxsum.organizations WHERE organization_id=$1",
+        )
+        .bind(existing.organization_id)
+        .fetch_one(&mut *tx)
+        .await?;
+        if tenant != wallet.tenant_id() {
+            return Err(WalletError::Forbidden(
+                "order and wallet belong to different customers".into(),
+            ));
+        }
+        // Committing releases the advisory lock. Racing grants converge through
+        // their deterministic ledger and lot identities; the second transaction
+        // serializes the single fulfillment/outbox record.
         tx.commit().await?;
-        let payload = self
-            .grant_order(&existing, wallet, existing.promo_minor, on)
-            .await?;
+        let payload = self.grant_order(&existing, wallet, on).await?;
 
         let mut tx = self.pool().begin().await?;
         sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1,0))")
@@ -1107,14 +1170,13 @@ impl Db {
     ///   [`crate::Wallet::repay_credit`] — `debit Cash / credit CreditLine` —
     ///   so not a minor of it can become spendable wallet balance.
     ///
-    /// `wallet` is the order organization's ledger; `promo_minor` is the bundle
-    /// order's recorded promo part. The returned value is the
+    /// `wallet` is the order organization's ledger; bundle quantities and expiry
+    /// come only from its authoritative snapshot. The returned value is the
     /// `purpose_payload` the fulfillment records — what was granted, as audit.
-    pub async fn grant_order(
+    pub(crate) async fn grant_order(
         &self,
         order: &PaymentOrder,
         wallet: &crate::Wallet,
-        promo_minor: i64,
         on: time::Date,
     ) -> Result<serde_json::Value, WalletError> {
         // The ledger idempotency keys derive from the order id, so a retried or
@@ -1133,6 +1195,35 @@ impl Db {
                 }))
             }
             PaymentOrderPurpose::Bundle => {
+                let offer = order.bundle_offer.as_ref().ok_or_else(|| {
+                    WalletError::Conflict(
+                        "legacy bundle has no authoritative offer; operator review required".into(),
+                    )
+                })?;
+                offer.terms.validate()?;
+                let rate = offer.terms.rate()?;
+                if order.purpose_ref != Some(offer.bundle_version_id)
+                    || order.amount_minor != offer.terms.purchased_minor
+                    || order.promo_minor != offer.terms.promo_minor
+                    || order.display_amount_minor != offer.terms.display_amount_minor
+                    || order.display_currency != offer.terms.display_currency
+                    || order.rate_mantissa != rate.mantissa
+                    || order.rate_scale != rate.scale
+                {
+                    return Err(WalletError::Conflict(
+                        "bundle order snapshot does not match its grant".into(),
+                    ));
+                }
+                let paid_at = order
+                    .paid_at
+                    .ok_or_else(|| invalid("a bundle grant requires confirmed payment"))?;
+                let expires_at = offer
+                    .terms
+                    .promo_lifetime_days
+                    .map(|days| paid_at.checked_add(time::Duration::days(i64::from(days))))
+                    .map(|value| value.ok_or_else(|| invalid("bundle expiry overflows")))
+                    .transpose()?;
+                let promo_minor = offer.terms.promo_minor;
                 let purchased = wallet.top_up(&key, order.amount_minor, on).await?;
                 // The promo leg is a lot, not an anonymous bonus grant: the
                 // `bundle_promo` row names the fulfillment that issued it and
@@ -1144,21 +1235,12 @@ impl Db {
                 // second grant.
                 let mut promo_lot = None;
                 if promo_minor > 0 {
-                    // A bundle's promo never expires at the order layer: the
-                    // `expires_at` a sale-specific promotion would carry is not
-                    // a term the order pins today.
-                    let lot = self
-                        .grant_promo_lot(
-                            wallet,
-                            order.organization_id,
-                            "bundle_promo",
-                            &order.order_id.to_string(),
-                            promo_minor,
-                            None,
-                            on,
-                        )
-                        .await?;
-                    promo_lot = Some(lot.lot_id);
+                    // The sold lifetime begins at the immutable paid instant;
+                    // retries cannot grant a fresh promotional lifetime.
+                    promo_lot = Some(
+                        self.grant_bundle_promotion(wallet, order, expires_at, on)
+                            .await?,
+                    );
                 }
                 self.reconcile_statements(order.organization_id, wallet, on)
                     .await?;

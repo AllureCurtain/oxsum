@@ -493,6 +493,8 @@ async fn migrating_twice_and_concurrently_is_safe() {
             "admin_audit".to_owned(),
             "api_keys".to_owned(),
             "budget_threshold_fires".to_owned(),
+            "bundle_offer_mutations".to_owned(),
+            "bundle_offers".to_owned(),
             "business_migrations".to_owned(),
             "business_mutations".to_owned(),
             "business_profile_revisions".to_owned(),

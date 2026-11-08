@@ -1,4 +1,5 @@
 import { decimalMinor } from "../lib/money";
+import { useBundles } from "../api/hooks/bundles";
 import { useEffect, useRef, useState, type FormEvent } from "react";
 import { Link, useNavigate, useParams, useSearchParams } from "react-router-dom";
 import { useTranslation } from "react-i18next";
@@ -247,7 +248,7 @@ export function Orders() {
 // ---------------------------------------------------------------------------
 
 function fiatToMinor(raw: string): number | null { return decimalMinor(raw, 2); }
-function creditsToMinor(raw: string): number | null { return decimalMinor(raw, 6, true); }
+
 
 export function OrderNew() {
   const { t } = useTranslation();
@@ -257,28 +258,29 @@ export function OrderNew() {
   const create = useCreateOrder();
   const [amount, setAmount] = useState("");
   const [purpose, setPurpose] = useState<"walletTopup" | "bundle">("walletTopup");
-  const [promo, setPromo] = useState("");
-  const currency = terms.data?.currency?.code ?? "";
+  const offers = useBundles();
+  const [bundleId, setBundleId] = useState("");
+  const offer = offers.data?.find((o) => o.bundleVersionId === bundleId);
+  const currency = terms.data?.currency?.code ?? "USD";
 
   const submit = (e: FormEvent) => {
     e.preventDefault();
-    const minor = fiatToMinor(amount);
-    if (minor === null || !terms.data?.ready) return;
-    // `promoMinor` is the bundle's promo lot in credit-minor — entered in
-    // whole credits; empty means no promo lot.
-    const promoMinor = purpose === "bundle" && promo.trim() !== "" ? creditsToMinor(promo) : null;
-    if (purpose === "bundle" && promo.trim() !== "" && promoMinor === null) return;
-    const payload = JSON.stringify({ purpose, minor, currency, promoMinor });
-    if (intent.current?.payload !== payload) intent.current = { payload, key: crypto.randomUUID() };
+    const minor = purpose === "bundle" ? offer?.terms.displayAmountMinor ?? null : fiatToMinor(amount);
+    if (minor === null || (purpose === "bundle" && !offer) || !terms.data?.ready) return;
+    const body = {
+      rail: "hyperswitch" as const,
+      purpose,
+      displayAmountMinor: minor,
+      displayCurrency: purpose === "bundle" ? offer!.terms.displayCurrency : currency,
+      ...(purpose === "bundle" ? { purposeRef: bundleId } : {}),
+    };
+    const serialized = JSON.stringify(body);
+    if (intent.current?.payload !== serialized) intent.current = { payload: serialized, key: crypto.randomUUID() };
     create.mutate(
       {
         expectedCollectionRevision: terms.data.revision,
         idempotencyKey: intent.current.key,
-        rail: "hyperswitch",
-        purpose,
-        displayAmountMinor: minor,
-        displayCurrency: currency,
-        ...(promoMinor ? { promoMinor } : {}),
+        ...body,
       },
       {
         onSuccess: (checkout) => {
@@ -304,30 +306,17 @@ export function OrderNew() {
               <option value="bundle">{t("orders.purposeBundle")}</option>
             </NativeSelect>
           </Field>
-          <Field label={t("orders.amountLabel", { currency })} hint={t("orders.amountHint")}>
-            <TextInput
-              type="number"
-              step="0.01"
-              min="0.01"
-              value={amount}
-              onChange={(e) => setAmount(e.target.value)}
-              required
-            />
-          </Field>
-          {purpose === "bundle" ? (
-            <Field label={t("orders.promoLabel")} hint={t("orders.promoHint")}>
-              <TextInput
-                type="number"
-                step="any"
-                min="0"
-                value={promo}
-                onChange={(e) => setPromo(e.target.value)}
-                trailingSlot={<span className="text-xs text-muted-foreground">cr</span>}
-              />
-            </Field>
-          ) : null}
+          {purpose === "walletTopup" ? <Field label={t("orders.amountLabel", { currency })} hint={t("orders.amountHint")}>
+            <TextInput inputMode="decimal" value={amount} onChange={(e) => setAmount(e.target.value)} required />
+          </Field> : <>
+            <Field label="Published bundle"><NativeSelect value={bundleId} onChange={(e) => setBundleId(e.target.value)} required disabled={offers.isLoading}>
+              <option value="">Select a bundle</option>{offers.data?.map((o) => <option key={o.bundleVersionId} value={o.bundleVersionId}>{o.terms.name} · version {o.version} · {fiat(o.terms.displayAmountMinor, o.terms.displayCurrency)}</option>)}
+            </NativeSelect></Field>
+            {offers.isError ? <Banner tone="error">Bundle offers could not be loaded.</Banner> : !offers.isLoading && !offers.data?.length ? <Banner tone="info">No bundle offers are currently on sale.</Banner> : null}
+            {offer ? <p>Pay {fiat(offer.terms.displayAmountMinor, offer.terms.displayCurrency)} for <Cr minor={offer.terms.purchasedMinor} /> purchased credit plus <Cr minor={offer.terms.promoMinor} /> promotional credit. Promotion {offer.terms.promoLifetimeDays == null ? "has no expiry" : `expires ${offer.terms.promoLifetimeDays} days after confirmed payment`}. A confirmed partial or full refund cancels remaining promotional credit without cash reimbursement.</p> : null}
+          </>}
           <p className="text-xs text-muted">{t("orders.createConsequence")}</p>
-          <Button type="submit" disabled={!terms.data?.ready || fiatToMinor(amount) === null || (purpose === "bundle" && promo.trim() !== "" && creditsToMinor(promo) === null)} isLoading={create.isPending} loadingText={t("orders.creating")}>
+          <Button type="submit" disabled={!terms.data?.ready || (purpose === "bundle" ? !offer : fiatToMinor(amount) === null)} isLoading={create.isPending} loadingText={t("orders.creating")}>
             {t("orders.createSubmit")}
           </Button>
           {create.error instanceof ApiError ? (
@@ -646,6 +635,9 @@ export function OrderDetail() {
         <Banner tone="info">{t("orders.returnedWaiting")}</Banner>
       ) : null}
       <FulfillmentBlock order={o} />
+      {o.bundleOffer ? <Card title={`${o.bundleOffer.terms.name} · version ${o.bundleOffer.version}`}>
+        <p>This order purchases <Cr minor={o.bundleOffer.terms.purchasedMinor} /> and grants <Cr minor={o.bundleOffer.terms.promoMinor} /> promotional credit. Promotion {o.bundleOffer.terms.promoLifetimeDays == null ? "has no expiry" : `expires ${o.bundleOffer.terms.promoLifetimeDays} days after confirmed payment`}. A confirmed partial or full refund cancels remaining promotional credit without cash reimbursement.</p>
+      </Card> : o.purpose === "bundle" && o.status !== "fulfilled" ? <Banner tone="warn">This legacy bundle has no published offer snapshot. Checkout and fulfillment require operator review.</Banner> : null}
       <div className="grid grid-cols-2 gap-4 sm:grid-cols-4">
         <div>
           <p className="text-[11px] font-medium uppercase tracking-wider text-muted">
