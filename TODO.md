@@ -42,7 +42,7 @@ Updated: 2026-11-09
 
 - [x] [#843](https://github.com/AllureCurtain/oxsum/issues/843) — N09.a: Actor-scoped business setup integrated in PR #845 (`df4ad4f`); 1,950 full workspace tests, 25 focused checks, strict Clippy, frontend/contract checks and independent review passed. Customer readiness and first-call proof remain.
 
-- [ ] [#849](https://github.com/AllureCurtain/oxsum/issues/849) — Correct fully funded/free-call admission before customer readiness: current authority, mandate/concurrency limits and genuine zero-priced calls; preserve plan dunning's overage-only restriction and documented budget semantics.
+- [ ] [#849](https://github.com/AllureCurtain/oxsum/issues/849) — In `.worktrees/funded-call-admission`: reproduce and correct fully funded/free-call admission before customer readiness; preserve current authority, mandate/concurrency limits, plan dunning's overage-only restriction and documented budget semantics.
 
 - [x] [#835](https://github.com/AllureCurtain/oxsum/issues/835) — Integrated in PR #844 (`23b6547`): explicit audited checkout routes, safe customer choices and retained-version retry; 1,948 full workspace checks, strict Clippy and independent review passed. Browser/PSP acceptance remains.
 
