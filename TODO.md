@@ -4,7 +4,9 @@ Updated: 2026-11-09
 
 ## In progress
 
-- [ ] [#843](https://github.com/AllureCurtain/oxsum/issues/843) — N09.a: Actor-scoped business setup implemented; 20 core and five HTTP checks, strict Clippy, contract/frontend build and independent review passed. Complete workspace regression and PR integration pending; customer readiness and first-call proof remain.
+- [ ] [#843](https://github.com/AllureCurtain/oxsum/issues/843) — N09.a: Actor-scoped business setup in PR #845 passed 1,950 full workspace tests, 25 focused checks, strict Clippy, frontend/contract checks and independent review. Normal integration pending; customer readiness and first-call proof remain.
+
+- [ ] [#849](https://github.com/AllureCurtain/oxsum/issues/849) — Correct fully funded/free-call admission before customer readiness: current authority, mandate/concurrency limits and genuine zero-priced calls; preserve plan dunning's overage-only restriction and documented budget semantics.
 
 - [x] [#835](https://github.com/AllureCurtain/oxsum/issues/835) — Integrated in PR #844 (`23b6547`): explicit audited checkout routes, safe customer choices and retained-version retry; 1,948 full workspace checks, strict Clippy and independent review passed. Browser/PSP acceptance remains.
 
@@ -35,7 +37,7 @@ Updated: 2026-11-09
 - [ ] [#732](https://github.com/AllureCurtain/oxsum/issues/732) — N06: Pinned Hyperswitch sandbox integrated (#762); merchant configuration UI, checkout selection and HTTPS/automatic callback acceptance remain.
 - [x] [#733](https://github.com/AllureCurtain/oxsum/issues/733) — N07: Customer invitation history, explicit local SMTP delivery and registration controls integrated (#781); browser journey acceptance remains.
 - [x] [#734](https://github.com/AllureCurtain/oxsum/issues/734) — N08: Email-bound staff invitations and role lifecycle integrated (#782); focused authority/mail tests passed, browser journey acceptance remains.
-- [ ] [#735](https://github.com/AllureCurtain/oxsum/issues/735) — N09: Journey-specific readiness and first bill remain to implement; current checklist still uses the legacy admin-token/positive-wallet/report-link conditions.
+- [ ] [#735](https://github.com/AllureCurtain/oxsum/issues/735) — N09: Business readiness #843 passed full validation in PR #845; customer readiness still uses legacy admin-token/positive-wallet/report-link conditions. Fix admission #849, then add permitted model/key/funding and immediate first-call proof.
 - [ ] [#736](https://github.com/AllureCurtain/oxsum/issues/736) — N10: Payment/refund authority and recovery repairs integrated; explicit statement repayment, remaining conservation fixes and complete commercial journeys remain.
 - [ ] [#737](https://github.com/AllureCurtain/oxsum/issues/737) — N11: Versioned daily revenue policy adopted (#783); implementation and deferred/earned conservation remain.
 - [ ] [#738](https://github.com/AllureCurtain/oxsum/issues/738) — N12: Complete evidence delivery, retained trust inputs and candidate offline-verifier acceptance using the existing verifier foundations.
