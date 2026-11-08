@@ -199,16 +199,6 @@ pub(crate) async fn customer_suspension(
         .await?)
 }
 
-pub(crate) async fn invite_customer(
-    State(state): State<AppState>,
-    headers: HeaderMap,
-    ApiJson(request): ApiJson<oxsum_core::CustomerInvitationRequest>,
-) -> ApiResult<oxsum_core::CreatedInvitation> {
-    ok(state
-        .db
-        .create_customer_invitation(&personal_token(&headers)?, &request)
-        .await?)
-}
 pub(crate) async fn revoke_customer_invitation(
     State(state): State<AppState>,
     headers: HeaderMap,

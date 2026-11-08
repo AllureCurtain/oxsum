@@ -37,6 +37,7 @@ mod heads;
 mod holds;
 mod idempotency;
 mod integration_credentials;
+mod invitation_management;
 mod invitations;
 mod jobs;
 mod journals;
@@ -185,6 +186,10 @@ pub use integration_credentials::{
     ActingService, CreatedIntegrationCredential, IntegrationCredential, IntegrationCredentialPage,
     IntegrationCredentialRequest, IntegrationCredentialRevokeRequest, IntegrationScope,
     ProvisionCustomerRequest,
+};
+pub use invitation_management::{
+    CustomerInvitationPage, CustomerInvitationSummary, InvitationDeliveryState,
+    InvitationMailTarget,
 };
 pub use invitations::{
     CreatedInvitation, CustomerInvitationRequest, InvitationAcceptRequest, InvitationAcceptance,
