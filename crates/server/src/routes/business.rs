@@ -165,6 +165,109 @@ pub(crate) async fn provision_customer(
         .provision_integration_customer(&service, &request)
         .await?)
 }
+
+/// Optional `?before=<index>&limit=<n>` on the customer billing read.
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct CustomerBillingQuery {
+    before: Option<u64>,
+    limit: Option<usize>,
+}
+
+/// `GET /business/customers/{organization_id}/billing` — integration
+/// `billingRead` for one granted customer: its current balance plus a page of
+/// the ledger entries that moved money. Service-only; a personal session is
+/// rejected like every other machine credential on this surface is `401`.
+pub(crate) async fn customer_billing(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    axum::extract::Path(id): axum::extract::Path<uuid::Uuid>,
+    ApiQuery(query): ApiQuery<CustomerBillingQuery>,
+) -> ApiResult<CustomerBillingRes> {
+    if !crate::auth::has_machine_credential(&headers) {
+        return Err(ApiError::Unauthorized);
+    }
+    let service = integration(&state, &headers).await?;
+    let tenant_id = state.db.integration_customer_tenant(&service, id).await?;
+    let w = state.tenants.get(&tenant_id).await?;
+    let limit = query.limit.unwrap_or(20);
+    if !(1..=50).contains(&limit) {
+        return Err(ApiError::Validation(
+            "limit must be between 1 and 50".into(),
+        ));
+    }
+    let page = w.transactions_page(query.before, limit).await?;
+    ok(CustomerBillingRes {
+        balance: CustomerBalanceRes {
+            available_minor: w.available().await?,
+            credit_limit_minor: w.credit_limit().await?,
+            credit_used_minor: w.credit_used().await?,
+            reserved_minor: w.reserved().await?,
+            spent_this_month_minor: w.month_spend().await?,
+        },
+        bills: CustomerBillsRes {
+            rows: page
+                .rows
+                .into_iter()
+                .map(|row| CustomerBillRow {
+                    index: row.index,
+                    entry_id: row.id,
+                    booked_on: row.booked_on.to_string(),
+                    kind: match row.kind {
+                        oxsum_core::TransactionKind::TopUp => "topUp",
+                        oxsum_core::TransactionKind::Adjustment => "adjustment",
+                        oxsum_core::TransactionKind::Settlement => "settlement",
+                    },
+                    amount_minor: row.amount_minor,
+                    description: row.description,
+                    content_hash: row.content_hash,
+                })
+                .collect(),
+            next_cursor: page.next_cursor,
+        },
+    })
+}
+
+/// The `CustomerBilling` schema: a granted customer's balance and bill window.
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct CustomerBillingRes {
+    balance: CustomerBalanceRes,
+    bills: CustomerBillsRes,
+}
+
+/// The balance half — the same fields the customer `GET /balance` returns.
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct CustomerBalanceRes {
+    available_minor: i64,
+    credit_limit_minor: i64,
+    credit_used_minor: i64,
+    reserved_minor: i64,
+    spent_this_month_minor: i64,
+}
+
+/// The bill window half — the same row shape `GET /bills` returns.
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct CustomerBillsRes {
+    rows: Vec<CustomerBillRow>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    next_cursor: Option<u64>,
+}
+
+/// One transaction in the customer's bill log.
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct CustomerBillRow {
+    index: u64,
+    entry_id: String,
+    booked_on: String,
+    kind: &'static str,
+    amount_minor: i64,
+    description: String,
+    content_hash: String,
+}
 pub(crate) async fn update_customer(
     State(state): State<AppState>,
     headers: HeaderMap,

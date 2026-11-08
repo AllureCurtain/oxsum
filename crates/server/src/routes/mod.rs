@@ -393,6 +393,11 @@ pub fn router(state: AppState) -> Router {
             "/business/customers/{organization_id}",
             get(business::customer).patch(business::update_customer),
         )
+        // Service-only customer billing read (billingRead, issue #788).
+        .route(
+            "/business/customers/{organization_id}/billing",
+            get(business::customer_billing),
+        )
         // The sold-plan catalogue staff CRUD and a customer's binding
         // (issue #610).
         .route(
