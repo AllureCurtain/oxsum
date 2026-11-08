@@ -52,6 +52,7 @@ mod invitations;
 mod jobs;
 mod journals;
 mod keys;
+mod ledger_source;
 mod mandates;
 mod manual_receipts;
 mod merchant_events;

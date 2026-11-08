@@ -1460,3 +1460,24 @@ For an already built verifier, set `OXSUM_VERIFY_WASM_DIR` to its directory; mis
 or placeholder WASM fails this suite. The tests reuse engine-generated Merkle
 fixtures and generate a separate signing key to exercise actual signatures,
 consistency, altered roots/paths, origin changes and empty-head limitations.
+
+### Borrowed ledger connection regressions (#856)
+
+Run `cargo nextest run -p oxsum-core --lib -E 'test(ledger_source::tests)'`
+against the test PostgreSQL cluster for the canonical-reader and transaction
+connection regressions. They cover a single-slot pool, concurrent transactions
+occupying every slot, repeatable-read visibility, uncommitted append/replay,
+credit repayment and settlement, canonical metadata/dimension tampering,
+malformed source evidence, missing/foreign tenants, storage errors and
+transaction-local period/day seals. `wallet`, `plan_refunds`, `nonplan_chargebacks`
+and `journals` cover the existing financial behavior. Because these helpers are
+shared by wallet, accounting and server paths, use the complete workspace suite
+before integration, plus strict workspace Clippy and formatting.
+
+Read through `ledger_source::entries_in` when a caller already owns a database
+connection; never call pooled `LedgerStore::get` or `Wallet::verified_source_hash`
+while retaining a transaction. `Wallet::verified_source_hash_in` refuses missing
+or malformed/hash-mismatched sources without swallowing database errors. A batch
+reader reports corrupt entries individually; it does not mark an unsequenced
+entry as official evidence. Source ownership, raw-key equality, account meaning
+and the snapshot isolation level remain the consumer's responsibility.

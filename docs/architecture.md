@@ -594,3 +594,26 @@ Its stable operation fingerprint uses application plus customer plus request key
 original credential provenance is pinned in admission metadata. Completion checks
 that the current credential belongs to the same application and holds the needed
 scope. Legacy credentials keep their previous fingerprints and authority.
+
+### Transaction-bound ledger source reads (#856)
+
+`ledger_source` reconstructs complete `StoredEntry<SCALE>` values on a borrowed
+`PgConnection` and calls the public engine's canonical hash verification. Raw
+idempotency bytes, booking/value dates, description, kind, provenance, document
+references, reversal metadata, posting order, account IDs, currencies, layers and
+dimensions are preserved. Missing sources stay missing; malformed or corrupt
+entries retain per-entry failures in batch reads; operational database errors
+abort the read. A content hash does not prove log inclusion, entry-ID-to-key
+mapping, account-path labels, or original business ownership. Consumers must
+compare the verified raw key and registered account IDs with their exact source;
+financial reconciliation must also require an official log index.
+
+Wallet transaction paths read their calendar, sealed-day state, source entries,
+receipts and outstanding holds on the same connection as their append. Credit
+repayment and credit-limit changes keep the append inside the transaction that
+holds their credit lock. A transaction sees its own newly appended entry and
+cannot starve the pool by checking out a second slot. The caller chooses the
+isolation level: independent reconciliation needs a repeatable-read snapshot;
+ordinary mutations retain their existing locking and isolation policy. The
+helper neither opens a transaction nor changes the caller's isolation level.
+No ledger-engine schema or canonical encoding changes are required.
