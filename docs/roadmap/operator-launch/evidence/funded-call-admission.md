@@ -26,7 +26,7 @@ Build 39.52 s; test execution 1.672 s; exit 100. Execution log retained locally 
 
 The focused suite additionally covers current key revoke/expiry/scope changes,
 key/member/team and mandate monetary caps, cache-hit restrictions, partial quota
-rollback, atomic watch-write failure, concurrency races/double counting,
+rollback, atomic watch-write failure and legacy-watch insertion races, concurrency races/double counting,
 independent identical operations and explicit idempotent replay, zero-wallet
 recovery with failure/retry, one-connection money/quota/free recovery, distinct-key
 small-pool bursts, controlled lock order and plan-dunning overage-only behavior.
