@@ -1905,6 +1905,33 @@
       "reload": "Reload",
       "notSet": "Not configured",
       "helpLink": "Contact and help"
+    "staffInv": {
+      "title": "Invite staff by email",
+      "colEmail": "Email",
+      "colState": "State",
+      "colMail": "Mail",
+      "emailHint": "The recipient accepts through their own session on this address; no user ID is needed.",
+      "sendEmail": "Email the invitation link",
+      "invite": "Send invitation",
+      "mailed": "Invitation mailed.",
+      "copyLink": "Invitation created — copy the link:",
+      "revoke": "Revoke",
+      "revokeTitle": "Revoke staff invitation?",
+      "revokeExplain": "The pending link to {{email}} stops working; nothing the recipient already did is undone.",
+      "empty": "No staff invitations.",
+      "state": {
+        "pending": "Pending",
+        "accepted": "Accepted",
+        "revoked": "Revoked",
+        "expired": "Expired"
+      },
+      "mail": {
+        "notRequested": "not requested",
+        "notAttempted": "not attempted",
+        "submitted": "submitted",
+        "unavailable": "no mailer",
+        "unknown": "unknown"
+      }
     }
   },
   "setup": {

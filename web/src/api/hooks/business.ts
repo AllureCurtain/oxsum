@@ -690,3 +690,41 @@ export function useRevokeStaff() {
     onSuccess: () => client.invalidateQueries({ queryKey: ["biz-staff"] }),
   });
 }
+
+// ---------------------------------------------------------------------------
+// Staff invitations: an email-bound grant a recipient accepts through their own
+// session — no internal user UUID crosses the onboarding flow (issue #734, N08).
+// ---------------------------------------------------------------------------
+
+export type StaffInvitationPage = components["schemas"]["StaffInvitationPage"];
+export type StaffInvitationSummary = components["schemas"]["StaffInvitationSummary"];
+export type StaffInvitationResult = components["schemas"]["StaffInvitationResult"];
+
+export function useStaffInvitations(after?: string, enabled = true) {
+  return useQuery({
+    enabled,
+    queryKey: ["biz-staff-invitations", after ?? null],
+    queryFn: () => api<StaffInvitationPage>(`/business/staff-invitations${qs({ after })}`),
+  });
+}
+
+export function useCreateStaffInvitation() {
+  const client = useQueryClient();
+  return useMutation({
+    mutationFn: (body: { idempotencyKey: string; email: string; role: "admin" | "finance" | "support" | "viewer"; sendEmail: boolean; reason: string }) =>
+      api<StaffInvitationResult>("/business/staff-invitations", { method: "POST", body }),
+    onSuccess: () => client.invalidateQueries({ queryKey: ["biz-staff-invitations"] }),
+  });
+}
+
+export function useRevokeStaffInvitation() {
+  const client = useQueryClient();
+  return useMutation({
+    mutationFn: (body: { invitationId: string; idempotencyKey: string; reason: string }) =>
+      api<BusinessMutationResult>(`/business/staff-invitations/${body.invitationId}/revoke`, {
+        method: "POST",
+        body: { idempotencyKey: body.idempotencyKey, reason: body.reason },
+      }),
+    onSuccess: () => client.invalidateQueries({ queryKey: ["biz-staff-invitations"] }),
+  });
+}
