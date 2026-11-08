@@ -90,7 +90,7 @@ const SECTION_GROUPS: { group: string; items: Section[] }[] = [
     group: "access",
     items: [
       { key: "staff", labelKey: "staff", Icon: Users, cap: "staffManage" },
-      { key: "integrations", labelKey: "integrations", Icon: Landmark, cap: "integrationsManage" },
+      { key: "integrations", labelKey: "integrations", Icon: Landmark, cap: "reportsRead" },
       { key: "audit", labelKey: "audit", Icon: ScrollText, cap: "reportsRead" },
     ],
   },

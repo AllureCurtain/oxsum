@@ -1,14 +1,14 @@
 import { useState } from "react";
 import { useTranslation } from "react-i18next";
-import { Landmark, ScrollText, Users } from "lucide-react";
+import { ScrollText, Users } from "lucide-react";
 import {
   idem,
   useBusinessAudit,
+  useBusiness,
+  useCapability,
   useBusinessStaff,
   useCreateIntegrationCredential,
   useIntegrationCredentials,
-  useMerchantEvents,
-  useMerchants,
   useCreateStaffInvitation,
   useRevokeIntegrationCredential,
   useRevokeStaff,
@@ -25,12 +25,12 @@ import {
   EmptyRows,
   Field,
   NativeSelect,
-  Skeleton,
   TableShell,
   Td,
   TextInput,
 } from "../../components/ui";
-import { AuditAction, stateBadge } from "./biz";
+import { AuditAction } from "./biz";
+import { MerchantSettings } from "./merchants";
 
 // ---------------------------------------------------------------------------
 // /app/business#business/staff + #business/integrations + #business/audit —
@@ -227,76 +227,6 @@ function StaffInvitations() {
 // partner reaches the API under (T04), with mint + revoke.
 // ---------------------------------------------------------------------------
 
-function MerchantCards() {
-  const { t } = useTranslation();
-  const merchants = useMerchants();
-  const [picked, setPicked] = useState<string | null>(null);
-  const events = useMerchantEvents(picked ?? undefined);
-
-  return (
-    <Card title={t("biz.integrations.merchantsTitle")}>
-      {merchants.isError ? (
-        <Banner tone="error">{t("biz.loadError")}</Banner>
-      ) : (
-        <TableShell
-          density="compact"
-          head={[
-            t("biz.integrations.colName"),
-            t("biz.integrations.colRail"),
-            t("biz.integrations.colMode"),
-            t("biz.integrations.colAccount"),
-            t("common.status"),
-            "",
-          ]}
-          loading={merchants.isLoading ? 3 : 0}
-          sticky={false}
-        >
-          {!merchants.isLoading &&
-            (merchants.data?.merchants ?? []).map((m) => (
-              <>
-                <tr key={m.id} className="cursor-pointer" onClick={() => setPicked(picked === m.id ? null : m.id)}>
-                  <td className="font-medium">{m.name}</td>
-                  <td>{m.rail}</td>
-                  <td>{m.mode}</td>
-                  <Td mono truncate>{m.accountId}</Td>
-                  <td>{m.enabled ? <Badge tone="success">{t("biz.integrations.enabled")}</Badge> : <Badge tone="secondary">{t("biz.integrations.disabled")}</Badge>}</td>
-                  <Td mono>v{m.currentVersion.revision}</Td>
-                </tr>
-                {picked === m.id ? (
-                  <tr key={`${m.id}-events`}>
-                    <td colSpan={6} className="bg-canvas-inset">
-                      <p className="mb-2 text-xs font-semibold text-muted">{t("biz.integrations.events")}</p>
-                      {events.isLoading ? (
-                        <Skeleton className="h-12 w-full" />
-                      ) : (
-                        <TableShell density="compact" sticky={false} head={[t("biz.integrations.colEvent"), t("biz.integrations.colKind"), t("common.status"), t("biz.integrations.colReason")]}>
-                          {(events.data?.events ?? []).map((ev) => (
-                            <tr key={ev.id}>
-                              <Td mono truncate>{ev.eventId}</Td>
-                              <td>{ev.kind}</td>
-                              <td>{stateBadge(ev.state)}</td>
-                              <Td truncate>{ev.reason ?? "—"}</Td>
-                            </tr>
-                          ))}
-                          {(events.data?.events.length ?? 0) === 0 ? (
-                            <EmptyRows colSpan={4}>{t("biz.integrations.noEvents")}</EmptyRows>
-                          ) : null}
-                        </TableShell>
-                      )}
-                    </td>
-                  </tr>
-                ) : null}
-              </>
-            ))}
-          {!merchants.isLoading && (merchants.data?.merchants.length ?? 0) === 0 ? (
-            <EmptyRows colSpan={6} icon={<Landmark />}>{t("biz.integrations.noMerchants")}</EmptyRows>
-          ) : null}
-        </TableShell>
-      )}
-    </Card>
-  );
-}
-
 function Credentials() {
   const { t } = useTranslation();
   const creds = useIntegrationCredentials();
@@ -380,11 +310,13 @@ function Credentials() {
 
 export function BusinessIntegrations() {
   const { t } = useTranslation();
+  const business = useBusiness();
+  const canManage = useCapability(business.data, "integrationsManage");
   return (
     <div className="flex flex-col gap-6">
       <h2 className="text-xl font-bold">{t("biz.integrations.title")}</h2>
-      <MerchantCards />
-      <Credentials />
+      <MerchantSettings />
+      {canManage ? <Credentials /> : null}
     </div>
   );
 }

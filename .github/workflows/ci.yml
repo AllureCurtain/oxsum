@@ -317,6 +317,8 @@ jobs:
       - name: Test exact sale editor inputs
         if: steps.filter.outputs.stages == 'true'
         run: node --experimental-strip-types --test web/tests/sale-draft.test.ts
+      - name: Check merchant credential drafts
+        run: node --experimental-strip-types --test web/tests/merchant-draft.test.ts
       - name: Test exact money inputs
         if: steps.filter.outputs.stages == 'true'
         run: node --experimental-strip-types --test web/tests/money.test.ts
