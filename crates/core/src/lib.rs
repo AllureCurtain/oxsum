@@ -184,6 +184,7 @@ pub use idempotency::{Claim, credential_fingerprint, fingerprint};
 pub use integration_credentials::{
     ActingService, CreatedIntegrationCredential, IntegrationCredential, IntegrationCredentialPage,
     IntegrationCredentialRequest, IntegrationCredentialRevokeRequest, IntegrationScope,
+    ProvisionCustomerRequest,
 };
 pub use invitations::{
     CreatedInvitation, CustomerInvitationRequest, InvitationAcceptRequest, InvitationAcceptance,

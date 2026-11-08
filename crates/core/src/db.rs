@@ -389,6 +389,10 @@ const MIGRATIONS: &[(&str, &str)] = &[
         "0097_evidence_bundles",
         include_str!("../migrations/0097_evidence_bundles.sql"),
     ),
+    (
+        "0098_integration_provision",
+        include_str!("../migrations/0098_integration_provision.sql"),
+    ),
 ];
 
 /// Advisory-lock key serialising the migration runner across processes.

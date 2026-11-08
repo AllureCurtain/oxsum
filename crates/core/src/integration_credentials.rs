@@ -19,14 +19,30 @@ pub enum IntegrationScope {
     CustomersRead,
     /// Submit usage metering for payments on behalf of the business.
     MeteringWrite,
+    /// Provision service-managed customer accounts the credential then owns.
+    CustomersProvision,
 }
 impl IntegrationScope {
     pub(crate) fn as_str(self) -> &'static str {
         match self {
             Self::CustomersRead => "customersRead",
             Self::MeteringWrite => "meteringWrite",
+            Self::CustomersProvision => "customersProvision",
         }
     }
+}
+/// Request to provision a service-managed customer account.
+#[derive(Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ProvisionCustomerRequest {
+    /// Caller-supplied key that makes repeated provisions return the same customer.
+    pub idempotency_key: String,
+    /// Caller-chosen identifier, unique within the business — the namespace key.
+    pub external_id: String,
+    /// Display name of the customer account, 1 to 80 characters.
+    pub name: String,
+    /// Optional contact email for the customer.
+    pub contact_email: Option<String>,
 }
 /// Request to issue an integration credential.
 #[derive(Serialize, Deserialize)]
@@ -124,6 +140,7 @@ fn from_row(row: &sqlx::postgres::PgRow) -> Result<IntegrationCredential, Wallet
         .map(|s| match s.as_str() {
             "customersRead" => Ok(IntegrationScope::CustomersRead),
             "meteringWrite" => Ok(IntegrationScope::MeteringWrite),
+            "customersProvision" => Ok(IntegrationScope::CustomersProvision),
             _ => Err(WalletError::Forbidden("unknown integration scope".into())),
         })
         .collect::<Result<_, _>>()?;
@@ -224,14 +241,19 @@ impl Db {
         let mut customers = request.customer_ids.clone();
         customers.sort_unstable();
         customers.dedup();
+        // A pure customersProvision grant starts with an empty allowlist and
+        // grows its own namespace; every other scope reads or meters an
+        // existing customer, so it must name at least one.
+        let provision_only =
+            !scopes.is_empty() && scopes.iter().all(|s| *s == "customersProvision");
         if scopes.is_empty()
             || scopes.len() != request.scopes.len()
-            || customers.is_empty()
             || customers.len() > 1000
             || customers.len() != request.customer_ids.len()
+            || (!provision_only && customers.is_empty())
         {
             return Err(WalletError::InvalidInput(
-                "scopes and 1 to 1000 customerIds must be explicit and distinct".into(),
+                "scopes must be distinct and customerIds must be 1 to 1000 distinct ids, or empty for a customersProvision-only grant".into(),
             ));
         }
         let now = OffsetDateTime::now_utc();
@@ -352,6 +374,125 @@ impl Db {
         .await?;
         tx.commit().await?;
         Ok(result)
+    }
+    /// Provisions a service-managed customer billing account under the calling
+    /// credential's business — the N21 embedded-app onboarding path. The
+    /// account has no human login and no staff membership; the credential that
+    /// created it is granted access through `integration_credential_customers`,
+    /// so the namespace is exactly the customers it created plus any the owner
+    /// already allowlisted.
+    ///
+    /// Idempotent on `(business, externalId)`: an exact replay answers the
+    /// standing customer, and a caller cannot name or claim a foreign account.
+    ///
+    /// # Errors
+    ///
+    /// [`WalletError::Forbidden`] without a live `customersProvision` grant;
+    /// [`WalletError::Conflict`] when `externalId` is already assigned.
+    pub async fn provision_integration_customer(
+        &self,
+        service: &ActingService,
+        request: &ProvisionCustomerRequest,
+    ) -> Result<crate::BusinessCustomer, WalletError> {
+        authority::validate(&request.idempotency_key, None)?;
+        let external = request.external_id.trim();
+        if external.is_empty() || external.chars().count() > 200 {
+            return Err(WalletError::InvalidInput(
+                "externalId must be 1 to 200 characters".into(),
+            ));
+        }
+        let name = request.name.trim();
+        if name.is_empty() || name.chars().count() > 80 {
+            return Err(WalletError::InvalidInput(
+                "name must be 1 to 80 characters".into(),
+            ));
+        }
+        let mut tx = self.pool().begin().await?;
+        require_integration(&mut tx, service, IntegrationScope::CustomersProvision, None).await?;
+        let business = authority::lock_business(&mut tx).await?;
+        let detail = json!(request);
+        let action = crate::audit::action::BUSINESS_INTEGRATION_PROVISION;
+        // Idempotency is the (business, externalId) uniqueness of the profile —
+        // `business_mutations.actor_id` is a user FK a service credential cannot
+        // fill, so the durable dedup is the namespace key itself. A replay on an
+        // externalId this credential already provisioned answers the standing
+        // customer; one it did not falls through to the insert and conflicts.
+        let existing: Option<Uuid> = sqlx::query_scalar(
+            "SELECT a.organization_id FROM oxsum.integration_credential_customers a \
+             JOIN oxsum.customer_profiles c USING (business_id,organization_id) \
+             WHERE a.business_id=$1 AND a.credential_id=$2 AND c.external_id=$3",
+        )
+        .bind(business)
+        .bind(service.credential_id)
+        .bind(external)
+        .fetch_optional(&mut *tx)
+        .await?;
+        if let Some(id) = existing {
+            let customer = crate::customers::customer(&mut tx, business, id).await?;
+            tx.commit().await?;
+            return Ok(customer);
+        }
+        // The organization row is what carries the ledger; its insert fires the
+        // business-ownership trigger that creates a placeholder customer_profiles
+        // row keyed on the organization id. Identity (organization_id, business_id,
+        // external_id) is immutable once set — UPDATE is refused by a trigger — so
+        // the placeholder is replaced by the caller's real external identity in one
+        // delete+insert inside this transaction. The UNIQUE(business_id,externalId)
+        // is the namespace guard: a foreign externalId fails the insert.
+        let organization_id = Uuid::new_v4();
+        crate::orgs::insert(&mut tx, organization_id, name, crate::Kind::Personal).await?;
+        sqlx::query("DELETE FROM oxsum.customer_profiles WHERE organization_id=$1")
+            .bind(organization_id)
+            .execute(&mut *tx)
+            .await?;
+        sqlx::query(
+            "INSERT INTO oxsum.customer_profiles \
+             (organization_id,business_id,external_id,contact_email) \
+             VALUES ($1,$2,$3,$4)",
+        )
+        .bind(organization_id)
+        .bind(business)
+        .bind(external)
+        .bind(request.contact_email.as_deref())
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| {
+            crate::keys::conflict_or_storage(
+                e,
+                "customer_profiles_business_id_external_id_key",
+                "externalId is already assigned",
+            )
+        })?;
+        // The namespace grant: the new account is scoped to the credential that
+        // created it, so a later customersRead/meteringWrite call reaches it
+        // without the owner adding it to the allowlist by hand.
+        sqlx::query(
+            "INSERT INTO oxsum.integration_credential_customers \
+             (business_id,credential_id,organization_id) VALUES ($1,$2,$3) \
+             ON CONFLICT DO NOTHING",
+        )
+        .bind(business)
+        .bind(service.credential_id)
+        .bind(organization_id)
+        .execute(&mut *tx)
+        .await?;
+        // A service-scoped audit row: actor is the credential id, spelled as a
+        // service, not a user.
+        sqlx::query(
+            "INSERT INTO oxsum.admin_audit \
+             (action,actor,target,detail,idempotency_key) \
+             VALUES ($1,$2,$3,$4,$5)",
+        )
+        .bind(action)
+        .bind(format!("service:{}", service.credential_id))
+        .bind(organization_id.to_string())
+        .bind(&detail)
+        .bind(format!("provisioning:{}", request.idempotency_key))
+        .execute(&mut *tx)
+        .await?;
+        let customer = crate::customers::customer(&mut tx, business, organization_id).await?;
+        tx.commit().await?;
+        Ok(customer)
     }
     /// Resolves a plaintext integration secret to its acting service. Returns
     /// `None` for unknown, revoked or expired credentials.

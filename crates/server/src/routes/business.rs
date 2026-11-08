@@ -152,6 +152,19 @@ pub(crate) async fn customer(
         .business_customer(&personal_token(&headers)?, id)
         .await?)
 }
+pub(crate) async fn provision_customer(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    ApiJson(request): ApiJson<oxsum_core::ProvisionCustomerRequest>,
+) -> ApiResult<oxsum_core::BusinessCustomer> {
+    // Provisioning is a service grant only — a staff session is refused at the
+    // same door as every integration-authenticated call.
+    let service = integration(&state, &headers).await?;
+    ok(state
+        .db
+        .provision_integration_customer(&service, &request)
+        .await?)
+}
 pub(crate) async fn update_customer(
     State(state): State<AppState>,
     headers: HeaderMap,

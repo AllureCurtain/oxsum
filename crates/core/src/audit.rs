@@ -67,6 +67,8 @@ pub mod action {
     pub const BUSINESS_INTEGRATION_CREATE: &str = "business.integration.create";
     /// A business integration was revoked.
     pub const BUSINESS_INTEGRATION_REVOKE: &str = "business.integration.revoke";
+    /// An integration credential provisioned a service-managed customer.
+    pub const BUSINESS_INTEGRATION_PROVISION: &str = "business.integration.provision";
     /// A business staff seat was revoked.
     pub const BUSINESS_STAFF_REVOKE: &str = "business.staff.revoke";
     /// A staff member's account was deleted.
