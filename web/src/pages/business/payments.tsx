@@ -1,14 +1,15 @@
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { AlertTriangle, Landmark, Wallet } from "lucide-react";
+import { decimalMinor } from "../../lib/money";
 import { ApiError } from "../../api/client";
 import {
-  idem,
   useBusiness,
   useBusinessOrders,
   useCapability,
   useDisplay,
   useManualOrder,
+  useCollectionTerms,
   usePaymentReconciliation,
 } from "../../api/hooks";
 import {
@@ -174,7 +175,9 @@ function ManualReceipt() {
   const manual = useManualOrder();
   const [orgId, setOrgId] = useState("");
   const [amount, setAmount] = useState("");
-  const [currency, setCurrency] = useState("USD");
+  const terms = useCollectionTerms(true);
+  const currency = terms.data?.currency?.code ?? "";
+  const intent = useRef<{payload:string; key:string}|null>(null);
   const [reference, setReference] = useState("");
   const [reason, setReason] = useState("");
   const canWrite = useCapability(useBusiness().data, "fundsWrite");
@@ -186,11 +189,16 @@ function ManualReceipt() {
         className="flex flex-col gap-3"
         onSubmit={(e) => {
           e.preventDefault();
+          const minor = decimalMinor(amount, 0);
+          if (minor === null || !terms.data?.ready) return;
+          const payload = JSON.stringify({ orgId, minor, currency, reference, reason });
+          if (intent.current?.payload !== payload) intent.current = { payload, key: crypto.randomUUID() };
           manual.mutate(
             {
               organizationId: orgId,
-              idempotencyKey: idem(),
-              displayAmountMinor: Number(amount),
+              idempotencyKey: intent.current.key,
+              expectedCollectionRevision: terms.data.revision,
+              displayAmountMinor: minor,
               displayCurrency: currency,
               reference,
               reason,
@@ -199,6 +207,8 @@ function ManualReceipt() {
           );
         }}
       >
+        {terms.data?.ready ? <p className="font-mono text-sm">1 credit = {terms.data.currency?.ratePerCredit} {currency}</p> : <Banner tone="warn">Collection terms are unavailable. Configure them before recording a receipt.</Banner>}
+        <Button type="button" tone="ghost" onClick={() => terms.refetch()}>Refresh collection terms</Button>
         <Field label={t("biz.payments.fOrg")} hint={t("biz.payments.manualHint")}>
           <TextInput value={orgId} onChange={(e) => setOrgId(e.target.value)} required placeholder="org uuid" />
         </Field>
@@ -207,7 +217,7 @@ function ManualReceipt() {
             <TextInput inputMode="numeric" value={amount} onChange={(e) => setAmount(e.target.value)} required placeholder="minor units" />
           </Field>
           <Field label={t("biz.plans.colCurrency")}>
-            <TextInput value={currency} onChange={(e) => setCurrency(e.target.value)} required maxLength={3} />
+            <TextInput value={currency} readOnly />
           </Field>
         </div>
         <Field label={t("biz.payments.reference")}>
@@ -222,7 +232,7 @@ function ManualReceipt() {
             {t("biz.payments.recorded", { id: manual.data.order.orderId.slice(0, 8) })}
           </Banner>
         ) : null}
-        <Button type="submit" isLoading={manual.isPending}>{t("biz.payments.record")}</Button>
+        <Button type="submit" disabled={!terms.data?.ready || decimalMinor(amount, 0) === null} isLoading={manual.isPending}>{t("biz.payments.record")}</Button>
       </form>
     </Card>
   );

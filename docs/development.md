@@ -1263,3 +1263,21 @@ checks authority, concurrent revisions/windows, pinned snapshots, signed sale
 binding and all production-router operations. Browser acceptance additionally
 requires creating, publishing and activating a book, two customer assignments,
 a retained draft after conflict and a call whose exported charge matches preview.
+### Collection configuration and exact money checks
+
+`OXSUM_DISPLAY_CURRENCY` and `OXSUM_DISPLAY_RATE_PER_CREDIT` bootstrap Business
+collection terms once when both are configured. After persistence, change
+collection through the owner's Business settings; editing env or a customer's
+display preference does not reprice payments. No configured collection terms
+means new provider/manual fiat orders fail closed. Existing orders retain their
+pinned conversion. Legacy credit-denominated admin receipts retain their units.
+
+Check the touched exact decimal/quote helpers with:
+
+```bash
+node --experimental-strip-types --test web/tests/money.test.ts
+```
+
+The script uses the project's supported Node 22+ runtime and no network or paid
+service. Backend collection fixtures explicitly adopt their rate; setting only a
+customer display preference no longer configures collection.

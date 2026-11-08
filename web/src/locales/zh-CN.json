@@ -1436,6 +1436,7 @@
     "reason": "原因",
     "sections": "控制台栏目",
     "groups": {
+      "collection": "Collection settings",
       "operations": "运营",
       "receivables": "应收",
       "catalog": "目录",
@@ -1457,7 +1458,8 @@
       "staff": "员工",
       "integrations": "集成",
       "audit": "审计",
-      "profile": "运营商资料"
+      "profile": "运营商资料",
+      "collection": "收款设置"
     },
     "roles": {
       "owner": "所有者",

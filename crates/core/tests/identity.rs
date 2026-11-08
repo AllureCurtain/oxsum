@@ -503,6 +503,8 @@ async fn migrating_twice_and_concurrently_is_safe() {
             "channel_credentials".to_owned(),
             "channel_prices".to_owned(),
             "channels".to_owned(),
+            "collection_term_revisions".to_owned(),
+            "collection_terms".to_owned(),
             "credit_notes".to_owned(),
             "customer_plans".to_owned(),
             "customer_profiles".to_owned(),

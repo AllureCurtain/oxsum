@@ -13,7 +13,7 @@ use crate::error::{ApiError, ApiJson, ApiQuery};
 use axum::Extension;
 use axum::extract::{Path, State};
 use oxsum_core::{
-    MerchantRail, NewManualOrder, NewPaymentOrder, OrderRate, PaymentOrder, PaymentOrderPage,
+    MerchantRail, NewManualOrder, NewPaymentOrder, PaymentOrder, PaymentOrderPage,
     PaymentOrderPurpose, PaymentReconciliation, Principal,
 };
 use serde::Deserialize;
@@ -26,6 +26,7 @@ use uuid::Uuid;
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(crate) struct CreateOrderReq {
+    expected_collection_revision: Option<i64>,
     idempotency_key: String,
     rail: MerchantRail,
     purpose: PaymentOrderPurpose,
@@ -81,15 +82,6 @@ pub(crate) async fn create_order(
     let secret = state.config.secret().ok_or_else(|| {
         ApiError::ServiceUnavailable("merchant encryption is not configured".into())
     })?;
-    // The order rates against the organization's effective display currency —
-    // the server's own figure, resolved exactly as the bill renders it.
-    let display = state.config.display_for(organization).ok_or_else(|| {
-        ApiError::Validation("no display currency is configured to rate a payment order".into())
-    })?;
-    let rate = OrderRate {
-        mantissa: display.rate_mantissa(),
-        scale: display.rate_scale(),
-    };
     let context = state
         .db
         .environment_merchant(r.rail, secret)
@@ -98,6 +90,7 @@ pub(crate) async fn create_order(
             ApiError::ServiceUnavailable("the requested payment rail is not configured".into())
         })?;
     let new = NewPaymentOrder {
+        expected_collection_revision: r.expected_collection_revision,
         purpose: r.purpose,
         display_amount_minor: r.display_amount_minor,
         display_currency: r.display_currency.clone(),
@@ -107,7 +100,7 @@ pub(crate) async fn create_order(
     };
     let order = state
         .db
-        .create_payment_order(&context, organization.id, &new, &rate)
+        .create_payment_order(&context, organization.id, &new)
         .await?;
     let order = drive_checkout(
         &state,
@@ -386,7 +379,7 @@ pub(crate) struct BusinessOrdersPage {
 }
 
 /// `POST /api/v1/business/orders`: a staff-recorded manual receipt (issue
-/// #607). The fiat receipt rates to credits at the customer's own display
+/// #607). The fiat receipt rates to credits at the business collection
 /// rate, the order lands `paid` on the receipt's own evidence — reference
 /// unique per business — and the same `fulfill_payment_order` the sweep runs
 /// books the top-up exactly once. `FundsWrite` is the capability; the replay
@@ -394,6 +387,7 @@ pub(crate) struct BusinessOrdersPage {
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(crate) struct ManualOrderReq {
+    expected_collection_revision: Option<i64>,
     organization_id: Uuid,
     idempotency_key: String,
     /// `walletTopup` only — a receipt books wallet cash or it is not a receipt.
@@ -427,22 +421,8 @@ pub(crate) async fn create_manual_order(
             "a manual receipt only funds a walletTopup order".into(),
         ));
     }
-    // The receipt rates to credits at the customer's own display rate — the
-    // same source a provider order's conversion resolves from.
-    let organization = state.db.organization_by_id(r.organization_id).await?;
-    let display = state
-        .config
-        .display_for_pair(organization.display_currency.as_ref())
-        .ok_or_else(|| {
-            ApiError::Validation(
-                "the customer has no rated display currency to convert the receipt at".into(),
-            )
-        })?;
-    let rate = OrderRate {
-        mantissa: display.rate_mantissa(),
-        scale: display.rate_scale(),
-    };
     let new = NewManualOrder {
+        expected_collection_revision: r.expected_collection_revision,
         organization: r.organization_id,
         purpose: PaymentOrderPurpose::WalletTopup,
         display_amount_minor: r.display_amount_minor,
@@ -451,10 +431,8 @@ pub(crate) async fn create_manual_order(
         reference: r.reference,
         reason: r.reason,
     };
-    let order = state
-        .db
-        .create_manual_payment_order(&token, &new, &rate)
-        .await?;
+    let order = state.db.create_manual_payment_order(&token, &new).await?;
+    let organization = state.db.organization_by_id(order.organization_id).await?;
     // Replay: the standing order answers with its standing fulfillment — the
     // unique-evidence check and the idempotency replay already ran inside
     // `create_manual_payment_order`'s transaction.

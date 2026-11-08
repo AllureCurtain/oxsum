@@ -413,6 +413,10 @@ const MIGRATIONS: &[(&str, &str)] = &[
         "0106_integration_billing_read",
         include_str!("../migrations/0106_integration_billing_read.sql"),
     ),
+    (
+        "0101_collection_terms",
+        include_str!("../migrations/0101_collection_terms.sql"),
+    ),
 ];
 
 /// Advisory-lock key serialising the migration runner across processes.

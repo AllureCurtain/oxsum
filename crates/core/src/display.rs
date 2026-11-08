@@ -2,7 +2,8 @@
 //! credit amount and the fiat unit an organization reads its bills in.
 //!
 //! The ledger only ever holds integer minor units of one credit — this module
-//! converts for display and is never an input to a charge, a freeze or a proof.
+//! supports presentation and exact payment conversion. Collection authority
+//! chooses its own stored rate; a customer display preference never sets it.
 //! The conversion itself stays in integer arithmetic: a `DisplayRate` is a
 //! decimal stored as text and parsed to a mantissa plus a scale, so converting
 //! a minor-unit figure is one `i128` multiply and one divide — no float ever

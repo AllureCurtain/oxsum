@@ -15,3 +15,4 @@ export * from "./business";
 export * from "./providers";
 
 export * from "./profile";
+export * from "./collection";

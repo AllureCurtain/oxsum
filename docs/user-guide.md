@@ -1240,3 +1240,20 @@ in that merchant account, and arrange a signed terminal event/replay using the
 retained credential version. A missing merchant credential or an HTTP timeout
 does not prove that money was not returned. A historical operation without an
 external ID requires provider-side reconciliation before any new operation.
+
+
+### Set collection terms before accepting payment
+
+Open **Business → Collection settings** as the owner. Enter the settlement code
+and the exact currency amount paid for one credit, for example USD and 1 for the
+isolated fixture. Review the retained payment currencies, enter a reason and
+save. The page shows its revision and whether terms are compatible with history.
+Other staff can read the settings. Customer display preferences remain cosmetic.
+
+Checkout and manual receipts show these collection terms before submission. A
+changed quote returns an error and preserves the entered amount; refresh the
+terms, review them, then retry. An unchanged retry keeps its request identity.
+Existing orders keep their original rate. Currency with payment history cannot
+be relabeled; mixed historical currency requires reconciliation. A saved rate
+alone does not mean the payment provider is working. Current provider amounts
+use two decimal minor digits; zero/six-decimal currency support is not implied.

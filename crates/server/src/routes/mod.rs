@@ -72,6 +72,7 @@ pub fn router(state: AppState) -> Router {
     // principal.
     let authenticated = Router::new()
         .route("/org", get(org::organization).patch(org::update_display))
+        .route("/collection-terms", get(org::collection_terms))
         .route(
             "/orgs",
             get(org::my_organizations).post(org::create_organization),
@@ -491,6 +492,10 @@ pub fn router(state: AppState) -> Router {
         .route("/business/staff/revoke", post(business::revoke_staff))
         .route("/business/ownership", post(business::transfer_ownership))
         .route("/business/registration", post(business::registration))
+        .route(
+            "/business/collection-terms",
+            get(business::collection_terms).post(business::set_collection_terms),
+        )
         .route("/business/setup", post(business::accept_setup))
         .route("/business/setup/register", post(business::register_owner))
         .route("/auth/login", post(auth::login))

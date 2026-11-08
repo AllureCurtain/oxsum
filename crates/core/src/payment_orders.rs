@@ -31,7 +31,7 @@ use uuid::Uuid;
 /// columns so a later re-rate cannot rewrite what the customer agreed to pay.
 #[derive(Debug, Clone, Copy)]
 pub struct OrderRate {
-    /// Rate numerator: currency minor units per credit = `mantissa / 10^scale`.
+    /// Rate numerator: currency major units per credit = `mantissa / 10^scale`.
     pub mantissa: i128,
     /// Decimal scale applied to `mantissa`.
     pub scale: u32,
@@ -194,6 +194,8 @@ pub struct PaymentReconciliation {
 /// the route rather than reaching here.
 #[derive(Debug, Clone)]
 pub struct NewPaymentOrder {
+    /// Optional displayed quote revision, checked only for a new operation.
+    pub expected_collection_revision: Option<i64>,
     /// The fulfillment arm this order will take.
     pub purpose: PaymentOrderPurpose,
     /// The fiat minor amount the provider will charge, in `display_currency`.
@@ -218,6 +220,8 @@ pub struct NewPaymentOrder {
 /// wallet cash or it is not a receipt.
 #[derive(Debug, Clone)]
 pub struct NewManualOrder {
+    /// Optional displayed quote revision, checked only for a new operation.
+    pub expected_collection_revision: Option<i64>,
     /// Customer organization the receipt funds.
     pub organization: Uuid,
     /// Order purpose; the service pins this to `walletTopup`.
@@ -330,9 +334,8 @@ impl Db {
     /// the immutable terms in one transaction — so the expectation is durable
     /// before the provider is ever called.
     ///
-    /// `rate` is the server's own conversion (the organization's effective
-    /// display rate the route resolved); `amount_minor` is derived from
-    /// `display_amount_minor` under it. Replaying the same
+    /// The business's stored collection policy rates `display_amount_minor`
+    /// inside the creation transaction. Customer display settings cannot affect it. Replaying the same
     /// `(organization, idempotency_key)` returns the standing order unchanged —
     /// changed terms under a reused key conflict, like every deposit rail.
     ///
@@ -344,7 +347,6 @@ impl Db {
         context: &crate::MerchantSigningContext,
         organization: Uuid,
         new: &NewPaymentOrder,
-        rate: &OrderRate,
     ) -> Result<PaymentOrder, WalletError> {
         authority::validate(&new.idempotency_key, None)?;
         if new.display_amount_minor <= 0
@@ -354,18 +356,6 @@ impl Db {
         {
             return Err(invalid("invalid payment order terms"));
         }
-        // The ledger amount is rated here, server-side, from the display amount
-        // — never taken from the request. The conversion is the display rate's
-        // own inverse, integer throughout.
-        let display = crate::display::display_currency(
-            Some(&new.display_currency),
-            Some(&decimal_text(rate)),
-            2,
-        )?
-        .ok_or_else(|| invalid("the organization has no rated display currency"))?;
-        let amount_minor = display
-            .to_credit_minor(new.display_amount_minor)
-            .ok_or_else(|| invalid("the display amount does not rate to a credit figure"))?;
         if new.promo_minor < 0 {
             return Err(invalid("a bundle promo amount cannot be negative"));
         }
@@ -380,6 +370,7 @@ impl Db {
             _ => {}
         }
         let mut tx = self.pool().begin().await?;
+        let business = authority::lock_business(&mut tx).await?;
         // The order's own UUID serializes its create: two racing creates of the
         // same idempotency key lock the same expected-payment identity.
         sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1,0))")
@@ -404,6 +395,7 @@ impl Db {
                 || standing.display_amount_minor != new.display_amount_minor
                 || standing.display_currency != new.display_currency
                 || standing.purpose_ref != new.purpose_ref
+                || standing.promo_minor != new.promo_minor
             {
                 return Err(WalletError::Conflict(
                     "payment order terms changed for the same idempotency key".into(),
@@ -414,7 +406,6 @@ impl Db {
         }
         // Gate on the merchant being enabled for this customer, mirroring
         // `pin_merchant_payment`'s check — the binding and the order agree on it.
-        let business = authority::lock_business(&mut tx).await?;
         let allowed = sqlx::query(
             "SELECT m.merchant_id FROM oxsum.merchant_accounts m \
              JOIN oxsum.customer_profiles c ON c.business_id=m.business_id \
@@ -431,6 +422,21 @@ impl Db {
                 "merchant is not enabled for this customer's new payments".into(),
             ));
         }
+        let display = crate::collection_terms::rate_in(
+            &mut tx,
+            business,
+            &new.display_currency,
+            new.expected_collection_revision,
+        )
+        .await?;
+        let amount_minor = display
+            .to_credit_minor(new.display_amount_minor)
+            .filter(|amount| *amount > 0)
+            .ok_or_else(|| invalid("collection amount does not rate to a credit figure"))?;
+        let rate = OrderRate {
+            mantissa: display.rate_mantissa(),
+            scale: display.rate_scale(),
+        };
         let order_id = Uuid::new_v4();
         // The expected payment: the provider will charge the display (fiat)
         // amount, so the binding pins `display_*` for `classify` to match the
@@ -633,7 +639,6 @@ impl Db {
         &self,
         token: &str,
         new: &NewManualOrder,
-        rate: &OrderRate,
     ) -> Result<PaymentOrder, WalletError> {
         authority::validate(&new.idempotency_key, Some(&new.reason))?;
         if new.display_amount_minor <= 0
@@ -646,15 +651,6 @@ impl Db {
         {
             return Err(invalid("invalid manual payment order terms"));
         }
-        let display = crate::display::display_currency(
-            Some(&new.display_currency),
-            Some(&decimal_text(rate)),
-            2,
-        )?
-        .ok_or_else(|| invalid("the organization has no rated display currency"))?;
-        let amount_minor = display
-            .to_credit_minor(new.display_amount_minor)
-            .ok_or_else(|| invalid("the display amount does not rate to a credit figure"))?;
         let mut tx = self.pool().begin().await?;
         let business = authority::lock_business(&mut tx).await?;
         let actor =
@@ -703,6 +699,21 @@ impl Db {
             tx.commit().await?;
             return Ok(standing);
         }
+        let display = crate::collection_terms::rate_in(
+            &mut tx,
+            business,
+            &new.display_currency,
+            new.expected_collection_revision,
+        )
+        .await?;
+        let amount_minor = display
+            .to_credit_minor(new.display_amount_minor)
+            .filter(|amount| *amount > 0)
+            .ok_or_else(|| invalid("collection amount does not rate to a credit figure"))?;
+        let rate = OrderRate {
+            mantissa: display.rate_mantissa(),
+            scale: display.rate_scale(),
+        };
         let order_id = Uuid::new_v4();
         // The evidence freezes who recorded what receipt — the audit a later
         // dispute or reconciliation reads, immutable with the terms.
@@ -751,27 +762,6 @@ impl Db {
         tx.commit().await?;
         Ok(created)
     }
-}
-
-/// The rate's `mantissa/10^scale` as the decimal text `display_currency` parses —
-/// `"7.20"` for mantissa 720 scale 2 — so the rated conversion reuses the one
-/// validator rather than a second decimal reader.
-fn decimal_text(rate: &OrderRate) -> String {
-    if rate.scale == 0 {
-        return rate.mantissa.to_string();
-    }
-    let digits = rate.mantissa.to_string();
-    let negative = digits.starts_with('-');
-    let digits = digits.trim_start_matches('-');
-    let pad = rate.scale as usize + 1;
-    let padded = format!("{:0>width$}", digits, width = pad);
-    let split = padded.len() - rate.scale as usize;
-    format!(
-        "{}{}.{}",
-        if negative { "-" } else { "" },
-        &padded[..split],
-        &padded[split..]
-    )
 }
 
 impl Db {

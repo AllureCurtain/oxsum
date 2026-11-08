@@ -211,6 +211,7 @@ fn customer_route_capability(method: &str, path: &str) -> oxsum_core::CustomerCa
             | "/plans"
             | "/plans/{plan_version_id}"
             | "/pricing"
+            | "/collection-terms"
             | "/entries/{entry_id}/proof"
             | "/log/head"
             | "/log/consistency"

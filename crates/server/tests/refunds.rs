@@ -343,6 +343,12 @@ async fn register(app: &Router) -> Account {
 /// The organization's display rate: `0.0014` USD per credit, so $2.10 rates
 /// at 1_500_000_000 credit-minor.
 async fn set_display(db: &Db, org: Uuid) {
+    db.bootstrap_collection_terms(&oxsum_core::CollectionCurrency {
+        code: USD.into(),
+        rate_per_credit: "0.0014".into(),
+    })
+    .await
+    .unwrap();
     db.set_display_currency(
         org,
         Some(DisplayCurrency {

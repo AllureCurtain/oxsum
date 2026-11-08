@@ -313,6 +313,7 @@ export function useManualOrder() {
   return useMutation({
     mutationFn: (body: {
       organizationId: string;
+      expectedCollectionRevision?: number;
       idempotencyKey: string;
       displayAmountMinor: number;
       displayCurrency: string;

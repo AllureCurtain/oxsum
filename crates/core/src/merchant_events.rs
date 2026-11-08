@@ -336,6 +336,7 @@ impl Db {
             return Err(invalid("invalid expected payment terms"));
         }
         let mut tx = self.pool().begin().await?;
+        let business = authority::lock_business(&mut tx).await?;
         // Same local identity serializes even before its binding row exists.
         sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1,0))")
             .bind(format!("merchant-payment:{}", payment.payment_id))
@@ -356,6 +357,7 @@ impl Db {
             }
             return Ok(());
         }
+        crate::collection_terms::guard_currency_in(&mut tx, business, &payment.currency).await?;
         let allowed=sqlx::query("SELECT m.merchant_id FROM oxsum.merchant_accounts m JOIN oxsum.customer_profiles c ON c.business_id=m.business_id WHERE m.merchant_id=$1 AND m.current_version_id=$2 AND m.enabled AND c.organization_id=$3 FOR SHARE OF m").bind(payment.merchant_id).bind(payment.version_id).bind(payment.organization_id).fetch_optional(&mut *tx).await?;
         if allowed.is_none() {
             return Err(WalletError::Forbidden(
@@ -719,6 +721,7 @@ impl Db {
             return Err(invalid("amountMinor must be positive"));
         }
         let mut tx = self.pool().begin().await?;
+        let business = authority::lock_business(&mut tx).await?;
         sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1,0))")
             .bind(format!(
                 "merchant-deposit:{organization}:{}:{key}",
@@ -755,6 +758,7 @@ impl Db {
             tx.commit().await?;
             return Ok(result);
         }
+        crate::collection_terms::guard_currency_in(&mut tx, business, "USD").await?;
         let allowed=sqlx::query("SELECT m.merchant_id FROM oxsum.merchant_accounts m JOIN oxsum.customer_profiles c ON c.business_id=m.business_id WHERE m.merchant_id=$1 AND m.current_version_id=$2 AND m.enabled AND c.organization_id=$3 FOR SHARE OF m").bind(context.merchant_id).bind(context.version.id).bind(organization).fetch_optional(&mut *tx).await?;
         if allowed.is_none() {
             return Err(WalletError::Forbidden(
