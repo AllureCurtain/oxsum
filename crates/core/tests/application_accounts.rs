@@ -425,7 +425,18 @@ async fn metering_operation_identity_survives_application_credential_rotation() 
     )
     .await
     .unwrap();
-    let (replacement, _) = service(&db, app.application_id, capabilities).await;
+    let mut replacement_request = support::request(vec![], capabilities);
+    replacement_request.application_id = Some(app.application_id);
+    replacement_request.name = Some("rotated credential label".into());
+    let replacement_minted = db
+        .create_integration_credential(&support::owner(&db).await, &replacement_request)
+        .await
+        .unwrap();
+    let replacement = db
+        .authenticate_service(replacement_minted.secret.as_deref().unwrap())
+        .await
+        .unwrap()
+        .unwrap();
     let same = db
         .metering_hold(&tenants, &replacement, org, "operation", &event, on)
         .await
@@ -474,6 +485,15 @@ async fn metering_operation_identity_survives_application_credential_rotation() 
             .unwrap();
     assert_eq!(frozen["source_credential"], credential.to_string());
     assert_eq!(frozen["source_name"], "metering fixture");
+    let description: String = sqlx::query_scalar(&format!(
+        "SELECT description FROM ledger_{tenant}.entries WHERE entry_id=$1"
+    ))
+    .bind(settled.settlement_id)
+    .fetch_one(db.pool())
+    .await
+    .unwrap();
+    let record: serde_json::Value = serde_json::from_str(&description).unwrap();
+    assert_eq!(record["service"], "metering fixture");
 
     let mut changed = event;
     changed.usage.input_tokens = 99;
