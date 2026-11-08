@@ -28,6 +28,7 @@ mod business_invitations;
 mod business_prices;
 mod business_profile;
 mod business_providers;
+mod business_readiness;
 mod device;
 mod evidence;
 mod experiments;
@@ -269,6 +270,7 @@ pub fn router(state: AppState) -> Router {
             get(business::context).post(business::select_context),
         )
         .route("/business", get(business::business))
+        .route("/business/readiness", get(business_readiness::get))
         .route(
             "/business/profile",
             get(business_profile::get).post(business_profile::save),

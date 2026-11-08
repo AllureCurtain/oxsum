@@ -2100,5 +2100,52 @@
     "retained": "retained choice",
     "stale": "The available route has changed. Your previous choice is retained for an unchanged retry. To start a new payment, explicitly select a current route.",
     "retryHelp": "An unchanged retry recovers the original payment shown below (amount in fiat minor units). Refreshes do not replace it. Editing starts a new payment intent."
+  },
+  "businessReadiness": {
+    "title": "Business setup",
+    "intro": "Prepare a solo pay-as-you-go business. These checks use your current business role and saved configuration.",
+    "checklist": "Required configuration",
+    "refresh": "Refresh checks",
+    "error": "The current checks could not be read. No previous result is being treated as current; refresh or check your business access.",
+    "progress": "{{done}} of {{total}} checks are ready.",
+    "ready": "Configuration is ready for the first customer journey.",
+    "restricted": "Your current role cannot read this configuration check.",
+    "askOwner": "Ask the business owner or an authorized colleague to review this step.",
+    "collectionTerms": "Collection currency and conversion",
+    "boundaryTitle": "What these checks establish",
+    "boundary": "These are current configuration facts. They do not prove an upstream request, payment, callback or email delivery succeeded. Complete the first customer call and inspect its immediate bill proof; closed-period exports come later. Configuration can change after this snapshot.",
+    "optional": "Extra staff and sold plans are optional for this first pay-as-you-go journey. Invite-only admission supports direct invitation links without requiring SMTP.",
+    "steps": {
+      "profile": {
+        "title": "Business identity",
+        "ready": "The intended owner has initialized the business name.",
+        "todo": "Complete the owner setup and save the business identity.",
+        "action": "Business profile"
+      },
+      "supply": {
+        "title": "Configured model supply",
+        "ready": "At least one supported chat route has a current price and an available credential that this process can open. No upstream request was made.",
+        "todo": "Configure a supported chat model and price with an active credential. Disabled, cooling-down or unreadable credentials do not qualify.",
+        "action": "Provider channels"
+      },
+      "saleTerms": {
+        "title": "Active customer sale terms",
+        "ready": "A currently effective default sale book prices at least one configured chat model.",
+        "todo": "Publish and activate a default sale book for a configured chat model. A draft, future schedule or unrelated model does not qualify.",
+        "action": "Sale prices"
+      },
+      "collection": {
+        "title": "Selected collection path",
+        "ready": "An explicitly selected enabled merchant, readable credentials, compatible collection terms and public return URL are configured. This is not a payment certification.",
+        "todo": "Choose and enable a checkout merchant, configure compatible collection currency/conversion and the public return URL, and retain the encryption key. Stored merchants alone do not qualify.",
+        "action": "Merchant and checkout settings"
+      },
+      "admission": {
+        "title": "Customer admission",
+        "ready": "An invitation workflow or deliberately opened registration is available. No customer or email delivery is required for this check.",
+        "todo": "Restore an invitation or registration path under the intended owner.",
+        "action": "Customers and invitations"
+      }
+    }
   }
 }

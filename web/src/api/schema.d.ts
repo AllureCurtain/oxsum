@@ -7986,6 +7986,60 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/business/readiness": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Read current business setup readiness
+         * @description Current personal business session with overviewRead. The five required
+         *     facts describe the solo pay-as-you-go configuration: initialized seller
+         *     identity, configured usable chat supply, an active matching default sale
+         *     book, explicit enabled checkout selection with compatible collection
+         *     terms and runtime prerequisites, and an available customer admission path.
+         *     Additional staff and plans are optional. Facts outside the actor's read
+         *     authority are restricted and never count as ready. Each action is absent
+         *     unless the actor can manage that section. No provider or merchant secrets,
+         *     endpoints, customer identities or commercial values are returned. This is
+         *     a current configuration snapshot, not a reservation, external provider or
+         *     payment certification, successful email delivery, or release acceptance.
+         */
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Current actor-scoped configuration facts */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            data: components["schemas"]["BusinessReadiness"];
+                        };
+                    };
+                };
+                401: components["responses"]["Error"];
+                403: components["responses"]["Error"];
+                500: components["responses"]["Error"];
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/business/profile": {
         parameters: {
             query?: never;
@@ -15724,6 +15778,24 @@ export interface components {
             contactEmail: string | null;
             /** @description Public help link; absolute HTTP(S) without user info or control characters. */
             helpUrl: string | null;
+        };
+        BusinessReadinessStep: {
+            /** @enum {string} */
+            key: "profile" | "supply" | "saleTerms" | "collection" | "admission";
+            /** @enum {string} */
+            state: "ready" | "todo" | "restricted";
+            /**
+             * @description Existing business section the current actor can manage; null requires an appropriately authorized colleague.
+             * @enum {string|null}
+             */
+            action: "profile" | "channels" | "prices" | "integrations" | "customers" | null;
+        };
+        BusinessReadiness: {
+            /** Format: date-time */
+            checkedAt: string;
+            /** @description True only when all five facts are ready and readable to this actor. */
+            ready: boolean;
+            steps: components["schemas"]["BusinessReadinessStep"][];
         };
         BusinessProfile: {
             /** Format: uuid */
