@@ -54,6 +54,9 @@ pub struct CustomerInvitationRequest {
     pub name: String,
     /// Caller-chosen customer identifier, 1 to 200 characters and unique in the business.
     pub external_id: String,
+    /// Request one SMTP submission to the bound recipient at the HTTP boundary.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub send_email: bool,
     /// Operator-visible justification recorded in the audit log.
     pub reason: String,
 }
@@ -100,6 +103,9 @@ pub struct InvitationPreview {
     pub expires_at: OffsetDateTime,
 }
 
+fn is_false(value: &bool) -> bool {
+    !*value
+}
 fn invalid() -> WalletError {
     WalletError::NotFound("the invitation is not valid".into())
 }
@@ -305,8 +311,8 @@ impl Db {
         )
         .await?;
         let secret = generate_token();
-        let row = sqlx::query("INSERT INTO oxsum.invitations (invitation_id,business_id,kind,invited_by,token_hash,expires_at,intended_email,pending_customer_id,customer_name,external_id,creation_mutation_id) VALUES ($1,$2,'customer',$3,$4,clock_timestamp()+interval '7 days',$5,$6,$7,$8,$9) RETURNING invitation_id,organization_id,pending_customer_id,expires_at")
-            .bind(Uuid::new_v4()).bind(business).bind(actor.user_id).bind(hash_token(&secret)).bind(email).bind(Uuid::new_v4()).bind(name).bind(external).bind(mutation.id).fetch_one(&mut *tx).await?;
+        let row = sqlx::query("INSERT INTO oxsum.invitations (invitation_id,business_id,kind,invited_by,token_hash,expires_at,intended_email,pending_customer_id,customer_name,external_id,creation_mutation_id,mail_state) VALUES ($1,$2,'customer',$3,$4,clock_timestamp()+interval '7 days',$5,$6,$7,$8,$9,$10) RETURNING invitation_id,organization_id,pending_customer_id,expires_at")
+            .bind(Uuid::new_v4()).bind(business).bind(actor.user_id).bind(hash_token(&secret)).bind(email).bind(Uuid::new_v4()).bind(name).bind(external).bind(mutation.id).bind(if request.send_email { "not_attempted" } else { "not_requested" }).fetch_one(&mut *tx).await?;
         let result = created(&row, Some(secret))?;
         tx.commit().await?;
         Ok(result)

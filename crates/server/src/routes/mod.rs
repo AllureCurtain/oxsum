@@ -24,6 +24,7 @@ use crate::error::ApiError;
 mod auth;
 pub(crate) mod billing;
 mod business;
+mod business_invitations;
 mod business_prices;
 mod business_providers;
 mod device;
@@ -517,7 +518,7 @@ pub fn router(state: AppState) -> Router {
         )
         .route(
             "/business/customer-invitations",
-            post(business::invite_customer),
+            get(business_invitations::list).post(business_invitations::create),
         )
         .route(
             "/business/customer-invitations/{invitationId}/revoke",

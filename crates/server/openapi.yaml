@@ -1253,6 +1253,27 @@ paths:
         "404": { $ref: "#/components/responses/Error" }
         "409": { $ref: "#/components/responses/Error" }
   /api/v1/business/customer-invitations:
+    get:
+      summary: List business customer invitations and local delivery status
+      description: CustomersRead capability required. Lists only this business's customer invitations, never team invitations or token hashes. Cursor is scoped to this list. Mail readiness means configured, not a successful external delivery.
+      security: [{ sessionCookie: [] }]
+      parameters:
+        - { in: query, name: after, schema: { type: string, format: uuid } }
+        - { in: query, name: limit, schema: { type: integer, minimum: 1, maximum: 100, default: 25 } }
+      responses:
+        "200":
+          description: Safe invitation history, mail configuration and saved registration policy
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data: { $ref: "#/components/schemas/CustomerInvitationPage" }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
     post:
       summary: Invite the first owner of a new customer account
       description: |
@@ -1263,7 +1284,12 @@ paths:
         No staff role or funding is granted. Live pending invitations and existing
         customers cannot share an external ID. Revocation/expiry releases the reservation.
         Returns the token once; identical retries return the same ID with token null.
-        Changed-body retries conflict. This endpoint does not send email.
+        Changed-body retries conflict. sendEmail explicitly requests one SMTP submission to
+        the bound email. The attempt is recorded before transmission; HTTP replay never
+        resends and plaintext is never retained. submitted means the configured SMTP
+        transport accepted the message, not recipient delivery. An ambiguous failure or
+        crash remains unknown; revoke and create a fresh invitation to recover a lost link.
+        Copy-link creation works without a mailer. No mail is sent unless sendEmail is true.
       security: [{ sessionCookie: [] }]
       requestBody:
         required: true
@@ -1279,7 +1305,7 @@ paths:
                 type: object
                 required: [data]
                 properties:
-                  data: { $ref: "#/components/schemas/CreatedInvitation" }
+                  data: { $ref: "#/components/schemas/CustomerInvitationResult" }
         "400": { $ref: "#/components/responses/Error" }
         "401": { $ref: "#/components/responses/Error" }
         "403": { $ref: "#/components/responses/Error" }
@@ -10819,6 +10845,42 @@ components:
         idempotencyKey: { type: string, minLength: 1, maxLength: 200 }
         intendedEmail: { type: string, format: email, nullable: true, maxLength: 320 }
         email: { type: string, format: email, nullable: true, maxLength: 254, description: "Bind and mail the invitation" }
+    InvitationDeliveryState:
+      type: string
+      enum: [notRequested, notAttempted, submitted, unavailable, unknown]
+      description: SMTP submission state only. unknown includes interrupted, timed-out or rejected transport attempts and must never trigger an automatic resend.
+    CustomerInvitationResult:
+      allOf:
+        - $ref: "#/components/schemas/CreatedInvitation"
+        - type: object
+          required: [mailState]
+          properties:
+            mailState: { $ref: "#/components/schemas/InvitationDeliveryState" }
+    CustomerInvitationSummary:
+      type: object
+      required: [id, organizationId, email, name, externalId, state, expiresAt, createdAt, acceptedAt, revokedAt, mailState, mailAttemptedAt, mailSubmittedAt]
+      properties:
+        id: { type: string, format: uuid }
+        organizationId: { type: string, format: uuid }
+        email: { type: string, format: email }
+        name: { type: string }
+        externalId: { type: string }
+        state: { type: string, enum: [pending, accepted, revoked, expired] }
+        expiresAt: { type: string, format: date-time }
+        createdAt: { type: string, format: date-time }
+        acceptedAt: { type: string, format: date-time, nullable: true }
+        revokedAt: { type: string, format: date-time, nullable: true }
+        mailState: { $ref: "#/components/schemas/InvitationDeliveryState" }
+        mailAttemptedAt: { type: string, format: date-time, nullable: true }
+        mailSubmittedAt: { type: string, format: date-time, nullable: true }
+    CustomerInvitationPage:
+      type: object
+      required: [invitations, nextCursor, mailConfigured, registrationMode]
+      properties:
+        invitations: { type: array, items: { $ref: "#/components/schemas/CustomerInvitationSummary" } }
+        nextCursor: { type: string, format: uuid, nullable: true }
+        mailConfigured: { type: boolean, description: "The server has an SMTP configuration; delivery remains unverified" }
+        registrationMode: { type: string, enum: [invite, open] }
     CustomerInvitationRequest:
       type: object
       additionalProperties: false
@@ -10828,6 +10890,7 @@ components:
         email: { type: string, format: email, maxLength: 320 }
         name: { type: string, minLength: 1, maxLength: 80 }
         externalId: { type: string, minLength: 1, maxLength: 200 }
+        sendEmail: { type: boolean, default: false, description: "Request one SMTP submission to the bound email; replay never resends" }
         reason: { type: string, minLength: 1, maxLength: 500 }
     InvitationRevokeRequest:
       type: object

@@ -392,6 +392,8 @@ const MIGRATIONS: &[(&str, &str)] = &[
     (
         "0105_integration_provision",
         include_str!("../migrations/0105_integration_provision.sql"),
+        "0104_customer_invitation_delivery",
+        include_str!("../migrations/0104_customer_invitation_delivery.sql"),
     ),
     (
         "0099_hyperswitch_recovery",
