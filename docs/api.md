@@ -296,6 +296,8 @@ Whoever deploys oxsum, and nobody else: the credential is the operator token fro
 
 - `GET /metrics` — the process's telemetry in Prometheus exposition format: HTTP request counts and durations by route pattern, the gateway's money path (holds taken, settlements by kind, charged minor units, settled tokens, upstream response latency), rate-limit rejections, idempotency claim outcomes, and scrape-time gauges for open holds and the connection pool. It sits outside the `/api/v1` prefix like `/healthz` but carries the same operator token: a scrape config sends it as `bearer_token`.
 
+`GET /api/v1/admin/diagnostics` is operator-only and read-only: fixed configuration flags, build/schema identity and aggregate provider/merchant/recovery counts. Incompatible/unavailable/unmigrated storage returns `counts: null`, never invented zeroes. One repeatable-read snapshot has a five-second statement timeout and six-second endpoint deadline. No IDs, names, addresses, amounts, payloads, secret values or raw errors are returned, and no providers are probed. The [diagnostic guide](operator-diagnostics.md) defines each count and the sanitized collector.
+
 A deployment that sets no `OXSUM_ADMIN_TOKEN` has no admin surface: the routes exist and answer `UNAUTHORIZED`, rather than being open or absent — `/metrics` included.
 
 ## Tree heads (`/api/v1/log`)

@@ -563,6 +563,7 @@ upgrade runbook's deliberate migrate. Ledger schemas are untouched by either: do
 | Start the server | `cargo run -p oxsum-server` |
 | Migrate only | `cargo run -p oxsum-server -- --migrate-only` (applies pending migrations, prints the schema level, exits — the deploy `oxsum-migrate` step) |
 | Validate the environment | `cargo run -p oxsum-server -- --check-config` (runs the startup config parse and prints a JSON verdict without touching the database — issue #619) |
+| Collect sanitized deployment diagnostics | `python3 scripts/operator-diagnostics.py --url http://127.0.0.1:3000 --token-file /private/operator-token --env-file deploy/.env --output /private/diagnostics.json` — private inputs, new output; optional token/env flags; fixed counts/presence only ([guide](operator-diagnostics.md), #819) |
 | Seed the demo world | `OXSUM_DEMO_SEED=true cargo run -p oxsum-server -- seed` (populates, prints the credentials, exits — see "Demo data") |
 | All tests | `cargo nextest run --workspace` — runs the full suite locally (loads `DATABASE_URL` from `.env` or the shell; `cargo test --workspace` is the fallback and covers doctests). Worth it for cross-crate changes; otherwise CI runs the same coverage on every PR — see "CI" below |
 | Focused while iterating | `cargo nextest run -p oxsum-<crate>` — only the crates the change touched; the local pre-push gate is fmt + clippy + these focused runs, with CI holding the full suite |

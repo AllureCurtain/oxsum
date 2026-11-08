@@ -2,15 +2,25 @@
 
 ## Self-host operators
 
-Before filing, collect the deployment's identity:
+Before filing, collect the fixed diagnostic report. Store the operator token
+alone in a private file (mode `0600`); do not put it in a command argument:
 
 ```bash
-curl -s http://127.0.0.1:3000/api/v1/version    # version + gitSha + schemaVersion
-docker compose -f deploy/docker-compose.core.yml logs oxsum oxsum-migrate
+python3 scripts/operator-diagnostics.py --url http://127.0.0.1:3000 \
+  --token-file /private/operator-token --env-file deploy/.env \
+  --output /private/diagnostics.json
 ```
 
-The version payload names the exact build; the migrate container's log names
-any failed migration file. Paste both (values, not secrets) into the report.
+The output contains build/schema identity, health states, configuration presence
+and aggregate recovery queues. It excludes addresses, identities, amounts,
+payloads, logs and secret values. Without `--token-file`, only public health and
+version are collected. `--env-file` is optional and reports fixed presence
+groups; it is parsed as text, never executed. Both input files must be private
+regular files. The output must be a new path and is created with mode `0600`.
+Review the report before sharing: counts and configuration flags can still be
+operationally sensitive. See [diagnostics and recovery](docs/operator-diagnostics.md)
+for field meanings and next steps. A successful collection is not proof that
+providers, mail or payments work.
 
 - Installation / upgrade / restore: follow [the installation runbook](docs/self-hosted-install.md) and
   [the upgrade/restore runbook](docs/self-hosted-upgrade.md) first — the "If boot refuses" section lists
@@ -21,7 +31,9 @@ any failed migration file. Paste both (values, not secrets) into the report.
 - Backup/restore: `scripts/backup.sh` writes a manifest (schema version,
   counts, SHA-256); quote it when reporting a restore issue.
 - File at <https://github.com/AllureCurtain/oxsum/issues/new> with
-  `self-hosted` context, the version payload, and sanitized logs.
+  `self-hosted` context and the reviewed diagnostic report. Do not attach complete
+  Compose logs or environment files. Inspect startup logs locally when needed;
+  share only a reviewed excerpt with credentials, URLs and customer data removed.
 
 ## Customers of a hosted deployment
 
@@ -40,7 +52,7 @@ Never file publicly — see `SECURITY.md`.
 
 ## What a good report contains
 
-1. `version`/`gitSha`/`schemaVersion` output.
+1. The reviewed sanitized diagnostic report or public build identity.
 2. The exact request (or UI action) and the response code/body — redact
    tokens, emails, amounts if sensitive.
 3. Whether a retry changed the result (retain the idempotency key privately and
