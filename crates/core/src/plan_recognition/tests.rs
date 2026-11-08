@@ -1429,7 +1429,8 @@ async fn tiny_month_end_fees_keep_exact_final_remainder_in_real_entries() {
         )
         .await;
         payment::mark_paid(&w.db, &w.context, &order).await;
-        let start = time::macros::datetime!(2024-01-31 12:00 UTC);
+        // Use the next leap year after the ledger's fixed 2026 opening date.
+        let start = time::macros::datetime!(2028-01-31 12:00 UTC);
         w.db.activate_plan_period_at(order.order_id, plan.customer_plan_id, start)
             .await
             .unwrap();
@@ -1440,7 +1441,7 @@ async fn tiny_month_end_fees_keep_exact_final_remainder_in_real_entries() {
                 .remove(0);
         assert_eq!(
             period.period_end.date(),
-            time::macros::date!(2024 - 02 - 29)
+            time::macros::date!(2028 - 02 - 29)
         );
         let journal =
             w.db.plan_journals(user.organization.id, None, 50)
@@ -1458,7 +1459,7 @@ async fn tiny_month_end_fees_keep_exact_final_remainder_in_real_entries() {
             &wallet,
             journal.journal_id,
             period.period_end,
-            OffsetDateTime::now_utc().date(),
+            period.period_end.date(),
         )
         .await
         .unwrap();

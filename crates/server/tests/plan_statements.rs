@@ -118,7 +118,7 @@ async fn world() -> Option<World> {
     })
 }
 
-/// Publishes a sold plan through the staff route and answers its version id.
+/// Seeds a retained v1 sold plan and answers its version id.
 async fn publish(world: &World, name: &str, price: i64) -> Uuid {
     legacy_plan::publish(
         &world.db,
