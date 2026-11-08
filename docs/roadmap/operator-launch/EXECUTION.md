@@ -16,8 +16,9 @@ Read this file on every resume, then reconcile actual main, worktrees, issues/PR
   `.worktrees/application-accounts` (`feat/application-accounts`), including exact
   provisioning/archive and rotated-credential metering replay. Contract and
   frontend checks passed; migration 0114 follows integrated 0113 on `b3eb063a`.
-  The 39 core and 13 HTTP PostgreSQL checks passed, zero skipped; full validation
-  and integration are pending. [Evidence](evidence/application-accounts.md).
+  The 39 core and 13 HTTP PostgreSQL checks passed, zero skipped; the full suite
+  passed 2,003 tests with six existing opt-ins skipped. Strict Clippy and final
+  independent review passed; PR #855 integration is pending. [Evidence](evidence/application-accounts.md).
   Owner portal #853 and full embedded J18 remain pending.
 
 - Current integration checkpoint: `b3eb063a`, including #838 daily accounting, #835 checkout routing,
@@ -72,7 +73,7 @@ Status describes implementation: `planned`, `in_progress`, or `integrated`. `int
 | N18 [#744](https://github.com/AllureCurtain/oxsum/issues/744) — Final integrated candidate | N01–N17,N21 | planned | — | Freeze only after software dependencies and repaired main. Execute full CI including engine/process-shared checks and actual artifact portal/embedded/offline/deploy/restore acceptance. |
 | N19 [#745](https://github.com/AllureCurtain/oxsum/issues/745) — Two independent operator pilots | N18 + participants | planned | — | Prepare portal and embedded pilot kits now; actual two outsiders are absent. Internal agents cannot supply J17 evidence. |
 | N20 [#746](https://github.com/AllureCurtain/oxsum/issues/746) — Selected publication/deployment | N18 + action authority | planned | — | Complete tools and isolated rehearsal. Public registry/package/release publication and existing-service upgrades remain unperformed under this run. |
-| N21 [#747](https://github.com/AllureCurtain/oxsum/issues/747) — Embedded application integration | N03,N05–N07,N10–N12 | in_progress | [#786](https://github.com/AllureCurtain/oxsum/pull/786) / `f9f637d`; [#791](https://github.com/AllureCurtain/oxsum/pull/791) / `d2b12ab` | customersProvision and billingRead are integrated with explicit customer grants. Complete stable application/account lifecycle and verified human linking, key/entitlement/checkout/evidence scopes, signed notifications and a clean external app J18. [Provisioning](evidence/integration-scopes.md); [billing](evidence/integration-billing-read.md). |
+| N21 [#747](https://github.com/AllureCurtain/oxsum/issues/747) — Embedded application integration | N03,N05–N07,N10–N12 | in_progress | [#786](https://github.com/AllureCurtain/oxsum/pull/786) / `f9f637d`; [#791](https://github.com/AllureCurtain/oxsum/pull/791) / `d2b12ab` | customersProvision and billingRead are integrated with explicit customer grants. Stable application/account lifecycle and rotated metering replay in PR #855 passed 2,003 full checks and independent review; integration pending. Owner portal #853, verified human linking, key/entitlement/checkout/evidence scopes, signed notifications and a clean external app J18 remain. [Provisioning](evidence/integration-scopes.md); [billing](evidence/integration-billing-read.md). |
 
 ### Active repair and reconciliation
 
