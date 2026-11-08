@@ -141,6 +141,8 @@ fn days_in_month(year: i32, month: time::Month) -> u8 {
 #[derive(Debug, Clone, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SoldPlan {
+    /// Pinned accounting policy: 1 closes revenue; 2 recognizes service days.
+    pub accounting_policy_version: i16,
     /// The version row's own id — what a binding names.
     pub plan_version_id: Uuid,
     /// The plan's stable identity across versions.
@@ -323,6 +325,8 @@ pub struct CustomerPlan {
 #[derive(Debug, Clone, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PlanPeriod {
+    /// Immutable period accounting policy; historical periods retain 1.
+    pub accounting_policy_version: i16,
     /// Local period identifier.
     pub plan_period_id: Uuid,
     /// Customer plan this period belongs to.
@@ -396,7 +400,7 @@ impl Db {
     /// Storage failures surface as [`WalletError`].
     pub async fn sold_plans(&self, business_id: Uuid) -> Result<Vec<SoldPlan>, WalletError> {
         let rows = sqlx::query(
-            "SELECT plan_version_id, plan_id, business_id, version, name, price_minor, \
+            "SELECT accounting_policy_version, plan_version_id, plan_id, business_id, version, name, price_minor, \
                     currency, quota_minor, period_kind, overage_enabled, sort_order, \
                     published_at, retired_at, created_at \
              FROM oxsum.sold_plans \
@@ -416,7 +420,7 @@ impl Db {
     /// Storage failures surface as [`WalletError`].
     pub async fn sold_plan(&self, plan_version_id: Uuid) -> Result<Option<SoldPlan>, WalletError> {
         let row = sqlx::query(
-            "SELECT plan_version_id, plan_id, business_id, version, name, price_minor, \
+            "SELECT accounting_policy_version, plan_version_id, plan_id, business_id, version, name, price_minor, \
                     currency, quota_minor, period_kind, overage_enabled, sort_order, \
                     published_at, retired_at, created_at \
              FROM oxsum.sold_plans WHERE plan_version_id = $1",
@@ -472,9 +476,9 @@ impl Db {
         let row = sqlx::query(
             "INSERT INTO oxsum.sold_plans \
                  (plan_version_id, plan_id, business_id, version, name, price_minor, \
-                  currency, quota_minor, period_kind, overage_enabled, sort_order, published_at) \
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, now()) \
-             RETURNING plan_version_id, plan_id, business_id, version, name, price_minor, \
+                  currency, quota_minor, period_kind, overage_enabled, sort_order, published_at,accounting_policy_version) \
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, now(),2) \
+             RETURNING accounting_policy_version, plan_version_id, plan_id, business_id, version, name, price_minor, \
                        currency, quota_minor, period_kind, overage_enabled, sort_order, \
                        published_at, retired_at, created_at",
         )
@@ -551,7 +555,7 @@ impl Db {
         let rows = sqlx::query(
             "SELECT plan_period_id, customer_plan_id, period_index, period_start, period_end, \
                     quota_minor, consumed_minor, authorization_kind, authorization_ref, \
-                    state, created_at \
+                    state, created_at, COALESCE((SELECT accounting_policy_version FROM oxsum.plan_accounting_periods a WHERE a.plan_period_id=plan_periods.plan_period_id),1)::smallint AS accounting_policy_version \
              FROM oxsum.plan_periods \
              WHERE customer_plan_id = $1 ORDER BY period_index",
         )
@@ -676,6 +680,11 @@ impl Db {
             )
             .await?;
         }
+        if plan.price_minor == 0 && plan.accounting_policy_version == 2 {
+            let wallet = self.journal_wallet(&mut tx, organization_id).await?;
+            self.invoice_daily_plan_in(&mut tx, &wallet, customer_plan_id, &plan, now)
+                .await?;
+        }
         tx.commit().await?;
         self.customer_plan(organization_id)
             .await?
@@ -702,6 +711,27 @@ impl Db {
         &self,
         order_id: Uuid,
         customer_plan_id: Uuid,
+    ) -> Result<CustomerPlan, WalletError> {
+        self.activate_plan_period_with_clock(order_id, customer_plan_id, None)
+            .await
+    }
+
+    #[cfg(test)]
+    pub(crate) async fn activate_plan_period_at(
+        &self,
+        order_id: Uuid,
+        customer_plan_id: Uuid,
+        now: OffsetDateTime,
+    ) -> Result<CustomerPlan, WalletError> {
+        self.activate_plan_period_with_clock(order_id, customer_plan_id, Some(now))
+            .await
+    }
+
+    async fn activate_plan_period_with_clock(
+        &self,
+        order_id: Uuid,
+        customer_plan_id: Uuid,
+        controlled_now: Option<OffsetDateTime>,
     ) -> Result<CustomerPlan, WalletError> {
         let mut tx = self.pool().begin().await?;
         // Match the paid fact before taking entitlement locks. The subscription
@@ -790,9 +820,14 @@ impl Db {
                 "the paid intent no longer matches the plan; finance review is required".into(),
             ));
         }
-        let now: OffsetDateTime = sqlx::query_scalar("SELECT clock_timestamp()")
-            .fetch_one(&mut *tx)
-            .await?;
+        let now: OffsetDateTime = match controlled_now {
+            Some(now) => now,
+            None => {
+                sqlx::query_scalar("SELECT clock_timestamp()")
+                    .fetch_one(&mut *tx)
+                    .await?
+            }
+        };
         // Open once before any ledger writes. Reopening this wallet after the
         // closing journal has appended would run bootstrap DDL on another pool
         // connection while this transaction still holds the ledger locks.
@@ -906,6 +941,10 @@ impl Db {
         wallet
             .plan_prepay_in(&mut tx, &order_id, terms.fee_minor, now.date())
             .await?;
+        if sold.accounting_policy_version == 2 {
+            self.invoice_daily_plan_in(&mut tx, &wallet, customer_plan_id, &sold, now)
+                .await?;
+        }
         let standing = customer_plan_in(&mut tx, customer_plan_id).await?;
         tx.commit().await?;
         standing.ok_or_else(|| invalid("the customer plan did not land"))
@@ -1448,6 +1487,7 @@ async fn customer_plan_in(
 
 fn sold_plan_from_row(row: &sqlx::postgres::PgRow) -> Result<SoldPlan, WalletError> {
     Ok(SoldPlan {
+        accounting_policy_version: row.try_get("accounting_policy_version")?,
         plan_version_id: row.try_get("plan_version_id")?,
         plan_id: row.try_get("plan_id")?,
         business_id: row.try_get("business_id")?,
@@ -1484,6 +1524,7 @@ fn customer_plan_from_row(row: &sqlx::postgres::PgRow) -> Result<CustomerPlan, W
 
 fn plan_period_from_row(row: &sqlx::postgres::PgRow) -> Result<PlanPeriod, WalletError> {
     Ok(PlanPeriod {
+        accounting_policy_version: row.try_get("accounting_policy_version")?,
         plan_period_id: row.try_get("plan_period_id")?,
         customer_plan_id: row.try_get("customer_plan_id")?,
         period_index: row.try_get("period_index")?,

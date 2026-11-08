@@ -2,6 +2,8 @@
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 #[path = "support/plan_payment.rs"]
 mod fixture;
+#[path = "support/legacy_plan.rs"]
+mod legacy_plan;
 #[path = "support/integration.rs"]
 mod setup;
 use oxsum_core::{
@@ -23,22 +25,22 @@ async fn world() -> Option<(Db, String, Uuid, Uuid)> {
         })
         .await
         .unwrap();
-    let sold = db
-        .publish_sold_plan(
-            db.default_business().await.unwrap(),
-            &NewSoldPlan {
-                plan_id: None,
-                name: "Exact quoted plan".into(),
-                price_minor: 1_000_001,
-                currency: "USD".into(),
-                quota_minor: Some(7_000_000),
-                period_kind: PeriodKind::CalendarMonth,
-                overage_enabled: false,
-                sort_order: 0,
-            },
-        )
-        .await
-        .unwrap();
+    let sold = legacy_plan::publish(
+        &db,
+        db.default_business().await.unwrap(),
+        &NewSoldPlan {
+            plan_id: None,
+            name: "Exact quoted plan".into(),
+            price_minor: 1_000_001,
+            currency: "USD".into(),
+            quota_minor: Some(7_000_000),
+            period_kind: PeriodKind::CalendarMonth,
+            overage_enabled: false,
+            sort_order: 0,
+        },
+    )
+    .await
+    .unwrap();
     let plan = db
         .bind_customer_plan(
             customer.organization.id,
@@ -404,22 +406,22 @@ async fn a_scheduled_paid_version_renews_with_its_own_quota_and_overage_policy()
     };
     let old = fixture::paid_order(&db, &owner, organization, plan).await;
     fixture::fulfill(&db, &old).await;
-    let next = db
-        .publish_sold_plan(
-            db.default_business().await.unwrap(),
-            &NewSoldPlan {
-                plan_id: None,
-                name: "Changed paid terms".into(),
-                price_minor: 2_000_000,
-                currency: "USD".into(),
-                quota_minor: Some(9_000_000),
-                period_kind: PeriodKind::Anniversary,
-                overage_enabled: true,
-                sort_order: 0,
-            },
-        )
-        .await
-        .unwrap();
+    let next = legacy_plan::publish(
+        &db,
+        db.default_business().await.unwrap(),
+        &NewSoldPlan {
+            plan_id: None,
+            name: "Changed paid terms".into(),
+            price_minor: 2_000_000,
+            currency: "USD".into(),
+            quota_minor: Some(9_000_000),
+            period_kind: PeriodKind::Anniversary,
+            overage_enabled: true,
+            sort_order: 0,
+        },
+    )
+    .await
+    .unwrap();
     db.schedule_customer_plan_change(organization, next.plan_version_id)
         .await
         .unwrap();

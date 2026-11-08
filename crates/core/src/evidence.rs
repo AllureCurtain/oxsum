@@ -602,6 +602,14 @@ impl Db {
         collector: &mut Collector,
         detail: &crate::PlanStatementDetail,
     ) -> Result<(), WalletError> {
+        // The immutable accounting inputs/effects form one captured snapshot.
+        // It attests listed facts, not a complete live financial projection.
+        let mut tx = self.pool().begin().await?;
+        sqlx::query("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY")
+            .execute(&mut *tx)
+            .await?;
+        // The public detail serializer is retained for the original artifact
+        // shape; its snapshot is committed separately from accounting effects.
         let journal = match detail.statement.journal_id {
             Some(journal_id) => {
                 self.plan_journal(collector.organization_id, journal_id)
@@ -609,7 +617,32 @@ impl Db {
             }
             None => None,
         };
-        let artifact = serde_json::json!({
+        let mut accounting = None;
+        let mut entry_ids = Vec::new();
+        if let Some(journal) = &journal
+            && journal.journal.accounting_policy_version == 2
+        {
+            let period: Option<serde_json::Value> = sqlx::query_scalar(
+                "SELECT to_jsonb(a) FROM oxsum.plan_accounting_periods a WHERE journal_id=$1",
+            )
+            .bind(journal.journal.journal_id)
+            .fetch_optional(&mut *tx)
+            .await?;
+            let effects:Vec<serde_json::Value>=sqlx::query_scalar("SELECT to_jsonb(e) FROM oxsum.plan_accounting_effects e JOIN oxsum.plan_accounting_periods a USING(plan_period_id) WHERE a.journal_id=$1 ORDER BY e.created_at,e.effect_id").bind(journal.journal.journal_id).fetch_all(&mut *tx).await?;
+            for effect in &effects {
+                if let Some(entry) = effect["entry_id"].as_str() {
+                    entry_ids.push(Uuid::parse_str(entry).map_err(|e| invalid(&e.to_string()))?);
+                }
+            }
+            let captured_at: OffsetDateTime = sqlx::query_scalar("SELECT clock_timestamp()")
+                .fetch_one(&mut *tx)
+                .await?;
+            accounting = Some(
+                serde_json::json!({"policyVersion":2,"period":period,"effects":effects,"capturedAt":captured_at,"scope":"Only these committed accounting effects and referenced ledger entries are included. Future recognition and later adjustments are excluded. Actual service delivery and accounting policy compliance remain operator claims."}),
+            );
+        }
+        tx.commit().await?;
+        let mut artifact = serde_json::json!({
             "v": 1,
             "statement": serde_json::to_value(&detail.statement)
                 .map_err(|e| invalid(&e.to_string()))?,
@@ -626,12 +659,15 @@ impl Db {
                 .transpose()
                 .map_err(|e| invalid(&e.to_string()))?,
         });
+        if let Some(accounting) = accounting {
+            artifact["accounting"] = accounting;
+        }
         collector.add(
             "planStatement",
             detail.statement.statement_id.to_string(),
             artifact.clone(),
             canonicalize(&artifact)?,
-            Vec::new(),
+            entry_ids,
         );
         Ok(())
     }

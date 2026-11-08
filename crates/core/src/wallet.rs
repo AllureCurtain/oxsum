@@ -1509,6 +1509,76 @@ impl Wallet {
         self.append_in(tx, draft).await
     }
 
+    /// Release one completed service day's original deferred fee to income.
+    pub(crate) async fn plan_daily_recognition_in(
+        &self,
+        tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+        key: &str,
+        minor: i64,
+        on: Date,
+    ) -> Result<Option<Uuid>, WalletError> {
+        if minor == 0 {
+            return Ok(None);
+        }
+        let amount = positive(minor)?;
+        let entry = Entry::<Draft, SCALE>::new(entry_id_for(key), idem(key)?, on)
+            .with_description(description_of(
+                "v2 plan fee: completed UTC service-day recognition",
+            )?)
+            .debit(self.unearned_plan_fees, amount, currency())
+            .credit(self.plan_fees, amount, currency());
+        self.append_in(tx, entry)
+            .await
+            .map(|r| Some(*r.entry_id.as_uuid()))
+    }
+
+    /// Reverse exact v2 net earned/deferred amounts without moving Cash.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) async fn plan_daily_void_in(
+        &self,
+        tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+        journal: Uuid,
+        earned: i64,
+        deferred: i64,
+        receivable: i64,
+        collected: i64,
+        on: Date,
+    ) -> Result<Option<Uuid>, WalletError> {
+        if [earned, deferred, receivable, collected]
+            .iter()
+            .any(|v| *v < 0)
+            || earned.checked_add(deferred) != receivable.checked_add(collected)
+        {
+            return Err(invalid("daily void source amounts differ"));
+        }
+        if earned == 0 && deferred == 0 {
+            return Ok(None);
+        }
+        let key = format!("plan-journal/{journal}/void");
+        let mut entry = Entry::<Draft, SCALE>::new(entry_id_for(&key), idem(&key)?, on)
+            .with_description(description_of(
+                "v2 plan journal: reverse net earned and deferred fees; cash unchanged",
+            )?);
+        for (account, minor, debit) in [
+            (self.discounts, earned, true),
+            (self.unearned_plan_fees, deferred, true),
+            (self.receivables, receivable, false),
+            (self.refund_payable, collected, false),
+        ] {
+            if minor > 0 {
+                let amount = Credits::from_minor(minor);
+                entry = if debit {
+                    entry.debit(account, amount, currency())
+                } else {
+                    entry.credit(account, amount, currency())
+                };
+            }
+        }
+        self.append_in(tx, entry)
+            .await
+            .map(|r| Some(*r.entry_id.as_uuid()))
+    }
+
     /// Remove proven duplicated plan revenue, reducing only original open debt
     /// and retaining already collected excess as payable. Cash never moves.
     pub(crate) async fn plan_usage_correction_in(

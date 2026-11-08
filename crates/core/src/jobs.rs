@@ -57,6 +57,8 @@ pub mod kinds {
     /// `expired`. Leader-required — a second runner would roll the same period
     /// twice inside one organization.
     pub const SUBSCRIPTION_ROLLOVERS: &str = "subscription-rollovers";
+    /// Recognize completed UTC service days for versioned prepaid plans.
+    pub const PLAN_RECOGNITION: &str = "plan-recognition";
     /// The task-relay's upstream status pass (issue #503): ask each open
     /// task's channel for the job's state and settle the hold on the terminal
     /// answer. Unleadered — the pass is per-task, and two workers polling the
@@ -147,6 +149,7 @@ pub fn requires_leader(kind: &str) -> bool {
             | UPSTREAM_BILL_SYNC
             | USAGE_ANCHORS
             | SUBSCRIPTION_ROLLOVERS
+            | PLAN_RECOGNITION
             | EXPIRE_LOTS
             | STATEMENT_PAST_DUE
             | RECONCILE
@@ -234,7 +237,7 @@ pub fn next_run(kind: &str) -> Option<Duration> {
         WITNESS_CHECKPOINTS => Duration::hours(1),
         // Hourly: often enough that an ended period closes even when no
         // request arrives, rare enough that every pass is one scan.
-        SUBSCRIPTION_ROLLOVERS => Duration::hours(1),
+        SUBSCRIPTION_ROLLOVERS | PLAN_RECOGNITION => Duration::hours(1),
         // Every minute: an expiring lot should burn within a minute of its
         // `expires_at`, because a hold admitted just before the deadline may
         // still pin it — the pass is one indexed UPDATE per due lot, cheap.

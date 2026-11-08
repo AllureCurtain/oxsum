@@ -7,6 +7,9 @@
 //! their prices, open holds, usage records) live in one `oxsum` schema, outside the ledgers;
 //! see [`Db`].
 
+#[cfg(test)]
+extern crate self as oxsum_core;
+
 mod adapters;
 mod anomaly;
 mod audit;
@@ -61,6 +64,7 @@ mod orgs;
 mod payment_orders;
 mod plan_debt;
 mod plan_payments;
+mod plan_recognition;
 mod plan_refunds;
 mod plan_statements;
 mod plan_usage_corrections;
