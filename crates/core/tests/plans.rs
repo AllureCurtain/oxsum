@@ -604,6 +604,149 @@ async fn cancel_at_period_end_serves_then_stops() {
     assert_eq!(periods[0].state, oxsum_core::PlanPeriodState::Closed);
 }
 
+/// The first boundary request performs cancellation itself; it must not take
+/// an extra draw merely because the periodic rollover worker has not run.
+#[tokio::test]
+async fn lazy_boundary_cancellation_never_spends_the_ended_quota() {
+    let url = db_or_skip!();
+    for overflow in [false, true] {
+        let world = world(&url).await;
+        let sold = sold(
+            &world.db,
+            world.business_id,
+            "cancel-boundary",
+            2500,
+            Some(10 * ONE),
+            PeriodKind::CalendarMonth,
+            overflow,
+        )
+        .await;
+        let plan = world
+            .db
+            .bind_customer_plan(
+                world.organization_id,
+                sold.plan_version_id,
+                PeriodAuthorization::PaymentOrder(Uuid::nil()),
+            )
+            .await
+            .unwrap();
+        world
+            .db
+            .activate_plan_period(
+                plan_payment::paid_order(
+                    &world.db,
+                    &world.owner,
+                    world.organization_id,
+                    plan.customer_plan_id,
+                )
+                .await
+                .order_id,
+                plan.customer_plan_id,
+            )
+            .await
+            .unwrap();
+        let old_key = format!("old-cancel-draw-{}", world.organization_id);
+        let next_key = format!("new-cancel-draw-{}", world.organization_id);
+        let old = world
+            .db
+            .admit_subscription_draw(world.organization_id, &old_key, 4 * ONE)
+            .await
+            .unwrap();
+        world
+            .db
+            .cancel_customer_plan(world.organization_id)
+            .await
+            .unwrap();
+        end_period_ago(&world.pool, world.organization_id, 60).await;
+
+        // No worker has run. The quota admission must close the cancellation
+        // and answer that the wallet owns the entire new request.
+        let next = world
+            .db
+            .admit_subscription_draw(world.organization_id, &next_key, ONE)
+            .await
+            .unwrap();
+        assert_eq!(next.drawn_minor, 0, "ended quota cannot fund a new call");
+        assert_eq!(next.draw_id, Uuid::nil());
+        assert_eq!(next.subscription_id, Uuid::nil());
+        let new_draws: i64 =
+            sqlx::query_scalar("SELECT count(*) FROM oxsum.subscription_draws WHERE hold_key = $1")
+                .bind(&next_key)
+                .fetch_one(&world.pool)
+                .await
+                .unwrap();
+        assert_eq!(new_draws, 0);
+        assert!(
+            world
+                .db
+                .active_subscription(world.organization_id)
+                .await
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            world
+                .db
+                .customer_plan(world.organization_id)
+                .await
+                .unwrap()
+                .is_none()
+        );
+        let periods = world
+            .db
+            .subscription_periods(old.subscription_id)
+            .await
+            .unwrap();
+        assert_eq!(periods.len(), 1);
+        assert_eq!(periods[0].outcome, "cancelled");
+        assert_eq!(periods[0].consumed_minor, 4 * ONE);
+
+        // A pre-boundary reservation remains valid; returning its unused part
+        // updates the retained old period without reopening entitlement.
+        assert_eq!(
+            world
+                .db
+                .settle_subscription_draw(&old_key, 2 * ONE)
+                .await
+                .unwrap(),
+            Some(2 * ONE)
+        );
+        assert_eq!(
+            world
+                .db
+                .settle_subscription_draw(&old_key, 2 * ONE)
+                .await
+                .unwrap(),
+            Some(2 * ONE)
+        );
+        let periods = world
+            .db
+            .subscription_periods(old.subscription_id)
+            .await
+            .unwrap();
+        assert_eq!(periods[0].outcome, "cancelled");
+        assert_eq!(periods[0].consumed_minor, 2 * ONE);
+        world.db.rollover_due_subscriptions().await.unwrap();
+        assert_eq!(
+            world
+                .db
+                .plan_periods(plan.customer_plan_id)
+                .await
+                .unwrap()
+                .len(),
+            1
+        );
+        let journals: i64 = sqlx::query_scalar(
+            "SELECT count(*) FROM oxsum.invoice_journals WHERE customer_plan_id = $1",
+        )
+        .bind(plan.customer_plan_id)
+        .fetch_one(&world.pool)
+        .await
+        .unwrap();
+        assert_eq!(journals, 1, "the later worker cannot close or bill twice");
+    }
+}
+
 #[tokio::test]
 async fn a_scheduled_change_applies_at_the_boundary() {
     let url = db_or_skip!();
