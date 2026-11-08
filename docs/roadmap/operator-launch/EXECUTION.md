@@ -222,3 +222,8 @@ The existing pass clones projection totals into `actualTotals`; #838's independe
 ledger assertions are development evidence, not proof that deployed reconciliation
 independently checks postings. #737 stays open until #848 and remaining acceptance
 complete.
+
+- #853 prepares the owner application and credential portal using #846's contract.
+  Explicit grant/expiry/scopes, frozen retry identity and one-time secret recovery
+  replace the incomplete credential form. Validation and integration remain
+  pending; [evidence](evidence/application-grants.md). No J18 completion follows.
