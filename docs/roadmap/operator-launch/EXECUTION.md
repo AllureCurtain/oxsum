@@ -247,6 +247,6 @@ complete.
   integrated in PR #860 (`4fc5581a`) with 2,012 full workspace passes and independent
   source review. Their browser/candidate and parent finance gates remain distinct.
 - #863 exposes explicit owner/admin period/statement evidence mint, retained
-  manifest inputs, byte-preserving downloads and local WASM verification. Four
+  manifest inputs, byte-preserving downloads and local WASM verification. Five
   behavior and three actual-WASM groups passed, plus frontend build. [Evidence](evidence/customer-evidence-portal.md).
   Source review/normal PR integration and candidate offline/browser acceptance remain.

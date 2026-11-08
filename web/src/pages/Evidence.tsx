@@ -6,7 +6,7 @@ import { CheckCircle2, FileCheck2, ShieldAlert } from "lucide-react";
 import { api } from "../api/client";
 import { useSession, type SessionInfo } from "../api/hooks";
 import { archiveKey, loadHeadVerifier, readArchive, type LedgerIdentity, type RetainedHead } from "../lib/retained-head";
-import { downloadEvidence, evidenceBody, evidencePeriod, expectedEvidence, verifyEvidence, type EvidenceBundle, type EvidenceExpected, type EvidenceResult, type EvidenceSummary, type EvidenceVerifier } from "../lib/evidence";
+import { downloadEvidence, evidenceBody, evidencePeriod, expectedEvidence, matchesEvidence, verifyEvidence, type EvidenceBundle, type EvidenceExpected, type EvidenceResult, type EvidenceSummary, type EvidenceVerifier } from "../lib/evidence";
 import { Banner, Button, Card, CodeBlock, EmptyRows, Field, PageState, TableShell, Td, TextInput } from "../components/ui";
 
 export function Evidence() {
@@ -60,7 +60,7 @@ function CustomerEvidence({ identity, statement }: { identity: LedgerIdentity; s
     const expected = expectedEvidence(identity, summary);
     const { bundle, json } = await fetchBundle(`/org/evidence-bundles/${summary.bundleId}`);
     if (!current()) return;
-    if (bundle.organizationId !== expected.organizationId || bundle.bundleId !== expected.bundleId || bundle.manifestDigest !== expected.manifestDigest) throw new Error(t("evidence.selectionChanged"));
+    if (bundle.organizationId !== expected.organizationId || !matchesEvidence(summary, bundle)) throw new Error(t("evidence.selectionChanged"));
     setSelected({ bundle, json, expected });
   }
   async function mint() {

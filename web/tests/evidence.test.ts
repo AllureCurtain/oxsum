@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { evidenceBody, evidencePeriod, expectedEvidence, verifyEvidence, type EvidenceBundle, type EvidenceVerifier } from "../src/lib/evidence.ts";
+import { evidenceBody, evidencePeriod, expectedEvidence, matchesEvidence, verifyEvidence, type EvidenceBundle, type EvidenceVerifier } from "../src/lib/evidence.ts";
 const now = Date.UTC(2026, 10, 9, 23);
 
 test("evidence spans use valid inclusive ended UTC days with a 366-day maximum", () => {
@@ -33,4 +33,11 @@ test("raw evidence preserves exact large integers and only accepts the contract 
   assert.equal(parsed.json, json);
   await verifyEvidence(parsed.json, expected, identity, null, { ...pass, verifyEvidenceBundle: (bytes) => { assert.equal(bytes, json); return '{"ok":true}'; } });
   for (const value of ['{"data":null}', '{"data":{},"other":1}', '{"data":{},"data":{}}', '{"data":[]}', '{}', 'invalid']) assert.throws(() => evidenceBody(value));
+});
+
+
+test("selected period and statement metadata must match even when the digest is unchanged", () => {
+  const summary = { ...bundle, periodFrom: "2026-11-01", periodTo: "2026-11-08", entryCount: 1, createdAt: "2026-11-09T00:00:00Z" };
+  assert.equal(matchesEvidence(summary, summary), true);
+  for (const change of [{ kind: "statement" }, { periodFrom: "2026-10-01" }, { periodTo: "2026-11-07" }, { statementId: "other-statement" }]) assert.equal(matchesEvidence(summary, { ...summary, ...change } as EvidenceBundle), false);
 });

@@ -37,6 +37,15 @@ export function expectedEvidence(identity: LedgerIdentity, selected: Pick<Eviden
   return { organizationId: identity.organizationId, origin: `oxsum/ledgers/${identity.tenantId}`, bundleId: selected.bundleId, manifestDigest: selected.manifestDigest };
 }
 
+/** List/mint metadata is the user's selected scope. Its dates are not implied by
+ * merely matching a digest, so bind them independently before publishing a result. */
+export function matchesEvidence(summary: EvidenceSummary, bundle: EvidenceBundle): boolean {
+  return summary.bundleId === bundle.bundleId && summary.manifestDigest === bundle.manifestDigest && summary.kind === bundle.kind
+    && (summary.periodFrom ?? null) === (bundle.periodFrom ?? null)
+    && (summary.periodTo ?? null) === (bundle.periodTo ?? null)
+    && (summary.statementId ?? null) === (bundle.statementId ?? null);
+}
+
 function passed(json: string): void {
   if ((JSON.parse(json) as { ok?: unknown })?.ok !== true) throw new Error("The local verifier did not confirm the evidence.");
 }

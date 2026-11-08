@@ -17,7 +17,7 @@ signature from a different ledger must fail this additional check.
 
 Executed development validation:
 
-- Four behavior groups: valid ended UTC date spans, inclusive 366-day cap, malformed
+- Five behavior groups: valid ended UTC date spans, inclusive 366-day cap, malformed
   dates, customer/manifest substitution, positive local verdict, unsigned/malformed
   signature states and lossless large-integer/raw-envelope handling.
 - Three actual-WASM groups: valid retained/supplied/unsigned evidence; changed
@@ -39,5 +39,5 @@ Independent review identified and corrected two async state boundaries: statemen
 navigation remounts the customer-scoped view, so an old request cannot publish
 into the new statement; verification checks that browser trust did not change
 during the WASM load and freezes the exact trust snapshot in the verdict/export.
-Final combined verification ran nine behavior tests and seven actual-WASM groups,
+Final combined verification ran ten behavior tests and seven actual-WASM groups,
 all passed, and the production build passed on integrated main `e53e303a`.
