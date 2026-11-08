@@ -67,8 +67,20 @@ struct World {
 /// cannot reach the failure, so the world carries the `Db`/`Tenants` beside
 /// the router.
 async fn world(database_url: &str, top_up: i64) -> World {
-    let pool = sqlx::postgres::PgPoolOptions::new()
-        .max_connections(16)
+    world_with_pool_options(
+        database_url,
+        top_up,
+        sqlx::postgres::PgPoolOptions::new().max_connections(16),
+    )
+    .await
+}
+
+async fn world_with_pool_options(
+    database_url: &str,
+    top_up: i64,
+    options: sqlx::postgres::PgPoolOptions,
+) -> World {
+    let pool = options
         .connect(database_url)
         .await
         .expect("connects to PostgreSQL");
@@ -310,12 +322,26 @@ async fn a_killed_settle_stays_consistent_and_conflicts_on_replay() {
 // ── Pool exhaustion ──────────────────────────────────────────────────────────
 
 /// Every pool connection busy at once: new requests queue and fail fast with
-/// `PoolBusy` (or time out) rather than deadlocking. The assertion is that the
+/// `PoolBusy` rather than deadlocking. The assertion is that the
 /// failure is explicit and bounded, and the pool recovers once connections
 /// free — no leak of `PoolBusy` into a later, quiet request.
 #[tokio::test]
 async fn pool_exhaustion_fails_fast_and_recovers() {
-    let w = world_or_skip!(5_000_000);
+    let Some(database_url) = url() else {
+        eprintln!("DATABASE_URL not set, skipping");
+        return;
+    };
+    const CONNECTIONS: u32 = 16;
+    // The acquire deadline must expire before the independent watchdog. SQLx's
+    // default and the old outer watchdog were both 30s, racing on a busy runner.
+    let w = world_with_pool_options(
+        &database_url,
+        5_000_000,
+        sqlx::postgres::PgPoolOptions::new()
+            .max_connections(CONNECTIONS)
+            .acquire_timeout(Duration::from_secs(1)),
+    )
+    .await;
     // Open the wallet before saturating the pool — `Wallet::open` itself
     // migrates and registers accounts, which needs free connections.
     let wallet = w.tenants.get(&w.tenant_id).await.unwrap();
@@ -323,23 +349,28 @@ async fn pool_exhaustion_fails_fast_and_recovers() {
     // pool is the same one `Db`/`Wallet` draw on, so a saturated pool is the
     // whole process's connection budget exhausted.
     let mut held = Vec::new();
-    for _ in 0..16 {
+    for _ in 0..CONNECTIONS {
         match tokio::time::timeout(Duration::from_secs(5), w.pool.acquire()).await {
             Ok(Ok(conn)) => held.push(conn),
             _ => break,
         }
     }
-    assert_eq!(held.len(), 16, "the fixture must saturate the pool");
+    assert_eq!(
+        held.len(),
+        CONNECTIONS as usize,
+        "the fixture must saturate the pool"
+    );
 
     // A wallet call that needs a connection now fails fast — `acquire_timeout`
     // bounds the wait, and the error surfaces as `PoolBusy`-class rather than
     // hanging.
-    let verdict = tokio::time::timeout(Duration::from_secs(30), wallet.available()).await;
-    match verdict {
-        Ok(Ok(_)) | Ok(Err(WalletError::PoolBusy)) => {}
-        Ok(Err(e)) => panic!("a saturated pool must fail fast, not surface {e:?}"),
-        Err(_) => panic!("a saturated pool must not hang past the acquire timeout"),
-    }
+    let verdict = tokio::time::timeout(Duration::from_secs(5), wallet.available())
+        .await
+        .expect("a saturated pool must answer before the independent watchdog");
+    assert!(
+        matches!(verdict, Err(WalletError::PoolBusy)),
+        "a fully saturated pool must return PoolBusy, got {verdict:?}"
+    );
     drop(held);
 
     // Once connections free, the same call recovers — no poisoned state.
