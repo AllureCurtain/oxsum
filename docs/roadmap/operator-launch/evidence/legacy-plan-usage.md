@@ -65,6 +65,12 @@ passed; an initial stale shared-target metadata result was corrected by
 refreshing this crate's root mtime, with no implementation suppression.
 Formatting, diff whitespace and 44 local documentation links passed.
 
+The final contract review added both `plan_usage.correct` and
+`plan_refund.recover` to the existing finance-audit action enum and regenerated
+the dashboard types. All four OpenAPI authority checks and the frontend
+TypeScript/Vite production build passed after that documentation/schema-only
+increment; the existing bundle-size advisory remains.
+
 Independent source review covered the original correction and the later-cash
 source-map increment. It reported no remaining introduced blocker. Unsupported
 combined histories still require explicit review, and later confirmed cash in

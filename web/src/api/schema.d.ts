@@ -9715,7 +9715,7 @@ export interface paths {
         };
         /**
          * List the business finance audit
-         * @description Current business staff with report-read capability; a personal session. One immutable `finance_audit` row per staff financial action — every refund resolution, dispute close, journal void, statement release and reconciliation resolve/waive/repair — newest first. Each row names the actor, the audited action and the reason it carried, and drills to the entity it corrected. `action` narrows to one audited action.
+         * @description Current business staff with report-read capability; a personal session. One immutable `finance_audit` row per staff financial action — every refund resolution, dispute close, journal void, statement release, reconciliation resolve/waive/repair and explicit historical plan refund or usage correction — newest first. Each row names the actor, the audited action and the reason it carried, and drills to the entity it corrected. `action` narrows to one audited action, including `plan_refund.recover` and `plan_usage.correct` from the local correction commands.
          */
         get: operations["businessFinanceAudit"];
         put?: never;
@@ -20383,7 +20383,7 @@ export interface components {
             /** Format: uuid */
             nextCursor: string | null;
         };
-        /** @description One immutable `finance_audit` row — the staff financial action's authorization record. Every refund resolution, dispute close, journal void, statement release and reconciliation close/repair lands one, naming the actor, the audited action and the reason it carried. */
+        /** @description One immutable `finance_audit` row — the staff financial action's authorization record. Every refund resolution, dispute close, journal void, statement release, reconciliation close/repair and explicit historical plan refund or usage correction lands one, naming the actor, the audited action and the reason it carried. */
         FinanceAuditEntry: {
             /** Format: uuid */
             auditId: string;
@@ -20396,7 +20396,7 @@ export interface components {
              * @description the audited financial action — the same vocabulary `finance_audit`'s check constraint bounds
              * @enum {string}
              */
-            action: "refund.approve" | "refund.decline" | "refund.release" | "dispute.resolve" | "journal.void" | "statement.release" | "reconciliation.resolve" | "reconciliation.waive" | "reconciliation.repair";
+            action: "refund.approve" | "refund.decline" | "refund.release" | "dispute.resolve" | "journal.void" | "statement.release" | "reconciliation.resolve" | "reconciliation.waive" | "reconciliation.repair" | "plan_refund.recover" | "plan_usage.correct";
             /** @description the entity the action corrected — a refund */
             target: string;
             /** @description the action's safe fields — reason */
