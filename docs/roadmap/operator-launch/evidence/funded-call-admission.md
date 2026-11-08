@@ -29,7 +29,8 @@ key/member/team and mandate monetary caps, cache-hit restrictions, partial quota
 rollback, atomic watch-write failure and legacy-watch insertion races, concurrency races/double counting,
 independent identical operations and explicit idempotent replay, zero-wallet
 recovery with failure/retry, one-connection money/quota/free recovery, distinct-key
-small-pool bursts, controlled lock order and plan-dunning overage-only behavior.
+small-pool bursts, controlled lock order, both winners of streaming cancellation
+versus recovery, and plan-dunning overage-only behavior.
 
 Results, exact runtime SHA, final focused/combined regression gates and review
 will be recorded after execution. Customer readiness follows this repair and the
