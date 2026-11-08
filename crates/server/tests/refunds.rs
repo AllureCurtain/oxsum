@@ -301,7 +301,6 @@ fn dispute(order: Uuid, org: Uuid, provider: &str, dispute_id: &str, amount: i64
         "livemode": false,
         "content": {"type":"dispute_details","object":{
             "dispute_id": dispute_id,
-            "refund_id": dispute_id,
             "payment_id": provider,
             "amount": amount,
             "currency": USD,
@@ -901,10 +900,10 @@ async fn a_provider_timeout_retries_then_settles() {
 }
 
 /// A `dispute_opened` event records the contested charge — deliberately not a
-/// refund — and `lost` re-charges the drawn receivable under the dispute's own
+/// refund — and `lost` retains the complete Cash loss under the dispute's own
 /// ledger key; `won` ends the record without moving money.
 #[tokio::test]
-async fn a_dispute_is_not_a_refund_and_lost_recharges() {
+async fn a_dispute_retains_complete_cash_without_repaying_credit() {
     let Some((app, db, stub, merchant, version)) = world().await else {
         return;
     };
@@ -952,7 +951,7 @@ async fn a_dispute_is_not_a_refund_and_lost_recharges() {
     .unwrap();
     assert_eq!(wallet.credit_used().await.unwrap(), 500_000_000);
 
-    // `lost` re-charges the drawn receivable — capped at the 500_000_000 draw.
+    // Spent original funding remains explicit suspense, with complete Cash loss.
     let (status, body) = call(
         &app,
         "POST",
@@ -964,9 +963,10 @@ async fn a_dispute_is_not_a_refund_and_lost_recharges() {
     assert_eq!(status, StatusCode::OK, "{body}");
     assert_eq!(body["data"]["state"].as_str().unwrap(), "lost");
     assert!(body["data"]["rechargeEntryId"].is_string(), "{body}");
-    // The contested 1_500_000_000 credit is capped at the 500_000_000 drawn —
-    // this legacy incoming-cash allocation remains the known #829 defect.
-    assert_eq!(wallet.credit_used().await.unwrap(), 0);
+    assert_eq!(wallet.credit_used().await.unwrap(), 500_000_000);
+    let cash: i64 = sqlx::query_scalar(&format!("SELECT COALESCE(SUM(CASE WHEN p.direction='C' THEN p.amount_minor ELSE -p.amount_minor END),0)::bigint FROM ledger_{}.postings p JOIN ledger_{}.accounts a USING(account_index) WHERE a.path='Assets:Cash' AND p.entry_id=$1",wallet.tenant_id(),wallet.tenant_id()))
+        .bind(Uuid::parse_str(body["data"]["rechargeEntryId"].as_str().unwrap()).unwrap()).fetch_one(db.pool()).await.unwrap();
+    assert_eq!(cash, 1_500_000_000);
     let entry = body["data"]["rechargeEntryId"].clone();
     let log_size = wallet.log_size().await.unwrap();
     let path = format!("/api/v1/business/disputes/{dispute_id}/resolve");
@@ -1341,4 +1341,82 @@ async fn a_refund_response_timeout_recovers_without_a_second_create() {
     assert_eq!(standing.refund.state, "provider_pending");
     assert_eq!(standing.refund.retry_count, 1);
     server.abort();
+}
+
+#[tokio::test]
+async fn disputed_case_identity_is_taken_from_the_signed_dispute_field() {
+    let Some((app, db, stub, merchant, version)) = world().await else {
+        return;
+    };
+    let account = register(&app).await;
+    set_display(&db, account.organization_id).await;
+    let owner = operator(&db, &app).await;
+    let (order, provider, _wallet) = paid_order(
+        &app,
+        &db,
+        &stub,
+        merchant,
+        version,
+        &account,
+        "native-case-identity",
+        210,
+    )
+    .await;
+    let mut body: Value = serde_json::from_str(&dispute(
+        order,
+        account.organization_id,
+        &provider,
+        "native-case",
+        105,
+    ))
+    .unwrap();
+    body["content"]["object"]["refund_id"] = json!("conflicting-refund");
+    let conflicting = body.to_string();
+    let status = post_webhook(
+        &app,
+        merchant,
+        version,
+        signed(WEBHOOK_SECRET, &conflicting),
+        conflicting,
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    body["content"]["object"]
+        .as_object_mut()
+        .unwrap()
+        .remove("refund_id");
+    let genuine = body.to_string();
+    assert_eq!(
+        post_webhook(
+            &app,
+            merchant,
+            version,
+            signed(WEBHOOK_SECRET, &genuine),
+            genuine.clone()
+        )
+        .await,
+        StatusCode::OK
+    );
+    assert_eq!(
+        post_webhook(
+            &app,
+            merchant,
+            version,
+            signed(WEBHOOK_SECRET, &genuine),
+            genuine
+        )
+        .await,
+        StatusCode::OK
+    );
+    let (status, listed) = call(&app, "GET", "/api/v1/business/disputes", None, Some(&owner)).await;
+    assert_eq!(status, StatusCode::OK);
+    let cases = listed["data"]["disputes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|d| d["orderId"].as_str() == Some(order.to_string().as_str()))
+        .collect::<Vec<_>>();
+    assert_eq!(cases.len(), 1);
+    assert_eq!(cases[0]["providerDisputeId"], "native-case");
+    assert_eq!(cases[0]["amountMinor"], 750_000_000);
 }
