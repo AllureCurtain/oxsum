@@ -35,7 +35,7 @@ pub(crate) const MAX_NAME: usize = 80;
 /// The longest one entry of a model allowlist may be.
 pub(crate) const MAX_MODEL: usize = 128;
 /// The columns every `ApiKey` read projects, in one place for select and returning.
-const KEY_COLS: &str = "key_id, name, prefix, created_by, created_at, expires_at, \
+pub(crate) const KEY_COLS: &str = "key_id, name, prefix, created_by, created_at, expires_at, \
                         revoked_at, spend_limit_minor, budget_duration, model_allowlist, \
                         requests_per_minute, max_concurrent_holds, tokens_per_minute, \
                         tokens_per_minute_scopes, required_policies, group_id";
@@ -60,7 +60,7 @@ pub(crate) fn validate_model_allowlist(models: &[String]) -> Result<(), WalletEr
 }
 
 /// The window a periodic spend limit applies to. Without one the limit is cumulative.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum BudgetDuration {
     /// A limit that resets at the start of each UTC day.
@@ -284,7 +284,7 @@ pub struct KeyConstraints {
 impl KeyConstraints {
     /// The domain rules the column checks cannot express: a window needs a limit, and
     /// an allowlist is null or a non-empty list of non-empty names.
-    fn validate(&self) -> Result<(), WalletError> {
+    pub(crate) fn validate(&self) -> Result<(), WalletError> {
         validate_limit(self.spend_limit_minor)?;
         if self.budget_duration.is_some() && self.spend_limit_minor.is_none() {
             return Err(WalletError::InvalidInput(
@@ -347,7 +347,7 @@ fn validate_tpm_scopes(scopes: &TpmScopes) -> Result<(), WalletError> {
 }
 
 /// An API key as the API presents it. Never the secret, never the hash.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ApiKey {
     /// The key's identifier, used to address it in management calls.
@@ -1054,7 +1054,7 @@ fn validate_name(name: Option<String>) -> Result<Option<String>, WalletError> {
     }
 }
 
-fn key_from_row(row: &sqlx::postgres::PgRow) -> Result<ApiKey, WalletError> {
+pub(crate) fn key_from_row(row: &sqlx::postgres::PgRow) -> Result<ApiKey, WalletError> {
     use sqlx::Row;
     Ok(ApiKey {
         id: row.try_get("key_id")?,

@@ -806,3 +806,15 @@ Pre-upgrade projection-only runs have retained `legacy` snapshots with coverage
 version 0 and never become independent evidence retroactively. Current exception
 resolution/waiver status is a separate work list; it cannot rewrite a captured
 attempt. Bounds or storage failures leave the previous run/snapshot intact.
+
+Application-bound `customerKeysWrite` enables
+`GET/POST /integration/customers/{organization_id}/keys` and
+`POST /integration/customers/{organization_id}/keys/{key_id}/revoke`. The exact
+fields and bounds are in OpenAPI. This scope cannot be issued to a legacy grant;
+only an application's own provisioned customers and issued keys are eligible.
+Creation's `secret` is non-null exactly once. Subsequent exact operation replays,
+including through a rotated management credential, return the original metadata
+with `secret: null`; list reads current metadata. Current authority is checked even
+on replay, and changed operation terms conflict across create/revoke/customer
+operations sharing the same application namespace. The API does not recover lost
+plaintext: explicitly revoke and intentionally create a replacement.

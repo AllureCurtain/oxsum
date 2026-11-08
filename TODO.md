@@ -4,6 +4,8 @@ Updated: 2026-11-09
 
 ## In progress
 
+- [ ] [#866](https://github.com/AllureCurtain/oxsum/issues/866) — Bounded application-only customer key lifecycle; contract and implementation in progress, migration 0118 follows integrated 0117.
+
 - [x] [#894](https://github.com/AllureCurtain/oxsum/issues/894) — Record focused validation defaults, changed-crate strict Clippy and reuse of unchanged results after rebase; integrated in PR #895 (`397d07b0`).
 
 - [x] [#891](https://github.com/AllureCurtain/oxsum/issues/891) — Fix concurrent statement/period evidence descriptor publication after main CI exposed a non-arbiter unique-index race; five focused core checks, core-only strict Clippy and independent source review passed; integrated in PR #893 (`dcd226c6`).

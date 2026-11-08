@@ -35,3 +35,11 @@ test("malformed and out-of-range expiries or missing authority fail before submi
   assert.throws(() => credentialRequest({ ...draft, scopes: [] }, "key", 0), /scopes/);
   assert.throws(() => credentialRequest({ ...draft, reason: " " }, "key", 0), /details/);
 });
+
+test("customer key management is confined to application grants", () => {
+  assert.throws(() => credentialRequest({ ...draft, mode: "customers", scopes: ["customerKeysWrite"] }, "key", 0), /scopes/);
+  const request = credentialRequest({ ...draft, scopes: ["customerKeysWrite"] }, "key", 0);
+  assert.equal(request.applicationId, "app-a");
+  assert.deepEqual(request.customerIds, []);
+  assert.deepEqual(request.scopes, ["customerKeysWrite"]);
+});

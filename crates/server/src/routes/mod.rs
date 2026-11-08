@@ -281,6 +281,15 @@ pub fn router(state: AppState) -> Router {
             get(integration_applications::customer).post(integration_applications::provision),
         )
         .route(
+            "/integration/customers/{organization_id}/keys",
+            get(integration_applications::customer_keys)
+                .post(integration_applications::create_customer_key),
+        )
+        .route(
+            "/integration/customers/{organization_id}/keys/{key_id}/revoke",
+            post(integration_applications::revoke_customer_key),
+        )
+        .route(
             "/integration/customers/{organization_id}/archive",
             post(integration_applications::archive),
         )

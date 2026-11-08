@@ -72,7 +72,7 @@ async fn namespace_in(
         .bind(service.business_id).bind(service.credential_id).fetch_one(&mut **tx).await?)
 }
 
-async fn replay_in(
+pub(super) async fn replay_in(
     tx: &mut Transaction<'_, Postgres>,
     namespace: Uuid,
     key: &str,
@@ -93,7 +93,7 @@ async fn replay_in(
 }
 
 #[allow(clippy::too_many_arguments)]
-async fn record_in(
+pub(super) async fn record_in(
     tx: &mut Transaction<'_, Postgres>,
     service: &ActingService,
     namespace: Uuid,

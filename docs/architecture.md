@@ -705,3 +705,20 @@ against refundable bounds and excludes payout retries even if terminal state
 cannot change. An unfulfilled returned purchase stays in reconciliation and
 cannot receive a future grant. The recovery CLI uses explicit database/session
 inputs without dotenv, migrations, lazy wallet creation or provider I/O.
+
+### Application-owned customer keys
+
+`integration_applications::keys` authorizes an application-only `customerKeysWrite`
+grant, reuses the customer consumption-key insert and retains immutable ownership
+in `application_customer_keys`. Composite foreign keys bind business/application/
+customer, the actual organization/key and original issuing credential. Creation
+and revocation use the stable application operation namespace introduced in 0114;
+0118 widens its actions to `key.create`/`key.revoke` and its scope check. Exact
+receipt replay uses current management authority and returns original metadata.
+No stored receipt or audit contains the one-time plaintext.
+
+Mutations take business then credential/customer parent locks before key rows and
+audit foreign keys. Lists use current credential authorization and paginate only
+the application's bridge rows. No fabricated `Principal` or human actor reaches
+the personal key-management entry points. Existing gateway keys keep the usual
+consumption enforcement and explicit independent expiry/revocation lifecycle.

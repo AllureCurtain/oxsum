@@ -1625,3 +1625,13 @@ remain in captured evidence. Fix the exact underlying source through its
 supported audited workflow, then request a new comparison. Reconciliation
 itself never changes money or invents missing source links. Historical reports
 marked **Legacy report** did not perform an independent ledger comparison.
+
+In **Business → Staff → Application access**, the **Issue and revoke bounded
+customer gateway keys** scope is available only for a selected application. A
+service uses it for customer accounts it provisioned, not existing unrelated
+portal accounts. Required key limits include a finite cumulative budget, allowed
+models, request/concurrency caps and expiry. Secrets are returned once; exact
+retries give metadata without plaintext. Retrieve the operation receipt, revoke
+the old key and deliberately create a replacement if the first secret response
+was lost. Revoking the management grant stops future management but does not
+silently revoke keys already issued; those keep their own expiry/revocation.

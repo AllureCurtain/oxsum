@@ -277,3 +277,20 @@ success as authenticated terminal evidence. Known pinned handles are read-only;
 unknown old outcomes are fenced. Five leased attempts bound recovery. Exhaustion
 retains unknown/pending state, and only an exact signed outcome settles it.
 Local fixtures prove retry and accounting behavior, not real PSP certification.
+
+### Bounded application customer gateway keys
+
+An owner can select the application-only `customerKeysWrite` scope in Staff's
+application grant form. The runtime uses that grant to issue only its own
+service-managed customer's consumption keys, with required spend/model/expiry/
+RPM/concurrency limits. It never needs owner login credentials. The key has no
+balance of its own and cannot change billing or other credentials.
+
+The [application-keys walkthrough](../examples/application-keys/README.md) performs
+bounded issuance, exact secret-free replay, metadata listing and revocation. Its
+state file records request/revoke identity before the first network action; reuse
+it after interrupted/ambiguous requests. It invokes no upstream or payment service.
+Management credential revocation does not cascade to previously issued gateway
+keys, which retain explicit expiry/revocation and customer lifecycle restrictions.
+Entitlement/checkout/evidence scopes, consent linking, signed notifications and
+the complete separate-application J18 remain distinct N21 deliverables.

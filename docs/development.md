@@ -1529,3 +1529,11 @@ shared accounting changes. CLI argument checks use `cargo test -p oxsum-core
 --example recover_nonplan_refund`. Tests use isolated PostgreSQL fixtures and
 never call a PSP; [development evidence](roadmap/operator-launch/evidence/nonplan-refunds.md)
 does not certify a production correction or release candidate.
+
+Application key lifecycle regressions are
+`cargo nextest run -p oxsum-core --test application_customer_keys` and
+`cargo nextest run -p oxsum-server --test application_customer_keys` with the test
+PostgreSQL cluster. The example needs explicit `OXSUM_APPLICATION_CREDENTIAL`,
+`OXSUM_APPLICATION_CUSTOMER_ID`, `OXSUM_APPLICATION_MODEL` and a task-owned
+`OXSUM_APPLICATION_KEY_STATE` file; see its README. These are example-only inputs,
+not server configuration or authorization to use an external paid provider.

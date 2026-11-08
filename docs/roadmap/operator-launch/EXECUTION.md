@@ -294,3 +294,16 @@ remain; #737 stays open. [Evidence](evidence/independent-reconciliation.md).
   Strict Clippy, final frontend/contract checks and independent source review
   passed. Normal PR integration remains; #842/#829, #777 and browser/candidate
   commercial acceptance are still open.
+
+- #863 customer Evidence portal integrated in PR #865 (`cbabfafd`): ten combined
+  behavioral and seven actual-WASM groups, contract/frontend/format checks and
+  final independent review passed. Browser/final-candidate offline acceptance
+  remains separate.
+- #866 adds application-only bounded customer key lifecycle after #846/#853.
+  Contract, source and prepared core/HTTP regressions live in
+  `.worktrees/application-customer-keys`; migration 0118 is deliberately
+  unregistered until the 0115/0116/0117 financial/admission chain integrates.
+  Frontend contract/build and four grant checks pass; Rust compilation/runtime,
+  upgrade and real example execution remain pending. Independent source review
+  passed; expiry uses the database clock, and the prepared consumer regression
+  checks the actual Wallet budget/concurrency/model boundaries.
