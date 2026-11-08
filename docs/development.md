@@ -18,6 +18,16 @@
   `OXSUM_REGISTRY_USERNAME` and `OXSUM_REGISTRY_TOKEN`, never a root `.env` load.
   See [the promotion runbook](self-hosted-release.md) for selectors and receipts.
 
+- Digest deployment: `python3 scripts/test-candidate-deploy.py` exercises
+  runtime evidence, immutable plans, Compose rendering, refusal and managed
+  state transitions. Its loopback HTTP fixture uses a mocked Docker state model;
+  it is not an application-image deployment. `scripts/deployment_plan.py`
+  validates candidate provenance and published digest with read-only registry
+  authority; `scripts/deploy-candidate.py` applies only trusted plans on Linux.
+  See [the deployment/rollback runbook](self-hosted-upgrade.md). No helper builds
+  or publishes an image. `OXSUM_IMAGE_REF` is the shared Compose image input;
+  `SMOKE_VERSION_OUTPUT` retains observed candidate runtime JSON.
+
 - Candidate validation: `python3 scripts/test-candidate-ci.py` exercises the
   full-CI evidence gate without credentials. `scripts/check-candidate-ci.py
   --sha <40-character-sha> --repository AllureCurtain/oxsum --output ci.json`
@@ -839,24 +849,21 @@ process open, so nine seconds after the signal the process exits regardless —
 just under `docker stop`'s default SIGTERM grace — and the sweeper settles
 whatever the exit left in flight.
 
-Rollback is `docker run` the previous image — with one honest limit: migrations
-are forward-only. A release that added a table or relaxed a constraint leaves a
-database the older binary tolerates (the schema is a superset of what it
-expects), but a release that changed *behavior* — settlement semantics, a
-constraint tightened the other way — may not round-trip. The safe procedure:
+Rollback depends on schema and behavior compatibility. `/readyz` requires exact
+schema equality, so an older binary cannot be assumed ready against an additive
+newer schema. Retain the prior digest, environment and a verified pre-upgrade
+backup. A schema-changing rollback restores into a fresh database; no down
+migration exists. A same-schema retained artifact may be restarted only after
+an operator compatibility decision and the deployment helper's identity checks.
 
-1. Dump the database before the upgrade (`pg_dump` above).
-2. Upgrade; verify `/healthz`, then a real turn.
-3. Roll back by restoring the pre-upgrade dump only when the release's changes
-   made the schema or the books incompatible — a plain revert keeps the data a
-   rollback would otherwise strand behind a constraint it predates.
-
-Image promotion now consumes the validated candidate archive and creates one
-explicit version tag plus an immutable digest receipt. It never rebuilds or
-updates `latest`. The legacy `deploy.yml` combined caller lacks candidate
-selectors and fails closed before publication; N13.c will replace it with
-explicit digest deployment and compatible rollback. Retain the previous
-receipt and backup for that separately authorized operation.
+Image promotion consumes the validated candidate archive and creates one
+explicit version tag plus an immutable digest receipt. Deploy is a separate
+manual workflow with no build/publication call: it verifies candidate provenance,
+observed runtime version and published digest, then runs migration and serving
+from that exact artifact. The managed helper retains current/previous receipts,
+refuses unmanaged containers and drift, and never guesses an automatic rollback
+after a failed migration. Follow `docs/self-hosted-upgrade.md` for maintenance,
+legacy adoption, failure recovery and same-schema versus restored rollback.
 
 The CI gate builds and smoke-tests the image on every pull request, so a release
 that cannot boot never reaches the registry; what it cannot smoke-test is your

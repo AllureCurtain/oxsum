@@ -2982,3 +2982,32 @@ responsible for runtime enforcement.
 - Legacy recovery defaults to a preview, requires explicit refund identity and personal `FundsWrite` authority, and never calls a provider. It reads the original entry's actual account/direction/amounts. An old receivable-credit refund is corrected by appending the missing cash and receivable legs; an already-correct cash entry is retained without a second outflow. The original note entry remains immutable. Unsupported mixed historical corrections refuse with a finance-review action instead of guessing.
 - The converse ordering uses the same rule: a chargeback after a refund records the complete outflow, restores only still-collected original payment as debt, and retains excess suspense in `dispute.resolve`. Both writers serialize on the plan and replay the actual source entry regardless of journal state.
 - These are correctness repairs for every V1 period. Daily revenue recognition remains separately versioned work: it can allocate `deferred_minor` and `earned_minor` from period facts without treating the existing deferred balance of another period as this refund's money.
+
+
+## 2026-11-08 — Separate digest deployment from publication (#810)
+
+Compose now requires one explicit OXSUM_IMAGE_REF for both migration and serving;
+no accepted deployment defaults to latest. Local candidate smoke may select its
+explicit pre-publication tag and retains the actual version endpoint response
+as hashed runtimeVersion evidence in the version-2 bundle. Promotion remains
+compatible with older v2 bundles; deployment refuses those lacking actual
+runtime evidence rather than inventing schema/package identity from source.
+
+Deploy is manual and read-only toward GitHub/registry. It validates candidate
+provenance and the explicit published digest before authenticated SSH transfer
+of a narrow plan/helper. Pinned known hosts replace trust-on-first-use scanning.
+The plan is not signed and must remain in that trusted transfer boundary. The
+host pulls/saves/verifies image content before downtime, snapshots the operator
+environment, migrates and serves the same digest, then checks exact readiness
+and source/package/schema. Private current/previous receipts and a host lock
+prevent silently adopting unknown containers or concurrent managed writers.
+
+Readiness requires exact schema equality. Additive migrations do not establish
+older-image compatibility. Same-schema rollback needs retained prior success,
+unchanged database/key environment and an explicit operator behavior decision;
+schema-changing rollback restores to a separate database. Migration/start/probe
+failure never triggers a guessed automatic rollback or a success receipt.
+Legacy unmanaged containers require explicit maintenance and retained backups
+before first managed adoption. Tests distinguish real loopback HTTP with mocked
+Docker state from future real candidate deployment acceptance. SDK publication
+remains N13.d; no public action or live host is exercised by these tests.

@@ -35,11 +35,16 @@ $EDITOR deploy/.env
 The minimum a boot needs:
 
 ```dotenv
+OXSUM_IMAGE_REF=ghcr.io/allurecurtain/oxsum@sha256:<verified-registry-digest>
 POSTGRES_PASSWORD=<openssl rand -hex 32>
 OXSUM_ADMIN_TOKEN=<openssl rand -hex 32>
 OXSUM_SECRET_KEY=<openssl rand -base64 32>
 ```
 
+- `OXSUM_IMAGE_REF` — the immutable reference from the verified promotion
+  receipt. Both migration and serving use exactly this image; no implicit
+  `latest` is selected. Existing `OXSUM_IMAGE_TAG` deployments must replace that
+  variable with the full reference before using this profile.
 - `POSTGRES_PASSWORD` — the only database credential; the compose file builds
   `DATABASE_URL` from it for the oxsum containers.
 - `OXSUM_ADMIN_TOKEN` — the operator token on `/api/v1/admin` and `/metrics`.
@@ -85,8 +90,8 @@ placeholder values the examples ship, and refuses a world-readable file.
 ## 2. Boot the database
 
 ```bash
-docker compose -f deploy/docker-compose.core.yml up -d postgres
-docker compose -f deploy/docker-compose.core.yml ps
+docker compose --env-file deploy/.env -f deploy/docker-compose.core.yml up -d postgres
+docker compose --env-file deploy/.env -f deploy/docker-compose.core.yml ps
 ```
 
 Wait for `postgres` to show `(healthy)` — `pg_isready` is its healthcheck.
@@ -94,7 +99,7 @@ Wait for `postgres` to show `(healthy)` — `pg_isready` is its healthcheck.
 ## 3. Migrate the schema
 
 ```bash
-docker compose -f deploy/docker-compose.core.yml run --rm oxsum-migrate
+docker compose --env-file deploy/.env -f deploy/docker-compose.core.yml run --rm oxsum-migrate
 # expect: schema migrated to the latest migration included in this artifact
 ```
 
@@ -108,8 +113,8 @@ and leaves the database at the last good version, never half-applied.
 ## 4. Start the server
 
 ```bash
-docker compose -f deploy/docker-compose.core.yml up -d oxsum
-docker compose -f deploy/docker-compose.core.yml ps
+docker compose --env-file deploy/.env -f deploy/docker-compose.core.yml up -d oxsum
+docker compose --env-file deploy/.env -f deploy/docker-compose.core.yml ps
 ```
 
 Expected:
@@ -181,7 +186,7 @@ If `deploy/.env` completes a rail set (`OXSUM_STRIPE_*`,
 payment profile so the declaration is explicit:
 
 ```bash
-docker compose -f deploy/docker-compose.core.yml \
+docker compose --env-file deploy/.env -f deploy/docker-compose.core.yml \
                -f deploy/docker-compose.payment.yml up -d oxsum
 ```
 
@@ -208,7 +213,7 @@ The server names the variable in its refusal — the compose log carries the
 exact line:
 
 ```bash
-docker compose -f deploy/docker-compose.core.yml logs oxsum-migrate oxsum
+docker compose --env-file deploy/.env -f deploy/docker-compose.core.yml logs oxsum-migrate oxsum
 ```
 
 - `OXSUM_* … are set together, or none` — a half-configured set (mailer,
@@ -221,7 +226,7 @@ docker compose -f deploy/docker-compose.core.yml logs oxsum-migrate oxsum
   touching the database:
 
   ```bash
-  docker compose -f deploy/docker-compose.core.yml run --rm --no-deps \
+  docker compose --env-file deploy/.env -f deploy/docker-compose.core.yml run --rm --no-deps \
     oxsum --check-config
   ```
 

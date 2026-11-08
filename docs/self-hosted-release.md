@@ -13,7 +13,7 @@ and "a version is published". Publishing (`release.yml`) and deploying
 | 1 | `release-candidate.yml` — fmt, clippy, lib/doc tests, wasm build, frontend build, verify-consumer, candidate image build, manifest + checksums + notes draft | manual `gh workflow run release-candidate.yml -f sha=<sha>` | the exact promoted SHA |
 | 2 | `scripts/release-candidate-smoke.sh` — live smoke, including an exact version SHA assertion | candidate image job, automatically; repeatable locally | the image built in gate 1 |
 | 3 | `release.yml` — validate online provenance, upload the original image config/layer bytes, retain immutable digest receipt | manual dispatch with candidate run/attempt/source and explicit version | the saved candidate archive |
-| 4 | Explicit digest deployment and compatible rollback | N13.c pending; legacy `deploy.yml` fails closed before publication | an authorized immutable image reference |
+| 4 | `deploy.yml` — verify a published candidate digest, migrate/serve it and check readiness/version | separate authorized manual dispatch | immutable digest plus candidate run/attempt/source |
 
 Gate 1 fails closed unless `check-candidate-ci.py` finds a successful
 completed `ci.yml` run on exactly the candidate SHA and main branch. Every
@@ -69,7 +69,10 @@ Per step:
   reported SHA, migration, readiness, business setup and customer invitation.
   **Never pushed**: no registry login exists in this workflow. The tested image
   is exported as `candidate-image.tar.gz`; `docker load` restores the exact
-  bytes for repeat validation. `candidate-smoke.log` records the executed run.
+  bytes for repeat validation. `candidate-smoke.log` records the executed run;
+  `candidate-runtime-version.json` retains the actual `/api/v1/version` response
+  after readiness and source assertions. Its hashed bytes bind package/source/
+  schema identity required by digest deployment.
 - **manifest** — version 2 [`candidate-manifest.json`](roadmap/operator-launch/CANDIDATE-FORMAT.md)
   records source and workflow revisions, run/attempt, required gates, image
   config ID/platform/source label and SDK name/version/SHA-512 integrity.
@@ -102,7 +105,7 @@ verify-consumer job covers the SDK on the same SHA. To repeat it locally after
 loading the candidate-image artifact:
 
 ```bash
-OXSUM_IMAGE_TAG=sha-<sha> SMOKE_EXPECTED_SHA=<sha> SMOKE_BUILD=0 scripts/release-candidate-smoke.sh
+OXSUM_IMAGE_REF=ghcr.io/allurecurtain/oxsum:sha-<sha> SMOKE_EXPECTED_SHA=<sha> SMOKE_BUILD=0 scripts/release-candidate-smoke.sh
 ```
 
 It asserts, in order: `--check-config` parses the env; `--migrate-only`
@@ -153,13 +156,14 @@ external/limitation decisions are satisfied:
    It creates only the explicit version tag, with no implicit `latest` or SHA tag.
 4. Retain `image-promotion-receipt` alongside the original candidate bundle. It
    names the archive hash, image config ID, platform and immutable registry
-   reference. Use that digest as the deployment input when N13.c is integrated.
+   reference. Use that digest as the separate deployment input.
 
-The legacy `deploy.yml` caller has no candidate selectors and now refuses before
-publication or its SSH job. Its compatible callable schema is retained solely
-until N13.c replaces the combined publish/deploy path. Do not dispatch it as a
-rollback mechanism. SDK publication, digest deployment and rollback rehearsal
-remain separate N13 work; image promotion alone does not close J14.
+The `deploy.yml` workflow verifies the explicit published digest and requires
+candidate runtime evidence before its SSH stage. It never calls Release or
+builds an image. See [the deployment and rollback runbook](self-hosted-upgrade.md)
+for its prerequisites, trusted plan, readiness/version checks and compatibility
+rules. SDK publication and final actual-candidate deployment/rollback acceptance
+remain separate N13 work; tooling alone does not close J14.
 
 ## Image promotion checks and receipt
 

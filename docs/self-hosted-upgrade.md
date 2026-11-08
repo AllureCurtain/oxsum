@@ -8,7 +8,9 @@ pre-upgrade dump — migrations are one-way, and this runbook exists because
 The rule that shapes everything below: **the newest binary migrates, and
 migrations are forward-only.** A restored dump of an older release migrates
 again — `oxsum --migrate-only` is idempotent — but there is no path that
-*un*-applies a migration. A rollback is a restore, never an in-place revert.
+*un*-applies a migration. A schema-changing rollback requires a restore. A retained artifact with the
+exact same schema may be restarted only after the operator has also checked
+behavior and data compatibility; equal schema alone does not prove that policy.
 
 ## Before you upgrade
 
@@ -29,14 +31,14 @@ binary will migrate to.
 
 ```bash
 # Point the deployment at the new image.
-$EDITOR deploy/.env          # OXSUM_IMAGE_TAG=v0.2.0  (or sha-<sha>)
+$EDITOR deploy/.env          # OXSUM_IMAGE_REF=ghcr.io/allurecurtain/oxsum@sha256:<verified-digest>
 
-docker compose -f deploy/docker-compose.core.yml pull
-docker compose -f deploy/docker-compose.core.yml run --rm oxsum-migrate
+docker compose --env-file deploy/.env -f deploy/docker-compose.core.yml pull
+docker compose --env-file deploy/.env -f deploy/docker-compose.core.yml run --rm oxsum-migrate
 # expect: schema migrated to <new version>
 
-docker compose -f deploy/docker-compose.core.yml up -d
-docker compose -f deploy/docker-compose.core.yml ps
+docker compose --env-file deploy/.env -f deploy/docker-compose.core.yml up -d
+docker compose --env-file deploy/.env -f deploy/docker-compose.core.yml ps
 ```
 
 `up -d` recreates `oxsum` on the new image; the running container drains on
@@ -63,12 +65,89 @@ schema leads, the service follows. Do not `docker compose up` past it by
 starting `oxsum` alone; wait on the migrator's log:
 
 ```bash
-docker compose -f deploy/docker-compose.core.yml logs -f oxsum-migrate
+docker compose --env-file deploy/.env -f deploy/docker-compose.core.yml logs -f oxsum-migrate
 ```
+
+## Managed host deployment and compatible rollback (#810)
+
+The manual Deploy workflow is independent of Release. It takes an explicit
+`ghcr.io/allurecurtain/oxsum@sha256:<digest>`, source SHA and successful candidate
+run/attempt. It downloads and validates the candidate online, requires observed
+runtime version evidence, checks registry config/layer identity and produces a
+trusted plan. It has only Actions/content/package read permissions; it cannot
+build or publish. The target must have Linux Docker with `image save --platform` support
+(API 1.48+), Python 3.10+, GHCR pull
+authority, `/opt/oxsum/oxsum.env` and a private mode-0700
+`/opt/oxsum/deployment-state`. Pin the host key in `DEPLOY_KNOWN_HOSTS`; the
+workflow never trusts an unauthenticated `ssh-keyscan` result.
+
+For direct operation, first prepare the plan on a trusted operator machine:
+
+```bash
+python3 scripts/deployment_plan.py /path/to/candidate-bundle \
+  --sha <source-sha> --run <candidate-run> --attempt <attempt> \
+  --image-ref ghcr.io/allurecurtain/oxsum@sha256:<digest> \
+  --output /new/deployment-plan.json
+```
+
+Transfer that plan and the reviewed helper sources through an authenticated
+channel. A plan is a transport record, not a signature: do not accept an edited
+or third-party plan as provenance. The workflow creates and transfers it in the
+same trusted job. On the intended Linux host:
+
+```bash
+python3 scripts/deploy-candidate.py deploy --plan /trusted/deployment-plan.json \
+  --env-file /opt/oxsum/oxsum.env --state-directory /opt/oxsum/deployment-state \
+  --port 3001 --receipt /new/deployment-receipt.json
+```
+
+The helper pulls the digest and saves it to check actual config/platform/source
+and layer bytes before any downtime. It snapshots the operator environment once
+for both containers, runs config preflight, stops the managed service, migrates
+with that exact digest, starts it and checks both `/readyz` and all three version
+fields (`gitSha`, package `version`, `schemaVersion`). It also checks the landed
+container's immutable image reference. A successful receipt and current/previous
+state are retained privately. The operator file hash pins the database/key
+configuration without logging its contents. The helper refuses an unmanaged
+existing `oxsum` container; it never adopts one by guessing its provenance.
+
+A failed migration, start or readiness check creates no success receipt and
+never triggers automatic rollback. The service may remain stopped after a
+migration failure; inspect the host privately and recover explicitly. A failed
+post-start verification can leave the new container running but unaccepted.
+Retained state remains the last accepted deployment, so a subsequent command
+refuses drift rather than pretending the failure succeeded. Back up before any
+upgrade, and resolve the failure before resuming managed deployment.
+
+To move a legacy unmanaged service to this path, first complete its backup and
+restoration rehearsal, prepare the verified replacement plan, then explicitly
+stop/remove the old container during the authorized maintenance window. Preserve
+its image reference, environment and backup separately. Run the helper as the
+first managed deployment; it records no invented previous receipt. Until a
+second managed deployment succeeds, managed rollback has no retained predecessor.
+
+For a **same-schema** retained predecessor, the operator must confirm behavior
+compatibility. No environment/database/key change is allowed across the current
+and previous successful receipts:
+
+```bash
+python3 scripts/deploy-candidate.py rollback \
+  --image-ref ghcr.io/allurecurtain/oxsum@sha256:<retained-previous-digest> \
+  --source-sha <retained-previous-source-sha> --confirm-compatible-rollback \
+  --env-file /opt/oxsum/oxsum.env --state-directory /opt/oxsum/deployment-state \
+  --port 3001 --receipt /new/rollback-receipt.json
+```
+
+This selects only the stored previous artifact, pulls it by digest, and repeats
+all config/migration/readiness/version checks. The migration command is a no-op
+at the same schema. A mismatched schema is refused: `/readyz` requires exact
+migration-version equality, even when a newer schema is merely additive. Follow
+the separate-database restoration procedure below for schema changes. No tool
+here performs an automatic down migration or restores over a live database.
 
 ## Rollback
 
-A rollback restores the pre-upgrade dump and pins the old image tag. The
+A schema-changing rollback restores the pre-upgrade dump and pins the old image digest. The
 database *contents* come back to the backup's instant — everything written
 since is gone, which is why the backup is step 1, not a nicety.
 
@@ -82,14 +161,14 @@ scripts/restore.sh backups/oxsum-backup-<utc>-*.manifest.json oxsum-rollback
 #    image expects).
 DATABASE_URL=postgres://postgres:<password>@localhost:5432/oxsum-rollback \
   docker run --rm --env-file deploy/.env \
-    ghcr.io/allurecurtain/oxsum:<old-tag> --migrate-only
+    ghcr.io/allurecurtain/oxsum@sha256:<retained-old-digest> --migrate-only
 
 # 3. Point the deployment at the restored database and the old image.
 $EDITOR deploy/.env
-#   OXSUM_IMAGE_TAG=<old-tag>
+#   OXSUM_IMAGE_REF=ghcr.io/allurecurtain/oxsum@sha256:<retained-old-digest>
 #   POSTGRES_DB=oxsum-rollback
 
-docker compose -f deploy/docker-compose.core.yml up -d
+docker compose --env-file deploy/.env -f deploy/docker-compose.core.yml up -d
 curl -s http://127.0.0.1:3000/api/v1/version    # gitSha back to the old build
 ```
 

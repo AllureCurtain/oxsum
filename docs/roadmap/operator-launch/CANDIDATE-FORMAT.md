@@ -21,7 +21,11 @@ and future registry manifest digest are separate identities.
 - `sdk`: `tarball` (relative file), `name` (`verify-oxsum-bill`), `version` and
   `integrity` (npm SHA-512 SRI of those exact compressed bytes). This is the
   same file installed in the clean consumer; no second pack is permitted.
-- `evidence`: relative `fullCi`, `smokeLog`, `consumerLog` files. Full CI names
+- `evidence`: relative `fullCi`, `smokeLog`, `consumerLog` files. New candidate
+  runs also retain `runtimeVersion`, the actual readiness-checked
+  `/api/v1/version` JSON (`data.gitSha`, `data.version`, `data.schemaVersion`).
+  Version-2 bundles without this optional field remain valid for promotion, but
+  accepted digest deployment requires it and refuses historical missing evidence. Full CI names
   an executed successful main run on sourceSha, including all integration
   shards, engine/process-shared suites and real WASM/frontend builds.
 - `artifacts`: a map from every retained relative artifact/notes path to
@@ -45,8 +49,8 @@ workflow or a local JSON assertion cannot replace that provenance.
 Older version-1 bundles must be regenerated; they are not silently promoted.
 Every rebuild is a new artifact requiring validation. Promotion consumes these
 bytes and records the separate registry digest after upload. Image promotion is implemented by `scripts/promote-candidate.py` (#801).
-Digest deployment and readiness/source checks remain a separate N13 child and
-require their action-specific authority.
+Digest deployment and readiness/source/schema checks are implemented by N13.c
+(#810); execution still requires its action-specific authority.
 
 Docker's containerd image store can report an OCI index digest as `.Id`, while
 classic Docker reports the config ID there. The manifest deliberately hashes the
@@ -90,3 +94,27 @@ conflicts immediately before tagging and checks the final tag after pull.
 Direct or external writers must observe the same operator exclusion. Fixture
 mode permits only `127.0.0.1:<port>` and does not contact GitHub or certify the
 fixture's asserted CI. Production always uses online provenance and GHCR.
+
+
+## Deployment plan and retained state (#810)
+
+`deployment_plan.py` freezes and validates the candidate online, requires its
+observed `runtimeVersion` artifact and verifies the selected fixed GHCR digest
+against original config/layer bytes. Registry authority is read-only. The plan
+records version 1, `verified-candidate`, exact source/repository/workflow,
+manifest/archive hashes, image reference/config/platform/top-level/platform
+manifest digests, observed runtime fields and preparation time.
+
+The plan is not signed. Only accept it through the same trusted authenticated
+channel that ran its preparation; schema validation alone cannot authenticate a
+locally edited record. Deploy's workflow prepares and transfers it in one job.
+Runtime execution checks the pulled saved image and exact readiness/version,
+then writes a successful receipt with the full plan, actual runtime, target
+container/port, operator-environment hash, prior digest and completion time.
+Private mode-0700 state retains active/previous receipts and a host process lock.
+
+A same-schema rollback requires explicit compatibility confirmation, both
+successful receipts, exact previous digest/source selection, unchanged current/
+previous operator environment and exact current runtime. Otherwise restore to a
+separate database. A local HTTP/Docker state fixture proves only orchestration
+branches; it cannot provide `verified-candidate` acceptance for a real runtime.
