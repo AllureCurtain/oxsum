@@ -75,7 +75,13 @@ impl Db {
         wallet.lock_append_in(&mut tx).await?;
         if let Some(effect) = apply::effect_in(&mut tx, wallet, request.refund_id).await? {
             let source = evidence::source_in(&mut tx, wallet, request.refund_id).await?;
-            evidence::event_in(&mut tx, &source, request.event_receipt_id, false).await?;
+            evidence::event_in(
+                &mut tx,
+                &source,
+                request.event_receipt_id,
+                request.event_receipt_id == effect.event_receipt_id,
+            )
+            .await?;
             let row=sqlx::query("SELECT source_revision,source FROM oxsum.nonplan_refund_effects WHERE refund_id=$1")
                 .bind(request.refund_id).fetch_one(&mut *tx).await?;
             let report = NonplanRefundRecovery {

@@ -2,6 +2,8 @@
 
 use std::time::Duration;
 
+use doubleentry::storage::postgres::PostgresError;
+use doubleentry::{Direction, Layer};
 use serde::Serialize;
 use sha2::{Digest, Sha256};
 use sqlx::{Postgres, Row, Transaction};
@@ -9,6 +11,10 @@ use tokio::time::Instant;
 use uuid::Uuid;
 
 use crate::{VerifiedMerchantEvent, Wallet, WalletError};
+
+// Bounded source inspection while holding append ownership. A larger history
+// retains Cash in suspense instead of guessing an unverified take-back.
+const ACTIVITY_LIMIT: usize = 20_000;
 
 /// Claim a source without parking a pooled connection behind independent grants.
 /// The caller rolls back on `PoolBusy`; retained event/request retries remain safe.
@@ -267,7 +273,12 @@ async fn inspect_source_in(
     }
     proof.entry_id = Some(id);
     let hash: String = rows[0].try_get("hash")?;
-    if wallet.verified_source_hash(id).await?.as_deref() != Some(hash.as_str()) {
+    if wallet
+        .verified_source_hash_in(&mut **tx, id)
+        .await?
+        .as_deref()
+        != Some(hash.as_str())
+    {
         return Ok(proof.uncertain("originalEntryHashUnproven"));
     }
     proof.content_hash = Some(hash);
@@ -280,13 +291,21 @@ async fn inspect_source_in(
     if reversed {
         return Ok(proof.uncertain("originalEntryReversed"));
     }
-    let postings = sqlx::query(&format!("SELECT a.path,p.direction,p.amount_minor,p.currency,p.layer FROM ledger_{tenant}.postings p JOIN ledger_{tenant}.accounts a USING(account_index) WHERE p.entry_id=$1"))
+    let postings = sqlx::query(&format!("SELECT a.path,p.account_index,p.direction,p.amount_minor,p.currency,p.layer FROM ledger_{tenant}.postings p JOIN ledger_{tenant}.accounts a USING(account_index) WHERE p.entry_id=$1"))
         .bind(id).fetch_all(&mut **tx).await?;
     let mut cash = 0i64;
     for posting in postings {
         let minor: i64 = posting.try_get("amount_minor")?;
         let path: String = posting.try_get("path")?;
         let direction: String = posting.try_get("direction")?;
+        if wallet
+            .source_account(&path)
+            .map(|account| account.index())
+            .ok()
+            != u32::try_from(posting.try_get::<i32, _>("account_index")?).ok()
+        {
+            return Ok(proof.uncertain("originalAccountIdentityUnproven"));
+        }
         if minor <= 0
             || posting.try_get::<String, _>("currency")? != "USD"
             || posting.try_get::<String, _>("layer")? != "settled"
@@ -412,7 +431,7 @@ async fn inspect_source_in(
         }
         if cash > 0 {
             let id = *crate::entry_id_for(&format!("dispute-recharge/{prior_id}")).as_uuid();
-            proof.prior_returns.push(serde_json::json!({"disputeId":prior_id,"entryId":id,"contentHash":wallet.verified_source_hash(id).await?,"cashMinor":cash}));
+            proof.prior_returns.push(serde_json::json!({"disputeId":prior_id,"entryId":id,"contentHash":wallet.verified_source_hash_in(&mut **tx, id).await?,"cashMinor":cash}));
         }
         if cash == 0
             && (prior.try_get::<String, _>("state")? == "lost"
@@ -433,18 +452,86 @@ async fn inspect_source_in(
     }
     proof.ledger_boundary=sqlx::query_scalar(&format!("SELECT MAX(log_index) FROM ledger_{tenant}.entries WHERE $1::bigint IS NULL OR log_index<$1"))
         .bind(before).fetch_one(&mut **tx).await?;
-    let activity:serde_json::Value=sqlx::query_scalar(&format!("SELECT COALESCE(jsonb_agg(jsonb_build_object('id',entry_id,'hash',hash,'position',log_index,'debit',debit,'pending',pending) ORDER BY log_index),'[]'::jsonb) FROM (SELECT e.entry_id,encode(e.content_hash,'hex') AS hash,e.log_index,SUM(p.amount_minor) FILTER(WHERE p.layer='settled' AND p.direction='D' AND e.log_index>$1) AS debit,SUM(CASE WHEN p.direction='D' THEN p.amount_minor ELSE -p.amount_minor END) FILTER(WHERE p.layer='pending') AS pending FROM ledger_{tenant}.postings p JOIN ledger_{tenant}.entries e USING(entry_id) JOIN ledger_{tenant}.accounts a USING(account_index) WHERE e.log_index IS NOT NULL AND ($2::bigint IS NULL OR e.log_index<$2) AND a.path='Liabilities:Wallet' GROUP BY e.entry_id,e.content_hash,e.log_index) q"))
-        .bind(position).bind(before).fetch_one(&mut **tx).await?;
+    let wallet_account = wallet.source_account("Liabilities:Wallet")?;
+    // Verify every entry before the boundary: selecting only current Wallet
+    // postings would miss a corrupted posting whose account ID was changed.
+    let ids: Vec<Uuid> = sqlx::query_scalar(&format!("SELECT e.entry_id FROM ledger_{tenant}.entries e WHERE e.log_index IS NOT NULL AND ($1::bigint IS NULL OR e.log_index<$1) ORDER BY e.log_index LIMIT $2"))
+        .bind(before).bind((ACTIVITY_LIMIT + 1) as i64).fetch_all(&mut **tx).await?;
+    if ids.len() > ACTIVITY_LIMIT {
+        return Ok(proof.uncertain("walletActivityReviewLimit"));
+    }
+    let mut activity = Vec::new();
+    let mut pending = 0i64;
+    for chunk in ids.chunks(ACTIVITY_LIMIT) {
+        let entries = match crate::ledger_source::entries_in(&mut **tx, tenant, chunk).await {
+            Ok(entries) => entries,
+            Err(PostgresError::Integrity(_) | PostgresError::Malformed(_)) => {
+                return Ok(proof.uncertain("walletActivityUnproven"));
+            }
+            Err(error) => return Err(error.into()),
+        };
+        if entries.len() != chunk.len() {
+            return Ok(proof.uncertain("walletActivityUnproven"));
+        }
+        for source in entries {
+            let stored = match source.verification {
+                Ok(stored) => stored,
+                Err(PostgresError::Integrity(_) | PostgresError::Malformed(_)) => {
+                    return Ok(proof.uncertain("walletActivityUnproven"));
+                }
+                Err(error) => return Err(error.into()),
+            };
+            let Some(index) = stored.index else {
+                return Ok(proof.uncertain("walletActivityUnproven"));
+            };
+            let index = i64::try_from(index.get()).map_err(crate::error::invalid)?;
+            let mut entry_debit = 0i64;
+            let mut entry_pending = 0i64;
+            for posting in stored.entry.postings() {
+                if posting.account != wallet_account {
+                    continue;
+                }
+                let amount = posting.amount.to_minor();
+                if amount <= 0 || posting.currency.code() != "USD" {
+                    return Ok(proof.uncertain("walletActivityUnproven"));
+                }
+                if posting.layer == Layer::Settled
+                    && posting.direction == Direction::Debit
+                    && index > position
+                {
+                    entry_debit = entry_debit
+                        .checked_add(amount)
+                        .ok_or_else(|| crate::error::invalid("Wallet debit total overflows"))?;
+                }
+                if posting.layer == Layer::Pending {
+                    entry_pending = entry_pending
+                        .checked_add(if posting.direction == Direction::Debit {
+                            amount
+                        } else {
+                            -amount
+                        })
+                        .ok_or_else(|| {
+                            crate::error::invalid("Wallet reservation total overflows")
+                        })?;
+                }
+            }
+            proof.subsequent_wallet_debit_minor = proof
+                .subsequent_wallet_debit_minor
+                .checked_add(entry_debit)
+                .ok_or_else(|| crate::error::invalid("Wallet debit total overflows"))?;
+            pending = pending
+                .checked_add(entry_pending)
+                .ok_or_else(|| crate::error::invalid("Wallet reservation total overflows"))?;
+            activity.push(serde_json::json!({"id":source.id,"hash":stored.content_hash.to_hex(),"position":index,"debit":entry_debit,"pending":entry_pending}));
+        }
+    }
     proof.wallet_activity_sha256 = Some(
         Sha256::digest(serde_json::to_vec(&activity).map_err(crate::error::invalid)?)
             .iter()
             .map(|b| format!("{b:02x}"))
             .collect(),
     );
-    let used = sqlx::query(&format!("SELECT COALESCE(SUM(p.amount_minor) FILTER(WHERE p.layer='settled' AND p.direction='D' AND e.log_index>$1),0)::bigint AS debits,COALESCE(SUM(CASE WHEN p.direction='D' THEN p.amount_minor ELSE -p.amount_minor END) FILTER(WHERE p.layer='pending'),0)::bigint AS reserved FROM ledger_{tenant}.postings p JOIN ledger_{tenant}.entries e USING(entry_id) JOIN ledger_{tenant}.accounts a USING(account_index) WHERE e.log_index IS NOT NULL AND ($2::bigint IS NULL OR e.log_index<$2) AND a.path='Liabilities:Wallet'"))
-        .bind(position).bind(before).fetch_one(&mut **tx).await?;
-    proof.subsequent_wallet_debit_minor = used.try_get("debits")?;
-    proof.pending_wallet_minor = used.try_get::<i64, _>("reserved")?.max(0);
+    proof.pending_wallet_minor = pending.max(0);
     proof.wallet_minor = proof
         .source_wallet_minor
         .saturating_sub(proof.subsequent_wallet_debit_minor)
@@ -487,7 +574,10 @@ async fn prior_cash_in(
         || rows[0].try_get::<Vec<u8>, _>("idempotency_key")? != key.as_bytes()
         || rows[0].try_get::<Option<Uuid>, _>("reverses")?.is_some()
         || rows[0].try_get::<Option<i64>, _>("log_index")?.is_none()
-        || wallet.verified_source_hash(id).await?.is_none()
+        || wallet
+            .verified_source_hash_in(&mut **tx, id)
+            .await?
+            .is_none()
     {
         return Ok(None);
     }
@@ -500,13 +590,21 @@ async fn prior_cash_in(
     if reversed {
         return Ok(None);
     }
-    let rows=sqlx::query(&format!("SELECT a.path,p.direction,p.amount_minor,p.currency,p.layer FROM ledger_{tenant}.postings p JOIN ledger_{tenant}.accounts a USING(account_index) WHERE p.entry_id=$1"))
+    let rows=sqlx::query(&format!("SELECT a.path,p.account_index,p.direction,p.amount_minor,p.currency,p.layer FROM ledger_{tenant}.postings p JOIN ledger_{tenant}.accounts a USING(account_index) WHERE p.entry_id=$1"))
         .bind(id).fetch_all(&mut **tx).await?;
     let mut cash = 0i64;
     let mut allocated = 0i64;
     for row in rows {
         let path: String = row.try_get("path")?;
         let direction: String = row.try_get("direction")?;
+        if wallet
+            .source_account(&path)
+            .map(|account| account.index())
+            .ok()
+            != u32::try_from(row.try_get::<i32, _>("account_index")?).ok()
+        {
+            return Ok(None);
+        }
         let minor: i64 = row.try_get("amount_minor")?;
         if minor <= 0
             || row.try_get::<String, _>("currency")? != "USD"

@@ -71,6 +71,15 @@ For missing historical Cash, a confirmed exact source appends the complete
 held, repayment-origin or uncertain amounts remain `Equity:Adjustments` suspense.
 Later Wallet credits cannot replenish the original source.
 
+Source inspection verifies every sequenced entry before its selected boundary,
+including the canonical bytes of intervening Wallet activity, using the caller's
+database connection. It is bounded to 20,000 entries per customer ledger. A larger
+history is `walletActivityReviewLimit`: a fresh confirmed refund still records
+complete Cash with review suspense, and historical Wallet restitution refuses.
+This limit is not proof that the original funding was spent or absent. Retain
+the original evidence for explicit source investigation; splitting the refund
+or changing its identity cannot establish a stronger source bound.
+
 For a verified legacy `Dr Wallet / Cr Cash` entry, preserve its ID, key, hash,
 booking date and note pointer. Compute the justified original Wallet take-back
 immediately before that entry's sequenced position, including outstanding holds

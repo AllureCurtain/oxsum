@@ -897,6 +897,30 @@ async fn wrong_wallet_forged_receipt_and_customer_session_cannot_apply_recovery(
             .await
             .is_err()
     );
+    for forged in [
+        MerchantEventReceipt {
+            kind: MerchantEventKind::RefundFailed,
+            ..event.clone()
+        },
+        MerchantEventReceipt {
+            payment_id: None,
+            ..event.clone()
+        },
+        MerchantEventReceipt {
+            merchant_id: Uuid::new_v4(),
+            ..event.clone()
+        },
+    ] {
+        assert!(
+            w.db.apply_refund_event(&w.wallet, &forged, today())
+                .await
+                .is_err()
+        );
+    }
+    assert_eq!(
+        current(&w, refund.refund_id).await.state,
+        "provider_pending"
+    );
     let email = format!("{}@example.test", Uuid::new_v4());
     w.db.register(NewUser {
         email: email.clone(),
@@ -1221,4 +1245,240 @@ async fn historical_restitution_rolls_back_when_recovery_audit_fails() {
     assert_eq!(report.effect.unwrap().cash_entry_hash, hash);
     assert_eq!(w.wallet.available().await.unwrap(), TOTAL);
     assert_eq!(w.wallet.log_size().await.unwrap(), log + 1);
+}
+
+#[tokio::test]
+async fn callbacks_and_historical_recovery_complete_with_one_shared_connection() {
+    let Some(w) = world().await else { return };
+    let live_order = paid(&w, PaymentOrderPurpose::Bundle, true).await;
+    let live_refund = reserve(&w, &live_order, None, true).await;
+    let live_receipt = signed_receipt(&w, &live_order, &live_refund).await;
+    let old_order = paid(&w, PaymentOrderPurpose::WalletTopup, true).await;
+    // Spend both original purchased sources and the bundle promotion, then
+    // reproduce the legacy take-back from unrelated replacement funds.
+    w.wallet
+        .hold("all-original-spent", "", TOTAL * 2 + 1_000_000, today())
+        .await
+        .unwrap();
+    w.wallet
+        .settle("all-original-spent", "", TOTAL * 2 + 1_000_000, today())
+        .await
+        .unwrap();
+    w.wallet
+        .top_up("later-replacement", TOTAL, today())
+        .await
+        .unwrap();
+    let old_refund = reserve(&w, &old_order, None, true).await;
+    let old_receipt = signed_receipt(&w, &old_order, &old_refund).await;
+    let old_hash = old_cash(&w, old_refund.refund_id, TOTAL).await;
+    sqlx::query("UPDATE oxsum.refunds SET state='succeeded' WHERE refund_id=$1")
+        .bind(old_refund.refund_id)
+        .execute(w.db.pool())
+        .await
+        .unwrap();
+    let url = oxsum_testkit::suite_db_url("nonplan_refunds").unwrap();
+    let small = Db::connect(&url, 1).await.unwrap();
+    let wallet = Wallet::open_existing(small.pool().clone(), w.wallet.tenant_id())
+        .await
+        .unwrap();
+    let mut request = recovery(old_refund.refund_id, old_receipt.id);
+    let preview = tokio::time::timeout(
+        std::time::Duration::from_secs(10),
+        small.recover_nonplan_refund(&w.owner, &wallet, &request, false, today()),
+    )
+    .await
+    .expect("preview must use its one borrowed connection")
+    .unwrap();
+    assert_eq!(preview.wallet_to_restore_minor, TOTAL);
+    request.expected_revision = Some(preview.source_revision);
+    let (callback, recovered) = tokio::time::timeout(std::time::Duration::from_secs(10), async {
+        tokio::join!(
+            small.apply_refund_event(&wallet, &live_receipt, today()),
+            small.recover_nonplan_refund(&w.owner, &wallet, &request, true, today())
+        )
+    })
+    .await
+    .expect("distinct refund operations must not request nested pool connections");
+    callback.unwrap();
+    assert_eq!(recovered.unwrap().effect.unwrap().cash_entry_hash, old_hash);
+    let replay = tokio::time::timeout(
+        std::time::Duration::from_secs(10),
+        small.recover_nonplan_refund(&w.owner, &wallet, &request, true, today()),
+    )
+    .await
+    .expect("replay verification must use the borrowed connection")
+    .unwrap();
+    assert!(replay.already_applied);
+    assert_eq!(reported_cash(&w, None).await, TOTAL * 2);
+    assert_eq!(wallet.available().await.unwrap(), TOTAL);
+}
+
+#[tokio::test]
+async fn corrupted_original_or_historical_activity_cannot_authorize_wallet_changes() {
+    for historical in [false, true] {
+        let Some(w) = world().await else { return };
+        let order = paid(&w, PaymentOrderPurpose::WalletTopup, true).await;
+        let refund = reserve(&w, &order, None, true).await;
+        let receipt = signed_receipt(&w, &order, &refund).await;
+        let tampered = if historical {
+            w.wallet
+                .hold("historical-draw", "", 500_000, today())
+                .await
+                .unwrap();
+            let spent = w
+                .wallet
+                .settle("historical-draw", "", 500_000, today())
+                .await
+                .unwrap();
+            w.wallet
+                .top_up("another-source", 500_000, today())
+                .await
+                .unwrap();
+            old_cash(&w, refund.refund_id, TOTAL).await;
+            sqlx::query("UPDATE oxsum.refunds SET state='succeeded' WHERE refund_id=$1")
+                .bind(refund.refund_id)
+                .execute(w.db.pool())
+                .await
+                .unwrap();
+            spent.entry_id
+        } else {
+            oxsum_core::entry_id_for(&format!("payment-order:{}", order.order_id))
+        };
+        // Isolated test-only corruption retains the original content hash.
+        sqlx::query(&format!(
+            "UPDATE ledger_{}.entries SET description='tampered fixture' WHERE entry_id=$1",
+            w.wallet.tenant_id()
+        ))
+        .bind(tampered.as_uuid())
+        .execute(w.db.pool())
+        .await
+        .unwrap();
+        if historical {
+            let count = w.wallet.log_size().await.unwrap();
+            let report =
+                w.db.recover_nonplan_refund(
+                    &w.owner,
+                    &w.wallet,
+                    &recovery(refund.refund_id, receipt.id),
+                    false,
+                    today(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(report.status, "refused");
+            assert!(
+                report
+                    .refusal
+                    .unwrap()
+                    .contains("original-source bound is unproven")
+            );
+            assert_eq!(w.wallet.log_size().await.unwrap(), count);
+        } else {
+            apply(&w, &receipt).await;
+            let effect = current(&w, refund.refund_id).await.cash_effect.unwrap();
+            assert_eq!(
+                (
+                    effect.cash_minor,
+                    effect.wallet_minor,
+                    effect.suspense_minor
+                ),
+                (TOTAL, 0, TOTAL)
+            );
+            assert!(
+                effect
+                    .review_reasons
+                    .contains(&"originalEntryHashUnproven".into())
+            );
+            assert_eq!(w.wallet.available().await.unwrap(), TOTAL);
+        }
+    }
+}
+
+#[tokio::test]
+async fn migration_default_preserves_legacy_policy_and_ambiguous_receipt_refuses_recovery() {
+    let Some(w) = world().await else { return };
+    let order = paid(&w, PaymentOrderPurpose::WalletTopup, true).await;
+    let id = Uuid::new_v4();
+    sqlx::query("INSERT INTO oxsum.refunds(refund_id,order_id,organization_id,business_id,amount_minor,display_amount_minor,display_currency,reason,state,provider_payment_id,request_key,hyperswitch_body_id) SELECT $1,order_id,organization_id,business_id,amount_minor,display_amount_minor,display_currency,'legacy source fixture','requested',provider_payment_id,$2,true FROM oxsum.payment_orders WHERE order_id=$3")
+        .bind(id).bind(Uuid::new_v4().to_string()).bind(order.order_id).execute(w.db.pool()).await.unwrap();
+    let version: i16 =
+        sqlx::query_scalar("SELECT cash_policy_version FROM oxsum.refunds WHERE refund_id=$1")
+            .bind(id)
+            .fetch_one(w.db.pool())
+            .await
+            .unwrap();
+    assert_eq!(version, 0);
+    let refund =
+        w.db.resolve_order_refund(
+            &w.owner,
+            id,
+            RefundDecision::Approve,
+            Some("approve old source"),
+            &Uuid::new_v4().to_string(),
+        )
+        .await
+        .unwrap()
+        .0;
+    let mut body = event(&w, &order, &refund);
+    body.refund_id = None;
+    let payment_only =
+        w.db.receive_merchant_event(&w.context, &body, &[21; 32])
+            .await
+            .unwrap();
+    assert_eq!(payment_only.state, "accepted");
+    sqlx::query("UPDATE oxsum.refunds SET state='succeeded' WHERE refund_id=$1")
+        .bind(id)
+        .execute(w.db.pool())
+        .await
+        .unwrap();
+    let log = w.wallet.log_size().await.unwrap();
+    let report =
+        w.db.recover_nonplan_refund(
+            &w.owner,
+            &w.wallet,
+            &recovery(id, payment_only.id),
+            false,
+            today(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(report.status, "refused");
+    assert!(report.refusal.unwrap().contains("payment-only receipt"));
+    assert_eq!(w.wallet.log_size().await.unwrap(), log);
+    let exact = signed_receipt(&w, &order, &refund).await;
+    let mut request = recovery(id, exact.id);
+    let report =
+        w.db.recover_nonplan_refund(&w.owner, &w.wallet, &request, false, today())
+            .await
+            .unwrap();
+    assert_eq!(report.status, "proposed");
+    request.expected_revision = Some(report.source_revision);
+    let report =
+        w.db.recover_nonplan_refund(&w.owner, &w.wallet, &request, true, today())
+            .await
+            .unwrap();
+    assert_eq!(report.effect.unwrap().wallet_minor, TOTAL);
+    assert_eq!(w.wallet.available().await.unwrap(), 0);
+}
+
+#[tokio::test]
+async fn unique_forward_payment_only_receipt_replays_its_retained_identity() {
+    let Some(w) = world().await else { return };
+    let order = paid(&w, PaymentOrderPurpose::WalletTopup, true).await;
+    let refund = reserve(&w, &order, Some(1_000_000), true).await;
+    let mut body = event(&w, &order, &refund);
+    body.refund_id = None;
+    let receipt =
+        w.db.receive_merchant_event(&w.context, &body, &[29; 32])
+            .await
+            .unwrap();
+    apply(&w, &receipt).await;
+    let next = reserve(&w, &order, Some(1_500_000), true).await;
+    let log = w.wallet.log_size().await.unwrap();
+    apply(&w, &receipt).await;
+    assert_eq!(w.wallet.log_size().await.unwrap(), log);
+    assert!(current(&w, next.refund_id).await.cash_effect.is_none());
+    apply(&w, &signed_receipt(&w, &order, &next).await).await;
+    assert_eq!(reported_cash(&w, None).await, TOTAL);
+    assert_eq!(w.wallet.available().await.unwrap(), 0);
 }

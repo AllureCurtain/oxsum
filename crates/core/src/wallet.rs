@@ -1156,6 +1156,12 @@ impl Wallet {
         self.verified_source_hash_in(&mut connection, id).await
     }
 
+    /// Resolve an original-source account against this wallet's registered chart.
+    /// Canonical entry hashes bind account IDs rather than database path labels.
+    pub(crate) fn source_account(&self, path: &str) -> Result<AccountId, WalletError> {
+        find_account(&self.registry, path)
+    }
+
     /// Retain complete chargeback Cash outflow and only the proven Wallet part.
     /// The caller holds the source and ledger locks; no CreditLine debt is invented.
     pub(crate) async fn nonplan_dispute_in(
