@@ -86,13 +86,20 @@ async fn upgrade_retains_fulfilled_history_and_fences_pending_bundles_and_old_wr
             .unwrap();
     db.migrate().await.unwrap();
     db.migrate().await.unwrap();
-    let after: serde_json::Value = sqlx::query_scalar(
-        "SELECT to_jsonb(o)-'bundle_offer' FROM oxsum.payment_orders o WHERE order_id=$1",
-    )
-    .bind(fulfilled)
-    .fetch_one(db.pool())
-    .await
-    .unwrap();
+    let mut after: serde_json::Value =
+        sqlx::query_scalar("SELECT to_jsonb(o) FROM oxsum.payment_orders o WHERE order_id=$1")
+            .bind(fulfilled)
+            .fetch_one(db.pool())
+            .await
+            .unwrap();
+    // Newly introduced authority snapshots must remain absent on historical
+    // orders; every field that existed before the upgrade remains unchanged.
+    for column in ["bundle_offer", "plan_payment"] {
+        assert_eq!(
+            after.as_object_mut().unwrap().remove(column),
+            Some(serde_json::Value::Null)
+        );
+    }
     assert_eq!(before, after);
     assert!(db.bundle_catalog().await.unwrap().is_empty());
     assert!(

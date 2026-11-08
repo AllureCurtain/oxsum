@@ -146,6 +146,15 @@ async fn an_order_cannot_choose_its_customer_fee_currency_or_bonus() {
         .await
         .unwrap();
     assert_eq!(replay.order_id, order.order_id);
+    for fingerprint in [None, Some("0".repeat(64))] {
+        let mut altered = good.clone();
+        altered.expected_plan_quote = fingerprint;
+        assert!(matches!(
+            db.create_payment_order(&context, organization, &altered)
+                .await,
+            Err(WalletError::Conflict(_))
+        ));
+    }
     let tenant: String =
         sqlx::query_scalar("SELECT tenant_id FROM oxsum.organizations WHERE organization_id=$1")
             .bind(organization)
