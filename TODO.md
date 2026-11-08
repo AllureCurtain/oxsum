@@ -37,7 +37,7 @@ Updated: 2026-11-08
 - [ ] [#740](https://github.com/AllureCurtain/oxsum/issues/740) — N14: Real-provider certification remains; DeepSeek shared budget records 0/5 attempts and CNY 0.
 - [ ] [#741](https://github.com/AllureCurtain/oxsum/issues/741) — N15: Genuine PSP sandbox certification remains external pending; local payment/callback fixtures do not close that gate.
 - [ ] [#742](https://github.com/AllureCurtain/oxsum/issues/742) — N16: Job-clock fixture correction integrated (#773); reference capacity, fairness and eight-hour soak remain.
-- [ ] [#743](https://github.com/AllureCurtain/oxsum/issues/743) — N17: Sanitized diagnostics integrated in #825 (`22e2ad7`); #827 explicit private backup/restore implemented and tested, review/integration pending. Candidate upgrade, independent representative restore and compatible rollback remain.
+- [ ] [#743](https://github.com/AllureCurtain/oxsum/issues/743) — N17: Sanitized diagnostics integrated in #825 (`22e2ad7`); #827 explicit private backup/restore integrated (#832); #833 real development artifact upgrade/drain/restore/rollback and old/new offline proofs passed, review/integration pending. Candidate upgrade, independent representative restore and compatible rollback remain.
 - [ ] [#744](https://github.com/AllureCurtain/oxsum/issues/744) — N18: Final integrated candidate acceptance remains; no operator-launch candidate frozen; post-repair main CI is green, but exact full-CI/engine candidate evidence remains required.
 - [ ] [#745](https://github.com/AllureCurtain/oxsum/issues/745) — N19: Prepare both independent operator pilot kits; actual participants have not been supplied.
 - [ ] [#746](https://github.com/AllureCurtain/oxsum/issues/746) — N20: Complete publication/deployment tooling and isolated rehearsal; public actions and existing-service upgrades remain unperformed under this scope.
@@ -78,7 +78,9 @@ Updated: 2026-11-08
 
 - [x] [#819](https://github.com/AllureCurtain/oxsum/issues/819) — N17.a: Operator-only sanitized configuration/queue snapshot and explicit private-file collector implemented; 1,905 workspace checks and local redaction/authority fixtures passed; two independent reviews and final seven Rust/ten Python refinement checks passed; integrated in PR #825 (`22e2ad7`). Upgrade/restore/compatible rollback remain N17/J16.
 
-- [ ] [#827](https://github.com/AllureCurtain/oxsum/issues/827) — N17.b: Explicit target selection, private snapshot-bound portable manifests and fresh transactional restore implemented; ten fault checks, seven install/upgrade checks and isolated dual-PostgreSQL transport rehearsal passed. Review/integration pending; candidate upgrade/restore acceptance remains.
+- [x] [#827](https://github.com/AllureCurtain/oxsum/issues/827) — N17.b: Explicit target selection, private snapshot-bound portable manifests and fresh transactional restore implemented; ten fault checks, seven install/upgrade checks and isolated dual-PostgreSQL transport rehearsal passed. Integrated in PR #832 (`8d18170`); candidate upgrade/restore acceptance remains.
+
+- [ ] [#833](https://github.com/AllureCurtain/oxsum/issues/833) — N17.c: Explicit frozen native artifacts exercised real old/current schema upgrade, streamed SIGTERM drain, independent PostgreSQL restore, retained keys, same-schema rollback and three offline proof sets. Five boundary tests and complete development rehearsal passed; review/integration pending. Final candidate/representative J16 acceptance remains.
 
 - [x] [#723](https://github.com/AllureCurtain/oxsum/issues/723) — Serialized promo writers on the ledger append advisory lock before their promo row locks, fixing the post-merge hold/expiry deadlock; integrated in PR #724.
 

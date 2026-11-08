@@ -756,6 +756,12 @@ old bill evidence and new calls before shifting traffic. In-flight reservations
 and operation recovery require their own drill; a successful dump/restore count
 check does not exercise those workers.
 
+The [development artifact recovery rehearsal](artifact-recovery-rehearsal.md)
+accepts frozen old/current/compatible binaries and verifier tarball identities,
+then exercises two customers, real SIGTERM drain, upgrade, separate restore,
+retained keys, offline old/new proofs and new calls. It is a development tier,
+not final-candidate evidence.
+
 ### Migration ordering
 
 There is one ordering rule: **the newest binary migrates**. oxsum's own tables
