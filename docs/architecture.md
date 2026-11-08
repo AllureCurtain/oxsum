@@ -623,7 +623,8 @@ No ledger-engine schema or canonical encoding changes are required.
 `nonplan_refunds/{evidence,apply,recovery,types}.rs` owns exact receipt/source
 verification, transaction-owned Cash and the explicit local recovery boundary.
 Migration 0115 keeps immutable effects separate from the original approval/note
-state. The shared non-plan order-source lock precedes refund and append locks;
+state. Business and organization parent key-share locks precede the shared
+non-plan order-source, refund and append locks;
 actual Cash, source promotion cancellation, note projection, effect and applicable
 human finance audit commit together. External unapproved cash uses null-note
 source evidence and review suspense, never a fabricated staff actor.

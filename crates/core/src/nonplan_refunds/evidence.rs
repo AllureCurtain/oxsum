@@ -46,12 +46,38 @@ pub(super) fn revision(value: &serde_json::Value) -> Result<String, WalletError>
     )
 }
 
+/// Claim effect parent rows before the source/append locks. Deferred FK checks
+/// must never wait for a staff business lock while holding ledger ownership.
+pub(super) async fn parents_in(
+    tx: &mut Transaction<'_, Postgres>,
+    refund: Uuid,
+) -> Result<Uuid, WalletError> {
+    let (order, business, organization): (Uuid, Uuid, Uuid) = sqlx::query_as(
+        "SELECT order_id,business_id,organization_id FROM oxsum.refunds WHERE refund_id=$1",
+    )
+    .bind(refund)
+    .fetch_optional(&mut **tx)
+    .await?
+    .ok_or_else(|| WalletError::NotFound("unknown refund".into()))?;
+    sqlx::query("SELECT business_id FROM oxsum.businesses WHERE business_id=$1 FOR KEY SHARE")
+        .bind(business)
+        .fetch_one(&mut **tx)
+        .await?;
+    sqlx::query(
+        "SELECT organization_id FROM oxsum.organizations WHERE organization_id=$1 FOR KEY SHARE",
+    )
+    .bind(organization)
+    .fetch_one(&mut **tx)
+    .await?;
+    Ok(order)
+}
+
 pub(super) async fn source_in(
     tx: &mut Transaction<'_, Postgres>,
     wallet: &Wallet,
     refund: Uuid,
 ) -> Result<Source, WalletError> {
-    let row = sqlx::query("SELECT r.*,p.purpose,p.status,p.paid_at,p.organization_id AS order_organization,p.business_id AS order_business,p.merchant_id,p.merchant_version_id,p.provider_payment_id AS order_provider,o.tenant_id,n.credit_note_id,n.state AS note_state,n.entry_id AS note_entry,n.amount_minor AS note_amount,n.order_id AS note_order,n.organization_id AS note_organization,EXISTS(SELECT 1 FROM oxsum.finance_audit a WHERE a.audit_id=r.audit_ref AND a.business_id=r.business_id AND a.actor_user_id=r.resolved_by AND a.action='refund.approve' AND a.target=r.refund_id::text AND a.note_id=n.credit_note_id AND a.detail->>'orderId'=r.order_id::text AND (a.detail->>'amountMinor')::numeric=r.amount_minor) AS approved FROM oxsum.refunds r JOIN oxsum.payment_orders p USING(order_id) JOIN oxsum.organizations o ON o.organization_id=r.organization_id LEFT JOIN oxsum.credit_notes n ON n.refund_id=r.refund_id WHERE r.refund_id=$1 FOR UPDATE OF r")
+    let row = sqlx::query("SELECT r.*,p.purpose,p.status,p.paid_at,p.organization_id AS order_organization,p.business_id AS order_business,p.amount_minor AS order_amount,p.display_amount_minor AS order_display_amount,p.display_currency AS order_currency,p.merchant_id,p.merchant_version_id,p.provider_payment_id AS order_provider,o.tenant_id,n.credit_note_id,n.state AS note_state,n.entry_id AS note_entry,n.amount_minor AS note_amount,n.order_id AS note_order,n.organization_id AS note_organization,EXISTS(SELECT 1 FROM oxsum.finance_audit a WHERE a.audit_id=r.audit_ref AND a.business_id=r.business_id AND a.actor_user_id=r.resolved_by AND a.action='refund.approve' AND a.target=r.refund_id::text AND a.note_id=n.credit_note_id AND a.detail->>'orderId'=r.order_id::text AND (a.detail->>'amountMinor')::numeric=r.amount_minor) AS approved FROM oxsum.refunds r JOIN oxsum.payment_orders p USING(order_id) JOIN oxsum.organizations o ON o.organization_id=r.organization_id LEFT JOIN oxsum.credit_notes n ON n.refund_id=r.refund_id WHERE r.refund_id=$1 FOR UPDATE OF r")
         .bind(refund).fetch_optional(&mut **tx).await?
         .ok_or_else(|| WalletError::NotFound("unknown refund".into()))?;
     let organization: Uuid = row.try_get("organization_id")?;
@@ -63,6 +89,18 @@ pub(super) async fn source_in(
         || row.try_get::<Uuid, _>("order_business")? != business
     {
         return Err(review("wallet or order ownership differs"));
+    }
+    if amount <= 0
+        || amount > row.try_get::<i64, _>("order_amount")?
+        || row.try_get::<i64, _>("display_amount_minor")? <= 0
+        || row.try_get::<i64, _>("display_amount_minor")?
+            > row.try_get::<i64, _>("order_display_amount")?
+        || row.try_get::<String, _>("display_currency")?
+            != row.try_get::<String, _>("order_currency")?
+        || row.try_get::<Option<String>, _>("provider_payment_id")?
+            != row.try_get::<Option<String>, _>("order_provider")?
+    {
+        return Err(review("refund terms differ from the original paid order"));
     }
     let purpose: String = row.try_get("purpose")?;
     if !matches!(

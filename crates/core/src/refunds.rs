@@ -326,7 +326,8 @@ async fn refund_in(
 
 /// What one order has already refunded or reserved: succeeded refunds plus
 /// the requested/provider_pending reservations still holding a bound.
-/// Declined, failed and released rows have freed theirs.
+/// A retained actual cash effect still consumes its bound when a declined,
+/// failed or released approval state remains unchanged.
 async fn committed_minor_in(
     tx: &mut Transaction<'_, Postgres>,
     order_id: Uuid,

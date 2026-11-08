@@ -1482,3 +1482,73 @@ async fn unique_forward_payment_only_receipt_replays_its_retained_identity() {
     assert_eq!(reported_cash(&w, None).await, TOTAL);
     assert_eq!(w.wallet.available().await.unwrap(), 0);
 }
+
+#[tokio::test]
+async fn callback_claims_parent_rows_before_holding_the_source_or_append_lock() {
+    use doubleentry::LedgerId;
+    use doubleentry::storage::postgres::PostgresStore;
+    for parent in ["business", "organization"] {
+        let Some(w) = world().await else { return };
+        let order = paid(&w, PaymentOrderPurpose::WalletTopup, true).await;
+        let refund = reserve(&w, &order, None, true).await;
+        let receipt = signed_receipt(&w, &order, &refund).await;
+        let store = PostgresStore::<6>::new(
+            w.db.pool().clone(),
+            LedgerId::new(format!("tenant-{}", w.wallet.tenant_id())).unwrap(),
+        )
+        .in_schema(&format!("ledger_{}", w.wallet.tenant_id()));
+        let mut pin = w.db.pool().begin().await.unwrap();
+        if parent == "business" {
+            sqlx::query("SELECT business_id FROM oxsum.businesses WHERE singleton FOR UPDATE")
+                .fetch_one(&mut *pin)
+                .await
+                .unwrap();
+        } else {
+            sqlx::query("SELECT organization_id FROM oxsum.organizations WHERE organization_id=$1 FOR UPDATE").bind(w.org).fetch_one(&mut *pin).await.unwrap();
+        }
+        let pid: i32 = sqlx::query_scalar("SELECT pg_backend_pid()")
+            .fetch_one(&mut *pin)
+            .await
+            .unwrap();
+        let db = w.db.clone();
+        let wallet = w.wallet.clone();
+        let callback =
+            tokio::spawn(async move { db.apply_refund_event(&wallet, &receipt, today()).await });
+        tokio::time::timeout(std::time::Duration::from_secs(10),async {
+            loop {
+                let blocked:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM pg_stat_activity WHERE datname=current_database() AND $1=ANY(pg_blocking_pids(pid)))").bind(pid).fetch_one(w.db.pool()).await.unwrap();
+                if blocked {break;}
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+        }).await.expect("callback reaches the controlled parent lock");
+        let source: bool =
+            sqlx::query_scalar("SELECT pg_try_advisory_xact_lock(hashtextextended($1,0))")
+                .bind(format!("oxsum.nonplan-return:{}", order.order_id))
+                .fetch_one(&mut *pin)
+                .await
+                .unwrap();
+        let append: bool = sqlx::query_scalar("SELECT pg_try_advisory_xact_lock($1)")
+            .bind(store.append_lock())
+            .fetch_one(&mut *pin)
+            .await
+            .unwrap();
+        assert!(
+            source && append,
+            "waiting for {parent} must not hold source or append ownership"
+        );
+        pin.rollback().await.unwrap();
+        tokio::time::timeout(std::time::Duration::from_secs(10), callback)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            current(&w, refund.refund_id)
+                .await
+                .cash_effect
+                .unwrap()
+                .wallet_minor,
+            TOTAL
+        );
+    }
+}
