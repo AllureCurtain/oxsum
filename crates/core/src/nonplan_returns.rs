@@ -407,26 +407,21 @@ async fn inspect_source_in(
     for prior in previous {
         let prior_id: Uuid = prior.try_get("dispute_id")?;
         let expected: i64 = prior.try_get("amount_minor")?;
-        let Some(cash) = prior_cash_in(tx, wallet, prior_id, expected).await? else {
+        let Some(prior_cash) = prior_cash_in(tx, wallet, prior_id, expected).await? else {
             return Ok(proof.uncertain("priorChargebackUnproven"));
         };
+        let cash = prior_cash.cash;
         if cash > 0
-            && let Some(upper) = before
+            && before.is_some_and(|upper| {
+                prior_cash
+                    .position
+                    .is_some_and(|position| position >= upper)
+            })
         {
-            let position: Option<i64> = sqlx::query_scalar(&format!(
-                "SELECT log_index FROM ledger_{tenant}.entries WHERE entry_id=$1"
-            ))
-            .bind(crate::entry_id_for(&format!("dispute-recharge/{prior_id}")).as_uuid())
-            .fetch_optional(&mut **tx)
-            .await?
-            .flatten();
-            if position.is_some_and(|position| position >= upper) {
-                continue;
-            }
+            continue;
         }
         if cash > 0 {
-            let id = *crate::entry_id_for(&format!("dispute-recharge/{prior_id}")).as_uuid();
-            proof.prior_returns.push(serde_json::json!({"disputeId":prior_id,"entryId":id,"contentHash":wallet.verified_source_hash_in(tx, id).await?,"cashMinor":cash}));
+            proof.prior_returns.push(prior_cash.evidence);
         }
         if cash == 0
             && (prior.try_get::<String, _>("state")? == "lost"
@@ -548,6 +543,12 @@ async fn inspect_source_in(
     Ok(proof)
 }
 
+struct PriorCash {
+    cash: i64,
+    position: Option<i64>,
+    evidence: serde_json::Value,
+}
+
 /// Count actual complete prior Cash returns, irrespective of interrupted state.
 /// Legacy wrong-direction or incompatible effects cannot authorize pool debits.
 async fn prior_cash_in(
@@ -555,14 +556,36 @@ async fn prior_cash_in(
     wallet: &Wallet,
     dispute: Uuid,
     expected: i64,
-) -> Result<Option<i64>, WalletError> {
+) -> Result<Option<PriorCash>, WalletError> {
+    let correction = match crate::nonplan_chargebacks::effect_in(tx, wallet, dispute).await {
+        Ok(value) => value,
+        Err(WalletError::Conflict(_)) => return Ok(None),
+        Err(error) => return Err(error),
+    };
+    if let Some(effect) = correction {
+        let position: Option<i64> = sqlx::query_scalar(&format!(
+            "SELECT log_index FROM ledger_{}.entries WHERE entry_id=$1",
+            wallet.tenant_id()
+        ))
+        .bind(effect.original_entry_id)
+        .fetch_one(&mut **tx)
+        .await?;
+        return Ok((effect.actual_loss_minor == expected).then_some(PriorCash {
+            cash:effect.actual_loss_minor,position,
+            evidence:serde_json::json!({"disputeId":dispute,"cashMinor":effect.actual_loss_minor,"originalWrongEntryId":effect.original_entry_id,"originalWrongHash":effect.original_entry_hash,"correctionEntryId":effect.correction_entry_id,"correctionHash":effect.correction_entry_hash,"falseReceiptMinor":effect.false_receipt_minor,"sourceRevision":effect.source_revision,"logIndex":position}),
+        }));
+    }
     let tenant = wallet.tenant_id();
     let key = format!("dispute-recharge/{dispute}");
     let id = *crate::entry_id_for(&key).as_uuid();
     let rows = sqlx::query(&format!("SELECT entry_id,idempotency_key,reverses,log_index FROM ledger_{tenant}.entries WHERE entry_id=$1 OR idempotency_key=$2"))
         .bind(id).bind(key.as_bytes()).fetch_all(&mut **tx).await?;
     if rows.is_empty() {
-        return Ok(Some(0));
+        return Ok(Some(PriorCash {
+            cash: 0,
+            position: None,
+            evidence: serde_json::Value::Null,
+        }));
     }
     if rows.len() != 1
         || rows[0].try_get::<Uuid, _>("entry_id")? != id
@@ -573,6 +596,7 @@ async fn prior_cash_in(
     {
         return Ok(None);
     }
+    let rows_position: Option<i64> = rows[0].try_get("log_index")?;
     let reversed: bool = sqlx::query_scalar(&format!(
         "SELECT EXISTS(SELECT 1 FROM ledger_{tenant}.entries WHERE reverses=$1)"
     ))
@@ -614,5 +638,8 @@ async fn prior_cash_in(
         };
         *target = sum;
     }
-    Ok((cash == expected && allocated == cash && cash > 0).then_some(cash))
+    Ok((cash == expected && allocated == cash && cash > 0).then_some(PriorCash {
+        cash,position:rows_position,
+        evidence:serde_json::json!({"disputeId":dispute,"entryId":id,"contentHash":wallet.verified_source_hash_in(tx,id).await?,"cashMinor":cash,"logIndex":rows_position}),
+    }))
 }
