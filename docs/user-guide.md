@@ -1336,7 +1336,22 @@ In business context, open **Integrations → Add merchant** as the owner. Choose
 
 Open a merchant's name to inspect its paginated versions and event inbox. The owner can **Add credential version**, supplying every secret again; redacted reads never populate a credential placeholder. Rotation retains checkout enablement and all old callback versions. **Enable future checkout** and **Disable future checkout** require an audit reason and explicit confirmation. Each version shows its callback URL under the current site origin; configure the exact URL at the provider and ensure that origin is reachable. Retain old callback coordinates for in-flight orders. Settings, version history and events are readable by owner/admin/finance/viewer; only the owner sees integration-key controls and merchant mutations.
 
-An unchanged failed form retries with the same idempotency key. Editing creates a new intent; closing or losing owner permission clears its secret draft. The equivalent [merchant API](api.md#business-merchant-configuration-apiv1businessmerchants) accepts explicit keys for scripted recovery. Enabling a newly created merchant does not make it the default checkout route: order creation currently uses the environment-bootstrapped merchant. Checkout selection and actual browser/PSP certification remain separate launch work; the UI does not label a saved merchant as externally certified.
+An unchanged failed form retries with the same idempotency key. Editing creates a new intent; closing or losing owner permission clears its secret draft. The equivalent [merchant API](api.md#business-merchant-configuration-apiv1businessmerchants) accepts explicit keys for scripted recovery. In the merchant detail, **Checkout selection** shows the selected merchant for
+its rail. Select this enabled merchant or disable the whole rail, then confirm
+the old/new merchant, test/live mode and reason. Creation/enablement alone does
+not change the selection. An untouched rail retains its environment bootstrap;
+a disabled explicit selection blocks new checkout without fallback. The legacy
+callback URL continues to identify its original bootstrap merchant.
+
+Customers select an available route for wallet/bundle and plan-period payments.
+Test routes use sandbox money; live routes may charge real money. The selected
+merchant/version remains fixed through background refreshes and stale choices
+are shown explicitly. An unchanged retry recovers the original full payment
+payload and key even if terms or the offer later change. Editing or explicitly
+choosing another route starts a new intent; inspect existing orders first if a
+previous outcome is unknown. Existing orders retain their pinned versions and
+callbacks. Availability is not browser/PSP certification. Explicit statement
+repayment remains the separate #777 work unit.
 
 ### Switching between staff and customer authority
 

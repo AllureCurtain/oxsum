@@ -1389,3 +1389,12 @@ journal, statement, dispute and audit snapshots after rollback. Old middle-phase
 entries are created through the existing public ledger seam and refused without
 new cash. The corrected-source fixture repeats the rollback check for review
 suspense. No payment provider or live customer data is used.
+
+### Checkout route regression checks (#835)
+
+With the explicit local PostgreSQL test URL, run core `merchant_routes`,
+`merchants` and `payment_orders`, and server `checkout_routes`, `payments` and
+`merchants`. The HTTP fixture uses a loopback Hyperswitch-shaped service, tests
+new owner-created merchants without environment bootstrap, and counts provider
+calls to distinguish recovery from a new checkout. Migration 0112 requires the
+full workspace gate before integration. Browser/PSP certification is separate.

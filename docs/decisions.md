@@ -1,5 +1,16 @@
 # Technical decisions
 
+## 2026-11-08 — Separate checkout selection from callback bootstrap (#835)
+
+Environment bootstrap was the only order selector, leaving owner-created merchants
+unusable for checkout. An audited, revision-checked per-rail selection now retains
+bootstrap compatibility only until explicit adoption. Null or disabled selections
+never fall back; legacy callback identity remains unchanged. New order pinning
+rechecks route/version under the business lock, while existing keys recover their
+original merchant and SDK version. Customer choice snapshots and frozen submitted
+payloads prevent background refreshes after a lost response from creating another
+order. Only deliberate user edits replace the payment intent.
+
 New decisions go on top. Overturned decisions are never deleted; mark them "Superseded" and name the decision that replaces it.
 
 ## 2026-11-04 — The dashboard bundle reads from disk in debug builds; `debug-embed` stays off (issue #569)
