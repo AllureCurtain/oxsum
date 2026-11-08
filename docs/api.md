@@ -696,3 +696,41 @@ request. Historic mixed-currency data is retained, surfaced and fenced.
 For v2 fee effects, `timeBasis=booking` selects the actual ledger write date, `service` selects the completed service date (activation uses service start; correction/dispute uses action date), and `payment` groups recognition/cashless void by original order payment date while refund/dispute cash uses action booking date. No filter returns the cumulative position; a filtered deferred/receivable figure is a signed movement, not the period-end balance. V1 bill/collection/receivable cohorts retain their historical posted/issued-date semantics. Refund cash uses allocation booking or proven ledger booking for every basis; noncash discounts use line creation date. Usage service reads use settlement entry booking dates. These source clocks are explicit and must not be interpreted as a statutory financial statement.
 
 New v2 `planStatement` evidence artifacts include `accounting.policyVersion`, the immutable `period`, listed `effects`, `capturedAt` and a precise scope statement. Each nonnull effect entry must be included in the bundle and verify against its head. Re-download/re-mint retains existing bytes: later recognition/refunds are not silently added. The export proves captured source integrity and inclusion, not actual delivery or future completeness.
+
+### Application namespaces and customer lifecycle (#846)
+
+The owner creates a stable namespace with `POST /api/v1/business/applications`
+(`idempotencyKey`, lowercase `key`, `name`, `customerLimit`, `reason`) and lists
+namespaces with the same path's GET. Limits count every retained account,
+including archived identities. No application or customer identity can move.
+
+An owner-issued integration credential may select `applicationId` with empty
+`customerIds`. Its explicit scopes reach only customers provisioned in that
+application, including after credential replacement. Existing credentials without
+an application keep their explicit customer grants and credential-local identity.
+`customersLifecycleWrite` is available only with an application and grants archive,
+not reactivation, identity linking, staff access or balance changes.
+
+Application credentials use `POST /api/v1/integration/customers`,
+`GET /api/v1/integration/customers?externalId=...` and
+`POST /api/v1/integration/customers/{organization_id}/archive`. Responses contain
+`applicationId`, the application-local `externalId`, and `customer`; the latter
+retains its original business external identity and ledger organization ID. The
+same caller ID in two applications creates two independent accounts. No email
+match or explicit allowlist entry adopts an existing human account.
+
+Provision and archive keys share the application operation namespace. Exact
+normalized retries return the original receipt, including after rotation or later
+archival. Changed reuse conflicts; another key cannot provision an existing ID.
+Read the customer to see its current state. Archive serializes with admission,
+retains historical money/evidence and permits already admitted holds to settle.
+Legacy business provisioning also pins normalized request keys; matching an
+external ID alone is no longer sufficient to claim a standing account.
+
+Application metering keys bind application/customer/operation rather than the
+replaceable credential. A replacement credential with current `meteringWrite`
+may recover the same hold/outcome without charging twice. Original credential
+attribution, price and terms remain pinned. Changed usage or an unrelated
+application cannot take over the operation. These APIs do not yet supply scoped
+key management, checkout, human consent linking or the full external application
+journey tracked by #747.

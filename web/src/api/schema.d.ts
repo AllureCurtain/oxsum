@@ -8040,6 +8040,216 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/business/applications": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List owner-managed application namespaces
+         * @description Current business owner session only; does not expose credentials.
+         */
+        get: {
+            parameters: {
+                query?: {
+                    after?: string;
+                    limit?: number;
+                };
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Application page */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            data: components["schemas"]["IntegrationApplicationPage"];
+                        };
+                    };
+                };
+                401: components["responses"]["Error"];
+                403: components["responses"]["Error"];
+            };
+        };
+        put?: never;
+        /**
+         * Create a bounded application namespace
+         * @description Owner-only audited operation. Exact retries return the original application; changed reuse conflicts. No customers, credentials or money are created.
+         */
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": components["schemas"]["IntegrationApplicationRequest"];
+                };
+            };
+            responses: {
+                /** @description Created or retained application */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            data: components["schemas"]["IntegrationApplication"];
+                        };
+                    };
+                };
+                400: components["responses"]["Error"];
+                401: components["responses"]["Error"];
+                403: components["responses"]["Error"];
+                409: components["responses"]["Error"];
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/integration/customers": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Retrieve this application's customer by external identity
+         * @description Application integration credential with customersRead. Foreign or unknown identities return not found; archived accounts retain history. Personal sessions cannot use this route.
+         */
+        get: {
+            parameters: {
+                query: {
+                    externalId: string;
+                };
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Application-scoped customer */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            data: components["schemas"]["ApplicationCustomer"];
+                        };
+                    };
+                };
+                401: components["responses"]["Error"];
+                403: components["responses"]["Error"];
+                404: components["responses"]["Error"];
+            };
+        };
+        put?: never;
+        /**
+         * Provision an account within this application
+         * @description Application credential with customersProvision. Normalized request and key persist across credential rotation. Exact retries return the original receipt; changed key reuse or another key for an existing external ID conflicts. A bounded new account has no human login, membership or funds. Archival never frees its identity or capacity.
+         */
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": components["schemas"]["ProvisionCustomerRequest"];
+                };
+            };
+            responses: {
+                /** @description Created or retained provisioning receipt */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            data: components["schemas"]["ApplicationCustomer"];
+                        };
+                    };
+                };
+                400: components["responses"]["Error"];
+                401: components["responses"]["Error"];
+                403: components["responses"]["Error"];
+                409: components["responses"]["Error"];
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/integration/customers/{organization_id}/archive": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Archive one account owned by this application
+         * @description Application-only customersLifecycleWrite. Serialized with admission; blocks new work, retains historical funds/evidence and permits existing hold recovery. Exact retry returns the original receipt without reapplying state. No reactivation or human linking is implied. Provisioning and metering retries preserve application/customer/operation identity across credential rotation.
+         */
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    organization_id: string;
+                };
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": components["schemas"]["ApplicationCustomerArchiveRequest"];
+                };
+            };
+            responses: {
+                /** @description Archived customer receipt */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            data: components["schemas"]["ApplicationCustomer"];
+                        };
+                    };
+                };
+                400: components["responses"]["Error"];
+                401: components["responses"]["Error"];
+                403: components["responses"]["Error"];
+                404: components["responses"]["Error"];
+                409: components["responses"]["Error"];
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/business/profile": {
         parameters: {
             query?: never;
@@ -20810,11 +21020,45 @@ export interface components {
             reason: string;
             config: Record<string, never>;
         };
+        IntegrationApplicationRequest: {
+            idempotencyKey: string;
+            key: string;
+            name: string;
+            customerLimit: number;
+            reason: string;
+        };
+        IntegrationApplication: {
+            /** Format: uuid */
+            applicationId: string;
+            /** Format: uuid */
+            businessId: string;
+            key: string;
+            name: string;
+            customerLimit: number;
+            /** Format: date-time */
+            createdAt: string;
+        };
+        IntegrationApplicationPage: {
+            applications: components["schemas"]["IntegrationApplication"][];
+            /** Format: uuid */
+            nextCursor: string | null;
+        };
+        ApplicationCustomer: {
+            /** Format: uuid */
+            applicationId: string;
+            /** @description Stable caller identity within this application. */
+            externalId: string;
+            customer: components["schemas"]["BusinessCustomer"];
+        };
+        ApplicationCustomerArchiveRequest: {
+            idempotencyKey: string;
+            reason: string;
+        };
         /** @enum {string} */
-        IntegrationScope: "customersRead" | "meteringWrite" | "customersProvision" | "billingRead";
+        IntegrationScope: "customersRead" | "meteringWrite" | "customersProvision" | "billingRead" | "customersLifecycleWrite";
         ProvisionCustomerRequest: {
             idempotencyKey: string;
-            /** @description Caller-chosen customer identifier, unique within the business; the provisioning namespace key. */
+            /** @description Caller-chosen identifier within the application (integration route) or legacy business namespace (business route). */
             externalId: string;
             name: string;
             contactEmail?: string | null;
@@ -20822,8 +21066,13 @@ export interface components {
         IntegrationCredentialRequest: {
             idempotencyKey: string;
             name?: string | null;
+            /**
+             * Format: uuid
+             * @description Owner-selected stable application; customerIds must be empty. Only that application’s provisioned accounts are accessible. Omit for existing explicit grants.
+             */
+            applicationId?: string | null;
             scopes: components["schemas"]["IntegrationScope"][];
-            /** @description Existing customers the credential may read or meter. May be empty only for a customersProvision-only grant, which grows its own namespace. */
+            /** @description Existing customers the credential may read or meter. Must be empty for an application grant. Legacy grants may be empty only for customersProvision alone. */
             customerIds: string[];
             /** Format: date-time */
             expiresAt: string;
@@ -20838,6 +21087,8 @@ export interface components {
             credentialId: string;
             /** Format: uuid */
             businessId: string;
+            /** Format: uuid */
+            applicationId: string | null;
             name: string | null;
             prefix: string;
             scopes: components["schemas"]["IntegrationScope"][];

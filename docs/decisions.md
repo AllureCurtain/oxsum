@@ -1,5 +1,19 @@
 # Technical decisions
 
+## 2026-11-09 — Stable application ownership and exact operation replay (#846)
+
+Application identity is owner-created and separate from replaceable credentials.
+A dedicated immutable application/customer mapping preserves business profiles
+and ledger ownership while allowing identical external IDs in different apps.
+Application grants use an empty explicit allowlist and only their named scopes;
+legacy grants never inherit namespace reach. A distinct lifecycle scope permits
+archive only. Provision/archive persist normalized request and result in the same
+transaction, with business-before-credential lock ordering. Metering fingerprints
+use stable application/customer/key and retain original credential provenance,
+so rotation cannot create a second charge. Owner-selected lifetime limits remain
+consumed after archive. Existing portal customers require a separate verified
+consent flow; email matching or broad customer wildcard grants are rejected.
+
 ## 2026-11-08 — Separate checkout selection from callback bootstrap (#835)
 
 Environment bootstrap was the only order selector, leaving owner-created merchants

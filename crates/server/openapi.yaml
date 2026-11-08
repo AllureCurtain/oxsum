@@ -6043,7 +6043,7 @@ paths:
   /api/v1/integration/customers/{organization_id}/archive:
     post:
       summary: Archive one account owned by this application
-      description: Application-only customersLifecycleWrite. Serialized with admission; blocks new work, retains historical funds/evidence and permits existing hold recovery. Exact retry returns the original receipt without reapplying state. No reactivation or human linking is implied.
+      description: Application-only customersLifecycleWrite. Serialized with admission; blocks new work, retains historical funds/evidence and permits existing hold recovery. Exact retry returns the original receipt without reapplying state. No reactivation or human linking is implied. Provisioning and metering retries preserve application/customer/operation identity across credential rotation.
       security: [{ integrationCredential: [] }]
       parameters:
         - { in: path, name: organization_id, required: true, schema: { type: string, format: uuid } }
@@ -11088,9 +11088,10 @@ components:
       type: http
       scheme: bearer
       description: |
-        Owner-issued oxs-int- secret with selected customer IDs and explicit scopes.
-        customersRead grants only business customer list/detail; meteringWrite grants
-        only metering for the selected customers. No gateway, personal, deployment,
+        Owner-issued oxs-int- secret with selected customer IDs or one stable application namespace, and explicit scopes.
+        customersRead grants scoped customer list/detail; meteringWrite grants only
+        metering for those customers. Application metering operation identity survives
+        credential replacement; existing explicit grants retain credential-local replay. No gateway, personal, deployment,
         funds-crediting or staff authority. Expired/revoked/legacy credentials fail
         authentication. Explicit Authorization never falls back to cookies.
     sessionCookie:

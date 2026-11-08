@@ -65,6 +65,7 @@ pub fn request(
     scopes: Vec<IntegrationScope>,
 ) -> IntegrationCredentialRequest {
     IntegrationCredentialRequest {
+        application_id: None,
         idempotency_key: Uuid::new_v4().to_string(),
         name: Some("metering fixture".into()),
         scopes,
