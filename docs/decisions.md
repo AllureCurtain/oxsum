@@ -3011,3 +3011,27 @@ Legacy unmanaged containers require explicit maintenance and retained backups
 before first managed adoption. Tests distinguish real loopback HTTP with mocked
 Docker state from future real candidate deployment acceptance. SDK publication
 remains N13.d; no public action or live host is exercised by these tests.
+
+## 2026-11-08 — Never rebill already-settled usage at plan close (#803)
+
+A settled overflow request already credits Income:Usage and either consumes
+wallet funds or draws its approved credit line. Summing that same request's
+charged amount into a plan-close usage_overage line opens a second receivable
+and credits Income:PlanFees again. This is a conservation defect under every
+recognition policy, including the existing period-close policy. It is not a
+policy choice that can wait for daily recognition.
+
+New closes omit this aggregation entirely, preserving the sold fee and its
+source-linked prepayment. Historical usage_overage lines remain readable and
+immutable. Their explicit compensation is tracked separately by #809: original
+entries remain, uncollected duplicates reduce receivables and collected excess
+becomes RefundPayable, never a claimed cash refund. No historic record is
+silently changed by deploying the forward fix.
+
+Tests for legacy partial documents construct the old journal/statement shape
+explicitly and use doubleentry's public transaction append API for real source
+postings. They no longer rely on generating a new erroneous receivable in
+production to test dunning/refund/renewal behavior. Cash-funded and credit-funded
+usage regressions use actual wallet holds, settlements and linked usage records,
+then compare income, receivable, wallet balance and customer statements across
+close and replay. Daily fee recognition and statement repayment remain N11/#777.

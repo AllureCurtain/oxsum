@@ -137,8 +137,8 @@ async fn publish(world: &World, name: &str, price: i64) -> Uuid {
     Uuid::parse_str(body["data"]["planVersionId"].as_str().unwrap()).unwrap()
 }
 
-/// Bind and activate using a real quoted paid fixture; separate overage leaves
-/// an outstanding receivable for the HTTP reporting/dunning assertions.
+/// Bind and activate using a real quoted paid fixture. The close helper seeds
+/// a historical partial journal for HTTP reporting and dunning assertions.
 async fn bound_and_active(world: &World, version: Uuid) -> Uuid {
     let (status, body) = call(
         &world.app,
@@ -166,7 +166,6 @@ async fn bound_and_active(world: &World, version: Uuid) -> Uuid {
         )
         .await
         .unwrap();
-    plan_payment::overage(&world.db, world.customer_org, customer_plan_id, 1000).await;
     customer_plan_id
 }
 
@@ -191,6 +190,9 @@ async fn close_period(world: &World) {
     .execute(&world.pool)
     .await
     .expect("the plan period moves");
+    let plan: Uuid = sqlx::query_scalar("SELECT customer_plan_id FROM oxsum.customer_plans WHERE organization_id=$1 AND state='active'")
+        .bind(world.customer_org).fetch_one(&world.pool).await.unwrap();
+    plan_payment::legacy_close(&world.db, world.customer_org, plan, 1000).await;
     world.db.rollover_due_subscriptions().await.unwrap();
 }
 

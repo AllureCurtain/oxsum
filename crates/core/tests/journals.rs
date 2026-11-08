@@ -226,7 +226,7 @@ async fn a_period_close_writes_the_journal() {
 }
 
 #[tokio::test]
-async fn close_bills_overage_on_an_overage_enabled_plan() {
+async fn close_does_not_rebill_recorded_usage_on_an_overage_enabled_plan() {
     let Some(world) = world().await else { return };
     let pro = sold(
         &world.db,
@@ -300,20 +300,20 @@ async fn close_bills_overage_on_an_overage_enabled_plan() {
     let bill = detail(&world.db, world.organization_id, journal.journal_id).await;
     let kinds: Vec<JournalLineKind> = bill.lines.iter().map(|l| l.kind).collect();
     assert!(kinds.contains(&JournalLineKind::BaseFee));
-    assert!(kinds.contains(&JournalLineKind::UsageOverage));
+    assert!(!kinds.contains(&JournalLineKind::UsageOverage));
     let overage: i64 = bill
         .lines
         .iter()
         .filter(|l| l.kind == JournalLineKind::UsageOverage)
         .map(|l| l.amount_minor)
         .sum();
-    assert_eq!(overage, 3 * ONE);
+    assert_eq!(overage, 0);
     // The lines sum to the total — the row guard's own invariant.
     let sum: i64 = bill.lines.iter().map(|l| l.amount_minor).sum();
     assert_eq!(sum, journal.total_minor);
-    // The prepay covered the base fee; the overage is the open receivable.
-    assert_eq!(journal.state, JournalState::Posted);
-    assert_eq!(journal.total_minor, 2500 + 3 * ONE);
+    // Only the sold fee is billed; usage is already accounted for separately.
+    assert_eq!(journal.state, JournalState::Paid);
+    assert_eq!(journal.total_minor, 2500);
     assert_eq!(journal.settled_minor, 2500);
 }
 
@@ -341,7 +341,7 @@ async fn a_renewal_prepays_its_period_without_consuming_old_debt() {
         )
         .await
         .unwrap();
-    // The exact base fee is prepaid. Separate overage remains a receivable.
+    // The exact fee is prepaid. Explicit historical overage remains a receivable.
     let partial = plan_order(&world, plan.customer_plan_id, 2500).await;
     world
         .db
@@ -349,14 +349,14 @@ async fn a_renewal_prepays_its_period_without_consuming_old_debt() {
         .await
         .unwrap();
 
-    plan_payment::overage(
+    end_period_ago(&world.pool, world.organization_id, 60).await;
+    plan_payment::legacy_close(
         &world.db,
         world.organization_id,
         plan.customer_plan_id,
         1500,
     )
     .await;
-    end_period_ago(&world.pool, world.organization_id, 60).await;
     world.db.rollover_due_subscriptions().await.unwrap();
     assert_eq!(
         live(&world.db, world.organization_id).await.state,
@@ -657,7 +657,7 @@ async fn a_posted_journal_refuses_edits_and_deletes() {
         )
         .await
         .unwrap();
-    // An exact paid activation with overage leaves a real posted receivable.
+    // An explicit historical overage fixture leaves a posted receivable.
     world
         .db
         .activate_plan_period(
@@ -673,14 +673,14 @@ async fn a_posted_journal_refuses_edits_and_deletes() {
         )
         .await
         .unwrap();
-    plan_payment::overage(
+    end_period_ago(&world.pool, world.organization_id, 60).await;
+    plan_payment::legacy_close(
         &world.db,
         world.organization_id,
         plan.customer_plan_id,
         1000,
     )
     .await;
-    end_period_ago(&world.pool, world.organization_id, 60).await;
     world.db.rollover_due_subscriptions().await.unwrap();
     let journal = journals(&world.db, world.organization_id)
         .await
