@@ -35,9 +35,10 @@ Updated: 2026-11-09
 - [x] [#856](https://github.com/AllureCurtain/oxsum/issues/856) — Shared borrowed ledger verification and transaction reads in PR #860: nine focused PostgreSQL checks, 2,012 complete workspace passes, strict Clippy, formatting and three independent reviews passed. Integrated in PR #860 (`4fc5581a`); parent refund/reconciliation/admission work remains.
 
 
-- [ ] [#848](https://github.com/AllureCurtain/oxsum/issues/848) — Compare runtime financial projections with independent official ledger/source totals after #838; current reconciliation actual totals still clone the projection. N11 remains open.
+- [ ] [#848](https://github.com/AllureCurtain/oxsum/issues/848) — Independent source/ledger comparisons, immutable attempts and explicit coverage in progress on integrated shared reader #856; migration 0117 follows #841/#849. N11 remains open.
 
 - [x] [#838](https://github.com/AllureCurtain/oxsum/issues/838) — Versioned daily recognition, paid-activation invoices and durable captured evidence integrated in PR #851 (`b3eb063a`): 1,995 complete workspace checks, 25 new accounting/fault checks, 49 HTTP, 12 upgrade, 93 verifier and strict Clippy/wasm passed. Independent runtime reconciliation remains #848.
+
 
 - [x] [#850](https://github.com/AllureCurtain/oxsum/issues/850) — Integrated in PR #852 (`5dc49dc`): wait for durable fulfillment before stopping the real payment worker. 19 real PostgreSQL checks, strict Clippy, formatting and independent review passed; included in #838's 1,995-check combined run.
 

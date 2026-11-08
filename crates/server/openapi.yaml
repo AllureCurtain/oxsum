@@ -3327,11 +3327,14 @@ paths:
       summary: Request a manual reconciliation run
       description: |
         A staff-requested run over `[periodStart, periodEnd]` (issue #613,
-        T22): recomputes the eight categories per organization, diffs the
-        conservation invariants and writes the run plus its exceptions.
+        T22): independently compares scoped plan and refund sources with official
+        ledger postings, captures coverage and excluded fields, and retains an
+        immutable snapshot for every completed attempt. The interval is at most
+        366 days. Concurrent work for the same scope returns POOL_BUSY.
         `FundsWrite` capability — a financial action, audited in
         `finance_audit`. A replayed `idempotencyKey` re-runs under the run's
-        own `(kind, period)` identity rather than minting a second run.
+        own `(kind, period, timeBasis)` identity rather than minting a second run.
+        Each attempt retains its evidence; no financial repair occurs.
       security: [{ sessionCookie: [] }]
       requestBody:
         required: true
@@ -3369,6 +3372,51 @@ paths:
                 required: [data]
                 properties:
                   data: { $ref: "#/components/schemas/ReconciliationRun" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
+  /api/v1/business/reconciliation-runs/{runId}/snapshots:
+    get:
+      summary: Retained reconciliation attempts
+      description: Immutable snapshots with independently compared totals, coverage and source evidence. ReportsRead; maximum 100 summaries per page.
+      security: [{ sessionCookie: [] }]
+      parameters:
+        - { name: runId, in: path, required: true, schema: { type: string, format: uuid } }
+        - { name: after, in: query, required: false, schema: { type: string, format: uuid } }
+        - { name: limit, in: query, required: false, schema: { type: integer, minimum: 1, maximum: 100, default: 20 } }
+      responses:
+        "200":
+          description: Latest immutable attempt summaries, with evidence available by snapshot ID
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data: { type: array, items: { $ref: "#/components/schemas/ReconciliationSnapshot" } }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
+  /api/v1/business/reconciliation-runs/{runId}/snapshots/{snapshotId}:
+    get:
+      summary: One retained reconciliation attempt
+      description: Exact compared sources, entry hashes and postings, differences and coverage at capture. ReportsRead; the snapshot is immutable and never re-derived from current financial rows.
+      security: [{ sessionCookie: [] }]
+      parameters:
+        - { name: runId, in: path, required: true, schema: { type: string, format: uuid } }
+        - { name: snapshotId, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        "200":
+          description: The retained attempt and its source evidence
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data: { $ref: "#/components/schemas/ReconciliationSnapshot" }
         "401": { $ref: "#/components/responses/Error" }
         "403": { $ref: "#/components/responses/Error" }
         "404": { $ref: "#/components/responses/Error" }
@@ -15586,23 +15634,54 @@ components:
         byProviderDay: { type: array, items: { $ref: "#/components/schemas/CostCoverageDay" } }
     ReconciliationRun:
       type: object
-      required: [runId, kind, periodStart, periodEnd, state, expectedTotals, actualTotals, exceptionCount, requestedBy, startedAt, finishedAt, lastError]
+      required: [runId, kind, periodStart, periodEnd, timeBasis, latestSnapshotId, coverage, state, expectedTotals, actualTotals, exceptionCount, requestedBy, startedAt, finishedAt, lastError]
       properties:
         runId: { type: string, format: uuid }
         kind: { type: string, enum: [daily, period_close, manual] }
         periodStart: { type: string, format: date }
         periodEnd: { type: string, format: date }
         state: { type: string, enum: [running, matched, exceptions, failed] }
-        expectedTotals: { type: object, description: the eight-category figures the projections claimed, frozen at run time }
-        actualTotals: { type: object, description: the same categories recomputed — the exceptions are the disagreements the figures cannot hide }
+        timeBasis: { type: string, enum: [booking, service, payment] }
+        latestSnapshotId: { type: [string, "null"], format: uuid, description: null on retained legacy runs that did not perform independent ledger comparison }
+        coverage: { $ref: "#/components/schemas/ReconciliationCoverage" }
+        expectedTotals: { type: object, additionalProperties: { type: integer, format: int64 }, description: Only the fields named in coverage.comparedFields; legacy snapshots retain their original shape }
+        actualTotals: { type: object, additionalProperties: { type: integer, format: int64 }, description: Independently derived official ledger amounts for compared fields; excluded fields are absent, never copied }
         exceptionCount: { type: integer, format: int64 }
         requestedBy: { type: [string, "null"], format: uuid, description: the staff actor on a manual run, null on a scheduled pass }
         startedAt: { type: string, format: date-time }
         finishedAt: { type: [string, "null"], format: date-time }
         lastError: { type: [string, "null"] }
+    ReconciliationCoverage:
+      type: object
+      required: [version, complete, comparedFields, notCompared, organizations, sources, verifiedSources, entries, verifiedEntries, basis, limits]
+      properties:
+        version: { type: integer, description: 0 means retained legacy projection-only evidence; 1 means independent plan/refund comparison }
+        complete: { type: boolean, description: false when any required source is missing, unsupported or corrupt }
+        comparedFields: { type: array, items: { type: string } }
+        notCompared: { type: array, items: { type: string }, description: Explicit exclusions; matched never attests these fields }
+        organizations: { type: integer, format: int64 }
+        sources: { type: integer, format: int64, description: Required source comparisons }
+        verifiedSources: { type: integer, format: int64, description: Source comparisons with supported and complete ledger evidence }
+        entries: { type: integer, format: int64 }
+        verifiedEntries: { type: integer, format: int64 }
+        basis: { type: string, description: Describes v1 net journal cohort and v2 effect movements, and separate payable/suspense positions }
+        limits: { type: object, additionalProperties: { type: integer, format: int64 } }
+    ReconciliationSnapshot:
+      type: object
+      required: [snapshotId, runId, state, expectedTotals, actualTotals, coverage, exceptionCount, capturedAt, evidence]
+      properties:
+        snapshotId: { type: string, format: uuid }
+        runId: { type: string, format: uuid }
+        state: { type: string, enum: [matched, exceptions, legacy] }
+        expectedTotals: { type: object, additionalProperties: { type: integer, format: int64 } }
+        actualTotals: { type: object, additionalProperties: { type: integer, format: int64 } }
+        coverage: { $ref: "#/components/schemas/ReconciliationCoverage" }
+        exceptionCount: { type: integer, format: int64 }
+        capturedAt: { type: string, format: date-time }
+        evidence: { type: [object, "null"], description: null in list summaries; detail captures source IDs, dates, verified entries, amounts and exact differences }
     ReconciliationException:
       type: object
-      required: [exceptionId, runId, organizationId, kind, expectedMinor, actualMinor, sourceTable, sourceRef, detail, state, resolvedBy, resolution, resolvedAt, createdAt]
+      required: [exceptionId, runId, organizationId, kind, fact, expectedMinor, actualMinor, sourceTable, sourceRef, detail, state, resolvedBy, resolution, resolvedAt, createdAt]
       properties:
         exceptionId: { type: string, format: uuid }
         runId: { type: string, format: uuid }
@@ -15612,6 +15691,7 @@ components:
         actualMinor: { type: [integer, "null"], format: int64 }
         sourceTable: { type: [string, "null"], description: the blamed projection — usage_records, invoice_journals, payment_orders, plan_statements, ledger }
         sourceRef: { type: [string, "null"], description: the blamed row's identifier — a request id, journal id, order id or entry id }
+        fact: { type: string, description: Stable compared field or source failure; distinct facts on one source remain distinct exceptions }
         detail: { type: [string, "null"], description: the check's own diff summary }
         state: { type: string, enum: [open, resolved, waived] }
         resolvedBy: { type: [string, "null"], format: uuid }
@@ -15639,6 +15719,7 @@ components:
         idempotencyKey: { type: string, minLength: 1, maxLength: 200 }
         periodStart: { type: string, format: date }
         periodEnd: { type: string, format: date }
+        timeBasis: { type: string, enum: [booking, service, payment], default: booking }
     ReconciliationCloseRequest:
       type: object
       additionalProperties: false
