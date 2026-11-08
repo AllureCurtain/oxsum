@@ -101,9 +101,9 @@ pub(crate) async fn business_statement(
 
 /// `POST /api/v1/business/statements/{id}/release-review`: the staff
 /// release-review — `extendGrace` restores `past_due → issued` (re-opens the
-/// grace window), `void` cancels the statement with reversing lines. A
-/// `finance_audit` row records the actor and reason. `FundsWrite`; a replayed
-/// `idempotencyKey` answers the standing statement.
+/// grace window), `void` atomically reverses its proven journal and statement.
+/// Other past-grace debt retains dunning. A `finance_audit` row records actor,
+/// reason and financial entry. `FundsWrite`; an exact replay is inert.
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(crate) struct ReleaseReviewBody {

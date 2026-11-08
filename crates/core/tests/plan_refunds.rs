@@ -919,3 +919,46 @@ async fn a_void_then_refund_then_chargeback_consumes_only_the_remaining_payable(
     assert_eq!(net(&w, "Assets:Receivables").await, 0);
     assert_eq!(net(&w, "Equity:Adjustments").await, -1_000_000);
 }
+
+#[tokio::test]
+async fn unpaid_statement_void_after_full_cash_refund_creates_no_payable() {
+    let Some(w) = world(true).await else { return };
+    due(&w).await;
+    let journal = payment::legacy_close(&w.db, w.org, w.plan.customer_plan_id, 1_000_000).await;
+    w.db.rollover_due_subscriptions().await.unwrap();
+    refunded(&w, FEE).await;
+    let before = w.db.plan_journal(w.org, journal).await.unwrap().unwrap();
+    assert_eq!(
+        (before.journal.total_minor, before.journal.settled_minor),
+        (1_000_000, 0)
+    );
+    let statement =
+        w.db.plan_statements(w.org, None, 50)
+            .await
+            .unwrap()
+            .statements
+            .remove(0);
+    let cash = net(&w, "Assets:Cash").await;
+    w.db.release_statement_review(
+        &w.owner,
+        statement.statement_id,
+        "void",
+        "cancel remaining unpaid debt",
+        &Uuid::new_v4().to_string(),
+    )
+    .await
+    .unwrap();
+    assert_eq!(net(&w, "Assets:Cash").await, cash);
+    assert_eq!(net(&w, "Assets:Receivables").await, 0);
+    assert_eq!(net(&w, "Liabilities:RefundPayable").await, 0);
+    assert_eq!(net(&w, "Income:PlanFees").await, 0);
+    assert_eq!(
+        w.db.plan_journal(w.org, journal)
+            .await
+            .unwrap()
+            .unwrap()
+            .journal
+            .state,
+        JournalState::Void
+    );
+}

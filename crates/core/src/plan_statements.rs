@@ -22,11 +22,12 @@
 //! The `statement-past-due` job flips `issued` rows whose `due_at` passed to
 //! `past_due`, and past `grace_days` suspends the plan's wallet-side
 //! admission — subscription-quota draws (already paid for) still serve; a
-//! payment clearing all statements removes only that debt suspension. The
-//! independent plan renewal state still requires a paid period authorization. `credit_limit_minor` caps the wallet-side overage a
-//! plan-bound turn may hold: admission refuses when `outstanding +
-//! this_overage > credit_limit_minor`, where `outstanding` is the open
-//! statements' remaining plus the pools' current holds.
+//! payment clearing past-grace debt removes only that debt suspension. Wallet
+//! admission also evaluates effective overdue debt before the worker stamps a
+//! flag. Renewal still requires a paid period authorization. `credit_limit_minor`
+//! caps wallet-side overage: `outstanding + this_overage > credit_limit_minor`
+//! refuses, counting live statement debt, posted journals without live documents
+//! and current holds.
 
 use sqlx::postgres::PgRow;
 use sqlx::{Postgres, Row, Transaction};
@@ -397,7 +398,7 @@ impl Db {
     /// or full allocation appends an order-linked `paymentApplied` line
     /// reducing `total_minor − paid_minor` to zero and walks `issued|past_due
     /// → paid`; a partial one leaves `issued` with `paid_minor > 0`. A
-    /// statement that just cleared also lifts the plan's dunning suspension
+    /// statement that just cleared recomputes dunning from all past-grace debt
     /// in the same transaction. Renewal and manual suspension remain separate.
     ///
     /// Runs inside the caller's transaction beside the journal update. The
@@ -458,20 +459,9 @@ impl Db {
             .bind(order_id)
             .execute(&mut **tx)
             .await?;
-            // Clear only debt suspension after every statement is covered.
-            // Paying an old receivable cannot authorize another plan period
-            // or change the independent renewal/cancellation lifecycle.
-            sqlx::query(
-                "UPDATE oxsum.customer_plans \
-                 SET dunning_suspended_at=NULL, updated_at=now() \
-                 WHERE customer_plan_id=$1 \
-                   AND NOT EXISTS(SELECT 1 FROM oxsum.plan_statements s \
-                       WHERE s.customer_plan_id=$1 AND s.state IN ('issued','past_due') \
-                         AND s.total_minor>s.paid_minor)",
-            )
-            .bind(statement.customer_plan_id)
-            .execute(&mut **tx)
-            .await?;
+            // Other past-grace debt, including a retained document-only void,
+            // keeps its restriction. Payment does not authorize another period.
+            crate::plan_debt::refresh_in(tx, journal.customer_plan_id).await?;
         } else {
             sqlx::query(
                 "UPDATE oxsum.plan_statements \
@@ -546,6 +536,115 @@ impl Db {
         }
         sqlx::query("UPDATE oxsum.plan_statements SET total_minor=$2,paid_minor=$3,updated_at=now() WHERE statement_id=$1")
             .bind(statement.statement_id).bind(total).bind(paid).execute(&mut **tx).await?;
+        Ok(())
+    }
+
+    /// Validate a one-to-one journal projection before any financial reversal.
+    /// A retained legacy document void has zeroed counters but remains linked;
+    /// its historical charge/payment lines must still reconstruct the journal.
+    pub(crate) async fn validate_journal_void_statements_in(
+        &self,
+        tx: &mut Transaction<'_, Postgres>,
+        journal: &InvoiceJournal,
+    ) -> Result<(), WalletError> {
+        let rows = sqlx::query(&format!(
+            "SELECT {STATEMENT_COLS} FROM oxsum.plan_statements \
+             WHERE journal_id=$1 ORDER BY created_at,statement_id FOR UPDATE"
+        ))
+        .bind(journal.journal_id)
+        .fetch_all(&mut **tx)
+        .await?;
+        if rows.len() > 1 {
+            return Err(WalletError::Conflict(
+                "multiple journal statements require explicit financial reconciliation".into(),
+            ));
+        }
+        if let Some(row) = rows.first() {
+            let statement = statement_from_row(row)?;
+            if statement.customer_plan_id != Some(journal.customer_plan_id)
+                || statement.organization_id != journal.organization_id
+                || statement.business_id != journal.business_id
+                || statement.period_index != Some(journal.period_index)
+                || statement.replaces_statement_id.is_some()
+                || statement.state == PlanStatementState::Open
+            {
+                return Err(WalletError::Conflict("statement does not identify the original journal period; financial reconciliation required".into()));
+            }
+            let lines = lines_in(tx, statement.statement_id).await?;
+            if lines
+                .iter()
+                .any(|line| line.kind == StatementLineKind::DisputeChargeback)
+            {
+                return Err(WalletError::Conflict(
+                    "mixed chargeback statement requires source-specific financial reconciliation"
+                        .into(),
+                ));
+            }
+            let expected = crate::journals::lines_for_statement_in(tx, journal.journal_id).await?;
+            // Compare each immutable source and signed amount. Refund credit is
+            // the customer vocabulary for a journal discount; promo/tax are
+            // likewise grouped only by their documented statement kind.
+            let category = |kind: StatementLineKind| match kind {
+                StatementLineKind::RefundCredit => StatementLineKind::Discount,
+                other => other,
+            };
+            let mut charges = std::collections::BTreeMap::new();
+            let mut actual = std::collections::BTreeMap::new();
+            for line in expected {
+                let key = (
+                    category(statement_kind(&line)).as_str(),
+                    line.source_ref.or(Some(line.line_id)),
+                );
+                let value = charges.entry(key).or_insert(0i64);
+                *value = value
+                    .checked_add(line.amount_minor)
+                    .ok_or_else(|| invalid("journal amount overflows"))?;
+            }
+            let mut paid = 0i64;
+            let mut reversed = std::collections::BTreeSet::new();
+            for line in &lines {
+                if statement.state == PlanStatementState::Void
+                    && let Some(source) = line
+                        .source_ref
+                        .and_then(|id| lines.iter().find(|source| source.line_id == id))
+                {
+                    // Retained document-only voids must contain exactly one
+                    // opposite line per original; a source link alone is not
+                    // proof that this line belongs to the old reversal.
+                    if source.kind != line.kind
+                        || source.amount_minor.checked_neg() != Some(line.amount_minor)
+                        || source
+                            .source_ref
+                            .is_some_and(|id| lines.iter().any(|candidate| candidate.line_id == id))
+                        || !reversed.insert(source.line_id)
+                    {
+                        return Err(WalletError::Conflict("legacy void reversal differs from its source; financial reconciliation required".into()));
+                    }
+                    continue;
+                }
+                if line.kind == StatementLineKind::PaymentApplied {
+                    paid = paid
+                        .checked_sub(line.amount_minor)
+                        .ok_or_else(|| invalid("statement amount overflows"))?;
+                } else {
+                    let value = actual
+                        .entry((category(line.kind).as_str(), line.source_ref))
+                        .or_insert(0i64);
+                    *value = value
+                        .checked_add(line.amount_minor)
+                        .ok_or_else(|| invalid("statement amount overflows"))?;
+                }
+            }
+            if (statement.state == PlanStatementState::Void && reversed.len() * 2 != lines.len())
+                || actual != charges
+                || paid != journal.settled_minor
+                || (statement.state != PlanStatementState::Void
+                    && (statement.total_minor != journal.total_minor
+                        || statement.paid_minor != journal.settled_minor))
+            {
+                return Err(WalletError::Conflict("statement amounts or sources differ from its journal; financial reconciliation required".into()));
+            }
+        }
         Ok(())
     }
 
@@ -890,7 +989,10 @@ impl Db {
 
     /// The staff release-review: `extend_grace` walks `past_due → issued`
     /// (restores the issued standing, extends the grace window), `void`
-    /// cancels the statement with reversing lines so it nets to zero. Every
+    /// reverses the proven backing journal and statement together, retaining
+    /// cash and recognizing collected funds as refund payable. Other debt
+    /// past grace retains dunning; renewal and manual restrictions are separate.
+    /// Every
     /// release writes a `finance_audit` row naming the staff actor, the
     /// reason and the statement — the same audit family `journal.void` uses.
     /// A replayed `idempotency_key` answers the standing statement.
@@ -926,26 +1028,50 @@ impl Db {
             crate::BusinessCapability::FundsWrite,
         )
         .await?;
-        // Identity is immutable: resolve the scoped plan without a row lock,
-        // lock that owner first, then re-read the statement under its own lock.
-        // Close/refund hold plan before journal/statement; repayment must too.
-        let coordinates = sqlx::query(
-            "SELECT customer_plan_id FROM oxsum.plan_statements \
-             WHERE statement_id=$1 AND business_id=$2 AND state<>'open'",
-        )
-        .bind(statement_id)
-        .bind(business)
-        .fetch_optional(&mut *tx)
-        .await?
-        .ok_or_else(|| WalletError::NotFound("unknown statement".into()))?;
-        if let Some(plan) = coordinates.try_get::<Option<Uuid>, _>("customer_plan_id")? {
-            sqlx::query(
-                "SELECT customer_plan_id FROM oxsum.customer_plans \
-                 WHERE customer_plan_id=$1 FOR UPDATE",
-            )
-            .bind(plan)
-            .fetch_one(&mut *tx)
-            .await?;
+        if let Some(prior)=sqlx::query("SELECT target,detail FROM oxsum.finance_audit WHERE business_id=$1 AND action='statement.release' AND idempotency_key=$2")
+            .bind(business).bind(idempotency_key).fetch_optional(&mut *tx).await? {
+            let detail:serde_json::Value=prior.try_get("detail")?;
+            if prior.try_get::<String,_>("target")?!=statement_id.to_string() || detail["releaseAction"]!=action || detail["reason"]!=reason {
+                return Err(WalletError::Conflict("statement release key names different request terms".into()));
+            }
+            let statement=statement_in(&mut tx,statement_id).await?.ok_or_else(||invalid("audited statement disappeared"))?;
+            let lines=lines_in(&mut tx,statement_id).await?;
+            tx.commit().await?;
+            return Ok(PlanStatementDetail{statement,lines});
+        }
+        // Resolve immutable identity, then take owner, journal, ledger and
+        // statement in that order. Extend-grace needs only owner/statement.
+        let coordinates=sqlx::query("SELECT s.customer_plan_id,s.journal_id,o.tenant_id FROM oxsum.plan_statements s JOIN oxsum.organizations o USING(organization_id) WHERE s.statement_id=$1 AND s.business_id=$2 AND s.state<>'open'")
+            .bind(statement_id).bind(business).fetch_optional(&mut *tx).await?
+            .ok_or_else(||WalletError::NotFound("unknown statement".into()))?;
+        let plan: Option<Uuid> = coordinates.try_get("customer_plan_id")?;
+        if let Some(plan) = plan {
+            sqlx::query("SELECT customer_plan_id FROM oxsum.customer_plans WHERE customer_plan_id=$1 FOR UPDATE")
+                .bind(plan).fetch_one(&mut *tx).await?;
+        }
+        let mut wallet = None;
+        let mut journal = None;
+        if action == "void" {
+            let journal_id: Option<Uuid> = coordinates.try_get("journal_id")?;
+            let journal_id = journal_id.ok_or_else(|| {
+                WalletError::Conflict(
+                    "statement has no backing journal; explicit financial reconciliation required"
+                        .into(),
+                )
+            })?;
+            journal = crate::journals::journal_in(&mut tx, journal_id).await?;
+            let source = journal
+                .as_ref()
+                .ok_or_else(|| WalletError::Conflict("backing journal is missing".into()))?;
+            if Some(source.customer_plan_id) != plan || source.business_id != business {
+                return Err(WalletError::Conflict(
+                    "statement and journal ownership differ".into(),
+                ));
+            }
+            let tenant: String = coordinates.try_get("tenant_id")?;
+            let source_wallet = crate::Wallet::open_existing(self.pool().clone(), &tenant).await?;
+            source_wallet.lock_append_in(&mut tx).await?;
+            wallet = Some(source_wallet);
         }
         let Some(statement) = statement_in(&mut tx, statement_id).await? else {
             return Err(WalletError::NotFound("unknown statement".into()));
@@ -954,6 +1080,7 @@ impl Db {
             return Err(WalletError::NotFound("unknown statement".into()));
         }
         let previous_state = statement.state.as_str();
+        let mut reversal_entry = None;
         match action {
             "extend_grace" => {
                 // Restore the issued standing — the grace window re-opens
@@ -980,42 +1107,30 @@ impl Db {
                 .bind(net_terms.to_string())
                 .execute(&mut *tx)
                 .await?;
-                // Restoring the statement restores admission: the sweep-set
-                // suspension lifts, the plan stays `past_due` (still owing,
-                // inside a fresh grace).
-                sqlx::query(
-                    "UPDATE oxsum.customer_plans \
-                     SET dunning_suspended_at=NULL, updated_at=now() \
-                     WHERE customer_plan_id=$1",
-                )
-                .bind(statement.customer_plan_id)
-                .execute(&mut *tx)
-                .await?;
+                if let Some(plan) = plan {
+                    crate::plan_debt::refresh_in(&mut tx, plan).await?;
+                }
             }
             _ => {
-                // Void: reversing lines append so the statement nets to zero.
-                let lines = lines_in(&mut tx, statement_id).await?;
-                for line in &lines {
-                    insert_line_in(
+                let source = journal
+                    .as_ref()
+                    .ok_or_else(|| invalid("validated journal missing"))?;
+                if source.state == crate::JournalState::Void
+                    && statement.state != PlanStatementState::Void
+                {
+                    return Err(WalletError::Conflict("void journal has a live statement; explicit financial reconciliation required".into()));
+                }
+                reversal_entry = self
+                    .void_journal_financial_in(
                         &mut tx,
-                        statement_id,
-                        line.kind,
-                        -line.amount_minor,
-                        &format!("void reversal of {}", line.description),
-                        Some(line.line_id),
+                        wallet
+                            .as_ref()
+                            .ok_or_else(|| invalid("validated wallet missing"))?,
+                        source,
+                        reason,
+                        OffsetDateTime::now_utc().date(),
                     )
                     .await?;
-                }
-                sqlx::query(
-                    "UPDATE oxsum.plan_statements \
-                     SET state='void', total_minor=0, paid_minor=0, voided_at=now(), \
-                         void_reason=$2, updated_at=now() \
-                     WHERE statement_id=$1",
-                )
-                .bind(statement_id)
-                .bind(reason)
-                .execute(&mut *tx)
-                .await?;
             }
         }
         let audit_id = Uuid::new_v4();
@@ -1035,6 +1150,8 @@ impl Db {
             "previousState": previous_state,
             "totalMinor": statement.total_minor,
             "reason": reason,
+            "journalId": journal.as_ref().map(|source|source.journal_id),
+            "reversalEntryId": reversal_entry,
         }))
         .bind(idempotency_key)
         .execute(&mut *tx)
@@ -1061,8 +1178,8 @@ impl Db {
     }
 
     /// The credit figure `/org/plan` reports: `creditLimitMinor` the binding's
-    /// cap, `outstandingMinor` the open statements' remaining plus current
-    /// holds, `nextDueAt` the earliest open statement's due date.
+    /// cap, `outstandingMinor` the remaining statement/journal debt, and
+    /// `nextDueAt` its earliest due date. Admission separately includes holds.
     ///
     /// # Errors
     ///
@@ -1071,26 +1188,23 @@ impl Db {
         &self,
         organization_id: Uuid,
     ) -> Result<Option<PlanCreditStanding>, WalletError> {
+        let mut connection = self.pool().acquire().await?;
         let row = sqlx::query(
-            "SELECT cp.credit_limit_minor, \
-                    COALESCE(SUM(s.total_minor - s.paid_minor),0)::bigint AS outstanding, \
-                    MIN(s.due_at) AS next_due \
-             FROM oxsum.customer_plans cp \
-             LEFT JOIN oxsum.plan_statements s \
-               ON s.customer_plan_id = cp.customer_plan_id \
-              AND s.state IN ('issued','past_due') \
-             WHERE cp.organization_id=$1 \
-               AND cp.state IN ('pending_payment','active','renewal_pending','past_due') \
-             GROUP BY cp.credit_limit_minor",
+            "SELECT customer_plan_id,credit_limit_minor FROM oxsum.customer_plans \
+             WHERE organization_id=$1 \
+               AND state IN ('pending_payment','active','renewal_pending','past_due')",
         )
         .bind(organization_id)
-        .fetch_optional(self.pool())
+        .fetch_optional(&mut *connection)
         .await?;
         let Some(row) = row else { return Ok(None) };
+        let (outstanding_minor, next_due_at) =
+            crate::plan_debt::standing_in(&mut connection, row.try_get("customer_plan_id")?)
+                .await?;
         Ok(Some(PlanCreditStanding {
             credit_limit_minor: row.try_get("credit_limit_minor")?,
-            outstanding_minor: row.try_get("outstanding")?,
-            next_due_at: row.try_get("next_due")?,
+            outstanding_minor,
+            next_due_at,
         }))
     }
 }
@@ -1101,10 +1215,10 @@ impl Db {
 pub struct PlanCreditStanding {
     /// The binding's wallet-side overage cap; `None` is unlimited.
     pub credit_limit_minor: Option<i64>,
-    /// The open statements' remaining plus current holds — what the credit
-    /// limit's admission check counts.
+    /// Remaining statement debt and posted journals without live statements.
+    /// The admission check additionally counts open holds.
     pub outstanding_minor: i64,
-    /// The earliest open statement's due date.
+    /// The earliest effective debt due date, including retained voids.
     #[serde(with = "time::serde::rfc3339::option")]
     pub next_due_at: Option<OffsetDateTime>,
 }

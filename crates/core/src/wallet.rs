@@ -1849,15 +1849,8 @@ impl Wallet {
                         .fetch_one(&mut *tx)
                         .await?;
                 if has_plans {
-                    suspended = sqlx::query_scalar(
-                        "SELECT COALESCE((SELECT dunning_suspended_at IS NOT NULL FROM oxsum.customer_plans \
-                           WHERE organization_id=$1 \
-                             AND state IN ('pending_payment','active','renewal_pending','past_due') \
-                           LIMIT 1), false)",
-                    )
-                    .bind(organization)
-                    .fetch_one(&mut *tx)
-                    .await?;
+                    suspended =
+                        crate::plan_debt::admission_suspended_in(&mut tx, organization).await?;
                 }
             }
             drop(tx);
@@ -2251,15 +2244,8 @@ impl Wallet {
                         .fetch_one(&mut *tx)
                         .await?;
                 if has_plans {
-                    let plan_suspended: bool = sqlx::query_scalar(
-                        "SELECT COALESCE((SELECT dunning_suspended_at IS NOT NULL FROM oxsum.customer_plans \
-                           WHERE organization_id=$1 \
-                             AND state IN ('pending_payment','active','renewal_pending','past_due') \
-                           LIMIT 1), false)",
-                    )
-                    .bind(organization)
-                    .fetch_one(&mut *tx)
-                    .await?;
+                    let plan_suspended: bool =
+                        crate::plan_debt::admission_suspended_in(&mut tx, organization).await?;
                     if plan_suspended {
                         return Err(WalletError::Forbidden(
                             "the organization is suspended".into(),

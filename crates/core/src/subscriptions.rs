@@ -819,15 +819,10 @@ impl Db {
         let Some(row) = row else { return Ok(()) };
         let limit: Option<i64> = row.try_get("credit_limit_minor")?;
         let Some(limit) = limit else { return Ok(()) };
-        // Open statements' remaining — the receivable the customer still owes.
-        let statements_outstanding: i64 = sqlx::query_scalar(
-            "SELECT COALESCE(SUM(total_minor - paid_minor),0)::bigint \
-             FROM oxsum.plan_statements \
-             WHERE organization_id=$1 AND state IN ('issued','past_due')",
-        )
-        .bind(organization_id)
-        .fetch_one(&mut **tx)
-        .await?;
+        // The same debt projection as customer credit standing, including a
+        // posted journal hidden by an old document-only void.
+        let statements_outstanding =
+            crate::plan_debt::organization_outstanding_in(&mut *tx, organization_id).await?;
         // Current holds — the pending reservations a racing turn would compete
         // for, counted from the watch rows the same lock covers.
         let tenant: String = row.try_get("tenant_id")?;
