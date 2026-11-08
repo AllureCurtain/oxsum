@@ -650,50 +650,66 @@ test jobs; the image itself is not built on every PR.
 
 ## Publishing `verify-oxsum-bill` to npm
 
-The `web/verify-sdk` package ships the same wasm-bindgen module the `/verify` page
-serves, packed so a downstream page imports `verify-oxsum-bill` rather than host the
-`.wasm` itself. Publishing is a maintainer step, not a CI job: it runs from a clean
-checkout, with the maintainer's npm login.
+The package is built and packed once by the candidate's clean consumer check.
+The release path consumes that original verified `.tgz`; it never invokes
+`npm publish` in `web/verify-sdk` or repeats prepare/prepack. Build or version
+changes require a new candidate run. A locally consistent tarball alone does not
+authenticate successful candidate/full-CI provenance.
+
+After explicit publication authorization, select the candidate run/attempt,
+source SHA, embedded package version and an unoccupied distribution tag:
 
 ```bash
-# 0. Install the toolchain the package builds against — `prepare` runs `tsc` here:
-cd web/verify-sdk && npm ci && cd -
-
-# 1. Build the wasm the loader imports. Needs the wasm32-unknown-unknown target and
-#    a wasm-bindgen CLI matching Cargo.lock (the generated glue embeds a schema
-#    version the CLI validates):
-scripts/build-verify-wasm.sh
-
-# 2. Sanity-check the tarball: it must carry dist/{index,verify-bill,
-#    verify-statement,verify-usage-report}.{js,d.ts}, wasm/verify_wasm{.js,_bg.wasm},
-#    README.md, and LICENSE-{MIT,APACHE}. `prepack` refuses a pack with an empty
-#    wasm/, so this step never ships a loader without its module.
-cd web/verify-sdk
-npm pack --dry-run
-
-# 3. Install that tarball into a clean temporary project and run the offline
-#    example over captured genuine evidence (`examples/verify-consumer`). This
-#    is the consumer-side check: no workspace path, no billing server, and the
-#    tampered/wrong-hash/wrong-key/wrong-archived-head cases must be rejected.
-cd -
-bash scripts/check-verify-consumer.sh
-
-# 4. Publish. `--access public` is required the first time — scoped or not, npm
-#    defaults to private on the first publish of a name.
-cd web/verify-sdk
-npm publish --access public
+python3 scripts/publish-candidate-sdk.py /path/to/candidate-bundle \
+  --sha <40-character-source-sha> --run <successful-candidate-run> --attempt <attempt> \
+  --version <embedded-sdk-version> --tag candidate-<version-with-dashes> \
+  --registry https://registry.npmjs.org/ --receipt /new/sdk-publication-receipt.json
 ```
 
-`wasm/` is a gitignored build artifact the script populates, so a fresh clone packs
-nothing usable — the order above is the only order. `npm publish` runs `prepack`,
-which rebuilds `dist/` and refuses when `wasm/` is empty; a `tsc` error or a missing
-wasm-bindgen run therefore stops the publish rather than ship a broken tarball.
-`scripts/check-verify-consumer.sh` prints the version its tarball carries; record
-that version in `examples/verify-consumer/README.md` when the tested version changes.
+Requirements: Python 3.10+, Node 24/npm 11, authenticated `gh` for candidate
+artifact reads, and `OXSUM_NPM_TOKEN` supplied from a secret store with publication
+authority for `verify-oxsum-bill`. The helper never sources `.env`. The manual
+`release-sdk.yml` workflow provides the same selectors and repository secret;
+it does not run on pushes and has no image/deployment action.
 
-As of 2026-11-04 the package is **not published**: `npm view verify-oxsum-bill`
-answers E404. The tarball packs and verifies locally at `0.1.0`; publication waits
-on the maintainer's npm credentials and authorization.
+The helper snapshots and validates the version-2 candidate online, verifies the
+selected SDK version and original SRI, then runs real `npm publish <absolute-tgz>
+--ignore-scripts`. Isolated cwd/config/cache/environment prevent ambient npmrc,
+proxy or Node preload overrides; package `publishConfig` is refused. npm sees a
+bounded ephemeral loopback relay and token. The remote token remains in Python,
+which only sends it to the exact selected registry origin and refuses redirects.
+The relay checks the original attachment bytes/SRI and only replaces transport
+metadata's tarball URL; the gzip archive is unchanged. No lifecycle hook, build,
+repack or automatic npm provenance generation occurs.
+
+Before writing, the selected distribution tag must be absent or already point
+to the same version. A version already present succeeds only if metadata SRI and
+downloaded bytes match exactly and the tag already matches. Different version
+bytes, an occupied tag, absent tag on an existing version, auth/network/proxy
+errors and redirected/foreign tarball URLs fail closed. The helper does not
+move `latest` or any existing tag to a new version. Tag changes require their
+own explicitly reviewed registry operation. Publication jobs serialize; external
+writers must observe the same exclusion because npm tags have no compare-and-swap.
+A partial publish without a receipt is incomplete; retry the same candidate/tag
+with a new receipt path to verify it. A missing tag requires explicit repair.
+
+The independent receipt binds source/workflow, candidate manifest hash, original
+tarball SHA256 and SHA512 SRI, package/version, registry/tag and final verification.
+Keep it before the workflow artifact expires. This tooling is not a claim that
+the package was publicly published; no public npm request was made in its local
+rehearsal. The historical 2026-11-04 npm E404 observation remains historical.
+
+```bash
+python3 scripts/test-candidate-sdk.py
+python3 scripts/test-candidate-sdk.py --local-registry /new/sdk-rehearsal-output
+```
+
+The real npm rehearsal creates task-owned loopback HTTP endpoints, captures the
+actual publish request, verifies uploaded/downloaded compressed bytes, proves
+lifecycle hooks did not run, and refuses repeat/version/tag/redirect conflicts.
+Only explicit `--local-fixture` with numeric `http://127.0.0.1:<port>/` can bypass
+online provenance; it marks receipts `local-fixture` and cannot publish remotely.
+Its synthetic package contents do not establish final SDK candidate acceptance.
 
 ## Deployment runbook
 

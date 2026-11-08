@@ -118,3 +118,30 @@ successful receipts, exact previous digest/source selection, unchanged current/
 previous operator environment and exact current runtime. Otherwise restore to a
 separate database. A local HTTP/Docker state fixture proves only orchestration
 branches; it cannot provide `verified-candidate` acceptance for a real runtime.
+
+
+## SDK publication receipt, version 1 (#814)
+
+The original version-2 `sdk.tarball` is the publication input. The helper freezes
+and revalidates the candidate online, then uses real npm with lifecycle/provenance
+scripts disabled through a bounded relay. The relay verifies npm's attachment
+matches the original gzip bytes before forwarding the package PUT. The only
+rewritten data is transport metadata's registry tarball URL. No package build,
+pack or byte normalization occurs.
+
+The independent receipt includes `formatVersion: 1`, `evidenceTier`
+(`verified-candidate` or loopback-only `local-fixture`), `sourceSha`, `repository`,
+`workflow`, `candidateManifestSha256`, `tarballSha256`, package `name`, `version`,
+SHA512 `integrity`, exact `registry`, selected `tag`, `result` (`published` or
+`already-present`) and UTC `publishedAt`. A receipt appears only after metadata
+and downloaded byte verification, never inside or overwriting the candidate.
+
+The registry/package endpoint and tarball URL stay on the selected exact origin;
+redirects are refused. Python holds the remote token; npm receives only an
+ephemeral loopback token and isolated config. Production requires the official
+HTTPS npm registry; fixture mode is restricted to numeric loopback HTTP. Existing
+versions require original bytes, and a tag pointing elsewhere is never moved.
+Same-version absent-tag repair is outside this path. Workflow jobs serialize;
+other writers must observe operator exclusion because tag updates have no atomic
+compare-and-swap. Final real-candidate acceptance is separate from the fixture
+registry transport verdict.

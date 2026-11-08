@@ -13,6 +13,7 @@ and "a version is published". Publishing (`release.yml`) and deploying
 | 1 | `release-candidate.yml` — fmt, clippy, lib/doc tests, wasm build, frontend build, verify-consumer, candidate image build, manifest + checksums + notes draft | manual `gh workflow run release-candidate.yml -f sha=<sha>` | the exact promoted SHA |
 | 2 | `scripts/release-candidate-smoke.sh` — live smoke, including an exact version SHA assertion | candidate image job, automatically; repeatable locally | the image built in gate 1 |
 | 3 | `release.yml` — validate online provenance, upload the original image config/layer bytes, retain immutable digest receipt | manual dispatch with candidate run/attempt/source and explicit version | the saved candidate archive |
+| 3b | `release-sdk.yml` — publish the original candidate SDK tarball and verify downloaded SRI/bytes | separate authorized manual dispatch with package version/tag | the same `.tgz` installed by candidate consumer |
 | 4 | `deploy.yml` — verify a published candidate digest, migrate/serve it and check readiness/version | separate authorized manual dispatch | immutable digest plus candidate run/attempt/source |
 
 Gate 1 fails closed unless `check-candidate-ci.py` finds a successful
@@ -162,8 +163,8 @@ The `deploy.yml` workflow verifies the explicit published digest and requires
 candidate runtime evidence before its SSH stage. It never calls Release or
 builds an image. See [the deployment and rollback runbook](self-hosted-upgrade.md)
 for its prerequisites, trusted plan, readiness/version checks and compatibility
-rules. SDK publication and final actual-candidate deployment/rollback acceptance
-remain separate N13 work; tooling alone does not close J14.
+rules. SDK publication uses the separate `release-sdk.yml` path described below;
+final actual-candidate publication/deployment/rollback acceptance remains open; tooling alone does not close J14.
 
 ## Image promotion checks and receipt
 
@@ -225,3 +226,26 @@ publication and conflict refusal without running the application. The dedicated
 `127.0.0.1:<port>` registry and marks all receipts `local-fixture`. It cannot
 publish to GHCR and is never used by the Release workflow. These results are
 transport development evidence; a final real candidate remains required.
+
+
+## Publishing the original SDK candidate (#814)
+
+After the release checklist and explicit npm publication authority are satisfied,
+select the embedded package version and an unoccupied distribution tag:
+
+```bash
+gh workflow run release-sdk.yml --ref main \
+  -f source_sha=<40-character-source-sha> \
+  -f candidate_run=<successful-run-id> -f candidate_attempt=<attempt> \
+  -f package_version=<embedded-sdk-version> -f distribution_tag=candidate-<version>
+```
+
+The workflow downloads the same v2 candidate and revalidates online provenance.
+It publishes the original SDK tarball through `scripts/publish-candidate-sdk.py`,
+never a source directory or new pack. Existing versions require exact SRI and
+downloaded gzip bytes; occupied tags cannot be moved. Its independent
+`sdk-publication-receipt` names the original tarball hash and verified package/
+registry/tag identity. It neither publishes the image nor deploys the service.
+The full token/relay/partial-failure runbook and local real-npm rehearsal commands
+are in [the development guide](development.md#publishing-verify-oxsum-bill-to-npm).
+No public publication is implied by locally successful fixtures or tooling CI.

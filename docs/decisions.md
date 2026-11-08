@@ -3035,3 +3035,29 @@ production to test dunning/refund/renewal behavior. Cash-funded and credit-funde
 usage regressions use actual wallet holds, settlements and linked usage records,
 then compare income, receivable, wallet balance and customer statements across
 close and replay. Daily fee recognition and statement repayment remain N11/#777.
+
+
+## 2026-11-08 — Publish the original candidate SDK through a bounded npm relay (#814)
+
+The old source-directory npm publish recipe reran prepack and could replace the
+artifact the candidate consumer verified. Publication now requires candidate
+source/run/attempt and embedded version plus an explicit tag, freezes and
+validates the bundle online, and gives only the original tarball to real npm.
+Lifecycle hooks and npm provenance generation are disabled; package publishConfig
+and ambient npmrc/proxy/Node preload settings cannot override the path.
+
+A bounded loopback relay lets npm form a genuine publication request while keeping
+the remote registry token out of its process/config. The relay accepts only one
+selected package PUT, validates exact attachment bytes and SRI, then forwards
+through Python's exact-origin client with redirects disabled. Only the transport
+metadata's tarball URL changes; compressed package bytes do not. Production uses
+registry.npmjs.org HTTPS. An explicit numeric-loopback fixture mode is separately
+labeled and cannot bypass provenance for remote publication.
+
+Existing versions require metadata integrity and downloaded original-byte equality.
+Occupied tags pointing elsewhere refuse; the helper never implicitly moves latest.
+An existing version with a missing tag requires explicit operator registry repair,
+not another publish. Jobs serialize, and other writers need the same exclusion
+because npm tags have no compare-and-swap. A partial write without a verified
+receipt remains incomplete. The independent receipt binds original hashes and
+provenance; local real-npm tests do not imply a public SDK release or J14 closure.
