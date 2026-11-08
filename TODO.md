@@ -4,7 +4,10 @@ Updated: 2026-11-08
 
 ## In progress
 
-- [ ] [#835](https://github.com/AllureCurtain/oxsum/issues/835) — Explicit audited checkout routes, safe customer choices and retained-version retry implemented; 1,948 full workspace checks and strict Clippy passed, independent review passed; PR integration pending.
+- [ ] [#843](https://github.com/AllureCurtain/oxsum/issues/843) — N09.a: Derive business setup from current authority, supply, sale, checkout and admission facts; solo pay-as-you-go setup must not require extra staff or a plan. Customer readiness and first-call proof remain separate N09 work.
+
+- [x] [#835](https://github.com/AllureCurtain/oxsum/issues/835) — Integrated in PR #844 (`23b6547`): explicit audited checkout routes, safe customer choices and retained-version retry; 1,948 full workspace checks, strict Clippy and independent review passed. Browser/PSP acceptance remains.
+
 
 - [x] [#831](https://github.com/AllureCurtain/oxsum/issues/831) — Integrated in PR #834 (`0ea3ef3`): complete merchant configuration and redacted history; HTTP authority and required checks passed. Browser acceptance remains.
 
