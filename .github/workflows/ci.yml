@@ -102,6 +102,7 @@ jobs:
               - 'rust-toolchain.toml'
               - '.cargo/**'
               - '.github/workflows/**'
+              - '.github/actions/**'
               - 'Dockerfile'
               - '.dockerignore'
 
@@ -167,7 +168,9 @@ jobs:
       # runner tool cache and exposing its bin directory (issue #822).
       - name: Install mold
         if: needs.filter.outputs.rust == 'true'
-        run: python3 scripts/install-ci-tools.py mold
+        uses: ./.github/actions/install-ci-tool
+        with:
+          tool: mold
       - uses: Swatinem/rust-cache@v2
         if: needs.filter.outputs.rust == 'true'
         with:
@@ -180,7 +183,9 @@ jobs:
           save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: Verify pinned sccache archive
         if: needs.filter.outputs.rust == 'true'
-        run: python3 scripts/install-ci-tools.py sccache
+        uses: ./.github/actions/install-ci-tool
+        with:
+          tool: sccache
       - name: Configure sccache
         if: needs.filter.outputs.rust == 'true'
         uses: mozilla-actions/sccache-action@v0.0.11
@@ -214,6 +219,7 @@ jobs:
               - 'Cargo.toml'
               - 'Cargo.lock'
               - '.github/workflows/**'
+              - '.github/actions/**'
       - name: No publishable-crate change
         if: steps.filter.outputs.crates != 'true'
         run: echo "no publishable-crate change; skipping the dry-run"
@@ -225,7 +231,9 @@ jobs:
       # sccache wrapper the same way the clippy job does.
       - name: Install mold
         if: steps.filter.outputs.crates == 'true'
-        run: python3 scripts/install-ci-tools.py mold
+        uses: ./.github/actions/install-ci-tool
+        with:
+          tool: mold
       - if: steps.filter.outputs.crates == 'true'
         env:
           RUSTC_WRAPPER: ""
@@ -257,6 +265,7 @@ jobs:
               - 'scripts/**'
               - 'crates/verify/**'
               - '.github/workflows/**'
+              - '.github/actions/**'
       - name: No wasm stage change
         if: steps.filter.outputs.stages != 'true' && github.event_name != 'schedule' && github.event_name != 'workflow_dispatch'
         run: echo "no Dockerfile/wasm change; skipping the stage build"
@@ -295,6 +304,7 @@ jobs:
               - 'web/**'
               - 'crates/server/openapi.yaml'
               - '.github/workflows/**'
+              - '.github/actions/**'
       - name: No frontend stage change
         if: steps.filter.outputs.stages != 'true' && github.event_name != 'schedule' && github.event_name != 'workflow_dispatch'
         run: echo "no frontend change; skipping the stage build"
@@ -342,7 +352,9 @@ jobs:
         if: needs.filter.outputs.rust == 'true'
       - name: Install mold
         if: needs.filter.outputs.rust == 'true'
-        run: python3 scripts/install-ci-tools.py mold
+        uses: ./.github/actions/install-ci-tool
+        with:
+          tool: mold
       - uses: Swatinem/rust-cache@v2
         if: needs.filter.outputs.rust == 'true'
         with:
@@ -351,7 +363,9 @@ jobs:
           save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: Verify pinned sccache archive
         if: needs.filter.outputs.rust == 'true'
-        run: python3 scripts/install-ci-tools.py sccache
+        uses: ./.github/actions/install-ci-tool
+        with:
+          tool: sccache
       - name: Configure sccache
         if: needs.filter.outputs.rust == 'true'
         uses: mozilla-actions/sccache-action@v0.0.11
@@ -398,7 +412,9 @@ jobs:
         with:
           components: rustfmt, clippy
       - name: Install mold
-        run: python3 scripts/install-ci-tools.py mold
+        uses: ./.github/actions/install-ci-tool
+        with:
+          tool: mold
       # The workspace's test binaries are big (testcontainers, sqlx):
       # without this the runner exhausts its disk compiling them ("No space left
       # on device" from rustc).
@@ -418,7 +434,9 @@ jobs:
           cache-workspace-crates: "true"
           save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: Verify pinned sccache archive
-        run: python3 scripts/install-ci-tools.py sccache
+        uses: ./.github/actions/install-ci-tool
+        with:
+          tool: sccache
       - name: Configure sccache
         uses: mozilla-actions/sccache-action@v0.0.11
         with:
