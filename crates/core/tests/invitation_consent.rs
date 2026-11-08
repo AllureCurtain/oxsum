@@ -67,6 +67,7 @@ async fn business(db: &Db) -> (Registration, String) {
 }
 fn customer(key: &str, email: &str) -> CustomerInvitationRequest {
     CustomerInvitationRequest {
+        send_email: false,
         idempotency_key: key.into(),
         email: email.into(),
         name: "Invited account".into(),
@@ -544,4 +545,199 @@ async fn role_matrix_and_same_external_id_creation_race_fail_closed() {
     assert_ne!(a.is_ok(), b.is_ok());
     let stored:serde_json::Value=sqlx::query_scalar("SELECT request FROM oxsum.business_mutations WHERE action='business.customer.invitation.create' AND idempotency_key=$1").bind(if a.is_ok(){"collision"}else{"other-key"}).fetch_one(db.pool()).await.unwrap();
     assert_eq!(stored["externalId"], json!(first.external_id));
+}
+
+#[tokio::test]
+async fn customer_invitation_history_is_scoped_and_never_contains_a_secret() {
+    let Some(db) = database().await else { return };
+    let (_, owner) = business(&db).await;
+    let recipient = user(&db, "history-recipient").await;
+    let recipient_token = login(&db, &recipient.user).await;
+    let accepted = db
+        .create_customer_invitation(&owner, &customer("accepted", &recipient.user.email))
+        .await
+        .unwrap();
+    db.accept_invitation(&recipient_token, accepted.token.as_deref().unwrap())
+        .await
+        .unwrap();
+    let revoked = db
+        .create_customer_invitation(&owner, &customer("revoked", "revoked@example.com"))
+        .await
+        .unwrap();
+    db.revoke_invitation(&owner, revoked.id, true, &revoke("revoke-history"))
+        .await
+        .unwrap();
+    let expired = db
+        .create_customer_invitation(&owner, &customer("expired", "expired@example.com"))
+        .await
+        .unwrap();
+    sqlx::query(
+        "UPDATE oxsum.invitations SET expires_at=now()-interval '1 second' WHERE invitation_id=$1",
+    )
+    .bind(expired.id)
+    .execute(db.pool())
+    .await
+    .unwrap();
+    let pending = db
+        .create_customer_invitation(&owner, &customer("pending", "pending@example.com"))
+        .await
+        .unwrap();
+    let team = db
+        .create_invitation(&recipient_token, &team("team-hidden", None))
+        .await
+        .unwrap();
+    let page = db.customer_invitations(&owner, None, 2).await.unwrap();
+    assert_eq!(page.registration_mode, "invite");
+    assert_eq!(page.invitations.len(), 2);
+    assert_eq!(page.invitations[0].id, pending.id);
+    assert_eq!(page.invitations[0].state, "pending");
+    assert_eq!(page.invitations[1].state, "expired");
+    let older = db
+        .customer_invitations(&owner, page.next_cursor, 2)
+        .await
+        .unwrap();
+    assert_eq!(older.invitations.len(), 2);
+    assert!(older.next_cursor.is_none());
+    assert_eq!(older.invitations[0].state, "revoked");
+    assert_eq!(older.invitations[1].state, "accepted");
+    let wire = serde_json::to_string(&page).unwrap();
+    assert!(!wire.contains("token"));
+    assert!(!wire.contains(pending.token.as_deref().unwrap()));
+    assert!(matches!(
+        db.customer_invitations(&owner, Some(team.id), 2).await,
+        Err(WalletError::NotFound(_))
+    ));
+    assert!(matches!(
+        db.customer_invitations(&recipient_token, None, 2).await,
+        Err(WalletError::Forbidden(_))
+    ));
+    assert!(db.customer_invitations(&owner, None, 0).await.is_err());
+}
+
+#[tokio::test]
+async fn invitation_mail_claim_survives_replay_and_crash_without_a_second_send() {
+    let Some(db) = database().await else { return };
+    let (_, owner) = business(&db).await;
+    let mut terms = customer("mail-once", "Receiver@Example.com");
+    terms.send_email = true;
+    let invite = db.create_customer_invitation(&owner, &terms).await.unwrap();
+    let secret = invite.token.as_deref().unwrap();
+    assert!(
+        db.begin_customer_invitation_mail(&owner, invite.id, "wrong secret", true)
+            .await
+            .unwrap()
+            .is_none()
+    );
+    let (a, b) = tokio::join!(
+        db.begin_customer_invitation_mail(&owner, invite.id, secret, true),
+        db.begin_customer_invitation_mail(&owner, invite.id, secret, true)
+    );
+    let (a, b) = (a.unwrap(), b.unwrap());
+    assert_ne!(a.is_some(), b.is_some());
+    let target = a.or(b).unwrap();
+    assert_eq!(target.email, "receiver@example.com");
+    assert_eq!(
+        db.customer_invitation_mail_state(&owner, invite.id)
+            .await
+            .unwrap(),
+        oxsum_core::InvitationDeliveryState::Unknown
+    );
+    // Simulate interruption after the durable claim: a reconnect still cannot
+    // claim another send, and replay returns no plaintext token.
+    let replay = db.create_customer_invitation(&owner, &terms).await.unwrap();
+    assert!(replay.token.is_none());
+    assert!(
+        db.begin_customer_invitation_mail(&owner, invite.id, secret, true)
+            .await
+            .unwrap()
+            .is_none()
+    );
+    db.complete_customer_invitation_mail(&target).await.unwrap();
+    db.complete_customer_invitation_mail(&target).await.unwrap();
+    assert_eq!(
+        db.customer_invitation_mail_state(&owner, invite.id)
+            .await
+            .unwrap(),
+        oxsum_core::InvitationDeliveryState::Submitted
+    );
+    assert!(
+        sqlx::query(
+            "UPDATE oxsum.invitations SET mail_state='not_attempted' WHERE invitation_id=$1"
+        )
+        .bind(invite.id)
+        .execute(db.pool())
+        .await
+        .is_err()
+    );
+    terms.send_email = false;
+    assert!(matches!(
+        db.create_customer_invitation(&owner, &terms).await,
+        Err(WalletError::Conflict(_))
+    ));
+
+    let mut unavailable = customer("unavailable", "unavailable@example.com");
+    unavailable.send_email = true;
+    let absent = db
+        .create_customer_invitation(&owner, &unavailable)
+        .await
+        .unwrap();
+    assert!(
+        db.begin_customer_invitation_mail(
+            &owner,
+            absent.id,
+            absent.token.as_deref().unwrap(),
+            false
+        )
+        .await
+        .unwrap()
+        .is_none()
+    );
+    assert_eq!(
+        db.customer_invitation_mail_state(&owner, absent.id)
+            .await
+            .unwrap(),
+        oxsum_core::InvitationDeliveryState::Unavailable
+    );
+    assert!(
+        db.begin_customer_invitation_mail(
+            &owner,
+            absent.id,
+            absent.token.as_deref().unwrap(),
+            true
+        )
+        .await
+        .unwrap()
+        .is_none()
+    );
+
+    let copy = db
+        .create_customer_invitation(&owner, &customer("copy-only", "copy@example.com"))
+        .await
+        .unwrap();
+    assert!(
+        db.begin_customer_invitation_mail(&owner, copy.id, copy.token.as_deref().unwrap(), true)
+            .await
+            .unwrap()
+            .is_none()
+    );
+    let mut revoked = customer("revoked-mail", "revoked-mail@example.com");
+    revoked.send_email = true;
+    let revoked = db
+        .create_customer_invitation(&owner, &revoked)
+        .await
+        .unwrap();
+    db.revoke_invitation(&owner, revoked.id, true, &revoke("stop-mail"))
+        .await
+        .unwrap();
+    assert!(
+        db.begin_customer_invitation_mail(
+            &owner,
+            revoked.id,
+            revoked.token.as_deref().unwrap(),
+            true
+        )
+        .await
+        .unwrap()
+        .is_none()
+    );
 }
