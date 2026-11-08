@@ -20,7 +20,7 @@ use axum::extract::{Path, State};
 use axum::http::HeaderMap;
 use oxsum_core::{
     CostCoverage, FinancialFacts, Principal, ReconciliationException, ReconciliationRepair,
-    ReconciliationRun, TimeBasis,
+    ReconciliationRun, ReconciliationSnapshot, TimeBasis,
 };
 use serde::Deserialize;
 use uuid::Uuid;
@@ -210,6 +210,8 @@ pub(crate) struct RunBody {
     idempotency_key: String,
     period_start: String,
     period_end: String,
+    #[serde(default)]
+    time_basis: TimeBasis,
 }
 
 pub(crate) async fn request_run(
@@ -221,10 +223,11 @@ pub(crate) async fn request_run(
     let end = parse_day(&r.period_end)?;
     ok(state
         .db
-        .request_reconciliation_run(
+        .request_reconciliation_run_with_basis(
             &super::business::personal_token(&headers)?,
             start,
             end,
+            r.time_basis,
             &r.idempotency_key,
         )
         .await?)
@@ -320,4 +323,45 @@ pub(crate) async fn repair_exception(
             &r.idempotency_key,
         )
         .await?)
+}
+
+/// Pagination over immutable comparison attempts.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct SnapshotQuery {
+    after: Option<Uuid>,
+    limit: Option<i64>,
+}
+
+/// List retained attempt summaries under ReportsRead.
+pub(crate) async fn snapshots(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(run): Path<Uuid>,
+    ApiQuery(q): ApiQuery<SnapshotQuery>,
+) -> ApiResult<Vec<ReconciliationSnapshot>> {
+    ok(state
+        .db
+        .reconciliation_snapshots(
+            &super::business::personal_token(&headers)?,
+            run,
+            q.after,
+            q.limit.unwrap_or(50),
+        )
+        .await?)
+}
+
+/// Read one immutable attempt's sources and exact differences under ReportsRead.
+pub(crate) async fn snapshot(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path((run, snapshot)): Path<(Uuid, Uuid)>,
+) -> ApiResult<ReconciliationSnapshot> {
+    ok(state
+        .db
+        .reconciliation_snapshot(&super::business::personal_token(&headers)?, run, snapshot)
+        .await?
+        .ok_or_else(|| {
+            oxsum_core::WalletError::NotFound("unknown reconciliation snapshot".into())
+        })?)
 }
