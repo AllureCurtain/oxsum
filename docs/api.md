@@ -153,6 +153,16 @@ The programmatic read surface exposes scoped customer data without scraping HTML
 
 Consumption keys read only their own attributed records. Member sessions read their own keys (including revoked/expired keys) plus shared unattributed history; account-wide document markers remain owner/admin-only. Owner/admin sessions read all customer records. Lists filter before pagination, raw proofs return 404 outside scope, and exports/WebSocket use the same policy. See [the route inventory](customer-capabilities.md).
 
+Signed merchant callbacks (#759) preserve their original normalized payload
+and digest. When local payment/customer metadata is absent, intake may derive
+only those missing coordinates from an already-bound provider payment inside
+the route-selected merchant and version. Conflicting supplied IDs remain
+rejected; malformed UUID metadata is a validation error. A missing reference
+stays pending for recovery. This applies to both versioned and environment
+intake, including old Hyperswitch refund payloads that do not copy payment
+metadata. It cannot select another merchant's secret or authorize a new
+payment. New refund requests send separate refund/order/customer identifiers.
+
 ## Protocol-native gateway (`/v1` and `/v1beta`)
 
 Point an OpenAI client's `base_url` at `/v1` and everything else stays the client's own. A Gemini client gets the same at `/v1beta`, the path Google's SDKs build.

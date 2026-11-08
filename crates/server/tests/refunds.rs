@@ -62,6 +62,7 @@ struct SwitchStub {
     answers: Arc<Mutex<Vec<(String, String)>>>,
     refund_answers: Arc<Mutex<Vec<String>>>,
     refund_calls: Arc<Mutex<usize>>,
+    refund_requests: Arc<Mutex<Vec<Value>>>,
     calls: Arc<Mutex<usize>>,
     stored: Arc<Mutex<std::collections::HashMap<String, Value>>>,
     stored_refunds: Arc<Mutex<std::collections::HashMap<String, Value>>>,
@@ -105,6 +106,7 @@ async fn stub_switch() -> (String, SwitchStub) {
             post(
                 |State(stub): State<SwitchStub>, body: axum::Json<Value>| async move {
                     *stub.refund_calls.lock().unwrap() += 1;
+                    stub.refund_requests.lock().unwrap().push(body.0.clone());
                     if *stub.refuse_refund.lock().unwrap() { return (StatusCode::BAD_REQUEST, axum::Json(json!({"error":{"code":"IR_13"}}))); }
                     if stub.refund_answers.lock().unwrap().is_empty() { return (StatusCode::OK, axum::Json(json!({}))); }
                     let id = body["refund_id"].as_str().unwrap().to_owned();
@@ -554,6 +556,10 @@ async fn a_refund_is_reviewed_then_the_signed_event_settles() {
     assert_eq!(status, StatusCode::OK, "{body}");
     assert_eq!(body["data"]["state"].as_str().unwrap(), "provider_pending");
     assert_eq!(*stub.refund_calls.lock().unwrap(), 1);
+    assert_eq!(
+        stub.refund_requests.lock().unwrap()[0]["metadata"],
+        json!({"refund_id":refund_id,"order_id":order_id,"payment_id":order_id,"organization_id":account.organization_id})
+    );
 
     // A replayed resolve answers the standing reservation — no second PSP call.
     let (status, _body) = call(
@@ -567,16 +573,31 @@ async fn a_refund_is_reviewed_then_the_signed_event_settles() {
     assert_eq!(status, StatusCode::OK);
     assert_eq!(*stub.refund_calls.lock().unwrap(), 1);
 
-    // The signed `refund_succeeded` books the take-back.
-    let body_text = refund(
+    // v1.129's real local-switch response retains only the refund request's
+    // metadata. Old requests used the refund UUID as order_id and omitted
+    // payment/customer IDs. That exact shape must still settle safely.
+    let mut upstream: Value = serde_json::from_str(&refund(
         "refund_succeeded",
         order_id,
         account.organization_id,
         &provider,
         Some(&refund_id.to_string()),
         210,
-    );
+    ))
+    .unwrap();
+    upstream["content"]["object"]["metadata"] = json!({"refund_id":refund_id,"order_id":refund_id});
+    let body_text = upstream.to_string();
     let status = post_webhook(
+        &app,
+        merchant,
+        version,
+        signed(WEBHOOK_SECRET, &body_text),
+        body_text.clone(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(wallet.available().await.unwrap(), 0);
+    post_webhook(
         &app,
         merchant,
         version,
@@ -584,7 +605,6 @@ async fn a_refund_is_reviewed_then_the_signed_event_settles() {
         body_text,
     )
     .await;
-    assert_eq!(status, StatusCode::OK);
     assert_eq!(wallet.available().await.unwrap(), 0);
 
     // The finance read shows the succeeded refund and its applied note.

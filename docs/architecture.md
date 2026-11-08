@@ -358,3 +358,15 @@ profile as the staff read and applies deployment defaults only before a save.
 The UI uses generated contract types, re-reads current state after writes and
 renders one contact/help component on authentication and both portal shells.
 No ledger, invoice snapshot or customer currency is a profile dependency.
+
+### Metadata-poor merchant callbacks (#759)
+
+The authenticated inbox stores the received normalization and payload digest
+unchanged. When a provider refund does not copy payment metadata, classification
+derives missing payment/customer coordinates from the immutable provider
+reference joined to a payment binding under the inbox's merchant and version.
+The same join supplies receipt reads and recovery. Supplied contradictions
+are rejected; unknown references remain pending until the binding is recorded.
+No trigger is relaxed, historical event rewritten, or payload-selected key
+trusted. New refund requests obtain metadata directly from the committed
+refund reservation's order/customer identity.
