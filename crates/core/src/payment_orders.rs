@@ -110,6 +110,8 @@ pub struct PaymentOrder {
     pub promo_minor: i64,
     /// Immutable published offer snapshot; absent on legacy/non-bundle orders.
     pub bundle_offer: Option<crate::BundleOffer>,
+    /// Immutable customer, sold version, period and fee for a plan payment.
+    pub plan_payment: Option<crate::PlanPaymentTerms>,
     /// Provider-side payment identifier once the provider supplied one.
     pub provider_payment_id: Option<String>,
     /// The checkout handles the provider answered, so a replayed create returns
@@ -196,6 +198,8 @@ pub struct PaymentReconciliation {
 /// the route rather than reaching here.
 #[derive(Debug, Clone)]
 pub struct NewPaymentOrder {
+    /// Required authoritative quote fingerprint for a new plan-period payment.
+    pub expected_plan_quote: Option<String>,
     /// Optional displayed quote revision, checked only for a new operation.
     pub expected_collection_revision: Option<i64>,
     /// The fulfillment arm this order will take.
@@ -268,6 +272,11 @@ fn order(row: &PgRow) -> Result<PaymentOrder, WalletError> {
             .map(serde_json::from_value)
             .transpose()
             .map_err(|_| WalletError::Misconfigured("invalid order bundle snapshot".into()))?,
+        plan_payment: row
+            .try_get::<Option<serde_json::Value>, _>("plan_payment")?
+            .map(serde_json::from_value)
+            .transpose()
+            .map_err(|_| WalletError::Misconfigured("invalid stored plan payment intent".into()))?,
         provider_payment_id: row.try_get("provider_payment_id")?,
         checkout: row.try_get("checkout")?,
         source: row.try_get("source")?,
@@ -278,7 +287,7 @@ fn order(row: &PgRow) -> Result<PaymentOrder, WalletError> {
     })
 }
 
-async fn order_in(
+pub(crate) async fn order_in(
     tx: &mut Transaction<'_, Postgres>,
     id: Uuid,
 ) -> Result<Option<PaymentOrder>, WalletError> {
@@ -333,7 +342,7 @@ const ORDER_STATUSES: &[&str] = &[
 
 const ORDER_COLS: &str = "order_id,merchant_id,merchant_version_id,organization_id,\
      purpose,amount_minor,currency,display_currency,display_amount_minor,\
-     rate_mantissa,rate_scale,purpose_ref,promo_minor,bundle_offer,provider_payment_id,checkout,source,evidence,status,created_at,paid_at";
+     rate_mantissa,rate_scale,purpose_ref,promo_minor,bundle_offer,plan_payment,provider_payment_id,checkout,source,evidence,status,created_at,paid_at";
 
 impl Db {
     /// Creates a payment order: pins the expected payment under the order's own
@@ -368,6 +377,13 @@ impl Db {
         {
             return Err(invalid(
                 "promotional credit requires a published bundle offer",
+            ));
+        }
+        if (new.purpose == PaymentOrderPurpose::PlanPeriod && new.promo_minor != 0)
+            || (new.purpose != PaymentOrderPurpose::PlanPeriod && new.expected_plan_quote.is_some())
+        {
+            return Err(invalid(
+                "plan quote and promotional terms do not match this payment purpose",
             ));
         }
         // Purpose-specific validation: a plan period needs its plan, an invoice
@@ -409,6 +425,13 @@ impl Db {
                 || standing.display_currency != new.display_currency
                 || standing.purpose_ref != new.purpose_ref
                 || standing.promo_minor != new.promo_minor
+                || (standing.purpose == PaymentOrderPurpose::PlanPeriod
+                    && standing
+                        .plan_payment
+                        .as_ref()
+                        .map(crate::PlanPaymentTerms::fingerprint)
+                        .transpose()?
+                        != new.expected_plan_quote)
             {
                 return Err(WalletError::Conflict(
                     "payment order terms changed for the same idempotency key".into(),
@@ -460,11 +483,12 @@ impl Db {
         } else {
             None
         };
-        let (amount_minor, promo_minor, rate) = if let Some(bundle) = &bundle {
+        let (amount_minor, promo_minor, rate, plan_payment) = if let Some(bundle) = &bundle {
             (
                 bundle.terms.purchased_minor,
                 bundle.terms.promo_minor,
                 bundle.terms.rate()?,
+                None,
             )
         } else {
             let display = crate::collection_terms::rate_in(
@@ -474,10 +498,38 @@ impl Db {
                 new.expected_collection_revision,
             )
             .await?;
-            let amount = display
-                .to_credit_minor(new.display_amount_minor)
-                .filter(|amount| *amount > 0)
-                .ok_or_else(|| invalid("collection amount does not rate to a credit figure"))?;
+            let plan_payment = if new.purpose == PaymentOrderPurpose::PlanPeriod {
+                let quote = crate::plan_payments::quote_in(
+                    &mut tx,
+                    business,
+                    organization,
+                    new.purpose_ref,
+                )
+                .await?;
+                if let Some(id) = quote.existing_order_id {
+                    return Err(WalletError::Conflict(format!(
+                        "this plan period already has order {id}; resume it"
+                    )));
+                }
+                if new.expected_plan_quote.as_deref() != Some(quote.fingerprint.as_str())
+                    || new.display_amount_minor != quote.terms.display_amount_minor
+                    || new.display_currency != quote.terms.display_currency
+                {
+                    return Err(WalletError::Conflict(
+                        "plan quote changed or does not match; review the current quote".into(),
+                    ));
+                }
+                Some(quote.terms)
+            } else {
+                None
+            };
+            let amount = match &plan_payment {
+                Some(terms) => terms.fee_minor,
+                None => display
+                    .to_credit_minor(new.display_amount_minor)
+                    .filter(|amount| *amount > 0)
+                    .ok_or_else(|| invalid("collection amount does not rate to a credit figure"))?,
+            };
             (
                 amount,
                 0,
@@ -485,6 +537,7 @@ impl Db {
                     mantissa: display.rate_mantissa(),
                     scale: display.rate_scale(),
                 },
+                plan_payment,
             )
         };
         let order_id = Uuid::new_v4();
@@ -509,8 +562,8 @@ impl Db {
             "INSERT INTO oxsum.payment_orders\
              (order_id,business_id,merchant_id,merchant_version_id,organization_id,\
               purpose,amount_minor,currency,display_currency,display_amount_minor,\
-              rate_mantissa,rate_scale,purpose_ref,promo_minor,idempotency_key,status,bundle_offer) \
-             VALUES($1,$2,$3,$4,$5,$6,$7,'USD',$8,$9,$10,$11,$12,$13,$14,'created',$15)",
+              rate_mantissa,rate_scale,purpose_ref,promo_minor,idempotency_key,status,bundle_offer,plan_payment) \
+             VALUES($1,$2,$3,$4,$5,$6,$7,'USD',$8,$9,$10,$11,$12,$13,$14,'created',$15,$16)",
         )
         .bind(order_id)
         .bind(business)
@@ -526,7 +579,8 @@ impl Db {
         .bind(new.purpose_ref)
         .bind(promo_minor)
         .bind(&new.idempotency_key)
-        .bind(bundle.as_ref().map(|offer|serde_json::json!(offer)))
+        .bind(bundle.as_ref().map(|offer| serde_json::json!(offer)))
+        .bind(plan_payment.as_ref().map(|terms| serde_json::json!(terms)))
         .execute(&mut *tx)
         .await?;
         let created = order_in(&mut tx, order_id)
@@ -983,6 +1037,11 @@ impl Db {
         let rows = sqlx::query(&format!(
             "SELECT {ORDER_COLS} FROM oxsum.payment_orders \
              WHERE status='paid' AND (purpose <> 'bundle' OR bundle_offer IS NOT NULL) \
+               AND (purpose <> 'plan_period' OR \
+               EXISTS(SELECT 1 FROM oxsum.plan_periods p WHERE p.authorization_kind='payment_order' \
+                 AND p.authorization_ref=payment_orders.order_id) OR (plan_payment IS NOT NULL \
+               AND NOT EXISTS(SELECT 1 FROM oxsum.refunds r WHERE r.order_id=payment_orders.order_id \
+                 AND r.state IN ('requested','provider_pending','succeeded')))) \
              ORDER BY created_at LIMIT $1"
         ))
         .bind(limit)

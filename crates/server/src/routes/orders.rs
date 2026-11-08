@@ -26,6 +26,7 @@ use uuid::Uuid;
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(crate) struct CreateOrderReq {
+    expected_plan_quote: Option<String>,
     expected_collection_revision: Option<i64>,
     idempotency_key: String,
     rail: MerchantRail,
@@ -90,6 +91,7 @@ pub(crate) async fn create_order(
             ApiError::ServiceUnavailable("the requested payment rail is not configured".into())
         })?;
     let new = NewPaymentOrder {
+        expected_plan_quote: r.expected_plan_quote,
         expected_collection_revision: r.expected_collection_revision,
         purpose: r.purpose,
         display_amount_minor: r.display_amount_minor,
@@ -140,6 +142,14 @@ async fn drive_checkout(
     {
         return Err(ApiError::Conflict(
             "legacy bundle has no authoritative offer; operator review required".into(),
+        ));
+    }
+    if order.purpose == PaymentOrderPurpose::PlanPeriod
+        && order.plan_payment.is_none()
+        && order.status != "fulfilled"
+    {
+        return Err(ApiError::Conflict(
+            "legacy plan order has no authoritative period quote; operator review required".into(),
         ));
     }
     if order.provider_payment_id.is_some() || order.status != "created" {

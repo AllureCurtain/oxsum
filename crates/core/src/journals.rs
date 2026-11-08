@@ -714,7 +714,7 @@ impl Db {
     /// Settlement: a `payment_order`-authorized period's prepayment
     /// reclassifies `debit UnearnedPlanFees / credit Receivables` up to the
     /// journal's total — `paid` when the prepayment covers it, `posted` for
-    /// the remainder (the open receivable a renewal order or dunning settles).
+    /// the remainder, retained for explicit statement repayment or correction.
     /// A complimentary period is covered in full by its credit lines — `paid`
     /// with nothing owed.
     ///
@@ -1008,96 +1008,21 @@ impl Db {
                 Some(period.period_end),
             )
             .await?;
-            // A journal already `paid` at close reconciles its statement in
-            // the same commit — the prepaid order covered the bill, so the
-            // statement lands settled rather than issued-open.
-            if journal.state == JournalState::Paid
-                && let Some(order) = journal.paid_order_id
-            {
-                self.reconcile_statement_for_journal_in(tx, &journal, order, journal.total_minor)
-                    .await?;
+            // Every prepaid amount reaches the customer statement, including
+            // a partial cover when overage leaves the journal posted. Requiring
+            // the whole journal to be paid would charge its base fee twice in
+            // the outstanding statement even though the ledger settled it.
+            if journal.settled_minor > 0 && period.authorization_kind == "payment_order" {
+                self.reconcile_statement_for_journal_in(
+                    tx,
+                    &journal,
+                    period.authorization_ref,
+                    journal.settled_minor,
+                )
+                .await?;
             }
         }
         Ok(Some(journal_id))
-    }
-
-    /// The journal step a fulfilled `planPeriod` order runs inside
-    /// `activate_plan_period`'s transaction: settle every open receivable the
-    /// customer plan still carries (oldest first — arrears before the new
-    /// period's prepay), then book what remains of the order's amount as the
-    /// prepayment the next close will reclassify. `debit Cash / credit
-    /// Receivables` for the journals, `debit Cash / credit
-    /// UnearnedPlanFees` for the prepay — one posting each, keyed off the
-    /// order id, so a replayed activation is a no-op.
-    ///
-    /// Returns nothing: the standing journal reads answer the state.
-    ///
-    /// # Errors
-    ///
-    /// Storage failures surface as [`WalletError`].
-    pub(crate) async fn apply_order_to_journals_in(
-        &self,
-        tx: &mut Transaction<'_, Postgres>,
-        wallet: &crate::Wallet,
-        order_id: Uuid,
-        customer_plan_id: Uuid,
-        amount_minor: i64,
-        on: time::Date,
-    ) -> Result<(), WalletError> {
-        let mut remaining = amount_minor;
-        let open = sqlx::query(&format!(
-            "SELECT {JOURNAL_COLS} FROM oxsum.invoice_journals \
-             WHERE customer_plan_id=$1 AND state='posted' \
-             ORDER BY period_index FOR UPDATE"
-        ))
-        .bind(customer_plan_id)
-        .fetch_all(&mut **tx)
-        .await?;
-        for row in &open {
-            if remaining <= 0 {
-                break;
-            }
-            let journal = journal_from_row(row)?;
-            let owed = journal.total_minor - journal.settled_minor;
-            if owed <= 0 {
-                continue;
-            }
-            let pay = owed.min(remaining);
-            wallet
-                .plan_journal_payment_in(tx, &order_id, &journal.journal_id, pay, on)
-                .await?;
-            let settled = journal.settled_minor + pay;
-            let state = if settled >= journal.total_minor {
-                "paid"
-            } else {
-                "posted"
-            };
-            sqlx::query(
-                "UPDATE oxsum.invoice_journals \
-                 SET state=$2, settled_minor=$3, \
-                     paid_order_id=CASE WHEN $2='paid' THEN $4 ELSE paid_order_id END, \
-                     paid_at=CASE WHEN $2='paid' THEN now() ELSE paid_at END, \
-                     updated_at=now() \
-                 WHERE journal_id=$1",
-            )
-            .bind(journal.journal_id)
-            .bind(state)
-            .bind(settled)
-            .bind(order_id)
-            .execute(&mut **tx)
-            .await?;
-            // The statement the customer reads reconciles beside the journal
-            // (issue #612, T21): a `paymentApplied` line and `issued|past_due
-            // → paid` when this payment covered the bill — the suspension a
-            // dunning sweep placed lifts in the same commit.
-            self.reconcile_statement_for_journal_in(tx, &journal, order_id, pay)
-                .await?;
-            remaining -= pay;
-        }
-        if remaining > 0 {
-            wallet.plan_prepay_in(tx, &order_id, remaining, on).await?;
-        }
-        Ok(())
     }
 
     /// The journal half of `settle_order_refund` for a `planPeriod` order: the

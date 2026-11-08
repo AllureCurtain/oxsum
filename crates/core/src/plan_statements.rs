@@ -14,16 +14,16 @@
 //! The lifecycle is `open → issued → paid | past_due | void`, with
 //! `past_due → issued` the staff release-review's one backward step and `open`
 //! never resting outside the close transaction — the same machine the
-//! journal's trigger enforces. A payment reconciling the journal (T20's
-//! `apply_order_to_journals_in`, extended) appends a `paymentApplied` line,
+//! journal's trigger enforces. A payment reconciling the journal appends an
+//! order-linked `paymentApplied` line,
 //! reduces `total_minor − paid_minor` to zero, and walks `issued → paid`; a
 //! partial payment leaves `issued` with `paid_minor > 0`.
 //!
 //! The `statement-past-due` job flips `issued` rows whose `due_at` passed to
 //! `past_due`, and past `grace_days` suspends the plan's wallet-side
 //! admission — subscription-quota draws (already paid for) still serve; a
-//! payment clearing the statement restores `active` in the reconcile's own
-//! transaction. `credit_limit_minor` caps the wallet-side overage a
+//! payment clearing all statements removes only that debt suspension. The
+//! independent plan renewal state still requires a paid period authorization. `credit_limit_minor` caps the wallet-side overage a
 //! plan-bound turn may hold: admission refuses when `outstanding +
 //! this_overage > credit_limit_minor`, where `outstanding` is the open
 //! statements' remaining plus the pools' current holds.
@@ -161,7 +161,7 @@ pub struct PlanStatement {
     pub journal_id: Option<Uuid>,
     /// Lifecycle state of the statement.
     pub state: PlanStatementState,
-    /// The lines' sum — what the customer owes.
+    /// Gross charge/credit total, excluding payment allocation lines.
     pub total_minor: i64,
     /// What reconciled payments already covered.
     pub paid_minor: i64,
@@ -391,9 +391,8 @@ impl Db {
         Ok(Some(statement_id))
     }
 
-    /// The statement half of `apply_order_to_journals_in` — T20's seam,
-    /// extended: for every journal the order settled, reconcile the statement
-    /// that wraps it. A full settlement appends a `paymentApplied` line
+    /// Reconcile a journal allocation to its customer statement. Every partial
+    /// or full allocation appends an order-linked `paymentApplied` line
     /// reducing `total_minor − paid_minor` to zero and walks `issued|past_due
     /// → paid`; a partial one leaves `issued` with `paid_minor > 0`. A
     /// statement that just cleared also lifts the plan's dunning suspension
@@ -426,20 +425,25 @@ impl Db {
         if paid_minor <= 0 {
             return Ok(());
         }
-        let new_paid = statement.paid_minor + paid_minor;
+        let applied = paid_minor.min((statement.total_minor - statement.paid_minor).max(0));
+        if applied == 0 {
+            return Ok(());
+        }
+        let new_paid = statement.paid_minor + applied;
         let fully = new_paid >= statement.total_minor;
+        // Partial prepayment also has a source-linked line. The statement's
+        // gross total stays the charge total, while paid_minor and these lines
+        // show the allocations that reduced its outstanding receivable.
+        insert_line_in(
+            tx,
+            statement.statement_id,
+            StatementLineKind::PaymentApplied,
+            -applied,
+            "payment reconciled the statement",
+            Some(order_id),
+        )
+        .await?;
         if fully {
-            // The clearing line nets the bill to zero in customer terms — the
-            // payment the receivable just took.
-            insert_line_in(
-                tx,
-                statement.statement_id,
-                StatementLineKind::PaymentApplied,
-                -(statement.total_minor - statement.paid_minor),
-                "payment reconciled the statement",
-                Some(order_id),
-            )
-            .await?;
             sqlx::query(
                 "UPDATE oxsum.plan_statements \
                  SET state='paid', paid_minor=total_minor, paid_at=now(), \
@@ -450,13 +454,16 @@ impl Db {
             .bind(order_id)
             .execute(&mut **tx)
             .await?;
-            // Paying the receivable restores service: the sweep-set
-            // suspension lifts and the plan's `past_due` clears — inside the
-            // same transaction the payment committed.
+            // Clear only debt suspension after every statement is covered.
+            // Paying an old receivable cannot authorize another plan period
+            // or change the independent renewal/cancellation lifecycle.
             sqlx::query(
                 "UPDATE oxsum.customer_plans \
-                 SET state='active', dunning_suspended_at=NULL, updated_at=now() \
-                 WHERE customer_plan_id=$1 AND state='past_due'",
+                 SET dunning_suspended_at=NULL, updated_at=now() \
+                 WHERE customer_plan_id=$1 \
+                   AND NOT EXISTS(SELECT 1 FROM oxsum.plan_statements s \
+                       WHERE s.customer_plan_id=$1 AND s.state IN ('issued','past_due') \
+                         AND s.total_minor>s.paid_minor)",
             )
             .bind(statement.customer_plan_id)
             .execute(&mut **tx)

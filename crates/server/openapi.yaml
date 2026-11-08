@@ -2954,6 +2954,31 @@ paths:
                   data: { $ref: "#/components/schemas/OrgPlanView" }
         "401": { $ref: "#/components/responses/Error" }
         "500": { $ref: "#/components/responses/Error" }
+  /api/v1/org/plan/payment-quote:
+    get:
+      summary: Quote the caller's next payable plan period
+      description: |
+        Personal customer session. Quotes only the customer's assigned paid plan.
+        Manual renewal becomes payable at the current period's boundary; it cannot
+        close an active period early. Initial service begins on paid activation;
+        renewal service bounds continue from the preceding period. No money moves.
+        Quote changes require customer review before a new order. Existing orders
+        retain their original snapshot. An existing pending order is returned so
+        a lost response never requires a second payment intent.
+      security: [{ sessionCookie: [] }]
+      responses:
+        "200":
+          description: Authoritative quote and any standing order
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data: { $ref: "#/components/schemas/PlanPaymentQuote" }
+        "401": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "409": { $ref: "#/components/responses/Error" }
   /api/v1/org/plan/cancel:
     post:
       summary: Cancel the caller's plan at the period end
@@ -14935,6 +14960,30 @@ components:
       properties:
         id: { type: string, format: uuid }
         offer: { $ref: "#/components/schemas/BundleOffer" }
+    PlanPaymentTerms:
+      type: object
+      additionalProperties: false
+      required: [customerPlanId, planVersionId, periodIndex, periodStart, periodEnd, feeMinor, collectionRevision, displayCurrency, displayAmountMinor, rateMantissa, rateScale]
+      description: Immutable plan payment intent. The exact sold fee is prepaid solely for this period, never silently allocated to older receivables. The fiat amount rounds up to the nearest supported currency minor unit; it does not enlarge or reduce the sold credit-denominated fee. Null initial bounds mean service starts at paid activation; renewal bounds name the preceding boundary and sold next end.
+      properties:
+        customerPlanId: { type: string, format: uuid }
+        planVersionId: { type: string, format: uuid }
+        periodIndex: { type: integer, minimum: 0 }
+        periodStart: { type: [string, "null"], format: date-time }
+        periodEnd: { type: [string, "null"], format: date-time }
+        feeMinor: { type: integer, format: int64, minimum: 1 }
+        collectionRevision: { type: integer, format: int64, minimum: 1 }
+        displayCurrency: { type: string }
+        displayAmountMinor: { type: integer, format: int64, minimum: 1 }
+        rateMantissa: { type: string, description: Exact decimal integer numerator of currency-major units per credit }
+        rateScale: { type: integer, minimum: 0, maximum: 8 }
+    PlanPaymentQuote:
+      type: object
+      required: [terms, fingerprint, existingOrderId]
+      properties:
+        terms: { $ref: "#/components/schemas/PlanPaymentTerms" }
+        fingerprint: { type: string, pattern: "^[a-f0-9]{64}$", description: Expected plan quote required for a new planPeriod order }
+        existingOrderId: { type: [string, "null"], format: uuid, description: Resume this standing payment intent instead of creating another }
     OrderPurpose:
       type: string
       enum: [walletTopup, bundle, planPeriod, invoiceRepayment]
@@ -14954,12 +15003,13 @@ components:
         displayAmountMinor: { type: integer, format: int64, minimum: 1, description: the fiat minor amount the provider will charge }
         displayCurrency: { type: string, pattern: "^[A-Z]{3}$" }
         purposeRef: { type: [string, "null"], format: uuid, description: Published `bundleVersionId` for a bundle, the `customerPlanId` a `planPeriod` activates or renews, or the receivable an `invoiceRepayment` settles }
+        expectedPlanQuote: { type: [string, "null"], pattern: "^[a-f0-9]{64}$", description: Required for new planPeriod orders; the fingerprint from the customer-scoped quote. Never overrides the authoritative terms. }
         promoMinor: { type: [integer, "null"], format: int64, minimum: 0, description: Deprecated assertion only; zero/absent or exactly the selected bundle offer promotion. Customers cannot choose promotional credit. }
         returnUrl: { type: [string, "null"], description: "where the provider returns the browser — an absolute http(s) URL or a site-absolute path; absent, the order's own `/app/orders?order={orderId}` page" }
         cancelUrl: { type: [string, "null"], description: "the rail's cancel destination where one exists (Stripe); ignored by single-return rails" }
     PaymentOrder:
       type: object
-      required: [orderId, merchantId, merchantVersionId, organizationId, purpose, amountMinor, currency, displayCurrency, displayAmountMinor, rateMantissa, rateScale, purposeRef, promoMinor, bundleOffer, providerPaymentId, source, evidence, status, createdAt, paidAt]
+      required: [orderId, merchantId, merchantVersionId, organizationId, purpose, amountMinor, currency, displayCurrency, displayAmountMinor, rateMantissa, rateScale, purposeRef, promoMinor, bundleOffer, planPayment, providerPaymentId, source, evidence, status, createdAt, paidAt]
       properties:
         orderId: { type: string, format: uuid }
         merchantId: { type: [string, "null"], format: uuid, description: the merchant the checkout was offered under — null on a `manual` order }
@@ -14975,6 +15025,7 @@ components:
         purposeRef: { type: [string, "null"], format: uuid }
         promoMinor: { type: integer, format: int64 }
         bundleOffer: { anyOf: [{ $ref: "#/components/schemas/BundleOffer" }, { type: "null" }], description: Immutable publication snapshot for new bundle orders. Absent legacy unfulfilled bundles require operator review before checkout or granting. }
+        planPayment: { anyOf: [{ $ref: "#/components/schemas/PlanPaymentTerms" }, { type: "null" }], description: Immutable period payment intent; unsafe legacy unfulfilled plan orders require operator review }
         providerPaymentId: { type: [string, "null"] }
         source: { type: string, enum: [provider, manual], description: "how the order's payment arrived — a rail's signed webhook or a staff-recorded receipt" }
         evidence: { type: object, description: "a manual order's audit payload (`reference`, `reason`, `recordedBy`); `{}` on provider orders" }

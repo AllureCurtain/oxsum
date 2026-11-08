@@ -122,6 +122,7 @@ pub fn router(state: AppState) -> Router {
         .route("/plans", get(plans::list_plans))
         .route("/plans/{plan_version_id}", get(plans::get_plan))
         .route("/org/plan", get(plans::my_plan))
+        .route("/org/plan/payment-quote", get(plans::payment_quote))
         .route("/org/plan/cancel", post(plans::cancel_my_plan))
         .route("/org/plan/change", post(plans::change_my_plan))
         // The caller's plan-fee journals (issue #611, T20).
