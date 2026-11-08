@@ -5925,6 +5925,35 @@ paths:
         "403": { $ref: "#/components/responses/Error" }
         "404": { $ref: "#/components/responses/Error" }
         "409": { $ref: "#/components/responses/Error" }
+  /api/v1/business/readiness:
+    get:
+      summary: Read current business setup readiness
+      description: |
+        Current personal business session with overviewRead. The five required
+        facts describe the solo pay-as-you-go configuration: initialized seller
+        identity, configured usable chat supply, an active matching default sale
+        book, explicit enabled checkout selection with compatible collection
+        terms and runtime prerequisites, and an available customer admission path.
+        Additional staff and plans are optional. Facts outside the actor's read
+        authority are restricted and never count as ready. Each action is absent
+        unless the actor can manage that section. No provider or merchant secrets,
+        endpoints, customer identities or commercial values are returned. This is
+        a current configuration snapshot, not a reservation, external provider or
+        payment certification, successful email delivery, or release acceptance.
+      security: [{ sessionCookie: [] }]
+      responses:
+        "200":
+          description: Current actor-scoped configuration facts
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data: { $ref: "#/components/schemas/BusinessReadiness" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
   /api/v1/business/profile:
     get:
       summary: Read effective business identity and profile revision
@@ -11139,6 +11168,29 @@ components:
           type: [string, "null"]
           maxLength: 2048
           description: Public help link; absolute HTTP(S) without user info or control characters.
+    BusinessReadinessStep:
+      type: object
+      additionalProperties: false
+      required: [key, state, action]
+      properties:
+        key: { type: string, enum: [profile, supply, saleTerms, collection, admission] }
+        state: { type: string, enum: [ready, todo, restricted] }
+        action:
+          type: [string, "null"]
+          enum: [profile, channels, prices, integrations, customers, null]
+          description: Existing business section the current actor can manage; null requires an appropriately authorized colleague.
+    BusinessReadiness:
+      type: object
+      additionalProperties: false
+      required: [checkedAt, ready, steps]
+      properties:
+        checkedAt: { type: string, format: date-time }
+        ready: { type: boolean, description: True only when all five facts are ready and readable to this actor. }
+        steps:
+          type: array
+          minItems: 5
+          maxItems: 5
+          items: { $ref: "#/components/schemas/BusinessReadinessStep" }
     BusinessProfile:
       type: object
       required: [businessId, revision, source, updatedAt, branding]
