@@ -1,0 +1,28 @@
+name: Install a verified CI tool
+description: Cache compressed archives while verifying their pinned bytes on every use
+inputs:
+  tool:
+    description: Pinned tool name (mold or sccache)
+    required: true
+runs:
+  using: composite
+  steps:
+    - name: Restore compressed tool archive
+      id: archive
+      uses: actions/cache/restore@v4
+      with:
+        path: ${{ runner.temp }}/oxsum-ci-archives/${{ inputs.tool }}
+        key: verified-ci-v1-${{ runner.os }}-${{ runner.arch }}-${{ inputs.tool }}-${{ hashFiles('scripts/install-ci-tools.py') }}
+    - name: Verify archive and install
+      shell: bash
+      env:
+        OXSUM_CI_TOOL: ${{ inputs.tool }}
+        OXSUM_CI_ARCHIVE: ${{ runner.temp }}/oxsum-ci-archives/${{ inputs.tool }}
+      run: python3 scripts/install-ci-tools.py "$OXSUM_CI_TOOL" --archive-cache "$OXSUM_CI_ARCHIVE"
+    # Save before downstream tests so even a later test failure seeds other jobs.
+    - name: Save verified compressed archive
+      if: steps.archive.outputs.cache-hit != 'true'
+      uses: actions/cache/save@v4
+      with:
+        path: ${{ runner.temp }}/oxsum-ci-archives/${{ inputs.tool }}
+        key: verified-ci-v1-${{ runner.os }}-${{ runner.arch }}-${{ inputs.tool }}-${{ hashFiles('scripts/install-ci-tools.py') }}

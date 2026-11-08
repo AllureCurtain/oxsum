@@ -162,14 +162,18 @@ jobs:
         with:
           components: clippy
       - name: Install mold
-        run: python3 scripts/install-ci-tools.py mold
+        uses: ./.github/actions/install-ci-tool
+        with:
+          tool: mold
       - uses: Swatinem/rust-cache@v2
         with:
           shared-key: "ci"
           cache-workspace-crates: "true"
           save-if: false
       - name: Verify pinned sccache archive
-        run: python3 scripts/install-ci-tools.py sccache
+        uses: ./.github/actions/install-ci-tool
+        with:
+          tool: sccache
       - uses: mozilla-actions/sccache-action@v0.0.11
         with:
           version: v0.19.0
@@ -186,14 +190,18 @@ jobs:
           ref: ${{ needs.resolve.outputs.sha }}
       - uses: dtolnay/rust-toolchain@stable
       - name: Install mold
-        run: python3 scripts/install-ci-tools.py mold
+        uses: ./.github/actions/install-ci-tool
+        with:
+          tool: mold
       - uses: Swatinem/rust-cache@v2
         with:
           shared-key: "ci"
           cache-workspace-crates: "true"
           save-if: false
       - name: Verify pinned sccache archive
-        run: python3 scripts/install-ci-tools.py sccache
+        uses: ./.github/actions/install-ci-tool
+        with:
+          tool: sccache
       - uses: mozilla-actions/sccache-action@v0.0.11
         with:
           version: v0.19.0
@@ -224,7 +232,9 @@ jobs:
       # the wrapper otherwise resolves to a missing binary and rustc never
       # executes (the first crates.io-install dispatch hit exactly this).
       - name: Verify pinned sccache archive
-        run: python3 scripts/install-ci-tools.py sccache
+        uses: ./.github/actions/install-ci-tool
+        with:
+          tool: sccache
       - uses: mozilla-actions/sccache-action@v0.0.11
         with:
           version: v0.19.0
@@ -298,7 +308,9 @@ jobs:
       # same way the examples job does — the workflow-level wrapper otherwise
       # resolves to a missing binary and rustc never executes.
       - name: Verify pinned sccache archive
-        run: python3 scripts/install-ci-tools.py sccache
+        uses: ./.github/actions/install-ci-tool
+        with:
+          tool: sccache
       - uses: mozilla-actions/sccache-action@v0.0.11
         with:
           version: v0.19.0
@@ -359,7 +371,9 @@ jobs:
           ref: ${{ needs.resolve.outputs.sha }}
       - uses: dtolnay/rust-toolchain@stable
       - name: Install mold
-        run: python3 scripts/install-ci-tools.py mold
+        uses: ./.github/actions/install-ci-tool
+        with:
+          tool: mold
       - uses: actions/setup-node@v6
         with:
           node-version: 22
@@ -369,7 +383,9 @@ jobs:
           cache-workspace-crates: "true"
           save-if: false
       - name: Verify pinned sccache archive
-        run: python3 scripts/install-ci-tools.py sccache
+        uses: ./.github/actions/install-ci-tool
+        with:
+          tool: sccache
       - uses: mozilla-actions/sccache-action@v0.0.11
         with:
           version: v0.19.0

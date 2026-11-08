@@ -192,15 +192,88 @@ class InstallerTests(unittest.TestCase):
         self.assert_clean_failure()
         self.assertFalse((self.root / "escape").exists())
 
+    def test_transport_failure_uses_same_hash_fallback(self):
+        with server(self.root, [(503, b"unavailable")] * 4 + [(200, self.bytes)]) as (url, calls):
+            self.spec.update(asset=url, fallback=url + "-fallback")
+            tools.install("mold", self.spec, self.root / "cache")
+        self.assertEqual(len(calls), 5)
+        self.assertTrue(self.destination().with_suffix(".complete").is_file())
+
+    def test_fallback_is_bounded_and_never_extracts_failed_transport(self):
+        with server(self.root, [(503, b"unavailable")]) as (url, calls):
+            self.spec.update(asset=url, fallback=url + "-fallback")
+            with self.assertRaises(subprocess.CalledProcessError):
+                tools.install("mold", self.spec, self.root / "cache")
+        self.assertEqual(len(calls), 8)
+        self.assert_clean_failure()
+
+    def test_integrity_failure_never_tries_fallback(self):
+        with server(self.root, [(200, b"x" + self.bytes[1:]), (200, self.bytes)]) as (url, calls):
+            self.spec.update(asset=url, fallback=url + "-fallback")
+            with self.assertRaisesRegex(ValueError, "SHA-256 mismatch"):
+                tools.install("mold", self.spec, self.root / "cache")
+        self.assertEqual(len(calls), 1)
+        self.assert_clean_failure()
+
+    def test_oversized_response_never_tries_fallback(self):
+        with server(self.root, [(200, self.bytes + b"excess")] * 4 + [(200, self.bytes)]) as (url, calls):
+            self.spec.update(asset=url, fallback=url + "-fallback")
+            with self.assertRaises(subprocess.CalledProcessError) as error:
+                tools.install("mold", self.spec, self.root / "cache")
+        self.assertEqual(error.exception.returncode, 63)
+        # curl retries the failed request within its own four-attempt bound.
+        # The later good reply must not be consumed as another source.
+        self.assertLessEqual(len(calls), 4)
+        self.assert_clean_failure()
+
+    def test_restored_archive_is_verified_and_works_without_network(self):
+        archives = self.root / "archives"
+        with server(self.root, [(200, self.bytes)]) as (url, calls):
+            self.spec["asset"] = url
+            tools.install("mold", self.spec, self.root / "cache", archives)
+        retained = archives / f"{self.spec['sha256']}.tar.gz"
+        self.assertEqual(retained.read_bytes(), self.bytes)
+        self.assertEqual(retained.stat().st_mode & 0o777, 0o600)
+        with patch.object(tools, "download") as download:
+            result = tools.install("mold", self.spec, self.root / "offline", archives)
+            download.assert_not_called()
+        self.assertTrue(result.is_file())
+        self.assertEqual(len(calls), 1)
+
+    def test_corrupt_or_symlink_archive_cache_is_never_extracted(self):
+        archives = self.root / "archives"
+        archives.mkdir()
+        retained = archives / f"{self.spec['sha256']}.tar.gz"
+        retained.write_bytes(b"x" + self.bytes[1:])
+        for symlink in (False, True):
+            if symlink:
+                retained.unlink()
+                target = self.root / "target"
+                target.write_bytes(self.bytes)
+                retained.symlink_to(target)
+            with patch.object(tools, "download") as download, patch.object(tools, "extract") as extract:
+                with self.assertRaises(ValueError):
+                    tools.install("mold", self.spec, self.root / "cache", archives)
+                download.assert_not_called()
+                extract.assert_not_called()
+            self.assert_clean_failure()
+
     def test_workflows_use_one_installer_and_pin_mozilla_cache_setup(self):
         for name, molds, caches in [("ci.yml", 4, 3), ("release-candidate.yml", 3, 5)]:
             text = (ROOT / ".github/workflows" / name).read_text()
-            self.assertEqual(text.count("run: python3 scripts/install-ci-tools.py mold"), molds)
-            self.assertEqual(text.count("run: python3 scripts/install-ci-tools.py sccache"), caches)
+            self.assertEqual(text.count("tool: mold"), molds)
+            self.assertEqual(text.count("tool: sccache"), caches)
+            self.assertEqual(text.count("uses: ./.github/actions/install-ci-tool"), molds + caches)
             self.assertEqual(text.count("version: v0.19.0"), caches)
             self.assertEqual(text.count("mozilla-actions/sccache-action@v0.0.11"), caches)
             self.assertNotIn("curl -sL", text)
             self.assertIn('SCCACHE_GHA_ENABLED: "true"', text)
+        action = (ROOT / ".github/actions/install-ci-tool/action.yml").read_text()
+        self.assertIn("actions/cache/restore@v4", action)
+        self.assertIn("actions/cache/save@v4", action)
+        self.assertNotIn("restore-keys:", action)
+        self.assertIn('"$OXSUM_CI_TOOL" --archive-cache "$OXSUM_CI_ARCHIVE"', action)
+        self.assertIn("'.github/actions/**'", (ROOT / ".github/workflows/ci.yml").read_text())
 
 
 if __name__ == "__main__":
