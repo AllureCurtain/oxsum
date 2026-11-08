@@ -405,7 +405,18 @@ async fn a_paid_order_fulfills_promptly_through_the_worker() {
     let worker = oxsum_server::jobs::spawn_worker(db.clone(), ctx());
     let completed = tokio::time::timeout(Duration::from_secs(10), async {
         loop {
-            if wallet.available().await.unwrap() == 1_500_000_000 {
+            // The grant commits before the fulfillment/outbox transaction.
+            // Wait for that durable result before cancelling the worker.
+            let (status, progress) = call(
+                &app,
+                "GET",
+                &format!("/api/v1/orders/{order_id}/fulfillment"),
+                None,
+                Some(&account.cookie),
+            )
+            .await;
+            assert_eq!(status, StatusCode::OK, "{progress}");
+            if progress["data"]["status"] == "fulfilled" {
                 break;
             }
             tokio::time::sleep(Duration::from_millis(50)).await;
