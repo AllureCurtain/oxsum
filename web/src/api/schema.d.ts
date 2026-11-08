@@ -8561,6 +8561,126 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/business/checkout-routes": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Read selected checkout merchants for each rail
+         * @description ReportsRead personal business authority. Revision zero uses retained environment bootstrap; explicit owner selection or disablement never silently falls back.
+         */
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Selected routes without credential material */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            data: components["schemas"]["CheckoutRoute"][];
+                        };
+                    };
+                };
+                401: components["responses"]["Error"];
+                403: components["responses"]["Error"];
+            };
+        };
+        put?: never;
+        /**
+         * Select or explicitly disable a rail's checkout merchant
+         * @description Owner MerchantSecretsWrite authority. Revision-checked selection of an enabled owned merchant; null disables new checkout without changing existing orders or legacy callback identity. An exact retry returns its immutable result.
+         */
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": components["schemas"]["CheckoutRouteRequest"];
+                };
+            };
+            responses: {
+                /** @description Immutable selection receipt */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            data: components["schemas"]["CheckoutRouteMutation"];
+                        };
+                    };
+                };
+                400: components["responses"]["Error"];
+                401: components["responses"]["Error"];
+                403: components["responses"]["Error"];
+                404: components["responses"]["Error"];
+                409: components["responses"]["Error"];
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/checkout-options": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Read this customer's currently available checkout routes
+         * @description Personal customer session only. Returns selected enabled merchants under the customer's business; configuration availability does not certify PSP reachability. No API URL, provider account ID or credentials are exposed.
+         */
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Available rail and test/live choices with stale-choice preconditions */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            data: components["schemas"]["CheckoutRoute"][];
+                        };
+                    };
+                };
+                401: components["responses"]["Error"];
+                403: components["responses"]["Error"];
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/business/merchants": {
         parameters: {
             query?: never;
@@ -16909,6 +17029,45 @@ export interface components {
             /** @description one entry per model, at its current version */
             models: components["schemas"]["ModelPrice"][];
         };
+        CheckoutChoice: {
+            /** Format: int64 */
+            revision: number;
+            /** Format: uuid */
+            merchantId: string;
+            /** Format: uuid */
+            versionId: string;
+        };
+        CheckoutRoute: {
+            rail: components["schemas"]["MerchantRail"];
+            /** Format: int64 */
+            revision: number;
+            /** @enum {string} */
+            source: "owner" | "environment" | "unconfigured";
+            /** Format: uuid */
+            merchantId: string | null;
+            /** Format: uuid */
+            versionId: string | null;
+            name: string | null;
+            mode: components["schemas"]["MerchantMode"] | null;
+            /** @description Selected merchant is enabled; no external certification implied. */
+            available: boolean;
+        };
+        CheckoutRouteRequest: {
+            idempotencyKey: string;
+            reason: string;
+            rail: components["schemas"]["MerchantRail"];
+            expectedRevision: number;
+            /**
+             * Format: uuid
+             * @description Null explicitly disables this rail.
+             */
+            merchantId: string | null;
+        };
+        CheckoutRouteMutation: {
+            /** Format: uuid */
+            id: string;
+            route: components["schemas"]["CheckoutRoute"];
+        };
         /** @enum {string} */
         MerchantRail: "hyperswitch" | "stripe" | "airwallex";
         /** @enum {string} */
@@ -19892,6 +20051,8 @@ export interface components {
         OrderCreateRequest: {
             idempotencyKey: string;
             rail: components["schemas"]["MerchantRail"];
+            /** @description Optional current route/merchant/version precondition for new orders. Existing exact-key orders retain their original merchant and ignore current-choice preconditions; changing rail conflicts. */
+            expectedCheckout?: components["schemas"]["CheckoutChoice"];
             /** @enum {string} */
             purpose: "walletTopup" | "bundle" | "planPeriod" | "invoiceRepayment";
             /** @description Optional quote precondition for a new order. Browser clients send the displayed revision; changed settings conflict before provider I/O. An existing idempotent order returns its original terms. */

@@ -6390,6 +6390,65 @@ paths:
         "403": { $ref: "#/components/responses/Error" }
         "404": { $ref: "#/components/responses/Error" }
         "500": { $ref: "#/components/responses/Error" }
+  /api/v1/business/checkout-routes:
+    get:
+      summary: Read selected checkout merchants for each rail
+      description: ReportsRead personal business authority. Revision zero uses retained environment bootstrap; explicit owner selection or disablement never silently falls back.
+      security: [{ sessionCookie: [] }]
+      responses:
+        "200":
+          description: Selected routes without credential material
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data: { type: array, items: { $ref: "#/components/schemas/CheckoutRoute" } }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+    post:
+      summary: Select or explicitly disable a rail's checkout merchant
+      description: Owner MerchantSecretsWrite authority. Revision-checked selection of an enabled owned merchant; null disables new checkout without changing existing orders or legacy callback identity. An exact retry returns its immutable result.
+      security: [{ sessionCookie: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/CheckoutRouteRequest" }
+      responses:
+        "200":
+          description: Immutable selection receipt
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data: { $ref: "#/components/schemas/CheckoutRouteMutation" }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "409": { $ref: "#/components/responses/Error" }
+  /api/v1/checkout-options:
+    get:
+      summary: Read this customer's currently available checkout routes
+      description: Personal customer session only. Returns selected enabled merchants under the customer's business; configuration availability does not certify PSP reachability. No API URL, provider account ID or credentials are exposed.
+      x-consumption-key-access: denied
+      security: [{ sessionCookie: [] }]
+      responses:
+        "200":
+          description: Available rail and test/live choices with stale-choice preconditions
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data: { type: array, items: { $ref: "#/components/schemas/CheckoutRoute" } }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
   /api/v1/business/merchants:
     get:
       summary: List business merchant settings
@@ -12233,6 +12292,42 @@ components:
           type: array
           description: one entry per model, at its current version
           items: { $ref: "#/components/schemas/ModelPrice" }
+    CheckoutChoice:
+      type: object
+      additionalProperties: false
+      required: [revision, merchantId, versionId]
+      properties:
+        revision: { type: integer, format: int64, minimum: 0, maximum: 9007199254740991 }
+        merchantId: { type: string, format: uuid }
+        versionId: { type: string, format: uuid }
+    CheckoutRoute:
+      type: object
+      required: [rail, revision, source, merchantId, versionId, name, mode, available]
+      properties:
+        rail: { $ref: "#/components/schemas/MerchantRail" }
+        revision: { type: integer, format: int64, minimum: 0 }
+        source: { type: string, enum: [owner, environment, unconfigured] }
+        merchantId: { type: [string, "null"], format: uuid }
+        versionId: { type: [string, "null"], format: uuid }
+        name: { type: [string, "null"] }
+        mode: { anyOf: [{ $ref: "#/components/schemas/MerchantMode" }, { type: "null" }] }
+        available: { type: boolean, description: Selected merchant is enabled; no external certification implied. }
+    CheckoutRouteRequest:
+      type: object
+      additionalProperties: false
+      required: [idempotencyKey, reason, rail, expectedRevision, merchantId]
+      properties:
+        idempotencyKey: { type: string, minLength: 1, maxLength: 200 }
+        reason: { type: string, minLength: 1, maxLength: 500 }
+        rail: { $ref: "#/components/schemas/MerchantRail" }
+        expectedRevision: { type: integer, minimum: 0, maximum: 9007199254740991 }
+        merchantId: { type: [string, "null"], format: uuid, description: Null explicitly disables this rail. }
+    CheckoutRouteMutation:
+      type: object
+      required: [id, route]
+      properties:
+        id: { type: string, format: uuid }
+        route: { $ref: "#/components/schemas/CheckoutRoute" }
     MerchantRail:
       type: string
       enum: [hyperswitch, stripe, airwallex]
@@ -15113,6 +15208,7 @@ components:
       properties:
         idempotencyKey: { type: string, minLength: 1, maxLength: 200 }
         rail: { $ref: "#/components/schemas/MerchantRail" }
+        expectedCheckout: { $ref: "#/components/schemas/CheckoutChoice", description: Optional current route/merchant/version precondition for new orders. Existing exact-key orders retain their original merchant and ignore current-choice preconditions; changing rail conflicts. }
         purpose:
           type: string
           enum: [walletTopup, bundle, planPeriod, invoiceRepayment]
