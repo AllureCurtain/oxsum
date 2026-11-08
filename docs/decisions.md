@@ -3241,3 +3241,32 @@ This UI uses the current API without adding a default-merchant selector. Current
 order creation resolves the environment bootstrap record. Configuration status,
 checkout selection and external PSP certification remain distinct evidence;
 enabling a merchant cannot be presented as selecting or certifying that route.
+
+## 2026-11-08 — Make statement review one financial transaction (#820)
+
+A document-only void left the posted journal receivable outside customer credit
+and admission; a grace extension cleared the entire plan's dunning marker even
+when another statement remained overdue. Both violate the existing debt model.
+
+- Share the transaction-level journal void between journal and statement review.
+  Acquire business, plan, journal, ledger and statement locks in that order;
+  validate original ownership/period, source-linked charges and net payments
+  before effects. Cash remains unchanged; only actual collected amounts become
+  refund payable. Journal, ledger, statement and audit commit together.
+- Refuse mixed chargeback/reissued/inconsistent documents instead of reversing
+  guessed sources. Historical document-only voids must retain exactly one
+  opposite line per original; their immutable document history stays intact
+  when a new explicit request reverses the matching journal.
+- Use one debt projection for customer credit, overage admission and dunning
+  restoration. Include posted journals without live statements, retaining their
+  last document due date or posting time plus the original binding's current configured net terms. Admission evaluates
+  effective past-grace debt even when an old writer cleared the stored marker.
+  Grace/void/payment restore only debt suspension, after checking all debt;
+  cancellation, renewal, quota, manual suspension and archive do not change.
+- Exact target/action/reason/key replays are inert. Conflicting key reuse refuses;
+  audit names the real reversal entry or null for a zero-money operation.
+  `outstandingMinor` describes debt; overage admission additionally counts holds.
+
+This adds no payout, repayment or daily recognition feature. Validation and
+remaining release limits are recorded in
+[the review evidence](roadmap/operator-launch/evidence/statement-review-finance.md).
