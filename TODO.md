@@ -4,11 +4,11 @@ Updated: 2026-11-09
 
 ## In progress
 
-- [ ] [#846](https://github.com/AllureCurtain/oxsum/issues/846) — Stable application namespaces, bounded customer provisioning/retrieval/archive and exact replay; contract-first implementation in progress.
+- [ ] [#846](https://github.com/AllureCurtain/oxsum/issues/846) — Stable application namespaces, bounded customer lifecycle and rotated metering replay; 39 core and 13 HTTP checks passed, zero skipped. Full validation and PR integration pending; owner portal follows in #853.
 
 - [ ] [#848](https://github.com/AllureCurtain/oxsum/issues/848) — Compare runtime financial projections with independent official ledger/source totals after #838; current reconciliation actual totals still clone the projection. N11 remains open.
 
-- [ ] [#838](https://github.com/AllureCurtain/oxsum/issues/838) — Versioned daily recognition, paid-activation invoices and durable captured evidence in PR #851: 1,995 complete workspace checks, 25 new accounting/fault checks, 49 HTTP, 12 upgrade, 93 verifier and strict Clippy/wasm passed. Normal integration remains; independent runtime reconciliation is #848.
+- [x] [#838](https://github.com/AllureCurtain/oxsum/issues/838) — Versioned daily recognition, paid-activation invoices and durable captured evidence integrated in PR #851 (`b3eb063a`): 1,995 complete workspace checks, 25 new accounting/fault checks, 49 HTTP, 12 upgrade, 93 verifier and strict Clippy/wasm passed. Independent runtime reconciliation remains #848.
 
 - [x] [#850](https://github.com/AllureCurtain/oxsum/issues/850) — Integrated in PR #852 (`5dc49dc`): wait for durable fulfillment before stopping the real payment worker. 19 real PostgreSQL checks, strict Clippy, formatting and independent review passed; included in #838's 1,995-check combined run.
 
