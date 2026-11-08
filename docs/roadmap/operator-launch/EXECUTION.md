@@ -236,3 +236,10 @@ complete.
   behavior tests and four actual-WASM groups pass; frontend build passes.
   [Evidence](evidence/retained-head-verification.md). Period evidence delivery and
   final-candidate offline rejection matrix remain separate N12 work.
+
+
+- #862 repairs the pool-saturation timer race observed in CI 42518492586 on
+  `42b80a24`. The fixture now requires PoolBusy before a distinct watchdog and
+  exact balance recovery after release. All 17 PostgreSQL fault checks and strict
+  Clippy passed; [evidence](evidence/pool-exhaustion-deadline.md). PR integration
+  pending. A frontend-only green run did not erase the earlier Rust failure.
