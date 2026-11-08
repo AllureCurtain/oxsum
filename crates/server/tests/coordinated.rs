@@ -17,6 +17,8 @@
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
 use std::collections::HashMap;
+#[path = "../../core/tests/support/legacy_plan.rs"]
+mod legacy_plan;
 mod support;
 
 use std::sync::{Arc, Mutex};

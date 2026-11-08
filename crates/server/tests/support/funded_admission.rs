@@ -1303,7 +1303,7 @@ async fn a_funded_request_still_obeys_the_mandates_existing_monetary_cap() {
     no_reservations(&world).await;
 }
 
-async fn sold_quota(world: &World, quota: i64) -> oxsum_core::CustomerPlan {
+async fn sold_quota(world: &World, quota: i64, legacy: bool) -> oxsum_core::CustomerPlan {
     let organization = world.organization_id.parse::<Uuid>().unwrap();
     let business: Uuid = sqlx::query_scalar(
         "SELECT business_id FROM oxsum.customer_profiles WHERE organization_id=$1",
@@ -1312,23 +1312,22 @@ async fn sold_quota(world: &World, quota: i64) -> oxsum_core::CustomerPlan {
     .fetch_one(&world.pool)
     .await
     .unwrap();
-    let plan = world
-        .db
-        .publish_sold_plan(
-            business,
-            &oxsum_core::NewSoldPlan {
-                plan_id: None,
-                name: "atomic quota".into(),
-                price_minor: 0,
-                currency: "USD".into(),
-                quota_minor: Some(quota),
-                period_kind: oxsum_core::PeriodKind::CalendarMonth,
-                overage_enabled: true,
-                sort_order: 0,
-            },
-        )
-        .await
-        .unwrap();
+    let terms = oxsum_core::NewSoldPlan {
+        plan_id: None,
+        name: "atomic quota".into(),
+        price_minor: 0,
+        currency: "USD".into(),
+        quota_minor: Some(quota),
+        period_kind: oxsum_core::PeriodKind::CalendarMonth,
+        overage_enabled: true,
+        sort_order: 0,
+    };
+    let plan = if legacy {
+        super::legacy_plan::publish(&world.db, business, &terms).await
+    } else {
+        world.db.publish_sold_plan(business, &terms).await
+    }
+    .unwrap();
     world
         .db
         .bind_customer_plan(
@@ -1343,7 +1342,7 @@ async fn sold_quota(world: &World, quota: i64) -> oxsum_core::CustomerPlan {
 #[tokio::test]
 async fn quota_reservations_do_not_consume_the_plan_wallet_credit_limit() {
     let world = world_or_skip!(100);
-    let plan = sold_quota(&world, 60).await;
+    let plan = sold_quota(&world, 60, false).await;
     sqlx::query("UPDATE oxsum.customer_plans SET credit_limit_minor=20 WHERE customer_plan_id=$1")
         .bind(plan.customer_plan_id)
         .execute(&world.pool)
@@ -1370,7 +1369,9 @@ async fn quota_reservations_do_not_consume_the_plan_wallet_credit_limit() {
 async fn lazy_plan_boundary_reuses_the_admissions_only_connection() {
     let Some(database_url) = url() else { return };
     let world = world(&database_url, 100).await;
-    let plan = sold_quota(&world, 60).await;
+    // Historical v1 periods can be moved to a due boundary by the fixture.
+    // Today's v2 publisher freezes service dates; do not rewrite that history.
+    let plan = sold_quota(&world, 60, true).await;
     sqlx::query("UPDATE oxsum.org_subscriptions SET current_period_end=now()-interval '1 second' WHERE subscription_id=$1").bind(plan.subscription_id).execute(&world.pool).await.unwrap();
     sqlx::query("UPDATE oxsum.plan_periods SET period_end=now()-interval '1 second' WHERE customer_plan_id=$1 AND state='active'").bind(plan.customer_plan_id).execute(&world.pool).await.unwrap();
     let input = reservation(&world, 40).await;
