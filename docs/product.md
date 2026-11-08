@@ -653,3 +653,20 @@ Usage, entitlement, funding, costs and actual service delivery remain outside
 this comparison and are explicitly listed as such. The result is a bounded
 financial-source check, not complete business accounting or a claim about every
 filtered number in the reports dashboard.
+
+Application credentials may carry `customerKeysWrite` only when bound to a stable
+application namespace. They can issue/list/revoke only that application's own
+keys for its own provisioned customer accounts. Issuance requires explicit finite
+cumulative spend, model allowlist, RPM/concurrency and an expiry no later than the
+management credential and one year. No human membership, funds or pricing authority
+is implied. The consumption key remains subject to ordinary customer/gateway
+restrictions; archive/suspension blocks consumption and new issuance.
+
+Creation returns a plaintext secret once. Exact application-scoped replay after
+credential rotation returns the original metadata without the secret; changed
+request/customer/action reuse conflicts. An ambiguous secret response is recovered
+by retrieving the receipt, explicitly revoking that key and creating a new operation.
+Management-credential revocation prevents future management, while issued keys
+keep their separately recorded expiry and revocation. The bridge retains original
+application/customer/issuer/key ownership, and operation/audit receipts contain no
+secret. Applications cannot adopt or manage unrelated portal-issued keys.

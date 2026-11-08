@@ -87,3 +87,42 @@ pub(crate) async fn archive(
         .archive_application_customer(&service, id, &request)
         .await?)
 }
+
+pub(crate) async fn customer_keys(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(id): Path<Uuid>,
+    ApiQuery(query): ApiQuery<PageQuery>,
+) -> ApiResult<oxsum_core::ApplicationCustomerKeyPage> {
+    let service = business::integration(&state, &headers).await?;
+    ok(state
+        .db
+        .application_customer_keys(&service, id, query.after, query.limit.unwrap_or(50))
+        .await?)
+}
+
+pub(crate) async fn create_customer_key(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(id): Path<Uuid>,
+    ApiJson(request): ApiJson<oxsum_core::ApplicationCustomerKeyRequest>,
+) -> ApiResult<oxsum_core::ApplicationCustomerKeyResult> {
+    let service = business::integration(&state, &headers).await?;
+    ok(state
+        .db
+        .create_application_customer_key(&service, id, &request)
+        .await?)
+}
+
+pub(crate) async fn revoke_customer_key(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path((id, key)): Path<(Uuid, Uuid)>,
+    ApiJson(request): ApiJson<ApplicationCustomerArchiveRequest>,
+) -> ApiResult<oxsum_core::ApiKey> {
+    let service = business::integration(&state, &headers).await?;
+    ok(state
+        .db
+        .revoke_application_customer_key(&service, id, key, &request)
+        .await?)
+}

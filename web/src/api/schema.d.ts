@@ -8319,6 +8319,58 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/integration/customers/{organization_id}/keys": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List only gateway keys issued inside this application/customer
+         * @description Requires current application-only customerKeysWrite. Includes revoked/expired metadata, never secrets or another application's keys.
+         */
+        get: operations["listApplicationCustomerKeys"];
+        put?: never;
+        /**
+         * Issue a bounded customer consumption key with one-time secret
+         * @description Requires current application-only customerKeysWrite and the application's
+         *     own provisioned customer. Archived/suspended customers cannot receive new keys.
+         *     Finite cumulative spend, explicit models, RPM/concurrency and expiry are
+         *     mandatory. Expiry cannot exceed the issuing credential or 365 days.
+         *     Exact application-scoped retries survive credential rotation and return the
+         *     original metadata with secret null; changed reuse conflicts. A lost secret
+         *     response requires explicit revocation and a new create operation.
+         *     Revoking management credentials does not revoke already issued consumption
+         *     keys; those keep their own expiry/revocation and customer restrictions.
+         */
+        post: operations["createApplicationCustomerKey"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/integration/customers/{organization_id}/keys/{key_id}/revoke": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Revoke only a gateway key issued inside this application/customer
+         * @description Current application-only customerKeysWrite is required including replay. Revocation remains available after customer archive/suspension. The immutable operation receipt never contains the secret.
+         */
+        post: operations["revokeApplicationCustomerKey"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/integration/customers/{organization_id}/archive": {
         parameters: {
             query?: never;
@@ -21319,8 +21371,33 @@ export interface components {
             idempotencyKey: string;
             reason: string;
         };
+        ApplicationCustomerKeyRequest: {
+            idempotencyKey: string;
+            name: string;
+            reason: string;
+            /** Format: date-time */
+            expiresAt: string;
+            /**
+             * Format: int64
+             * @description Finite cumulative settled-plus-pending budget in minor credits.
+             */
+            spendLimitMinor: number;
+            modelAllowlist: string[];
+            requestsPerMinute: number;
+            maxConcurrentHolds: number;
+        };
+        ApplicationCustomerKeyResult: {
+            key: components["schemas"]["ApiKey"];
+            /** @description Only first issuance returns plaintext; operation receipts and retries exclude it. */
+            secret: string | null;
+        };
+        ApplicationCustomerKeyPage: {
+            keys: components["schemas"]["ApiKey"][];
+            /** Format: uuid */
+            nextCursor: string | null;
+        };
         /** @enum {string} */
-        IntegrationScope: "customersRead" | "meteringWrite" | "customersProvision" | "billingRead" | "customersLifecycleWrite";
+        IntegrationScope: "customersRead" | "meteringWrite" | "customersProvision" | "billingRead" | "customersLifecycleWrite" | "customerKeysWrite";
         ProvisionCustomerRequest: {
             idempotencyKey: string;
             /** @description Caller-chosen identifier within the application (integration route) or legacy business namespace (business route). */
@@ -22305,6 +22382,105 @@ export interface operations {
                 content: {
                     "application/json": {
                         data: components["schemas"]["BusinessPrincipal"];
+                    };
+                };
+            };
+            400: components["responses"]["Error"];
+            401: components["responses"]["Error"];
+            403: components["responses"]["Error"];
+            404: components["responses"]["Error"];
+            409: components["responses"]["Error"];
+        };
+    };
+    listApplicationCustomerKeys: {
+        parameters: {
+            query?: {
+                after?: string;
+                limit?: number;
+            };
+            header?: never;
+            path: {
+                organization_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Application customer key result */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: components["schemas"]["ApplicationCustomerKeyPage"];
+                    };
+                };
+            };
+            400: components["responses"]["Error"];
+            401: components["responses"]["Error"];
+            403: components["responses"]["Error"];
+            404: components["responses"]["Error"];
+            409: components["responses"]["Error"];
+        };
+    };
+    createApplicationCustomerKey: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                organization_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ApplicationCustomerKeyRequest"];
+            };
+        };
+        responses: {
+            /** @description Application customer key result */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: components["schemas"]["ApplicationCustomerKeyResult"];
+                    };
+                };
+            };
+            400: components["responses"]["Error"];
+            401: components["responses"]["Error"];
+            403: components["responses"]["Error"];
+            404: components["responses"]["Error"];
+            409: components["responses"]["Error"];
+        };
+    };
+    revokeApplicationCustomerKey: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                organization_id: string;
+                key_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ApplicationCustomerArchiveRequest"];
+            };
+        };
+        responses: {
+            /** @description Application customer key result */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: components["schemas"]["ApiKey"];
                     };
                 };
             };

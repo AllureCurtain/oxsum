@@ -3592,3 +3592,19 @@ storage/size failures roll back and preserve earlier evidence. Hard row/entry/
 byte/interval bounds refuse oversized attempts rather than silently truncating.
 The migration labels retained old projection-only evidence as legacy rather than
 claiming it was independently verified.
+
+## 2026-11-09 — Application-only bounded customer key lifecycle (#866)
+
+- Add `customerKeysWrite` to stable application grants, never legacy explicit
+  customer lists. It manages only keys issued by that application for accounts
+  provisioned in that namespace, preserving later human-owned keys separately.
+- Require finite cumulative minor-unit spend, explicit models, bounded RPM/
+  concurrency and expiry within the issuing management credential and 365 days.
+  Reuse existing gateway consumption enforcement without fabricating a person.
+- Store immutable original issuer/application/customer/key provenance plus exact
+  application-scoped operation/audit receipts. Creation plaintext exists once;
+  rotated management credentials replay metadata only under current authority.
+- Management and consumption credentials have distinct revocation semantics:
+  revoking management stops future management; issued keys retain their own
+  expiry/revocation and ordinary customer archive/suspension restrictions. This
+  avoids silently breaking ongoing customer keys during management rotation.

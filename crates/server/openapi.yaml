@@ -6109,6 +6109,96 @@ paths:
         "401": { $ref: "#/components/responses/Error" }
         "403": { $ref: "#/components/responses/Error" }
         "409": { $ref: "#/components/responses/Error" }
+  /api/v1/integration/customers/{organization_id}/keys:
+    get:
+      operationId: listApplicationCustomerKeys
+      summary: List only gateway keys issued inside this application/customer
+      description: Requires current application-only customerKeysWrite. Includes revoked/expired metadata, never secrets or another application's keys.
+      security: [{ integrationCredential: [] }]
+      parameters:
+        - { in: path, name: organization_id, required: true, schema: { type: string, format: uuid } }
+        - { in: query, name: after, schema: { type: string, format: uuid } }
+        - { in: query, name: limit, schema: { type: integer, minimum: 1, maximum: 100, default: 50 } }
+      responses:
+        "200":
+          description: Application customer key result
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data: { $ref: "#/components/schemas/ApplicationCustomerKeyPage" }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "409": { $ref: "#/components/responses/Error" }
+    post:
+      operationId: createApplicationCustomerKey
+      summary: Issue a bounded customer consumption key with one-time secret
+      description: |
+        Requires current application-only customerKeysWrite and the application's
+        own provisioned customer. Archived/suspended customers cannot receive new keys.
+        Finite cumulative spend, explicit models, RPM/concurrency and expiry are
+        mandatory. Expiry cannot exceed the issuing credential or 365 days.
+        Exact application-scoped retries survive credential rotation and return the
+        original metadata with secret null; changed reuse conflicts. A lost secret
+        response requires explicit revocation and a new create operation.
+        Revoking management credentials does not revoke already issued consumption
+        keys; those keep their own expiry/revocation and customer restrictions.
+      security: [{ integrationCredential: [] }]
+      parameters:
+        - { in: path, name: organization_id, required: true, schema: { type: string, format: uuid } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ApplicationCustomerKeyRequest" }
+      responses:
+        "200":
+          description: Application customer key result
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data: { $ref: "#/components/schemas/ApplicationCustomerKeyResult" }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "409": { $ref: "#/components/responses/Error" }
+  /api/v1/integration/customers/{organization_id}/keys/{key_id}/revoke:
+    post:
+      operationId: revokeApplicationCustomerKey
+      summary: Revoke only a gateway key issued inside this application/customer
+      description: Current application-only customerKeysWrite is required including replay. Revocation remains available after customer archive/suspension. The immutable operation receipt never contains the secret.
+      security: [{ integrationCredential: [] }]
+      parameters:
+        - { in: path, name: organization_id, required: true, schema: { type: string, format: uuid } }
+        - { in: path, name: key_id, required: true, schema: { type: string, format: uuid } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ApplicationCustomerArchiveRequest" }
+      responses:
+        "200":
+          description: Application customer key result
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data: { $ref: "#/components/schemas/ApiKey" }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "409": { $ref: "#/components/responses/Error" }
   /api/v1/integration/customers/{organization_id}/archive:
     post:
       summary: Archive one account owned by this application
@@ -16152,9 +16242,34 @@ components:
       properties:
         idempotencyKey: { type: string, minLength: 1, maxLength: 200 }
         reason: { type: string, minLength: 1, maxLength: 500 }
+    ApplicationCustomerKeyRequest:
+      type: object
+      additionalProperties: false
+      required: [idempotencyKey, name, reason, expiresAt, spendLimitMinor, modelAllowlist, requestsPerMinute, maxConcurrentHolds]
+      properties:
+        idempotencyKey: { type: string, minLength: 1, maxLength: 200 }
+        name: { type: string, minLength: 1, maxLength: 80 }
+        reason: { type: string, minLength: 1, maxLength: 500 }
+        expiresAt: { type: string, format: date-time }
+        spendLimitMinor: { type: integer, format: int64, minimum: 1, description: Finite cumulative settled-plus-pending budget in minor credits. }
+        modelAllowlist: { type: array, minItems: 1, maxItems: 100, uniqueItems: true, items: { type: string, minLength: 1, maxLength: 128 } }
+        requestsPerMinute: { type: integer, minimum: 1, maximum: 10000 }
+        maxConcurrentHolds: { type: integer, minimum: 1, maximum: 1000 }
+    ApplicationCustomerKeyResult:
+      type: object
+      required: [key, secret]
+      properties:
+        key: { $ref: "#/components/schemas/ApiKey" }
+        secret: { type: [string, "null"], description: Only first issuance returns plaintext; operation receipts and retries exclude it. }
+    ApplicationCustomerKeyPage:
+      type: object
+      required: [keys, nextCursor]
+      properties:
+        keys: { type: array, items: { $ref: "#/components/schemas/ApiKey" } }
+        nextCursor: { type: [string, "null"], format: uuid }
     IntegrationScope:
       type: string
-      enum: [customersRead, meteringWrite, customersProvision, billingRead, customersLifecycleWrite]
+      enum: [customersRead, meteringWrite, customersProvision, billingRead, customersLifecycleWrite, customerKeysWrite]
     ProvisionCustomerRequest:
       type: object
       additionalProperties: false
@@ -16176,7 +16291,7 @@ components:
         idempotencyKey: { type: string, minLength: 1, maxLength: 200 }
         name: { type: [string, "null"], maxLength: 80 }
         applicationId: { type: [string, "null"], format: uuid, description: "Owner-selected stable application; customerIds must be empty. Only that application’s provisioned accounts are accessible. Omit for existing explicit grants." }
-        scopes: { type: array, minItems: 1, maxItems: 5, uniqueItems: true, items: { $ref: "#/components/schemas/IntegrationScope" } }
+        scopes: { type: array, minItems: 1, maxItems: 6, uniqueItems: true, items: { $ref: "#/components/schemas/IntegrationScope" } }
         customerIds: { type: array, minItems: 0, maxItems: 1000, uniqueItems: true, items: { type: string, format: uuid }, description: "Existing customers the credential may read or meter. Must be empty for an application grant. Legacy grants may be empty only for customersProvision alone." }
         expiresAt: { type: string, format: date-time }
         reason: { type: string, minLength: 1, maxLength: 500 }

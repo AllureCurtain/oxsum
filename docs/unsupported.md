@@ -76,3 +76,13 @@ page fallback and answers 404.
 | Semantic-cache reuse across different sale terms | the `sale_digest` partitions the cache key — a hit under different terms is a miss, never a cross-serve | an answer priced under other terms cannot be served as this customer's own (`x-consumption-cache`, `openapi.yaml:5`) |
 | A payment rail's intent POST with the rail unconfigured | `503`; its inbound webhook `404` | a half-configured rail refuses to boot; an absent one names no handler |
 | A signed price/mandate/expired credential replayed where not valid | 401/403 per surface | capabilities are verified per call, not cached beyond their terms |
+
+`customerKeysWrite` is application-only. Legacy grants, human sessions and customer
+consumption keys cannot invoke application key management. Foreign application/
+customer/key identities return the same unavailable result; portal-issued keys
+cannot be adopted. New keys require explicit finite limits and expiry within the
+issuing credential. Archive/suspension refuses new issuance while allowing exact
+historical receipt retrieval and explicit revocation under current authority.
+Management-key rotation cannot recover an issued key's plaintext secret or replace
+its original provenance. No funds, provider secrets or staff authority accompany
+this scope.
