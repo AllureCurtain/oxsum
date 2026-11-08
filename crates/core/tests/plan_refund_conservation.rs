@@ -7,6 +7,8 @@
 //! DATABASE_URL; skips without it.
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
+#[path = "support/plan_payment.rs"]
+mod plan_payment;
 #[path = "support/integration.rs"]
 mod setup;
 
@@ -128,69 +130,20 @@ async fn end_period_ago(pool: &PgPool, organization_id: Uuid, ago_secs: i64) {
     .expect("the plan period moves");
 }
 
-/// A `fulfilled` `planPeriod` order row — the fixture's stand-in for the PSP
-/// half of T15, written directly so no provider is driven.
+/// A quote-backed order paid through the current verified-event boundary.
 async fn plan_order(world: &World, customer_plan_id: Uuid, amount_minor: i64) -> Uuid {
-    let order_id = Uuid::new_v4();
-    let merchant = Uuid::new_v4();
-    let version = Uuid::new_v4();
-    let mut tx = world.pool.begin().await.unwrap();
-    sqlx::query(
-        "INSERT INTO oxsum.merchant_accounts\
-         (merchant_id,business_id,name,rail,mode,account_id,current_version_id) \
-         VALUES($1,$2,$3,'hyperswitch','test',$4,$5)",
+    let order = plan_payment::paid_order(
+        &world.db,
+        &world.owner,
+        world.organization_id,
+        customer_plan_id,
     )
-    .bind(merchant)
-    .bind(world.business_id)
-    .bind(format!("m-{}", Uuid::new_v4().simple()))
-    .bind(format!("acct-{}", Uuid::new_v4().simple()))
-    .bind(version)
-    .execute(&mut *tx)
-    .await
-    .expect("the merchant lands");
-    sqlx::query(
-        "INSERT INTO oxsum.merchant_versions\
-         (version_id,merchant_id,revision,api_url,destination_policy,credentials_sealed,source) \
-         VALUES($1,$2,1,'https://sandbox.example','{}'::jsonb,'sealed','owner')",
-    )
-    .bind(version)
-    .bind(merchant)
-    .execute(&mut *tx)
-    .await
-    .expect("the merchant version lands");
-    sqlx::query(
-        "INSERT INTO oxsum.merchant_payment_bindings\
-         (payment_id,merchant_id,version_id,organization_id,amount_minor,currency,purpose) \
-         VALUES($1,$2,$3,$4,$5,'USD','order')",
-    )
-    .bind(order_id)
-    .bind(merchant)
-    .bind(version)
-    .bind(world.organization_id)
-    .bind(amount_minor)
-    .execute(&mut *tx)
-    .await
-    .expect("the binding lands");
-    sqlx::query(
-        "INSERT INTO oxsum.payment_orders\
-         (order_id,business_id,merchant_id,merchant_version_id,organization_id,\
-          purpose,amount_minor,currency,display_currency,display_amount_minor,\
-          rate_mantissa,rate_scale,purpose_ref,promo_minor,idempotency_key,status,paid_at) \
-         VALUES($1,$2,$3,$4,$5,'plan_period',$6,'USD','USD',$6,100,2,$7,0,$8,'fulfilled',now())",
-    )
-    .bind(order_id)
-    .bind(world.business_id)
-    .bind(merchant)
-    .bind(version)
-    .bind(world.organization_id)
-    .bind(amount_minor)
-    .bind(customer_plan_id)
-    .bind(format!("cons-{}", Uuid::new_v4().simple()))
-    .execute(&mut *tx)
-    .await
-    .expect("the order lands");
-    tx.commit().await.unwrap();
-    order_id
+    .await;
+    assert_eq!(
+        order.amount_minor, amount_minor,
+        "the sold fee is authoritative"
+    );
+    order.order_id
 }
 
 /// The org's journals, newest first.
@@ -546,7 +499,7 @@ async fn h3_a_refund_past_the_open_receivable_returns_cash() {
         2500,
         Some(10 * ONE),
         PeriodKind::Anniversary,
-        false,
+        true,
     )
     .await;
     let plan = world
@@ -558,9 +511,24 @@ async fn h3_a_refund_past_the_open_receivable_returns_cash() {
         )
         .await
         .unwrap();
-    // Underpay period 0: 1000 of 2500 — the close posts a 1500 receivable.
-    let order_id = plan_order(&world, plan.customer_plan_id, 1000).await;
-    let journal = closed_first_journal(&world, &plan, order_id).await;
+    // Pay the exact fee, then retain the legacy overage charge to isolate a
+    // partially settled journal. H1 separately owns that overage defect.
+    let order_id = plan_order(&world, plan.customer_plan_id, 2500).await;
+    world
+        .db
+        .activate_plan_period(order_id, plan.customer_plan_id)
+        .await
+        .unwrap();
+    plan_payment::overage(
+        &world.db,
+        world.organization_id,
+        plan.customer_plan_id,
+        1500,
+    )
+    .await;
+    end_period_ago(&world.pool, world.organization_id, 60).await;
+    world.db.rollover_due_subscriptions().await.unwrap();
+    let journal = journals(&world.db, world.organization_id).await.remove(0);
     assert_eq!(journal.state, JournalState::Posted);
     assert_eq!(journal.total_minor - journal.settled_minor, 1500);
     let receivable_before = ledger_net(&world.pool, &world.tenant, "Assets:Receivables").await;
@@ -618,7 +586,7 @@ async fn h4_statement_charge_total_excludes_payment_lines() {
         2500,
         Some(10 * ONE),
         PeriodKind::Anniversary,
-        false,
+        true,
     )
     .await;
     let plan = world
@@ -630,39 +598,81 @@ async fn h4_statement_charge_total_excludes_payment_lines() {
         )
         .await
         .unwrap();
-    // Underpay period 0 so the statement issues open, then a renewal pays it.
-    let order_id = plan_order(&world, plan.customer_plan_id, 1000).await;
-    let journal = closed_first_journal(&world, &plan, order_id).await;
-    let statement = statements(&world.db, world.organization_id)
-        .await
-        .into_iter()
-        .find(|s| s.journal_id == Some(journal.journal_id))
-        .expect("the close issued a statement");
-    let issued_total = statement.total_minor;
-    assert_eq!(issued_total, 2500, "the statement total is the charge");
-
-    // A renewal order settles the open receivable; the statement reconciles
-    // with a paymentApplied line — its total must stay the charge.
-    let renewal = plan_order(&world, plan.customer_plan_id, 2500).await;
+    let order_id = plan_order(&world, plan.customer_plan_id, 2500).await;
     world
         .db
-        .activate_plan_period(renewal, plan.customer_plan_id)
+        .activate_plan_period(order_id, plan.customer_plan_id)
         .await
         .unwrap();
-    let settled = statements(&world.db, world.organization_id)
+    // The current legacy overage policy supplies a partial journal balance;
+    // underpaying a plan fee is forbidden by the payment authority boundary.
+    // H1 separately retains the defect in this overage policy for N11.
+    plan_payment::overage(
+        &world.db,
+        world.organization_id,
+        plan.customer_plan_id,
+        1000,
+    )
+    .await;
+    end_period_ago(&world.pool, world.organization_id, 60).await;
+    world.db.rollover_due_subscriptions().await.unwrap();
+    let journal = journals(&world.db, world.organization_id).await.remove(0);
+    let statement = statements(&world.db, world.organization_id).await.remove(0);
+    assert_eq!(journal.total_minor, 3500);
+    assert_eq!(journal.settled_minor, 2500);
+    assert_eq!(statement.total_minor, journal.total_minor);
+    assert_eq!(statement.paid_minor, journal.settled_minor);
+    assert_eq!(statement.state, oxsum_core::PlanStatementState::Issued);
+    let before = world
+        .db
+        .plan_statement(world.organization_id, statement.statement_id)
         .await
-        .into_iter()
-        .find(|s| s.journal_id == Some(journal.journal_id))
+        .unwrap()
         .unwrap();
-    eprintln!(
-        "H4: issued_total={issued_total} after_total={} paid={} state={:?}",
-        settled.total_minor, settled.paid_minor, settled.state
+    let payments = before
+        .lines
+        .iter()
+        .filter(|line| line.kind == oxsum_core::StatementLineKind::PaymentApplied)
+        .collect::<Vec<_>>();
+    assert_eq!(payments.len(), 1);
+    assert_eq!(payments[0].amount_minor, -2500);
+    assert_eq!(payments[0].source_ref, Some(order_id));
+
+    // Renewal prepays its own period, never the outstanding first statement.
+    let renewal = plan_order(&world, plan.customer_plan_id, 2500).await;
+    for _ in 0..2 {
+        world
+            .db
+            .activate_plan_period(renewal, plan.customer_plan_id)
+            .await
+            .unwrap();
+        world.db.rollover_due_subscriptions().await.unwrap();
+    }
+    let after = world
+        .db
+        .plan_statement(world.organization_id, statement.statement_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(after.statement.total_minor, 3500);
+    assert_eq!(after.statement.paid_minor, 2500);
+    assert_eq!(
+        after.statement.total_minor - after.statement.paid_minor,
+        1000
     );
     assert_eq!(
-        settled.total_minor, issued_total,
-        "a payment line must not inflate the charge total"
+        after.statement.state,
+        oxsum_core::PlanStatementState::Issued
     );
-    assert_eq!(settled.paid_minor, issued_total);
+    assert_eq!(after.lines.len(), before.lines.len());
+    assert_eq!(
+        after
+            .lines
+            .iter()
+            .filter(|line| line.kind == oxsum_core::StatementLineKind::PaymentApplied)
+            .count(),
+        1
+    );
 }
 
 // ── H5: a lost-dispute chargeback lands on exactly one open statement ───────
@@ -685,7 +695,7 @@ async fn h5_a_chargeback_lands_on_exactly_one_open_statement() {
         2500,
         Some(10 * ONE),
         PeriodKind::Anniversary,
-        false,
+        true,
     )
     .await;
     let plan = world
@@ -700,23 +710,29 @@ async fn h5_a_chargeback_lands_on_exactly_one_open_statement() {
     let order_id = plan_order(&world, plan.customer_plan_id, 2500).await;
     let journal = closed_first_journal(&world, &plan, order_id).await;
     assert_eq!(journal.state, JournalState::Paid);
-    // The contested journal's own statement is the one the chargeback must
-    // restate.
+    // The already-paid document stays closed; a chargeback needs an open
+    // document without rewriting this settled statement.
     let contested_stmt = statements(&world.db, world.organization_id)
         .await
         .into_iter()
         .find(|s| s.journal_id == Some(journal.journal_id))
         .expect("the journal wrapped a statement");
 
-    // A second open statement stands for the same plan — period 1 underpaid, so
-    // its own journal posts with an open receivable and issues a statement that
-    // is not the contested journal's.
-    let renewal = plan_order(&world, plan.customer_plan_id, 1000).await;
+    // A second exact-paid period has legacy overage, so its own statement
+    // remains open. This retains H1's existing policy solely as fixture setup.
+    let renewal = plan_order(&world, plan.customer_plan_id, 2500).await;
     world
         .db
         .activate_plan_period(renewal, plan.customer_plan_id)
         .await
         .unwrap();
+    plan_payment::overage(
+        &world.db,
+        world.organization_id,
+        plan.customer_plan_id,
+        1500,
+    )
+    .await;
     end_period_ago(&world.pool, world.organization_id, 60).await;
     world.db.rollover_due_subscriptions().await.unwrap();
     let other_stmt = statements(&world.db, world.organization_id)
@@ -725,9 +741,26 @@ async fn h5_a_chargeback_lands_on_exactly_one_open_statement() {
         .find(|s| s.journal_id != Some(journal.journal_id) && s.period_index == Some(1))
         .expect("a second open statement stands");
 
-    // The dispute is lost: the recharge restores the receivable and appends
-    // the chargeback. It must land on the contested journal's own statement.
+    assert_eq!(contested_stmt.state, oxsum_core::PlanStatementState::Paid);
+    assert_eq!(other_stmt.state, oxsum_core::PlanStatementState::Issued);
+    assert_eq!(other_stmt.total_minor - other_stmt.paid_minor, 1500);
+
+    // The lost dispute restores the receivable on the original journal and
+    // surfaces it on the other open statement, exactly once.
     let dispute_id = Uuid::new_v4();
+    world
+        .db
+        .recharge_journal_dispute(
+            &world.wallet,
+            order_id,
+            dispute_id,
+            2500,
+            OffsetDateTime::now_utc().date(),
+        )
+        .await
+        .unwrap();
+
+    // A retry cannot restore the same disputed payment a second time.
     world
         .db
         .recharge_journal_dispute(
@@ -782,6 +815,12 @@ async fn h5_a_chargeback_lands_on_exactly_one_open_statement() {
         other_chargeback, 2500,
         "the open statement carries the restored debt exactly once"
     );
+    assert_eq!(other.total_minor - other.paid_minor, 4000);
+    assert_eq!(contested.state, oxsum_core::PlanStatementState::Paid);
+    assert_eq!(
+        ledger_net(&world.pool, &world.tenant, "Assets:Receivables").await,
+        -4000
+    );
 }
 
 // ── H6: voiding a paid journal must synchronize its customer statement ──────
@@ -824,7 +863,8 @@ async fn h6_voiding_a_journal_synchronizes_its_statement() {
         .into_iter()
         .find(|s| s.journal_id == Some(journal.journal_id))
         .expect("the journal wrapped a statement");
-    assert_ne!(format!("{:?}", statement.state), "Void");
+    assert_eq!(statement.state, oxsum_core::PlanStatementState::Paid);
+    assert_eq!(statement.paid_minor, 2500);
 
     world
         .db
