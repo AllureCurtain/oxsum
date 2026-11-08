@@ -38,7 +38,7 @@ Statuses distinguish planned, in_progress, implemented, validated, in_review, in
 | N18 [#744](https://github.com/AllureCurtain/oxsum/issues/744) — Final integrated candidate acceptance | N01–N17,N21 | planned | — | — | Freeze only after dependencies; run exact artifact checks |
 | N19 [#745](https://github.com/AllureCurtain/oxsum/issues/745) — Two independent operator pilots | N18 + participants | planned | — | — | Prepare both pilot kits; no external contact |
 | N20 [#746](https://github.com/AllureCurtain/oxsum/issues/746) — Publication and deployment, if selected | N18 + authority/gates | planned | — | — | Prepare/rehearse tooling; public actions unperformed |
-| N21 [#747](https://github.com/AllureCurtain/oxsum/issues/747) — Complete embedded application integration | N03,N05–N07,N10–N12 | planned | — | — | Split namespace/grants, lifecycle APIs and external example |
+| N21 [#747](https://github.com/AllureCurtain/oxsum/issues/747) — Complete embedded application integration | N03,N05–N07,N10–N12 | in_progress | `.worktrees/integration-scopes` / `feat/integration-scopes` | child [#785](https://github.com/AllureCurtain/oxsum/issues/785) | N21.a scoped application provisioning credentials in progress: IntegrationScope extension wired to real `require_integration` enforcement, namespace-bounded provisioning, contract-first |
 
 ## Requirement ownership
 
