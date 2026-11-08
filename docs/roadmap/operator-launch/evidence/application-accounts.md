@@ -29,8 +29,11 @@ Executed local validation with PostgreSQL and an empty worktree `.env`:
 - Contract generation/security (four checks), TypeScript and Vite build passed.
 - Strict workspace/all-target Clippy passed with `-D warnings` in 1m51s;
   formatting and diff checks passed.
-- Independent source review passed before the digest compilation correction;
-  final review and combined full workspace validation pending.
+- Final independent source review passed on registered runtime `5420b171`,
+  including the digest correction and migration registration.
+- Full workspace: 2,003 passed, six existing opt-in checks skipped, two slow,
+  in 276.293 seconds, with real PostgreSQL engine conformance enabled. The
+  final code snapshot is `5420b171`; later commits only record this evidence.
 
 Regressions cover cross-application identical IDs, scopes/revocation, concurrent
 exact retries, changed terms, retained capacity, one-way archive with in-flight

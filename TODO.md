@@ -4,7 +4,7 @@ Updated: 2026-11-09
 
 ## In progress
 
-- [ ] [#846](https://github.com/AllureCurtain/oxsum/issues/846) — Stable application namespaces, bounded customer lifecycle and rotated metering replay; 39 core and 13 HTTP checks passed, zero skipped. Full validation and PR integration pending; owner portal follows in #853.
+- [ ] [#846](https://github.com/AllureCurtain/oxsum/issues/846) — Stable application namespaces, bounded customer lifecycle and rotated metering replay; 2,003 full workspace passes plus 39 core and 13 HTTP checks, strict Clippy and final independent review passed. PR #855 integration pending; owner portal follows in #853.
 
 - [ ] [#848](https://github.com/AllureCurtain/oxsum/issues/848) — Compare runtime financial projections with independent official ledger/source totals after #838; current reconciliation actual totals still clone the projection. N11 remains open.
 
