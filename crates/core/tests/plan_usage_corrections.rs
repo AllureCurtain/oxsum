@@ -14,7 +14,7 @@ use doubleentry::{
 use oxsum_core::{
     BusinessRole, BusinessStaffRequest, Db, NewRefundRequest, NewSoldPlan, NewUser,
     PeriodAuthorization, PeriodKind, PlanUsageCorrection, PlanUsageCorrectionRequest,
-    SessionContext, SessionContextRequest, Wallet,
+    SessionContext, SessionContextRequest, Wallet, WalletError,
 };
 use time::OffsetDateTime;
 use uuid::Uuid;
@@ -885,24 +885,134 @@ async fn later_chargebacks_retain_cash_and_review_without_double_consuming_corre
 
 #[tokio::test]
 async fn a_later_void_preserves_correction_payable_and_adds_only_retained_collection() {
-    let Some(w) = world(FEE + USAGE).await else {
-        return;
-    };
-    run(&w, true).await;
-    let cash = net(&w, "Assets:Cash").await;
-    w.db.void_invoice_journal(
+    for statement_review in [false, true] {
+        let Some(w) = world(FEE + USAGE).await else {
+            return;
+        };
+        run(&w, true).await;
+        let cash = net(&w, "Assets:Cash").await;
+        if statement_review {
+            w.db.release_statement_review(
+                &w.owner,
+                w.statement,
+                "void",
+                "void corrected bill",
+                &Uuid::new_v4().to_string(),
+            )
+            .await
+            .unwrap();
+        } else {
+            w.db.void_invoice_journal(
+                &w.owner,
+                &w.wallet,
+                w.journal,
+                "void corrected bill",
+                &Uuid::new_v4().to_string(),
+                OffsetDateTime::now_utc().date(),
+            )
+            .await
+            .unwrap();
+        }
+        assert_eq!(net(&w, "Liabilities:RefundPayable").await, FEE + USAGE);
+        assert_eq!(net(&w, "Assets:Cash").await, cash);
+        assert_eq!(net(&w, "Income:PlanFees").await, 0);
+        assert_eq!(effects(&w).await, 1);
+        assert!(run(&w, true).await.already_applied);
+    }
+}
+
+#[tokio::test]
+async fn correction_preserves_other_retained_void_debt_and_its_admission_restriction() {
+    let Some(w) = world(FEE).await else { return };
+    let plan: Uuid = sqlx::query_scalar(
+        "SELECT customer_plan_id FROM oxsum.invoice_journals WHERE journal_id=$1",
+    )
+    .bind(w.journal)
+    .fetch_one(w.db.pool())
+    .await
+    .unwrap();
+    sqlx::query("UPDATE oxsum.org_subscriptions SET current_period_start=now()-interval '2 days',current_period_end=now()-interval '1 day' WHERE organization_id=$1 AND state='active'").bind(w.org).execute(w.db.pool()).await.unwrap();
+    w.db.rollover_due_subscriptions().await.unwrap();
+    let order = payment::paid_order(&w.db, &w.owner, w.org, plan).await;
+    w.db.activate_plan_period(order.order_id, plan)
+        .await
+        .unwrap();
+    sqlx::query("UPDATE oxsum.plan_periods SET period_start=now()-interval '2 days',period_end=now()-interval '1 day' WHERE customer_plan_id=$1 AND state='active'").bind(plan).execute(w.db.pool()).await.unwrap();
+    sqlx::query("UPDATE oxsum.org_subscriptions SET current_period_start=now()-interval '2 days',current_period_end=now()-interval '1 day' WHERE organization_id=$1 AND state='active'").bind(w.org).execute(w.db.pool()).await.unwrap();
+    let other = payment::legacy_close(&w.db, w.org, plan, USAGE).await;
+    w.db.rollover_due_subscriptions().await.unwrap();
+    let statement: Uuid =
+        sqlx::query_scalar("SELECT statement_id FROM oxsum.plan_statements WHERE journal_id=$1")
+            .bind(other)
+            .fetch_one(w.db.pool())
+            .await
+            .unwrap();
+    sqlx::query("UPDATE oxsum.plan_statements SET state='past_due',due_at=now()-interval '30 days' WHERE statement_id=$1").bind(statement).execute(w.db.pool()).await.unwrap();
+    sqlx::query("INSERT INTO oxsum.plan_statement_lines(line_id,statement_id,kind,amount_minor,description,source_ref) SELECT gen_random_uuid(),statement_id,kind,-amount_minor,'retained document-only void',line_id FROM oxsum.plan_statement_lines WHERE statement_id=$1").bind(statement).execute(w.db.pool()).await.unwrap();
+    sqlx::query("UPDATE oxsum.plan_statements SET state='void',total_minor=0,paid_minor=0,voided_at=now(),void_reason='historical document-only review' WHERE statement_id=$1").bind(statement).execute(w.db.pool()).await.unwrap();
+    sqlx::query(
+        "UPDATE oxsum.customer_plans SET dunning_suspended_at=now() WHERE customer_plan_id=$1",
+    )
+    .bind(plan)
+    .execute(w.db.pool())
+    .await
+    .unwrap();
+    assert_eq!(run(&w, true).await.status, "applied");
+    let suspended:bool=sqlx::query_scalar("SELECT dunning_suspended_at IS NOT NULL FROM oxsum.customer_plans WHERE customer_plan_id=$1").bind(plan).fetch_one(w.db.pool()).await.unwrap();
+    assert!(suspended);
+    assert_eq!(
+        w.db.plan_credit_standing(w.org)
+            .await
+            .unwrap()
+            .unwrap()
+            .outstanding_minor,
+        USAGE
+    );
+    w.wallet
+        .top_up(
+            "correction-admission",
+            100,
+            OffsetDateTime::now_utc().date(),
+        )
+        .await
+        .unwrap();
+    assert!(matches!(
+        w.wallet
+            .hold(
+                "correction-hold",
+                "retained debt",
+                1,
+                OffsetDateTime::now_utc().date()
+            )
+            .await,
+        Err(WalletError::Forbidden(_))
+    ));
+    w.db.release_statement_review(
         &w.owner,
-        &w.wallet,
-        w.journal,
-        "void corrected bill",
+        statement,
+        "void",
+        "reconcile retained debt",
         &Uuid::new_v4().to_string(),
-        OffsetDateTime::now_utc().date(),
     )
     .await
     .unwrap();
-    assert_eq!(net(&w, "Liabilities:RefundPayable").await, FEE + USAGE);
-    assert_eq!(net(&w, "Assets:Cash").await, cash);
-    assert_eq!(net(&w, "Income:PlanFees").await, 0);
-    assert_eq!(effects(&w).await, 1);
-    assert!(run(&w, true).await.already_applied);
+    assert_eq!(
+        w.db.plan_credit_standing(w.org)
+            .await
+            .unwrap()
+            .unwrap()
+            .outstanding_minor,
+        0
+    );
+    assert!(
+        w.wallet
+            .hold(
+                "correction-restored",
+                "last debt cleared",
+                1,
+                OffsetDateTime::now_utc().date()
+            )
+            .await
+            .is_ok()
+    );
 }
