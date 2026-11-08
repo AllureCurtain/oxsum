@@ -883,20 +883,32 @@ shorter months — a January 31 plan renews February 28, then March 31), and
 `overageEnabled`, the opt-in that lets an exhausted period draw past quota
 against the wallet.
 
-Buying is a two-step the business staff drives:
+The business assigns the plan, then you choose when to pay:
 
 1. `PUT /api/v1/business/customers/{organizationId}/plan` with
    `{"planVersionId"}` binds you — `pendingPayment` for a priced plan, active
    immediately for a free one bound with `{"complimentaryGrant": "<uuid>"}`.
-2. Pay through a `planPeriod` order (`POST /api/v1/orders` with
-   `purpose: "planPeriod"` and `purposeRef` = your `customerPlanId`): once the
-   signed webhook marks it paid and fulfillment lands, period 0 activates and
-   your plan turns `active`. `GET /api/v1/org/plan` shows the state plus every
-   period you have authorized — each carrying its bounds and what authorized
-   it (`paymentOrder` or `complimentary`).
+2. Open `/app/plans` and review the quoted plan payment. The page obtains
+   your own period quote, shows its exact sold fee and provider currency,
+   and sends the unchanged fingerprint with the order. You do not enter an
+   internal plan UUID or choose how much entitlement to buy. The first
+   service period starts when paid activation completes; the provider return
+   alone never activates it. If a response is lost, refresh availability and
+   resume the existing order instead of creating another payment.
+
+The quoted fiat amount rounds up to the smallest supported currency unit;
+the credit-denominated sold fee remains exact. An API client reads
+`GET /api/v1/org/plan/payment-quote`, then posts `purpose: "planPeriod"`,
+`purposeRef: terms.customerPlanId`, `expectedPlanQuote: fingerprint`,
+`expectedCollectionRevision` and the exact quoted fiat fields to `/api/v1/orders`.
+A changed quote conflicts before any provider request. Historical orders
+retain their original terms, including after conversion changes.
 
 A period only ever exists because its authorization does — the rollover timer
-can never open an unpaid one. When the boundary passes without a paid
+can never open an unpaid one. Manual renewal becomes payable only at the
+current UTC boundary; paying cannot cut an active period short. An unresolved
+period payment must finish before cancelling or changing the assignment.
+When the boundary passes without a paid
 renewal the plan goes `pastDue`: the ended period's unspent remainder still
 serves your requests, but no new quota issues until a renewal order
 fulfills — and that period chains off the previous end, so a late renewal
@@ -914,9 +926,11 @@ overflow (at par), `discount` a credit note or complimentary write-off,
 is `posted` while it still owes (the unpaid receivable your `pastDue` plan
 carries), `paid` once a `planPeriod` order's payment settles it, `void` if
 staff cancelled it. The fee bills in arrears: your order prepays the period
-it authorizes, the close bills it, and a renewal order settles any open
-journal before prepaying its own period — so an unpaid period never reads
-as free.
+it authorizes and the close bills it. Each renewal fee funds that renewal
+period in full. Existing journal debt stays visible and separate; the explicit
+statement repayment workflow is tracked by #777. Partial prepayment coverage
+at close is also shown on the customer statement, so the paid base fee does
+not appear as debt again.
 
 The journal is the accounting bill; the statement is the document you
 actually read (issue #612). `GET /api/v1/org/statements` lists yours newest
@@ -925,7 +939,7 @@ lines — `planFee`, `usage`, `discount`, `refundCredit` plus the
 payment-cycle `paymentApplied`/`disputeChargeback` — `totalMinor` what the
 period billed, `paidMinor` what your payments have covered, `dueAt` the
 date payment is due (`netTermsDays` after issue). A statement is `issued`
-while it waits, `paid` once a renewal order's payment covers it, `pastDue`
+while it waits, `paid` once its own allocations cover it, `pastDue`
 past its due date, `void` if staff cancelled it. An unpaid statement past
 `dueAt + graceDays` suspends your plan's new holds — the plan reads
 `pastDue` the same way — and paying the receivable lifts the suspension in
