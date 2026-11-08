@@ -10,7 +10,7 @@ Updated: 2026-11-09
 
 - [x] [#846](https://github.com/AllureCurtain/oxsum/issues/846) — Stable application namespaces, bounded customer lifecycle and rotated metering replay; 2,003 full workspace passes plus 39 core and 13 HTTP checks, strict Clippy and final independent review passed. Integrated in PR #855 (`42b80a24`); owner portal follows in #853.
 
-- [ ] [#856](https://github.com/AllureCurtain/oxsum/issues/856) — Shared transaction-bound ledger verification, calendar and receipt reads for refunds, reconciliation and admission; remove nested pool checkout while retaining canonical hash and source boundaries. Validation in progress.
+- [ ] [#856](https://github.com/AllureCurtain/oxsum/issues/856) — Shared borrowed ledger verification and transaction reads in PR #860: nine focused PostgreSQL checks, 2,012 complete workspace passes, strict Clippy, formatting and three independent reviews passed. Normal integration pending; parent refund/reconciliation/admission work remains.
 
 
 - [ ] [#848](https://github.com/AllureCurtain/oxsum/issues/848) — Compare runtime financial projections with independent official ledger/source totals after #838; current reconciliation actual totals still clone the projection. N11 remains open.
