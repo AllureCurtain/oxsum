@@ -301,7 +301,7 @@ export function OrderNew() {
     <div className="mx-auto flex max-w-lg flex-col gap-4">
       <h1 className="text-2xl font-bold">{t("orders.newTitle")}</h1>
       <Card title={t("orders.newCard")}>
-        <form className="flex flex-col gap-3" onSubmit={submit} onChange={() => { if (!create.isPending) { intent.current = null; create.reset(); } }}>
+        <form className="flex flex-col gap-3" noValidate={Boolean(intent.current)} onSubmit={submit} onChange={() => { if (!create.isPending) { intent.current = null; create.reset(); } }}>
           <fieldset disabled={create.isPending} className="flex min-w-0 flex-col gap-3">
           {terms.isLoading ? <p>Loading collection terms…</p> : terms.isError ? <Banner tone="error">Collection terms could not be loaded.</Banner> : terms.data?.ready ? <p className="font-mono text-sm">1 credit = {terms.data.currency?.ratePerCredit} {currency}. Existing orders keep their agreed rate.</p> : <Banner tone="warn">The operator has not configured compatible collection terms.</Banner>}
           <Button type="button" tone="ghost" onClick={() => terms.refetch()} disabled={create.isPending}>Refresh collection terms</Button>
