@@ -22,6 +22,7 @@ use crate::error::ApiError;
 
 mod auth;
 pub(crate) mod billing;
+mod bundles;
 mod business;
 mod business_invitations;
 mod business_prices;
@@ -172,6 +173,7 @@ pub fn router(state: AppState) -> Router {
         .route("/topups/hyperswitch", post(billing::hyperswitch_topup))
         .route("/topups/x402", post(billing::x402_topup))
         .route("/redemptions", post(billing::redeem))
+        .route("/bundles", get(bundles::catalog))
         .route(
             "/orders",
             get(orders::list_orders).post(orders::create_order),
@@ -268,6 +270,14 @@ pub fn router(state: AppState) -> Router {
         .route(
             "/business/profile",
             get(business_profile::get).post(business_profile::save),
+        )
+        .route(
+            "/business/bundles",
+            get(bundles::history).post(bundles::publish),
+        )
+        .route(
+            "/business/bundles/{bundle_version_id}/retire",
+            post(bundles::retire),
         )
         .route("/business/sale-books", get(business_prices::books))
         .route(

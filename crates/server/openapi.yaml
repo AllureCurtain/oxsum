@@ -6470,10 +6470,93 @@ paths:
         "409": { $ref: "#/components/responses/Error" }
         "500": { $ref: "#/components/responses/Error" }
         "503": { $ref: "#/components/responses/Error" }
+  /api/v1/bundles:
+    get:
+      summary: List published bundle offers available for new purchases
+      security: [{ sessionCookie: [] }, { apiKey: [] }]
+      responses:
+        "200":
+          description: Active published versions; selection never grants funds
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data: { type: array, items: { $ref: "#/components/schemas/BundleOffer" } }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+  /api/v1/business/bundles:
+    get:
+      summary: Read published and retired bundle offer history
+      security: [{ sessionCookie: [] }]
+      responses:
+        "200":
+          description: Current staff with overviewRead; no secrets
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data: { type: array, items: { $ref: "#/components/schemas/BundleOffer" } }
+        "403": { $ref: "#/components/responses/Error" }
+    post:
+      summary: Publish an immutable bundle version
+      description: Current commercialWrite authority, reason and idempotency key. A stable bundle ID with expectedVersion creates the next version; null starts a new offer. The complete price, purchased/promo split and promo lifetime are pinned. Saving makes no provider request.
+      security: [{ sessionCookie: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/BundlePublishRequest" }
+      responses:
+        "200":
+          description: Immutable audited publication receipt
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data: { $ref: "#/components/schemas/BundleMutation" }
+        "400": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "409": { $ref: "#/components/responses/Error" }
+  /api/v1/business/bundles/{bundleVersionId}/retire:
+    post:
+      summary: Retire a bundle version from new checkout
+      description: Current commercialWrite authority. Existing order snapshots and late paid fulfillment retain the sold version; retirement never revokes purchased funds.
+      security: [{ sessionCookie: [] }]
+      parameters:
+        - { name: bundleVersionId, in: path, required: true, schema: { type: string, format: uuid } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [idempotencyKey, reason]
+              properties:
+                idempotencyKey: { type: string, minLength: 1, maxLength: 200 }
+                reason: { type: string, minLength: 1, maxLength: 500 }
+      responses:
+        "200":
+          description: Immutable retirement receipt
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data: { $ref: "#/components/schemas/BundleMutation" }
+        "403": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
   /api/v1/orders:
     post:
       summary: Create a payment order
-      description: The customer pins an immutable order in the display currency it was quoted. The server rates the conversion to ledger credits at the stored business collection rate — `amountMinor`/`rate` are not request fields, so a client-supplied figure is a schema rejection, not a negotiated term. The expected payment and the order terms commit before the provider is called; the provider idempotency key is the order's durable local UUID, so a replayed `idempotencyKey` returns the standing order and its original checkout rather than a second charge. `purpose` fixes the one fulfillment arm the order may take — `walletTopup`, `bundle`, `planPeriod` or `invoiceRepayment`. The answer is a checkout to complete, never a paid order — `paid` is established only by the signed provider webhook.
+      description: The customer pins an immutable order in the display currency it was quoted. A bundle requires a published version in purposeRef; its exact price, purchased credit, promotion and lifetime come from that version. Other purposes rate through the stored business collection rate — `amountMinor`/`rate` are not request fields, so a client-supplied figure is a schema rejection, not a negotiated term. The expected payment and the order terms commit before the provider is called; the provider idempotency key is the order's durable local UUID, so a replayed `idempotencyKey` returns the standing order and its original checkout rather than a second charge. `purpose` fixes the one fulfillment arm the order may take — `walletTopup`, `bundle`, `planPeriod` or `invoiceRepayment`. The answer is a checkout to complete, never a paid order — `paid` is established only by the signed provider webhook.
       security: [{ sessionCookie: [], apiKey: [] }]
       requestBody:
         required: true
@@ -6659,7 +6742,7 @@ paths:
     post:
       summary: Request a refund review on an order
       description: |
-        The customer asks for review — it can never grant itself money. `amountMinor` names the credit amount asked back in ledger minor units; absent names the order's whole refundable remainder (`amountMinor` of the order minus what live refunds already reserve or returned — the promo leg of a bundle is never refundable cash). The amount is bounded by the refundable remainder, so no wallet is ever driven negative by refunding. The answer is a `requested` refund — the durable review record; a replayed `idempotencyKey` returns the standing request. Only `paid` or `fulfilled` orders may be asked on. Staff alone resolves it through `POST /api/v1/business/refunds/{refundId}/resolve`.
+        The customer asks for review — it can never grant itself money. `amountMinor` names the credit amount asked back in ledger minor units; absent names the order's whole refundable remainder (`amountMinor` of the order minus what live refunds already reserve or returned — the promo leg of a bundle is never refundable cash). The amount is bounded by the refundable remainder, so no wallet is ever driven negative by refunding. The answer is a `requested` refund — the durable review record; a replayed `idempotencyKey` returns the standing request. Only `paid` or `fulfilled` orders may be asked on; bundles must finish fulfillment first. A confirmed partial or full bundle refund cancels its remaining promotion, including unused releases from in-flight holds, without cash reimbursement. Staff alone resolves it through `POST /api/v1/business/refunds/{refundId}/resolve`.
       security: [{ sessionCookie: [], apiKey: [] }]
       parameters:
         - { name: orderId, in: path, required: true, schema: { type: string, format: uuid } }
@@ -14813,6 +14896,45 @@ components:
       properties:
         events: { type: array, items: { $ref: "#/components/schemas/MerchantEvent" } }
         nextCursor: { type: [string, "null"], format: uuid }
+    BundleTerms:
+      type: object
+      additionalProperties: false
+      required: [name, displayCurrency, displayAmountMinor, purchasedMinor, promoMinor, promoLifetimeDays]
+      description: Exact immutable sold terms. Price ratio must be representable by the existing eight-decimal collection snapshot. Promotional expiry is paidAt plus lifetime days; null never expires. Delayed fulfillment cannot restart this lifetime. Purchased funds do not inherit promotional expiry. A confirmed partial or full refund cancels remaining promotional credit without cash reimbursement.
+      properties:
+        name: { type: string, minLength: 1, maxLength: 200 }
+        displayCurrency: { type: string, pattern: "^[A-Z]{3}$" }
+        displayAmountMinor: { type: integer, format: int64, minimum: 1, maximum: 9007199254740991 }
+        purchasedMinor: { type: integer, format: int64, minimum: 1, maximum: 9007199254740991 }
+        promoMinor: { type: integer, format: int64, minimum: 0, maximum: 9007199254740991 }
+        promoLifetimeDays: { type: [integer, "null"], minimum: 1, maximum: 3650 }
+    BundleOffer:
+      type: object
+      additionalProperties: false
+      required: [bundleVersionId, bundleId, version, terms, publishedAt, retiredAt]
+      properties:
+        bundleVersionId: { type: string, format: uuid }
+        bundleId: { type: string, format: uuid }
+        version: { type: integer, minimum: 1 }
+        terms: { $ref: "#/components/schemas/BundleTerms" }
+        publishedAt: { type: string, format: date-time }
+        retiredAt: { type: [string, "null"], format: date-time }
+    BundlePublishRequest:
+      type: object
+      additionalProperties: false
+      required: [idempotencyKey, reason, bundleId, expectedVersion, terms]
+      properties:
+        idempotencyKey: { type: string, minLength: 1, maxLength: 200 }
+        reason: { type: string, minLength: 1, maxLength: 500 }
+        bundleId: { type: [string, "null"], format: uuid }
+        expectedVersion: { type: integer, minimum: 0 }
+        terms: { $ref: "#/components/schemas/BundleTerms" }
+    BundleMutation:
+      type: object
+      required: [id, offer]
+      properties:
+        id: { type: string, format: uuid }
+        offer: { $ref: "#/components/schemas/BundleOffer" }
     OrderPurpose:
       type: string
       enum: [walletTopup, bundle, planPeriod, invoiceRepayment]
@@ -14831,13 +14953,13 @@ components:
         expectedCollectionRevision: { type: integer, minimum: 0, maximum: 9007199254740991, description: Optional quote precondition for a new order. Browser clients send the displayed revision; changed settings conflict before provider I/O. An existing idempotent order returns its original terms. }
         displayAmountMinor: { type: integer, format: int64, minimum: 1, description: the fiat minor amount the provider will charge }
         displayCurrency: { type: string, pattern: "^[A-Z]{3}$" }
-        purposeRef: { type: [string, "null"], format: uuid, description: the `customerPlanId` a `planPeriod` activates or renews, or the receivable an `invoiceRepayment` settles }
-        promoMinor: { type: [integer, "null"], format: int64, minimum: 0, description: a `bundle` order's promo lot in credit-minor }
+        purposeRef: { type: [string, "null"], format: uuid, description: Published `bundleVersionId` for a bundle, the `customerPlanId` a `planPeriod` activates or renews, or the receivable an `invoiceRepayment` settles }
+        promoMinor: { type: [integer, "null"], format: int64, minimum: 0, description: Deprecated assertion only; zero/absent or exactly the selected bundle offer promotion. Customers cannot choose promotional credit. }
         returnUrl: { type: [string, "null"], description: "where the provider returns the browser — an absolute http(s) URL or a site-absolute path; absent, the order's own `/app/orders?order={orderId}` page" }
         cancelUrl: { type: [string, "null"], description: "the rail's cancel destination where one exists (Stripe); ignored by single-return rails" }
     PaymentOrder:
       type: object
-      required: [orderId, merchantId, merchantVersionId, organizationId, purpose, amountMinor, currency, displayCurrency, displayAmountMinor, rateMantissa, rateScale, purposeRef, promoMinor, providerPaymentId, source, evidence, status, createdAt, paidAt]
+      required: [orderId, merchantId, merchantVersionId, organizationId, purpose, amountMinor, currency, displayCurrency, displayAmountMinor, rateMantissa, rateScale, purposeRef, promoMinor, bundleOffer, providerPaymentId, source, evidence, status, createdAt, paidAt]
       properties:
         orderId: { type: string, format: uuid }
         merchantId: { type: [string, "null"], format: uuid, description: the merchant the checkout was offered under — null on a `manual` order }
@@ -14852,6 +14974,7 @@ components:
         rateScale: { type: integer, description: the pinned conversion denominator exponent }
         purposeRef: { type: [string, "null"], format: uuid }
         promoMinor: { type: integer, format: int64 }
+        bundleOffer: { anyOf: [{ $ref: "#/components/schemas/BundleOffer" }, { type: "null" }], description: Immutable publication snapshot for new bundle orders. Absent legacy unfulfilled bundles require operator review before checkout or granting. }
         providerPaymentId: { type: [string, "null"] }
         source: { type: string, enum: [provider, manual], description: "how the order's payment arrived — a rail's signed webhook or a staff-recorded receipt" }
         evidence: { type: object, description: "a manual order's audit payload (`reference`, `reason`, `recordedBy`); `{}` on provider orders" }

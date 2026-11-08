@@ -34,9 +34,9 @@ pub(crate) struct CreateOrderReq {
     display_amount_minor: i64,
     display_currency: String,
     /// The purpose's argument: the plan a `planPeriod` activates, the
-    /// receivable an `invoiceRepayment` settles.
+    /// receivable an `invoiceRepayment` settles, or a published bundle version.
     purpose_ref: Option<Uuid>,
-    /// A `bundle` order's promo lot, in credit-minor; absent/zero elsewhere.
+    /// Deprecated bundle assertion; absent/zero or exactly the offer's amount.
     promo_minor: Option<i64>,
     /// Where the provider returns the customer's browser after payment. Absent,
     /// the order's own `/app/orders?order={id}` page is the return — the same
@@ -134,6 +134,14 @@ async fn drive_checkout(
     return_url: Option<String>,
     cancel_url: Option<String>,
 ) -> Result<PaymentOrder, ApiError> {
+    if order.purpose == PaymentOrderPurpose::Bundle
+        && order.bundle_offer.is_none()
+        && order.status != "fulfilled"
+    {
+        return Err(ApiError::Conflict(
+            "legacy bundle has no authoritative offer; operator review required".into(),
+        ));
+    }
     if order.provider_payment_id.is_some() || order.status != "created" {
         return Ok(order);
     }

@@ -149,3 +149,12 @@ revision-bound saves and publication, default/customer schedules, model override
 confirmed schedule end/cancel and customer/draft preview. Pure financial input
 checks run with `node --experimental-strip-types --test tests/sale-draft.test.ts`.
 Browser evidence is tracked separately in the operator-launch execution ledger.
+
+### Published credit bundles (#774)
+
+Business **Credit bundles** reads immutable version history. Owner/finance can
+publish or retire with an audited reason and unchanged-intent replay; other staff
+have history only. Customer **Orders → New → Bundle** selects a published version
+and displays the fixed purchase, promotion, expiry and refund consequences. The
+order detail preserves the purchased version. Runtime/browser acceptance is
+tracked in `docs/roadmap/operator-launch/evidence/bundle-offers.md`.

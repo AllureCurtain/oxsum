@@ -11,6 +11,7 @@ mod adapters;
 mod anomaly;
 mod audit;
 mod billing;
+mod bundles;
 mod business;
 mod business_profile;
 mod business_providers;
@@ -90,6 +91,10 @@ mod users;
 mod wallet;
 mod webhooks;
 mod x402;
+
+pub use bundles::{
+    BundleMutation, BundleOffer, BundlePublishRequest, BundleRetireRequest, BundleTerms,
+};
 
 pub use adapters::{
     ANTHROPIC, GEMINI, OPENAI, TASKS, UsageAdapter, adapter_for, adapter_for_endpoint,

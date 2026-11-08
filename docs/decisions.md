@@ -2847,3 +2847,27 @@ supersede a failed event, because money actually returned cannot be erased by
 event delivery order. Success never downgrades and no callback repeats the local
 wallet debit. This change introduces no external reconciliation guesses or
 ledger rewrites. Migration numbers 0098/0099 belong to independent task PRs.
+## 2026-11-08 — Bundle offers own promotional grants (#774)
+
+- Problem: a customer-supplied `promoMinor` previously determined the promotional
+  grant. A conversion/display rate cannot authorize free promotional credit.
+- Decision: publish immutable, business-owned offer versions under current
+  `CommercialWrite` authority, including exact fiat/purchased/promo quantities and
+  optional validity. The customer selects a version; the deprecated promo input
+  is only a zero/absent or exact-match assertion. The order pins all sold terms.
+- Retirement stops new orders; an admitted order and its retry retain the original
+  terms. Optimistic family revisions prevent stale publications. Mutation receipts
+  retain the original result, while current authorization is checked even on replay.
+- Keep the existing rate columns truthful: reject ratios not exactly representable
+  with eight decimal places instead of recording an approximate conversion. No
+  floating-point money is introduced in core or browser inputs.
+- Legacy history is unchanged. A database insert guard fences new snapshot-less
+  bundle rows from old binaries; old unfulfilled bundles require operator review.
+  Fulfilled old effects and their purchased refund eligibility remain intact.
+- Promotion validity begins at `paidAt`. Already expired delayed grants are issued
+  and burned atomically; every retry uses the same lot. Refund review waits for
+  complete bundle fulfillment. A confirmed partial/full refund cancels the remaining
+  promo lot before marking success, preserving hold-release and retry conservation.
+- Scope: bundle authority is one child of #768. Collection authority (#765), payment
+  recovery/correlation (#759/#760/#763), plan authority and daily revenue recognition
+  remain separate work; all must be tested together on the final candidate.

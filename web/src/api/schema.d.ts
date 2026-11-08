@@ -8724,6 +8724,169 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/bundles": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List published bundle offers available for new purchases */
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Active published versions; selection never grants funds */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            data: components["schemas"]["BundleOffer"][];
+                        };
+                    };
+                };
+                401: components["responses"]["Error"];
+                403: components["responses"]["Error"];
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/business/bundles": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Read published and retired bundle offer history */
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Current staff with overviewRead; no secrets */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            data: components["schemas"]["BundleOffer"][];
+                        };
+                    };
+                };
+                403: components["responses"]["Error"];
+            };
+        };
+        put?: never;
+        /**
+         * Publish an immutable bundle version
+         * @description Current commercialWrite authority, reason and idempotency key. A stable bundle ID with expectedVersion creates the next version; null starts a new offer. The complete price, purchased/promo split and promo lifetime are pinned. Saving makes no provider request.
+         */
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": components["schemas"]["BundlePublishRequest"];
+                };
+            };
+            responses: {
+                /** @description Immutable audited publication receipt */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            data: components["schemas"]["BundleMutation"];
+                        };
+                    };
+                };
+                400: components["responses"]["Error"];
+                403: components["responses"]["Error"];
+                409: components["responses"]["Error"];
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/business/bundles/{bundleVersionId}/retire": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Retire a bundle version from new checkout
+         * @description Current commercialWrite authority. Existing order snapshots and late paid fulfillment retain the sold version; retirement never revokes purchased funds.
+         */
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    bundleVersionId: string;
+                };
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": {
+                        idempotencyKey: string;
+                        reason: string;
+                    };
+                };
+            };
+            responses: {
+                /** @description Immutable retirement receipt */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            data: components["schemas"]["BundleMutation"];
+                        };
+                    };
+                };
+                403: components["responses"]["Error"];
+                404: components["responses"]["Error"];
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/orders": {
         parameters: {
             query?: never;
@@ -8769,7 +8932,7 @@ export interface paths {
         put?: never;
         /**
          * Create a payment order
-         * @description The customer pins an immutable order in the display currency it was quoted. The server rates the conversion to ledger credits at the stored business collection rate — `amountMinor`/`rate` are not request fields, so a client-supplied figure is a schema rejection, not a negotiated term. The expected payment and the order terms commit before the provider is called; the provider idempotency key is the order's durable local UUID, so a replayed `idempotencyKey` returns the standing order and its original checkout rather than a second charge. `purpose` fixes the one fulfillment arm the order may take — `walletTopup`, `bundle`, `planPeriod` or `invoiceRepayment`. The answer is a checkout to complete, never a paid order — `paid` is established only by the signed provider webhook.
+         * @description The customer pins an immutable order in the display currency it was quoted. A bundle requires a published version in purposeRef; its exact price, purchased credit, promotion and lifetime come from that version. Other purposes rate through the stored business collection rate — `amountMinor`/`rate` are not request fields, so a client-supplied figure is a schema rejection, not a negotiated term. The expected payment and the order terms commit before the provider is called; the provider idempotency key is the order's durable local UUID, so a replayed `idempotencyKey` returns the standing order and its original checkout rather than a second charge. `purpose` fixes the one fulfillment arm the order may take — `walletTopup`, `bundle`, `planPeriod` or `invoiceRepayment`. The answer is a checkout to complete, never a paid order — `paid` is established only by the signed provider webhook.
          */
         post: {
             parameters: {
@@ -9096,7 +9259,7 @@ export interface paths {
         put?: never;
         /**
          * Request a refund review on an order
-         * @description The customer asks for review — it can never grant itself money. `amountMinor` names the credit amount asked back in ledger minor units; absent names the order's whole refundable remainder (`amountMinor` of the order minus what live refunds already reserve or returned — the promo leg of a bundle is never refundable cash). The amount is bounded by the refundable remainder, so no wallet is ever driven negative by refunding. The answer is a `requested` refund — the durable review record; a replayed `idempotencyKey` returns the standing request. Only `paid` or `fulfilled` orders may be asked on. Staff alone resolves it through `POST /api/v1/business/refunds/{refundId}/resolve`.
+         * @description The customer asks for review — it can never grant itself money. `amountMinor` names the credit amount asked back in ledger minor units; absent names the order's whole refundable remainder (`amountMinor` of the order minus what live refunds already reserve or returned — the promo leg of a bundle is never refundable cash). The amount is bounded by the refundable remainder, so no wallet is ever driven negative by refunding. The answer is a `requested` refund — the durable review record; a replayed `idempotencyKey` returns the standing request. Only `paid` or `fulfilled` orders may be asked on; bundles must finish fulfillment first. A confirmed partial or full bundle refund cancels its remaining promotion, including unused releases from in-flight holds, without cash reimbursement. Staff alone resolves it through `POST /api/v1/business/refunds/{refundId}/resolve`.
          */
         post: {
             parameters: {
@@ -19397,6 +19560,43 @@ export interface components {
             /** Format: uuid */
             nextCursor: string | null;
         };
+        /** @description Exact immutable sold terms. Price ratio must be representable by the existing eight-decimal collection snapshot. Promotional expiry is paidAt plus lifetime days; null never expires. Delayed fulfillment cannot restart this lifetime. Purchased funds do not inherit promotional expiry. A confirmed partial or full refund cancels remaining promotional credit without cash reimbursement. */
+        BundleTerms: {
+            name: string;
+            displayCurrency: string;
+            /** Format: int64 */
+            displayAmountMinor: number;
+            /** Format: int64 */
+            purchasedMinor: number;
+            /** Format: int64 */
+            promoMinor: number;
+            promoLifetimeDays: number | null;
+        };
+        BundleOffer: {
+            /** Format: uuid */
+            bundleVersionId: string;
+            /** Format: uuid */
+            bundleId: string;
+            version: number;
+            terms: components["schemas"]["BundleTerms"];
+            /** Format: date-time */
+            publishedAt: string;
+            /** Format: date-time */
+            retiredAt: string | null;
+        };
+        BundlePublishRequest: {
+            idempotencyKey: string;
+            reason: string;
+            /** Format: uuid */
+            bundleId: string | null;
+            expectedVersion: number;
+            terms: components["schemas"]["BundleTerms"];
+        };
+        BundleMutation: {
+            /** Format: uuid */
+            id: string;
+            offer: components["schemas"]["BundleOffer"];
+        };
         /**
          * @description The one fulfillment arm the order may take. `walletTopup` credits wallet cash only; `bundle` posts purchased credit plus a separate promo lot; `planPeriod` activates quota only; `invoiceRepayment` repays a drawn receivable only. No purpose both grants quota and wallet cash.
          * @enum {string}
@@ -19418,12 +19618,12 @@ export interface components {
             displayCurrency: string;
             /**
              * Format: uuid
-             * @description the `customerPlanId` a `planPeriod` activates or renews
+             * @description Published `bundleVersionId` for a bundle
              */
             purposeRef?: string | null;
             /**
              * Format: int64
-             * @description a `bundle` order's promo lot in credit-minor
+             * @description Deprecated assertion only; zero/absent or exactly the selected bundle offer promotion. Customers cannot choose promotional credit.
              */
             promoMinor?: number | null;
             /** @description where the provider returns the browser — an absolute http(s) URL or a site-absolute path; absent, the order's own `/app/orders?order={orderId}` page */
@@ -19471,6 +19671,8 @@ export interface components {
             purposeRef: string | null;
             /** Format: int64 */
             promoMinor: number;
+            /** @description Immutable publication snapshot for new bundle orders. Absent legacy unfulfilled bundles require operator review before checkout or granting. */
+            bundleOffer: components["schemas"]["BundleOffer"] | null;
             providerPaymentId: string | null;
             /**
              * @description how the order's payment arrived — a rail's signed webhook or a staff-recorded receipt
