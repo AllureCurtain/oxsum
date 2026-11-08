@@ -164,7 +164,11 @@ impl Wallet {
             )?;
             self.append_in(&mut tx, draft).await?;
         }
-        db.note_open_hold_in(&mut tx, watch).await?;
+        if !db.note_open_hold_in(&mut tx, watch).await? {
+            return Err(WalletError::Conflict(
+                "the reservation watch already exists".into(),
+            ));
+        }
         sqlx::query("UPDATE oxsum.open_holds SET wallet_minor=$2 WHERE hold_key=$1")
             .bind(&watch.hold_key)
             .bind(wallet_minor)

@@ -781,6 +781,84 @@ async fn a_failed_watch_write_rolls_back_quota_wallet_and_operation() {
 }
 
 #[tokio::test]
+async fn a_racing_legacy_watch_cannot_become_an_authorized_reservation() {
+    let world = world_or_skip!(100);
+    cover_with(&world, 20).await;
+    let input = reservation(&world, 40).await;
+    let operation_id = input.operation.operation_id;
+    let mut legacy = input.watch.clone();
+    legacy.request_id = Uuid::new_v4().to_string();
+    legacy.key_id = None;
+    legacy.tags.insert("fixture".into(), "legacy".into());
+    let function = format!("fixture_{}", Uuid::new_v4().simple());
+    let gate = oxsum_core::limit_lock_key(&function, &Uuid::new_v4());
+    let mut blocker = world.pool.begin().await.unwrap();
+    let pid: i32 = sqlx::query_scalar("SELECT pg_backend_pid()")
+        .fetch_one(&mut *blocker)
+        .await
+        .unwrap();
+    sqlx::query("SELECT pg_advisory_xact_lock($1)")
+        .bind(gate)
+        .execute(&mut *blocker)
+        .await
+        .unwrap();
+    // Pause after the existence check, immediately before the unique insert.
+    sqlx::query(&format!("CREATE FUNCTION oxsum.{function}() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN IF NEW.request_id='{}' THEN PERFORM pg_advisory_xact_lock({gate}::bigint); END IF; RETURN NEW; END $$", input.watch.request_id)).execute(&world.pool).await.unwrap();
+    sqlx::query(&format!("CREATE TRIGGER {function} BEFORE INSERT ON oxsum.open_holds FOR EACH ROW EXECUTE FUNCTION oxsum.{function}()" )).execute(&world.pool).await.unwrap();
+    let db = world.db.clone();
+    let wallet = world.wallet().await;
+    let job = tokio::spawn(async move { admit(&db, &wallet, &input).await });
+    tokio::time::timeout(Duration::from_secs(3), async {
+        loop {
+            let blocked: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM pg_stat_activity WHERE datname=current_database() AND $1=ANY(pg_blocking_pids(pid)))")
+                .bind(pid).fetch_one(&world.pool).await.unwrap();
+            if blocked { break; }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    }).await.unwrap();
+    world.db.note_open_hold(&legacy).await.unwrap();
+    blocker.commit().await.unwrap();
+    let error = tokio::time::timeout(Duration::from_secs(3), job)
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap_err();
+    assert!(matches!(error, oxsum_core::WalletError::Conflict(_)));
+    assert_eq!(remaining_draw(&world).await, 0);
+    assert_eq!(world.wallet().await.available().await.unwrap(), 100);
+    assert_eq!(world.wallet().await.reserved().await.unwrap(), 0);
+    assert!(
+        world
+            .db
+            .operation(world.organization_id.parse().unwrap(), operation_id)
+            .await
+            .unwrap()
+            .is_none()
+    );
+    let retained = world.db.open_hold(&legacy.hold_key).await.unwrap().unwrap();
+    assert_eq!(retained.request_id, legacy.request_id);
+    assert_eq!(retained.tags, legacy.tags);
+    assert_eq!(retained.key_id, None);
+    let wallet_minor: Option<i64> =
+        sqlx::query_scalar("SELECT wallet_minor FROM oxsum.open_holds WHERE hold_key=$1")
+            .bind(&legacy.hold_key)
+            .fetch_one(&world.pool)
+            .await
+            .unwrap();
+    assert_eq!(wallet_minor, None);
+    sqlx::query(&format!("DROP TRIGGER {function} ON oxsum.open_holds"))
+        .execute(&world.pool)
+        .await
+        .unwrap();
+    sqlx::query(&format!("DROP FUNCTION oxsum.{function}()"))
+        .execute(&world.pool)
+        .await
+        .unwrap();
+    world.db.clear_open_hold(&legacy.hold_key).await.unwrap();
+    no_reservations(&world).await;
+}
+
+#[tokio::test]
 async fn racing_funded_requests_reserve_one_slot_and_a_wallet_hold_counts_once() {
     for top_up in [0, 100] {
         let world = world_or_skip!(top_up);

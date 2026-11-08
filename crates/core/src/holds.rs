@@ -97,12 +97,13 @@ impl Db {
     }
 
     /// Write the watch inside admission's transaction, before committing authority.
+    /// Returns false when another writer already owns this hold's watch.
     pub(crate) async fn note_open_hold_in(
         &self,
         tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
         hold: &OpenHold,
-    ) -> Result<(), WalletError> {
-        sqlx::query(
+    ) -> Result<bool, WalletError> {
+        let inserted = sqlx::query(
             "INSERT INTO oxsum.open_holds \
              (hold_key, tenant_id, request_id, model, channel, price_version, \
               input_price, output_price, freeze_minor, key_id, mandate_id, end_user, service_tier, tags) \
@@ -125,7 +126,7 @@ impl Db {
         .bind(serde_json::to_value(&hold.tags).unwrap_or_default())
         .execute(&mut **tx)
         .await?;
-        Ok(())
+        Ok(inserted.rows_affected() == 1)
     }
 
     /// How many hold watch rows are open right now — the `/metrics` gauge, refreshed per
