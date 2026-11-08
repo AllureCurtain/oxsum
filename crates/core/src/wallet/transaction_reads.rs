@@ -12,6 +12,9 @@ use uuid::Uuid;
 use super::{Receipt, SCALE, Wallet};
 use crate::{WalletError, ledger_source};
 
+/// Reserved amounts in promo, bonus, wallet and credit order, then actor/correlation.
+pub(super) type HoldParts = (i64, i64, i64, i64, Option<String>, Option<String>);
+
 impl Wallet {
     /// Read the full hash-verified entry on the caller's connection.
     pub(super) async fn entry_in(
@@ -148,7 +151,7 @@ impl Wallet {
         &self,
         connection: &mut PgConnection,
         hold_key: &str,
-    ) -> Result<(i64, i64, i64, i64, Option<String>, Option<String>), WalletError> {
+    ) -> Result<HoldParts, WalletError> {
         let stored = self
             .entry_in(connection, super::entry_id_for(hold_key))
             .await?
@@ -161,7 +164,7 @@ impl Wallet {
         &self,
         stored: &StoredEntry<SCALE>,
         hold_key: &str,
-    ) -> Result<(i64, i64, i64, i64, Option<String>, Option<String>), WalletError> {
+    ) -> Result<HoldParts, WalletError> {
         if stored.entry.idempotency_key().as_bytes() != hold_key.as_bytes() {
             return Err(WalletError::HoldNotFound(format!(
                 "key {hold_key:?} does not name this hold"

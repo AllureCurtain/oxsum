@@ -3939,7 +3939,7 @@ impl Wallet {
     async fn outstanding_hold(
         &self,
         hold_key: &str,
-    ) -> Result<(i64, i64, i64, i64, Option<String>, Option<String>), WalletError> {
+    ) -> Result<transaction_reads::HoldParts, WalletError> {
         let Some(stored) = self.store.get(entry_id_for(hold_key)).await? else {
             return Err(WalletError::HoldNotFound(format!(
                 "no hold under key {hold_key:?}"
