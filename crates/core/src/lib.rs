@@ -40,6 +40,7 @@ mod error;
 mod evidence;
 mod experiments;
 mod financial_facts;
+mod financial_reconciliation;
 mod groups;
 mod guardrail;
 mod heads;
@@ -189,6 +190,7 @@ pub use financial_facts::{
     ReconciliationException, ReconciliationRepair, ReconciliationReport, ReconciliationRun,
     TimeBasis,
 };
+pub use financial_reconciliation::{ReconciliationCoverage, ReconciliationSnapshot};
 pub use groups::{Group, GroupChannel};
 pub use guardrail::{
     Guardrail, GuardrailBinding, GuardrailPolicy, GuardrailSet, KeywordConfig, KeywordPattern,
