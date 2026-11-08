@@ -283,14 +283,14 @@ async fn renewal_does_not_clear_an_outstanding_statement() {
         .activate_plan_period(order, plan.customer_plan_id)
         .await
         .unwrap();
-    plan_payment::overage(
+    end_period_ago(&world.pool, world.organization_id, 60).await;
+    plan_payment::legacy_close(
         &world.db,
         world.organization_id,
         plan.customer_plan_id,
         1000,
     )
     .await;
-    end_period_ago(&world.pool, world.organization_id, 60).await;
     world.db.rollover_due_subscriptions().await.unwrap();
     let statement = statements(&world.db, world.organization_id).await.remove(0);
     let renewal = plan_order(&world, plan.customer_plan_id, 2500).await;
@@ -327,14 +327,14 @@ async fn overdue_grace_and_suspend_transitions() {
         )
         .await
         .unwrap();
-    plan_payment::overage(
+    end_period_ago(&world.pool, world.organization_id, 60).await;
+    plan_payment::legacy_close(
         &world.db,
         world.organization_id,
         plan.customer_plan_id,
         1000,
     )
     .await;
-    end_period_ago(&world.pool, world.organization_id, 60).await;
     world.db.rollover_due_subscriptions().await.unwrap();
     let statement = statements(&world.db, world.organization_id)
         .await
@@ -427,14 +427,14 @@ async fn a_staff_release_review_restores_and_audits() {
         )
         .await
         .unwrap();
-    plan_payment::overage(
+    end_period_ago(&world.pool, world.organization_id, 60).await;
+    plan_payment::legacy_close(
         &world.db,
         world.organization_id,
         plan.customer_plan_id,
         1000,
     )
     .await;
-    end_period_ago(&world.pool, world.organization_id, 60).await;
     world.db.rollover_due_subscriptions().await.unwrap();
     let statement = statements(&world.db, world.organization_id)
         .await
@@ -563,14 +563,14 @@ async fn an_issued_statement_refuses_edits_and_deletes() {
         )
         .await
         .unwrap();
-    plan_payment::overage(
+    end_period_ago(&world.pool, world.organization_id, 60).await;
+    plan_payment::legacy_close(
         &world.db,
         world.organization_id,
         plan.customer_plan_id,
         1000,
     )
     .await;
-    end_period_ago(&world.pool, world.organization_id, 60).await;
     world.db.rollover_due_subscriptions().await.unwrap();
     let statement = statements(&world.db, world.organization_id)
         .await
@@ -627,14 +627,14 @@ async fn a_partial_payment_line_does_not_change_the_statement_charge_total() {
         .activate_plan_period(order, plan.customer_plan_id)
         .await
         .unwrap();
-    plan_payment::overage(
+    end_period_ago(&world.pool, world.organization_id, 60).await;
+    plan_payment::legacy_close(
         &world.db,
         world.organization_id,
         plan.customer_plan_id,
         1000,
     )
     .await;
-    end_period_ago(&world.pool, world.organization_id, 60).await;
     world.db.rollover_due_subscriptions().await.unwrap();
     let statement = statements(&world.db, world.organization_id).await.remove(0);
     let mut tx = world.pool.begin().await.unwrap();

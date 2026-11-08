@@ -12,9 +12,10 @@
 //! authorizes (`debit Cash / credit Liabilities:UnearnedPlanFees`), the close
 //! recognizes revenue (`debit Receivables / credit Income:PlanFees`) and
 //! reclassifies the prepayment into the receivable. What the prepayment did
-//! not cover — overage beyond the quota, or a fee that rose under a change —
-//! stays `posted` as the open receivable a later order settles, and the plan's
-//! `past_due` state and the posted journal are the same fact read two ways.
+//! not cover stays `posted` as an open receivable for explicit repayment.
+//! Wallet-settled usage is already recognized by its settlement and is never
+//! added to a new plan journal. Legacy overage lines remain readable for
+//! explicit correction; renewal state and unpaid debt are separate facts.
 //!
 //! The ledger legs keep revenue, receivable and liability in their own
 //! accounts: `Income:PlanFees`, `Income:Discounts`, `Assets:Receivables`,
@@ -87,9 +88,8 @@ impl JournalState {
 pub enum JournalLineKind {
     /// The sold version's `price_minor` for the period.
     BaseFee,
-    /// An overage-enabled plan's wallet-billed overflow inside the period,
-    /// charged at par — `sold_plans` carries no separate overage rate, so the
-    /// settled charge is its own price.
+    /// A historical duplicated wallet-overage charge. Retained for old journal
+    /// reads and source-linked corrections; new closes never emit this kind.
     UsageOverage,
     /// A credit against the bill — a refund's credit note, or a complimentary
     /// grant's write-off.
@@ -705,10 +705,8 @@ impl Db {
     /// covered — inside this transaction, beside the accrual entry the same
     /// transaction commits.
     ///
-    /// Lines: `base_fee` the sold version's price; `usage_overage` the
-    /// overage-enabled plan's wallet-billed overflow inside the period at par
-    /// (`sold_plans` carries no overage rate — the settled charge is the
-    /// price); `discount` the credit notes T17 applied to the order that
+    /// Lines: `base_fee` the sold version's price; `discount` the credit notes
+    /// applied to the order that
     /// authorized the period; `promo_credit` promo covering the fee — a
     /// complimentary grant's full coverage, or a payment's bundle promo leg,
     /// clamped to what the promo pool settles. `total_minor` is their sum.
@@ -765,38 +763,10 @@ impl Db {
             source_ref: Some(period.plan_period_id),
         });
 
-        // Usage overage: an overage-enabled, metered plan's wallet-billed
-        // overflow inside the period — the turns the quota could not cover
-        // charged the wallet at par (the settled charge is the price;
-        // `sold_plans` carries no separate overage rate). Tenant-scoped
-        // `usage_records` are keyed by the organization's tenant id.
-        if sold.overage_enabled && sold.quota_minor.is_some() {
-            let tenant: Option<String> = sqlx::query_scalar(
-                "SELECT tenant_id FROM oxsum.organizations WHERE organization_id=$1",
-            )
-            .bind(organization_id)
-            .fetch_optional(&mut **tx)
-            .await?;
-            if let Some(tenant) = tenant {
-                let overage: i64 = sqlx::query_scalar(
-                    "SELECT COALESCE(SUM(charged_minor),0)::bigint FROM oxsum.usage_records \
-                     WHERE tenant_id=$1 AND settled_at >= $2 AND settled_at < $3",
-                )
-                .bind(tenant)
-                .bind(period.period_start)
-                .bind(period.period_end)
-                .fetch_one(&mut **tx)
-                .await?;
-                if overage > 0 {
-                    lines.push(PendingLine {
-                        kind: JournalLineKind::UsageOverage,
-                        amount_minor: overage,
-                        description: format!("usage overage, period {}", period.period_index),
-                        source_ref: Some(period.plan_period_id),
-                    });
-                }
-            }
-        }
+        // Usage already settled through the wallet or credit line has its own
+        // Income:Usage entry. Summing usage_records here would bill that same
+        // turn again as Receivables/PlanFees. Policy versions change fee timing,
+        // never this once-only usage boundary.
 
         // Pre-close cash returns already reduced deferred funding. Their
         // immutable allocation, including a late success on a reversed note,

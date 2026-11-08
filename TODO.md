@@ -4,6 +4,9 @@ Updated: 2026-11-08
 
 ## In progress
 
+- [ ] [#803](https://github.com/AllureCurtain/oxsum/issues/803) — Stop new period closes rebilling settled wallet/credit usage; historical compensation is #809.
+- [ ] [#809](https://github.com/AllureCurtain/oxsum/issues/809) — Compensate retained historical duplicated usage with source-linked, audited corrections.
+
 ### Operator launch (#725)
 
 [Contract and execution evidence](docs/roadmap/operator-launch/EXECUTION.md) track the accepted N00–N21 scope. Checkboxes reflect issue closure, not release acceptance; each integrated unit retains its unperformed browser, journey and candidate gates. The [integration checkpoint](docs/roadmap/operator-launch/evidence/integration-reconciliation.md) records the 26 merged PRs and failed CI on `c79a588`.

@@ -95,7 +95,8 @@ impl PlanStatementState {
 pub enum StatementLineKind {
     /// The sold version's price — the journal's `base_fee`.
     PlanFee,
-    /// An overage-enabled plan's wallet-billed overflow — `usage_overage`.
+    /// A retained historical `usage_overage` line; new closes never rebill
+    /// wallet-settled usage.
     Usage,
     /// A credit against the bill — a promo or a grant write-off.
     Discount,

@@ -107,20 +107,6 @@ pub async fn paid_order(db: &Db, owner: &str, organization: Uuid, plan: Uuid) ->
         .unwrap()
 }
 
-/// Controlled usage fixture leaves an overage debt after the exact base fee is paid.
-pub async fn overage(db: &Db, organization: Uuid, plan: Uuid, amount: i64) {
-    sqlx::query("UPDATE oxsum.plan_periods SET period_start=period_start-interval '1 day' WHERE customer_plan_id=$1 AND state='active'")
-        .bind(plan).execute(db.pool()).await.unwrap();
-    let tenant: String =
-        sqlx::query_scalar("SELECT tenant_id FROM oxsum.organizations WHERE organization_id=$1")
-            .bind(organization)
-            .fetch_one(db.pool())
-            .await
-            .unwrap();
-    sqlx::query("INSERT INTO oxsum.usage_records(request_id,tenant_id,model,channel,price_version,kind,entry_id,input_tokens,output_tokens,charged_minor,freeze_minor,settled_at) VALUES($1,$2,'fixture','fixture',1,'usage',$3,1,1,$4,$4,now()-interval '120 seconds')")
-        .bind(Uuid::new_v4().to_string()).bind(tenant).bind(Uuid::new_v4()).bind(amount).execute(db.pool()).await.unwrap();
-}
-
 /// Fulfill a paid fixture, including its durable receipt/outbox.
 pub async fn fulfill(db: &Db, order: &PaymentOrder) {
     let tenant: String =

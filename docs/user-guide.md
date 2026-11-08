@@ -925,8 +925,8 @@ another version at the next boundary; there is no mid-period pro-rating.
 Each closed period leaves an invoice journal — the bill for what that period
 cost (issue #611). `GET /api/v1/org/plan/journals` lists yours newest first
 and `GET /api/v1/org/plan/journals/{journalId}` reads one with its lines:
-`baseFee` the version's price, `usageOverage` the period's wallet-billed
-overflow (at par), `discount` a credit note or complimentary write-off,
+`baseFee` the version's price, `discount` a credit note or complimentary
+write-off,
 `promoCredit` promo that covered the fee — `totalMinor` their sum. A journal
 is `posted` while it still owes (the unpaid receivable your `pastDue` plan
 carries), `paid` once a `planPeriod` order's payment settles it, `void` if
@@ -936,6 +936,10 @@ period in full. Existing journal debt stays visible and separate; the explicit
 statement repayment workflow is tracked by #777. Partial prepayment coverage
 at close is also shown on the customer statement, so the paid base fee does
 not appear as debt again.
+Usage paid from wallet funds or an approved credit line is settled with its
+request and is never charged again by a new period close. A historical journal
+may still show `usageOverage`; operators must use an explicit correction for
+that duplicated charge (#809), preserving the original record.
 
 The journal is the accounting bill; the statement is the document you
 actually read (issue #612). `GET /api/v1/org/statements` lists yours newest

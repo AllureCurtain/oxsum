@@ -193,23 +193,68 @@ async fn ledger_net(pool: &PgPool, tenant: &str, path: &str) -> i64 {
         .expect("the account net reads")
 }
 
-/// One usage row settled to the wallet inside the period — the overage an
-/// overage-enabled, metered plan bills. Mirrors `journals.rs`'s usage fixture.
-async fn settle_usage(world: &World, charged_minor: i64, seconds_ago: i64) {
-    sqlx::query(
-        "INSERT INTO oxsum.usage_records \
-             (request_id, tenant_id, model, channel, price_version, kind, entry_id, \
-              input_tokens, output_tokens, charged_minor, freeze_minor, settled_at) \
-         VALUES ($1,$2,'m','c',1,'usage',$3,1,1,$4,$4,now() - ($5 || ' seconds')::interval)",
-    )
-    .bind(format!("req-{}", Uuid::new_v4().simple()))
-    .bind(&world.tenant)
-    .bind(Uuid::new_v4())
-    .bind(charged_minor)
-    .bind(seconds_ago.to_string())
-    .execute(&world.pool)
-    .await
-    .unwrap();
+/// A real wallet hold and settlement, with its actual entry linked to usage.
+async fn settle_usage(world: &World, charged_minor: i64, on_credit: bool) {
+    let on = OffsetDateTime::now_utc().date();
+    if on_credit {
+        world
+            .wallet
+            .set_credit_limit("usage-credit", charged_minor * 2, on)
+            .await
+            .unwrap();
+    } else {
+        world
+            .wallet
+            .top_up("usage-funding", charged_minor * 2, on)
+            .await
+            .unwrap();
+    }
+    let hold = format!("settled-overflow-{}", Uuid::new_v4());
+    world
+        .wallet
+        .hold(&hold, "overflow fixture", charged_minor, on)
+        .await
+        .unwrap();
+    let receipt = world
+        .wallet
+        .settle(&hold, "overflow fixture", charged_minor, on)
+        .await
+        .unwrap();
+    let request = Uuid::new_v4().to_string();
+    world
+        .db
+        .record_usage(&oxsum_core::UsageRow {
+            request_id: request.clone(),
+            tenant_id: world.tenant.clone(),
+            key_id: None,
+            mandate_id: None,
+            model: "fixture".into(),
+            channel: "fixture".into(),
+            price_version: 1,
+            kind: oxsum_core::SettlementKind::Usage,
+            entry_id: *receipt.entry_id.as_uuid(),
+            status: "settled".into(),
+            failure_reason: None,
+            usage: oxsum_core::UsageRecord {
+                input_tokens: 1,
+                output_tokens: 1,
+                ..Default::default()
+            },
+            counts: oxsum_core::CountsProvenance::Provider {
+                input: 1,
+                output: 1,
+            },
+            charged_minor,
+            freeze_minor: charged_minor,
+            upstream_cost_minor: None,
+            cost_basis: oxsum_core::CostBasis::Missing,
+            upstream_attempts: 1,
+        })
+        .await
+        .unwrap();
+    // Deterministic boundary clock: the real settled entry stays unchanged.
+    sqlx::query("UPDATE oxsum.usage_records SET settled_at=now()-interval '120 seconds' WHERE request_id=$1")
+        .bind(request).execute(&world.pool).await.unwrap();
 }
 
 /// Drive a plan through activation and one close, returning its first journal.
@@ -241,15 +286,17 @@ async fn closed_first_journal(
 // settle (`Income:Usage`) and *again* as plan-fee receivable at close. The
 // customer is asked to pay the same usage twice.
 //
-// CONFIRMED, deferred to N11. Whether overage bills on the invoice at all is a
-// revenue-recognition decision the issue ties to versioned daily recognition;
-// the legacy `usage_overage` policy stays explicit until then. Run the
-// reproduction with `-- --ignored`: it asserts the conserved invariant the
-// current code violates, so it fails against the unfixed policy and passes
-// once the recognition lands.
 #[tokio::test]
-#[ignore = "N11 revenue-recognition decision pending; reproduces the confirmed defect"]
 async fn h1_settled_usage_is_recognized_once_not_billed_twice() {
+    assert_usage_once(false).await;
+}
+
+#[tokio::test]
+async fn credit_settled_usage_retains_only_its_original_receivable() {
+    assert_usage_once(true).await;
+}
+
+async fn assert_usage_once(on_credit: bool) {
     let Some(world) = world().await else { return };
     let pro = sold(
         &world.db,
@@ -291,7 +338,11 @@ async fn h1_settled_usage_is_recognized_once_not_billed_twice() {
     .unwrap();
     // Settle 3 credits of overage inside the period — the wallet already
     // recognized it as usage income before the close runs.
-    settle_usage(&world, 3 * ONE, 120).await;
+    settle_usage(&world, 3 * ONE, on_credit).await;
+    let receivable_before = ledger_net(&world.pool, &world.tenant, "Assets:Receivables").await;
+    let balance_before = world.wallet.available().await.unwrap();
+    let usage_before = ledger_net(&world.pool, &world.tenant, "Income:Usage").await;
+    assert_eq!(usage_before, 3 * ONE);
 
     end_period_ago(&world.pool, world.organization_id, 60).await;
     world.db.rollover_due_subscriptions().await.unwrap();
@@ -328,6 +379,31 @@ async fn h1_settled_usage_is_recognized_once_not_billed_twice() {
     // The base fee alone is the charge — nothing else the period consumed is
     // re-billed.
     assert_eq!(journal.total_minor, 2500);
+    assert_eq!(journal.settled_minor, 2500);
+    assert_eq!(journal.state, JournalState::Paid);
+    assert_eq!(receivable, receivable_before);
+    assert_eq!(plan_fees, 2500);
+    assert_eq!(usage, usage_before);
+    assert_eq!(world.wallet.available().await.unwrap(), balance_before);
+    if on_credit {
+        assert_eq!(world.wallet.credit_used().await.unwrap(), 3 * ONE);
+    }
+    let statement = statements(&world.db, world.organization_id).await.remove(0);
+    assert_eq!(statement.total_minor, 2500);
+    assert_eq!(statement.paid_minor, 2500);
+    assert_eq!(statement.state, oxsum_core::PlanStatementState::Paid);
+    for _ in 0..2 {
+        world.db.rollover_due_subscriptions().await.unwrap();
+    }
+    assert_eq!(journals(&world.db, world.organization_id).await.len(), 1);
+    assert_eq!(
+        ledger_net(&world.pool, &world.tenant, "Income:PlanFees").await,
+        2500
+    );
+    assert_eq!(
+        ledger_net(&world.pool, &world.tenant, "Assets:Receivables").await,
+        receivable_before
+    );
 }
 
 /// Insert a `requested` refund plus an `issued` credit note on the order — the
@@ -550,17 +626,16 @@ async fn h4_statement_charge_total_excludes_payment_lines() {
         .activate_plan_period(order_id, plan.customer_plan_id)
         .await
         .unwrap();
-    // The current legacy overage policy supplies a partial journal balance;
-    // underpaying a plan fee is forbidden by the payment authority boundary.
-    // H1 separately retains the defect in this overage policy for N11.
-    plan_payment::overage(
+    // Historical documents retain a partial journal balance. Seed the old
+    // recorded shape explicitly; new closes never duplicate settled usage.
+    end_period_ago(&world.pool, world.organization_id, 60).await;
+    plan_payment::legacy_close(
         &world.db,
         world.organization_id,
         plan.customer_plan_id,
         1000,
     )
     .await;
-    end_period_ago(&world.pool, world.organization_id, 60).await;
     world.db.rollover_due_subscriptions().await.unwrap();
     let journal = journals(&world.db, world.organization_id).await.remove(0);
     let statement = statements(&world.db, world.organization_id).await.remove(0);
@@ -672,14 +747,14 @@ async fn h5_a_chargeback_lands_on_exactly_one_open_statement() {
         .activate_plan_period(renewal, plan.customer_plan_id)
         .await
         .unwrap();
-    plan_payment::overage(
+    end_period_ago(&world.pool, world.organization_id, 60).await;
+    plan_payment::legacy_close(
         &world.db,
         world.organization_id,
         plan.customer_plan_id,
         1500,
     )
     .await;
-    end_period_ago(&world.pool, world.organization_id, 60).await;
     world.db.rollover_due_subscriptions().await.unwrap();
     let other_stmt = statements(&world.db, world.organization_id)
         .await
