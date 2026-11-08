@@ -25,11 +25,11 @@ Updated: 2026-11-08
 - [ ] [#736](https://github.com/AllureCurtain/oxsum/issues/736) — N10: Payment/refund authority and recovery repairs integrated; explicit statement repayment, remaining conservation fixes and complete commercial journeys remain.
 - [ ] [#737](https://github.com/AllureCurtain/oxsum/issues/737) — N11: Versioned daily revenue policy adopted (#783); implementation and deferred/earned conservation remain.
 - [ ] [#738](https://github.com/AllureCurtain/oxsum/issues/738) — N12: Complete evidence delivery, retained trust inputs and candidate offline-verifier acceptance using the existing verifier foundations.
-- [ ] [#739](https://github.com/AllureCurtain/oxsum/issues/739) — N13: Candidate byte/provenance gate integrated (#753); original-byte image promotion integrated (#806); digest deployment tooling integrated (#813); SDK publication #814 and actual candidate deployment/rollback rehearsal remain.
+- [ ] [#739](https://github.com/AllureCurtain/oxsum/issues/739) — N13: Candidate byte/provenance gate integrated (#753); original-byte image promotion integrated (#806); digest deployment tooling integrated (#813); original SDK publication integrated (#816); actual candidate deployment/rollback rehearsal remains.
 - [ ] [#740](https://github.com/AllureCurtain/oxsum/issues/740) — N14: Real-provider certification remains; DeepSeek shared budget records 0/5 attempts and CNY 0.
 - [ ] [#741](https://github.com/AllureCurtain/oxsum/issues/741) — N15: Genuine PSP sandbox certification remains external pending; local payment/callback fixtures do not close that gate.
 - [ ] [#742](https://github.com/AllureCurtain/oxsum/issues/742) — N16: Job-clock fixture correction integrated (#773); reference capacity, fairness and eight-hour soak remain.
-- [ ] [#743](https://github.com/AllureCurtain/oxsum/issues/743) — N17: Operator diagnostics, candidate upgrade, independent restore and compatible rollback remain.
+- [ ] [#743](https://github.com/AllureCurtain/oxsum/issues/743) — N17: Sanitized operator diagnostics implemented under #819; review/integration, candidate upgrade, independent restore and compatible rollback remain.
 - [ ] [#744](https://github.com/AllureCurtain/oxsum/issues/744) — N18: Final integrated candidate acceptance remains; no operator-launch candidate frozen; post-repair main CI is green, but exact full-CI/engine candidate evidence remains required.
 - [ ] [#745](https://github.com/AllureCurtain/oxsum/issues/745) — N19: Prepare both independent operator pilot kits; actual participants have not been supplied.
 - [ ] [#746](https://github.com/AllureCurtain/oxsum/issues/746) — N20: Complete publication/deployment tooling and isolated rehearsal; public actions and existing-service upgrades remain unperformed under this scope.
@@ -66,7 +66,9 @@ Updated: 2026-11-08
 
 - [x] [#810](https://github.com/AllureCurtain/oxsum/issues/810) — N13.c: Explicit digest deployment, shared Compose image, observed runtime/schema evidence and compatible retained rollback implemented; 55 candidate Python checks and loopback HTTP/mocked Docker state rehearsal passed. Integrated in PR #813 (`941434a`); actual candidate runtime rehearsal remains.
 
-- [ ] [#814](https://github.com/AllureCurtain/oxsum/issues/814) — N13.d: Original SDK tar publication, bounded npm relay, immutable-version/tag checks and receipt implemented; local real-npm fixture rehearsal passed. Review/integration pending; public publication and final candidate remain unperformed.
+- [x] [#814](https://github.com/AllureCurtain/oxsum/issues/814) — N13.d: Original SDK tar publication, bounded npm relay, immutable-version/tag checks and receipt integrated in PR #816 (`45a833e`); local real-npm fixture rehearsal passed. Public publication and final candidate remain unperformed.
+
+- [ ] [#819](https://github.com/AllureCurtain/oxsum/issues/819) — N17.a: Operator-only sanitized configuration/queue snapshot and explicit private-file collector implemented; 1,905 workspace checks and local redaction/authority fixtures passed; two independent reviews and final seven Rust/ten Python refinement checks passed; PR integration pending. Upgrade/restore/compatible rollback remain N17/J16.
 
 - [x] [#723](https://github.com/AllureCurtain/oxsum/issues/723) — Serialized promo writers on the ledger append advisory lock before their promo row locks, fixing the post-merge hold/expiry deadlock; integrated in PR #724.
 

@@ -3114,3 +3114,23 @@ staff grace/void review, a verified refund beside review, locked plan/statement
 progress, pending payment/grace updates and concurrent workers. The original
 code fails the lock-ownership and locked-oldest progress cases; fixed code
 retains exact cash, journal and statement amounts.
+
+
+## 2026-11-08 — Fixed sanitized diagnostics rather than log bundles (#819)
+
+Operator support needs deployment identity and recovery state without transferring
+customer data or credentials. A dedicated operator-token-only GET exposes fixed
+boolean configuration flags and count aggregates, never arbitrary stored strings
+except a validated migration name. Database counts use a consistent read-only
+transaction after exact schema comparison; unavailable or incompatible storage
+yields null counts. Five-second statements and a six-second endpoint deadline
+bound the read, including pool acquisition. The request cannot claim jobs,
+reconcile balances, migrate storage or contact external services.
+
+The standard-library collector validates every retained field, drops error
+bodies and unknown schema, disables redirects/proxies, and sends the token only
+to the protected endpoint. Explicit private files supply the token and optional
+environment presence; values are never evaluated or retained. Output is a new
+0600 file. Public probes are separate reads and can straddle a restart. This
+feature supports diagnosis, not provider/PSP certification or upgrade/restore
+acceptance; N17/J16 retain those separate required rehearsals.

@@ -29,6 +29,8 @@ scoped integration APIs. Calls reserve against authorized funds or entitlement
 and settle the recorded usage under pinned terms; customers can retain and
 independently verify evidence within its declared scope.
 
+Deployment operators can read a sanitized diagnostic snapshot under the operator token (#819): build/schema identity, configuration presence and aggregate provider/merchant/recovery queues. It contains no customer identities, secret values or payloads and performs no external probes or repairs. Counts do not certify connectivity, settlement conservation or release readiness. See [diagnostics and recovery](operator-diagnostics.md).
+
 ## First operator and customer journey
 
 1. Deploy the binary and PostgreSQL, then use the explicit setup token to

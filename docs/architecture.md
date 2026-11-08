@@ -24,6 +24,8 @@ API callers ──→ axum /api/v1 ───────────────
 
 The axum API, the core, doubleentry and the gateway exist today, with oxsum's own identity tables in one `oxsum` schema. The user-facing dashboard is the React app under `web/` — built once, embedded into the binary and served at `/app` (issue #234); it reached parity and the server-rendered Topcoat pages retired to it (issue #256), so the legacy page paths now `301` to their `/app` twins and only the public `/verify` check stays server-rendered.
 
+`Db::diagnostic_snapshot` reads only fixed schema/queue/configuration aggregates in a repeatable-read, read-only transaction. The operator-guarded HTTP endpoint adds parsed configuration presence and a six-second deadline; `scripts/operator-diagnostics.py` accepts only allowlisted response fields and optional explicit local env presence. It never reads ledger amounts, copies error bodies, claims jobs or probes external providers. [Diagnostics](operator-diagnostics.md) documents the boundaries.
+
 ## Modules
 
 | Module | Location | Responsibility |
