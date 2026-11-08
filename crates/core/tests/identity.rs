@@ -534,6 +534,8 @@ async fn migrating_twice_and_concurrently_is_safe() {
             "manual_receipts".to_owned(),
             "memberships".to_owned(),
             "merchant_accounts".to_owned(),
+            "merchant_checkout_route_results".to_owned(),
+            "merchant_checkout_routes".to_owned(),
             "merchant_environment_bootstrap".to_owned(),
             "merchant_event_inbox".to_owned(),
             "merchant_mutation_results".to_owned(),
