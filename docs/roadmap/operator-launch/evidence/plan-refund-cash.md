@@ -88,3 +88,16 @@ the ledger cash entry makes a retry idempotent regardless of journal state.
 A voided bill draws only its original net refund payable; it cannot borrow
 another journal's payable. The dispute resolution audit reports actual
 `rechargedMinor`, `payableMinor`, `unallocatedMinor` and `requiresReview`.
+
+
+## Final implementation validation
+
+Implementation commit `97e598e`, based on main `4c9f20e`, passed the complete
+workspace with explicit local PostgreSQL URLs: **1,897 passed, zero failed,
+seven skipped**, 245.401 seconds. The remaining skips are existing opt-ins and
+independent H1; H2/H3 and all 18 new refund scenarios executed. Strict workspace
+Clippy passed with warnings denied (25.70 seconds), formatter/diff checks passed.
+An independent agent reviewed the source, recovery and inverse/concurrent/void
+chargeback paths and found no new blocker. Required PR CI and normal merge
+remain separate integration gates. No browser or real PSP certification is
+claimed by these fixtures.
