@@ -52,6 +52,17 @@ token access, a positive wallet and a report link. Those assumptions are known
 N09 gaps (#735), not requirements to share an operator token with a customer.
 Browser completion of the full new journey remains an acceptance gate.
 
+The business setup page now reads `/api/v1/business/readiness` under the current
+personal business session (#843). Its five facts cover initialized identity,
+configured chat supply with an available decryptable credential, a matching
+active default sale book, explicitly selected enabled checkout with compatible
+collection/runtime configuration, and a customer admission path. Extra staff,
+sold plans and an existing customer are optional for this solo pay-as-you-go
+setup. Restricted facts are identified and never counted as complete. These
+configuration facts do not certify provider calls, payments, callbacks or mail
+delivery. Customer-specific model/key/funding readiness and first bill evidence
+remain the separate N09 customer unit.
+
 ## Initial owner browser setup (shipped, #748)
 
 `/app/setup` accepts the deployment-minted email-bound token through the existing new-user registration or personal-session consent endpoint. It shows the current identity, requires explicit consent, preserves draft fields on errors, and keeps the secret out of URLs and persistent browser storage. Existing users sign in through the normal password/TOTP flow and return to setup. A signed-in staff member can recover a lost acceptance response by opening the console; no token replay can initialize an already-owned business. Registration stays invite-only. Setup does not claim that provider, price, merchant or customer configuration is already complete.

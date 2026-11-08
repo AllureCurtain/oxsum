@@ -1,5 +1,17 @@
 # Architecture
 
+Business setup readiness (#843) lives in `crates/core/src/business_readiness.rs`.
+The HTTP adapter passes only the current personal token, the process encryption
+key and public-return-URL presence. A repeatable-read transaction rechecks current
+business authority, serializes with business configuration changes and derives
+five actor-scoped facts without writes or external probes. Provider credential
+health uses the gateway's pool filter; alias shadowing follows the catalog;
+default sale terms must be effective and match usable chat supply. Collection
+requires the owner's explicit route, enabled current merchant credentials and
+the existing collection-terms validator. The frontend renders restricted/error
+states explicitly. Customer readiness remains separate because its key grants,
+funding and first-call proof have different authority and evidence.
+
 ## Self-hosted release target
 
 The accepted [design](roadmap/self-hosted-v1/DESIGN.md) (#591) retains existing Organization IDs, tenant schemas and proofs as customer billing accounts and adds separate Business ownership/staff scope. There is no second commercial wallet or project wholesale charge. Durable single-customer operations coordinate financial and entitlement effects; sale prices remain independent of provider expense. These changes are planned until their [implementation issues](roadmap/self-hosted-v1/STATUS.md) integrate. [Baseline reconciliation](roadmap/self-hosted-v1/BASELINE.md) records the current source and compatibility boundaries.
