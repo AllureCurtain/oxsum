@@ -77,7 +77,7 @@ async fn complete_entry(w: &World, verifiable: bool) -> Entry<Balanced, SCALE> {
     } else {
         DocumentRef::unverified("fixture-document").unwrap()
     };
-    Entry::<Draft, SCALE>::new(
+    let draft = Entry::<Draft, SCALE>::new(
         EntryId::generate(),
         IdempotencyKey::new(vec![0, 255, 128, 42, u8::from(verifiable)]).unwrap(),
         DAY,
@@ -95,7 +95,6 @@ async fn complete_entry(w: &World, verifiable: bool) -> Entry<Balanced, SCALE> {
             .unwrap(),
     )
     .with_document(document)
-    .reversing(EntryId::generate(), date!(2026 - 09 - 30))
     .post(
         Posting::debit(cash, Amount::from_minor(70), Currency::USD)
             .with_dimensions(dimensions.clone()),
@@ -113,13 +112,29 @@ async fn complete_entry(w: &World, verifiable: bool) -> Entry<Balanced, SCALE> {
         Posting::credit(income, Amount::from_minor(30), Currency::USD)
             .in_layer(Layer::Pending)
             .with_dimensions(dimensions),
-    )
-    .seal(&SealContext {
+    );
+    let context = SealContext {
         accounts: &registry,
         calendar: &PeriodCalendar::new(),
         policy: &LedgerPolicy::default(),
-    })
-    .unwrap()
+    };
+    let original_id = EntryId::generate();
+    let mut original = Entry::<Draft, SCALE>::new(
+        original_id,
+        IdempotencyKey::new(format!("original-{original_id}").into_bytes()).unwrap(),
+        date!(2026 - 09 - 30),
+    );
+    for posting in draft.postings() {
+        original = original.post(posting.inverted());
+    }
+    w.store
+        .append(&EntryBatch::single(original.seal(&context).unwrap()))
+        .await
+        .unwrap();
+    draft
+        .reversing(original_id, date!(2026 - 09 - 30))
+        .seal(&context)
+        .unwrap()
 }
 
 #[tokio::test]
@@ -479,6 +494,164 @@ async fn borrowed_calendar_and_day_seals_refuse_writes_in_the_callers_transactio
             .usage_receipt_in(&mut tx, "free", "zero-cost", None, None, DAY)
             .await,
         Err(WalletError::DaySealed)
+    ));
+    tx.rollback().await.unwrap();
+}
+
+#[tokio::test]
+async fn one_connection_handles_promo_grant_replay_and_reserved_lots() {
+    let Some(w) = world(1).await else {
+        return;
+    };
+    let db = Db::from_pool(w.pool.clone());
+    let user = db
+        .register(NewUser {
+            email: format!("{}@example.test", Uuid::new_v4()),
+            password: "promo borrowed test password".into(),
+            organization_name: None,
+        })
+        .await
+        .unwrap();
+    let wallet = Wallet::open(w.pool.clone(), &user.organization.tenant_id)
+        .await
+        .unwrap();
+    tokio::time::timeout(Duration::from_secs(8), async {
+        let mut tx = w.pool.begin().await.unwrap();
+        let first = wallet
+            .grant_promo_lot_in(
+                &mut tx,
+                user.organization.id,
+                "admin",
+                "fixture",
+                "promo-grant",
+                50,
+                None,
+                DAY,
+            )
+            .await
+            .unwrap();
+        let replay = wallet
+            .grant_promo_lot_in(
+                &mut tx,
+                user.organization.id,
+                "admin",
+                "fixture",
+                "promo-grant",
+                50,
+                None,
+                DAY,
+            )
+            .await
+            .unwrap();
+        assert_eq!(first.0, replay.0);
+        assert_eq!(first.1.entry_id, replay.1.entry_id);
+        tx.commit().await.unwrap();
+        wallet
+            .hold("promo-hold", "reserved promo", 40, DAY)
+            .await
+            .unwrap();
+        let mut tx = w.pool.begin().await.unwrap();
+        wallet
+            .settle_in(&mut tx, "promo-hold", "settled promo", 30, DAY)
+            .await
+            .unwrap();
+        tx.commit().await.unwrap();
+        assert_eq!(wallet.available().await.unwrap(), 20);
+    })
+    .await
+    .unwrap();
+}
+
+#[tokio::test]
+async fn own_uncommitted_hold_preserves_attribution_and_wrong_raw_key_is_refused() {
+    let Some(w) = world(1).await else {
+        return;
+    };
+    w.wallet.top_up("funds", 100, DAY).await.unwrap();
+    let registry = AccountRegistry::from_records(w.store.accounts().await.unwrap()).unwrap();
+    let records = registry.records();
+    let account = records
+        .iter()
+        .find(|r| r.account.path.to_string() == "Liabilities:Wallet")
+        .unwrap()
+        .id;
+    let revenue = records
+        .iter()
+        .find(|r| r.account.path.to_string() == "Income:Usage")
+        .unwrap()
+        .id;
+    let draft = |id, key| {
+        Entry::<Draft, SCALE>::new(id, IdempotencyKey::new(key).unwrap(), DAY)
+            .with_provenance(
+                Provenance::none()
+                    .with_actor("fixture-actor")
+                    .unwrap()
+                    .with_correlation("fixture-mandate")
+                    .unwrap(),
+            )
+            .post(
+                Posting::debit(account, Amount::from_minor(40), Currency::USD)
+                    .in_layer(Layer::Pending),
+            )
+            .post(
+                Posting::credit(revenue, Amount::from_minor(40), Currency::USD)
+                    .in_layer(Layer::Pending),
+            )
+            .seal(&SealContext {
+                accounts: &registry,
+                calendar: &PeriodCalendar::new(),
+                policy: &LedgerPolicy::default(),
+            })
+            .unwrap()
+    };
+    let mut tx = w.pool.begin().await.unwrap();
+    w.store
+        .append_in_tx(
+            &mut tx,
+            &EntryBatch::single(draft(crate::entry_id_for("own-hold"), b"own-hold".to_vec())),
+        )
+        .await
+        .unwrap();
+    let settled = w
+        .wallet
+        .settle_in(&mut tx, "own-hold", "same transaction", 30, DAY)
+        .await
+        .unwrap();
+    let entry = super::entry_in(&mut tx, &w.tenant, settled.entry_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        entry.entry.provenance().actor.as_ref().unwrap().as_str(),
+        "fixture-actor"
+    );
+    assert_eq!(
+        entry
+            .entry
+            .provenance()
+            .correlation
+            .as_ref()
+            .unwrap()
+            .as_str(),
+        "fixture-mandate"
+    );
+    tx.rollback().await.unwrap();
+    let mut tx = w.pool.begin().await.unwrap();
+    w.store
+        .append_in_tx(
+            &mut tx,
+            &EntryBatch::single(draft(
+                crate::entry_id_for("claimed-hold"),
+                b"different-hold".to_vec(),
+            )),
+        )
+        .await
+        .unwrap();
+    assert!(matches!(
+        w.wallet
+            .settle_in(&mut tx, "claimed-hold", "must refuse", 30, DAY)
+            .await,
+        Err(WalletError::HoldNotFound(_))
     ));
     tx.rollback().await.unwrap();
 }

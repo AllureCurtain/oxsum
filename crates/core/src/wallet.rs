@@ -4108,7 +4108,7 @@ impl Wallet {
              ON CONFLICT (organization_id, source, source_ref) DO NOTHING",
         )
         .bind(lot_id)
-        .bind(self.organization_id_hint().await?)
+        .bind(self.organization_id_hint_in(&mut tx).await?)
         .bind(&self.tenant_id)
         .bind(amount)
         .execute(&mut *tx)
@@ -4148,28 +4148,6 @@ impl Wallet {
         }
     }
 
-    /// The organization id this wallet's tenant belongs to, looked up for the
-    /// migration lot's `organization_id` — `promo_lots` keys on the
-    /// `oxsum.organizations` identity, not the tenant string. `None` for a bare
-    /// ledger schema with no oxsum row (the generative model world), where the
-    /// migration has nothing to write.
-    async fn organization_id_hint(&self) -> Result<Option<Uuid>, WalletError> {
-        let table: Option<String> =
-            sqlx::query_scalar("SELECT to_regclass('oxsum.organizations')::text")
-                .fetch_one(self.store.pool())
-                .await?;
-        if table.is_none() {
-            return Ok(None);
-        }
-        let organization = sqlx::query_scalar(
-            "SELECT organization_id FROM oxsum.organizations WHERE tenant_id = $1",
-        )
-        .bind(&self.tenant_id)
-        .fetch_optional(self.store.pool())
-        .await?;
-        Ok(organization)
-    }
-
     /// The promo draw-pinning [`hold`](Self::hold) and
     /// [`hold_for_key`](Self::hold_for_key) run inside the hold's transaction:
     /// walks this organization's open lots in deterministic draw order —
@@ -4190,7 +4168,7 @@ impl Wallet {
         hold_key: &str,
         promo_minor: i64,
     ) -> Result<(), WalletError> {
-        let Some(organization) = self.organization_id_hint().await? else {
+        let Some(organization) = self.organization_id_hint_in(tx).await? else {
             // A bare ledger schema has no oxsum rows at all: the promo pool
             // stays empty there and `pool_split` would never take from it, so
             // reaching here means the model world asked for promo money it
