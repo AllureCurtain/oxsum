@@ -56,6 +56,10 @@ conflicts. A correction that clears the debt removes only debt-based dunning
 suspension when no other issued or past-due statement remains unpaid; it never activates or
 renews entitlement.
 
+Business staff with `ReportsRead` can inspect applied and refused outcomes at
+`GET /api/v1/business/audit?action=plan_usage.correct`. Historical refund
+recoveries use the same read with `action=plan_refund.recover`.
+
 `status: refused` and a nonempty `refusal` describe a source requiring manual
 review. The CLI exits 2. Explicit apply retains that refused outcome in
 immutable finance audit without changing money or documents; retrying the same

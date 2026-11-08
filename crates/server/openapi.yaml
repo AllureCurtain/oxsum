@@ -6992,7 +6992,7 @@ paths:
       operationId: businessFinanceAudit
       summary: List the business finance audit
       description: |
-        Current business staff with report-read capability; a personal session. One immutable `finance_audit` row per staff financial action — every refund resolution, dispute close, journal void, statement release and reconciliation resolve/waive/repair — newest first. Each row names the actor, the audited action and the reason it carried, and drills to the entity it corrected. `action` narrows to one audited action.
+        Current business staff with report-read capability; a personal session. One immutable `finance_audit` row per staff financial action — every refund resolution, dispute close, journal void, statement release, reconciliation resolve/waive/repair and explicit historical plan refund or usage correction — newest first. Each row names the actor, the audited action and the reason it carried, and drills to the entity it corrected. `action` narrows to one audited action, including `plan_refund.recover` and `plan_usage.correct` from the local correction commands.
       security: [{ sessionCookie: [] }]
       parameters:
         - { name: after, in: query, schema: { type: string, format: uuid } }
@@ -15436,13 +15436,13 @@ components:
     FinanceAuditEntry:
       type: object
       required: [auditId, actorUserId, action, target, detail, noteId, createdAt]
-      description: One immutable `finance_audit` row — the staff financial action's authorization record. Every refund resolution, dispute close, journal void, statement release and reconciliation close/repair lands one, naming the actor, the audited action and the reason it carried.
+      description: One immutable `finance_audit` row — the staff financial action's authorization record. Every refund resolution, dispute close, journal void, statement release, reconciliation close/repair and explicit historical plan refund or usage correction lands one, naming the actor, the audited action and the reason it carried.
       properties:
         auditId: { type: string, format: uuid }
         actorUserId: { type: string, format: uuid, description: the staff user who authorized the action }
         action:
           type: string
-          enum: [refund.approve, refund.decline, refund.release, dispute.resolve, journal.void, statement.release, reconciliation.resolve, reconciliation.waive, reconciliation.repair]
+          enum: [refund.approve, refund.decline, refund.release, dispute.resolve, journal.void, statement.release, reconciliation.resolve, reconciliation.waive, reconciliation.repair, plan_refund.recover, plan_usage.correct]
           description: the audited financial action — the same vocabulary `finance_audit`'s check constraint bounds
         target: { type: string, description: the entity the action corrected — a refund, dispute, journal, statement or exception id }
         detail: { type: object, additionalProperties: true, description: the action's safe fields — reason, decision, repair patch; never a credential }
