@@ -1680,10 +1680,10 @@
       "voidReason": "作废原因",
       "extendGrace": "延长宽限",
       "graceTitle": "延长宽限?",
-      "graceExplain": "将逾期应收恢复为已开具并解除催收暂停。",
+      "graceExplain": "延长此账单的付款期限。如果另有债务已超过宽限期，消费仍会暂停。",
       "void": "作废",
       "voidTitle": "作废此对账单?",
-      "voidExplain": "以冲正行取消应收——经审计,非删除。",
+      "voidExplain": "同时冲正此账单及其对应的日记账。现金不变，已收款转为应退款。混合来源或重新开具的账单需要财务对账。",
       "empty": "暂无对账单。"
     },
     "journals": {

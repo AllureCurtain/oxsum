@@ -3739,7 +3739,7 @@ export interface paths {
          *     Mixed chargeback, reissued or inconsistent sources return 409 for
          *     financial review. Historical document-only voids retain their lines;
          *     an explicit new void request can reverse their still-posted backing
-         *     journal. A `finance_audit` row records exact request terms and source
+         *     journal or recompute stale debt suspension if already financially void. A `finance_audit` row records exact request terms and source
          *     reversal. The same `idempotencyKey` and terms replay without effects;
          *     changed target, action or reason with that key returns 409. Manual
          *     restrictions and renewal/entitlement state remain independent.
@@ -4583,6 +4583,8 @@ export interface paths {
          *     return 409 for explicit financial reconciliation. Cash stays unchanged.
          *     `FundsWrite` capability; the same target/reason/key replays the standing
          *     voided journal, while reuse with different request terms returns 409.
+         *     A new explicit request against an already-void journal audits and
+         *     recomputes debt suspension without another ledger entry.
          */
         post: {
             parameters: {

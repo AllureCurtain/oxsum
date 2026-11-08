@@ -541,11 +541,6 @@ impl Db {
             tx.commit().await?;
             return Ok(InvoiceJournalDetail{journal,lines});
         }
-        if journal.state == JournalState::Void {
-            let lines = lines_in(&mut tx, journal_id).await?;
-            tx.commit().await?;
-            return Ok(InvoiceJournalDetail { journal, lines });
-        }
         let reversal_entry = self
             .void_journal_financial_in(&mut tx, wallet, &journal, reason, on)
             .await?;
@@ -604,6 +599,9 @@ impl Db {
     ) -> Result<Option<Uuid>, WalletError> {
         let journal_id = journal.journal_id;
         if journal.state == JournalState::Void {
+            // A new explicit review may clear an old writer's stale debt flag.
+            // Exact audited replays return before this helper and stay inert.
+            crate::plan_debt::refresh_in(tx, journal.customer_plan_id).await?;
             return Ok(None);
         }
         if journal.state == JournalState::Draft || journal.replaces_journal_id.is_some() {
