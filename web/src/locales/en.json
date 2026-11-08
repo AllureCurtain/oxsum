@@ -2051,6 +2051,16 @@
       "noAccess": "Your business role cannot read merchant configuration.",
       "saved": "Merchant configuration saved.",
       "noVersions": "No configuration versions returned."
+    },
+    "checkoutRoutes": {
+      "title": "Checkout selection",
+      "current": "Selected: {{name}} · revision {{revision}} · {{source}}",
+      "saved": "Selection saved. Existing orders retain their original merchant version.",
+      "action": "Selection change",
+      "select": "Select {{name}} for new checkout",
+      "disable": "Disable new {{rail}} checkout",
+      "help": "This explicit selection replaces the current route for new orders only. Disabling never falls back to another merchant. Old orders and callbacks keep their pinned versions.",
+      "confirm": "Confirm checkout selection"
     }
   },
   "setup": {
@@ -2079,5 +2089,16 @@
     "signInContinue": "Sign in to continue setup",
     "identityUnavailable": "Your sign-in state could not be checked. Retry before submitting ownership acceptance.",
     "retryIdentity": "Check sign-in state again"
+  },
+  "checkoutChoices": {
+    "label": "Payment route",
+    "select": "Select a payment route",
+    "error": "Payment routes could not be loaded.",
+    "empty": "No payment route is currently available. Contact the business.",
+    "help": "Test routes use sandbox money; live routes may charge real money. Availability is configuration status, not external payment certification.",
+    "refresh": "Refresh payment routes",
+    "retained": "retained choice",
+    "stale": "The available route has changed. Your previous choice is retained for an unchanged retry. To start a new payment, explicitly select a current route.",
+    "retryHelp": "An unchanged retry recovers the original payment shown below (amount in fiat minor units). Refreshes do not replace it. Editing starts a new payment intent."
   }
 }

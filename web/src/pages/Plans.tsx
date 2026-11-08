@@ -1,3 +1,4 @@
+import { CheckoutChoice, useCheckoutChoice } from "../components/checkout-choice";
 import { useRef, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { usePlanPaymentQuote } from "../api/hooks/plans";
@@ -61,10 +62,11 @@ function planStateBadge(state: string | undefined) {
 }
 
 function PlanPayment({ enabled }: { enabled: boolean }) {
+  const checkout = useCheckoutChoice(enabled);
   const quote = usePlanPaymentQuote(enabled);
   const create = useCreateOrder();
   const navigate = useNavigate();
-  const intent = useRef<{ fingerprint: string; key: string } | null>(null);
+  const intent = useRef<{ payload: string; key: string } | null>(null);
   const [review, setReview] = useState(false);
   if (!enabled) return null;
   const payment = quote.data;
@@ -72,14 +74,18 @@ function PlanPayment({ enabled }: { enabled: boolean }) {
   const amount = terms ? BigInt(terms.displayAmountMinor) : 0n;
   const price = `${amount / 100n}.${(amount % 100n).toString().padStart(2, "0")} ${terms?.displayCurrency ?? ""}`;
   const pay = () => {
-    if (!payment || !terms) return;
-    if (intent.current?.fingerprint !== payment.fingerprint) intent.current = { fingerprint: payment.fingerprint, key: crypto.randomUUID() };
-    create.mutate({
-      idempotencyKey: intent.current.key, purpose: "planPeriod", rail: "hyperswitch",
+    if (intent.current) {
+      create.mutate({ ...JSON.parse(intent.current.payload), idempotencyKey: intent.current.key }, { onSuccess: (result) => navigate(`/orders/${result.order.orderId}`) });
+      return;
+    }
+    if (!payment || !terms || !checkout.choice) return;
+    if (!intent.current) intent.current = { key: crypto.randomUUID(), payload: JSON.stringify({
+      purpose: "planPeriod", ...checkout.choice,
       purposeRef: terms.customerPlanId, expectedPlanQuote: payment.fingerprint,
       expectedCollectionRevision: terms.collectionRevision,
       displayAmountMinor: terms.displayAmountMinor, displayCurrency: terms.displayCurrency,
-    }, { onSuccess: (result) => navigate(`/orders/${result.order.orderId}`) });
+    }) };
+    create.mutate({ ...JSON.parse(intent.current.payload), idempotencyKey: intent.current.key    }, { onSuccess: (result) => navigate(`/orders/${result.order.orderId}`) });
   };
   return <div className="flex flex-col gap-3">
     <p className="text-sm text-muted">Plan payments fund one period. Renewal is manual and becomes available at the current UTC boundary. Old statement debt remains separate.</p>
@@ -92,8 +98,10 @@ function PlanPayment({ enabled }: { enabled: boolean }) {
     <Button tone="ghost" disabled={create.isPending} onClick={() => void quote.refetch()}>Refresh payment availability</Button>
     <AlertDialog open={review} onOpenChange={(open) => { if (!create.isPending) setReview(open); }}>
       <AlertDialogContent><AlertDialogHeader><AlertDialogTitle>Pay {price} for this plan period?</AlertDialogTitle><AlertDialogDescription>The payment creates plan entitlement after confirmed payment. It does not add spendable wallet credit or automatically renew. The fiat amount rounds up to the smallest currency unit; the sold credit fee stays exact.</AlertDialogDescription></AlertDialogHeader>
+        {intent.current ? <Banner tone="info">A retry recovers the original payment: {JSON.parse(intent.current.payload).displayAmountMinor} fiat minor {JSON.parse(intent.current.payload).displayCurrency}, {JSON.parse(intent.current.payload).rail}. Configuration refreshes do not replace it.</Banner> : null}
+        <div onChange={() => { if (!create.isPending) { intent.current = null; create.reset(); } }}><CheckoutChoice state={checkout} disabled={create.isPending} /></div>
         {create.error ? <Banner tone="error">{create.error.message}. Retry unchanged to recover this order, or refresh availability to resume it.</Banner> : null}
-        <AlertDialogFooter><Button tone="ghost" disabled={create.isPending} onClick={() => setReview(false)}>Keep reviewing</Button><Button isLoading={create.isPending} onClick={pay}>Continue to payment</Button></AlertDialogFooter>
+        <AlertDialogFooter><Button tone="ghost" disabled={create.isPending} onClick={() => setReview(false)}>Keep reviewing</Button><Button disabled={!intent.current && !checkout.choice} isLoading={create.isPending} onClick={pay}>Continue to payment</Button></AlertDialogFooter>
       </AlertDialogContent>
     </AlertDialog>
   </div>;

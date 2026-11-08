@@ -30,6 +30,7 @@ pub(crate) struct CreateOrderReq {
     expected_collection_revision: Option<i64>,
     idempotency_key: String,
     rail: MerchantRail,
+    expected_checkout: Option<oxsum_core::CheckoutChoice>,
     purpose: PaymentOrderPurpose,
     /// The fiat minor amount the provider will charge.
     display_amount_minor: i64,
@@ -83,13 +84,6 @@ pub(crate) async fn create_order(
     let secret = state.config.secret().ok_or_else(|| {
         ApiError::ServiceUnavailable("merchant encryption is not configured".into())
     })?;
-    let context = state
-        .db
-        .environment_merchant(r.rail, secret)
-        .await?
-        .ok_or_else(|| {
-            ApiError::ServiceUnavailable("the requested payment rail is not configured".into())
-        })?;
     let new = NewPaymentOrder {
         expected_plan_quote: r.expected_plan_quote,
         expected_collection_revision: r.expected_collection_revision,
@@ -100,9 +94,15 @@ pub(crate) async fn create_order(
         idempotency_key: r.idempotency_key.clone(),
         promo_minor: r.promo_minor.unwrap_or(0),
     };
-    let order = state
+    let (order, context) = state
         .db
-        .create_payment_order(&context, organization.id, &new)
+        .create_routed_payment_order(
+            organization.id,
+            r.rail,
+            r.expected_checkout.as_ref(),
+            secret,
+            &new,
+        )
         .await?;
     let order = drive_checkout(
         &state,

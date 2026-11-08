@@ -175,6 +175,7 @@ pub fn router(state: AppState) -> Router {
         .route("/topups/x402", post(billing::x402_topup))
         .route("/redemptions", post(billing::redeem))
         .route("/bundles", get(bundles::catalog))
+        .route("/checkout-options", get(merchants::checkout_options))
         .route(
             "/orders",
             get(orders::list_orders).post(orders::create_order),
@@ -333,6 +334,10 @@ pub fn router(state: AppState) -> Router {
         .route(
             "/webhooks/merchants/{merchant}/versions/{version}",
             post(merchant_events::webhook),
+        )
+        .route(
+            "/business/checkout-routes",
+            get(merchants::checkout_routes).post(merchants::select_checkout_route),
         )
         .route(
             "/business/merchants",

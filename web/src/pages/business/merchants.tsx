@@ -10,6 +10,7 @@ import {
   Field, Select, Skeleton, TableShell, Td, TextInput, Textarea,
 } from "../../components/ui";
 import { stateBadge } from "./biz";
+import { CheckoutRoutes } from "./checkout-routes";
 
 type Action = { kind: "create" } | { kind: "version" | "status"; merchant: Merchant };
 
@@ -130,6 +131,7 @@ function MerchantDetail({ merchant, canWrite, onAction, onBack }: {
       </dl>
       <p className="mt-4 text-sm text-ink-secondary">{t("biz.merchant.localOnly")}</p>
     </Card>
+    <CheckoutRoutes merchant={merchant} canWrite={canWrite} />
     <Card title={t("biz.merchant.history")}>
       {versions.isError ? <Banner tone="error">{t("biz.loadError")} <Button tone="ghost" onClick={() => void versions.refetch()}>{t("biz.provider.retry")}</Button></Banner> : null}
       {versions.isLoading ? <Skeleton className="h-24 w-full" /> : !versions.isError ? <div className="flex flex-col gap-4">{versions.data?.versions.map((version) => <section key={version.id} className="min-w-0 rounded-lg border border-line p-4">

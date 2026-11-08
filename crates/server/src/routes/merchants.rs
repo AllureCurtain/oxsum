@@ -92,3 +92,37 @@ pub(crate) async fn status(
         )
         .await?)
 }
+
+/// Current safe business checkout route settings.
+pub(crate) async fn checkout_routes(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> ApiResult<Vec<oxsum_core::CheckoutRoute>> {
+    ok(state
+        .db
+        .business_checkout_routes(&super::business::personal_token(&headers)?)
+        .await?)
+}
+
+/// Explicit owner selection, separate from legacy callback bootstrap.
+pub(crate) async fn select_checkout_route(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    ApiJson(request): ApiJson<oxsum_core::CheckoutRouteRequest>,
+) -> ApiResult<oxsum_core::CheckoutRouteMutation> {
+    ok(state
+        .db
+        .set_checkout_route(&super::business::personal_token(&headers)?, &request)
+        .await?)
+}
+
+/// Available choices for the authenticated customer.
+pub(crate) async fn checkout_options(
+    State(state): State<AppState>,
+    axum::Extension(principal): axum::Extension<oxsum_core::Principal>,
+) -> ApiResult<Vec<oxsum_core::CheckoutRoute>> {
+    ok(state
+        .db
+        .customer_checkout_options(principal.organization().id)
+        .await?)
+}

@@ -35,3 +35,16 @@ export function useMerchantVersions(merchantId: string, after?: number) {
     ),
   });
 }
+
+export type CheckoutRoute = Schemas["CheckoutRoute"];
+export function useCheckoutRoutes() {
+  return useQuery({ queryKey: ["biz-checkout-routes"], queryFn: () => api<CheckoutRoute[]>("/business/checkout-routes") });
+}
+export function useSelectCheckoutRoute() {
+  const client = useQueryClient();
+  return useMutation({
+    retry: false,
+    mutationFn: (body: Schemas["CheckoutRouteRequest"]) => api<Schemas["CheckoutRouteMutation"]>("/business/checkout-routes", { method: "POST", body }),
+    onSuccess: () => Promise.all([client.invalidateQueries({ queryKey: ["biz-checkout-routes"] }), client.invalidateQueries({ queryKey: ["checkout-options"] })]),
+  });
+}
