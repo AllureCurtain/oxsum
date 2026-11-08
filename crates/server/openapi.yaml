@@ -9571,6 +9571,32 @@ paths:
                     items: { $ref: "#/components/schemas/AdminMargin" }
         "401": { $ref: "#/components/responses/Error" }
         "500": { $ref: "#/components/responses/Error" }
+  /api/v1/admin/diagnostics:
+    get:
+      summary: Read a sanitized deployment diagnostic snapshot
+      description: |
+        Deployment operator token only. Read-only local configuration and one
+        repeatable-read database snapshot, with a five-second query timeout and
+        six-second total deadline including database pool acquisition.
+        Does not call SMTP, suppliers or payment providers and does not reconcile
+        or repair data. Presence/counts do not certify external connectivity.
+        No names, identifiers, URLs, amounts, secrets, raw errors or payloads are
+        returned. Queue counts are null when schema is absent/incompatible or
+        storage is unavailable; they are never replaced with misleading zeros.
+      security:
+        - adminToken: []
+      responses:
+        "200":
+          description: Sanitized diagnostic snapshot; database state may be unavailable
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data: { $ref: "#/components/schemas/OperatorDiagnostics" }
+        "401": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
   /api/v1/admin/reconciliation:
     get:
       summary: The drift between the ledgers and the tables that project them
@@ -10962,6 +10988,61 @@ components:
       description: "`hit` when the semantic cache answered instead of upstream (issue #497): the stored body re-served, billed at the cache-read rate, the settlement's v10 `cache` block naming the original turn's entry. Absent on a miss, a stream, or a channel that never opted in."
       schema: { type: string, enum: [hit] }
   schemas:
+    OperatorDiagnostics:
+      type: object
+      additionalProperties: false
+      required: [version, gitSha, schemaVersion, databaseState, appliedSchemaVersion, configuration, counts]
+      properties:
+        version: { type: string, description: Built package version. }
+        gitSha: { type: string, description: Built source revision or unknown. }
+        schemaVersion: { type: string, description: Schema required by this binary. }
+        databaseState: { type: string, enum: [ready, schemaMismatch, unmigrated, unavailable] }
+        appliedSchemaVersion: { type: [string, "null"], description: Sanitized applied migration version when readable. }
+        configuration:
+          type: object
+          additionalProperties: false
+          required: [smtpConfigured, publicUrlConfigured, credentialSealConfigured, headSigningConfigured, stripeConfigured, airwallexConfigured, hyperswitchConfigured, x402Configured]
+          properties:
+            smtpConfigured: { type: boolean }
+            publicUrlConfigured: { type: boolean }
+            credentialSealConfigured: { type: boolean }
+            headSigningConfigured: { type: boolean }
+            stripeConfigured: { type: boolean }
+            airwallexConfigured: { type: boolean }
+            hyperswitchConfigured: { type: boolean }
+            x402Configured: { type: boolean }
+        counts:
+          oneOf:
+            - { $ref: "#/components/schemas/OperatorDiagnosticCounts" }
+            - { type: "null" }
+    OperatorDiagnosticCounts:
+      type: object
+      additionalProperties: false
+      required: [providerChannels, providerCredentialsActive, providerCredentialsCooling, providerCredentialsDisabled, merchantsEnabled, merchantsDisabled, jobsScheduled, jobsDue, jobsRunning, jobClaimsExpired, jobsDead, operationsOpen, operationLeasesExpired, holdsOpen, holdsDead, paidOrdersUnfulfilled, paymentOrdersNeedAttention, merchantEventsPending, merchantEventsAccepted, refundsRetryDue, refundsNeedReview, legacyRefundsRetryDue, legacyRefundsNeedReview]
+      properties:
+        providerChannels: { type: integer, format: int64, minimum: 0, description: "Configured provider channel rows; not an external reachability claim." }
+        providerCredentialsActive: { type: integer, format: int64, minimum: 0, description: "Credentials enabled and outside cooldown at snapshot time." }
+        providerCredentialsCooling: { type: integer, format: int64, minimum: 0, description: "Enabled credentials whose cooldown is in the future." }
+        providerCredentialsDisabled: { type: integer, format: int64, minimum: 0, description: "Explicitly disabled credentials." }
+        merchantsEnabled: { type: integer, format: int64, minimum: 0, description: "Enabled merchant accounts across test/live modes." }
+        merchantsDisabled: { type: integer, format: int64, minimum: 0, description: "Disabled merchant accounts." }
+        jobsScheduled: { type: integer, format: int64, minimum: 0, description: "Pending jobs scheduled strictly after snapshot time." }
+        jobsDue: { type: integer, format: int64, minimum: 0, description: "Pending jobs at or before snapshot time." }
+        jobsRunning: { type: integer, format: int64, minimum: 0, description: "Jobs with running status, including expired claims." }
+        jobClaimsExpired: { type: integer, format: int64, minimum: 0, description: "Running jobs with null claim time or at least the five-minute claim lease elapsed." }
+        jobsDead: { type: integer, format: int64, minimum: 0, description: "Retained dead job rows; history count, not necessarily current outage." }
+        operationsOpen: { type: integer, format: int64, minimum: 0, description: "Request operations in created, leased or running state." }
+        operationLeasesExpired: { type: integer, format: int64, minimum: 0, description: "Open operations whose lease is null or before snapshot time; recoverable candidates, not proven failures." }
+        holdsOpen: { type: integer, format: int64, minimum: 0, description: "Open hold watch rows; no ledger scan is performed." }
+        holdsDead: { type: integer, format: int64, minimum: 0, description: "Open hold watch rows marked dead for hourly retry/operator review." }
+        paidOrdersUnfulfilled: { type: integer, format: int64, minimum: 0, description: "Orders in paid status awaiting fulfillment." }
+        paymentOrdersNeedAttention: { type: integer, format: int64, minimum: 0, description: "Orders in needs_attention status." }
+        merchantEventsPending: { type: integer, format: int64, minimum: 0, description: "Inbox events in pending state." }
+        merchantEventsAccepted: { type: integer, format: int64, minimum: 0, description: "Accepted inbox events awaiting application." }
+        refundsRetryDue: { type: integer, format: int64, minimum: 0, description: "Provider-pending refunds whose next retry is due." }
+        refundsNeedReview: { type: integer, format: int64, minimum: 0, description: "Provider-pending refunds with no next retry." }
+        legacyRefundsRetryDue: { type: integer, format: int64, minimum: 0, description: "Unknown/pending legacy deposit refunds whose next attempt is due." }
+        legacyRefundsNeedReview: { type: integer, format: int64, minimum: 0, description: "Unknown/pending legacy deposit refunds with no next attempt." }
     Branding:
       type: object
       additionalProperties: false

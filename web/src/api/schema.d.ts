@@ -13483,6 +13483,56 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/admin/diagnostics": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Read a sanitized deployment diagnostic snapshot
+         * @description Deployment operator token only. Read-only local configuration and one
+         *     repeatable-read database snapshot, with a five-second query timeout and
+         *     six-second total deadline including database pool acquisition.
+         *     Does not call SMTP, suppliers or payment providers and does not reconcile
+         *     or repair data. Presence/counts do not certify external connectivity.
+         *     No names, identifiers, URLs, amounts, secrets, raw errors or payloads are
+         *     returned. Queue counts are null when schema is absent/incompatible or
+         *     storage is unavailable; they are never replaced with misleading zeros.
+         */
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Sanitized diagnostic snapshot; database state may be unavailable */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            data: components["schemas"]["OperatorDiagnostics"];
+                        };
+                    };
+                };
+                401: components["responses"]["Error"];
+                500: components["responses"]["Error"];
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/admin/reconciliation": {
         parameters: {
             query?: never;
@@ -15390,6 +15440,146 @@ export interface paths {
 export type webhooks = Record<string, never>;
 export interface components {
     schemas: {
+        OperatorDiagnostics: {
+            /** @description Built package version. */
+            version: string;
+            /** @description Built source revision or unknown. */
+            gitSha: string;
+            /** @description Schema required by this binary. */
+            schemaVersion: string;
+            /** @enum {string} */
+            databaseState: "ready" | "schemaMismatch" | "unmigrated" | "unavailable";
+            /** @description Sanitized applied migration version when readable. */
+            appliedSchemaVersion: string | null;
+            configuration: {
+                smtpConfigured: boolean;
+                publicUrlConfigured: boolean;
+                credentialSealConfigured: boolean;
+                headSigningConfigured: boolean;
+                stripeConfigured: boolean;
+                airwallexConfigured: boolean;
+                hyperswitchConfigured: boolean;
+                x402Configured: boolean;
+            };
+            counts: components["schemas"]["OperatorDiagnosticCounts"] | null;
+        };
+        OperatorDiagnosticCounts: {
+            /**
+             * Format: int64
+             * @description Configured provider channel rows; not an external reachability claim.
+             */
+            providerChannels: number;
+            /**
+             * Format: int64
+             * @description Credentials enabled and outside cooldown at snapshot time.
+             */
+            providerCredentialsActive: number;
+            /**
+             * Format: int64
+             * @description Enabled credentials whose cooldown is in the future.
+             */
+            providerCredentialsCooling: number;
+            /**
+             * Format: int64
+             * @description Explicitly disabled credentials.
+             */
+            providerCredentialsDisabled: number;
+            /**
+             * Format: int64
+             * @description Enabled merchant accounts across test/live modes.
+             */
+            merchantsEnabled: number;
+            /**
+             * Format: int64
+             * @description Disabled merchant accounts.
+             */
+            merchantsDisabled: number;
+            /**
+             * Format: int64
+             * @description Pending jobs scheduled strictly after snapshot time.
+             */
+            jobsScheduled: number;
+            /**
+             * Format: int64
+             * @description Pending jobs at or before snapshot time.
+             */
+            jobsDue: number;
+            /**
+             * Format: int64
+             * @description Jobs with running status, including expired claims.
+             */
+            jobsRunning: number;
+            /**
+             * Format: int64
+             * @description Running jobs with null claim time or at least the five-minute claim lease elapsed.
+             */
+            jobClaimsExpired: number;
+            /**
+             * Format: int64
+             * @description Retained dead job rows; history count, not necessarily current outage.
+             */
+            jobsDead: number;
+            /**
+             * Format: int64
+             * @description Request operations in created, leased or running state.
+             */
+            operationsOpen: number;
+            /**
+             * Format: int64
+             * @description Open operations whose lease is null or before snapshot time; recoverable candidates, not proven failures.
+             */
+            operationLeasesExpired: number;
+            /**
+             * Format: int64
+             * @description Open hold watch rows; no ledger scan is performed.
+             */
+            holdsOpen: number;
+            /**
+             * Format: int64
+             * @description Open hold watch rows marked dead for hourly retry/operator review.
+             */
+            holdsDead: number;
+            /**
+             * Format: int64
+             * @description Orders in paid status awaiting fulfillment.
+             */
+            paidOrdersUnfulfilled: number;
+            /**
+             * Format: int64
+             * @description Orders in needs_attention status.
+             */
+            paymentOrdersNeedAttention: number;
+            /**
+             * Format: int64
+             * @description Inbox events in pending state.
+             */
+            merchantEventsPending: number;
+            /**
+             * Format: int64
+             * @description Accepted inbox events awaiting application.
+             */
+            merchantEventsAccepted: number;
+            /**
+             * Format: int64
+             * @description Provider-pending refunds whose next retry is due.
+             */
+            refundsRetryDue: number;
+            /**
+             * Format: int64
+             * @description Provider-pending refunds with no next retry.
+             */
+            refundsNeedReview: number;
+            /**
+             * Format: int64
+             * @description Unknown/pending legacy deposit refunds whose next attempt is due.
+             */
+            legacyRefundsRetryDue: number;
+            /**
+             * Format: int64
+             * @description Unknown/pending legacy deposit refunds with no next attempt.
+             */
+            legacyRefundsNeedReview: number;
+        };
         Branding: {
             /** @description Effective public seller name; saved profile, setup name, or deployment default in that order. */
             name: string;

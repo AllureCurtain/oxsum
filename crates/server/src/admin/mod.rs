@@ -33,6 +33,7 @@ mod billing;
 mod business;
 mod channels;
 mod credentials;
+mod diagnostics;
 mod fallbacks;
 mod groups;
 mod guardrails;
@@ -127,6 +128,7 @@ pub fn router(state: AppState) -> Router<AppState> {
         .route("/anomalies", get(ops::anomalies))
         .route("/margin", get(ops::margin))
         .route("/reconciliation", get(ops::reconciliation))
+        .route("/diagnostics", get(diagnostics::read))
         .route("/redemption-codes", post(billing::mint_codes))
         .route("/tiers", get(billing::tiers))
         .route(
