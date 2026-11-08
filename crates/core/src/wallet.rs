@@ -1146,16 +1146,6 @@ impl Wallet {
         .await
     }
 
-    /// Read through the engine's content-hash verification. Corrupt source bytes
-    /// cannot justify a Wallet take-back; operational storage errors still fail.
-    pub(crate) async fn verified_source_hash(
-        &self,
-        id: Uuid,
-    ) -> Result<Option<String>, WalletError> {
-        let mut connection = self.store.pool().acquire().await?;
-        self.verified_source_hash_in(&mut connection, id).await
-    }
-
     /// Resolve an original-source account against this wallet's registered chart.
     /// Canonical entry hashes bind account IDs rather than database path labels.
     pub(crate) fn source_account(&self, path: &str) -> Result<AccountId, WalletError> {

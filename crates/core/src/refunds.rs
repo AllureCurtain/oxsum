@@ -1227,7 +1227,14 @@ impl Db {
             return Ok(None);
         };
         if purpose != "plan_period" {
-            crate::nonplan_returns::lock_source_in(&mut tx, order).await?;
+            match crate::nonplan_returns::lock_source_in(&mut tx, order).await {
+                Ok(()) => {}
+                Err(WalletError::PoolBusy) => {
+                    tx.rollback().await?;
+                    return Ok(None);
+                }
+                Err(error) => return Err(error),
+            }
         }
         let changed = sqlx::query(
             "UPDATE oxsum.refunds SET retry_count=retry_count+1,\
