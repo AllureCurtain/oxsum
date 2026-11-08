@@ -488,8 +488,9 @@ impl Db {
     /// # Errors
     ///
     /// [`WalletError::NotFound`] for an unknown or draft journal;
-    /// [`WalletError::Conflict`] for an already-void journal (replay answers
-    /// it instead); storage failures surface as [`WalletError`].
+    /// [`WalletError::Conflict`] for changed replay terms, an unrelated wallet,
+    /// or ambiguous/reissued source documents; storage failures surface as
+    /// [`WalletError`].
     pub async fn void_invoice_journal(
         &self,
         token: &str,
@@ -509,52 +510,44 @@ impl Db {
             crate::BusinessCapability::FundsWrite,
         )
         .await?;
-        let Some(journal) = journal_in(&mut tx, journal_id).await? else {
-            return Err(WalletError::NotFound("unknown journal".into()));
-        };
-        if journal.business_id != business || journal.state == JournalState::Draft {
-            return Err(WalletError::NotFound("unknown journal".into()));
+        let coordinates = sqlx::query(
+            "SELECT j.customer_plan_id,o.tenant_id FROM oxsum.invoice_journals j \
+             JOIN oxsum.organizations o USING(organization_id) \
+             WHERE j.journal_id=$1 AND j.business_id=$2 AND j.state<>'draft'",
+        )
+        .bind(journal_id)
+        .bind(business)
+        .fetch_optional(&mut *tx)
+        .await?
+        .ok_or_else(|| WalletError::NotFound("unknown journal".into()))?;
+        if coordinates.try_get::<String, _>("tenant_id")? != wallet.tenant_id() {
+            return Err(WalletError::Conflict(
+                "journal wallet does not own the customer".into(),
+            ));
+        }
+        let plan: Uuid = coordinates.try_get("customer_plan_id")?;
+        sqlx::query("SELECT customer_plan_id FROM oxsum.customer_plans WHERE customer_plan_id=$1 FOR UPDATE")
+            .bind(plan).fetch_one(&mut *tx).await?;
+        let journal = journal_in(&mut tx, journal_id)
+            .await?
+            .ok_or_else(|| WalletError::NotFound("unknown journal".into()))?;
+        if let Some(prior) = sqlx::query("SELECT target,detail FROM oxsum.finance_audit WHERE business_id=$1 AND action='journal.void' AND idempotency_key=$2")
+            .bind(business).bind(idempotency_key).fetch_optional(&mut *tx).await? {
+            let detail:serde_json::Value=prior.try_get("detail")?;
+            if prior.try_get::<String,_>("target")?!=journal_id.to_string() || detail["reason"]!=reason {
+                return Err(WalletError::Conflict("journal void key names different request terms".into()));
+            }
+            let lines=lines_in(&mut tx,journal_id).await?;
+            tx.commit().await?;
+            return Ok(InvoiceJournalDetail{journal,lines});
         }
         if journal.state == JournalState::Void {
             let lines = lines_in(&mut tx, journal_id).await?;
             tx.commit().await?;
             return Ok(InvoiceJournalDetail { journal, lines });
         }
-        let lines = lines_in(&mut tx, journal_id).await?;
-        // Reverse every line onto the journal itself — the void's record is
-        // the second set of lines that nets the bill to zero.
-        let mut charges = 0i64;
-        let mut discount = 0i64;
-        let mut promo = 0i64;
-        for line in &lines {
-            match line.kind {
-                JournalLineKind::BaseFee | JournalLineKind::UsageOverage | JournalLineKind::Tax => {
-                    charges += line.amount_minor;
-                }
-                JournalLineKind::Discount => discount -= line.amount_minor,
-                JournalLineKind::PromoCredit => promo -= line.amount_minor,
-            }
-            insert_line_in(
-                &mut tx,
-                journal_id,
-                line.kind,
-                -line.amount_minor,
-                &format!("void reversal of {}", line.description),
-                Some(line.line_id),
-            )
-            .await?;
-        }
-        let receipt = wallet
-            .plan_journal_void_in(
-                &mut tx,
-                &journal_id,
-                charges,
-                discount,
-                promo,
-                journal.settled_minor,
-                journal.state == JournalState::Paid,
-                on,
-            )
+        let reversal_entry = self
+            .void_journal_financial_in(&mut tx, wallet, &journal, reason, on)
             .await?;
         let audit_id = Uuid::new_v4();
         sqlx::query(
@@ -572,7 +565,7 @@ impl Db {
             "totalMinor": journal.total_minor,
             "settledMinor": journal.settled_minor,
             "previousState": journal.state.as_str(),
-            "reversalEntryId": receipt.map(|r| *r.entry_id.as_uuid()),
+            "reversalEntryId": reversal_entry,
             "reason": reason,
         }))
         .bind(idempotency_key)
@@ -588,20 +581,6 @@ impl Db {
             }
             WalletError::Storage(e.into())
         })?;
-        sqlx::query(
-            "UPDATE oxsum.invoice_journals \
-             SET state='void', voided_at=now(), void_reason=$2, updated_at=now() \
-             WHERE journal_id=$1",
-        )
-        .bind(journal_id)
-        .bind(reason)
-        .execute(&mut *tx)
-        .await?;
-        // The customer-facing statement wraps this journal — it follows the
-        // void in the same transaction so the document never outlives its
-        // receivable as still-owed or paid-in-full (issue #779).
-        self.void_statement_for_journal_in(&mut tx, journal_id, reason)
-            .await?;
         let voided = journal_in(&mut tx, journal_id)
             .await?
             .ok_or_else(|| invalid("the journal did not land"))?;
@@ -612,11 +591,78 @@ impl Db {
             lines,
         })
     }
+
+    /// Shared cashless financial void. The caller owns business and plan locks,
+    /// then this locked journal; append lock precedes statement validation.
+    pub(crate) async fn void_journal_financial_in(
+        &self,
+        tx: &mut Transaction<'_, Postgres>,
+        wallet: &crate::Wallet,
+        journal: &InvoiceJournal,
+        reason: &str,
+        on: time::Date,
+    ) -> Result<Option<Uuid>, WalletError> {
+        let journal_id = journal.journal_id;
+        if journal.state == JournalState::Void {
+            return Ok(None);
+        }
+        if journal.state == JournalState::Draft || journal.replaces_journal_id.is_some() {
+            return Err(WalletError::Conflict(
+                "draft or reissued journal requires explicit financial reconciliation".into(),
+            ));
+        }
+        wallet.lock_append_in(tx).await?;
+        self.validate_journal_void_statements_in(tx, journal)
+            .await?;
+        let lines = lines_in(tx, journal_id).await?;
+        // Reverse every line onto the journal itself — the void's record is
+        // the second set of lines that nets the bill to zero.
+        let mut charges = 0i64;
+        let mut discount = 0i64;
+        let mut promo = 0i64;
+        for line in &lines {
+            match line.kind {
+                JournalLineKind::BaseFee | JournalLineKind::UsageOverage | JournalLineKind::Tax => {
+                    charges += line.amount_minor;
+                }
+                JournalLineKind::Discount => discount -= line.amount_minor,
+                JournalLineKind::PromoCredit => promo -= line.amount_minor,
+            }
+            insert_line_in(
+                tx,
+                journal_id,
+                line.kind,
+                -line.amount_minor,
+                &format!("void reversal of {}", line.description),
+                Some(line.line_id),
+            )
+            .await?;
+        }
+        let receipt = wallet
+            .plan_journal_void_in(
+                tx,
+                &journal_id,
+                charges,
+                discount,
+                promo,
+                journal.settled_minor,
+                journal.state == JournalState::Paid,
+                on,
+            )
+            .await?;
+
+        sqlx::query("UPDATE oxsum.invoice_journals SET state='void',voided_at=now(),void_reason=$2,updated_at=now() WHERE journal_id=$1")
+            .bind(journal_id).bind(reason).execute(&mut **tx).await?;
+        self.void_statement_for_journal_in(tx, journal_id, reason)
+            .await?;
+        crate::plan_debt::refresh_in(tx, journal.customer_plan_id).await?;
+        Ok(receipt.map(|r| *r.entry_id.as_uuid()))
+    }
 }
 
 /// The journal row inside the caller's transaction — `FOR UPDATE` so the
 /// settlement and correction writers serialize on it.
-async fn journal_in(
+pub(crate) async fn journal_in(
     tx: &mut Transaction<'_, Postgres>,
     journal_id: Uuid,
 ) -> Result<Option<InvoiceJournal>, WalletError> {

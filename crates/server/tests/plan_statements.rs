@@ -358,3 +358,57 @@ async fn the_staff_release_review_restores_the_statement() {
     .unwrap();
     assert!(audit.is_some(), "the release is audited");
 }
+
+#[tokio::test]
+async fn financial_void_requires_staff_and_replays_the_exact_request_once() {
+    let Some(world) = world().await else { return };
+    let version = publish(&world, "financial review", 2500).await;
+    bound_and_active(&world, version).await;
+    close_period(&world).await;
+    let statement = the_statement(&world).await;
+    let id = statement["statementId"].as_str().unwrap();
+    let path = format!("/api/v1/business/statements/{id}/release-review");
+    let key = Uuid::new_v4().to_string();
+    let terms =
+        json!({"action":"void","reason":"original journal correction","idempotencyKey":key});
+    let (status, body) = call(
+        &world.app,
+        "POST",
+        &path,
+        terms.clone(),
+        Some(&world.customer),
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
+    let mut invalid = terms.clone();
+    invalid["reason"] = json!("");
+    let (status, body) = call(&world.app, "POST", &path, invalid, Some(&world.owner)).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    for _ in 0..2 {
+        let (status, body) =
+            call(&world.app, "POST", &path, terms.clone(), Some(&world.owner)).await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert_eq!(body["data"]["state"], "void");
+        assert_eq!(body["data"]["totalMinor"], 0);
+    }
+    let (status, body) = call(
+        &world.app,
+        "GET",
+        &format!(
+            "/api/v1/org/plan/journals/{}",
+            statement["journalId"].as_str().unwrap()
+        ),
+        Value::Null,
+        Some(&world.customer),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["data"]["state"], "void");
+    let mut changed = terms;
+    changed["reason"] = json!("different terms");
+    let (status, body) = call(&world.app, "POST", &path, changed, Some(&world.owner)).await;
+    assert_eq!(status, StatusCode::CONFLICT, "{body}");
+    let audit: (i64,Option<String>)=sqlx::query_as("SELECT COUNT(*)::bigint,MAX(detail->>'reversalEntryId') FROM oxsum.finance_audit WHERE action='statement.release' AND idempotency_key=$1").bind(&key).fetch_one(&world.pool).await.unwrap();
+    assert_eq!(audit.0, 1);
+    assert!(audit.1.is_some());
+}

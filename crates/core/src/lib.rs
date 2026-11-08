@@ -56,6 +56,7 @@ mod oauth;
 mod operations;
 mod orgs;
 mod payment_orders;
+mod plan_debt;
 mod plan_payments;
 mod plan_refunds;
 mod plan_statements;

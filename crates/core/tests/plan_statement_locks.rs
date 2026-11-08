@@ -166,7 +166,10 @@ async fn suspended(w: &World) -> bool {
 }
 async fn clean(w: &World) {
     let current = state(w).await;
-    if current.state != PlanStatementState::Void {
+    if !matches!(
+        current.state,
+        PlanStatementState::Void | PlanStatementState::Paid
+    ) {
         w.db.release_statement_review(
             &w.owner,
             w.statement.statement_id,

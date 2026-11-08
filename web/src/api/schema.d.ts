@@ -3731,12 +3731,18 @@ export interface paths {
         /**
          * Run statement release-review
          * @description The staff release-review (issue #612, T21), under `FundsWrite`:
-         *     `extendGrace` walks `pastDue → issued` (restores the issued
-         *     standing, re-opens the grace window and lifts the dunning
-         *     suspension), `void` cancels the statement with reversing lines so it
-         *     nets to zero — never an edit, never a delete. A `finance_audit` row
-         *     records the actor, the reason and the statement. A replayed
-         *     `idempotencyKey` answers the standing statement.
+         *     `extendGrace` walks `pastDue → issued` and extends this statement's
+         *     due date. Debt suspension clears only when no other unpaid debt is
+         *     past grace. `void` reverses the proven backing journal and its
+         *     statement atomically: outstanding receivable is cancelled and
+         *     collected funds become refund payable; Cash does not move.
+         *     Mixed chargeback, reissued or inconsistent sources return 409 for
+         *     financial review. Historical document-only voids retain their lines;
+         *     an explicit new void request can reverse their still-posted backing
+         *     journal. A `finance_audit` row records exact request terms and source
+         *     reversal. The same `idempotencyKey` and terms replay without effects;
+         *     changed target, action or reason with that key returns 409. Manual
+         *     restrictions and renewal/entitlement state remain independent.
          */
         post: {
             parameters: {
@@ -4571,10 +4577,12 @@ export interface paths {
          *     bill nets to zero — never an edit, never a delete — the mirroring
          *     ledger entry posts the open receivable back off a `posted` journal, or
          *     unwinds the settlement to `Liabilities:RefundPayable` on a `paid` one,
-         *     and a `finance_audit` row records the actor and reason. A correction
-         *     that needs a different bill reissues under `replacesJournalId`.
-         *     `FundsWrite` capability; the replay of an `idempotencyKey` answers the
-         *     standing voided journal.
+         *     and a `finance_audit` row records the actor and reason. Its matching
+         *     statement is reversed in the same transaction; other debt past grace
+         *     retains dunning. Mixed chargeback, reissued or inconsistent sources
+         *     return 409 for explicit financial reconciliation. Cash stays unchanged.
+         *     `FundsWrite` capability; the same target/reason/key replays the standing
+         *     voided journal, while reuse with different request terms returns 409.
          */
         post: {
             parameters: {
@@ -18955,12 +18963,12 @@ export interface components {
             creditLimitMinor: number | null;
             /**
              * Format: int64
-             * @description the open statements' remaining plus current holds — what the credit limit's admission check counts
+             * @description remaining statement debt and posted journals without live statements; admission additionally counts open holds
              */
             outstandingMinor: number;
             /**
              * Format: date-time
-             * @description the earliest open statement's due date
+             * @description earliest effective debt due date, including the retained due date of a document-only void
              */
             nextDueAt: string | null;
         };
@@ -19152,7 +19160,7 @@ export interface components {
         ReleaseStatementRequest: {
             idempotencyKey: string;
             /**
-             * @description `extendGrace` restores `pastDue → issued` and lifts the dunning suspension; `void` cancels the statement with reversing lines
+             * @description `extendGrace` restores this statement to issued and retains suspension for other past-grace debt; `void` atomically reverses the backing journal and statement without moving Cash, refusing ambiguous sources
              * @enum {string}
              */
             action: "extendGrace" | "void";

@@ -416,8 +416,8 @@ export function useBusinessStatement(statementId: string | undefined) {
   });
 }
 
-/** `POST /business/statements/{id}/release-review`: `extendGrace` restores a
- * past-due receivable, `void` cancels it — both audited. */
+/** `POST /business/statements/{id}/release-review`: extend the selected due date
+ * or atomically reverse its proven journal and statement; both audited. */
 export function useReleaseStatement() {
   const client = useQueryClient();
   return useMutation({
@@ -429,6 +429,8 @@ export function useReleaseStatement() {
     onSuccess: (_d, v) => {
       client.invalidateQueries({ queryKey: ["biz-statements"] });
       client.invalidateQueries({ queryKey: ["biz-statement", v.statementId] });
+      client.invalidateQueries({ queryKey: ["biz-journals"] });
+      client.invalidateQueries({ queryKey: ["biz-journal"] });
     },
   });
 }

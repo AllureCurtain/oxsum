@@ -1680,10 +1680,10 @@
       "voidReason": "Void reason",
       "extendGrace": "Extend grace",
       "graceTitle": "Extend grace?",
-      "graceExplain": "Restores a past-due receivable to issued and lifts the dunning suspension.",
+      "graceExplain": "Extends this statement's due date. Spending stays suspended if another debt is past grace.",
       "void": "Void",
       "voidTitle": "Void this statement?",
-      "voidExplain": "Cancels the receivable with reversing lines — audited, never a delete.",
+      "voidExplain": "Reverses this statement and its matching journal together. Cash stays unchanged; collected funds become refund payable. Mixed or reissued bills require financial reconciliation.",
       "empty": "No statements."
     },
     "journals": {
