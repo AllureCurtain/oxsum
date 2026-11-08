@@ -6,9 +6,9 @@ Updated: 2026-11-09
 
 - [x] [#862](https://github.com/AllureCurtain/oxsum/issues/862) — Pool exhaustion deadline regression integrated in PR #864 (`e53e303a`); 17 PostgreSQL fault checks, strict Clippy and independent review passed.
 
-- [ ] [#841](https://github.com/AllureCurtain/oxsum/issues/841) — Implement complete non-plan refund Cash, exact original-source allocation, late cash/payout fences, customer/finance effect projections and explicit historical preview/apply. Contract and source audit prepared; implementation and validation in progress.
+- [ ] [#841](https://github.com/AllureCurtain/oxsum/issues/841) — Implement complete non-plan refund Cash, exact original-source allocation, late cash/payout fences, customer/finance effect projections and explicit historical preview/apply. Implemented with exact preview/apply, original Cash-day reporting and awaited fulfillment source release; 69 focused core, 40 HTTP, eight executable CLI and two parser checks passed. Complete run passed 2,035/2,037: its table-inventory omission is fixed with 11 identity passes; the existing gateway DDL race remains #867. Strict Clippy and independent review passed; normal PR integration pending.
 
-- [ ] [#863](https://github.com/AllureCurtain/oxsum/issues/863) — Customer period/statement evidence portal, exports and scoped local verification; five behavioral checks, three real-WASM groups and frontend build passed; independent review/PR integration pending.
+- [x] [#863](https://github.com/AllureCurtain/oxsum/issues/863) — Customer period/statement evidence portal, exports and scoped local verification integrated in PR #865 (`cbabfafd`); five behavioral checks, three real-WASM groups, frontend build and independent review passed. Browser/candidate acceptance remains.
 
 - [x] [#858](https://github.com/AllureCurtain/oxsum/issues/858) — Integrated dashboard signed-head/consistency verification and customer-scoped retained trust in PR #861 (`b67a2d3b`); five behavioral and four real-WASM groups passed. Browser/candidate acceptance remains.
 
