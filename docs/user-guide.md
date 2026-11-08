@@ -1594,3 +1594,26 @@ Operators reviewing historical missing or wrong-source effects use the
 current owner/finance session and trusted event receipt. A source-review refusal
 must be investigated using original evidence; new payment/refund identities do
 not repair it.
+
+### Compare financial sources with the books
+
+In **Business → Reports**, choose the start/end dates and booking, service or
+payment clock, then request a reconciliation. Finance write authority is required
+to start a run; reports readers can inspect it. A failed request can be retried
+with its same original dates, clock and request identity.
+
+Open a run and select a **Retained attempt**. The table compares captured source
+assertions with amounts reconstructed from verified official ledger postings.
+Read the coverage description before interpreting a match: old v1 journals use
+their original posting cohort; v2 uses signed movements under the chosen clock.
+The legacy statement-issued-date receivable filter on the financial-facts
+screen has a different cohort. Excluded fields are listed explicitly. The
+source evidence expands to show exact entries, dates and differences, including
+separate refund-payable and suspense amounts.
+
+The **Current exception work list** records review work. Its resolution state
+can change after the selected attempt, while that attempt's original differences
+remain in captured evidence. Fix the exact underlying source through its
+supported audited workflow, then request a new comparison. Reconciliation
+itself never changes money or invents missing source links. Historical reports
+marked **Legacy report** did not perform an independent ledger comparison.

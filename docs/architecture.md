@@ -583,10 +583,35 @@ stored bundles remain unchanged; independent ledger verification still requires
 the retained trust inputs and stays within the documented proof scope.
 
 
-Runtime independent ledger reconciliation remains [#848](https://github.com/AllureCurtain/oxsum/issues/848):
-the existing `actualTotals` snapshot still clones the projection. Daily accounting
-fixtures independently compare postings, but that development evidence does not
-turn the current runtime report into an independent ledger audit.
+Independent runtime comparison (#848) lives in `financial_reconciliation`.
+One repeatable-read transaction captures bounded business source rows and
+canonical ledger bytes through `ledger_source`, derives actual amounts solely
+from verified settled USD postings, and persists an immutable attempt plus the
+run's latest pointer. Raw idempotency keys, derived entry IDs, official sequence
+positions and registered account IDs are checked separately from content hashes.
+Hash verification alone does not authenticate path labels or business ownership;
+those retained source relationships remain part of the comparison's trust scope.
+
+Source comparison covers v1 net journal cohorts, v2 signed accounting effects,
+original authorization/fee/service intervals, independently replayed daily
+recognition, cash refunds, disputes, voids, usage corrections and customer
+statement lines. All captured entries are verified so changing a selector field
+cannot hide corruption. Unclaimed financial entries and missing/unsupported
+source links become explicit exceptions, not invented zero-value matches.
+The independent v1 receivable cohort follows original journal posting rather
+than the financial-facts screen's statement issue filter. Payable/suspense appear
+in source evidence, while unchecked categories are absent from actual totals.
+
+Migration 0117 retains legacy projection snapshots with coverage version 0,
+immutable `reconciliation_snapshots` and exact manual request receipts. A
+nonblocking transaction advisory lock owns each kind/period/clock; one transaction
+captures and publishes all evidence. No nested pool checkout or money repair
+occurs. Bounds fail the attempt before publishing: at most 1,000 organizations,
+10,000 captured source rows, 20,000 entries and 16 MiB retained evidence. Source
+and ledger input byte bounds prevent unbounded row materialization. A failure
+leaves the previous snapshot intact; operational failure is reported to the
+caller/job. Personal `ReportsRead` guards retained attempts and `FundsWrite`
+guards manual runs and existing audited exception actions.
 
 ### Stable application-owned accounts (#846)
 

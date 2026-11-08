@@ -3557,3 +3557,28 @@ Stop and drain old writers before upgrading; an old process does not participate
 in the explicit zero-wallet reservation protocol. This is development correctness
 work, not provider/browser/PSP or final candidate acceptance. The separate lazy
 cancellation defect is tracked in #854 and must close before the customer journey.
+
+## 2026-11-09 Independent financial source snapshots (#848)
+
+A reconciliation cannot use its projection as both assertion and observation.
+Actual plan/refund totals now come from canonical verified ledger entries in one
+repeatable-read snapshot. Original raw keys, derived IDs, official sequence
+positions, registered accounts and source ownership are checked separately;
+posting hashes do not bind those database relationships or prove service delivery.
+
+V1 retains a coherent original-posting journal cohort, including later net
+corrections; v2 compares signed movements under explicit booking/service/payment
+clocks. The dashboard's legacy statement-issued-date receivable filter remains a
+different cohort. Unchecked usage/entitlement/funding/cost fields are absent from
+actual totals and listed as exclusions. Payable and suspense are source evidence,
+not income or receivables. Missing sources report incomplete coverage, and
+independently balanced document drift still produces exact amount exceptions.
+
+Each completed attempt is immutable. The stable run is only a latest-result
+pointer; exact keyed manual retries return their original attempt. A nonblocking
+transaction lock prevents competing identical captures, with current personal
+capabilities checked on every request. Capture and publication use one connection;
+storage/size failures roll back and preserve earlier evidence. Hard row/entry/
+byte/interval bounds refuse oversized attempts rather than silently truncating.
+The migration labels retained old projection-only evidence as legacy rather than
+claiming it was independently verified.
