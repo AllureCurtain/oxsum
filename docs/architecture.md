@@ -495,3 +495,31 @@ on replay even after the journal becomes posted. Debt restoration is bounded by
 the remaining applied payment; voided bills draw their source refund payable.
 Any excess has an explicit suspense debit and review amount in the dispute
 resolution audit. No cash result is clipped to a journal's remaining payment.
+
+### Historical duplicate usage corrections (#809)
+
+`plan_usage_corrections` inspects one exact old journal under business,
+subscription, plan, journal, ledger-append and original-statement locks. It
+verifies the original accrual, period's actual `Income:Usage` settlements,
+source-specific prepayment and old Cash/Receivables payment entries, and the
+matching statement. A typed report preserves source identities, content hashes
+and allocation. Missing or combined correction history returns an explicit
+refusal; apply audits that refusal without posting money.
+
+Migration 0111 stores one immutable correction per journal. Successful apply
+appends Dr PlanFees / Cr original open Receivables and/or RefundPayable, then
+negative usage lines and any payment-to-payable reversal on the original
+documents. Cash never moves. The effect, entries, counters and audit commit
+atomically; all original entries and writer guards remain. Cleared debt may
+lift only the already-locked plan's dunning flag. The local command defaults to
+dry-run and uses `Wallet::open_existing`; it does not bootstrap a ledger or call
+a PSP. See [the runbook](plan-usage-correction.md).
+
+The correction's immutable funding map includes the authorizing order and every
+allocated historical cash order. Refund requests and approvals serialize with
+correction on the business row and refuse these sources before provider I/O.
+Later confirmed cash outcomes use the source map before ordinary period
+allocation: the full cash outflow is retained as review suspense, naming the
+corrected journals, without consuming another period's deferred balance or
+automatically clearing the correction payable. The standing cash entry provides
+chargeback replay; refund effects retain their own idempotent allocation.

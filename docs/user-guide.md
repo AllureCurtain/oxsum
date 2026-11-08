@@ -943,6 +943,13 @@ request and is never charged again by a new period close. A historical journal
 may still show `usageOverage`; operators must use an explicit correction for
 that duplicated charge (#809), preserving the original record.
 
+If an older bill charged already-settled usage again, owner/finance staff can
+use the [historical correction command](plan-usage-correction.md) after reviewing
+its original evidence. Your bill then shows a negative usage correction. Any
+amount already collected beyond the corrected bill becomes refund payable;
+the payment line states that cash has not yet been returned. Original billing
+lines remain visible, and unsupported combined histories require finance review.
+
 The journal is the accounting bill; the statement is the document you
 actually read (issue #612). `GET /api/v1/org/statements` lists yours newest
 first and `GET /api/v1/org/statements/{statementId}` reads one with its

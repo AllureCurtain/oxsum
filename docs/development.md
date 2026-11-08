@@ -1406,3 +1406,12 @@ case holds the owning plan while committing payment or a future due date, then
 checks the next sweep leaves the plan unsuspended. The keyset progress test
 uses a one-row page with a locked oldest plan, ensuring the next page is still
 processed. These fixtures do not contact a payment provider.
+
+### Correct historical duplicate plan usage
+
+After migration 0111, use `cargo run -p oxsum-core --example correct_plan_usage --
+--journal UUID --session-file PATH --reason TEXT --key KEY` with an explicitly
+supplied `DATABASE_URL`. The default previews without writes; `--apply` commits
+one verified correction or an audited refusal. Owner/finance personal business
+authority is required. The [runbook](plan-usage-correction.md) defines supported
+sources, payable handling, exit status, exact-source review and inert replay.
