@@ -147,8 +147,17 @@ impl Db {
         sqlx::query("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ")
             .execute(&mut *tx)
             .await?;
-        claim_in(&mut tx, kind, Scope { start, end, basis }).await?;
-        let run = run_in(&mut tx, kind, Scope { start, end, basis }, actor).await?;
+        if let Err(error) = claim_in(&mut tx, kind, Scope { start, end, basis }).await {
+            tx.rollback().await?;
+            return Err(error);
+        }
+        let run = match run_in(&mut tx, kind, Scope { start, end, basis }, actor).await {
+            Ok(run) => run,
+            Err(error) => {
+                tx.rollback().await?;
+                return Err(error);
+            }
+        };
         tx.commit().await?;
         Ok(ReconciliationReport {
             run_id: run.run_id,
@@ -173,7 +182,10 @@ impl Db {
         sqlx::query("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ")
             .execute(&mut *tx)
             .await?;
-        claim_in(&mut tx, "manual", Scope { start, end, basis }).await?;
+        if let Err(error) = claim_in(&mut tx, "manual", Scope { start, end, basis }).await {
+            tx.rollback().await?;
+            return Err(error);
+        }
         let business: Uuid = sqlx::query_scalar(
             "SELECT business_id FROM oxsum.businesses WHERE singleton FOR UPDATE SKIP LOCKED",
         )
@@ -185,15 +197,24 @@ impl Db {
                 .await?;
         if let Some(row)=sqlx::query("SELECT period_start,period_end,time_basis,result FROM oxsum.reconciliation_requests WHERE business_id=$1 AND idempotency_key=$2").bind(business).bind(key).fetch_optional(&mut *tx).await? {
             if row.try_get::<Date,_>("period_start")?!=start || row.try_get::<Date,_>("period_end")?!=end || row.try_get::<String,_>("time_basis")?!=basis_name(basis) {return Err(WalletError::Conflict("reconciliation request key already binds different terms".into()));}
-            return serde_json::from_value(row.try_get("result")?).map_err(error::invalid);
+            let result=serde_json::from_value(row.try_get("result")?).map_err(error::invalid)?;
+            tx.commit().await?;
+            return Ok(result);
         }
-        let result = run_in(
+        let result = match run_in(
             &mut tx,
             "manual",
             Scope { start, end, basis },
             Some(actor.user_id),
         )
-        .await?;
+        .await
+        {
+            Ok(result) => result,
+            Err(error) => {
+                tx.rollback().await?;
+                return Err(error);
+            }
+        };
         let audit = Uuid::new_v4();
         sqlx::query("INSERT INTO oxsum.finance_audit(audit_id,business_id,actor_user_id,action,target,detail,idempotency_key) VALUES($1,$2,$3,'reconciliation.repair',$4,$5,$6)")
             .bind(audit).bind(business).bind(actor.user_id).bind(result.run_id.to_string()).bind(serde_json::json!({"kind":"manual","periodStart":start.to_string(),"periodEnd":end.to_string(),"timeBasis":basis_name(basis),"snapshotId":result.latest_snapshot_id})).bind(format!("reconciliation-run/{key}")).execute(&mut *tx).await?;

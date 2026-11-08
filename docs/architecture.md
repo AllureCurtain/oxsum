@@ -595,7 +595,11 @@ those retained source relationships remain part of the comparison's trust scope.
 Source comparison covers v1 net journal cohorts, v2 signed accounting effects,
 original authorization/fee/service intervals, independently replayed daily
 recognition, cash refunds, disputes, voids, usage corrections and customer
-statement lines. All captured entries are verified so changing a selector field
+statement lines. Historical usage corrections recheck their retained source
+digest against the official correction description and each original usage,
+accrual and payment entry against complete verified bytes and an earlier official
+sequence position. These source checks do not certify usage measurement or
+service delivery. All captured entries are verified so changing a selector field
 cannot hide corruption. Unclaimed financial entries and missing/unsupported
 source links become explicit exceptions, not invented zero-value matches.
 The independent v1 receivable cohort follows original journal posting rather

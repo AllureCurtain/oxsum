@@ -4,7 +4,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use uuid::Uuid;
 
-use super::{Customer, refunds};
+use super::{Customer, corrections, refunds};
 use crate::WalletError;
 use crate::financial_reconciliation::ledger;
 use crate::financial_reconciliation::types::{self, Amounts};
@@ -199,6 +199,7 @@ pub(super) fn compare(customer: &mut Customer<'_>) -> Result<(), WalletError> {
             );
             valid &= correction.id("original_entry_id")?
                 == *crate::entry_id_for(&format!("plan-journal/{journal}/accrual")).as_uuid();
+            valid &= corrections::verify(customer, journal, &correction, &header)?;
             let singleton = BTreeSet::from([entry]);
             customer.compare_amount(
                 "plan_usage_corrections",

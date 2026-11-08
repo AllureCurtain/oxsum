@@ -18,6 +18,7 @@ use crate::{
 };
 
 const FEE: i64 = 2_500_000;
+static TEST_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 struct World {
     db: Db,
     owner: String,
@@ -83,11 +84,22 @@ async fn world(days: i64, legacy: bool) -> Option<World> {
         .unwrap();
     if legacy {
         db.rollover_due_subscriptions().await.unwrap();
-    } else {
-        db.run_plan_recognition(1000).await.unwrap();
     }
     let period = db.plan_periods(plan).await.unwrap().remove(0);
     let journal = db.plan_journals(org, None, 50).await.unwrap().journals[0].journal_id;
+    if !legacy {
+        let mut tx = db.pool().begin().await.unwrap();
+        db.recognize_plan_period_in(
+            &mut tx,
+            &wallet,
+            journal,
+            OffsetDateTime::now_utc(),
+            OffsetDateTime::now_utc().date(),
+        )
+        .await
+        .unwrap();
+        tx.commit().await.unwrap();
+    }
     Some(World {
         db,
         owner,
@@ -247,6 +259,7 @@ async fn corrupt(w: &World, sql: &str) {
 
 #[tokio::test]
 async fn v1_and_v2_real_books_have_independent_amounts_and_explicit_noncoverage() {
+    let _guard = TEST_LOCK.lock().await;
     for legacy in [false, true] {
         let Some(w) = world(if legacy { 40 } else { 10 }, legacy).await else {
             return;
@@ -279,6 +292,7 @@ async fn v1_and_v2_real_books_have_independent_amounts_and_explicit_noncoverage(
 
 #[tokio::test]
 async fn original_refund_cash_and_partial_dispute_do_not_duplicate_income_or_cash() {
+    let _guard = TEST_LOCK.lock().await;
     for legacy in [false, true] {
         let Some(w) = world(if legacy { 40 } else { 10 }, legacy).await else {
             return;
@@ -300,6 +314,7 @@ async fn original_refund_cash_and_partial_dispute_do_not_duplicate_income_or_cas
 
 #[tokio::test]
 async fn void_refund_and_excess_dispute_keep_payable_and_suspense_outside_facts() {
+    let _guard = TEST_LOCK.lock().await;
     for legacy in [false, true] {
         let Some(w) = world(if legacy { 40 } else { 10 }, legacy).await else {
             return;
@@ -328,6 +343,7 @@ async fn void_refund_and_excess_dispute_keep_payable_and_suspense_outside_facts(
 
 #[tokio::test]
 async fn internally_balanced_effect_drift_disagrees_with_real_official_entries() {
+    let _guard = TEST_LOCK.lock().await;
     let Some(w) = world(0, false).await else {
         return;
     };
@@ -349,6 +365,7 @@ async fn internally_balanced_effect_drift_disagrees_with_real_official_entries()
 
 #[tokio::test]
 async fn balanced_legacy_header_drift_cannot_be_its_own_actual() {
+    let _guard = TEST_LOCK.lock().await;
     let Some(w) = world(40, true).await else {
         return;
     };
@@ -367,6 +384,7 @@ async fn balanced_legacy_header_drift_cannot_be_its_own_actual() {
 
 #[tokio::test]
 async fn corrupt_posting_hash_and_missing_effect_have_durable_exact_source_differences() {
+    let _guard = TEST_LOCK.lock().await;
     let Some(w) = world(10, false).await else {
         return;
     };
@@ -393,6 +411,7 @@ async fn corrupt_posting_hash_and_missing_effect_have_durable_exact_source_diffe
 
 #[tokio::test]
 async fn wrong_raw_key_cannot_pass_by_preserving_a_valid_stored_hash() {
+    let _guard = TEST_LOCK.lock().await;
     let Some(w) = world(0, false).await else {
         return;
     };
@@ -417,6 +436,7 @@ async fn wrong_raw_key_cannot_pass_by_preserving_a_valid_stored_hash() {
 
 #[tokio::test]
 async fn repeatable_read_keeps_source_and_ledger_capture_on_the_same_snapshot() {
+    let _guard = TEST_LOCK.lock().await;
     let Some(w) = world(0, false).await else {
         return;
     };
@@ -453,6 +473,7 @@ async fn repeatable_read_keeps_source_and_ledger_capture_on_the_same_snapshot() 
 
 #[tokio::test]
 async fn retained_attempts_exact_replay_and_failed_bounds_preserve_original_evidence() {
+    let _guard = TEST_LOCK.lock().await;
     let Some(w) = world(0, false).await else {
         return;
     };
@@ -534,6 +555,7 @@ async fn retained_attempts_exact_replay_and_failed_bounds_preserve_original_evid
 
 #[tokio::test]
 async fn one_connection_capture_and_busy_identical_run_do_not_wait_for_nested_pools() {
+    let _guard = TEST_LOCK.lock().await;
     let Some(w) = world(0, false).await else {
         return;
     };
@@ -565,6 +587,7 @@ async fn one_connection_capture_and_busy_identical_run_do_not_wait_for_nested_po
 
 #[tokio::test]
 async fn late_daily_refund_after_lost_payment_is_cash_suspense_without_fee_cancellation() {
+    let _guard = TEST_LOCK.lock().await;
     let Some(w) = world(10, false).await else {
         return;
     };
@@ -631,6 +654,7 @@ async fn late_daily_refund_after_lost_payment_is_cash_suspense_without_fee_cance
 
 #[tokio::test]
 async fn mixed_policy_chargebacks_keep_each_original_customer_debt() {
+    let _guard = TEST_LOCK.lock().await;
     for daily_first in [false, true] {
         let Some(w) = world(40, true).await else {
             return;
@@ -667,7 +691,25 @@ async fn mixed_policy_chargebacks_keep_each_original_customer_debt() {
         w.db.activate_plan_period(daily.order_id, w.plan)
             .await
             .unwrap();
-        w.db.run_plan_recognition(1000).await.unwrap();
+        let current =
+            w.db.plan_journals(w.org, None, 50)
+                .await
+                .unwrap()
+                .journals
+                .into_iter()
+                .find(|j| j.accounting_policy_version == 2)
+                .unwrap();
+        let mut tx = w.db.pool().begin().await.unwrap();
+        w.db.recognize_plan_period_in(
+            &mut tx,
+            &w.wallet,
+            current.journal_id,
+            OffsetDateTime::now_utc(),
+            OffsetDateTime::now_utc().date(),
+        )
+        .await
+        .unwrap();
+        tx.commit().await.unwrap();
         let (first, second) = if daily_first {
             (&daily, &w.order)
         } else {
@@ -683,6 +725,7 @@ async fn mixed_policy_chargebacks_keep_each_original_customer_debt() {
 
 #[tokio::test]
 async fn current_booking_and_past_service_dates_are_separate_verified_movements() {
+    let _guard = TEST_LOCK.lock().await;
     let Some(w) = world(10, false).await else {
         return;
     };
@@ -731,6 +774,7 @@ async fn current_booking_and_past_service_dates_are_separate_verified_movements(
 
 #[tokio::test]
 async fn same_amount_receipt_from_another_refund_cannot_prove_this_source() {
+    let _guard = TEST_LOCK.lock().await;
     let Some(w) = world(0, false).await else {
         return;
     };
@@ -750,6 +794,7 @@ async fn same_amount_receipt_from_another_refund_cannot_prove_this_source() {
 
 #[tokio::test]
 async fn report_readers_cannot_run_and_exact_replay_rechecks_live_funds_authority() {
+    let _guard = TEST_LOCK.lock().await;
     let Some(w) = world(0, false).await else {
         return;
     };
@@ -827,6 +872,7 @@ async fn report_readers_cannot_run_and_exact_replay_rechecks_live_funds_authorit
 
 #[tokio::test]
 async fn snapshot_write_failure_keeps_the_preceding_complete_attempt() {
+    let _guard = TEST_LOCK.lock().await;
     let Some(w) = world(0, false).await else {
         return;
     };
@@ -857,4 +903,98 @@ async fn snapshot_write_failure_keeps_the_preceding_complete_attempt() {
     w.db.run_reconciliation("daily", day, day, None)
         .await
         .unwrap();
+}
+
+#[tokio::test]
+async fn nonplan_partial_returns_and_payment_only_receipts_reconcile_original_cash() {
+    let _guard = TEST_LOCK.lock().await;
+    for payment_only in [false, true] {
+        let Some(w) = world(0, false).await else {
+            return;
+        };
+        let order =
+            w.db.create_payment_order(
+                &w.context,
+                w.org,
+                &crate::NewPaymentOrder {
+                    purpose: crate::PaymentOrderPurpose::WalletTopup,
+                    purpose_ref: None,
+                    display_amount_minor: 250,
+                    display_currency: "USD".into(),
+                    idempotency_key: Uuid::new_v4().to_string(),
+                    promo_minor: 0,
+                    expected_plan_quote: None,
+                    expected_collection_revision: None,
+                },
+            )
+            .await
+            .unwrap();
+        payment::mark_paid(&w.db, &w.context, &order).await;
+        w.db.fulfill_payment_order(order.order_id, &w.wallet, OffsetDateTime::now_utc().date())
+            .await
+            .unwrap();
+        let refund =
+            w.db.request_order_refund(
+                w.org,
+                order.order_id,
+                &crate::NewRefundRequest {
+                    amount_minor: Some(1_000_000),
+                    reason: "nonplan source comparison".into(),
+                    request_key: Uuid::new_v4().to_string(),
+                    requested_by: None,
+                },
+            )
+            .await
+            .unwrap();
+        w.db.resolve_order_refund(
+            &w.owner,
+            refund.refund_id,
+            crate::RefundDecision::Approve,
+            None,
+            &Uuid::new_v4().to_string(),
+        )
+        .await
+        .unwrap();
+        let event = crate::VerifiedMerchantEvent {
+            event_id: Uuid::new_v4().to_string(),
+            kind: crate::MerchantEventKind::RefundSucceeded,
+            payment_id: if payment_only {
+                None
+            } else {
+                Some(order.order_id)
+            },
+            provider_payment_id: Some(format!("pay_{}", order.order_id)),
+            organization_id: if payment_only { None } else { Some(w.org) },
+            provider_account_id: Some(w.context.account_id.clone()),
+            mode: Some(crate::MerchantMode::Test),
+            amount_minor: Some(refund.display_amount_minor),
+            currency: Some(refund.display_currency),
+            refund_id: if payment_only {
+                None
+            } else {
+                Some(refund.refund_id.to_string())
+            },
+        };
+        let receipt =
+            w.db.receive_merchant_event(&w.context, &event, &[84; 32])
+                .await
+                .unwrap();
+        assert_eq!(receipt.state, "accepted");
+        w.db.apply_refund_event(&w.wallet, &receipt, OffsetDateTime::now_utc().date())
+            .await
+            .unwrap();
+        let result = capture(&w, TimeBasis::Booking).await;
+        clean(&result);
+        assert_eq!(result.actual.refund_minor, 1_000_000);
+        assert_eq!(w.wallet.available().await.unwrap(), FEE - 1_000_000);
+        corrupt(&w,&format!("UPDATE oxsum.nonplan_refund_effects SET wallet_restored_minor=17,correction_entry_id='{}',correction_entry_hash=repeat('0',64),legacy_recovery=true WHERE refund_id='{}'",Uuid::new_v4(),refund.refund_id)).await;
+        let drift = capture(&w, TimeBasis::Booking).await;
+        assert!(!drift.coverage.complete);
+        assert!(
+            drift
+                .differences
+                .iter()
+                .any(|d| d.fact == "retainedMetadata")
+        );
+    }
 }
