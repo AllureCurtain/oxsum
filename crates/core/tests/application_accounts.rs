@@ -509,7 +509,7 @@ async fn historical_provision_receipt_requires_original_actor_terms_and_identity
     // Reconstruct the pre-0114 application rows, never a human account or ledger.
     let mut tx = db.pool().begin().await.unwrap();
     sqlx::query("INSERT INTO oxsum.organizations(organization_id,name,tenant_id,kind) VALUES($1,$2,$3,'personal')")
-        .bind(id).bind(&req.name).bind(id.to_string()).execute(&mut *tx).await.unwrap();
+        .bind(id).bind(&req.name).bind(id.simple().to_string()).execute(&mut *tx).await.unwrap();
     sqlx::query("DELETE FROM oxsum.customer_profiles WHERE organization_id=$1")
         .bind(id)
         .execute(&mut *tx)
