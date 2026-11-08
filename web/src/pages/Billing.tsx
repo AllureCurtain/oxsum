@@ -1,10 +1,12 @@
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import { useTranslation } from "react-i18next";
 import { AlertCircle, CreditCard, FileText, Receipt } from "lucide-react";
+import { collectionMinor } from "../lib/money";
 import { ApiError } from "../api/client";
 import {
   useCreateOrder,
+  useCollectionTerms,
   useDisplay,
   useOrgPlan,
   usePlanStatement,
@@ -56,6 +58,8 @@ function PlanStanding() {
   const display = useDisplay();
   const navigate = useNavigate();
   const create = useCreateOrder();
+  const terms = useCollectionTerms();
+  const intent = useRef<{payload:string;key:string}|null>(null);
 
   if (orgPlan.isLoading) {
     return <PageState>{t("common.loading")}</PageState>;
@@ -78,28 +82,23 @@ function PlanStanding() {
     );
   }
 
-  // The repayment's fiat quote: `displayAmountMinor`/`displayCurrency` is the
-  // figure the provider charges, which the server converts to ledger credits at
-  // the org's own rate. The receivable's balance is credit-minor, so the fiat
-  // minor is the same decimal-string conversion `displayAmount` renders —
-  // rounded half-up to the currency's decimals, never a float.
+  // Collection uses the operator's quote; personal display remains cosmetic.
   const pay = () => {
     const outstanding = credit?.outstandingMinor ?? 0;
-    if (!display || outstanding <= 0) return;
-    const [whole, frac = ""] = display.ratePerCredit.split(".");
-    const mantissa = BigInt(whole + frac);
-    const rateScale = BigInt(frac.length);
-    const scale = 10n ** BigInt(display.decimals);
-    const numerator = BigInt(outstanding) * mantissa * scale;
-    const denominator = 10n ** (6n + rateScale);
-    const fiatMinor = Number((numerator + denominator / 2n) / denominator);
+    const currency = terms.data?.currency;
+    if (!terms.data?.ready || !currency || outstanding <= 0) return;
+    const fiatMinor = collectionMinor(outstanding, currency.ratePerCredit);
+    if (fiatMinor === null) return;
+    const payload = JSON.stringify({ fiatMinor, currency: currency.code });
+    if (intent.current?.payload !== payload) intent.current = { payload, key: crypto.randomUUID() };
     create.mutate(
       {
-        idempotencyKey: crypto.randomUUID(),
+        idempotencyKey: intent.current.key,
+        expectedCollectionRevision: terms.data.revision,
         rail: "hyperswitch",
         purpose: "invoiceRepayment",
-        displayAmountMinor: Math.max(1, fiatMinor),
-        displayCurrency: display.code,
+        displayAmountMinor: fiatMinor,
+        displayCurrency: currency.code,
       },
       {
         onSuccess: (checkout) =>
@@ -108,7 +107,7 @@ function PlanStanding() {
     );
   };
 
-  const open = credit != null && credit.outstandingMinor > 0 && display != null;
+  const open = credit != null && credit.outstandingMinor > 0 && terms.data?.ready === true;
   return (
     <Card
       title={t("billing.plan")}
@@ -121,6 +120,8 @@ function PlanStanding() {
       }
     >
       <div className="flex flex-col gap-4">
+        {terms.data?.ready ? <p className="font-mono text-sm">Collection: 1 credit = {terms.data.currency?.ratePerCredit} {terms.data.currency?.code}</p> : <Banner tone="warn">Collection terms are unavailable. Contact the operator before payment.</Banner>}
+        <Button tone="ghost" onClick={() => terms.refetch()} disabled={create.isPending}>Refresh collection terms</Button>
         {plan.state === "pastDue" ? (
           <Banner tone="warn">{t("billing.pastDueNote")}</Banner>
         ) : null}

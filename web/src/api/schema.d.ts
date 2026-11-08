@@ -8005,7 +8005,11 @@ export interface paths {
          */
         get: operations["listBusinessCustomers"];
         put?: never;
-        post?: never;
+        /**
+         * Provision a service-managed customer account
+         * @description Integration customersProvision grant only — never a staff session. Creates a customer billing account under the calling business, binds the caller-chosen externalId, and adds the new account to the credential's own grant so it can act on only the customers it created. Idempotent on externalId; a foreign customerId is never named or granted. No human login, no staff membership, no wallet credit.
+         */
+        post: operations["provisionBusinessCustomer"];
         delete?: never;
         options?: never;
         head?: never;
@@ -8034,6 +8038,26 @@ export interface paths {
          * @description Current customersWrite capability. Name/contact changes do not move identity or history. ExternalId is assigned once by creation or migration and is immutable. Same-key changed terms conflict.
          */
         patch: operations["updateBusinessCustomer"];
+        trace?: never;
+    };
+    "/api/v1/business/customers/{organizationId}/billing": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Read a customer's balance and recent bills
+         * @description Integration billingRead for this granted customer only — no session-cookie access. Returns the customer's current balance and a cursor-paged window of the ledger entries that moved money. Unknown, ungranted or foreign customer is 404; a credential without billingRead is 403.
+         */
+        get: operations["getBusinessCustomerBilling"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
         trace?: never;
     };
     "/api/v1/business/customers/{organizationId}/lifecycle": {
@@ -8742,7 +8766,7 @@ export interface paths {
         put?: never;
         /**
          * Create a payment order
-         * @description The customer pins an immutable order in the display currency it was quoted. The server rates the conversion to ledger credits at the organization's effective display rate — `amountMinor`/`rate` are not request fields, so a client-supplied figure is a schema rejection, not a negotiated term. The expected payment and the order terms commit before the provider is called; the provider idempotency key is the order's durable local UUID, so a replayed `idempotencyKey` returns the standing order and its original checkout rather than a second charge. `purpose` fixes the one fulfillment arm the order may take — `walletTopup`, `bundle`, `planPeriod` or `invoiceRepayment`. The answer is a checkout to complete, never a paid order — `paid` is established only by the signed provider webhook.
+         * @description The customer pins an immutable order in the display currency it was quoted. The server rates the conversion to ledger credits at the stored business collection rate — `amountMinor`/`rate` are not request fields, so a client-supplied figure is a schema rejection, not a negotiated term. The expected payment and the order terms commit before the provider is called; the provider idempotency key is the order's durable local UUID, so a replayed `idempotencyKey` returns the standing order and its original checkout rather than a second charge. `purpose` fixes the one fulfillment arm the order may take — `walletTopup`, `bundle`, `planPeriod` or `invoiceRepayment`. The answer is a checkout to complete, never a paid order — `paid` is established only by the signed provider webhook.
          */
         post: {
             parameters: {
@@ -10636,6 +10660,50 @@ export interface paths {
          * @description Owner only. Atomically promotes the selected current staff member and demotes the actor to admin. Last-owner deletion is refused. Replays recheck current owner permission.
          */
         post: operations["transferBusinessOwnership"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/collection-terms": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Read the operator's current collection currency and conversion
+         * @description Customer-readable collection policy. Personal display preferences do not change these terms. Historical orders retain their own snapshots. Current provider amounts use two decimal minor digits; a conflicting historical currency blocks new collection.
+         */
+        get: operations["getCollectionTerms"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/business/collection-terms": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Read collection settings
+         * @description Requires current business overviewRead authority.
+         */
+        get: operations["getBusinessCollectionTerms"];
+        put?: never;
+        /**
+         * Set owner-authorized collection settings
+         * @description Requires owner-only collectionWrite. Exact unchanged retries replay their immutable receipt. Revision conflicts preserve the caller draft. Currency cannot change once a payment intent or financial history commits it; rate revisions affect new intents only. No provider request is made. Existing deployment display defaults bootstrap only once and never overwrite this saved policy.
+         */
+        post: operations["setBusinessCollectionTerms"];
         delete?: never;
         options?: never;
         head?: never;
@@ -15125,10 +15193,48 @@ export interface components {
             suspended: boolean;
             reason: string;
         };
+        /** @description a granted customer's current balance plus a window of the ledger entries that moved money — the service-facing mirror of the customer `balance` and `bills` surfaces */
+        CustomerBilling: {
+            balance: {
+                /**
+                 * Format: int64
+                 * @description everything the organization can still reserve: own funds plus the undrawn credit line
+                 */
+                availableMinor: number;
+                /**
+                 * Format: int64
+                 * @description the credit facility the operator granted — 0 without one
+                 */
+                creditLimitMinor: number;
+                /**
+                 * Format: int64
+                 * @description the drawn plus reserved part of the credit line
+                 */
+                creditUsedMinor: number;
+                /**
+                 * Format: int64
+                 * @description what outstanding holds freeze right now
+                 */
+                reservedMinor: number;
+                /**
+                 * Format: int64
+                 * @description what this UTC calendar month has settled so far
+                 */
+                spentThisMonthMinor: number;
+            };
+            bills: {
+                rows: components["schemas"]["BillRow"][];
+                /**
+                 * Format: int64
+                 * @description present while an older page exists
+                 */
+                nextCursor?: number;
+            };
+        };
         /** @enum {string} */
         BusinessRole: "owner" | "admin" | "finance" | "support" | "viewer";
         /** @enum {string} */
-        BusinessCapability: "overviewRead" | "customersRead" | "customersWrite" | "customersSuspend" | "requestsRead" | "catalogWrite" | "routingWrite" | "providerSecretsWrite" | "commercialWrite" | "fundsWrite" | "refundsWrite" | "reportsRead" | "merchantSecretsWrite" | "staffManage" | "ownershipTransfer" | "registrationWrite" | "integrationsManage" | "profileWrite";
+        BusinessCapability: "overviewRead" | "customersRead" | "customersWrite" | "customersSuspend" | "requestsRead" | "catalogWrite" | "routingWrite" | "providerSecretsWrite" | "commercialWrite" | "fundsWrite" | "refundsWrite" | "reportsRead" | "merchantSecretsWrite" | "staffManage" | "ownershipTransfer" | "registrationWrite" | "integrationsManage" | "profileWrite" | "collectionWrite";
         BusinessPrincipal: {
             /** Format: uuid */
             businessId: string;
@@ -15167,6 +15273,36 @@ export interface components {
             role: components["schemas"]["BusinessRole"];
         };
         BusinessStaffList: components["schemas"]["BusinessStaff"][];
+        CollectionCurrency: {
+            code: string;
+            /** @description Exact positive currency-major amount per one credit; at most eight fractional digits and a signed-64-bit mantissa. Provider minor amounts use two decimal digits. */
+            ratePerCredit: string;
+        };
+        CollectionTerms: {
+            /** Format: uuid */
+            businessId: string;
+            revision: number;
+            /** @enum {string} */
+            source: "unconfigured" | "environment" | "owner";
+            currency: components["schemas"]["CollectionCurrency"] | null;
+            /** @description Currency codes already committed by payment intents or legacy financial records. Multiple codes require reconciliation; no historical rows are rewritten. */
+            historicalCurrencies: string[];
+            /** @description Configured and compatible with historical currency; does not certify a merchant or PSP. */
+            ready: boolean;
+            /** Format: date-time */
+            updatedAt: string | null;
+        };
+        CollectionTermsRequest: {
+            idempotencyKey: string;
+            reason: string;
+            expectedRevision: number;
+            currency: components["schemas"]["CollectionCurrency"];
+        };
+        CollectionTermsMutation: {
+            /** Format: uuid */
+            id: string;
+            terms: components["schemas"]["CollectionTerms"];
+        };
         BusinessMutationResult: {
             /**
              * Format: uuid
@@ -19124,6 +19260,8 @@ export interface components {
             rail: components["schemas"]["MerchantRail"];
             /** @enum {string} */
             purpose: "walletTopup" | "bundle" | "planPeriod" | "invoiceRepayment";
+            /** @description Optional quote precondition for a new order. Browser clients send the displayed revision; changed settings conflict before provider I/O. An existing idempotent order returns its original terms. */
+            expectedCollectionRevision?: number;
             /**
              * Format: int64
              * @description the fiat minor amount the provider will charge
@@ -19250,7 +19388,7 @@ export interface components {
             /** Format: uri */
             sdkUrl: string | null;
         };
-        /** @description A verified out-of-band receipt. The credit amount rates server-side at the customer's display rate — a staff-supplied ledger figure never enters. `reference` is the receipt's unique evidence. */
+        /** @description A verified out-of-band receipt. The credit amount rates server-side at the stored business collection rate — a staff-supplied ledger figure never enters. `reference` is the receipt's unique evidence. */
         ManualOrderRequest: {
             /**
              * Format: uuid
@@ -19263,6 +19401,8 @@ export interface components {
              * @enum {string|null}
              */
             purpose?: "walletTopup" | null;
+            /** @description Optional quote precondition for a new order. Browser clients send the displayed revision; changed settings conflict before provider I/O. An existing idempotent order returns its original terms. */
+            expectedCollectionRevision?: number;
             /**
              * Format: int64
              * @description the fiat minor amount the receipt evidences
@@ -19767,11 +19907,19 @@ export interface components {
             config: Record<string, never>;
         };
         /** @enum {string} */
-        IntegrationScope: "customersRead" | "meteringWrite";
+        IntegrationScope: "customersRead" | "meteringWrite" | "customersProvision" | "billingRead";
+        ProvisionCustomerRequest: {
+            idempotencyKey: string;
+            /** @description Caller-chosen customer identifier, unique within the business; the provisioning namespace key. */
+            externalId: string;
+            name: string;
+            contactEmail?: string | null;
+        };
         IntegrationCredentialRequest: {
             idempotencyKey: string;
             name?: string | null;
             scopes: components["schemas"]["IntegrationScope"][];
+            /** @description Existing customers the credential may read or meter. May be empty only for a customersProvision-only grant, which grows its own namespace. */
             customerIds: string[];
             /** Format: date-time */
             expiresAt: string;
@@ -20777,6 +20925,36 @@ export interface operations {
             409: components["responses"]["Error"];
         };
     };
+    provisionBusinessCustomer: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ProvisionCustomerRequest"];
+            };
+        };
+        responses: {
+            /** @description The provisioned (or, on exact replay, standing) customer */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: components["schemas"]["BusinessCustomer"];
+                    };
+                };
+            };
+            400: components["responses"]["Error"];
+            401: components["responses"]["Error"];
+            403: components["responses"]["Error"];
+            409: components["responses"]["Error"];
+        };
+    };
     getBusinessCustomer: {
         parameters: {
             query?: never;
@@ -20837,6 +21015,39 @@ export interface operations {
             403: components["responses"]["Error"];
             404: components["responses"]["Error"];
             409: components["responses"]["Error"];
+        };
+    };
+    getBusinessCustomerBilling: {
+        parameters: {
+            query?: {
+                /** @description page the bill log backwards — return rows older than this index */
+                before?: number;
+                /** @description bill rows per page, 1–50 */
+                limit?: number;
+            };
+            header?: never;
+            path: {
+                organizationId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Success */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: components["schemas"]["CustomerBilling"];
+                    };
+                };
+            };
+            400: components["responses"]["Error"];
+            401: components["responses"]["Error"];
+            403: components["responses"]["Error"];
+            404: components["responses"]["Error"];
         };
     };
     setCustomerLifecycle: {
@@ -21053,6 +21264,84 @@ export interface operations {
             401: components["responses"]["Error"];
             403: components["responses"]["Error"];
             404: components["responses"]["Error"];
+            409: components["responses"]["Error"];
+        };
+    };
+    getCollectionTerms: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Effective persisted terms and history guard */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: components["schemas"]["CollectionTerms"];
+                    };
+                };
+            };
+            401: components["responses"]["Error"];
+            403: components["responses"]["Error"];
+        };
+    };
+    getBusinessCollectionTerms: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Effective persisted terms and history guard */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: components["schemas"]["CollectionTerms"];
+                    };
+                };
+            };
+            401: components["responses"]["Error"];
+            403: components["responses"]["Error"];
+        };
+    };
+    setBusinessCollectionTerms: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CollectionTermsRequest"];
+            };
+        };
+        responses: {
+            /** @description Immutable mutation result */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: components["schemas"]["CollectionTermsMutation"];
+                    };
+                };
+            };
+            400: components["responses"]["Error"];
+            401: components["responses"]["Error"];
+            403: components["responses"]["Error"];
             409: components["responses"]["Error"];
         };
     };

@@ -27,6 +27,7 @@ import {
 } from "../api/hooks";
 import { Badge, Banner, Card, PageState } from "../components/ui";
 import { BusinessProfileSection } from "./business/profile";
+import { BusinessCollection } from "./business/collection";
 import { BusinessSetup } from "./business/setup";
 import { BusinessCustomers } from "./business/customers";
 import { BusinessChannels } from "./business/catalog";
@@ -59,6 +60,7 @@ const SECTION_GROUPS: { group: string; items: Section[] }[] = [
     items: [
       { key: "profile", labelKey: "profile", Icon: Wrench, cap: "overviewRead" },
       { key: "setup", labelKey: "setup", Icon: ListChecks, cap: "overviewRead" },
+      { key: "collection", labelKey: "collection", Icon: Landmark, cap: "overviewRead" },
       { key: "customers", labelKey: "customers", Icon: Users, cap: "customersRead" },
       { key: "payments", labelKey: "payments", Icon: Wallet, cap: "reportsRead" },
       { key: "refunds", labelKey: "refunds", Icon: ArrowLeftRight, cap: "refundsWrite" },
@@ -105,6 +107,8 @@ function SectionBody({ name }: { name: string }) {
   switch (name) {
     case "profile":
       return <BusinessProfileSection />;
+    case "collection":
+      return <BusinessCollection />;
     case "setup":
       return <BusinessSetup />;
     case "customers":

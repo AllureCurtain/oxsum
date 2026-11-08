@@ -549,3 +549,9 @@ pub(crate) async fn preview_invitation(
 ) -> ApiResult<oxsum_core::InvitationPreview> {
     ok(state.db.invitation_preview(&request.token).await?)
 }
+
+pub(crate) async fn collection_terms(
+    State(state): State<AppState>,
+) -> ApiResult<oxsum_core::CollectionTerms> {
+    ok(state.db.collection_terms().await?)
+}

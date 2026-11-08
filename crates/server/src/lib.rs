@@ -158,6 +158,13 @@ pub fn app_with_billing(
 ///
 /// A message naming what is wrong, for `main` to print before it exits.
 pub async fn prepare(db: &Db, config: &Config) -> Result<(), WalletError> {
+    if let Some(defaults) = config.display_for_pair(None) {
+        db.bootstrap_collection_terms(&oxsum_core::CollectionCurrency {
+            code: defaults.currency().code.clone(),
+            rate_per_credit: defaults.currency().rate_per_credit.clone(),
+        })
+        .await?;
+    }
     // The witness's trust roots (issue #260): seed each pinned origin's
     // starting head into `witness_served`, without overwriting a head the
     // witness already advanced past — a restart re-seeds the root it started

@@ -283,6 +283,12 @@ async fn register(app: &Router) -> Account {
 /// The organization's effective display rate: `0.0014` USD per credit, so the
 /// server rates a $2.10 order at 1_500_000_000 credit-minor.
 async fn set_display(db: &Db, org: Uuid) {
+    db.bootstrap_collection_terms(&oxsum_core::CollectionCurrency {
+        code: USD.into(),
+        rate_per_credit: "0.0014".into(),
+    })
+    .await
+    .unwrap();
     db.set_display_currency(
         org,
         Some(DisplayCurrency {
@@ -1496,4 +1502,142 @@ async fn historical_payments_cannot_create_a_new_external_operation() {
         .is_err()
     );
     assert_eq!(*stub.calls.lock().unwrap(), 1);
+}
+/// A personal display edit never changes purchased credits, and a stale quote
+/// or mismatched currency is refused before the stub sees a provider request.
+#[tokio::test]
+async fn collection_terms_ignore_display_tampering_and_reject_mismatched_quotes() {
+    let Some((app, db, stub, _, _)) = world().await else {
+        return;
+    };
+    let account = register(&app).await;
+    set_display(&db, account.organization_id).await;
+    db.set_display_currency(
+        account.organization_id,
+        Some(DisplayCurrency {
+            code: "EUR".into(),
+            rate_per_credit: "0.00000001".into(),
+            decimals: 6,
+        }),
+    )
+    .await
+    .unwrap();
+    let (status, terms) = call(
+        &app,
+        "GET",
+        "/api/v1/collection-terms",
+        None,
+        Some(&account.cookie),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(terms["data"]["currency"]["code"], "USD");
+    assert_eq!(terms["data"]["currency"]["ratePerCredit"], "0.0014");
+    let revision = terms["data"]["revision"].as_i64().unwrap();
+    let mut body = create_body("display-cannot-rate", "walletTopup", 210);
+    body["expectedCollectionRevision"] = json!(revision);
+    let (status, created) = call(
+        &app,
+        "POST",
+        "/api/v1/orders",
+        Some(body.clone()),
+        Some(&account.cookie),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{created}");
+    assert_eq!(created["data"]["order"]["amountMinor"], 1_500_000_000_i64);
+    let calls = *stub.calls.lock().unwrap();
+    body["idempotencyKey"] = json!("wrong-collection-code");
+    body["displayCurrency"] = json!("EUR");
+    assert_eq!(
+        call(
+            &app,
+            "POST",
+            "/api/v1/orders",
+            Some(body.clone()),
+            Some(&account.cookie)
+        )
+        .await
+        .0,
+        StatusCode::CONFLICT
+    );
+    body["displayCurrency"] = json!("USD");
+    body["expectedCollectionRevision"] = json!(revision + 1);
+    assert_eq!(
+        call(
+            &app,
+            "POST",
+            "/api/v1/orders",
+            Some(body),
+            Some(&account.cookie)
+        )
+        .await
+        .0,
+        StatusCode::CONFLICT
+    );
+    assert_eq!(*stub.calls.lock().unwrap(), calls);
+    assert_eq!(
+        call(
+            &app,
+            "GET",
+            "/api/v1/business/collection-terms",
+            None,
+            Some(&account.cookie)
+        )
+        .await
+        .0,
+        StatusCode::FORBIDDEN
+    );
+    let owner = operator(&db, &app).await;
+    let (status, read) = call(
+        &app,
+        "GET",
+        "/api/v1/business/collection-terms",
+        None,
+        Some(&owner),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{read}");
+    let update = json!({"idempotencyKey":"collection-http","reason":"owner fixture change","expectedRevision":revision,"currency":{"code":"USD","ratePerCredit":"1"}});
+    assert_eq!(
+        call(
+            &app,
+            "POST",
+            "/api/v1/business/collection-terms",
+            Some(update.clone()),
+            Some(&account.cookie)
+        )
+        .await
+        .0,
+        StatusCode::FORBIDDEN
+    );
+    let (status, saved) = call(
+        &app,
+        "POST",
+        "/api/v1/business/collection-terms",
+        Some(update.clone()),
+        Some(&owner),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{saved}");
+    let replay = call(
+        &app,
+        "POST",
+        "/api/v1/business/collection-terms",
+        Some(update),
+        Some(&owner),
+    )
+    .await;
+    assert_eq!(replay.1, saved);
+    let original = create_body("display-cannot-rate", "walletTopup", 210);
+    let (status, replayed) = call(
+        &app,
+        "POST",
+        "/api/v1/orders",
+        Some(original),
+        Some(&account.cookie),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(replayed["data"]["order"]["amountMinor"], 1_500_000_000_i64);
 }

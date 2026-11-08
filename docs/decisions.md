@@ -2788,3 +2788,39 @@ old stored payloads. The environment adapter uses the same domain resolution.
 This closes a correlation defect, not external PSP certification. The local
 switch also exposed separate provider idempotency/unknown-outcome concerns,
 tracked in #760; successful one-shot refund evidence cannot close those gates.
+
+## 2026-11-08 — Collection conversion belongs to the Business (#765)
+
+The earlier display preference deliberately belonged to the customer and moved
+no money. Later payment orders reused that value to derive purchased credits,
+so a customer could change its own collection rate or submit a different
+currency code. Separate collection authority without changing any historical
+order, payment binding, display setting or ledger entry.
+
+Migration 0101 adds revisioned business collection terms and immutable revision
+receipts. Existing `OXSUM_DISPLAY_CURRENCY`/`OXSUM_DISPLAY_RATE_PER_CREDIT` bootstrap
+this policy once; later restarts cannot replace it. The owner can save a reasoned,
+idempotent expected-revision change with the explicit `collectionWrite`
+capability. Other staff read current terms; customers get a safe read-only quote.
+A new order resolves these terms under the same business lock as its immutable
+create. The API never accepts a caller's rate. Personal display preferences
+remain presentation only. Existing keys replay their original order before
+current quote validation, including a changed rate after the first create.
+
+Historical provider bindings and order currency codes constrain adoption. A
+currency already committed by any payment intent cannot be relabeled. Legacy
+unbound Stripe/Hyperswitch/Airwallex deposits retain their existing USD contract;
+mixed historical currencies are reported and block new collection rather than
+rewriting them. Legacy credit-denominated manual receipts carry no invented fiat
+currency. Rate revisions apply only to new orders. The customer UI sends the
+revision it displayed; a concurrent rate change refuses that new quote before
+provider I/O. Generic and legacy binding insertion shares the business lock so
+currency edits cannot race past the history guard.
+
+The conversion remains checked integer arithmetic with at most eight fractional
+digits and a signed 64-bit mantissa. Current payment rails still use two provider
+minor digits; this change does not imply general ISO currency exponent support.
+Touched payment inputs parse decimal strings through BigInt, reject excess
+precision/unsafe integers and retain one idempotency key for unchanged retries.
+The separate N10 commercial offer authority audit is #768.
+>>>>>>> e8cb541 (fix: move payment collection conversion to business authority)

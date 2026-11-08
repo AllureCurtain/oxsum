@@ -1,3 +1,4 @@
+import { decimalMinor } from "../lib/money";
 import { useEffect, useRef, useState, type FormEvent } from "react";
 import { Link, useNavigate, useParams, useSearchParams } from "react-router-dom";
 import { useTranslation } from "react-i18next";
@@ -5,6 +6,7 @@ import {
   ApiError,
   useCheckoutSession,
   useCreateOrder,
+  useCollectionTerms,
   useDisplay,
   useOrder,
   useOrderFulfillment,
@@ -244,38 +246,34 @@ export function Orders() {
 // detail page where the checkout mounts against the session handles.
 // ---------------------------------------------------------------------------
 
-function fiatToMinor(raw: string): number | null {
-  const value = Number(raw);
-  if (!Number.isFinite(value) || value <= 0) return null;
-  return Math.round(value * 100);
-}
-
-function creditsToMinor(raw: string): number | null {
-  const value = Number(raw);
-  if (!Number.isFinite(value) || value < 0) return null;
-  return Math.round(value * 1_000_000);
-}
+function fiatToMinor(raw: string): number | null { return decimalMinor(raw, 2); }
+function creditsToMinor(raw: string): number | null { return decimalMinor(raw, 6, true); }
 
 export function OrderNew() {
   const { t } = useTranslation();
-  const display = useDisplay();
+  const terms = useCollectionTerms();
+  const intent = useRef<{ payload: string; key: string } | null>(null);
   const navigate = useNavigate();
   const create = useCreateOrder();
   const [amount, setAmount] = useState("");
   const [purpose, setPurpose] = useState<"walletTopup" | "bundle">("walletTopup");
   const [promo, setPromo] = useState("");
-  const currency = display?.code ?? "USD";
+  const currency = terms.data?.currency?.code ?? "";
 
   const submit = (e: FormEvent) => {
     e.preventDefault();
     const minor = fiatToMinor(amount);
-    if (minor === null) return;
+    if (minor === null || !terms.data?.ready) return;
     // `promoMinor` is the bundle's promo lot in credit-minor — entered in
     // whole credits; empty means no promo lot.
     const promoMinor = purpose === "bundle" && promo.trim() !== "" ? creditsToMinor(promo) : null;
+    if (purpose === "bundle" && promo.trim() !== "" && promoMinor === null) return;
+    const payload = JSON.stringify({ purpose, minor, currency, promoMinor });
+    if (intent.current?.payload !== payload) intent.current = { payload, key: crypto.randomUUID() };
     create.mutate(
       {
-        idempotencyKey: crypto.randomUUID(),
+        expectedCollectionRevision: terms.data.revision,
+        idempotencyKey: intent.current.key,
         rail: "hyperswitch",
         purpose,
         displayAmountMinor: minor,
@@ -295,6 +293,8 @@ export function OrderNew() {
       <h1 className="text-2xl font-bold">{t("orders.newTitle")}</h1>
       <Card title={t("orders.newCard")}>
         <form className="flex flex-col gap-3" onSubmit={submit}>
+          {terms.isLoading ? <p>Loading collection terms…</p> : terms.isError ? <Banner tone="error">Collection terms could not be loaded.</Banner> : terms.data?.ready ? <p className="font-mono text-sm">1 credit = {terms.data.currency?.ratePerCredit} {currency}. Existing orders keep their agreed rate.</p> : <Banner tone="warn">The operator has not configured compatible collection terms.</Banner>}
+          <Button type="button" tone="ghost" onClick={() => terms.refetch()} disabled={create.isPending}>Refresh collection terms</Button>
           <Field label={t("orders.filterPurpose")}>
             <NativeSelect
               value={purpose}
@@ -327,7 +327,7 @@ export function OrderNew() {
             </Field>
           ) : null}
           <p className="text-xs text-muted">{t("orders.createConsequence")}</p>
-          <Button type="submit" isLoading={create.isPending} loadingText={t("orders.creating")}>
+          <Button type="submit" disabled={!terms.data?.ready || fiatToMinor(amount) === null || (purpose === "bundle" && promo.trim() !== "" && creditsToMinor(promo) === null)} isLoading={create.isPending} loadingText={t("orders.creating")}>
             {t("orders.createSubmit")}
           </Button>
           {create.error instanceof ApiError ? (

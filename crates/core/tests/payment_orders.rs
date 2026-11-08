@@ -9,7 +9,7 @@ mod setup;
 use oxsum_core::{
     CustomerPlanState, Db, MerchantCreateRequest, MerchantEventKind, MerchantMode,
     MerchantMutationResult, MerchantPaymentPurpose, MerchantRail, MerchantSigningContext,
-    MerchantStatusRequest, MerchantVersionInput, NewPaymentOrder, NewSoldPlan, NewUser, OrderRate,
+    MerchantStatusRequest, MerchantVersionInput, NewPaymentOrder, NewSoldPlan, NewUser,
     PaymentOrderPurpose, PeriodAuthorization, PeriodKind, SecretKey, VerifiedMerchantEvent, Wallet,
     WalletError,
 };
@@ -29,6 +29,12 @@ async fn world() -> Option<(Db, String, Uuid, String)> {
     let url = url()?;
     let db = Db::connect(&url, 16).await.unwrap();
     db.migrate().await.unwrap();
+    db.bootstrap_collection_terms(&oxsum_core::CollectionCurrency {
+        code: "USD".into(),
+        rate_per_credit: "0.0014".into(),
+    })
+    .await
+    .unwrap();
     let owner = setup::owner(&db).await;
     let registration = db
         .register(NewUser {
@@ -92,17 +98,10 @@ async fn context(db: &Db, m: &MerchantMutationResult, version: Uuid) -> Merchant
         .unwrap()
 }
 
-/// The order's own USD rate: 1 credit (1_000_000 minor) per $0.0014, so
-/// `mantissa=14, scale=4` — the same rate `display.rs` documents.
-fn rate() -> OrderRate {
-    OrderRate {
-        mantissa: 14,
-        scale: 4,
-    }
-}
-
+/// An order requests the fixture's currency; the business supplies its rate.
 fn new_order(purpose: PaymentOrderPurpose, key: &str, display_minor: i64) -> NewPaymentOrder {
     NewPaymentOrder {
+        expected_collection_revision: None,
         purpose,
         display_amount_minor: display_minor,
         display_currency: "USD".into(),
@@ -149,7 +148,6 @@ async fn the_conversion_is_server_rated_and_the_terms_are_frozen() {
             &ctx,
             org,
             &new_order(PaymentOrderPurpose::WalletTopup, "order-key-1", 210),
-            &rate(),
         )
         .await
         .unwrap();
@@ -168,7 +166,6 @@ async fn the_conversion_is_server_rated_and_the_terms_are_frozen() {
             &ctx,
             org,
             &new_order(PaymentOrderPurpose::WalletTopup, "order-key-1", 210),
-            &rate(),
         )
         .await
         .unwrap();
@@ -180,7 +177,6 @@ async fn the_conversion_is_server_rated_and_the_terms_are_frozen() {
             &ctx,
             org,
             &new_order(PaymentOrderPurpose::WalletTopup, "order-key-1", 999),
-            &rate(),
         )
         .await,
         Err(WalletError::Conflict(_))
@@ -217,7 +213,6 @@ async fn paid_then_fulfilled_grants_only_the_purposes_value() {
             &ctx,
             org,
             &new_order(PaymentOrderPurpose::WalletTopup, "wt-1", 210),
-            &rate(),
         )
         .await
         .unwrap();
@@ -326,10 +321,7 @@ async fn a_plan_period_order_grants_quota_never_wallet_cash() {
 
     let mut new = new_order(PaymentOrderPurpose::PlanPeriod, "pp-1", 210);
     new.purpose_ref = Some(customer_plan.customer_plan_id);
-    let order = db
-        .create_payment_order(&ctx, org, &new, &rate())
-        .await
-        .unwrap();
+    let order = db.create_payment_order(&ctx, org, &new).await.unwrap();
 
     let ev = succeeded_event(order.order_id, "pay_pp_1", org, &account, 210);
     let receipt = db
@@ -376,7 +368,6 @@ async fn a_paid_amount_mismatch_parks_in_needs_attention() {
             &ctx,
             org,
             &new_order(PaymentOrderPurpose::WalletTopup, "na-1", 210),
-            &rate(),
         )
         .await
         .unwrap();
@@ -418,7 +409,6 @@ async fn recovery_redelivers_a_paid_unfulfilled_order_once() {
             &ctx,
             org,
             &new_order(PaymentOrderPurpose::WalletTopup, "rec-1", 210),
-            &rate(),
         )
         .await
         .unwrap();
@@ -472,7 +462,6 @@ async fn concurrent_duplicate_webhooks_apply_once() {
             &ctx,
             org,
             &new_order(PaymentOrderPurpose::WalletTopup, "dup-1", 210),
-            &rate(),
         )
         .await
         .unwrap();
@@ -532,10 +521,7 @@ async fn an_invoice_repayment_repays_only_the_drawn_receivable() {
     let mut new = new_order(PaymentOrderPurpose::InvoiceRepayment, "ir-1", 210);
     // The receivable the order settles — a statement id the purpose names.
     new.purpose_ref = Some(Uuid::new_v4());
-    let order = db
-        .create_payment_order(&ctx, org, &new, &rate())
-        .await
-        .unwrap();
+    let order = db.create_payment_order(&ctx, org, &new).await.unwrap();
     let ev = succeeded_event(order.order_id, "pay_ir_1", org, &account, 210);
     let receipt = db
         .receive_merchant_event(&ctx, &ev, &[12u8; 32])
@@ -574,7 +560,6 @@ async fn the_reconciliation_reports_paid_against_fulfilled() {
             &ctx,
             org,
             &new_order(PaymentOrderPurpose::WalletTopup, "recon-1", 210),
-            &rate(),
         )
         .await
         .unwrap();

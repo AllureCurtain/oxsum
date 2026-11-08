@@ -757,6 +757,12 @@ async fn a_refund_retry_storm_retains_the_reservation_at_the_attempt_budget() {
     )
     .await
     .unwrap();
+    w.db.bootstrap_collection_terms(&oxsum_core::CollectionCurrency {
+        code: "USD".into(),
+        rate_per_credit: "1".into(),
+    })
+    .await
+    .unwrap();
     let merchant = w.db.create_merchant(&owner, &serde_json::from_value(json!({
         "idempotencyKey":"fault-merchant", "reason":"refund retry fault fixture",
         "name":"fault-switch", "rail":"hyperswitch", "mode":"test", "accountId":"fault-switch",
@@ -788,16 +794,13 @@ async fn a_refund_retry_storm_retains_the_reservation_at_the_attempt_budget() {
             &context,
             org,
             &oxsum_core::NewPaymentOrder {
+                expected_collection_revision: None,
                 purpose: oxsum_core::PaymentOrderPurpose::WalletTopup,
                 display_amount_minor: 100,
                 display_currency: "USD".into(),
                 idempotency_key: "fault-order".into(),
                 purpose_ref: None,
                 promo_minor: 0,
-            },
-            &oxsum_core::OrderRate {
-                mantissa: 1,
-                scale: 0,
             },
         )
         .await

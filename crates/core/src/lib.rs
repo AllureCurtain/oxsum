@@ -18,6 +18,7 @@ mod business_setup;
 mod business_staff;
 mod cache;
 mod channels;
+mod collection_terms;
 mod credit_notes;
 mod customer_authority;
 mod customers;
@@ -321,4 +322,8 @@ pub use sale_books::{
     SaleBook, SaleBookHistory, SaleBookPage, SaleChange, SaleChangeRequest, SaleDraft,
     SaleModelMap, SaleMutationResult, SalePreviewRequest, SalePreviewSource, SalePreviewUsage,
     SalePrice, SalePricePreview, SalePriceSnapshot, SaleSchedule, SaleTerms, SaleVersion,
+};
+
+pub use collection_terms::{
+    CollectionCurrency, CollectionTerms, CollectionTermsMutation, CollectionTermsRequest,
 };

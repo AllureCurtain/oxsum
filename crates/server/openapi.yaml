@@ -6470,7 +6470,7 @@ paths:
   /api/v1/orders:
     post:
       summary: Create a payment order
-      description: The customer pins an immutable order in the display currency it was quoted. The server rates the conversion to ledger credits at the organization's effective display rate — `amountMinor`/`rate` are not request fields, so a client-supplied figure is a schema rejection, not a negotiated term. The expected payment and the order terms commit before the provider is called; the provider idempotency key is the order's durable local UUID, so a replayed `idempotencyKey` returns the standing order and its original checkout rather than a second charge. `purpose` fixes the one fulfillment arm the order may take — `walletTopup`, `bundle`, `planPeriod` or `invoiceRepayment`. The answer is a checkout to complete, never a paid order — `paid` is established only by the signed provider webhook.
+      description: The customer pins an immutable order in the display currency it was quoted. The server rates the conversion to ledger credits at the stored business collection rate — `amountMinor`/`rate` are not request fields, so a client-supplied figure is a schema rejection, not a negotiated term. The expected payment and the order terms commit before the provider is called; the provider idempotency key is the order's durable local UUID, so a replayed `idempotencyKey` returns the standing order and its original checkout rather than a second charge. `purpose` fixes the one fulfillment arm the order may take — `walletTopup`, `bundle`, `planPeriod` or `invoiceRepayment`. The answer is a checkout to complete, never a paid order — `paid` is established only by the signed provider webhook.
       security: [{ sessionCookie: [], apiKey: [] }]
       requestBody:
         required: true
@@ -7569,6 +7569,66 @@ paths:
         "401": { $ref: "#/components/responses/Error" }
         "403": { $ref: "#/components/responses/Error" }
         "404": { $ref: "#/components/responses/Error" }
+        "409": { $ref: "#/components/responses/Error" }
+  /api/v1/collection-terms:
+    get:
+      operationId: getCollectionTerms
+      summary: Read the operator's current collection currency and conversion
+      description: Customer-readable collection policy. Personal display preferences do not change these terms. Historical orders retain their own snapshots. Current provider amounts use two decimal minor digits; a conflicting historical currency blocks new collection.
+      security: [{ sessionCookie: [] }, { bearer: [] }]
+      responses:
+        "200":
+          description: Effective persisted terms and history guard
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data: { $ref: "#/components/schemas/CollectionTerms" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+  /api/v1/business/collection-terms:
+    get:
+      operationId: getBusinessCollectionTerms
+      summary: Read collection settings
+      description: Requires current business overviewRead authority.
+      security: [{ sessionCookie: [] }]
+      responses:
+        "200":
+          description: Effective persisted terms and history guard
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data: { $ref: "#/components/schemas/CollectionTerms" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+    post:
+      operationId: setBusinessCollectionTerms
+      summary: Set owner-authorized collection settings
+      description: Requires owner-only collectionWrite. Exact unchanged retries replay their immutable receipt. Revision conflicts preserve the caller draft. Currency cannot change once a payment intent or financial history commits it; rate revisions affect new intents only. No provider request is made. Existing deployment display defaults bootstrap only once and never overwrite this saved policy.
+      security: [{ sessionCookie: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/CollectionTermsRequest" }
+      responses:
+        "200":
+          description: Immutable mutation result
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data: { $ref: "#/components/schemas/CollectionTermsMutation" }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
         "409": { $ref: "#/components/responses/Error" }
   /api/v1/business/registration:
     post:
@@ -10806,7 +10866,7 @@ components:
       enum: [owner, admin, finance, support, viewer]
     BusinessCapability:
       type: string
-      enum: [overviewRead, customersRead, customersWrite, customersSuspend, requestsRead, catalogWrite, routingWrite, providerSecretsWrite, commercialWrite, fundsWrite, refundsWrite, reportsRead, merchantSecretsWrite, staffManage, ownershipTransfer, registrationWrite, integrationsManage, profileWrite]
+      enum: [overviewRead, customersRead, customersWrite, customersSuspend, requestsRead, catalogWrite, routingWrite, providerSecretsWrite, commercialWrite, fundsWrite, refundsWrite, reportsRead, merchantSecretsWrite, staffManage, ownershipTransfer, registrationWrite, integrationsManage, profileWrite, collectionWrite]
     BusinessPrincipal:
       type: object
       required: [businessId, userId, role, capabilities]
@@ -10853,6 +10913,42 @@ components:
     BusinessStaffList:
       type: array
       items: { $ref: "#/components/schemas/BusinessStaff" }
+    CollectionCurrency:
+      type: object
+      additionalProperties: false
+      required: [code, ratePerCredit]
+      properties:
+        code: { type: string, pattern: '^[A-Z]{3}$' }
+        ratePerCredit: { type: string, maxLength: 30, pattern: '^[0-9]+(\.[0-9]+)?$', description: Exact positive currency-major amount per one credit; at most eight fractional digits and a signed-64-bit mantissa. Provider minor amounts use two decimal digits. }
+    CollectionTerms:
+      type: object
+      required: [businessId, revision, source, currency, historicalCurrencies, ready, updatedAt]
+      properties:
+        businessId: { type: string, format: uuid }
+        revision: { type: integer, minimum: 0, maximum: 9007199254740991 }
+        source: { type: string, enum: [unconfigured, environment, owner] }
+        currency:
+          oneOf:
+            - $ref: "#/components/schemas/CollectionCurrency"
+            - type: "null"
+        historicalCurrencies: { type: array, items: { type: string }, description: Currency codes already committed by payment intents or legacy financial records. Multiple codes require reconciliation; no historical rows are rewritten. }
+        ready: { type: boolean, description: Configured and compatible with historical currency; does not certify a merchant or PSP. }
+        updatedAt: { type: [string, "null"], format: date-time }
+    CollectionTermsRequest:
+      type: object
+      additionalProperties: false
+      required: [idempotencyKey, reason, expectedRevision, currency]
+      properties:
+        idempotencyKey: { type: string, minLength: 1, maxLength: 200 }
+        reason: { type: string, minLength: 1, maxLength: 500 }
+        expectedRevision: { type: integer, minimum: 0, maximum: 9007199254740990 }
+        currency: { $ref: "#/components/schemas/CollectionCurrency" }
+    CollectionTermsMutation:
+      type: object
+      required: [id, terms]
+      properties:
+        id: { type: string, format: uuid }
+        terms: { $ref: "#/components/schemas/CollectionTerms" }
     BusinessMutationResult:
       type: object
       required: [id]
@@ -14583,6 +14679,7 @@ components:
         purpose:
           type: string
           enum: [walletTopup, bundle, planPeriod, invoiceRepayment]
+        expectedCollectionRevision: { type: integer, minimum: 0, maximum: 9007199254740991, description: Optional quote precondition for a new order. Browser clients send the displayed revision; changed settings conflict before provider I/O. An existing idempotent order returns its original terms. }
         displayAmountMinor: { type: integer, format: int64, minimum: 1, description: the fiat minor amount the provider will charge }
         displayCurrency: { type: string, pattern: "^[A-Z]{3}$" }
         purposeRef: { type: [string, "null"], format: uuid, description: the `customerPlanId` a `planPeriod` activates or renews, or the receivable an `invoiceRepayment` settles }
@@ -14662,11 +14759,12 @@ components:
       type: object
       additionalProperties: false
       required: [organizationId, idempotencyKey, displayAmountMinor, displayCurrency, reference, reason]
-      description: A verified out-of-band receipt. The credit amount rates server-side at the customer's display rate — a staff-supplied ledger figure never enters. `reference` is the receipt's unique evidence.
+      description: A verified out-of-band receipt. The credit amount rates server-side at the stored business collection rate — a staff-supplied ledger figure never enters. `reference` is the receipt's unique evidence.
       properties:
         organizationId: { type: string, format: uuid, description: the customer the receipt funds }
         idempotencyKey: { type: string, minLength: 1, maxLength: 200 }
         purpose: { type: [string, "null"], enum: [walletTopup], description: "fixed — a receipt only funds wallet cash" }
+        expectedCollectionRevision: { type: integer, minimum: 0, maximum: 9007199254740991, description: Optional quote precondition for a new order. Browser clients send the displayed revision; changed settings conflict before provider I/O. An existing idempotent order returns its original terms. }
         displayAmountMinor: { type: integer, format: int64, minimum: 1, description: the fiat minor amount the receipt evidences }
         displayCurrency: { type: string, pattern: "^[A-Z]{3}$" }
         reference: { type: string, minLength: 1, maxLength: 200, description: the receipt's own reference — a bank transaction id or remittance note, unique per business }

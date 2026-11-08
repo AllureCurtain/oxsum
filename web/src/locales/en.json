@@ -1436,6 +1436,7 @@
     "reason": "Reason",
     "sections": "Console sections",
     "groups": {
+      "collection": "Collection settings",
       "operations": "Operations",
       "receivables": "Receivables",
       "catalog": "Catalog",
@@ -1457,7 +1458,8 @@
       "staff": "Staff",
       "integrations": "Integrations",
       "audit": "Audit",
-      "profile": "Business profile"
+      "profile": "Business profile",
+      "collection": "Collection"
     },
     "roles": {
       "owner": "Owner",

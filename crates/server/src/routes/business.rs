@@ -360,3 +360,23 @@ pub(crate) async fn revoke_integration_credential(
         .revoke_integration_credential(&personal_token(&headers)?, id, &request)
         .await?)
 }
+
+pub(crate) async fn collection_terms(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> ApiResult<oxsum_core::CollectionTerms> {
+    ok(state
+        .db
+        .business_collection_terms(&personal_token(&headers)?)
+        .await?)
+}
+pub(crate) async fn set_collection_terms(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    ApiJson(request): ApiJson<oxsum_core::CollectionTermsRequest>,
+) -> ApiResult<oxsum_core::CollectionTermsMutation> {
+    ok(state
+        .db
+        .set_collection_terms(&personal_token(&headers)?, &request)
+        .await?)
+}

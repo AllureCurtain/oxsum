@@ -73,7 +73,8 @@ impl BusinessRole {
             | C::OwnershipTransfer
             | C::RegistrationWrite
             | C::ProfileWrite
-            | C::IntegrationsManage => self == Self::Owner,
+            | C::IntegrationsManage
+            | C::CollectionWrite => self == Self::Owner,
         }
     }
     /// Returns every capability this role grants, in `BusinessCapability::ALL`
@@ -127,6 +128,8 @@ pub enum BusinessCapability {
     IntegrationsManage,
     /// Change the public business identity and help settings.
     ProfileWrite,
+    /// Set authoritative collection currency and credit conversion.
+    CollectionWrite,
 }
 impl BusinessCapability {
     /// Every capability, in a stable order.
@@ -149,6 +152,7 @@ impl BusinessCapability {
         Self::RegistrationWrite,
         Self::IntegrationsManage,
         Self::ProfileWrite,
+        Self::CollectionWrite,
     ];
 }
 /// The authenticated staff member acting in one business.

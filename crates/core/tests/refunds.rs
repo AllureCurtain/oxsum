@@ -10,7 +10,7 @@ mod setup;
 use oxsum_core::{
     Db, DisputeResolution, MerchantCreateRequest, MerchantEventKind, MerchantMode,
     MerchantMutationResult, MerchantRail, MerchantSigningContext, MerchantStatusRequest,
-    MerchantVersionInput, NewPaymentOrder, NewRefundRequest, NewUser, OrderRate, PaymentOrder,
+    MerchantVersionInput, NewPaymentOrder, NewRefundRequest, NewUser, PaymentOrder,
     PaymentOrderPurpose, REFUND_MAX_ATTEMPTS, RefundDecision, SecretKey, VerifiedMerchantEvent,
     Wallet, WalletError,
 };
@@ -30,6 +30,12 @@ async fn world() -> Option<(Db, String, Uuid, String)> {
     let url = url()?;
     let db = Db::connect(&url, 16).await.unwrap();
     db.migrate().await.unwrap();
+    db.bootstrap_collection_terms(&oxsum_core::CollectionCurrency {
+        code: "USD".into(),
+        rate_per_credit: "0.0014".into(),
+    })
+    .await
+    .unwrap();
     let owner = setup::owner(&db).await;
     let registration = db
         .register(NewUser {
@@ -93,15 +99,9 @@ async fn context(db: &Db, m: &MerchantMutationResult, version: Uuid) -> Merchant
         .unwrap()
 }
 
-fn rate() -> OrderRate {
-    OrderRate {
-        mantissa: 14,
-        scale: 4,
-    }
-}
-
 fn new_order(purpose: PaymentOrderPurpose, key: &str, display_minor: i64) -> NewPaymentOrder {
     NewPaymentOrder {
+        expected_collection_revision: None,
         purpose,
         display_amount_minor: display_minor,
         display_currency: "USD".into(),
@@ -176,7 +176,6 @@ async fn paid_order(
             &ctx,
             org,
             &new_order(PaymentOrderPurpose::WalletTopup, key, display_minor),
-            &rate(),
         )
         .await
         .unwrap();
@@ -956,7 +955,6 @@ async fn refund_events_cannot_cross_orders_or_reprice_partial_refunds() {
             &ctx,
             org,
             &new_order(PaymentOrderPurpose::WalletTopup, "isolation-other", 210),
-            &rate(),
         )
         .await
         .unwrap();

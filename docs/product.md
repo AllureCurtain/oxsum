@@ -508,3 +508,16 @@ shows exact line items, selected terms and charge without provider traffic.
 Unchanged retries retain an idempotency key; validation/network conflicts retain
 the form. Exact decimal parsing refuses amounts the browser cannot represent as
 safe integer minor units rather than rounding them.
+
+
+### Collection currency and credit conversion
+
+The owner configures collection at `/app/business#business/collection` (#765).
+The persisted currency and exact amount paid for 1 credit determine new provider
+orders and staff-recorded fiat receipts; customer display settings cannot alter
+purchased value. Empty deployments may bootstrap once from `OXSUM_DISPLAY_*`;
+explicit owner saves take precedence thereafter. A rate revision affects only
+new intents. Existing orders and their proofs retain the original conversion.
+Currency cannot be changed across committed payment history. Mixed historical
+currencies are shown as requiring reconciliation and new collection is refused.
+A configured conversion does not prove merchant readiness or PSP certification.
