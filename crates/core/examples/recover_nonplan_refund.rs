@@ -92,6 +92,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::expect_used)]
     use super::*;
 
     fn exact() -> Vec<String> {
