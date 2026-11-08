@@ -58,8 +58,17 @@ PR acceptance.
 The expanded 52-test PostgreSQL run passed with zero skips: 13 correction
 cases plus identity, refund and plan-refund regressions. It covers both source
 orders, request/correction race, pre-provider fences, later full-cash review
-suspense and replay, and void after correction. Final integrated full results
-are recorded below before acceptance.
+suspense and replay, and void after correction. The final rebased implementation on main `45a833e` (source head `59401b2`)
+passed all 1,912 workspace tests in 247 seconds, with six existing opt-in tests
+skipped and all H1–H6 financial regressions active. Strict workspace Clippy
+passed; an initial stale shared-target metadata result was corrected by
+refreshing this crate's root mtime, with no implementation suppression.
+Formatting, diff whitespace and 44 local documentation links passed.
+
+Independent source review covered the original correction and the later-cash
+source-map increment. It reported no remaining introduced blocker. Unsupported
+combined histories still require explicit review, and later confirmed cash in
+suspense requires manual allocation before any further payout.
 The tests build actual source entries through wallet settlement and the ledger
 engine's append API. Original journal/statement fixtures use ordinary writer
 guards; no ledger tables are edited and no immutable triggers are disabled.

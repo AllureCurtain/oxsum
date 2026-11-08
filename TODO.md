@@ -7,7 +7,7 @@ Updated: 2026-11-08
 - [ ] [#828](https://github.com/AllureCurtain/oxsum/issues/828) — Reuse reverified CI tool archives and bounded official URL fallback through transient upstream failures; preserve all required gates.
 
 - [x] [#803](https://github.com/AllureCurtain/oxsum/issues/803) — Forward once-only wallet/credit usage fix validated: 69 focused and 1,899 workspace passes, all H1–H6 active; Integrated in PR #815 (`e35e557`). Historical compensation is #809.
-- [ ] [#809](https://github.com/AllureCurtain/oxsum/issues/809) — Compensate retained historical duplicated usage with source-linked, audited corrections.
+- [ ] [#809](https://github.com/AllureCurtain/oxsum/issues/809) — Exact-source historical usage correction and later cash fences implemented; 52 focused checks, 1,912 complete workspace tests and strict Clippy passed; independent source review passed, PR integration pending.
 
 ### Operator launch (#725)
 
