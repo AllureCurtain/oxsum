@@ -35,6 +35,16 @@ export function useOrgPlan() {
   });
 }
 
+/** Quote only the caller's assigned period; a standing order remains its retry target. */
+export function usePlanPaymentQuote(enabled = true) {
+  return useQuery({
+    queryKey: ["plan-payment-quote"],
+    queryFn: () => api<components["schemas"]["PlanPaymentQuote"]>("/org/plan/payment-quote"),
+    enabled,
+    retry: false,
+  });
+}
+
 /** `POST /api/v1/org/plan/cancel`: mark `cancelAtPeriodEnd` — the paid period
  * serves to its end, the boundary does not renew. */
 export function useCancelPlan() {

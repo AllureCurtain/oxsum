@@ -8,6 +8,8 @@
 
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
+#[path = "support/plan_payment.rs"]
+mod plan_payment;
 #[path = "support/integration.rs"]
 mod setup;
 
@@ -49,6 +51,7 @@ async fn pool(url: &str) -> PgPool {
 /// the business singleton — every plan call needs all four.
 struct World {
     db: Db,
+    owner: String,
     pool: PgPool,
     organization_id: Uuid,
     business_id: Uuid,
@@ -59,7 +62,7 @@ async fn world(url: &str) -> World {
     let db = Db::from_pool(pool.clone());
     db.migrate().await.expect("migrates");
     // The business setup must exist before `default_business` resolves.
-    let _owner = setup::owner(&db).await;
+    let owner = setup::owner(&db).await;
     let registration = db
         .register(NewUser {
             email: format!(
@@ -73,6 +76,7 @@ async fn world(url: &str) -> World {
         .expect("registers");
     let business_id = db.default_business().await.expect("a business");
     World {
+        owner,
         db,
         pool,
         organization_id: registration.organization.id,
@@ -339,7 +343,14 @@ async fn a_priced_plan_waits_for_its_order() {
     );
 
     // Activating on the funded order opens period 0 and the quota engine.
-    let order_id = Uuid::new_v4();
+    let order_id = plan_payment::paid_order(
+        &world.db,
+        &world.owner,
+        world.organization_id,
+        plan.customer_plan_id,
+    )
+    .await
+    .order_id;
     let active = world
         .db
         .activate_plan_period(order_id, plan.customer_plan_id)
@@ -401,7 +412,17 @@ async fn the_timer_never_issues_an_unpaid_period() {
         .unwrap();
     world
         .db
-        .activate_plan_period(Uuid::new_v4(), plan.customer_plan_id)
+        .activate_plan_period(
+            plan_payment::paid_order(
+                &world.db,
+                &world.owner,
+                world.organization_id,
+                plan.customer_plan_id,
+            )
+            .await
+            .order_id,
+            plan.customer_plan_id,
+        )
         .await
         .unwrap();
 
@@ -455,7 +476,17 @@ async fn a_past_due_plan_renews_on_a_fulfilled_order() {
         .unwrap();
     world
         .db
-        .activate_plan_period(Uuid::new_v4(), plan.customer_plan_id)
+        .activate_plan_period(
+            plan_payment::paid_order(
+                &world.db,
+                &world.owner,
+                world.organization_id,
+                plan.customer_plan_id,
+            )
+            .await
+            .order_id,
+            plan.customer_plan_id,
+        )
         .await
         .unwrap();
     end_period_ago(&world.pool, world.organization_id, 60).await;
@@ -467,7 +498,14 @@ async fn a_past_due_plan_renews_on_a_fulfilled_order() {
 
     // The renewal order's fulfillment opens period 1, chaining off the ended
     // period's boundary — never `now`, which would skip the gap's audit.
-    let renewal_order = Uuid::new_v4();
+    let renewal_order = plan_payment::paid_order(
+        &world.db,
+        &world.owner,
+        world.organization_id,
+        plan.customer_plan_id,
+    )
+    .await
+    .order_id;
     let renewed = world
         .db
         .activate_plan_period(renewal_order, plan.customer_plan_id)
@@ -515,7 +553,17 @@ async fn cancel_at_period_end_serves_then_stops() {
         .unwrap();
     world
         .db
-        .activate_plan_period(Uuid::new_v4(), plan.customer_plan_id)
+        .activate_plan_period(
+            plan_payment::paid_order(
+                &world.db,
+                &world.owner,
+                world.organization_id,
+                plan.customer_plan_id,
+            )
+            .await
+            .order_id,
+            plan.customer_plan_id,
+        )
         .await
         .unwrap();
 
@@ -588,7 +636,17 @@ async fn a_scheduled_change_applies_at_the_boundary() {
         .unwrap();
     world
         .db
-        .activate_plan_period(Uuid::new_v4(), plan.customer_plan_id)
+        .activate_plan_period(
+            plan_payment::paid_order(
+                &world.db,
+                &world.owner,
+                world.organization_id,
+                plan.customer_plan_id,
+            )
+            .await
+            .order_id,
+            plan.customer_plan_id,
+        )
         .await
         .unwrap();
 
@@ -679,7 +737,17 @@ async fn a_plan_draw_serves_and_past_due_holds_the_remainder() {
         .unwrap();
     world
         .db
-        .activate_plan_period(Uuid::new_v4(), plan.customer_plan_id)
+        .activate_plan_period(
+            plan_payment::paid_order(
+                &world.db,
+                &world.owner,
+                world.organization_id,
+                plan.customer_plan_id,
+            )
+            .await
+            .order_id,
+            plan.customer_plan_id,
+        )
         .await
         .unwrap();
 
@@ -729,7 +797,17 @@ async fn a_stale_draw_still_settles_against_a_plan() {
         .unwrap();
     world
         .db
-        .activate_plan_period(Uuid::new_v4(), plan.customer_plan_id)
+        .activate_plan_period(
+            plan_payment::paid_order(
+                &world.db,
+                &world.owner,
+                world.organization_id,
+                plan.customer_plan_id,
+            )
+            .await
+            .order_id,
+            plan.customer_plan_id,
+        )
         .await
         .unwrap();
 
@@ -786,7 +864,17 @@ async fn a_fully_covered_draw_needs_no_wallet() {
         .unwrap();
     world
         .db
-        .activate_plan_period(Uuid::new_v4(), plan.customer_plan_id)
+        .activate_plan_period(
+            plan_payment::paid_order(
+                &world.db,
+                &world.owner,
+                world.organization_id,
+                plan.customer_plan_id,
+            )
+            .await
+            .order_id,
+            plan.customer_plan_id,
+        )
         .await
         .unwrap();
 
