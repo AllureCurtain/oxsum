@@ -48,6 +48,9 @@ no upstream or PSP configuration is inherited from the main workspace.
   concurrent dispute refusal without connection pinning, cancellation and a
   two-connection pre-grant refusal. Official engine reversals test historical
   source and retained-effect refusal; no immutable ledger guards are disabled.
+- All 16 integration library checks passed, zero skipped:
+  `cc7c5fa0-90c3-4d02-83f5-e69623d9449f`. Native dispute normalization is also
+  covered through the signed HTTP fixture above.
 - Four API credential-contract checks, regenerated TypeScript declarations,
   TypeScript/Vite build, pinned formatting and 55 relative documentation links
   passed. The dispute UI shows credits and original fiat currency separately;
@@ -56,6 +59,7 @@ no upstream or PSP configuration is inherited from the main workspace.
   reversed-effect replay gaps, then passed the final source, native callback
   normalization and worker-queue boundary.
 
-Strict final Clippy, integration unit tests and the complete workspace run are
-pending before merge. These checks are not browser, real PSP or candidate
+After rebasing onto checkout-route main `23b6547`, strict workspace Clippy
+(`--all-targets -- -D warnings`), API generation and frontend build passed.
+The complete workspace run remains pending before merge. These checks are not browser, real PSP or candidate
 acceptance; #725/N10 and the final release gates remain open.
