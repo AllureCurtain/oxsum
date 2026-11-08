@@ -1,5 +1,8 @@
 //! The wallet facade: holds, settlements, receipts and ledger reads.
 
+#[path = "wallet/transaction_reads.rs"]
+mod transaction_reads;
+
 use std::collections::{BTreeMap, HashMap};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -731,7 +734,7 @@ impl Wallet {
         if minor - repay > 0 {
             draft = draft.credit(self.wallet, Credits::from_minor(minor - repay), currency());
         }
-        let receipt = self.append_sealed(self.seal(draft).await?).await;
+        let receipt = self.append_in(&mut tx, draft).await;
         match receipt {
             Ok(receipt) => {
                 tx.commit().await?;
@@ -837,7 +840,7 @@ impl Wallet {
             .await?;
         // Re-read under the lock, and re-check the entry id: a same-key
         // repayment may have committed while this one waited on it.
-        if let Some(stored) = self.store.get(entry_id).await? {
+        if let Some(stored) = self.entry_in(&mut tx, entry_id).await? {
             tx.rollback().await?;
             return self.repay_replay(&stored, minor, key);
         }
@@ -851,7 +854,7 @@ impl Wallet {
         let draft = Entry::<Draft, SCALE>::new(entry_id, idem(key)?, on)
             .debit(self.cash, amt, currency())
             .credit(self.credit_line, amt, currency());
-        let receipt = self.append_sealed(self.seal(draft).await?).await;
+        let receipt = self.append_in(&mut tx, draft).await;
         match receipt {
             Ok(receipt) => {
                 tx.commit().await?;
@@ -1141,11 +1144,8 @@ impl Wallet {
         &self,
         id: Uuid,
     ) -> Result<Option<String>, WalletError> {
-        match self.store.get(EntryId::from_uuid(id)).await {
-            Ok(Some(stored)) => Ok(Some(stored.content_hash.to_hex())),
-            Ok(None) | Err(PostgresError::Integrity(_) | PostgresError::Malformed(_)) => Ok(None),
-            Err(error) => Err(error.into()),
-        }
+        let mut connection = self.store.pool().acquire().await?;
+        self.verified_source_hash_in(&mut connection, id).await
     }
 
     /// Retain complete chargeback Cash outflow and only the proven Wallet part.
@@ -1216,8 +1216,8 @@ impl Wallet {
         }
         let key = format!("plan-journal/{journal_id}/accrual");
         let entry_id = entry_id_for(&key);
-        if let Some(stored) = self.store.get(entry_id).await? {
-            return Ok(Some(stored_receipt(&stored)));
+        if let Some(stored) = self.receipt_in(tx, entry_id).await? {
+            return Ok(Some(stored));
         }
         let mut draft = Entry::<Draft, SCALE>::new(entry_id, idem(&key)?, on).with_description(
             description_of(&format!("plan fee journal {journal_id}: accrual"))?,
@@ -1246,8 +1246,8 @@ impl Wallet {
                     .credit(self.receivables, amt, currency());
         }
         match self.append_in(tx, draft).await {
-            Err(WalletError::Conflict(_)) => match self.store.get(entry_id).await? {
-                Some(stored) => Ok(Some(stored_receipt(&stored))),
+            Err(WalletError::Conflict(_)) => match self.receipt_in(tx, entry_id).await? {
+                Some(stored) => Ok(Some(stored)),
                 None => Err(WalletError::Conflict(format!(
                     "idempotency key {key:?} is already taken"
                 ))),
@@ -1270,7 +1270,7 @@ impl Wallet {
         let amt = positive(minor)?;
         let key = format!("payment-order/{order_id}/prepay");
         let entry_id = entry_id_for(&key);
-        if let Some(stored) = self.store.get(entry_id).await? {
+        if let Some(stored) = self.entry_in(tx, entry_id).await? {
             return Ok(stored_receipt(&stored));
         }
         let draft = Entry::<Draft, SCALE>::new(entry_id, idem(&key)?, on)
@@ -1280,7 +1280,7 @@ impl Wallet {
             .debit(self.cash, amt, currency())
             .credit(self.unearned_plan_fees, amt, currency());
         match self.append_in(tx, draft).await {
-            Err(WalletError::Conflict(_)) => match self.store.get(entry_id).await? {
+            Err(WalletError::Conflict(_)) => match self.entry_in(tx, entry_id).await? {
                 Some(stored) => Ok(stored_receipt(&stored)),
                 None => Err(WalletError::Conflict(format!(
                     "idempotency key {key:?} is already taken"
@@ -1307,8 +1307,8 @@ impl Wallet {
         let amt = Credits::from_minor(minor);
         let key = format!("plan-journal/{journal_id}/prepay-settle");
         let entry_id = entry_id_for(&key);
-        if let Some(stored) = self.store.get(entry_id).await? {
-            return Ok(Some(stored_receipt(&stored)));
+        if let Some(stored) = self.receipt_in(tx, entry_id).await? {
+            return Ok(Some(stored));
         }
         let draft = Entry::<Draft, SCALE>::new(entry_id, idem(&key)?, on)
             .with_description(description_of(&format!(
@@ -1317,8 +1317,8 @@ impl Wallet {
             .debit(self.unearned_plan_fees, amt, currency())
             .credit(self.receivables, amt, currency());
         match self.append_in(tx, draft).await {
-            Err(WalletError::Conflict(_)) => match self.store.get(entry_id).await? {
-                Some(stored) => Ok(Some(stored_receipt(&stored))),
+            Err(WalletError::Conflict(_)) => match self.receipt_in(tx, entry_id).await? {
+                Some(stored) => Ok(Some(stored)),
                 None => Err(WalletError::Conflict(format!(
                     "idempotency key {key:?} is already taken"
                 ))),
@@ -1470,7 +1470,7 @@ impl Wallet {
     ) -> Result<Receipt, WalletError> {
         let key = format!("plan-refund-cash/{}", allocation.refund_id);
         let entry_id = entry_id_for(&key);
-        if let Some(stored) = self.store.get(entry_id).await? {
+        if let Some(stored) = self.entry_in(tx, entry_id).await? {
             return Ok(stored_receipt(&stored));
         }
         let old_cash = old.map_or(0, |v| v.cash);
@@ -1487,8 +1487,7 @@ impl Wallet {
         if legs.iter().all(|(_, amount)| *amount == 0) {
             let previous = old.ok_or_else(|| invalid("refund allocation has no source legs"))?;
             let stored = self
-                .store
-                .get(EntryId::from_uuid(previous.entry_id))
+                .entry_in(tx, EntryId::from_uuid(previous.entry_id))
                 .await?
                 .ok_or_else(|| invalid("legacy refund entry disappeared"))?;
             return Ok(stored_receipt(&stored));
@@ -1633,7 +1632,7 @@ impl Wallet {
             .ok_or_else(|| invalid("invalid chargeback source allocation"))?;
         let key = format!("dispute-recharge/{dispute_id}");
         let entry_id = entry_id_for(&key);
-        if let Some(stored) = self.store.get(entry_id).await? {
+        if let Some(stored) = self.entry_in(tx, entry_id).await? {
             return Ok(stored_receipt(&stored));
         }
         let mut draft=Entry::<Draft,SCALE>::new(entry_id,idem(&key)?,on)
@@ -1675,7 +1674,7 @@ impl Wallet {
     ) -> Result<Option<Receipt>, WalletError> {
         let key = format!("plan-journal/{journal_id}/void");
         let entry_id = entry_id_for(&key);
-        if let Some(stored) = self.store.get(entry_id).await? {
+        if let Some(stored) = self.entry_in(tx, entry_id).await? {
             return Ok(Some(stored_receipt(&stored)));
         }
         let mut draft = Entry::<Draft, SCALE>::new(entry_id, idem(&key)?, on).with_description(
@@ -1759,7 +1758,7 @@ impl Wallet {
             return Ok(None);
         }
         match self.append_in(tx, draft).await {
-            Err(WalletError::Conflict(_)) => match self.store.get(entry_id).await? {
+            Err(WalletError::Conflict(_)) => match self.entry_in(tx, entry_id).await? {
                 Some(stored) => Ok(Some(stored_receipt(&stored))),
                 None => Err(WalletError::Conflict(format!(
                     "idempotency key {key:?} is already taken"
@@ -3264,12 +3263,10 @@ impl Wallet {
     /// (issue #602, D05). The caller owns the commit — a failure leaves nothing
     /// half-written: no release, no charge, no operation close.
     ///
-    /// The outstanding-hold read still runs on the pool first: the hold entry it
-    /// reads is immutable once committed, and reading it inside the caller's
-    /// transaction would only lengthen the lock hold. The settle draft the read
-    /// feeds cannot drift either — the settlement's idempotency key is derived
-    /// from the hold's key, so a raced second settle conflicts at the append
-    /// inside the transaction rather than writing a different release.
+    /// The outstanding hold, sealed-day check, calendar and append all use the
+    /// caller's connection. A transaction therefore sees its own hold and never
+    /// waits on a second pool slot. The settlement key derives from the hold key,
+    /// so a raced second settle cannot write a different release.
     ///
     /// # Errors
     ///
@@ -3284,7 +3281,7 @@ impl Wallet {
         on: Date,
     ) -> Result<Receipt, WalletError> {
         idem(hold_key)?;
-        if self.day_is_anchored(on).await? {
+        if self.day_is_anchored_in(tx, on).await? {
             return Err(WalletError::DaySealed);
         }
         if actual_minor < 0 {
@@ -3299,7 +3296,7 @@ impl Wallet {
             credit_held,
             outstanding_actor,
             outstanding_correlation,
-        ) = self.outstanding_hold(hold_key).await?;
+        ) = self.outstanding_hold_in(tx, hold_key).await?;
         if actual_minor > promo_held + bonus_held + wallet_held + credit_held {
             return Err(WalletError::InvalidInput(
                 "actual must be within 0..=held".into(),
@@ -3443,7 +3440,7 @@ impl Wallet {
         correlation: Option<&str>,
         on: Date,
     ) -> Result<Receipt, WalletError> {
-        if self.day_is_anchored(on).await? {
+        if self.day_is_anchored_in(tx, on).await? {
             return Err(WalletError::DaySealed);
         }
         let draft = self.usage_receipt_draft(hold_key, description, actor, correlation, on)?;
@@ -3733,7 +3730,7 @@ impl Wallet {
         // does — a matching change replays its receipt, anything else is the
         // key-reuse conflict — rather than reporting a no-op for a change
         // that did write.
-        if let Some(stored) = self.store.get(entry_id).await? {
+        if let Some(stored) = self.entry_in(&mut tx, entry_id).await? {
             tx.rollback().await?;
             if stored.entry.description().as_str() == description.as_str() {
                 return Ok(Some(stored_receipt(&stored)));
@@ -3760,7 +3757,7 @@ impl Wallet {
                 .debit(self.credit_line, amt, currency())
                 .credit(self.facility, amt, currency())
         };
-        let receipt = self.append_sealed(self.seal(draft).await?).await;
+        let receipt = self.append_in(&mut tx, draft).await;
         match receipt {
             // A shrink that would cut into the outstanding draw surfaces as the
             // credit line's `InsufficientFunds`; name what it actually is.
@@ -3948,50 +3945,7 @@ impl Wallet {
                 "no hold under key {hold_key:?}"
             )));
         };
-        let mut promo_held = 0;
-        let mut bonus_held = 0;
-        let mut wallet_held = 0;
-        let mut credit_held = 0;
-        for p in stored.entry.postings() {
-            if p.layer != Layer::Pending {
-                continue;
-            }
-            let signed = match p.direction {
-                Direction::Debit => p.amount.to_minor(),
-                Direction::Credit => -p.amount.to_minor(),
-            };
-            if p.account == self.promo {
-                promo_held += signed;
-            } else if p.account == self.bonus {
-                bonus_held += signed;
-            } else if p.account == self.wallet {
-                wallet_held += signed;
-            } else if p.account == self.credit_line {
-                credit_held += signed;
-            }
-        }
-        if promo_held + bonus_held + wallet_held + credit_held <= 0 {
-            return Err(WalletError::HoldNotFound(format!(
-                "key {hold_key:?} does not name a hold"
-            )));
-        }
-        let provenance = stored.entry.provenance();
-        let actor = provenance
-            .actor
-            .as_ref()
-            .map(|actor| actor.as_str().to_owned());
-        let correlation = provenance
-            .correlation
-            .as_ref()
-            .map(|correlation| correlation.as_str().to_owned());
-        Ok((
-            promo_held,
-            bonus_held,
-            wallet_held,
-            credit_held,
-            actor,
-            correlation,
-        ))
+        self.hold_parts(&stored, hold_key)
     }
 
     /// The one-time pool migration (decision D1): moves the unspent remainder of
@@ -4420,7 +4374,7 @@ impl Wallet {
         {
             use sqlx::Row;
             let lot_id: Uuid = row.try_get("lot_id")?;
-            let receipt = match self.store.get(entry_id_for(ledger_key)).await? {
+            let receipt = match self.entry_in(tx, entry_id_for(ledger_key)).await? {
                 Some(stored) => stored_receipt(&stored),
                 None => {
                     return Err(WalletError::InvalidInput(
@@ -5642,8 +5596,8 @@ impl Wallet {
     }
 
     /// [`append`](Self::append) inside the caller's transaction (issue #602):
-    /// the draft seals against the calendar read off the pool — same as
-    /// `append` does — then rides the borrowed-transaction append, so the
+    /// the draft seals against the calendar read on the same connection,
+    /// then rides the borrowed-transaction append, so the
     /// entry commits with whatever else the caller's transaction carries.
     /// The caller owns the commit; a rolled-back transaction leaves no entry,
     /// no node and no idempotency claim.
@@ -5652,7 +5606,7 @@ impl Wallet {
         tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
         draft: Entry<Draft, SCALE>,
     ) -> Result<Receipt, WalletError> {
-        let entry = self.seal(draft).await?;
+        let entry = self.seal_in(tx, draft).await?;
         let recorded = self
             .store
             .append_in_tx(tx, &EntryBatch::single(entry))
@@ -5894,7 +5848,7 @@ fn find_account(registry: &AccountRegistry, path: &str) -> Result<AccountId, Wal
 }
 
 /// Tenant ids end up inside schema names, so only lowercase letters, digits and underscores are allowed, 1 to 40 chars.
-fn validate_tenant_id(tenant_id: &str) -> Result<(), WalletError> {
+pub(super) fn validate_tenant_id(tenant_id: &str) -> Result<(), WalletError> {
     let ok = !tenant_id.is_empty()
         && tenant_id.len() <= 40
         && tenant_id
