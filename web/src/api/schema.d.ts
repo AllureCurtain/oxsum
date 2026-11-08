@@ -10109,7 +10109,7 @@ export interface paths {
         };
         /**
          * List the business finance audit
-         * @description Current business staff with report-read capability; a personal session. One immutable `finance_audit` row per staff financial action — every refund resolution, dispute close, journal void, statement release, reconciliation resolve/waive/repair and explicit historical plan refund or usage correction — newest first. Each row names the actor, the audited action and the reason it carried, and drills to the entity it corrected. `action` narrows to one audited action, including `plan_refund.recover` and `plan_usage.correct` from the local correction commands.
+         * @description Current business staff with report-read capability; a personal session. One immutable `finance_audit` row per staff financial action — every refund resolution, dispute close, journal void, statement release, reconciliation resolve/waive/repair and explicit historical plan refund or usage correction — newest first. Each row names the actor, the audited action and the reason it carried, and drills to the entity it corrected. `action` narrows to one audited action, including `plan_refund.recover`, `plan_usage.correct` and `nonplan_refund.recover` from the local correction commands. A non-plan refund `cashEffect` describes actual verified money-out separately from immutable approval/note state; it fences further payouts even after a late terminal event. Unapproved cash is explicit review suspense, never a retroactive approval.
          */
         get: operations["businessFinanceAudit"];
         put?: never;
@@ -20754,6 +20754,61 @@ export interface components {
             resolution: "evidenceDue" | "won" | "lost" | "closed";
             reason?: string | null;
         };
+        /** @description Immutable verified non-plan refund cash fact. This is separate from the original request/approval and credit-note state. Late or unapproved external money-out can coexist with an unchanged declined, failed or released state. Its presence does not authorize a provider call or reopen old debt. Null on the parent means this policy has not verified an effect, not zero money-out. */
+        NonplanRefundEffect: {
+            /** @constant */
+            policy: "nonplan-refund-v1";
+            /** Format: uuid */
+            refundId: string;
+            /** Format: uuid */
+            orderId: string;
+            /** Format: uuid */
+            organizationId: string;
+            /**
+             * Format: int64
+             * @description Complete provider Cash outflow, in ledger credit minor units.
+             */
+            cashMinor: number;
+            /**
+             * Format: int64
+             * @description Only provably retained original Wallet funding reclaimed.
+             */
+            walletMinor: number;
+            /**
+             * Format: int64
+             * @description Cash outflow requiring source review; never invented debt.
+             */
+            suspenseMinor: number;
+            /**
+             * Format: int64
+             * @description Proven historical wrong-source Wallet debit restored without another Cash outflow.
+             */
+            walletRestoredMinor: number;
+            /** Format: uuid */
+            cashEntryId: string;
+            cashEntryHash: string;
+            /**
+             * Format: date
+             * @description Original Cash entry accounting day, retained during later source correction.
+             */
+            cashBookingDate: string;
+            /** Format: uuid */
+            correctionEntryId: string | null;
+            correctionEntryHash: string | null;
+            /** Format: uuid */
+            originalFundingEntryId: string | null;
+            originalFundingEntryHash: string | null;
+            /** Format: uuid */
+            eventReceiptId: string;
+            legacyRecovery: boolean;
+            requiresReview: boolean;
+            reviewReasons: string[];
+            /**
+             * Format: date-time
+             * @description When this verified allocation metadata committed; not necessarily the Cash accounting date.
+             */
+            bookedAt: string;
+        };
         OrderRefund: {
             /** Format: uuid */
             refundId: string;
@@ -20789,6 +20844,7 @@ export interface components {
              * @description the credit note an approval issued
              */
             noteId: string | null;
+            cashEffect: components["schemas"]["NonplanRefundEffect"] | null;
             /** Format: date-time */
             createdAt: string;
             /** Format: date-time */
@@ -20818,9 +20874,10 @@ export interface components {
             refundId: string;
             /**
              * Format: uuid
-             * @description the wallet take-back entry once applied; null while issued-unapplied
+             * @description original retained note entry; cashEffect separately describes verified cash and historical correction
              */
             entryId: string | null;
+            cashEffect: components["schemas"]["NonplanRefundEffect"] | null;
             /** Format: int64 */
             amountMinor: number;
             reason: string;
@@ -20880,7 +20937,7 @@ export interface components {
              * @description the audited financial action — the same vocabulary `finance_audit`'s check constraint bounds
              * @enum {string}
              */
-            action: "refund.approve" | "refund.decline" | "refund.release" | "dispute.resolve" | "journal.void" | "statement.release" | "reconciliation.resolve" | "reconciliation.waive" | "reconciliation.repair" | "plan_refund.recover" | "plan_usage.correct";
+            action: "refund.approve" | "refund.decline" | "refund.release" | "dispute.resolve" | "journal.void" | "statement.release" | "reconciliation.resolve" | "reconciliation.waive" | "reconciliation.repair" | "plan_refund.recover" | "plan_usage.correct" | "nonplan_refund.recover";
             /** @description the entity the action corrected — a refund */
             target: string;
             /** @description the action's safe fields — reason */

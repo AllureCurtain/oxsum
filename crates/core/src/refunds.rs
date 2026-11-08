@@ -108,6 +108,8 @@ pub struct OrderRefund {
     pub next_retry_at: Option<OffsetDateTime>,
     /// The credit note the approval issued, once it exists.
     pub note_id: Option<Uuid>,
+    /// Verified actual non-plan Cash, independent of immutable approval state.
+    pub cash_effect: Option<crate::NonplanRefundEffect>,
     /// When the request was recorded.
     #[serde(with = "time::serde::rfc3339")]
     pub created_at: OffsetDateTime,
@@ -210,6 +212,8 @@ pub struct OrderCreditNote {
     pub reason: String,
     /// `issued`, `applied` or `reversed`.
     pub state: String,
+    /// Verified actual non-plan Cash and any retained historical correction.
+    pub cash_effect: Option<crate::NonplanRefundEffect>,
     /// When the note was issued.
     #[serde(with = "time::serde::rfc3339")]
     pub created_at: OffsetDateTime,
@@ -231,9 +235,10 @@ const REFUND_SELECT: &str = "SELECT r.refund_id,r.order_id,r.organization_id,r.b
      r.amount_minor,r.display_amount_minor,r.display_currency,r.reason,r.state,\
      r.provider_refund_id,r.provider_payment_id,r.retry_count,r.next_retry_at,r.hyperswitch_body_id,\
      r.requested_by,r.resolved_by,r.audit_ref,r.request_key,r.created_at,r.updated_at,\
-     n.credit_note_id AS note_id \
+     n.credit_note_id AS note_id,e.effect AS cash_effect \
      FROM oxsum.refunds r \
-     LEFT JOIN oxsum.credit_notes n ON n.refund_id = r.refund_id";
+     LEFT JOIN oxsum.credit_notes n ON n.refund_id = r.refund_id \
+     LEFT JOIN oxsum.nonplan_refund_effects e ON e.refund_id=r.refund_id";
 
 fn refund_from_row(row: &PgRow) -> Result<OrderRefund, WalletError> {
     Ok(OrderRefund {
@@ -252,6 +257,11 @@ fn refund_from_row(row: &PgRow) -> Result<OrderRefund, WalletError> {
         resolved_by: row.try_get("resolved_by")?,
         next_retry_at: row.try_get("next_retry_at")?,
         note_id: row.try_get("note_id")?,
+        cash_effect: row
+            .try_get::<Option<serde_json::Value>, _>("cash_effect")?
+            .map(serde_json::from_value)
+            .transpose()
+            .map_err(crate::error::invalid)?,
         created_at: row.try_get("created_at")?,
         updated_at: row.try_get("updated_at")?,
     })
@@ -322,7 +332,7 @@ async fn committed_minor_in(
 ) -> Result<i64, WalletError> {
     let committed: i64 = sqlx::query_scalar(
         "SELECT COALESCE(SUM(amount_minor),0)::bigint FROM oxsum.refunds \
-         WHERE order_id=$1 AND (state IN ('requested','provider_pending','succeeded') OR EXISTS(SELECT 1 FROM oxsum.plan_refund_effects e WHERE e.refund_id=refunds.refund_id))",
+         WHERE order_id=$1 AND (state IN ('requested','provider_pending','succeeded') OR EXISTS(SELECT 1 FROM oxsum.plan_refund_effects e WHERE e.refund_id=refunds.refund_id) OR EXISTS(SELECT 1 FROM oxsum.nonplan_refund_effects e WHERE e.refund_id=refunds.refund_id))",
     )
     .bind(order_id)
     .fetch_one(&mut **tx)
@@ -338,7 +348,7 @@ async fn committed_display_minor_in(
 ) -> Result<i64, WalletError> {
     let committed: i64 = sqlx::query_scalar(
         "SELECT COALESCE(SUM(display_amount_minor),0)::bigint FROM oxsum.refunds \
-         WHERE order_id=$1 AND (state IN ('requested','provider_pending','succeeded') OR EXISTS(SELECT 1 FROM oxsum.plan_refund_effects e WHERE e.refund_id=refunds.refund_id))",
+         WHERE order_id=$1 AND (state IN ('requested','provider_pending','succeeded') OR EXISTS(SELECT 1 FROM oxsum.plan_refund_effects e WHERE e.refund_id=refunds.refund_id) OR EXISTS(SELECT 1 FROM oxsum.nonplan_refund_effects e WHERE e.refund_id=refunds.refund_id))",
     )
     .bind(order_id)
     .fetch_one(&mut **tx)
@@ -500,8 +510,8 @@ impl Db {
             "INSERT INTO oxsum.refunds\
              (refund_id,order_id,organization_id,business_id,amount_minor,\
               display_amount_minor,display_currency,reason,state,provider_payment_id,\
-              requested_by,request_key,hyperswitch_body_id) \
-             VALUES($1,$2,$3,$4,$5,$6,$7,$8,'requested',$9,$10,$11,true)",
+              requested_by,request_key,hyperswitch_body_id,cash_policy_version) \
+             VALUES($1,$2,$3,$4,$5,$6,$7,$8,'requested',$9,$10,$11,true,1)",
         )
         .bind(refund_id)
         .bind(order_id)
@@ -547,7 +557,7 @@ impl Db {
         let total: i64 = row.try_get("amount_minor")?;
         let committed: i64 = sqlx::query_scalar(
             "SELECT COALESCE(SUM(amount_minor),0)::bigint FROM oxsum.refunds \
-             WHERE order_id=$1 AND (state IN ('requested','provider_pending','succeeded') OR EXISTS(SELECT 1 FROM oxsum.plan_refund_effects e WHERE e.refund_id=refunds.refund_id))",
+             WHERE order_id=$1 AND (state IN ('requested','provider_pending','succeeded') OR EXISTS(SELECT 1 FROM oxsum.plan_refund_effects e WHERE e.refund_id=refunds.refund_id) OR EXISTS(SELECT 1 FROM oxsum.nonplan_refund_effects e WHERE e.refund_id=refunds.refund_id))",
         )
         .bind(order_id)
         .fetch_one(self.pool())
@@ -619,7 +629,7 @@ impl Db {
         if existing.business_id != business {
             return Err(WalletError::NotFound("unknown refund".into()));
         }
-        if existing.state != "requested" {
+        if existing.state != "requested" || existing.cash_effect.is_some() {
             // A terminal or in-flight row is the resolve's own replay —
             // answer it without re-deciding. `provider_pending` also means a
             // prior approve committed; the provider call is not re-requested
@@ -922,59 +932,19 @@ impl Db {
         };
         drop(tx);
         let late = refund.state != "provider_pending";
-        if refund.state == "declined" {
-            return Ok(());
-        }
-        // The order's purpose routes the correction: a `plan_period` refund
-        // corrects the journal the order settled — the plan-fee cash was
-        // never wallet money, so `refund_debit`'s pool draw has nothing to
-        // take back (issue #611). Every other purpose keeps T17's shape.
         let purpose: Option<String> =
             sqlx::query_scalar("SELECT purpose FROM oxsum.payment_orders WHERE order_id=$1")
                 .bind(refund.order_id)
                 .fetch_optional(self.pool())
                 .await?;
-        let plan_fee = purpose.as_deref() == Some("plan_period");
-        if refund.state == "succeeded" && !plan_fee {
+        if purpose.as_deref() != Some("plan_period") {
+            return self
+                .settle_nonplan_refund(wallet, refund.refund_id, receipt.id, on)
+                .await;
+        }
+        if refund.state == "declined" {
             return Ok(());
         }
-        if purpose.as_deref() == Some("bundle") {
-            // Cancel before the terminal mark. A crash retries this idempotent
-            // burn before recording success, and held releases burn later too.
-            let lot: Option<Uuid> = sqlx::query_scalar(
-                "SELECT lot_id FROM oxsum.promo_lots WHERE organization_id=$1 \
-                 AND source='bundle_promo' AND source_ref=$2",
-            )
-            .bind(refund.organization_id)
-            .bind(refund.order_id.to_string())
-            .fetch_optional(self.pool())
-            .await?;
-            if let Some(lot) = lot {
-                self.cancel_promo_lot(wallet, lot, on).await?;
-            }
-        }
-        // The ledger append runs outside any held row lock, keyed on the
-        // refund id: a retried or recovered settle replays the standing entry.
-        // `FundedReservations` refuses a take-back the purchased pool cannot
-        // carry — the customer already spent the refunded credit — which is
-        // the "failed compensation" the audit records, never a negative wallet.
-        let mut entry_id = if plan_fee {
-            None
-        } else {
-            match wallet
-                .refund_debit(
-                    &refund.refund_id.to_string(),
-                    &format!("refund of order {}", refund.order_id),
-                    refund.amount_minor,
-                    on,
-                )
-                .await
-            {
-                Ok(receipt) => Some(*receipt.entry_id.as_uuid()),
-                Err(WalletError::InsufficientFunds) => None,
-                Err(error) => return Err(error),
-            }
-        };
         let mut tx = self.pool().begin().await?;
         sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1,0))")
             .bind(format!("order-refund:{}", refund.refund_id))
@@ -1006,33 +976,18 @@ impl Db {
         // Plan cash, source allocation, credit note and customer documents
         // share this transaction. Recovery of a succeeded legacy refund follows
         // the same source-bound path instead of returning before its missing leg.
-        if plan_fee {
-            let allocation = self
-                .apply_plan_refund_in(
-                    &mut tx,
-                    wallet,
-                    refund.refund_id,
-                    Some(receipt.id),
-                    current.state == "succeeded",
-                    true,
-                    on,
-                )
-                .await?;
-            entry_id = allocation.entry_id;
-        }
-        // The note applies with its entry id when the take-back booked; when
-        // the pool could not carry it, `issued` stays and the audit detail
-        // records the compensation the ledger owes but cannot carry.
-        if let Some(entry_id) = entry_id.filter(|_| !plan_fee) {
-            sqlx::query(
-                "UPDATE oxsum.credit_notes SET state='applied',entry_id=$2,updated_at=now() \
-                 WHERE refund_id=$1 AND state='issued'",
+        let allocation = self
+            .apply_plan_refund_in(
+                &mut tx,
+                wallet,
+                refund.refund_id,
+                Some(receipt.id),
+                current.state == "succeeded",
+                true,
+                on,
             )
-            .bind(refund.refund_id)
-            .bind(entry_id)
-            .execute(&mut *tx)
             .await?;
-        }
+        let entry_id = allocation.entry_id;
         if entry_id.is_none() || late {
             sqlx::query(
                 "INSERT INTO oxsum.finance_audit\
@@ -1225,7 +1180,7 @@ impl Db {
             return Err(invalid("limit must be 1..100"));
         }
         let rows = sqlx::query(&format!(
-            "{REFUND_SELECT} WHERE r.state='provider_pending' AND r.next_retry_at <= now() \
+            "{REFUND_SELECT} WHERE r.state='provider_pending' AND r.next_retry_at <= now() AND e.refund_id IS NULL \
              ORDER BY r.next_retry_at LIMIT $1"
         ))
         .bind(limit)
@@ -1241,13 +1196,23 @@ impl Db {
         &self,
         refund_id: Uuid,
     ) -> Result<Option<RefundRetryTarget>, WalletError> {
+        let mut tx = self.pool().begin().await?;
+        let order: Option<(Uuid,String)> = sqlx::query_as("SELECT r.order_id,p.purpose FROM oxsum.refunds r JOIN oxsum.payment_orders p USING(order_id) WHERE refund_id=$1")
+            .bind(refund_id).fetch_optional(&mut *tx).await?;
+        let Some((order, purpose)) = order else {
+            return Ok(None);
+        };
+        if purpose != "plan_period" {
+            crate::nonplan_returns::lock_source_in(&mut tx, order).await?;
+        }
         let changed = sqlx::query(
             "UPDATE oxsum.refunds SET retry_count=retry_count+1,\
              next_retry_at=CASE WHEN retry_count+1 < $2 THEN now() + \
              (($3::bigint[])[retry_count+1] * interval '1 second') ELSE NULL END,updated_at=now() \
-             WHERE refund_id=$1 AND state='provider_pending' AND next_retry_at<=now() AND retry_count<$2"
+             WHERE refund_id=$1 AND state='provider_pending' AND next_retry_at<=now() AND retry_count<$2 AND NOT EXISTS(SELECT 1 FROM oxsum.nonplan_refund_effects e WHERE e.refund_id=refunds.refund_id)"
         ).bind(refund_id).bind(REFUND_MAX_ATTEMPTS).bind(REFUND_RETRY_DELAYS_SECS.as_slice())
-            .execute(self.pool()).await?.rows_affected();
+            .execute(&mut *tx).await?.rows_affected();
+        tx.commit().await?;
         if changed == 0 {
             return Ok(None);
         }
@@ -1376,8 +1341,9 @@ impl Db {
             .await?;
         let rows = sqlx::query(
             "SELECT n.credit_note_id,n.organization_id,n.order_id,n.refund_id,n.entry_id,\
-                    n.amount_minor,n.reason,n.state,n.created_at \
+                    n.amount_minor,n.reason,n.state,n.created_at,e.effect AS cash_effect \
              FROM oxsum.credit_notes n JOIN oxsum.refunds r ON r.refund_id=n.refund_id \
+             LEFT JOIN oxsum.nonplan_refund_effects e ON e.refund_id=r.refund_id \
              WHERE r.business_id=$1 AND n.order_id IS NOT NULL \
                AND ($2::uuid IS NULL OR n.credit_note_id>$2) \
              ORDER BY n.credit_note_id LIMIT $3",
@@ -1399,6 +1365,11 @@ impl Db {
                     amount_minor: row.try_get("amount_minor")?,
                     reason: row.try_get("reason")?,
                     state: row.try_get("state")?,
+                    cash_effect: row
+                        .try_get::<Option<serde_json::Value>, _>("cash_effect")?
+                        .map(serde_json::from_value)
+                        .transpose()
+                        .map_err(crate::error::invalid)?,
                     created_at: row.try_get("created_at")?,
                 })
             })

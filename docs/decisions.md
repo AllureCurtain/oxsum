@@ -3388,3 +3388,34 @@ string; concurrent publishers reload the winner before appending. It checks
 an existing marker's document digest. Failed export insertion leaves recoverable
 inputs; prior unmatched orphan markers fail closed. This preserves old bundles
 and avoids modifying the ledger engine while making the crash gap recoverable.
+
+## 2026-11-09 — Retain actual non-plan refunds separately from approval (#841)
+
+A confirmed provider return credits complete Cash once. The original paid order,
+immutable fulfillment and verified sequenced funding entry determine how much
+original Wallet funding is still retained; later credits cannot refill it. Held,
+spent, repayment-origin or unproven source remains explicit Adjustments suspense,
+without inventing receivables or reopening old CreditLine statements.
+
+Migration 0115 retains immutable `nonplan_refund_effects`, including exact event,
+source revision, cash/correction identities and hashes and original Cash booking
+date. A nullable credit-note link supports an authenticated but unapproved cash
+fact without fabricating approval or a human audit actor. Existing refund/note
+terminal states and applied entry pointers remain immutable. Effects fence new
+payout claims and unperformed grants and consume refundable bounds even when old
+state says declined, failed or released. Current state cannot erase actual cash.
+
+Old refund rows retain `cash_policy_version=0`; new atomic writers explicitly
+record version 1. An old nonterminal row may hide a separately committed Cash
+entry. Only a new version-1 row with no actual Cash effect can establish that
+another pending partial refund has not yet consumed source. Stop and drain old
+writers before deployment; mixed binaries do not share this safety boundary.
+
+Historical recovery is an exact local owner/finance command with an explicit
+trusted receipt, default preview and required source-revision pin on apply.
+A retained old Cash entry is never repeated. Proven wrong-source Wallet is
+restored with Adjustments/Wallet only, using the balance and pending reservations
+immediately before the old return's sequence position. Unproven source cannot
+justify restitution: conservative zero allocation is not proof of a wrong debit.
+Preview writes nothing; apply commits compensation, effect, document projection
+and audit together, retaining refused outcomes and binding exact request terms.

@@ -581,3 +581,23 @@ scope; retries preserve the immutable period identity. Raw bundle downloads and
 separate expected inputs survive link expiration. Local checks distinguish
 retained-key, bundle-supplied-key and unsigned evidence, bind the signed head to
 the authenticated customer's ledger origin and preserve the existing proof scope.
+
+### Actual non-plan refund cash (#841)
+
+Wallet, bundle and legacy CreditLine-repayment refunds retain the full verified
+provider cash return once. Only retained original purchased Wallet funding is
+taken back; consumed, held, repayment-origin or uncertain amounts need finance
+source review. Later top-ups cannot pay for an earlier order's refund. Original
+CreditLine/receivable debt and entitlement are unchanged.
+
+A refund's approval state and its actual cash effect are separate facts. A late
+success after decline/failure/release retains the old terminal state and shows
+confirmed cash plus review status. Unapproved returns do not become approvals.
+Once real cash is recorded, the same refund cannot authorize another payout and
+its amount remains consumed in the order's refundable bound. Confirmed returns
+before fulfillment prevent later grants and remain in reconciliation.
+
+Historical recovery requires current owner/finance authority, exact original
+provider receipt and verified ledger source. It previews first and only applies
+an unchanged reviewed source revision. A wrong-source old Wallet debit can be
+restored without repeating already-recorded Cash; unsupported source is refused.

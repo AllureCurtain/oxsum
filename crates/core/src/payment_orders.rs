@@ -1066,7 +1066,7 @@ impl Db {
         let rows = sqlx::query(&format!(
             "SELECT {ORDER_COLS} FROM oxsum.payment_orders \
              WHERE status='paid' AND (purpose <> 'bundle' OR bundle_offer IS NOT NULL) \
-               AND (purpose='plan_period' OR NOT EXISTS(SELECT 1 FROM oxsum.disputes d WHERE d.order_id=payment_orders.order_id AND d.state='lost')) \
+               AND (purpose='plan_period' OR (NOT EXISTS(SELECT 1 FROM oxsum.disputes d WHERE d.order_id=payment_orders.order_id AND d.state='lost') AND NOT EXISTS(SELECT 1 FROM oxsum.nonplan_refund_effects e WHERE e.order_id=payment_orders.order_id))) \
                AND (purpose <> 'plan_period' OR \
                EXISTS(SELECT 1 FROM oxsum.plan_periods p WHERE p.authorization_kind='payment_order' \
                  AND p.authorization_ref=payment_orders.order_id) OR (plan_payment IS NOT NULL \
@@ -1188,7 +1188,7 @@ impl Db {
             return Ok(standing);
         }
         if let Some(guard) = source_guard.as_mut() {
-            crate::nonplan_returns::guard_lost_in(guard, order_id).await?;
+            crate::nonplan_returns::guard_grant_in(guard, order_id).await?;
         }
         if existing.status != "paid" {
             return Err(WalletError::Conflict(format!(

@@ -59,6 +59,7 @@ mod merchant_events;
 mod merchant_routes;
 mod merchants;
 mod metering;
+mod nonplan_refunds;
 mod nonplan_returns;
 mod oauth;
 mod operations;
@@ -253,6 +254,9 @@ pub use merchants::{
     MerchantVersionInput, MerchantVersionPage, MerchantVersionRequest,
 };
 pub use metering::{MeteredEvent, MeteredHold, MeteredOutcome};
+pub use nonplan_refunds::{
+    NonplanRefundEffect, NonplanRefundRecovery, NonplanRefundRecoveryRequest,
+};
 pub use oauth::{ConsumedState, OAuthIdentity};
 pub use operations::{
     AttemptStatus, LEASE_SECS, METERED_OUTCOME, METERING_SURFACE, NewOperation, OperationAttempt,

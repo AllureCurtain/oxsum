@@ -1489,3 +1489,14 @@ The latter also accepts `OXSUM_VERIFY_WASM_DIR`. It fails on missing/placeholder
 artifacts and tests real digest/inclusion/signature behavior, including a genuinely
 signed foreign origin that the UI must independently reject. Raw evidence JSON
 is passed unchanged to WASM and downloaded without JavaScript integer rounding.
+
+### Exact non-plan refund recovery (#841)
+
+`cargo run -p oxsum-core --example recover_nonplan_refund -- --refund UUID
+--receipt UUID --session-file PATH --reason TEXT --key KEY` previews one exact
+historical source. The command requires explicit `DATABASE_URL` and current
+owner/finance Business authority and never discovers dotenv, migrates, creates a
+wallet or calls a provider. Apply additionally requires `--apply
+--expected-revision SHA256` from the reviewed preview. Refusal/error exits 2;
+proposed/applied output exits 0. See the complete
+[workflow and evidence requirements](nonplan-refund-recovery.md).

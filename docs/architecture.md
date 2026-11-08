@@ -617,3 +617,28 @@ isolation level: independent reconciliation needs a repeatable-read snapshot;
 ordinary mutations retain their existing locking and isolation policy. The
 helper neither opens a transaction nor changes the caller's isolation level.
 No ledger-engine schema or canonical encoding changes are required.
+
+### Non-plan refund cash and historical recovery (#841)
+
+`nonplan_refunds/{evidence,apply,recovery,types}.rs` owns exact receipt/source
+verification, transaction-owned Cash and the explicit local recovery boundary.
+Migration 0115 keeps immutable effects separate from the original approval/note
+state. The shared non-plan order-source lock precedes refund and append locks;
+actual Cash, source promotion cancellation, note projection, effect and applicable
+human finance audit commit together. External unapproved cash uses null-note
+source evidence and review suspense, never a fabricated staff actor.
+
+Original funding is verified through the ledger engine's content-hash read.
+The conservative bound excludes later credits, subtracts settled debits and
+outstanding pending reservations, and counts previous actual returns once. New
+atomic refund rows can prove no effect; old rows retain an uncertain-source fence.
+Historical restitution uses an exclusive original return `log_index`, not today's
+Wallet balance. The source revision includes ledger boundary, Wallet activity
+hash and prior return identities/hashes. Existing Cash and note pointers remain;
+only a missing Cash leg or a proven Wallet restitution is appended.
+
+`cashEffect` is an additive customer/finance projection. Actual late cash counts
+against refundable bounds and excludes payout retries even if terminal state
+cannot change. An unfulfilled returned purchase stays in reconciliation and
+cannot receive a future grant. The recovery CLI uses explicit database/session
+inputs without dotenv, migrations, lazy wallet creation or provider I/O.

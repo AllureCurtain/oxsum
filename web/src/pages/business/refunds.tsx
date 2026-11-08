@@ -62,10 +62,20 @@ function RefundRows() {
                 <Td mono truncate>{r.orderId.slice(0, 8)}</Td>
                 <Td mono truncate>{r.organizationId.slice(0, 8)}</Td>
                 <Td mono align="right"><Cr minor={r.amountMinor} currency={display} /></Td>
-                <td>{stateBadge(r.state)}</td>
+                <td>
+                  {stateBadge(r.state)}
+                  {r.cashEffect ? <div className="mt-1 text-xs">
+                    {t("refundCash.returned")} <Cr minor={r.cashEffect.cashMinor} />
+                    {r.cashEffect.requiresReview ? <p>{t("refundCash.review")}</p> : null}
+                    <p>{t("refundCash.walletTaken")} <Cr minor={r.cashEffect.walletMinor} /></p>
+                    {r.cashEffect.suspenseMinor > 0 ? <p>{t("refundCash.suspense")} <Cr minor={r.cashEffect.suspenseMinor} /></p> : null}
+                    {r.cashEffect.walletRestoredMinor > 0 ? <p>{t("refundCash.walletRestored")} <Cr minor={r.cashEffect.walletRestoredMinor} /></p> : null}
+                    <p className="text-muted">{t("refundCash.stateRetained")}</p>
+                  </div> : null}
+                </td>
                 <Td mono>{r.createdAt.slice(0, 10)}</Td>
                 <td className="text-right">
-                  {canWrite && r.state === "requested" ? (
+                  {canWrite && r.state === "requested" && !r.cashEffect ? (
                     <span className="inline-flex gap-1">
                       <AuditAction
                         trigger={<Button tone="ghost">{t("biz.refunds.approve")}</Button>}
@@ -140,7 +150,7 @@ function CreditNotes() {
                 <Td mono truncate>{n.creditNoteId.slice(0, 8)}</Td>
                 <Td mono truncate>{n.orderId.slice(0, 8)}</Td>
                 <Td mono align="right"><Cr minor={n.amountMinor} currency={display} /></Td>
-                <td>{stateBadge(n.state)}</td>
+                <td>{stateBadge(n.state)}{n.cashEffect ? <p className="mt-1 text-xs">{t("refundCash.returned")} <Cr minor={n.cashEffect.cashMinor} />{n.cashEffect.requiresReview ? ` · ${t("refundCash.review")}` : ""}</p> : null}</td>
                 <Td mono>{n.createdAt.slice(0, 10)}</Td>
               </tr>
             ))}
