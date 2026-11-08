@@ -390,8 +390,8 @@ const MIGRATIONS: &[(&str, &str)] = &[
         include_str!("../migrations/0097_evidence_bundles.sql"),
     ),
     (
-        "0098_integration_provision",
-        include_str!("../migrations/0098_integration_provision.sql"),
+        "0105_integration_provision",
+        include_str!("../migrations/0105_integration_provision.sql"),
     ),
 ];
 

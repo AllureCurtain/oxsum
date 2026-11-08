@@ -12,7 +12,7 @@ The namespace is the credential's own grant: provisioning inserts the new accoun
 
 Idempotency is the `(business, externalId)` uniqueness of the profile: `business_mutations.actor_id` is a `users` FK a service credential cannot fill, so the durable dedup is the namespace key. An exact replay answers the standing customer.
 
-A pure `customersProvision` credential mints with an **empty** `customerIds` allowlist and grows its own namespace; every other scope still requires 1–1000 explicit ids. Migration `0098` widens `integration_credentials_scopes_check` for the new variant and the 1–3 cardinality.
+A pure `customersProvision` credential mints with an **empty** `customerIds` allowlist and grows its own namespace; every other scope still requires 1–1000 explicit ids. Migration `0105` widens `integration_credentials_scopes_check` for the new variant and the 1–3 cardinality.
 
 ## Scope-set decision
 
