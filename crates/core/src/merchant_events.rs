@@ -302,6 +302,34 @@ async fn classify(
             return Ok(("rejected", Some("currencyMismatch")));
         }
     }
+    if event.kind == MerchantEventKind::Dispute && payment.purpose == MerchantPaymentPurpose::Order
+    {
+        let order=sqlx::query("SELECT purpose,amount_minor,display_amount_minor,display_currency FROM oxsum.payment_orders WHERE order_id=$1")
+            .bind(id).fetch_optional(&mut **tx).await?;
+        if let Some(order) = order
+            && order.try_get::<String, _>("purpose")? != "plan_period"
+        {
+            let amount = match crate::nonplan_returns::disputed_minor(
+                order.try_get("amount_minor")?,
+                order.try_get("display_amount_minor")?,
+                &order.try_get::<String, _>("display_currency")?,
+                event,
+            ) {
+                Ok(amount) => amount,
+                Err(reason) => return Ok(("rejected", Some(reason))),
+            };
+            let existing=sqlx::query("SELECT order_id,amount_minor,currency FROM oxsum.disputes WHERE merchant_id=$1 AND provider_dispute_id=$2")
+                .bind(merchant).bind(event.refund_id.as_deref()).fetch_optional(&mut **tx).await?;
+            if let Some(existing) = existing
+                && (existing.try_get::<Uuid, _>("order_id")? != id
+                    || existing.try_get::<i64, _>("amount_minor")? != amount
+                    || Some(existing.try_get::<String, _>("currency")?.as_str())
+                        != event.currency.as_deref())
+            {
+                return Ok(("rejected", Some("disputeTermsMismatch")));
+            }
+        }
+    }
     // Refunds/disputes remain authenticated intake for T17's own expected terms.
     // They cannot establish a new payment reference or invoke deposit credit.
     if matches!(

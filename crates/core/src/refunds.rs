@@ -21,9 +21,9 @@
 //! A **dispute** is not a refund: the `dispute` event kind opens a contested
 //! record of its own (`opened → evidence_due → won | lost | closed`). Each
 //! resolution commits authority, ledger/documents, terminal state and audit
-//! together. Historical interrupted effects require source review. The legacy
-//! non-plan Dr Cash / Cr CreditLine allocation is a known defect (#829), not a
-//! correct cash-loss representation; plan chargebacks retain complete cash.
+//! together. Historical interrupted effects require source review. New non-plan
+//! losses retain complete Cash credit against proven original Wallet funding or
+//! explicit review suspense. Historical wrong-direction entries remain #842.
 //!
 //! The promo leg of a `bundle` order is never refundable cash: the bound is
 //! `amount_minor` alone, and cancelling the promo lot is T18's seam — a
@@ -127,8 +127,8 @@ pub struct OrderRefundPage {
 }
 
 /// A contested charge as the dispute record tracks it — deliberately not a
-/// refund: a dispute is a claim the provider arbitrates, and its `lost`
-/// outcome re-charges the receivable rather than granting credit back.
+/// refund: a dispute is a claim the provider arbitrates. A new `lost` outcome
+/// retains the complete known cash loss against its source or review suspense.
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct OrderDispute {
@@ -140,13 +140,13 @@ pub struct OrderDispute {
     pub organization_id: Uuid,
     /// PSP-side dispute reference.
     pub provider_dispute_id: String,
-    /// The fiat figure contested, from the signed event.
+    /// Contested ledger credit minor units; non-plan fiat converts exactly.
     pub amount_minor: i64,
-    /// Currency of the contested amount.
+    /// Original collection fiat currency; `amount_minor` uses ledger credit units.
     pub currency: String,
     /// `opened → evidence_due → won | lost | closed`.
     pub state: String,
-    /// Ledger entry that re-charged the receivable once lost; `None` before.
+    /// Ledger entry retaining the lost chargeback cash; `None` before.
     pub recharge_entry_id: Option<Uuid>,
     /// When the dispute record opened.
     #[serde(with = "time::serde::rfc3339")]
@@ -423,6 +423,7 @@ impl Db {
         // Historical correction holds the business before its source snapshot.
         // A new request must serialize before that correction or see its fence.
         authority::lock_business(&mut tx).await?;
+        crate::nonplan_returns::lock_source_in(&mut tx, order_id).await?;
         sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1,0))")
             .bind(format!("order-refund:{order_id}"))
             .execute(&mut *tx)
@@ -463,6 +464,7 @@ impl Db {
         {
             return Err(WalletError::Conflict("this order funds a historical usage correction; review its refund payable before authorizing a payout".into()));
         }
+        crate::nonplan_returns::guard_lost_in(&mut tx, order_id).await?;
         // Only money that actually arrived may refund: `paid` or `fulfilled`
         // — a `provider_pending` order has nothing to give back yet.
         if !matches!(order.status.as_str(), "paid" | "fulfilled") {
@@ -532,7 +534,8 @@ impl Db {
         let row = sqlx::query(
             "SELECT amount_minor FROM oxsum.payment_orders \
              WHERE order_id=$1 AND organization_id=$2 AND status IN ('paid','fulfilled') \
-               AND (purpose <> 'bundle' OR status='fulfilled')",
+               AND (purpose <> 'bundle' OR status='fulfilled') \
+               AND (purpose='plan_period' OR NOT EXISTS(SELECT 1 FROM oxsum.disputes d WHERE d.order_id=payment_orders.order_id AND d.state='lost'))",
         )
         .bind(order_id)
         .bind(organization)
@@ -600,6 +603,16 @@ impl Db {
             BusinessCapability::RefundsWrite,
         )
         .await?;
+        let order_id: Option<Uuid> = sqlx::query_scalar(
+            "SELECT order_id FROM oxsum.refunds WHERE refund_id=$1 AND business_id=$2",
+        )
+        .bind(refund_id)
+        .bind(business)
+        .fetch_optional(&mut *tx)
+        .await?;
+        if let Some(order_id) = order_id {
+            crate::nonplan_returns::lock_source_in(&mut tx, order_id).await?;
+        }
         let Some(existing) = refund_in(&mut tx, refund_id).await? else {
             return Err(WalletError::NotFound("unknown refund".into()));
         };
@@ -651,6 +664,7 @@ impl Db {
                 Ok((standing, false))
             }
             RefundDecision::Approve => {
+                crate::nonplan_returns::guard_lost_in(&mut tx, existing.order_id).await?;
                 if !crate::plan_usage_corrections::corrected_order_journals_in(
                     &mut tx,
                     existing.order_id,
@@ -1113,11 +1127,8 @@ impl Db {
         Ok(())
     }
 
-    /// The `dispute` arm: a contested charge opens its own record — never a
-    /// refund — deduped on `(merchant_id, provider_dispute_id)` so a replayed
-    /// or re-delivered event keeps the standing row. The disputed figure is
-    /// the event's fiat amount, or the order's own when the event carries
-    /// none.
+    /// Retain one authenticated case. Non-plan amounts must map exactly from
+    /// pinned fiat; incompatible duplicate identities remain visible inbox review.
     pub async fn record_order_dispute(
         &self,
         event: &crate::VerifiedMerchantEvent,
@@ -1127,46 +1138,78 @@ impl Db {
             return Ok(());
         };
         let mut tx = self.pool().begin().await?;
-        let Some(order) = refund_order_in(&mut tx, order_id).await? else {
-            tx.commit().await?;
-            return Ok(());
-        };
         let provider_dispute_id = event
             .refund_id
             .clone()
             .or_else(|| event.provider_payment_id.clone())
             .unwrap_or_else(|| order_id.to_string());
-        // The contested amount is the order's funded credit — `amount_minor`,
-        // never the display figure the event echoes: a `lost` re-charge books
-        // ledger-minor through `dispute-recharge`, and the credit is the
-        // receivable that restores.
-        let amount = order.amount_minor;
-        sqlx::query(
-            "INSERT INTO oxsum.disputes\
-             (dispute_id,order_id,organization_id,merchant_id,provider_dispute_id,\
-              amount_minor,currency,state,inbox_receipt_id) \
-             VALUES($1,$2,$3,$4,$5,$6,$7,'opened',$8) ON CONFLICT (merchant_id,provider_dispute_id) DO NOTHING",
-        )
-        .bind(Uuid::new_v4())
-        .bind(order_id)
-        .bind(order.organization_id)
-        .bind(receipt.merchant_id)
-        .bind(provider_dispute_id)
-        .bind(amount.max(1))
-        .bind(event.currency.as_deref().unwrap_or(&order.display_currency))
-        .bind(receipt.id)
-        .execute(&mut *tx)
-        .await?;
-        // A plan-fee order's dispute contests the journal it settled: the
-        // contested figure tracks on the journal from the moment the record
-        // opens, so the staff read never shows a silently-contested bill
-        // (issue #611).
         let purpose: Option<String> =
             sqlx::query_scalar("SELECT purpose FROM oxsum.payment_orders WHERE order_id=$1")
                 .bind(order_id)
                 .fetch_optional(&mut *tx)
                 .await?;
-        if purpose.as_deref() == Some("plan_period") {
+        if purpose.as_deref().is_some_and(|p| p != "plan_period") {
+            let claimed: bool =
+                sqlx::query_scalar("SELECT pg_try_advisory_xact_lock(hashtextextended($1,0))")
+                    .bind(format!(
+                        "merchant-dispute:{}:{provider_dispute_id}",
+                        receipt.merchant_id
+                    ))
+                    .fetch_one(&mut *tx)
+                    .await?;
+            if !claimed {
+                return Err(WalletError::PoolBusy);
+            }
+            crate::nonplan_returns::lock_source_in(&mut tx, order_id).await?;
+        }
+        let Some(order) = refund_order_in(&mut tx, order_id).await? else {
+            tx.commit().await?;
+            return Ok(());
+        };
+        let nonplan = order.purpose != "plan_period";
+        let amount = if nonplan {
+            match crate::nonplan_returns::disputed_minor(
+                order.amount_minor,
+                order.display_amount_minor,
+                &order.display_currency,
+                event,
+            ) {
+                Ok(amount) => amount,
+                Err(reason) => {
+                    sqlx::query("UPDATE oxsum.merchant_event_inbox SET reason=$2,updated_at=now() WHERE receipt_id=$1 AND state='accepted'")
+                        .bind(receipt.id).bind(reason).execute(&mut *tx).await?;
+                    tx.commit().await?;
+                    return Err(WalletError::Conflict(format!(
+                        "dispute source requires review: {reason}"
+                    )));
+                }
+            }
+        } else {
+            order.amount_minor
+        };
+        let currency = event.currency.as_deref().unwrap_or(&order.display_currency);
+        let standing=sqlx::query("SELECT order_id,organization_id,amount_minor,currency FROM oxsum.disputes WHERE merchant_id=$1 AND provider_dispute_id=$2")
+            .bind(receipt.merchant_id).bind(&provider_dispute_id).fetch_optional(&mut *tx).await?;
+        if nonplan && let Some(standing) = standing {
+            if standing.try_get::<Uuid, _>("order_id")? != order_id
+                || standing.try_get::<Uuid, _>("organization_id")? != order.organization_id
+                || standing.try_get::<i64, _>("amount_minor")? != amount
+                || standing.try_get::<String, _>("currency")? != currency
+            {
+                sqlx::query("UPDATE oxsum.merchant_event_inbox SET reason='disputeTermsMismatch',updated_at=now() WHERE receipt_id=$1 AND state='accepted'")
+                    .bind(receipt.id).execute(&mut *tx).await?;
+                tx.commit().await?;
+                return Err(WalletError::Conflict(
+                    "dispute case has incompatible original terms".into(),
+                ));
+            }
+            tx.commit().await?;
+            return Ok(());
+        }
+        sqlx::query("INSERT INTO oxsum.disputes(dispute_id,order_id,organization_id,merchant_id,provider_dispute_id,amount_minor,currency,state,inbox_receipt_id) VALUES($1,$2,$3,$4,$5,$6,$7,'opened',$8) ON CONFLICT (merchant_id,provider_dispute_id) DO NOTHING")
+            .bind(Uuid::new_v4()).bind(order_id).bind(order.organization_id).bind(receipt.merchant_id)
+            .bind(provider_dispute_id).bind(amount.max(1)).bind(currency).bind(receipt.id).execute(&mut *tx).await?;
+        if !nonplan {
             self.track_journal_dispute_in(&mut tx, order_id, amount)
                 .await?;
         }

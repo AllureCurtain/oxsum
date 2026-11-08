@@ -243,6 +243,27 @@ pub fn normalize(
                 MerchantMode::Test
             }
         });
+    let refund_id = if kind == Kind::Dispute {
+        let supplied_case = object.get("dispute_id").filter(|v| !v.is_null());
+        let supplied_legacy = object.get("refund_id").filter(|v| !v.is_null());
+        if supplied_case.is_some_and(|v| text(v).is_none())
+            || supplied_legacy.is_some_and(|v| text(v).is_none())
+        {
+            return Err(MerchantEventError::Malformed);
+        }
+        let case = text(&object["dispute_id"]);
+        let legacy = text(&object["refund_id"]);
+        if case
+            .as_ref()
+            .zip(legacy.as_ref())
+            .is_some_and(|(a, b)| a != b)
+        {
+            return Err(MerchantEventError::Malformed);
+        }
+        case.or(legacy)
+    } else {
+        text(&object["refund_id"])
+    };
     let event = VerifiedMerchantEvent {
         event_id: event_id.ok_or(MerchantEventError::Malformed)?,
         kind,
@@ -253,7 +274,7 @@ pub fn normalize(
         mode,
         amount_minor,
         currency: text(&object["currency"]).map(|s| s.to_ascii_uppercase()),
-        refund_id: text(&object["refund_id"]),
+        refund_id,
     };
     Ok((event, Sha256::digest(body).into()))
 }

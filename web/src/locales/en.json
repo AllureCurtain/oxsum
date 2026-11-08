@@ -1660,8 +1660,9 @@
       "colOpened": "Opened",
       "resolve": "Resolve",
       "resolveTitle": "Resolve this dispute?",
-      "resolveExplain": "A lost dispute re-charges the drawn receivable under its own ledger entry.",
-      "recharge": "Recharge entry",
+      "resolveExplain": "This action closes the case without moving money. Lost outcomes retain the complete cash loss against proven funding or an explicit amount requiring review.",
+      "collectionCurrency": "Original collection currency",
+      "recharge": "Chargeback entry",
       "updated": "Updated",
       "empty": "No disputes."
     },

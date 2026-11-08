@@ -6,6 +6,7 @@
 //! organizations, memberships, API keys — lives in the single `oxsum` schema, created and
 //! versioned here. The two never mix.
 
+use std::sync::Arc;
 use std::time::Duration;
 
 use sqlx::postgres::PgPoolOptions;
@@ -463,6 +464,9 @@ pub struct Db {
     /// across `Db`'s cheap clones so a request's pick and its attempt's sample
     /// meet in the one store.
     pub(crate) route_stats: SharedRouteStats,
+    /// Non-plan grants can hold a source guard plus two nested connections.
+    /// Queue bursts before checkout; every clone shares this bounded admission.
+    pub(crate) fulfillment_queue: Arc<tokio::sync::Semaphore>,
 }
 
 /// How long a checkout may wait for a free connection before failing. See
@@ -502,20 +506,18 @@ impl Db {
             .test_before_acquire(true)
             .connect_with(options)
             .await?;
-        Ok(Self {
-            pool,
-            affinity: Default::default(),
-            route_stats: Default::default(),
-        })
+        Ok(Self::from_pool(pool))
     }
 
     /// Wraps an already built pool. Tests use this; `connect` is the server's path.
     #[must_use]
     pub fn from_pool(pool: PgPool) -> Self {
+        let width = (pool.options().get_max_connections().saturating_sub(1) / 3).max(1);
         Self {
             pool,
             affinity: Default::default(),
             route_stats: Default::default(),
+            fulfillment_queue: Arc::new(tokio::sync::Semaphore::new(width as usize)),
         }
     }
 
