@@ -2,6 +2,18 @@
 
 Field definitions for each endpoint are authoritative in `crates/server/openapi.yaml`; this file only records general conventions.
 
+Non-plan refund effects (#841, implementation in progress): `OrderRefund` and
+`OrderCreditNote` gain nullable `cashEffect`. Its immutable verified Cash return
+is separate from approval and note state, so late terminal and unapproved cash
+remain visible without fabricating approval or changing historical records.
+Complete Cash equals proven original Wallet take-back plus review suspense;
+historical Wallet restitution is a separate non-Cash correction. Null means no
+effect verified under this policy, not zero returned. A retained effect fences
+approval, provider retries, refundable source reuse and unperformed grants.
+The [local recovery command](nonplan-refund-recovery.md) requires exact receipt
+evidence, current owner/finance authority and an unchanged preview revision on
+apply. Its `nonplan_refund.recover` finance audit names the actor and outcome.
+
 Business setup readiness (#843): `GET /api/v1/business/readiness` requires a
 current personal session in Business context with `overviewRead`. It returns
 `checkedAt`, `ready` and five `{key,state,action}` facts. `state` is `ready`,
