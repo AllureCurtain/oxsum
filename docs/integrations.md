@@ -59,7 +59,7 @@ models, cap and window per request.
 
 For events that never pass through the gateway — a service reports its own completed
 or in-flight billable work. Credential: an owner-issued integration credential with
-the `meteringWrite` scope, its selected customers explicit; scope and customer are
+the `meteringWrite` scope and either explicit customer grants or its owner-selected application namespace; scope and customer are
 rechecked inside the authorization transaction
 (`x-integration-scope` on each operation, `crates/server/tests/metering.rs`,
 `integration_credentials.rs`).
@@ -82,6 +82,27 @@ customer answers 402, an unknown or unscoped one 404
 [examples/scoped-integration](../examples/scoped-integration/README.md), and the
 server suite runs that actual client end-to-end
 (`documented_python_client_reads_meters_replays_and_refuses_foreign_customer`).
+
+## Embedded application accounts
+
+The owner creates an immutable application through `POST /api/v1/business/applications`
+and issues a credential for its `applicationId` with empty `customerIds`. The
+application has a lifetime account limit, including archived accounts. Runtime
+credentials cannot create an application or claim a portal customer.
+
+`POST /api/v1/integration/customers` requires `customersProvision` and maps an
+application-local external identity to a new ledger account, without creating a
+human login, membership or balance. `GET` with `externalId` requires `customersRead`;
+`POST /{organizationId}/archive` requires `customersLifecycleWrite`. Archival
+preserves funds/history and blocks new admission. Exact operation retries retain
+the original receipt; changed terms conflict. Credential rotation retains account
+mapping and metering identity while each call rechecks current authority.
+
+The core and HTTP `application_accounts` suites cover isolation, concurrency,
+rotation, archival and historical provision recovery. Human consent linking,
+scoped gateway key/checkout/evidence operations, lifecycle notifications and a
+complete external application journey remain separate N21 work. See
+[the application API contract](api.md#application-namespaces-and-customer-lifecycle-846).
 
 ## Payment rails
 
@@ -181,8 +202,8 @@ Each refusal is a behavior a caller can test, not a gap to assume around.
 | `/v1/images`, `/v1/audio/*`, `/v1/fine_tuning`, `/v1/batches`, `/v1/moderations`, `/v1/assistants`, threads | not routed — falls through to 404 | no surface, no adapter; the `event` price mode can *meter* these dimensions (tool/image/audio/video token fields on `EventUsage`) when a service reports them, but the gateway forwards no such request |
 | Batch/embeddings bulk API | not routed | `/v1/embeddings` is the synchronous single call only |
 | Provider-account import OAuth | not wired | issue #506 — deferred; named here so no reader assumes coverage |
-| Scope beyond `customersRead`/`meteringWrite` | schema rejection — `IntegrationScope` is a closed enum | `crates/server/openapi.yaml` |
-| Wildcard customer on an integration credential | `customerIds` is 1–1000 explicit UUIDs, no wildcard | same schema |
+| Scope beyond `customersRead`/`meteringWrite`/`customersProvision`/`billingRead`/`customersLifecycleWrite` | schema rejection — `IntegrationScope` is a closed enum; lifecycle scope requires an application | `crates/server/openapi.yaml` |
+| Wildcard customer on an integration credential | Explicit legacy grants select 1–1000 UUIDs; a provision-only grant may start empty. Application grants require empty `customerIds` and reach only their provisioned accounts; no wildcard | same schema |
 | `stream: true` on `/v1/embeddings` or `/v1/rerank` | parameter refusal — "this surface does not stream" | `crates/server/src/gateway/request.rs:199` |
 | Client-set ledger amount on an order | schema rejection — `OrderCreateRequest` has no `amountMinor`/`rate` fields | [unsupported.md](unsupported.md) |
 | Legacy `oxs-svc-` credentials | 401 — disabled | `examples/scoped-integration/README.md` |
