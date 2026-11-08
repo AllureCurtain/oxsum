@@ -6,7 +6,7 @@ Six hypotheses from the source audit were each driven through a real-ledger fixt
 
 Suite: `crates/core/tests/plan_refund_conservation.rs`.
 
-Current correction: [#802 cash allocation evidence](plan-refund-cash.md) supersedes the H2/H3 deferral and the old H3 cash split below. Confirmed refunds return the full external amount; the historical text is retained as the original failed hypothesis record. H2/H3 reproductions are active after #802.
+Current corrections: [#802 cash allocation evidence](plan-refund-cash.md) supersedes the H2/H3 deferral and the old H3 cash split below; it integrated in #812. Confirmed refunds return the full external amount. [#803 settled-usage evidence](plan-usage-once.md) supersedes H1's deferral: duplicate billing is a correctness defect under every policy. All H1–H6 regressions now execute, with cash- and credit-funded overflow cases. The verdicts and validation below retain the original audit record rather than describing the current implementation.
 
 ## Verdicts
 
@@ -48,6 +48,6 @@ Fix: new `void_statement_for_journal_in` in `plan_statements.rs`, called inside 
 
 `cargo nextest run -p oxsum-core --test plan_refund_conservation` — 3 active tests pass (H4, H5-designed, H6); 3 confirmed reproductions run under `--ignored` (H1, H2, H3). `cargo nextest run -p oxsum-core --test journals --test plan_statements --test refunds --test plans` — 35 passed, 0 failed. `scripts/fmt.sh` clean; `cargo clippy -p oxsum-core --all-targets` clean.
 
-## Remaining gates
+## Original deferral, superseded by the repairs above
 
-H1, H2 and H3 need the N11 versioned daily-recognition policy to land the deferred/earned allocation they each isolate; the `#[ignore]`'d reproductions are ready to un-ignore and pass once that decision is implemented. The legacy `usage_overage`, mid-period-note and over-receivable policies stay explicit in the interim. No real model, provider or payment spend was attempted.
+The original audit deferred H1–H3 to N11 and retained ignored reproductions. That dependency was incorrect: once-only usage charging and confirmed refund cash conservation are required under V1 as well. #802/#803 repair them without rewriting historical entries. Current remaining work is explicit historical compensation (#809), lifecycle locking (#811), daily recognition and reporting (N11), scoped statement repayment (#777), and candidate/browser acceptance. No real model, provider or payment spend was attempted.
