@@ -7203,7 +7203,7 @@ paths:
       operationId: businessFinanceAudit
       summary: List the business finance audit
       description: |
-        Current business staff with report-read capability; a personal session. One immutable `finance_audit` row per staff financial action — every refund resolution, dispute close, journal void, statement release, reconciliation resolve/waive/repair and explicit historical plan refund or usage correction — newest first. Each row names the actor, the audited action and the reason it carried, and drills to the entity it corrected. `action` narrows to one audited action, including `plan_refund.recover` and `plan_usage.correct` from the local correction commands.
+        Current business staff with report-read capability; a personal session. One immutable `finance_audit` row per staff financial action — every refund resolution, dispute close, journal void, statement release, reconciliation resolve/waive/repair and explicit historical plan refund or usage correction — newest first. Each row names the actor, the audited action and the reason it carried, and drills to the entity it corrected. `action` narrows to one audited action, including `plan_refund.recover`, `plan_usage.correct` and `nonplan_refund.recover` from the local correction commands. A non-plan refund `cashEffect` describes actual verified money-out separately from immutable approval/note state; it fences further payouts even after a late terminal event. Unapproved cash is explicit review suspense, never a retroactive approval.
       security: [{ sessionCookie: [] }]
       parameters:
         - { name: after, in: query, schema: { type: string, format: uuid } }
@@ -15651,9 +15651,82 @@ components:
         idempotencyKey: { type: string, minLength: 1, maxLength: 200 }
         resolution: { type: string, enum: [evidenceDue, won, lost, closed] }
         reason: { type: [string, "null"], maxLength: 500 }
+    NonplanRefundEffect:
+      type: object
+      additionalProperties: false
+      description: >-
+        Immutable verified non-plan refund cash fact. This is separate from the
+        original request/approval and credit-note state. Late or unapproved external
+        money-out can coexist with an unchanged declined, failed or released state.
+        Its presence does not authorize a provider call or reopen old debt. Null on
+        the parent means this policy has not verified an effect, not zero money-out.
+      required:
+        - policy
+        - refundId
+        - orderId
+        - organizationId
+        - cashMinor
+        - walletMinor
+        - suspenseMinor
+        - walletRestoredMinor
+        - cashEntryId
+        - cashEntryHash
+        - cashBookingDate
+        - correctionEntryId
+        - correctionEntryHash
+        - originalFundingEntryId
+        - originalFundingEntryHash
+        - eventReceiptId
+        - legacyRecovery
+        - requiresReview
+        - reviewReasons
+        - bookedAt
+      properties:
+        policy: { type: string, const: nonplan-refund-v1 }
+        refundId: { type: string, format: uuid }
+        orderId: { type: string, format: uuid }
+        organizationId: { type: string, format: uuid }
+        cashMinor:
+          type: integer
+          format: int64
+          minimum: 1
+          description: Complete provider Cash outflow, in ledger credit minor units.
+        walletMinor:
+          type: integer
+          format: int64
+          minimum: 0
+          description: Only provably retained original Wallet funding reclaimed.
+        suspenseMinor:
+          type: integer
+          format: int64
+          minimum: 0
+          description: Cash outflow requiring source review; never invented debt.
+        walletRestoredMinor:
+          type: integer
+          format: int64
+          minimum: 0
+          description: Proven historical wrong-source Wallet debit restored without another Cash outflow.
+        cashEntryId: { type: string, format: uuid }
+        cashEntryHash: { type: string, pattern: '^[0-9a-f]{64}$' }
+        cashBookingDate:
+          type: string
+          format: date
+          description: Original Cash entry accounting day, retained during later source correction.
+        correctionEntryId: { type: [string, 'null'], format: uuid }
+        correctionEntryHash: { type: [string, 'null'], pattern: '^[0-9a-f]{64}$' }
+        originalFundingEntryId: { type: [string, 'null'], format: uuid }
+        originalFundingEntryHash: { type: [string, 'null'], pattern: '^[0-9a-f]{64}$' }
+        eventReceiptId: { type: string, format: uuid }
+        legacyRecovery: { type: boolean }
+        requiresReview: { type: boolean }
+        reviewReasons: { type: array, items: { type: string } }
+        bookedAt:
+          type: string
+          format: date-time
+          description: When this verified allocation metadata committed; not necessarily the Cash accounting date.
     OrderRefund:
       type: object
-      required: [refundId, orderId, organizationId, amountMinor, displayAmountMinor, displayCurrency, reason, state, providerRefundId, retryCount, nextRetryAt, noteId, createdAt, updatedAt]
+      required: [refundId, orderId, organizationId, amountMinor, displayAmountMinor, displayCurrency, reason, state, providerRefundId, retryCount, nextRetryAt, noteId, cashEffect, createdAt, updatedAt]
       properties:
         refundId: { type: string, format: uuid }
         orderId: { type: string, format: uuid }
@@ -15667,6 +15740,10 @@ components:
         retryCount: { type: integer, description: provider attempts so far }
         nextRetryAt: { type: [string, "null"], format: date-time, description: "Next bounded provider recovery attempt. Null while provider_pending means automatic recovery stopped and reconciliation is required; the reserved amount and issued note remain held." }
         noteId: { type: [string, "null"], format: uuid, description: the credit note an approval issued }
+        cashEffect:
+          oneOf:
+            - $ref: "#/components/schemas/NonplanRefundEffect"
+            - type: "null"
         createdAt: { type: string, format: date-time }
         updatedAt: { type: string, format: date-time }
     OrderRefundPage:
@@ -15683,13 +15760,17 @@ components:
         refundableMinor: { type: [integer, "null"], format: int64, description: the credit-minor still refundable on the order; null for an order with nothing refundable }
     OrderCreditNote:
       type: object
-      required: [creditNoteId, organizationId, orderId, refundId, entryId, amountMinor, reason, state, createdAt]
+      required: [creditNoteId, organizationId, orderId, refundId, entryId, amountMinor, reason, state, cashEffect, createdAt]
       properties:
         creditNoteId: { type: string, format: uuid }
         organizationId: { type: string, format: uuid }
         orderId: { type: string, format: uuid }
         refundId: { type: string, format: uuid }
-        entryId: { type: [string, "null"], format: uuid, description: the wallet take-back entry once applied; null while issued-unapplied }
+        entryId: { type: [string, "null"], format: uuid, description: original retained note entry; cashEffect separately describes verified cash and historical correction }
+        cashEffect:
+          oneOf:
+            - $ref: "#/components/schemas/NonplanRefundEffect"
+            - type: "null"
         amountMinor: { type: integer, format: int64 }
         reason: { type: string }
         state: { type: string, enum: [issued, applied, reversed] }
@@ -15729,7 +15810,7 @@ components:
         actorUserId: { type: string, format: uuid, description: the staff user who authorized the action }
         action:
           type: string
-          enum: [refund.approve, refund.decline, refund.release, dispute.resolve, journal.void, statement.release, reconciliation.resolve, reconciliation.waive, reconciliation.repair, plan_refund.recover, plan_usage.correct]
+          enum: [refund.approve, refund.decline, refund.release, dispute.resolve, journal.void, statement.release, reconciliation.resolve, reconciliation.waive, reconciliation.repair, plan_refund.recover, plan_usage.correct, nonplan_refund.recover]
           description: the audited financial action — the same vocabulary `finance_audit`'s check constraint bounds
         target: { type: string, description: the entity the action corrected — a refund, dispute, journal, statement or exception id }
         detail: { type: object, additionalProperties: true, description: the action's safe fields — reason, decision, repair patch; never a credential }

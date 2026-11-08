@@ -6,6 +6,8 @@ Updated: 2026-11-09
 
 - [x] [#862](https://github.com/AllureCurtain/oxsum/issues/862) — Pool exhaustion deadline regression integrated in PR #864 (`e53e303a`); 17 PostgreSQL fault checks, strict Clippy and independent review passed.
 
+- [ ] [#841](https://github.com/AllureCurtain/oxsum/issues/841) — Implement complete non-plan refund Cash, exact original-source allocation, late cash/payout fences, customer/finance effect projections and explicit historical preview/apply. Contract and source audit prepared; implementation and validation in progress.
+
 - [ ] [#863](https://github.com/AllureCurtain/oxsum/issues/863) — Customer period/statement evidence portal, exports and scoped local verification; five behavioral checks, three real-WASM groups and frontend build passed; independent review/PR integration pending.
 
 - [x] [#858](https://github.com/AllureCurtain/oxsum/issues/858) — Integrated dashboard signed-head/consistency verification and customer-scoped retained trust in PR #861 (`b67a2d3b`); five behavioral and four real-WASM groups passed. Browser/candidate acceptance remains.
