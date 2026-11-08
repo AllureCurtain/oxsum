@@ -48,14 +48,11 @@ async fn mixed_historical_collection_currencies_remain_fenced_and_original() {
         sqlx::query("INSERT INTO oxsum.payment_orders(order_id,business_id,organization_id,purpose,amount_minor,currency,display_currency,display_amount_minor,rate_mantissa,rate_scale,idempotency_key,source,evidence,status,paid_at) VALUES($1,oxsum.default_business_id(),$2,'wallet_topup',2000000,'USD',$3,200,1,0,$3,'manual',$4,'paid',now())")
             .bind(Uuid::new_v4()).bind(user.organization.id).bind(code).bind(json!({"reference":code})).execute(db.pool()).await.unwrap();
     }
-    // `plan_payment` is a nullable column added by 0103: it lands as NULL on
-    // these historical orders, which is not a relabel of their contents.
-    let before: Vec<Value> = sqlx::query_scalar(
-        "SELECT to_jsonb(p)-'plan_payment' FROM oxsum.payment_orders p ORDER BY order_id",
-    )
-    .fetch_all(db.pool())
-    .await
-    .unwrap();
+    let before: Vec<Value> =
+        sqlx::query_scalar("SELECT to_jsonb(p) FROM oxsum.payment_orders p ORDER BY order_id")
+            .fetch_all(db.pool())
+            .await
+            .unwrap();
     db.migrate().await.unwrap();
     db.migrate().await.unwrap();
     db.bootstrap_collection_terms(&CollectionCurrency {
@@ -85,11 +82,20 @@ async fn mixed_historical_collection_currencies_remain_fenced_and_original() {
             Err(WalletError::Conflict(_))
         ));
     }
-    let after: Vec<Value> = sqlx::query_scalar(
-        "SELECT to_jsonb(p)-'plan_payment' FROM oxsum.payment_orders p ORDER BY order_id",
-    )
-    .fetch_all(db.pool())
-    .await
-    .unwrap();
+    let mut after: Vec<Value> =
+        sqlx::query_scalar("SELECT to_jsonb(p) FROM oxsum.payment_orders p ORDER BY order_id")
+            .fetch_all(db.pool())
+            .await
+            .unwrap();
+    // Bundle/plan authority snapshots are new nullable columns, not historical
+    // facts. Assert their defaults separately from the original row contents.
+    for row in &mut after {
+        for column in ["bundle_offer", "plan_payment"] {
+            assert_eq!(
+                row.as_object_mut().unwrap().remove(column),
+                Some(Value::Null)
+            );
+        }
+    }
     assert_eq!(before, after);
 }

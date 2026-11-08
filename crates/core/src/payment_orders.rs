@@ -424,7 +424,6 @@ impl Db {
                 || standing.display_amount_minor != new.display_amount_minor
                 || standing.display_currency != new.display_currency
                 || standing.purpose_ref != new.purpose_ref
-                || standing.promo_minor != new.promo_minor
                 || (standing.purpose == PaymentOrderPurpose::PlanPeriod
                     && standing
                         .plan_payment
@@ -437,6 +436,9 @@ impl Db {
                     "payment order terms changed for the same idempotency key".into(),
                 ));
             }
+            // Zero omits the optional bundle assertion. The stored promotion
+            // comes from the published offer, so replay compares only an
+            // explicit assertion with that original grant.
             if new.promo_minor != 0 && new.promo_minor != standing.promo_minor {
                 return Err(WalletError::Conflict(
                     "bundle promotion assertion changed on replay".into(),

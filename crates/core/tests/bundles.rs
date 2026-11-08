@@ -203,6 +203,13 @@ async fn published_bundle_pins_grants_retirement_expiry_and_replay() {
     assert_eq!(created.promo_minor, 1_000_000);
     assert_eq!(created.rate_mantissa, 1);
     assert_eq!(created.rate_scale, 0);
+    assert_eq!(
+        db.create_payment_order(&ctx, customer.organization.id, &new)
+            .await
+            .unwrap()
+            .order_id,
+        created.order_id
+    );
     // Even an old/direct writer cannot insert a forged promotion alongside a
     // valid publication snapshot. This is an oxsum table, not a ledger edit.
     assert!(sqlx::query("INSERT INTO oxsum.payment_orders(order_id,business_id,merchant_id,merchant_version_id,organization_id,purpose,amount_minor,currency,display_currency,display_amount_minor,rate_mantissa,rate_scale,purpose_ref,promo_minor,idempotency_key,bundle_offer) SELECT $2,business_id,merchant_id,merchant_version_id,organization_id,purpose,amount_minor,currency,display_currency,display_amount_minor,rate_mantissa,rate_scale,purpose_ref,promo_minor+1,$2::text,bundle_offer FROM oxsum.payment_orders WHERE order_id=$1")
@@ -223,6 +230,40 @@ async fn published_bundle_pins_grants_retirement_expiry_and_replay() {
         )
         .unwrap(),
         frozen
+    );
+    let mut asserted = new.clone();
+    asserted.promo_minor = created.promo_minor;
+    assert_eq!(
+        db.create_payment_order(&ctx, customer.organization.id, &asserted)
+            .await
+            .unwrap()
+            .order_id,
+        created.order_id,
+        "a matching explicit assertion replays the retired offer's original order"
+    );
+    for change in 0..4 {
+        let mut altered = new.clone();
+        match change {
+            0 => altered.promo_minor = created.promo_minor + 1,
+            1 => altered.display_amount_minor += 1,
+            2 => altered.display_currency = "EUR".into(),
+            _ => altered.purpose_ref = Some(Uuid::new_v4()),
+        }
+        assert!(matches!(
+            db.create_payment_order(&ctx, customer.organization.id, &altered)
+                .await,
+            Err(WalletError::Conflict(_))
+        ));
+    }
+    let order_count: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM oxsum.payment_orders WHERE organization_id=$1")
+            .bind(customer.organization.id)
+            .fetch_one(db.pool())
+            .await
+            .unwrap();
+    assert_eq!(
+        order_count, 1,
+        "replays and rejected alterations create no second order"
     );
     tampered = new.clone();
     tampered.idempotency_key = Uuid::new_v4().to_string();
