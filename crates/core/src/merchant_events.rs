@@ -145,9 +145,29 @@ fn binding(row: &PgRow) -> Result<MerchantPaymentBinding, WalletError> {
         provider_payment_id: row.try_get("provider_payment_id")?,
     })
 }
-fn receipt(row: &PgRow) -> Result<MerchantEventReceipt, WalletError> {
-    let event: VerifiedMerchantEvent = serde_json::from_value(row.try_get("normalized")?)
+// The received normalization remains immutable. Trusted coordinates are a
+// derived read over immutable payment bindings, never rewritten event data.
+const EVENT_SELECT: &str = "SELECT e.*,b.payment_id AS correlated_payment_id,b.organization_id AS correlated_organization_id FROM oxsum.merchant_event_inbox e LEFT JOIN oxsum.merchant_payment_refs r ON r.merchant_id=e.merchant_id AND r.provider_payment_id=e.normalized->>'providerPaymentId' LEFT JOIN oxsum.merchant_payment_bindings b ON b.payment_id=r.payment_id AND b.merchant_id=e.merchant_id AND b.version_id=e.version_id";
+
+fn event_data(row: &PgRow) -> Result<VerifiedMerchantEvent, WalletError> {
+    let mut event: VerifiedMerchantEvent = serde_json::from_value(row.try_get("normalized")?)
         .map_err(|_| invalid("invalid stored merchant event"))?;
+    let payment: Option<Uuid> = row.try_get("correlated_payment_id")?;
+    let organization: Option<Uuid> = row.try_get("correlated_organization_id")?;
+    if payment.is_some()
+        && event.payment_id.is_none_or(|id| Some(id) == payment)
+        && event
+            .organization_id
+            .is_none_or(|id| Some(id) == organization)
+    {
+        event.payment_id = payment;
+        event.organization_id = organization;
+    }
+    Ok(event)
+}
+
+fn receipt(row: &PgRow) -> Result<MerchantEventReceipt, WalletError> {
+    let event = event_data(row)?;
     Ok(MerchantEventReceipt {
         id: row.try_get("receipt_id")?,
         merchant_id: row.try_get("merchant_id")?,
@@ -198,7 +218,7 @@ async fn classify(
     tx: &mut Transaction<'_, Postgres>,
     merchant: Uuid,
     version: Uuid,
-    event: &VerifiedMerchantEvent,
+    event: &mut VerifiedMerchantEvent,
 ) -> Result<(&'static str, Option<&'static str>), WalletError> {
     if event.kind == MerchantEventKind::Unsupported {
         return Ok(("ignored", Some("unsupportedEvent")));
@@ -220,6 +240,34 @@ async fn classify(
     }
     if event.mode.is_some_and(|v| v.as_str() != mode) {
         return Ok(("rejected", Some("modeMismatch")));
+    }
+    // A switch's refund object need not copy the payment's metadata. Resolve
+    // only missing coordinates from our already-bound reference, within the
+    // signed route's merchant/version. Never repair a supplied contradiction.
+    if (event.payment_id.is_none() || event.organization_id.is_none())
+        && let Some(provider) = event.provider_payment_id.as_deref()
+    {
+        let row = sqlx::query("SELECT b.*,r.provider_payment_id FROM oxsum.merchant_payment_refs r JOIN oxsum.merchant_payment_bindings b USING(payment_id) WHERE r.merchant_id=$1 AND r.provider_payment_id=$2")
+            .bind(merchant).bind(provider).fetch_optional(&mut **tx).await?;
+        if let Some(row) = row {
+            let bound = binding(&row)?;
+            if bound.version_id != version {
+                return Ok(("rejected", Some("versionMismatch")));
+            }
+            if event.payment_id.is_some_and(|id| id != bound.payment_id) {
+                return Ok(("rejected", Some("providerPaymentMismatch")));
+            }
+            if event
+                .organization_id
+                .is_some_and(|id| id != bound.organization_id)
+            {
+                return Ok(("rejected", Some("customerMismatch")));
+            }
+            event.payment_id = Some(bound.payment_id);
+            event.organization_id = Some(bound.organization_id);
+        } else {
+            return Ok(("pending", Some("paymentReferencePending")));
+        }
     }
     let Some(id) = event.payment_id else {
         return Ok(("rejected", Some("missingLocalPayment")));
@@ -377,7 +425,13 @@ impl Db {
             ))
             .execute(&mut *tx)
             .await?;
-        let existing=sqlx::query("SELECT * FROM oxsum.merchant_event_inbox WHERE merchant_id=$1 AND event_id=$2 FOR UPDATE").bind(context.merchant_id).bind(&event.event_id).fetch_optional(&mut *tx).await?;
+        let existing = sqlx::query(&format!(
+            "{EVENT_SELECT} WHERE e.merchant_id=$1 AND e.event_id=$2 FOR UPDATE OF e"
+        ))
+        .bind(context.merchant_id)
+        .bind(&event.event_id)
+        .fetch_optional(&mut *tx)
+        .await?;
         let id = if let Some(row) = existing {
             let digest: Vec<u8> = row.try_get("payload_digest")?;
             if digest != payload_digest {
@@ -401,17 +455,18 @@ impl Db {
         .bind(id)
         .fetch_one(&mut *tx)
         .await?;
-        let original: VerifiedMerchantEvent = serde_json::from_value(stored.try_get("normalized")?)
-            .map_err(|_| invalid("invalid stored merchant event"))?;
+        let mut original: VerifiedMerchantEvent =
+            serde_json::from_value(stored.try_get("normalized")?)
+                .map_err(|_| invalid("invalid stored merchant event"))?;
         let (state, reason) = classify(
             &mut tx,
             context.merchant_id,
             stored.try_get("version_id")?,
-            &original,
+            &mut original,
         )
         .await?;
         sqlx::query("UPDATE oxsum.merchant_event_inbox SET state=$2,reason=$3,updated_at=now() WHERE receipt_id=$1").bind(id).bind(state).bind(reason).execute(&mut *tx).await?;
-        let row = sqlx::query("SELECT * FROM oxsum.merchant_event_inbox WHERE receipt_id=$1")
+        let row = sqlx::query(&format!("{EVENT_SELECT} WHERE e.receipt_id=$1"))
             .bind(id)
             .fetch_one(&mut *tx)
             .await?;
@@ -425,25 +480,28 @@ impl Db {
         id: Uuid,
     ) -> Result<MerchantEventReceipt, WalletError> {
         let mut tx = self.pool().begin().await?;
-        let row =
-            sqlx::query("SELECT * FROM oxsum.merchant_event_inbox WHERE receipt_id=$1 FOR UPDATE")
-                .bind(id)
-                .fetch_optional(&mut *tx)
-                .await?
-                .ok_or_else(|| WalletError::NotFound("unknown merchant event".into()))?;
+        let row = sqlx::query(&format!(
+            "{EVENT_SELECT} WHERE e.receipt_id=$1 FOR UPDATE OF e"
+        ))
+        .bind(id)
+        .fetch_optional(&mut *tx)
+        .await?
+        .ok_or_else(|| WalletError::NotFound("unknown merchant event".into()))?;
         let result = receipt(&row)?;
         if result.state != "pending" {
             return Ok(result);
         }
-        let event = serde_json::from_value(row.try_get("normalized")?)
-            .map_err(|_| invalid("invalid stored merchant event"))?;
+        let mut event: VerifiedMerchantEvent =
+            serde_json::from_value(row.try_get("normalized")?)
+                .map_err(|_| invalid("invalid stored merchant event"))?;
         let (state, reason) =
-            classify(&mut tx, result.merchant_id, result.version_id, &event).await?;
+            classify(&mut tx, result.merchant_id, result.version_id, &mut event).await?;
         sqlx::query("UPDATE oxsum.merchant_event_inbox SET state=$2,reason=$3,updated_at=now() WHERE receipt_id=$1").bind(id).bind(state).bind(reason).execute(&mut *tx).await?;
         tx.commit().await?;
         Ok(MerchantEventReceipt {
             state: state.into(),
             reason: reason.map(str::to_owned),
+            payment_id: event.payment_id,
             ..result
         })
     }
@@ -463,26 +521,26 @@ impl Db {
         if !(1..=100).contains(&limit) {
             return Err(invalid("limit must be 1..100"));
         }
-        let rows=sqlx::query("SELECT * FROM oxsum.merchant_event_inbox WHERE state IN ('pending','accepted') ORDER BY updated_at,receipt_id LIMIT $1").bind(limit).fetch_all(self.pool()).await?;
+        let rows = sqlx::query(&format!(
+            "{EVENT_SELECT} WHERE e.state IN ('pending','accepted') ORDER BY e.updated_at,e.receipt_id LIMIT $1"
+        ))
+        .bind(limit)
+        .fetch_all(self.pool())
+        .await?;
         rows.iter().map(receipt).collect()
     }
-    /// Returns the normalized verified event stored for a receipt, or `None` if
-    /// the receipt is unknown.
+    /// Returns the verified event with missing coordinates derived from its
+    /// immutable merchant/version binding, or `None` for an unknown receipt.
+    /// The original normalized event and payload digest remain unchanged.
     pub async fn merchant_event_data(
         &self,
         id: Uuid,
     ) -> Result<Option<VerifiedMerchantEvent>, WalletError> {
-        let value: Option<serde_json::Value> = sqlx::query_scalar(
-            "SELECT normalized FROM oxsum.merchant_event_inbox WHERE receipt_id=$1",
-        )
-        .bind(id)
-        .fetch_optional(self.pool())
-        .await?;
-        value
-            .map(|v| {
-                serde_json::from_value(v).map_err(|_| invalid("invalid stored merchant event"))
-            })
-            .transpose()
+        let row = sqlx::query(&format!("{EVENT_SELECT} WHERE e.receipt_id=$1"))
+            .bind(id)
+            .fetch_optional(self.pool())
+            .await?;
+        row.as_ref().map(event_data).transpose()
     }
     /// Lists a merchant's event inbox for business reports. Requires the
     /// reports-read capability; `limit` must be between 1 and 100.
@@ -504,7 +562,7 @@ impl Db {
         if !exists {
             return Err(WalletError::NotFound("unknown merchant".into()));
         }
-        let rows=sqlx::query("SELECT * FROM oxsum.merchant_event_inbox WHERE merchant_id=$1 AND ($2::uuid IS NULL OR receipt_id>$2) ORDER BY receipt_id LIMIT $3").bind(merchant).bind(after).bind(limit+1).fetch_all(&mut *tx).await?;
+        let rows=sqlx::query(&format!("{EVENT_SELECT} WHERE e.merchant_id=$1 AND ($2::uuid IS NULL OR e.receipt_id>$2) ORDER BY e.receipt_id LIMIT $3")).bind(merchant).bind(after).bind(limit+1).fetch_all(&mut *tx).await?;
         let mut events = rows.iter().map(receipt).collect::<Result<Vec<_>, _>>()?;
         let more = events.len() > limit as usize;
         events.truncate(limit as usize);

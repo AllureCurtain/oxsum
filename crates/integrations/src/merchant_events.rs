@@ -200,6 +200,16 @@ pub fn normalize(
         }
     };
     let metadata = &object["metadata"];
+    // Invalid supplied IDs are not missing metadata. In particular they must
+    // not be replaced by the trusted provider-reference recovery path.
+    for field in ["payment_id", "deposit_id", "organization_id"] {
+        if metadata
+            .get(field)
+            .is_some_and(|value| !value.is_null() && id(value).is_none())
+        {
+            return Err(MerchantEventError::Malformed);
+        }
+    }
     let payment_id = id(&metadata["payment_id"])
         .or_else(|| id(&metadata["deposit_id"]))
         .or_else(|| id(&object["client_reference_id"]))

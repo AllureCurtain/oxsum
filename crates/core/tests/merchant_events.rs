@@ -184,6 +184,139 @@ async fn matching_event_accepts_and_replays_idempotently() {
     assert_eq!(by_provider.payment_id, payment_id);
 }
 
+/// Metadata-poor events wait for a stored reference, then recover only within
+/// its exact signing scope. Contradictory supplied coordinates remain refused.
+#[tokio::test]
+async fn missing_metadata_recovers_only_from_the_pinned_merchant_version() {
+    let Some((db, owner, org, tenant)) = world().await else {
+        return;
+    };
+    let first = merchant(&db, &owner, "correlation-first").await;
+    let ctx = context(&db, &first, first.version_id).await;
+    let payment = Uuid::new_v4();
+    db.pin_merchant_payment(&binding(payment, &first, org, 5000))
+        .await
+        .unwrap();
+    let mut ev = event(payment, "pay_correlation", org, &ctx.account_id, 1000);
+    ev.kind = MerchantEventKind::RefundSucceeded;
+    ev.refund_id = Some("refund_correlation".into());
+    ev.payment_id = None;
+    ev.organization_id = None;
+    let waiting = db
+        .receive_merchant_event(&ctx, &ev, &[51; 32])
+        .await
+        .unwrap();
+    assert_eq!(waiting.state, "pending");
+    assert_eq!(waiting.reason.as_deref(), Some("paymentReferencePending"));
+    assert_eq!(waiting.payment_id, None);
+    db.record_merchant_payment_reference(payment, "pay_correlation")
+        .await
+        .unwrap();
+    let recovered = db.retry_merchant_event(waiting.id).await.unwrap();
+    assert_eq!(recovered.state, "accepted");
+    assert_eq!(recovered.payment_id, Some(payment));
+    let stored = db.merchant_event_data(waiting.id).await.unwrap().unwrap();
+    assert_eq!(stored.organization_id, Some(org));
+    assert_eq!(stored.payment_id, Some(payment));
+    let original: serde_json::Value =
+        sqlx::query_scalar("SELECT normalized FROM oxsum.merchant_event_inbox WHERE receipt_id=$1")
+            .bind(waiting.id)
+            .fetch_one(db.pool())
+            .await
+            .unwrap();
+    assert!(original["paymentId"].is_null());
+    assert!(original["organizationId"].is_null());
+    assert!(
+        sqlx::query("UPDATE oxsum.merchant_event_inbox SET normalized='{}' WHERE receipt_id=$1")
+            .bind(waiting.id)
+            .execute(db.pool())
+            .await
+            .is_err()
+    );
+    let replay = db
+        .receive_merchant_event(&ctx, &ev, &[51; 32])
+        .await
+        .unwrap();
+    assert_eq!(replay.id, waiting.id);
+    assert_eq!(replay.payment_id, Some(payment));
+    assert!(matches!(
+        db.receive_merchant_event(&ctx, &ev, &[52; 32]).await,
+        Err(WalletError::Conflict(_))
+    ));
+
+    for (wrong_payment, wrong_customer, reason) in [
+        (Some(Uuid::new_v4()), None, "providerPaymentMismatch"),
+        (None, Some(Uuid::new_v4()), "customerMismatch"),
+    ] {
+        let mut altered = ev.clone();
+        altered.event_id = Uuid::new_v4().to_string();
+        altered.payment_id = wrong_payment;
+        altered.organization_id = wrong_customer;
+        let rejected = db
+            .receive_merchant_event(&ctx, &altered, &[53; 32])
+            .await
+            .unwrap();
+        assert_eq!(rejected.state, "rejected");
+        assert_eq!(rejected.reason.as_deref(), Some(reason));
+    }
+
+    let rotated = db
+        .rotate_merchant(
+            &owner,
+            first.merchant_id,
+            &MerchantVersionRequest {
+                idempotency_key: Uuid::new_v4().to_string(),
+                reason: "correlation rotation".into(),
+                config: config("correlation-rotated"),
+            },
+            &secret(),
+        )
+        .await
+        .unwrap();
+    let rotated_ctx = context(&db, &first, rotated.version_id).await;
+    let mut rotated_event = ev.clone();
+    rotated_event.event_id = Uuid::new_v4().to_string();
+    let rejected = db
+        .receive_merchant_event(&rotated_ctx, &rotated_event, &[54; 32])
+        .await
+        .unwrap();
+    assert_eq!(rejected.state, "rejected");
+    assert_eq!(rejected.reason.as_deref(), Some("versionMismatch"));
+    assert_eq!(rejected.payment_id, None);
+
+    let second = merchant(&db, &owner, "correlation-second").await;
+    let second_ctx = context(&db, &second, second.version_id).await;
+    let mut other = ev.clone();
+    other.event_id = Uuid::new_v4().to_string();
+    other.provider_account_id = Some(second_ctx.account_id.clone());
+    let pending = db
+        .receive_merchant_event(&second_ctx, &other, &[55; 32])
+        .await
+        .unwrap();
+    assert_eq!(pending.state, "pending");
+    assert_eq!(pending.payment_id, None);
+    let second_payment = Uuid::new_v4();
+    db.pin_merchant_payment(&binding(second_payment, &second, org, 5000))
+        .await
+        .unwrap();
+    db.record_merchant_payment_reference(second_payment, "pay_correlation")
+        .await
+        .unwrap();
+    let own = db.retry_merchant_event(pending.id).await.unwrap();
+    assert_eq!(own.state, "accepted");
+    assert_eq!(own.payment_id, Some(second_payment));
+    // Intake alone never creates a refund, note or ledger effect.
+    let wallet = Wallet::open(db.pool().clone(), &tenant).await.unwrap();
+    assert_eq!(wallet.available().await.unwrap(), 0);
+    let refunds: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM oxsum.refunds WHERE organization_id=$1")
+            .bind(org)
+            .fetch_one(db.pool())
+            .await
+            .unwrap();
+    assert_eq!(refunds, 0);
+}
+
 /// The same event ID delivered under a different digest is a conflict, never a
 /// silent overwrite — the dedupe window is merchant-scoped across versions.
 #[tokio::test]

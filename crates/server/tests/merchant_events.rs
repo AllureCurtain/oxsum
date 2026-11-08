@@ -254,6 +254,42 @@ async fn versioned_webhook_refuses_bad_signature_and_unknown_coordinates() {
     assert_eq!(count, 0);
 }
 
+/// Present but malformed metadata cannot be mistaken for absent metadata and
+/// filled from a trusted reference. No authenticated inbox effect is recorded.
+#[tokio::test]
+async fn malformed_callback_coordinates_are_refused_before_intake() {
+    let Some((db, app, m, _)) = world().await else {
+        return;
+    };
+    for field in ["payment_id", "deposit_id", "organization_id"] {
+        let mut body: Value = serde_json::from_str(&succeeded(
+            Uuid::new_v4(),
+            Uuid::new_v4(),
+            "pay_malformed",
+            1000,
+        ))
+        .unwrap();
+        body["content"]["object"]["metadata"][field] = json!("not-a-uuid");
+        let body = body.to_string();
+        let (status, _) = post(
+            &app,
+            m.merchant_id,
+            m.version_id,
+            signed(WEBHOOK_SECRET, &body),
+            body,
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+    }
+    let count: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM oxsum.merchant_event_inbox WHERE merchant_id=$1")
+            .bind(m.merchant_id)
+            .fetch_one(db.pool())
+            .await
+            .unwrap();
+    assert_eq!(count, 0);
+}
+
 /// The business read surface lists the recorded event — redacted, scoped and
 /// behind the reports capability the personal session already holds.
 #[tokio::test]

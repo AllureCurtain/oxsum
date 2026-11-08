@@ -104,7 +104,7 @@ pub(crate) async fn environment(
         if !signed(&context, headers, body) {
             continue;
         }
-        let (mut event, digest) = merchant_events::normalize(&context, body)
+        let (event, digest) = merchant_events::normalize(&context, body)
             .map_err(|_| ApiError::Validation("unreadable merchant event".into()))?;
         // Historical provider payloads may omit our metadata. Only an already
         // stored reference inside this trusted merchant may supply that context.
@@ -117,16 +117,10 @@ pub(crate) async fn environment(
             }
             None => None,
         };
-        if let Some(bound) = bound {
-            if bound.version_id != context.version.id {
-                continue;
-            }
-            if event.payment_id.is_none() {
-                event.payment_id = Some(bound.payment_id);
-            }
-            if event.organization_id.is_none() {
-                event.organization_id = Some(bound.organization_id);
-            }
+        if let Some(bound) = bound
+            && bound.version_id != context.version.id
+        {
+            continue;
         }
         let receipt = state
             .db

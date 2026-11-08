@@ -295,6 +295,12 @@ pub async fn create_refund(
                     ("payment_intent", provider_payment_id.to_string()),
                     ("amount", amount_minor.to_string()),
                     ("metadata[refund_id]", refund_id.to_string()),
+                    ("metadata[order_id]", refund.order_id.to_string()),
+                    ("metadata[payment_id]", refund.order_id.to_string()),
+                    (
+                        "metadata[organization_id]",
+                        refund.organization_id.to_string(),
+                    ),
                 ])
                 .timeout(Duration::from_secs(10))
                 .send()

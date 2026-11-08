@@ -124,8 +124,17 @@ The verified event lands in `oxsum.merchant_event_inbox`
 - the same event id with different payload bytes conflicts `409` — "merchant event ID was reused with different content";
 - kinds nothing recognized become `unsupported` → state `ignored`, acknowledged without financial effect;
 - recognized events must match the pinned payment's merchant, version, customer, provider account, mode, and — on success — amount and currency exactly, else `rejected` with the named reason; a payment the merchant never pinned stays `pending` (`unknownPayment`) for recovery rather than being dropped;
+- missing local payment/customer metadata is derived only from an already-bound provider payment reference inside the signed merchant/version. Supplied conflicting or malformed coordinates are not replaced. A callback arriving before its reference stays `pending` (`paymentReferencePending`) and recovery re-evaluates it. The original normalized event and raw digest remain immutable; correlation is a derived read of immutable bindings (#759);
 - `accepted` → `applied` when the fulfillment actually moves the wallet; `pending` and `accepted` rows are what the recovery sweep re-reads;
 - `GET /api/v1/business/merchants/{merchantId}/events` is the redacted staff read — coordinates, state and rejection reason only, never raw payload or secret.
+
+New order refunds send their distinct `refund_id`, actual `order_id`/
+`payment_id` and `organization_id` to the switch. Historical refunds that only
+carried a refund identifier can still correlate through the pinned provider
+payment reference. This repairs scoped intake for the local Hyperswitch
+v1.129.0 response shape; it does not establish genuine PSP callback delivery.
+Provider request idempotency and ambiguous-outcome recovery are tracked in
+#760 and remain separate acceptance requirements.
 
 Two funding paths carry no webhook inbox. The **x402 rail**
 (`POST /api/v1/topups/x402`) credits a signed payment authorization directly —

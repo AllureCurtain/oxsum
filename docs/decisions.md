@@ -2769,3 +2769,22 @@ rounding them. The preview endpoint remains the pricing authority and performs
 no model request. A lost-response retry retains its original idempotency key;
 a changed payload creates a new intent. Existing admitted snapshot and signed
 sale-proof semantics are unchanged.
+## 2026-11-08 — Derive missing refund coordinates without rewriting events (#759)
+
+Pinned local Hyperswitch v1.129.0 returns a refund object's own metadata. The
+previous client sent its refund UUID as `order_id` and omitted local payment
+and customer IDs, whereas tests fabricated those missing IDs in callbacks.
+The real response therefore could not settle through the versioned intake.
+
+Send the committed reservation's distinct refund/order/customer coordinates on
+new requests. For existing metadata-poor events, derive only absent coordinates
+from a provider reference already bound inside the exact authenticated merchant
+and version. Preserve supplied contradictions and reject malformed UUIDs. Keep
+an early event pending until its reference exists and re-evaluate it in recovery.
+The inbox normalization and raw digest remain immutable; the resolution is a
+join over immutable bindings. Do not relax the event-history trigger or change
+old stored payloads. The environment adapter uses the same domain resolution.
+
+This closes a correlation defect, not external PSP certification. The local
+switch also exposed separate provider idempotency/unknown-outcome concerns,
+tracked in #760; successful one-shot refund evidence cannot close those gates.
