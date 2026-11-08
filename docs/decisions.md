@@ -2871,3 +2871,31 @@ ledger rewrites. Migration numbers 0098/0099 belong to independent task PRs.
 - Scope: bundle authority is one child of #768. Collection authority (#765), payment
   recovery/correlation (#759/#760/#763), plan authority and daily revenue recognition
   remain separate work; all must be tested together on the final candidate.
+## 2026-11-08 — Quote and fund one sold plan period (#776)
+
+Plan activation previously accepted a missing/foreign/unpaid order UUID and
+could close an active period early. A renewal also applied its fee to older
+receivables before funding its own service. These are authorization and
+conservation defects, not supported flexible-payment behavior.
+
+Each new paid intent pins customer, sold version, period index/bounds, exact
+fee and Business collection conversion; a required fingerprint binds the
+customer's reviewed quote. Provider minor units use checked integer ceiling,
+without inverse-rounding the sold fee. One live intent per plan/index prevents
+parallel checkouts. Definite failed/expired intents may be replaced; unknown
+outcomes retain the standing order and reservation.
+
+Initial service starts at paid activation. Manual renewal opens at the prior
+UTC boundary, preserving the existing sold calendar/anniversary policy and
+late-renewal chain. No advance entitlement, automatic PSP subscription or
+customer proration is introduced. A captured unresolved payment must finish
+before assignment change/cancel. New periods prepay their entire own fee;
+explicit statement repayment is isolated as #777 without dropping N10 debt
+requirements. Legacy completed authorizations replay, and unsafe pending
+legacy orders remain reconciliation work rather than receiving invented terms.
+
+Focused tests uncovered a partial-prepay statement mismatch and a second
+wallet bootstrap waiting behind its own transaction's journal writes. Close
+now reconciles every prepaid amount and renewal reuses one opened wallet.
+New version renewal moves its exact quota mirror and overage policy together.
+N11 versioned daily recognition will retain historical policy and postings.

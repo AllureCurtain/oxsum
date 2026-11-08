@@ -158,3 +158,10 @@ have history only. Customer **Orders → New → Bundle** selects a published ve
 and displays the fixed purchase, promotion, expiry and refund consequences. The
 order detail preserves the purchased version. Runtime/browser acceptance is
 tracked in `docs/roadmap/operator-launch/evidence/bundle-offers.md`.
+
+Plan payment authority (#776): `/app/plans` shows the customer's exact payable
+period quote, confirmation and standing-order recovery; `/app/orders/:id`
+retains its purchased period snapshot. The first period starts on paid activation;
+manual renewal opens at the current UTC boundary. Renewal fees and old statement
+debts remain separate (#777). Actual browser acceptance and final integration
+are recorded independently from frontend compilation.
