@@ -46,7 +46,7 @@ pub(super) fn revision(value: &serde_json::Value) -> Result<String, WalletError>
     )
 }
 
-/// Claim effect parent rows before the source/append locks. Deferred FK checks
+/// Claim effect parent rows before the source/append locks. Later FK checks
 /// must never wait for a staff business lock while holding ledger ownership.
 pub(super) async fn parents_in(
     tx: &mut Transaction<'_, Postgres>,

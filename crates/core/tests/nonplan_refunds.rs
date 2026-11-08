@@ -14,7 +14,6 @@ use oxsum_core::{
     PaymentOrderPurpose, RefundDecision, SessionContext, SessionContextRequest,
     VerifiedMerchantEvent, Wallet, WalletError,
 };
-use serde_json::json;
 use time::{Date, Duration, OffsetDateTime};
 use uuid::Uuid;
 
@@ -789,8 +788,12 @@ async fn concurrent_loss_and_refund_retain_both_cash_facts_once() {
         returned.unwrap();
     }
     assert_eq!(net(&w, "Assets:Cash").await, TOTAL);
-    assert_eq!(w.wallet.available().await.unwrap(), 0);
-    assert_eq!(net(&w, "Equity:Adjustments").await, -TOTAL);
+    let retained = w.wallet.available().await.unwrap();
+    // If the loss wins, the preapproved refund conservatively fences its Wallet
+    // allocation and both actual cash facts remain in suspense. If the refund
+    // wins, it takes the original Wallet once and the loss uses suspense.
+    assert!(retained == 0 || retained == TOTAL);
+    assert_eq!(net(&w, "Equity:Adjustments").await, -TOTAL - retained);
     apply(&w, &receipt).await;
     assert_eq!(net(&w, "Assets:Cash").await, TOTAL);
 }
