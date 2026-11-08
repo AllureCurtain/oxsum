@@ -965,8 +965,40 @@ async fn a_dispute_is_not_a_refund_and_lost_recharges() {
     assert_eq!(body["data"]["state"].as_str().unwrap(), "lost");
     assert!(body["data"]["rechargeEntryId"].is_string(), "{body}");
     // The contested 1_500_000_000 credit is capped at the 500_000_000 drawn —
-    // the receivable restored in whole.
+    // this legacy incoming-cash allocation remains the known #829 defect.
     assert_eq!(wallet.credit_used().await.unwrap(), 0);
+    let entry = body["data"]["rechargeEntryId"].clone();
+    let log_size = wallet.log_size().await.unwrap();
+    let path = format!("/api/v1/business/disputes/{dispute_id}/resolve");
+    let (status, replay) = call(
+        &app,
+        "POST",
+        &path,
+        Some(
+            json!({"idempotencyKey":"disp-5","resolution":"lost","reason":"  chargeback upheld  "}),
+        ),
+        Some(&owner),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{replay}");
+    assert_eq!(replay["data"]["rechargeEntryId"], entry);
+    for request in [
+        json!({"idempotencyKey":"disp-5","resolution":"lost","reason":"changed reason"}),
+        json!({"idempotencyKey":"disp-5","resolution":"won","reason":"chargeback upheld"}),
+        json!({"idempotencyKey":"disp-other","resolution":"closed","reason":"chargeback upheld"}),
+    ] {
+        let (status, response) = call(&app, "POST", &path, Some(request), Some(&owner)).await;
+        assert_eq!(status, StatusCode::CONFLICT, "{response}");
+    }
+    assert_eq!(wallet.log_size().await.unwrap(), log_size);
+    let audits: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM oxsum.finance_audit WHERE action='dispute.resolve' AND target=$1",
+    )
+    .bind(dispute_id.to_string())
+    .fetch_one(db.pool())
+    .await
+    .unwrap();
+    assert_eq!(audits, 1);
 }
 
 /// Losing the post-commit response cannot create a second partial refund.
