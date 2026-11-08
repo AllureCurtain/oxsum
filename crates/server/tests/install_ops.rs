@@ -504,14 +504,15 @@ async fn backup_and_restore_between_databases_preserves_state() {
     // Environment B: a fresh database the restore lands in — created through
     // the admin connection, never over the source.
     let target = format!("{source}_restored");
-    sqlx::query(&format!("DROP DATABASE IF EXISTS {target} WITH (FORCE)"))
-        .execute(db.pool())
-        .await
-        .unwrap();
     let manifest = std::fs::read_dir(&workdir)
         .unwrap()
         .map(|f| f.unwrap().path())
-        .find(|p| p.extension().map(|e| e == "json").unwrap_or(false))
+        .find(|p| {
+            p.file_name()
+                .unwrap()
+                .to_string_lossy()
+                .ends_with(".manifest.json")
+        })
         .unwrap();
     let restore = std::process::Command::new("bash")
         .arg(format!("{repo}/scripts/restore.sh"))
