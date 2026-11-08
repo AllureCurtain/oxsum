@@ -2,6 +2,17 @@
 
 Field definitions for each endpoint are authoritative in `crates/server/openapi.yaml`; this file only records general conventions.
 
+Business setup readiness (#843): `GET /api/v1/business/readiness` requires a
+current personal session in Business context with `overviewRead`. It returns
+`checkedAt`, `ready` and five `{key,state,action}` facts. `state` is `ready`,
+`todo` or `restricted`; `action` is an existing manageable business section or
+null. Restricted facts never count as ready. Profile and admission are overview
+facts; supply requires `catalogWrite`, sale terms owner/admin/finance, and
+collection `reportsRead`. Actions additionally require the relevant write
+capability. The endpoint performs no external I/O or completion mutation and
+never returns supplier/merchant secrets, endpoints or commercial values.
+Configuration readiness is not provider/PSP certification or release acceptance.
+
 ## Basics
 
 - Prefix: `/api/v1`. `/healthz` needs no auth and sits outside the prefix — so does `/readyz`, the readiness probe (200 only when the database answers and its schema is current, issue #619). `GET /api/v1/version` is unauthenticated inside the prefix: the deployment's own version/gitSha/schemaVersion identity. Also unauthenticated: `POST /api/v1/auth/register`, when the deployment allows signup at all, `POST /api/v1/invitations/redeem` — the invitation link's token is its credential — `POST /api/v1/webhooks/stripe`, where the `Stripe-Signature` header is the credential, `POST /api/v1/webhooks/airwallex`, where `x-timestamp` + `x-signature` are, and `POST /api/v1/webhooks/merchants/{merchantId}/versions/{versionId}`, where the rail's own signature header is the credential.

@@ -78,6 +78,23 @@ for positive credit and a report link. These are known gaps tracked in
 customers a deployment token or purchase funds their entitlement already covers.
 A completed checklist does not certify a provider or payment configuration.
 
+**Business → Setup** now has its own five checks (#843). The owner name from
+initialization satisfies the identity step; saving a logo or recruiting another
+staff member is optional. Configure a supported chat route with an active
+credential, then publish an immediately effective default sale book covering
+that model. Explicitly select and enable the checkout merchant in
+**Business → Integrations** and review **Business → Collection** for compatible
+currency and conversion. The process also needs the original encryption key and
+a public return URL. An invitation workflow is an available admission path even
+before the first customer joins, and does not require SMTP.
+
+Refresh the checks after configuring a section. An unavailable read shows an
+error; a fact outside your role shows **restricted** and points you to the owner.
+An admin can edit supply and default sale terms but cannot select a merchant.
+Finance can read sale/collection facts; support and viewer have fewer readable
+facts. A partially visible checklist never claims that the whole business is
+ready. These checks make no upstream, payment or email request.
+
 A Chat turn is a real billable request. Its settlement proof is available on
 Requests/Bills immediately. Reports and period exports cover closed UTC spans;
 a first-turn verification does not require a public end-user report link. Keep
