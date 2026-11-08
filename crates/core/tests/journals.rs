@@ -87,7 +87,7 @@ async fn sold(
     overage: bool,
 ) -> SoldPlan {
     legacy_plan::publish(
-        &db,
+        db,
         business_id,
         &NewSoldPlan {
             plan_id: None,
