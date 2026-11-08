@@ -90,8 +90,10 @@ effect-entry omission and orphan-marker mismatch tests.
 The final focused runtime/test snapshot was `65aad22` on integrated main
 `23b6547`. It was subsequently rebased onto business-readiness main `df4ad4f` as
 `42e9586`; only the TODO status merge required conflict resolution, with both
-workstreams retained. The complete combined validation is still pending and is
-not implied by the earlier focused checks.
+workstreams retained. Final integration rebases retained #840 and #850, producing
+runtime/test snapshot `561bfb590a011f1c626ea806550efc41c076329f` on main
+`5dc49dc969965ab2f992b70cbef390fd01821748`. Range-diff confirmed the runtime and
+test patches were unchanged; conflicts only joined progress and policy documents.
 
 | Check | Observed result |
 | --- | --- |
@@ -104,6 +106,17 @@ not implied by the earlier focused checks.
 | Browser-compatible verifier | `wasm32-unknown-unknown --features wasm` passed in 66 seconds |
 | Contract/generated frontend | Four OpenAPI security checks, generated types and production build passed |
 | Formatting and patch integrity | `scripts/fmt-check.sh` and `git diff --check` passed |
+| Complete integrated workspace | 1,995 passed, zero failed, six existing opt-in skips across 192 binaries in 292.685 seconds |
+
+The complete run used explicit local `DATABASE_URL` and
+`DOUBLEENTRY_DATABASE_URL` and `cargo nextest run --workspace --no-fail-fast`.
+Run ID: `b4baef5f-5d53-4297-8411-5af0e6690bc1`. Every financial hypothesis and the
+PostgreSQL ledger conformance suite ran. The six skips are two fixture-generation
+helpers, two real-provider cases, the optional load check and reference capacity.
+The final runtime also passed the five required PR checks: fmt, strict Clippy,
+lib/doc tests, wasm and frontend. Evidence/progress documentation alone changed
+after this full run; normal protected integration still requires the final
+commit's required CI.
 
 The daily selection covers one ledger entry per completed day, replay, final
 close, transaction rollback after a ledger append, skipped locked candidates,
@@ -122,8 +135,9 @@ refund worker does not understand the daily earned/deferred allocation. Use the
 normal single-writer upgrade procedure and retain original exports. Migration
 0113 does not rewrite committed ledger history or stored evidence.
 
-PR-required checks and the complete workspace run remain pending at this
-checkpoint. Runtime independent reconciliation is explicitly tracked by
+PR #851 carries the completed combined validation and source review; normal
+protected integration is pending at this checkpoint. Runtime independent
+reconciliation is explicitly tracked by
 [#848](https://github.com/AllureCurtain/oxsum/issues/848): the current pass still
 clones the financial projection into `actualTotals`. The independent ledger
 assertions above are development verification and do not close that deployed

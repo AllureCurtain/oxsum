@@ -6,9 +6,9 @@ Updated: 2026-11-09
 
 - [ ] [#848](https://github.com/AllureCurtain/oxsum/issues/848) — Compare runtime financial projections with independent official ledger/source totals after #838; current reconciliation actual totals still clone the projection. N11 remains open.
 
-- [ ] [#838](https://github.com/AllureCurtain/oxsum/issues/838) — Versioned daily recognition, paid-activation invoices and durable captured evidence: 25 new accounting/fault checks, 49 HTTP, 12 upgrade, 93 verifier and strict Clippy/wasm passed. Complete combined validation and PR integration remain; independent runtime reconciliation is #848.
+- [ ] [#838](https://github.com/AllureCurtain/oxsum/issues/838) — Versioned daily recognition, paid-activation invoices and durable captured evidence in PR #851: 1,995 complete workspace checks, 25 new accounting/fault checks, 49 HTTP, 12 upgrade, 93 verifier and strict Clippy/wasm passed. Normal integration remains; independent runtime reconciliation is #848.
 
-- [ ] [#850](https://github.com/AllureCurtain/oxsum/issues/850) — Wait for durable fulfillment before stopping the real payment worker; repair main CI fixture cancellation race. 19 real PostgreSQL checks, strict Clippy, formatting and independent review passed; PR integration pending.
+- [x] [#850](https://github.com/AllureCurtain/oxsum/issues/850) — Integrated in PR #852 (`5dc49dc`): wait for durable fulfillment before stopping the real payment worker. 19 real PostgreSQL checks, strict Clippy, formatting and independent review passed; included in #838's 1,995-check combined run.
 
 - [x] [#840](https://github.com/AllureCurtain/oxsum/issues/840) — Complete non-plan chargeback cash, exact original Wallet allocation, source/queue concurrency and actual callback identity integrated in PR #847 (`2063897`); 1,970 complete workspace tests passed with six existing opt-ins skipped, plus focused checks, strict Clippy and independent source review. Historical refunds and wrong-direction chargebacks remain #841/#842 before #829 closure.
 
@@ -47,7 +47,7 @@ Updated: 2026-11-09
 - [x] [#734](https://github.com/AllureCurtain/oxsum/issues/734) — N08: Email-bound staff invitations and role lifecycle integrated (#782); focused authority/mail tests passed, browser journey acceptance remains.
 - [ ] [#735](https://github.com/AllureCurtain/oxsum/issues/735) — N09: Business readiness #843 integrated in PR #845 (`df4ad4f`); customer readiness still uses legacy admin-token/positive-wallet/report-link conditions. Fix admission #849, then add permitted model/key/funding and immediate first-call proof.
 - [ ] [#736](https://github.com/AllureCurtain/oxsum/issues/736) — N10: Payment/refund authority and recovery repairs integrated; explicit statement repayment, remaining conservation fixes and complete commercial journeys remain.
-- [ ] [#737](https://github.com/AllureCurtain/oxsum/issues/737) — N11: Daily policy, source-linked corrections, financial reports and captured evidence implemented in #838 under combined validation. Independent runtime ledger reconciliation #848 and browser/candidate acceptance remain.
+- [ ] [#737](https://github.com/AllureCurtain/oxsum/issues/737) — N11: Daily policy, source-linked corrections, financial reports and captured evidence validated in PR #851 with 1,995 complete workspace checks. Normal integration, independent runtime ledger reconciliation #848 and browser/candidate acceptance remain.
 - [ ] [#738](https://github.com/AllureCurtain/oxsum/issues/738) — N12: Complete evidence delivery, retained trust inputs and candidate offline-verifier acceptance using the existing verifier foundations.
 - [ ] [#739](https://github.com/AllureCurtain/oxsum/issues/739) — N13: Candidate byte/provenance gate integrated (#753); original-byte image promotion integrated (#806); digest deployment tooling integrated (#813); original SDK publication integrated (#816); actual candidate deployment/rollback rehearsal remains.
 - [ ] [#740](https://github.com/AllureCurtain/oxsum/issues/740) — N14: Real-provider certification remains; DeepSeek shared budget records 0/5 attempts and CNY 0.
