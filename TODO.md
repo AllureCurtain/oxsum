@@ -4,7 +4,6 @@ Updated: 2026-11-08
 
 ## In progress
 
-<<<<<<< HEAD
 ### Operator launch (#725)
 
 [Contract and execution evidence](docs/roadmap/operator-launch/EXECUTION.md) track the accepted N00–N21 scope.
