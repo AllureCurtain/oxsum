@@ -3,10 +3,12 @@
 //! The ledger stays the source of truth — a hold's amount and whether it is settled are read from
 //! the hold entry, and the settlement entry's idempotency key is derived from the hold's key, so a
 //! late settlement and the sweeper cannot both take effect. This table is only how the sweeper
-//! *finds* stale holds: the pending layer says how much is held, not by which request or since
+//! *finds* legacy monetary holds: the pending layer says how much is held, not by which request or since
 //! when, and paging every tenant's log on every pass would cost O(the log) each time. A row whose
 //! hold is gone is deleted without a ledger write, so a disagreement always resolves toward the
-//! ledger (docs/decisions.md, "a small watch table for the hold sweeper").
+//! ledger (docs/decisions.md, "a small watch table for the hold sweeper"). New gateway admissions
+//! set `wallet_minor` atomically with their operation and quota draw. Its explicit zero proves
+//! an authorized nonmonetary reservation; recovery writes a typed zero-cost receipt for it.
 
 use std::collections::BTreeMap;
 use std::time::Duration;
@@ -16,7 +18,7 @@ use sqlx::Row;
 use time::{Date, OffsetDateTime};
 use uuid::Uuid;
 
-use crate::billing::BillLine;
+use crate::billing::{BillLine, SettlementSubscription};
 use crate::db::Db;
 use crate::error::WalletError;
 use crate::operations::{METERING_SURFACE, OperationState, SWEEPER_OWNER};
@@ -47,7 +49,7 @@ pub struct OpenHold {
     pub input_price: i64,
     /// Minor units per million output tokens at that version.
     pub output_price: i64,
-    /// What was frozen, in minor units.
+    /// The priced bound, including quota; zero is valid for explicit free terms.
     pub freeze_minor: i64,
     /// The key that took the hold, where one was attributed — what the settled
     /// turn's usage row records as its payer.
@@ -88,6 +90,18 @@ impl Db {
     /// Storage failures surface as [`WalletError`]; the gateway refuses the request rather
     /// than taking a hold nobody watches.
     pub async fn note_open_hold(&self, hold: &OpenHold) -> Result<(), WalletError> {
+        let mut tx = self.pool().begin().await?;
+        self.note_open_hold_in(&mut tx, hold).await?;
+        tx.commit().await?;
+        Ok(())
+    }
+
+    /// Write the watch inside admission's transaction, before committing authority.
+    pub(crate) async fn note_open_hold_in(
+        &self,
+        tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+        hold: &OpenHold,
+    ) -> Result<(), WalletError> {
         sqlx::query(
             "INSERT INTO oxsum.open_holds \
              (hold_key, tenant_id, request_id, model, channel, price_version, \
@@ -109,7 +123,7 @@ impl Db {
         .bind(&hold.end_user)
         .bind(&hold.service_tier)
         .bind(serde_json::to_value(&hold.tags).unwrap_or_default())
-        .execute(self.pool())
+        .execute(&mut **tx)
         .await?;
         Ok(())
     }
@@ -263,8 +277,8 @@ impl Db {
     /// The holds one organization currently has in flight, newest first.
     ///
     /// What the dashboard's holds section lists and the billing WebSocket keeps live.
-    /// The ledger stays the source of truth — a row whose hold is gone is deleted, not
-    /// shown — this only finds the rows.
+    /// Legacy rows locate ledger holds. New explicit zero-wallet reservations
+    /// also appear while their admitted gateway operation is outstanding.
     ///
     /// # Errors
     ///
@@ -288,8 +302,8 @@ impl Db {
     /// Every watched hold, across all organizations, newest first: the platform admin's
     /// in-flight list.
     ///
-    /// The ledger stays the source of truth — the sweeper deletes a row whose hold is
-    /// gone — so a hold listed here is one the ledger still reserves. An organization
+    /// The list also includes durable quota-funded and free reservations, whose
+    /// priced bound may be zero and whose wallet amount is zero. An organization
     /// that was deleted is impossible (the membership schema forbids it), but a watch
     /// row predating its organization join survives as an unnamed organization rather
     /// than vanishing.
@@ -536,6 +550,15 @@ async fn sweep_one(
     on: Date,
 ) -> Result<(), WalletError> {
     let wallet = tenants.get(&hold.tenant_id).await?;
+    let wallet_minor: Option<i64> =
+        sqlx::query_scalar("SELECT wallet_minor FROM oxsum.open_holds WHERE hold_key=$1")
+            .bind(&hold.hold_key)
+            .fetch_optional(db.pool())
+            .await?
+            .flatten();
+    if wallet_minor.is_some() {
+        return sweep_admitted_hold(db, &wallet, hold, on).await;
+    }
     // The swept record reuses the settlement shape, with zero counts and zero charge: the
     // description is built from the row alone, so a retried sweep reproduces it exactly and
     // replays instead of conflicting.
@@ -644,6 +667,139 @@ async fn sweep_one(
     }
 }
 
+/// An admission written by the atomic gateway boundary owns more than a money
+/// hold: its quota, zero-wallet slot, receipt and operation must recover together.
+async fn sweep_admitted_hold(
+    db: &Db,
+    wallet: &Wallet,
+    hold: &OpenHold,
+    on: Date,
+) -> Result<(), WalletError> {
+    let key = hold.key_id.ok_or_else(|| {
+        WalletError::InvalidInput("an admitted gateway reservation has no key".into())
+    })?;
+    let mut tx = db.pool().begin().await?;
+    wallet.lock_key_settlement_in(&mut tx, key).await?;
+    let wallet_minor: Option<i64> =
+        sqlx::query_scalar("SELECT wallet_minor FROM oxsum.open_holds WHERE hold_key=$1")
+            .bind(&hold.hold_key)
+            .fetch_optional(&mut *tx)
+            .await?
+            .flatten();
+    let Some(wallet_minor) = wallet_minor else {
+        // The turn or another sweeper committed after the stale-list read.
+        return Ok(());
+    };
+    db.settle_subscription_draw_in(&mut tx, &hold.hold_key, 0)
+        .await?;
+    let draw = sqlx::query(
+        "SELECT subscription_id,period_id,drawn_minor FROM oxsum.subscription_draws WHERE hold_key=$1",
+    )
+    .bind(&hold.hold_key)
+    .fetch_optional(&mut *tx)
+    .await?;
+    let subscription = draw
+        .as_ref()
+        .map(|row| -> Result<_, WalletError> {
+            Ok((
+                row.try_get::<Uuid, _>("subscription_id")?,
+                row.try_get::<Uuid, _>("period_id")?,
+                row.try_get::<i64, _>("drawn_minor")?,
+            ))
+        })
+        .transpose()?;
+    let usage = UsageRecord {
+        end_user: hold.end_user.clone(),
+        service_tier: hold.service_tier.clone(),
+        tags: hold.tags.clone(),
+        ..UsageRecord::default()
+    };
+    let description = Settlement {
+        request: &hold.request_id,
+        channel: &hold.channel,
+        model: &hold.model,
+        requested_model: &hold.model,
+        served_model: &hold.model,
+        upstream_model: None,
+        price_version: hold.price_version,
+        kind: SettlementKind::Swept,
+        usage: &usage,
+        lines: &[],
+        matched_rule: None,
+        discount_percent: None,
+        charged: 0,
+        freeze: hold.freeze_minor,
+        upstream_attempts: 1,
+        // The watch preserves mandate provenance, but not the original signed
+        // blob hash. Do not invent a commitment that recovery cannot verify.
+        mandate: None,
+        subscription: subscription
+            .as_ref()
+            .map(
+                |(subscription_id, period_id, drawn)| SettlementSubscription {
+                    subscription_id,
+                    period_id,
+                    drawn_minor: *drawn,
+                    charged_minor: 0,
+                },
+            ),
+        cache: None,
+        guardrail: Vec::new(),
+        reason: None,
+        experiment: None,
+        sale: None,
+    }
+    .description()?;
+    if wallet_minor > 0 {
+        wallet
+            .settle_in(&mut tx, &hold.hold_key, &description, 0, on)
+            .await?;
+    } else {
+        let actor = key.simple().to_string();
+        let correlation = hold.mandate_id.map(|id| id.simple().to_string());
+        wallet
+            .usage_receipt_in(
+                &mut tx,
+                &hold.hold_key,
+                &description,
+                Some(&actor),
+                correlation.as_deref(),
+                on,
+            )
+            .await?;
+    }
+    let operation: Uuid = sqlx::query_scalar(
+        "SELECT operation_id FROM oxsum.request_operations WHERE hold_key=$1 AND key_id=$2",
+    )
+    .bind(&hold.hold_key)
+    .bind(key)
+    .fetch_one(&mut *tx)
+    .await?;
+    if db
+        .settle_operation_in(
+            &mut tx,
+            operation,
+            SWEEPER_OWNER,
+            OperationState::TimedOut,
+            0,
+            "swept",
+        )
+        .await?
+        != crate::OperationSettle::Settled
+    {
+        return Err(WalletError::Conflict(
+            "the swept operation is already terminal".into(),
+        ));
+    }
+    let mut row = swept_usage(hold);
+    row.status = SettlementKind::Swept.status().to_owned();
+    let available = wallet.available_in(&mut tx).await?;
+    db.record_usage_in(&mut tx, &row, Some(available)).await?;
+    db.clear_open_hold_in(&mut tx, &hold.hold_key).await?;
+    tx.commit().await?;
+    Ok(())
+}
+
 /// Closes a metered event's operation when the open-holds sweep releases its
 /// stale hold (issue #604): metering operations are excluded from the
 /// gateway-lease sweep, so this is the only pass that ends one — a metered
@@ -687,40 +843,41 @@ async fn record_swept_usage(db: &Db, wallet: &Wallet, hold: &OpenHold) -> Result
     // A swept turn frees the freeze back into available — the balance.low
     // check reads what the release left.
     let available = wallet.available().await.ok();
-    db.record_usage_balanced(
-        &UsageRow {
-            request_id: hold.request_id.clone(),
-            tenant_id: hold.tenant_id.clone(),
-            key_id: hold.key_id,
-            mandate_id: hold.mandate_id,
-            model: hold.model.clone(),
-            channel: hold.channel.clone(),
-            price_version: hold.price_version,
-            kind: SettlementKind::Swept,
-            entry_id: *entry_id_for(&settlement_key_for(&hold.hold_key)).as_uuid(),
-            status: "settled".to_owned(),
-            failure_reason: None,
-            usage: UsageRecord {
-                end_user: hold.end_user.clone(),
-                service_tier: hold.service_tier.clone(),
-                tags: hold.tags.clone(),
-                ..UsageRecord::default()
-            },
-            // The watch row timed out: nothing reported and nothing was
-            // counted — every provenance column stays NULL.
-            counts: CountsProvenance::None,
-            charged_minor: 0,
-            freeze_minor: hold.freeze_minor,
-            // The watch row carries no price, so a swept turn's upstream cost is
-            // untracked rather than zero — `upstream_cost_minor` stays NULL and
-            // the basis is `missing` (issue #604).
-            upstream_cost_minor: None,
-            cost_basis: CostBasis::Missing,
-            upstream_attempts: 1,
+    db.record_usage_balanced(&swept_usage(hold), available)
+        .await
+}
+
+fn swept_usage(hold: &OpenHold) -> UsageRow {
+    UsageRow {
+        request_id: hold.request_id.clone(),
+        tenant_id: hold.tenant_id.clone(),
+        key_id: hold.key_id,
+        mandate_id: hold.mandate_id,
+        model: hold.model.clone(),
+        channel: hold.channel.clone(),
+        price_version: hold.price_version,
+        kind: SettlementKind::Swept,
+        entry_id: *entry_id_for(&settlement_key_for(&hold.hold_key)).as_uuid(),
+        status: "settled".to_owned(),
+        failure_reason: None,
+        usage: UsageRecord {
+            end_user: hold.end_user.clone(),
+            service_tier: hold.service_tier.clone(),
+            tags: hold.tags.clone(),
+            ..UsageRecord::default()
         },
-        available,
-    )
-    .await
+        // The watch row timed out: nothing reported and nothing was
+        // counted — every provenance column stays NULL.
+        counts: CountsProvenance::None,
+        charged_minor: 0,
+        freeze_minor: hold.freeze_minor,
+        // The watch row carries no price, so a swept turn's upstream cost is
+        // untracked rather than zero — `upstream_cost_minor` stays NULL and
+        // the basis is `missing` (issue #604).
+        upstream_cost_minor: None,
+        cost_basis: CostBasis::Missing,
+        upstream_attempts: 1,
+    }
 }
 
 /// The default hold timeout: 30 minutes (docs/product.md). It must exceed the longest possible

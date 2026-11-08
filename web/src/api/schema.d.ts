@@ -2109,8 +2109,18 @@ export interface paths {
          *     `X-RateLimit-Limit`/`X-RateLimit-Remaining`/`X-RateLimit-Reset` headers.
          *     `maxConcurrentHolds` caps how many holds the key may have outstanding at
          *     once: a hold over it is refused 429 `TOO_MANY_HOLDS`, counted from the
-         *     ledger's own pending entries under the same per-key lock as the spend
-         *     limit, so racing requests cannot both fit through.
+         *     ledger's own pending entries plus explicitly admitted quota-funded or
+         *     free requests under the same per-key lock as the spend limit. A turn
+         *     counts once, including when it reserves no wallet money. Cancellation,
+         *     settlement and recovery release its concurrency slot.
+         *
+         *     Monetary limits retain their existing wallet, bonus and credit-line
+         *     posting basis. Subscription quota is already paid entitlement and is
+         *     not charged against those limits again. Admission compares committed
+         *     monetary spend plus this request's wallet-side amount with the current
+         *     key, member, team and mandate cap. A zero-wallet request can use a cap
+         *     exactly reached; a cap already exceeded still refuses. The existing
+         *     promotional-pool budget interpretation is unchanged.
          *
          *     `tokensPerMinute` caps the settled input+output tokens the key may burn
          *     inside a trailing minute (issue #203). Where RPM spends a slot at admission,
@@ -15073,8 +15083,25 @@ export interface paths {
          *     cannot return more than the freeze was computed for and its usage arrives in the final chunk.
          *     The request settles against that usage, capped at the freeze.
          *
-         *     Every response carries `x-oxsum-request-id`. The two ledger entries use `req-<id>:hold` and
-         *     `req-<id>:settle`, and the settlement's description carries the channel, the price version in
+         *     Normal and cache-hit calls enforce current key state, model access,
+         *     organization manual/dunning/archive restrictions, mandate validity and
+         *     concurrent-request limits even when prepaid quota covers the complete
+         *     charge. Plan-statement dunning restricts wallet overage only; previously
+         *     paid quota remains usable. The quota draw, wallet-side reservation,
+         *     durable watch and operation binding commit together before serving.
+         *     Rejected admission reserves neither quota nor money.
+         *
+         *     Explicit zero-priced terms are valid: the request reserves a concurrency
+         *     slot but no wallet money or paid quota. Its settlement records a
+         *     verifiable zero-cost receipt. The receipt's balanced metadata postings
+         *     do not fund a wallet or recognize usage revenue. Every independently
+         *     admitted request has its own operation, even when its body matches an
+         *     earlier request; only an explicit Idempotency-Key replays a turn.
+         *
+         *     Every response carries `x-oxsum-request-id`. A monetary reservation uses
+         *     `req-<id>:hold`; settlement derives `settle:<hold-entry-id>` from that
+         *     key. A request reserving no wallet money writes only the settlement
+         *     receipt. The settlement's description carries the channel, the price version in
          *     force when the request started, the token counts and the prices that produced the charge, so a
          *     bill can be verified down to the arithmetic years later.
          *

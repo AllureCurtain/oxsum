@@ -1170,6 +1170,11 @@ impl Plan {
         }
         let outcome: Result<Outcome, WalletError> = async {
             let mut tx = self.db.pool().begin().await?;
+            // Admission locks this key before subscription and ledger. The
+            // forecast below updates its row, so settlement follows that order.
+            self.wallet
+                .lock_key_settlement_in(&mut tx, self.key_id)
+                .await?;
             // The subscription draw settles first: its consumption and the
             // released share's return ride the same commit as the charge.
             if self.subscription.drawn_minor > 0 {

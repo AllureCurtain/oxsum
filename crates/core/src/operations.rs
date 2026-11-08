@@ -7,8 +7,11 @@
 //! row is created once the freeze is known, binds the same `hold_key` the
 //! sweeper's watch list holds, heartbeats while upstream streams, and goes
 //! terminal on the same condition the settlement wrote under. A replay under the
-//! same scoped fingerprint names the same row instead of taking a second hold,
-//! and a crashed worker's operation is recoverable by inspection: its lease
+//! same scoped fingerprint names the same row instead of taking a second hold.
+//! Gateway fingerprints include the server request id; explicit HTTP replay is
+//! resolved by the idempotency claim before admission, while equal independent
+//! bodies retain separate operations and recovery watches.
+//! A crashed worker's operation is recoverable by inspection: its lease
 //! lapses, the sweeper claims it, and the hold it bound releases through the
 //! existing `sweep_one` path.
 //!
@@ -197,8 +200,8 @@ pub struct RequestOperation {
     /// Which surface served the turn: `chat`, `responses`, `messages`,
     /// `embeddings`, `rerank`, or `task:<kind>`.
     pub surface: String,
-    /// The scoped idempotency fingerprint — `credential_fingerprint` over the
-    /// credential, surface, resource and body. A retry names the same row.
+    /// The scoped operation identity. Gateway requests append their server id
+    /// to the credential/body digest; explicit HTTP claims own replay.
     pub fingerprint: String,
     /// The declared upper bound the freeze priced, in minor units.
     pub bound_minor: i64,
@@ -364,6 +367,18 @@ impl Db {
         &self,
         operation: &NewOperation,
     ) -> Result<(RequestOperation, bool), WalletError> {
+        let mut tx = self.pool().begin().await?;
+        let result = self.insert_operation_in(&mut tx, operation).await?;
+        tx.commit().await?;
+        Ok(result)
+    }
+
+    /// Insert the operation in the same transaction as admission's reservation.
+    pub(crate) async fn insert_operation_in(
+        &self,
+        tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+        operation: &NewOperation,
+    ) -> Result<(RequestOperation, bool), WalletError> {
         let inserted = sqlx::query(&format!(
             "INSERT INTO oxsum.request_operations \
              (operation_id, organization_id, key_id, surface, fingerprint, \
@@ -382,7 +397,7 @@ impl Db {
         .bind(&operation.channel)
         .bind(operation.customer_id)
         .bind(operation.terms_version)
-        .fetch_optional(self.pool())
+        .fetch_optional(&mut **tx)
         .await?;
         if let Some(row) = inserted {
             return Ok((operation_from_row(&row)?, true));
@@ -396,7 +411,7 @@ impl Db {
         ))
         .bind(operation.organization_id)
         .bind(&operation.fingerprint)
-        .fetch_one(self.pool())
+        .fetch_one(&mut **tx)
         .await?;
         Ok((operation_from_row(&row)?, false))
     }
@@ -447,6 +462,24 @@ impl Db {
         .bind(operation_id)
         .bind(organization_id)
         .fetch_optional(self.pool())
+        .await?;
+        row.map(|row| operation_from_row(&row)).transpose()
+    }
+
+    /// Read an operation's actual fields before committing its admission.
+    pub(crate) async fn operation_in(
+        &self,
+        tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+        organization_id: Uuid,
+        operation_id: Uuid,
+    ) -> Result<Option<RequestOperation>, WalletError> {
+        let row = sqlx::query(&format!(
+            "SELECT {OPERATION_COLS} FROM oxsum.request_operations \
+             WHERE operation_id=$1 AND organization_id=$2",
+        ))
+        .bind(operation_id)
+        .bind(organization_id)
+        .fetch_optional(&mut **tx)
         .await?;
         row.map(|row| operation_from_row(&row)).transpose()
     }
@@ -538,6 +571,22 @@ impl Db {
         hold_key: &str,
         lease_owner: &str,
     ) -> Result<bool, WalletError> {
+        let mut tx = self.pool().begin().await?;
+        let bound = self
+            .bind_hold_in(&mut tx, operation_id, hold_key, lease_owner)
+            .await?;
+        tx.commit().await?;
+        Ok(bound)
+    }
+
+    /// Bind the operation inside the reservation's transaction.
+    pub(crate) async fn bind_hold_in(
+        &self,
+        tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+        operation_id: Uuid,
+        hold_key: &str,
+        lease_owner: &str,
+    ) -> Result<bool, WalletError> {
         let bound = sqlx::query_scalar::<_, uuid::Uuid>(
             "UPDATE oxsum.request_operations \
              SET hold_key = $2, state = 'leased', lease_owner = $3, \
@@ -549,7 +598,7 @@ impl Db {
         .bind(hold_key)
         .bind(lease_owner)
         .bind(LEASE_SECS)
-        .fetch_optional(self.pool())
+        .fetch_optional(&mut **tx)
         .await?;
         Ok(bound.is_some())
     }

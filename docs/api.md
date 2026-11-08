@@ -33,6 +33,18 @@ capability. The endpoint performs no external I/O or completion mutation and
 never returns supplier/merchant secrets, endpoints or commercial values.
 Configuration readiness is not provider/PSP certification or release acceptance.
 
+Gateway admission (#849) treats wallet-funded, subscription-funded, cached and
+explicit zero-priced requests alike for current key and organization authority,
+mandate validity and concurrency. Monetary key/member/team/mandate caps keep
+their wallet, bonus and credit-line posting basis; quota is not counted again.
+An exact cap admits a zero-wallet request, while already-exceeded caps refuse.
+Plan dunning restricts wallet overage only. The quota draw, monetary reservation,
+durable watch and operation bind commit together. A refusal retains none of
+those reservations. Independent identical bodies own distinct operations;
+explicit `Idempotency-Key` claims retain the existing replay semantics. A free
+request consumes neither wallet money nor quota and records a verifiable
+zero-cost receipt when it settles.
+
 ## Basics
 
 - Prefix: `/api/v1`. `/healthz` needs no auth and sits outside the prefix — so does `/readyz`, the readiness probe (200 only when the database answers and its schema is current, issue #619). `GET /api/v1/version` is unauthenticated inside the prefix: the deployment's own version/gitSha/schemaVersion identity. Also unauthenticated: `POST /api/v1/auth/register`, when the deployment allows signup at all, `POST /api/v1/invitations/redeem` — the invitation link's token is its credential — `POST /api/v1/webhooks/stripe`, where the `Stripe-Signature` header is the credential, `POST /api/v1/webhooks/airwallex`, where `x-timestamp` + `x-signature` are, and `POST /api/v1/webhooks/merchants/{merchantId}/versions/{versionId}`, where the rail's own signature header is the credential.

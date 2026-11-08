@@ -19,9 +19,6 @@
 use std::collections::HashMap;
 mod support;
 
-#[path = "support/funded_admission.rs"]
-mod funded_admission;
-
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -61,6 +58,9 @@ macro_rules! world_or_skip {
         }
     };
 }
+
+#[path = "support/funded_admission.rs"]
+mod funded_admission;
 
 // ── the scripted upstream ────────────────────────────────────────────────────
 

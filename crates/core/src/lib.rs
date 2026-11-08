@@ -339,8 +339,9 @@ pub use usage_completeness::{
 pub use usage_reports::{ReportEntryBundle, UsageReport, UsageReportRow};
 pub use users::{AccountDeletion, NewUser, Registration, User};
 pub use wallet::{
-    Credits, ListPage, LogEntry, Receipt, RequestEntry, SCALE, SettledEntry, SettledTurn,
-    TransactionEntry, TransactionKind, Wallet, entry_id_for, limit_lock_key, settlement_key_for,
+    Credits, GatewayAdmission, ListPage, LogEntry, Receipt, RequestEntry, SCALE, SettledEntry,
+    SettledTurn, TransactionEntry, TransactionKind, Wallet, entry_id_for, limit_lock_key,
+    settlement_key_for,
 };
 pub use webhooks::{
     ANOMALY_DETECTED, BALANCE_LOW, BUDGET_EXHAUSTION_FORECAST, BUDGET_THRESHOLD_CROSSED,

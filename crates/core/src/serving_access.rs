@@ -10,7 +10,7 @@ use crate::{Db, WalletError};
 /// One coherent read of the caller's authority. Changes affect later admissions;
 /// an admitted task retains its identity and endpoint for terminal recovery.
 /// Sorted sets also make this suitable for a versioned cache-context digest.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ServingAccess {
     /// The customer the credential serves.
@@ -100,6 +100,16 @@ impl Db {
         sqlx::query("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY")
             .execute(&mut *tx)
             .await?;
+        self.serving_access_in(&mut tx, customer_id, key_id).await
+    }
+
+    /// Re-read the route authority on admission's own connection after its key guard.
+    pub(crate) async fn serving_access_in(
+        &self,
+        tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+        customer_id: Uuid,
+        key_id: Option<Uuid>,
+    ) -> Result<ServingAccess, WalletError> {
         let customer = sqlx::query(
             "SELECT cp.business_id, t.model_allowlist, t.requests_per_minute \
              FROM oxsum.customer_profiles cp \
@@ -108,7 +118,7 @@ impl Db {
              WHERE cp.organization_id=$1",
         )
         .bind(customer_id)
-        .fetch_optional(&mut *tx)
+        .fetch_optional(&mut **tx)
         .await?
         .ok_or(WalletError::Unauthenticated)?;
         let business_id: Uuid = customer.try_get("business_id")?;
@@ -117,11 +127,11 @@ impl Db {
                 let row = sqlx::query(
                     "SELECT model_allowlist,group_id FROM oxsum.api_keys \
                      WHERE key_id=$1 AND organization_id=$2 AND revoked_at IS NULL \
-                     AND (expires_at IS NULL OR expires_at>now())",
+                     AND (expires_at IS NULL OR expires_at>clock_timestamp())",
                 )
                 .bind(key)
                 .bind(customer_id)
-                .fetch_optional(&mut *tx)
+                .fetch_optional(&mut **tx)
                 .await?
                 .ok_or(WalletError::Unauthenticated)?;
                 (
@@ -142,7 +152,7 @@ impl Db {
         .bind(business_id)
         .bind(group)
         .bind(customer_id)
-        .fetch_all(&mut *tx)
+        .fetch_all(&mut **tx)
         .await?;
         Ok(ServingAccess {
             customer_id,
