@@ -187,6 +187,16 @@ class BackupRestoreTest(unittest.TestCase):
         self.assertEqual(receipt.read_bytes(), before)
         self.assertEqual(list(self.root.glob(".oxsum-json-*")), [])
 
+    def test_partial_snapshot_line_cannot_block_past_deadline(self):
+        reader, writer = os.pipe()
+        try:
+            os.write(writer, b"partial")
+            with os.fdopen(reader, "rb", buffering=0) as stream:
+                with self.assertRaisesRegex(ValueError, "timed out"):
+                    backup.bounded_line(stream, timeout=0.02)
+        finally:
+            os.close(writer)
+
 
 if __name__ == "__main__":
     unittest.main()

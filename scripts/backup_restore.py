@@ -125,6 +125,23 @@ def sync_directory(path):
         os.close(descriptor)
 
 
+def bounded_line(stream, timeout=35):
+    """Bound the whole response, including a peer that sends only a partial line."""
+    deadline = time.monotonic() + timeout
+    raw = bytearray()
+    while b"\n" not in raw:
+        remaining = deadline - time.monotonic()
+        require(remaining > 0, "database snapshot query timed out")
+        ready, _, _ = select.select([stream], [], [], remaining)
+        require(ready, "database snapshot query timed out")
+        chunk = os.read(stream.fileno(), min(4096, 32769 - len(raw)))
+        require(chunk, "database snapshot query failed")
+        raw.extend(chunk)
+        require(len(raw) <= 32768, "database snapshot response is too large")
+    require(raw.endswith(b"\n") and raw.count(b"\n") == 1, "unexpected database snapshot response")
+    return raw.decode().strip()
+
+
 class Connection:
     """One explicit host/credential set; no ambient libpq, Docker discovery or .env."""
 
@@ -217,9 +234,7 @@ class Snapshot:
     def query(self, sql):
         self.process.stdin.write((sql + ";\n").encode())
         self.process.stdin.flush()
-        ready, _, _ = select.select([self.process.stdout], [], [], 35)
-        require(ready, "database snapshot query timed out")
-        self.answer = self.process.stdout.readline(32769).decode().strip()
+        self.answer = bounded_line(self.process.stdout)
         require(self.answer and len(self.answer) <= 32768, "database snapshot query failed")
 
     def __exit__(self, *_):
@@ -345,6 +360,8 @@ def parser():
 def main():
     args = parser().parse_args()
     connection = Connection(args.container, args.database, args.user, args.database_url_file)
+    if args.operation == "drill":
+        require(os.environ.get("SOURCE") in {None, connection.database}, "drill source differs from the explicit connection")
     if args.operation == "backup":
         path = backup(connection, args.output_directory)
         print("Private backup completed; manifest: " + str(path))
