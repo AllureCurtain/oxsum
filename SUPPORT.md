@@ -28,8 +28,10 @@ providers, mail or payments work.
 - Config problems: `scripts/check-config.sh deploy/.env` and
   `scripts/check-secrets.sh deploy/.env` diagnose placeholders, typos and
   half-configured sets before you file.
-- Backup/restore: `scripts/backup.sh` writes a manifest (schema version,
-  counts, SHA-256); quote it when reporting a restore issue.
+- Backup/restore: `scripts/backup.sh` writes a private version-2 manifest (snapshot
+  schema/counts, size, SHA-256 and timing) against an explicit target. Use the
+  [backup/restore procedure](docs/operator-backup-restore.md); review its counts
+  and the restore receipt before sharing. Never attach the database dump.
 - File at <https://github.com/AllureCurtain/oxsum/issues/new> with
   `self-hosted` context and the reviewed diagnostic report. Do not attach complete
   Compose logs or environment files. Inspect startup logs locally when needed;
