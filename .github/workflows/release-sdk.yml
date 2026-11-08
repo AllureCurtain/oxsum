@@ -1,0 +1,88 @@
+# Manual SDK publication only: consume the original candidate tarball, never
+# build/repack, move an occupied tag, publish an image or deploy an application.
+name: Release SDK
+
+on:
+  workflow_dispatch:
+    inputs:
+      source_sha:
+        description: 'Full source SHA from the successful candidate'
+        required: true
+      candidate_run:
+        description: 'Successful release-candidate run ID'
+        required: true
+      candidate_attempt:
+        description: 'Successful candidate attempt'
+        required: true
+      package_version:
+        description: 'Exact SDK version already in the candidate tarball'
+        required: true
+      distribution_tag:
+        description: 'Explicit unoccupied npm tag (for example candidate-0-1-0)'
+        required: true
+
+concurrency:
+  group: oxsum-sdk-publication
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    name: publish the verified original SDK tarball
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      actions: read
+      contents: read
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+      - name: Validate explicit candidate and package selectors
+        env:
+          SOURCE_SHA: ${{ inputs.source_sha }}
+          CANDIDATE_RUN: ${{ inputs.candidate_run }}
+          CANDIDATE_ATTEMPT: ${{ inputs.candidate_attempt }}
+          PACKAGE_VERSION: ${{ inputs.package_version }}
+          DISTRIBUTION_TAG: ${{ inputs.distribution_tag }}
+        run: |
+          python3 - <<'PY'
+          import os, re
+          for name, pattern in {
+              "SOURCE_SHA": r"[0-9a-f]{40}",
+              "CANDIDATE_RUN": r"[1-9][0-9]*",
+              "CANDIDATE_ATTEMPT": r"[1-9][0-9]*",
+              "PACKAGE_VERSION": r"\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?",
+              "DISTRIBUTION_TAG": r"[a-z][a-z0-9-]{0,62}",
+          }.items():
+              if not re.fullmatch(pattern, os.environ[name]):
+                  raise SystemExit("Invalid " + name)
+          PY
+      - name: Download the selected candidate
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          CANDIDATE_RUN: ${{ inputs.candidate_run }}
+        run: |
+          gh run download "$CANDIDATE_RUN" --repo "$GITHUB_REPOSITORY" \
+            --name candidate-bundle --dir candidate-bundle
+      - name: Revalidate and publish the original verified tarball
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          OXSUM_NPM_TOKEN: ${{ secrets.OXSUM_NPM_TOKEN }}
+          SOURCE_SHA: ${{ inputs.source_sha }}
+          CANDIDATE_RUN: ${{ inputs.candidate_run }}
+          CANDIDATE_ATTEMPT: ${{ inputs.candidate_attempt }}
+          PACKAGE_VERSION: ${{ inputs.package_version }}
+          DISTRIBUTION_TAG: ${{ inputs.distribution_tag }}
+        run: |
+          python3 scripts/publish-candidate-sdk.py candidate-bundle \
+            --sha "$SOURCE_SHA" --run "$CANDIDATE_RUN" --attempt "$CANDIDATE_ATTEMPT" \
+            --version "$PACKAGE_VERSION" --tag "$DISTRIBUTION_TAG" \
+            --registry https://registry.npmjs.org/ --receipt sdk-publication-receipt.json
+      - name: Retain exact-byte publication receipt
+        uses: actions/upload-artifact@v6
+        with:
+          name: sdk-publication-receipt
+          path: sdk-publication-receipt.json
+          if-no-files-found: error
+          retention-days: 90
