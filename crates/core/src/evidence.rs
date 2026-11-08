@@ -156,7 +156,7 @@ pub fn evidence_manifest_digest(canonical_manifest_json: &str) -> Hash {
 /// against its entry here — an artifact missing from the manifest is
 /// unattested, an artifact the manifest names but the bundle lacks is a
 /// dropped committed row.
-#[derive(Debug, Clone, serde::Serialize)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ManifestEntry {
     /// The artifact class, `evidence-artifact/v1/<kind>`'s suffix.
@@ -642,6 +642,9 @@ impl Db {
             let captured_at: OffsetDateTime = sqlx::query_scalar("SELECT clock_timestamp()")
                 .fetch_one(&mut *tx)
                 .await?;
+            let captured_at = captured_at
+                .format(&time::format_description::well_known::Rfc3339)
+                .map_err(|e| invalid(&e.to_string()))?;
             accounting = Some(
                 serde_json::json!({"policyVersion":2,"period":period,"effects":effects,"capturedAt":captured_at,"scope":"Only these committed accounting effects and referenced ledger entries are included. Future recognition and later adjustments are excluded. Actual service delivery and accounting policy compliance remain operator claims."}),
             );
@@ -991,34 +994,6 @@ impl Db {
         key: Option<&crate::HeadSigningKey>,
     ) -> Result<EvidenceBundleRow, WalletError> {
         let organization_id = collector.organization_id;
-        let include_upstream_cost = collector.include_upstream_cost;
-        let (mut manifest_entries, artifacts, mut entry_ids) = collector.finish();
-        manifest_entries.sort_by(|a, b| {
-            (a.kind.as_str(), a.id.as_str()).cmp(&(b.kind.as_str(), b.id.as_str()))
-        });
-
-        let excluded: Vec<String> = evidence_scope(include_upstream_cost).excluded;
-        let manifest_canonical = serde_json::to_string(&EvidenceManifestV1 {
-            v: 1,
-            kind: kind.as_str(),
-            organization_id: &organization_id.to_string(),
-            covered: SCOPE_COVERED,
-            excluded: &excluded,
-            entries: &manifest_entries,
-        })
-        .map_err(|e| invalid(&e.to_string()))?;
-        let manifest_digest = evidence_manifest_digest(&manifest_canonical);
-
-        // The marker — appended once per scope, like the usage report's. Each
-        // kind's companion field is set by construction; a caller that passes
-        // one absent is a bug the error names rather than a panic.
-        //
-        // The scope key carries the organization: the marker's deterministic
-        // id doubles as the *global* `oxsum.evidence_bundles` primary key, so
-        // two organizations minting the same period span must not collide
-        // (a bare `period/<from>/<to>` would map both to one row and the
-        // second mint's ON CONFLICT would silently skip, leaving that
-        // organization's download a 404).
         let scope_key = match kind {
             EvidenceKind::Period => format!(
                 "period/{}/{}/{}",
@@ -1032,6 +1007,36 @@ impl Db {
                 statement_id.ok_or_else(|| invalid("a statement kind names its id"))?
             ),
         };
+        let bundle_id = *crate::entry_id_for(&format!("evidence-bundle/{scope_key}")).as_uuid();
+        // Atomic insert chooses one immutable source snapshot. It commits
+        // before any marker write; no pooled connection is held across Wallet
+        // calls. Concurrent publishers therefore all anchor identical inputs.
+        sqlx::query("INSERT INTO oxsum.evidence_mint_inputs(scope_key,organization_id,collector) VALUES($1,$2,$3) ON CONFLICT(scope_key) DO NOTHING")
+            .bind(&scope_key).bind(organization_id).bind(serde_json::to_value(&collector).map_err(|e|invalid(&e.to_string()))?)
+            .execute(self.pool()).await?;
+        if let Some(existing) = self.evidence_bundle(organization_id, bundle_id).await? {
+            return Ok(existing);
+        }
+        let frozen:serde_json::Value=sqlx::query_scalar("SELECT collector FROM oxsum.evidence_mint_inputs WHERE scope_key=$1 AND organization_id=$2")
+            .bind(&scope_key).bind(organization_id).fetch_one(self.pool()).await?;
+        let collector: Collector =
+            serde_json::from_value(frozen).map_err(|e| invalid(&e.to_string()))?;
+        let include_upstream_cost = collector.include_upstream_cost;
+        let (mut manifest_entries, artifacts, mut entry_ids) = collector.finish();
+        manifest_entries.sort_by(|a, b| {
+            (a.kind.as_str(), a.id.as_str()).cmp(&(b.kind.as_str(), b.id.as_str()))
+        });
+        let excluded = evidence_scope(include_upstream_cost).excluded;
+        let manifest_canonical = serde_json::to_string(&EvidenceManifestV1 {
+            v: 1,
+            kind: kind.as_str(),
+            organization_id: &organization_id.to_string(),
+            covered: SCOPE_COVERED,
+            excluded: &excluded,
+            entries: &manifest_entries,
+        })
+        .map_err(|e| invalid(&e.to_string()))?;
+        let manifest_digest = evidence_manifest_digest(&manifest_canonical);
         let description = serde_json::json!({
             "v": 1,
             "kind": kind.as_str(),
@@ -1096,8 +1101,7 @@ impl Db {
             "INSERT INTO oxsum.evidence_bundles \
              (bundle_id, organization_id, kind, period_from, period_to, statement_id, \
               manifest_digest, anchor_log_index, bundle_json, entry_count) \
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) \
-             ON CONFLICT (bundle_id) DO NOTHING",
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) ON CONFLICT(bundle_id) DO NOTHING",
         )
         .bind(*marker_id.as_uuid())
         .bind(organization_id)
@@ -1112,18 +1116,9 @@ impl Db {
         .execute(self.pool())
         .await?;
 
-        Ok(EvidenceBundleRow {
-            bundle_id: *marker_id.as_uuid(),
-            organization_id,
-            kind,
-            period_from,
-            period_to,
-            statement_id,
-            manifest_digest: manifest_digest.to_hex(),
-            anchor_log_index: log_index as i64,
-            entry_count,
-            created_at: OffsetDateTime::now_utc(),
-        })
+        self.evidence_bundle(organization_id, bundle_id)
+            .await?
+            .ok_or_else(|| invalid("published evidence descriptor missing"))
     }
 
     /// The standing period bundle for `(organization, from, to)` — the replay
@@ -1464,6 +1459,7 @@ impl Db {
 /// What a mint collects: the manifest plus the artifact map, gathered under
 /// one organization. `entry_ids` pairs each ledger entry id the artifacts
 /// named with the `(kind, id)` of the artifact that wants its proof.
+#[derive(serde::Serialize, serde::Deserialize)]
 struct Collector {
     organization_id: Uuid,
     include_upstream_cost: bool,

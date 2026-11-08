@@ -553,3 +553,15 @@ provider endpoints or credentials.
 `plan_accounting_periods` freezes each v2 authorization, version, fee and exact service bounds beside its activation invoice. `plan_accounting_effects` records activation, one effect per completed UTC date, refunds, disputes and voids with exact ledger entry IDs. Every effect conserves `billed = earned + deferred` and `receivable = billed - collected`. Inputs/effects are append-only; current net values are sums. The durable `plan-recognition` worker advances through eligible periods, owns the plan row, locks the journal and then ledger append, and commits the daily row beside the official entry. Refund/void use the same catch-up and lock order. Old service dates are metadata; late work posts to today's open ledger date.
 
 V2 invoices issue before earning: prepaid activation creates a paid journal/statement without Receivables/PlanFees accrual. The period close finds the immutable accounting row even if its invoice is void and cannot reissue. A refund first catches up completed days, recomputes net earned under reduced consideration and debits earned contra plus remaining original deferred. A dispute changes collection/receivable (or payable after void), never the service interval or earned amount. The same source-linked effect records feed reports and exported evidence.
+
+
+Evidence minting freezes exact artifact inputs durably in `evidence_mint_inputs`
+before appending its deterministic scope marker. An atomic unique scope insert selects
+the winning snapshot; concurrent mints reload it and return the persisted descriptor.
+No database connection is retained across nested ledger calls.
+If a process fails after marker append but before exported bytes persist, retry
+uses those frozen inputs even when later refunds or daily recognition have landed.
+An older orphan marker with no matching captured inputs explicitly refuses
+publication rather than serving an export bound to a different digest. Existing
+stored bundles remain unchanged; independent ledger verification still requires
+the retained trust inputs and stays within the documented proof scope.

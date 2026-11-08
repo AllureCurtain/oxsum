@@ -97,3 +97,15 @@ END;
 $guard$ LANGUAGE plpgsql;
 CREATE TRIGGER accounted_plan_period_immutable BEFORE UPDATE OR DELETE ON oxsum.plan_periods
     FOR EACH ROW EXECUTE FUNCTION oxsum.protect_accounted_plan_period();
+
+
+-- Freeze exact artifact inputs before the separately committed ledger marker.
+-- A crash can then finish the same manifest instead of recapturing later facts.
+CREATE TABLE oxsum.evidence_mint_inputs (
+    scope_key text PRIMARY KEY,
+    organization_id uuid NOT NULL REFERENCES oxsum.organizations(organization_id),
+    collector jsonb NOT NULL CHECK (jsonb_typeof(collector)='object'),
+    created_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE TRIGGER evidence_mint_inputs_immutable BEFORE UPDATE OR DELETE ON oxsum.evidence_mint_inputs
+    FOR EACH ROW EXECUTE FUNCTION oxsum.protect_plan_accounting_history();

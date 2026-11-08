@@ -3365,3 +3365,12 @@ Confirmed refunds reduce net consideration without changing service bounds, quot
 Reports distinguish net billed, earned, deferred movement, collected, receivable, cash refund and noncash discount. V2 filters select effect booking, service attribution or payment-cohort dates; a filtered deferred/receivable amount is a movement, not an ending balance. Recognition and cashless void retain the original payment cohort; actual refund/dispute cash is attributed to its booking date. V1 retains its historical posted-journal cohort. Confirmed refunds are counted once from source allocations/ledger cash, excluding matching journal credits. The service-clock usage ledger join now uses the actual `ledger_<tenant>` schema and tolerates customers without a created wallet.
 
 Statement evidence commits the captured policy, original inputs and listed effects with their ledger entries; the verifier rejects missing referenced daily entries. Captured exports remain byte-stable after later days or adjustments. Actual delivery, completeness beyond the captured effects, and statutory accounting compliance remain outside the proof claim.
+
+
+Independent review of #838 found that recapturing a statement at concurrent mint
+or after a marker-only crash could bind a new manifest to an old deterministic
+marker. The writer now commits immutable exact inputs first under the same unique scope
+string; concurrent publishers reload the winner before appending. It checks
+an existing marker's document digest. Failed export insertion leaves recoverable
+inputs; prior unmatched orphan markers fail closed. This preserves old bundles
+and avoids modifying the ledger engine while making the crash gap recoverable.

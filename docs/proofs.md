@@ -63,3 +63,15 @@ every object and check computed field-by-field — is [the transparency-log spec
 A new v2 plan-statement artifact commits the policy number, immutable original version/authorization/fee/service bounds, capture time and listed accounting effects. Each effect names its actual official ledger entry (zero-money days have none); the bundle carries those entries and the pure verifier rejects an omitted referenced entry. Policy inputs/effects and statement itemization are collected from one repeatable-read database snapshot. Existing bundles and v1 verification remain readable and byte-stable.
 
 This is source integrity and ledger inclusion for the captured list. It does not independently attest actual service delivery, statutory accounting compliance, completeness of effects absent from the captured list, or financial changes after mint. A statement may export before service ends; its committed scope explicitly excludes future recognition and later adjustments. Re-minting its immutable scope returns the same bytes.
+
+
+Evidence minting freezes exact artifact inputs durably in `evidence_mint_inputs`
+before appending its deterministic scope marker. An atomic unique scope insert selects
+the winning snapshot; concurrent mints reload it and return the persisted descriptor.
+No database connection is retained across nested ledger calls.
+If a process fails after marker append but before exported bytes persist, retry
+uses those frozen inputs even when later refunds or daily recognition have landed.
+An older orphan marker with no matching captured inputs explicitly refuses
+publication rather than serving an export bound to a different digest. Existing
+stored bundles remain unchanged; independent ledger verification still requires
+the retained trust inputs and stays within the documented proof scope.

@@ -4948,15 +4948,33 @@ impl Wallet {
         .with_description(description_of(description_json)?)
         .debit(self.adjustments, minor, currency())
         .credit(self.adjustments, minor, currency());
-        let receipt = match self.append(entry).await {
-            Ok(receipt) => receipt,
-            Err(error) => {
-                // A raced mint lands on the same idempotency key; the standing
-                // entry is the same bundle either way, so read it back.
-                let Some(stored) = self.store.get(entry_id_for(&key)).await? else {
-                    return Err(error);
-                };
-                stored_receipt(&stored)
+        // Read an existing exact marker before sealing today's draft, so a
+        // retry after calendar closure remains recoverable. Other append errors
+        // propagate; only an actual idempotency conflict gets a raced reread.
+        let valid = |stored: &StoredEntry<SCALE>| {
+            stored.entry.document().is_some_and(|document| {
+                document.id.as_str() == EVIDENCE_BUNDLE_DOCUMENT
+                    && document.content_hash == Some(manifest_digest)
+            })
+        };
+        let receipt = if let Some(stored) = self.store.get(entry_id_for(&key)).await? {
+            if !valid(&stored) {
+                return Err(WalletError::Conflict("retained evidence marker names different captured inputs; explicit recovery required".into()));
+            }
+            stored_receipt(&stored)
+        } else {
+            match self.append(entry).await {
+                Ok(receipt) => receipt,
+                Err(error @ WalletError::Conflict(_)) => {
+                    let Some(stored) = self.store.get(entry_id_for(&key)).await? else {
+                        return Err(error);
+                    };
+                    if !valid(&stored) {
+                        return Err(WalletError::Conflict("retained evidence marker names different captured inputs; explicit recovery required".into()));
+                    }
+                    stored_receipt(&stored)
+                }
+                Err(error) => return Err(error),
             }
         };
         let index = receipt.log_index.ok_or_else(|| {
