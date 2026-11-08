@@ -4,6 +4,7 @@ Updated: 2026-11-08
 
 ## In progress
 
+<<<<<<< HEAD
 ### Operator launch (#725)
 
 [Contract and execution evidence](docs/roadmap/operator-launch/EXECUTION.md) track the accepted N00–N21 scope.
@@ -32,6 +33,7 @@ Updated: 2026-11-08
 - [ ] [#746](https://github.com/AllureCurtain/oxsum/issues/746) — N20: Publication and deployment, if selected.
 - [ ] [#747](https://github.com/AllureCurtain/oxsum/issues/747) — N21: Complete embedded application integration.
 - [ ] [#770](https://github.com/AllureCurtain/oxsum/issues/770) — Anchor job failure fixtures to the database clock; implemented;38 jobs/faults checks and five repeated regression runs passed, review pending.
+- [x] [#785](https://github.com/AllureCurtain/oxsum/issues/785) — Scoped application provisioning credentials (N21.a): `customersProvision` lets an integration credential mint namespace-bounded service-managed customer accounts via `POST /business/customers`; identity stays immutable, idempotency is the `externalId` namespace key, and a provision-only grant starts with an empty allowlist. Migration `0105`; contract `openapi.yaml` first.
 
 - [x] [#723](https://github.com/AllureCurtain/oxsum/issues/723) — Serialized promo writers on the ledger append advisory lock before their promo row locks, fixing the post-merge hold/expiry deadlock; integrated in PR #724.
 
