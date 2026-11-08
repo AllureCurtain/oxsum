@@ -67,12 +67,7 @@ async fn retained_effect(
         .bind(id)
         .fetch_one(&mut **tx)
         .await?;
-        if reversed
-            || wallet
-                .verified_source_hash_in(&mut **tx, id)
-                .await?
-                .is_none()
-        {
+        if reversed || wallet.verified_source_hash_in(tx, id).await?.is_none() {
             return Err(review());
         }
     }

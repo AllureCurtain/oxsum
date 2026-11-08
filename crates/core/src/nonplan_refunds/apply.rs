@@ -92,7 +92,7 @@ async fn verify_restitution_in(
     let key = format!("nonplan-refund-restitution/{}", effect.refund_id);
     let id = *crate::entry_id_for(&key).as_uuid();
     if effect.correction_entry_id != Some(id)
-        || wallet.verified_source_hash_in(&mut **tx, id).await? != effect.correction_entry_hash
+        || wallet.verified_source_hash_in(tx, id).await? != effect.correction_entry_hash
     {
         return Err(evidence::review("restitution identity or hash differs"));
     }

@@ -273,12 +273,7 @@ async fn inspect_source_in(
     }
     proof.entry_id = Some(id);
     let hash: String = rows[0].try_get("hash")?;
-    if wallet
-        .verified_source_hash_in(&mut **tx, id)
-        .await?
-        .as_deref()
-        != Some(hash.as_str())
-    {
+    if wallet.verified_source_hash_in(tx, id).await?.as_deref() != Some(hash.as_str()) {
         return Ok(proof.uncertain("originalEntryHashUnproven"));
     }
     proof.content_hash = Some(hash);
@@ -431,7 +426,7 @@ async fn inspect_source_in(
         }
         if cash > 0 {
             let id = *crate::entry_id_for(&format!("dispute-recharge/{prior_id}")).as_uuid();
-            proof.prior_returns.push(serde_json::json!({"disputeId":prior_id,"entryId":id,"contentHash":wallet.verified_source_hash_in(&mut **tx, id).await?,"cashMinor":cash}));
+            proof.prior_returns.push(serde_json::json!({"disputeId":prior_id,"entryId":id,"contentHash":wallet.verified_source_hash_in(tx, id).await?,"cashMinor":cash}));
         }
         if cash == 0
             && (prior.try_get::<String, _>("state")? == "lost"
@@ -463,7 +458,7 @@ async fn inspect_source_in(
     let mut activity = Vec::new();
     let mut pending = 0i64;
     for chunk in ids.chunks(ACTIVITY_LIMIT) {
-        let entries = match crate::ledger_source::entries_in(&mut **tx, tenant, chunk).await {
+        let entries = match crate::ledger_source::entries_in(tx, tenant, chunk).await {
             Ok(entries) => entries,
             Err(PostgresError::Integrity(_) | PostgresError::Malformed(_)) => {
                 return Ok(proof.uncertain("walletActivityUnproven"));
@@ -574,10 +569,7 @@ async fn prior_cash_in(
         || rows[0].try_get::<Vec<u8>, _>("idempotency_key")? != key.as_bytes()
         || rows[0].try_get::<Option<Uuid>, _>("reverses")?.is_some()
         || rows[0].try_get::<Option<i64>, _>("log_index")?.is_none()
-        || wallet
-            .verified_source_hash_in(&mut **tx, id)
-            .await?
-            .is_none()
+        || wallet.verified_source_hash_in(tx, id).await?.is_none()
     {
         return Ok(None);
     }

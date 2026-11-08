@@ -1185,6 +1185,9 @@ impl Db {
                 .await?
                 .ok_or_else(|| WalletError::Storage(sqlx::Error::RowNotFound.into()))?;
             tx.commit().await?;
+            if let Some(guard) = source_guard.take() {
+                guard.rollback().await?;
+            }
             return Ok(standing);
         }
         if let Some(guard) = source_guard.as_mut() {
@@ -1226,6 +1229,9 @@ impl Db {
                 .await?
                 .ok_or_else(|| WalletError::Storage(sqlx::Error::RowNotFound.into()))?;
             tx.commit().await?;
+            if let Some(guard) = source_guard.take() {
+                guard.rollback().await?;
+            }
             return Ok(standing);
         }
         if current.status != "paid" {
@@ -1272,6 +1278,11 @@ impl Db {
             .await?
             .ok_or_else(|| WalletError::Storage(sqlx::Error::RowNotFound.into()))?;
         tx.commit().await?;
+        // Drop queues rollback without awaiting PostgreSQL. A successful grant
+        // must release source ownership before an immediate refund may try it.
+        if let Some(guard) = source_guard.take() {
+            guard.rollback().await?;
+        }
         Ok(standing)
     }
 

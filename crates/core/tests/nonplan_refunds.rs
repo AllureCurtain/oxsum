@@ -1555,3 +1555,55 @@ async fn callback_claims_parent_rows_before_holding_the_source_or_append_lock() 
         );
     }
 }
+
+#[tokio::test]
+async fn successful_fulfillment_releases_source_before_return_even_when_drop_cleanup_is_paused() {
+    use sqlx::Connection;
+    use sqlx::postgres::PgPoolOptions;
+    use tokio::sync::Semaphore;
+
+    let Some(w) = world().await else { return };
+    let order = paid(&w, PaymentOrderPurpose::WalletTopup, false).await;
+    let url = oxsum_testkit::suite_db_url("nonplan_refunds").unwrap();
+    for replay in [false, true] {
+        let cleanup = Arc::new(Semaphore::new(0));
+        let paused_cleanup = cleanup.clone();
+        let pool = PgPoolOptions::new()
+            .max_connections(4)
+            .after_release(move |connection, _| {
+                let paused_cleanup = paused_cleanup.clone();
+                Box::pin(async move {
+                    // SQLx queues Drop's ROLLBACK before returning this connection.
+                    // Freeze that cleanup before it can flush to PostgreSQL.
+                    if connection.should_flush() {
+                        paused_cleanup.acquire().await.unwrap().forget();
+                    }
+                    Ok(true)
+                })
+            })
+            .connect(&url)
+            .await
+            .unwrap();
+        let db = Db::from_pool(pool.clone());
+        db.fulfill_payment_order(order.order_id, &w.wallet, today())
+            .await
+            .unwrap();
+        let mut observer = w.db.pool().begin().await.unwrap();
+        let available: bool =
+            sqlx::query_scalar("SELECT pg_try_advisory_xact_lock(hashtextextended($1,0))")
+                .bind(format!("oxsum.nonplan-return:{}", order.order_id))
+                .fetch_one(&mut *observer)
+                .await
+                .unwrap();
+        observer.rollback().await.unwrap();
+        cleanup.add_permits(4);
+        pool.close().await;
+        assert!(
+            available,
+            "source must be unlocked on successful return; replay={replay}"
+        );
+    }
+    let refund = reserve(&w, &order, None, true).await;
+    assert_eq!(refund.state, "provider_pending");
+    assert_eq!(w.wallet.available().await.unwrap(), TOTAL);
+}

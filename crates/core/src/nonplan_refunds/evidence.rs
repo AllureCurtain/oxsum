@@ -252,12 +252,7 @@ pub(crate) async fn return_entry_in(
     }
     let row = &rows[0];
     let hash: String = row.try_get("hash")?;
-    if wallet
-        .verified_source_hash_in(&mut **tx, id)
-        .await?
-        .as_deref()
-        != Some(hash.as_str())
-    {
+    if wallet.verified_source_hash_in(tx, id).await?.as_deref() != Some(hash.as_str()) {
         return Err(review("retained Cash content hash differs"));
     }
     let reversed: bool = sqlx::query_scalar(&format!(
