@@ -47,6 +47,7 @@ impl Db {
         if scope.try_get::<String, _>("tenant_id")? != wallet.tenant_id() {
             return Err(evidence::review("wallet does not own the selected refund"));
         }
+        evidence::parents_in(&mut tx, request.refund_id).await?;
         let terms = json!({"refundId":request.refund_id,"eventReceiptId":request.event_receipt_id,"idempotencyKey":request.idempotency_key,"reason":request.reason.trim(),"expectedRevision":request.expected_revision});
         if let Some(row)=sqlx::query("SELECT actor_user_id,detail FROM oxsum.finance_audit WHERE business_id=$1 AND action='nonplan_refund.recover' AND idempotency_key=$2")
             .bind(business).bind(&request.idempotency_key).fetch_optional(&mut *tx).await? {

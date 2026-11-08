@@ -53,7 +53,7 @@ must not replace a refusal with a new guessed source.
 
 Apply the same request with both `--apply` and
 `--expected-revision SOURCE_REVISION`. The command checks live authority and
-reconstructs the snapshot under the same source/refund/append locks. Any changed
+reconstructs the snapshot under the same parent/source/refund/append locks. Any changed
 source revision refuses without moving money. Preview again and review the new
 facts before selecting a new request key. The same key binds the actor, exact
 refund/receipt, reason and revision; changed reuse conflicts. An unchanged

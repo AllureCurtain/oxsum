@@ -364,11 +364,7 @@ impl Db {
         on: Date,
     ) -> Result<(), WalletError> {
         let mut tx = self.pool().begin().await?;
-        let order: Uuid =
-            sqlx::query_scalar("SELECT order_id FROM oxsum.refunds WHERE refund_id=$1")
-                .bind(refund)
-                .fetch_one(&mut *tx)
-                .await?;
+        let order = evidence::parents_in(&mut tx, refund).await?;
         nonplan_returns::lock_source_in(&mut tx, order).await?;
         let source = evidence::source_in(&mut tx, wallet, refund).await?;
         wallet.lock_append_in(&mut tx).await?;
