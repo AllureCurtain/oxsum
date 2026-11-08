@@ -59,6 +59,7 @@ mod payment_orders;
 mod plan_payments;
 mod plan_refunds;
 mod plan_statements;
+mod plan_usage_corrections;
 mod plans;
 mod pools;
 mod promo_lots;
@@ -253,6 +254,7 @@ pub use plan_statements::{
     PastDueReport, PlanCreditStanding, PlanStatement, PlanStatementDetail, PlanStatementLine,
     PlanStatementPage, PlanStatementState, StatementLineKind,
 };
+pub use plan_usage_corrections::{PlanUsageCorrection, PlanUsageCorrectionRequest};
 pub use plans::{
     CustomerPlan, CustomerPlanState, NewSoldPlan, PeriodAuthorization, PeriodKind,
     PlanAuthorizationKind, PlanPeriod, PlanPeriodState, SoldPlan, period_end_for,

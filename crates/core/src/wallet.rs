@@ -1493,6 +1493,39 @@ impl Wallet {
         self.append_in(tx, draft).await
     }
 
+    /// Remove proven duplicated plan revenue, reducing only original open debt
+    /// and retaining already collected excess as payable. Cash never moves.
+    pub(crate) async fn plan_usage_correction_in(
+        &self,
+        tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+        correction: &crate::PlanUsageCorrection,
+        on: Date,
+    ) -> Result<Receipt, WalletError> {
+        let amount = positive(correction.duplicate_minor)?;
+        if correction.receivable_minor < 0
+            || correction.payable_minor < 0
+            || correction
+                .receivable_minor
+                .checked_add(correction.payable_minor)
+                != Some(correction.duplicate_minor)
+        {
+            return Err(invalid("invalid duplicate-usage allocation"));
+        }
+        let key = format!("plan-usage-correction/{}", correction.journal_id);
+        let mut draft = Entry::<Draft,SCALE>::new(entry_id_for(&key),idem(&key)?,on)
+            .with_description(description_of(&format!("historical duplicate usage correction {}; original accrual {}; receivable {}; refund payable {}; evidence sha256 {}; cash unchanged",correction.journal_id,correction.original_entry_id,correction.receivable_minor,correction.payable_minor,correction.evidence_sha256))?)
+            .debit(self.plan_fees,amount,currency());
+        for (account, minor) in [
+            (self.receivables, correction.receivable_minor),
+            (self.refund_payable, correction.payable_minor),
+        ] {
+            if minor > 0 {
+                draft = draft.credit(account, Credits::from_minor(minor), currency());
+            }
+        }
+        self.append_in(tx, draft).await
+    }
+
     /// Record the full observed chargeback cash. Only original collected funds
     /// restore debt; a voided bill draws its payable and excess is review suspense.
     #[allow(clippy::too_many_arguments)]

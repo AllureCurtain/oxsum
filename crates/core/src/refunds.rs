@@ -417,6 +417,9 @@ impl Db {
         // The order row serializes every refund decision on it: a request and
         // a resolution, or two racing requests, compute the bound against the
         // same committed figure.
+        // Historical correction holds the business before its source snapshot.
+        // A new request must serialize before that correction or see its fence.
+        authority::lock_business(&mut tx).await?;
         sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1,0))")
             .bind(format!("order-refund:{order_id}"))
             .execute(&mut *tx)
@@ -450,6 +453,12 @@ impl Db {
             // Another organization's order is a not-found, the same scoping
             // the order read uses.
             return Err(WalletError::NotFound("unknown payment order".into()));
+        }
+        if !crate::plan_usage_corrections::corrected_order_journals_in(&mut tx, order_id)
+            .await?
+            .is_empty()
+        {
+            return Err(WalletError::Conflict("this order funds a historical usage correction; review its refund payable before authorizing a payout".into()));
         }
         // Only money that actually arrived may refund: `paid` or `fulfilled`
         // — a `provider_pending` order has nothing to give back yet.
@@ -639,6 +648,15 @@ impl Db {
                 Ok((standing, false))
             }
             RefundDecision::Approve => {
+                if !crate::plan_usage_corrections::corrected_order_journals_in(
+                    &mut tx,
+                    existing.order_id,
+                )
+                .await?
+                .is_empty()
+                {
+                    return Err(WalletError::Conflict("this order funds a historical usage correction; review its refund payable before provider authorization".into()));
+                }
                 // Re-check the bound inside the locked transaction: refunds
                 // resolved since the request was written may have consumed
                 // the remainder this one was sized against.
@@ -1636,6 +1654,7 @@ impl Db {
         let mut recharge_entry = None;
         let mut unallocated_chargeback = 0i64;
         let mut payable_chargeback = 0i64;
+        let mut corrected_journals = Vec::new();
         let recharge = if resolution == DisputeResolution::Lost && !plan_fee {
             let drawn = wallet.credit_used().await?;
             if drawn <= 0 {
@@ -1675,6 +1694,11 @@ impl Db {
                 .plan_source_debit_in(&mut jtx, &key, crate::wallet::REFUND_PAYABLE)
                 .await?;
             unallocated_chargeback = dispute.amount_minor - allocated - payable_chargeback;
+            corrected_journals = crate::plan_usage_corrections::corrected_order_journals_in(
+                &mut jtx,
+                dispute.order_id,
+            )
+            .await?;
             recharged = Some(allocated);
             jtx.commit().await?;
             if restored.is_none() {
@@ -1716,6 +1740,8 @@ impl Db {
             "payableMinor": payable_chargeback,
             "unallocatedMinor": unallocated_chargeback,
             "requiresReview": unallocated_chargeback>0,
+            "correctedJournals":corrected_journals,
+            "reviewReason":if corrected_journals.is_empty(){None}else{Some("historical usage correction requires explicit payable allocation")},
             "currency": dispute.currency,
             "rechargeEntryId": recharge_entry,
             "reason": reason,
