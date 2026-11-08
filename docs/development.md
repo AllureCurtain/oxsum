@@ -9,6 +9,15 @@
   omitting it checks local consistency only. `VERIFY_CONSUMER_OUTPUT=<new-dir>
   scripts/check-verify-consumer.sh` retains the exact installed SDK tarball.
 
+- Image promotion: `python3 scripts/test-candidate-promotion.py` tests refusal,
+  immutable identity and credential boundaries without registry access.
+  `python3 scripts/test-candidate-promotion.py --local-registry <new-output-dir>`
+  exercises a task-owned loopback registry using the script's explicitly pinned
+  image (must already be local). `scripts/promote-candidate.py` consumes saved
+  candidate bytes; production requires `gh` plus secret-store exports
+  `OXSUM_REGISTRY_USERNAME` and `OXSUM_REGISTRY_TOKEN`, never a root `.env` load.
+  See [the promotion runbook](self-hosted-release.md) for selectors and receipts.
+
 - Candidate validation: `python3 scripts/test-candidate-ci.py` exercises the
   full-CI evidence gate without credentials. `scripts/check-candidate-ci.py
   --sha <40-character-sha> --repository AllureCurtain/oxsum --output ci.json`
@@ -842,11 +851,12 @@ constraint tightened the other way — may not round-trip. The safe procedure:
    made the schema or the books incompatible — a plain revert keeps the data a
    rollback would otherwise strand behind a constraint it predates.
 
-Every deploy workflow tags the image `sha-<git-sha>` beside `latest`, so the
-rollback is `docker pull ghcr.io/allurecurtain/oxsum:sha-<previous>` and restart
-— no rebuild. The `deploy.yml` `image_tag` input accepts `sha-<sha>` directly
-for exactly this; a manual SSH `docker run` of the same tag does it without
-going through CI.
+Image promotion now consumes the validated candidate archive and creates one
+explicit version tag plus an immutable digest receipt. It never rebuilds or
+updates `latest`. The legacy `deploy.yml` combined caller lacks candidate
+selectors and fails closed before publication; N13.c will replace it with
+explicit digest deployment and compatible rollback. Retain the previous
+receipt and backup for that separately authorized operation.
 
 The CI gate builds and smoke-tests the image on every pull request, so a release
 that cannot boot never reaches the registry; what it cannot smoke-test is your

@@ -56,6 +56,8 @@ Updated: 2026-11-08
 - [ ] [#800](https://github.com/AllureCurtain/oxsum/issues/800) — Replace undefined OpenAPI security requirements with the credential classes each route actually accepts.
 - [ ] [#805](https://github.com/AllureCurtain/oxsum/issues/805) — Repair the five complete-run migration/recovery regressions and prevent migration registry drift; 42 focused and 1,877 complete PostgreSQL/workspace tests plus strict Clippy passed; nine existing opt-ins/known defects remain skipped. Integration pending.
 
+- [ ] [#801](https://github.com/AllureCurtain/oxsum/issues/801) — N13.b: Original candidate config/layer promotion and immutable registry receipts implemented; 39 Python checks and isolated registry upload/pull/idempotency/conflict/gzip checks passed. Review/integration pending; no public publication or deployment.
+
 - [x] [#723](https://github.com/AllureCurtain/oxsum/issues/723) — Serialized promo writers on the ledger append advisory lock before their promo row locks, fixing the post-merge hold/expiry deadlock; integrated in PR #724.
 
 - [x] [#697](https://github.com/AllureCurtain/oxsum/issues/697) — Rust style normalization: phases 0–11 adopted the Google Rust Style Guide workspace-wide. Pinned nightly formatting, explicit imports, `FromStr` for every `Result` parser, `#[non_exhaustive]` verify API, workspace `missing_docs`, poisoned-lock panics, borrowed application parameters, and the verify/gateway module splits. Decisions and exceptions are in the 2026-11-07 entry of `docs/decisions.md`.
