@@ -53,7 +53,7 @@ Updated: 2026-11-08
 - [x] [#794](https://github.com/AllureCurtain/oxsum/issues/794) — Reconcile integrated progress and remaining acceptance; integrated in PR #796.
 - [x] [#795](https://github.com/AllureCurtain/oxsum/issues/795) — Closing plan prepayments reach statements once with payment-source evidence; integrated in PR #798 (`c97e5f7`). H1/H2/H3 remain separate defects.
 - [x] [#799](https://github.com/AllureCurtain/oxsum/issues/799) — Checkout authority descriptions and generated type drift reconciled in PR #804 (`465061d`).
-- [ ] [#800](https://github.com/AllureCurtain/oxsum/issues/800) — Replace undefined OpenAPI security requirements with the credential classes each route actually accepts.
+- [ ] [#800](https://github.com/AllureCurtain/oxsum/issues/800) — Align 19 OpenAPI operations with existing credential authority; four contract checks and frontend build passed, integration pending.
 - [ ] [#805](https://github.com/AllureCurtain/oxsum/issues/805) — Repair the five complete-run migration/recovery regressions and prevent migration registry drift; 42 focused and 1,877 complete PostgreSQL/workspace tests plus strict Clippy passed; nine existing opt-ins/known defects remain skipped. Integration pending.
 
 - [ ] [#801](https://github.com/AllureCurtain/oxsum/issues/801) — N13.b: Original candidate config/layer promotion and immutable registry receipts implemented; 39 Python checks and isolated registry upload/pull/idempotency/conflict/gzip checks passed. Review/integration pending; no public publication or deployment.

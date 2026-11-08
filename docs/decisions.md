@@ -2955,3 +2955,21 @@ its reusable promotion workflow. Its missing explicit selectors now fail before
 publication/SSH; N13.c separately replaces combined publication/deployment with
 immutable reference deployment and database-compatible rollback. SDK publication
 and final candidate acceptance remain separate units.
+
+## 2026-11-08 — Check authentication declarations before API code generation (#800)
+
+Nineteen OpenAPI operations referenced an undefined `apiKey` scheme; seventeen
+also required that scheme and a personal cookie together. The existing router
+accepts machine headers as consumption keys and blocks cookie fallback, so those
+declarations could not represent the actual authority. Correct the contract to
+the audited `ScopedRead`, `Personal` and `AccountManage` boundaries without
+changing runtime authorization.
+
+The frontend's existing code-generation step now runs a Node contract check
+before generating types. It rejects undefined schemes, cookie/machine conjunctions
+and denied-key contradictions, and pins the reviewed commercial/financial route
+matrix. `js-yaml` is an explicit development dependency at its already-locked
+version so the check parses YAML without depending on a transitive import. The
+Docker frontend stage already runs codegen, which makes this check part of the
+protected frontend gate without another CI job. HTTP authority tests remain
+responsible for runtime enforcement.

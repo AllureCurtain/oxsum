@@ -1012,10 +1012,17 @@ backend changes were needed.
 
 ```bash
 npm --prefix web ci          # install the toolchain (Node 22+)
-npm --prefix web run codegen # regenerate src/api/schema.d.ts from crates/server/openapi.yaml
+npm --prefix web run test:contract # check OpenAPI security declarations
+npm --prefix web run codegen # check the contract, then regenerate src/api/schema.d.ts
 npm --prefix web run dev     # vite dev server, proxies /api to localhost:3000
 npm --prefix web run build   # emit web/dist
 ```
+
+The contract check runs before code generation, including the Docker frontend
+stage and its CI job. It rejects unknown security schemes, combined cookie and
+machine requirements, denied-key contradictions and changes to the audited
+commercial/financial credential boundaries. It parses the full OpenAPI YAML;
+these checks do not replace HTTP authorization tests.
 
 The server embeds `web/dist` via `rust-embed` and serves it at `/app`
 (`crates/server/src/spa.rs`): extension-less routes fall back to

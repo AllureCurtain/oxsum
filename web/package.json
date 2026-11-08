@@ -6,7 +6,8 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc -b && vite build",
-    "codegen": "openapi-typescript ../crates/server/openapi.yaml -o src/api/schema.d.ts",
+    "codegen": "npm run test:contract && openapi-typescript ../crates/server/openapi.yaml -o src/api/schema.d.ts",
+    "test:contract": "node --test tests/openapi-security.test.mjs",
     "preview": "vite preview"
   },
   "dependencies": {
@@ -50,6 +51,7 @@
     "@types/react": "^19.2.0",
     "@types/react-dom": "^19.2.0",
     "@vitejs/plugin-react": "^5.0.0",
+    "js-yaml": "4.3.2",
     "openapi-typescript": "^7.10.0",
     "tailwindcss": "^4.1.0",
     "typescript": "^5.9.0",
