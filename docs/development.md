@@ -1347,3 +1347,21 @@ The current `business_providers` HTTP fixture remains the runtime authority,
 replay and no-forbidden-effects check. Browser desktop/mobile, both locales,
 keyboard and retry acceptance must be separately observed; a build is not that
 evidence.
+
+
+### Statement financial review (#820)
+
+Run the PostgreSQL conservation, retained-void, admission and lifecycle cases with:
+
+```bash
+cargo nextest run -p oxsum-core -p oxsum-server \
+  --test statement_review_finance --test plan_statements \
+  --test plan_statement_locks --test journals --test plan_refunds
+```
+
+The fixtures preserve historical document-only voids and duplicated usage through
+normal immutable guards and official ledger APIs. They compare actual Cash,
+Receivables and RefundPayable postings, block real wallet admission, and inject a
+statement-write fault after the ledger append to prove transaction rollback.
+No provider is called. The [evidence](roadmap/operator-launch/evidence/statement-review-finance.md)
+records baseline failures and final checks; complete release acceptance is separate.

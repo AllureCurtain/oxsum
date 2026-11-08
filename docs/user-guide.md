@@ -1002,18 +1002,28 @@ date payment is due (`netTermsDays` after issue). A statement is `issued`
 while it waits, `paid` once its own allocations cover it, `pastDue`
 past its due date, `void` if staff cancelled it. An unpaid statement past
 `dueAt + graceDays` suspends your plan's new holds — the plan reads
-`pastDue` the same way — and paying the receivable lifts the suspension in
-the same commit. The overdue pass uses the current unpaid balance and due
+`pastDue` the same way. Payment, a grace extension or financial void clears
+debt suspension only when no other debt remains past grace. The overdue pass uses the current unpaid balance and due
 date under the same plan/statement locks as lifecycle changes: a payment,
 void or grace extension committed before that check is respected. A busy
 statement is retried on a later pass while other customers can progress.
-The current statement-review `void` action cancels the document only; it does
-not write off the journal receivable or clear debt suspension. That combined
-financial workflow is being corrected separately under N10.
+New wallet admission checks effective debt past grace immediately, for current
+statements as well as retained legacy voids, even before that pass stamps a flag.
+Staff may extend the selected statement's due date or financially void it.
+A financial void reverses the matching original journal and statement in one
+commit: remaining debt clears, Cash stays unchanged, and collected funds become
+refund payable. This action does not send a refund or renew service. A bill
+mixing another journal's chargeback, a reissue or inconsistent sources refuses
+with a financial-reconciliation explanation. Historical document-only voids
+retain their original lines and remain included in debt and spending checks;
+a new explicit void request can reconcile the proven backing journal.
+Replaying the same target, action, reason and key makes no second change.
 `GET /api/v1/org/plan` carries the `credit` block beside
 the binding: `creditLimitMinor` the facility's cap (null when uncapped),
-`outstandingMinor` the open statements' remainder plus your current holds,
-`nextDueAt` the earliest open statement's due date. A plan over its credit
+`outstandingMinor` the remaining statement debt plus posted journals without a
+live statement, `nextDueAt` the earliest effective debt due date. A retained
+void uses its old due date; a journal without a document uses its posting time
+plus the original binding's current configured net terms. Admission additionally counts current holds. A plan over its credit
 limit refuses a wallet-billed overage draw — subscription-drawn quota is
 never refused.
 
