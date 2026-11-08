@@ -19,6 +19,9 @@
 use std::collections::HashMap;
 mod support;
 
+#[path = "support/funded_admission.rs"]
+mod funded_admission;
+
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
