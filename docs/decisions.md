@@ -3081,3 +3081,36 @@ context. No compiler flag, test gate or candidate acceptance rule is relaxed.
 The old mold asset has no publisher-provided metadata digest; its checked-in
 pin is explicitly the digest of two matching official downloads, not a claim
 of signed publisher provenance.
+
+## 2026-11-08 — Plan statement writers acquire their owner before the document (#811)
+
+`extendGrace` previously held its statement while updating the customer plan,
+opposite the plan-first close/refund path. The overdue worker's initial
+`FOR UPDATE SKIP LOCKED` ran in autocommit, so its locks disappeared before the
+per-statement transaction; that transaction then acquired statement before
+plan and could suspend a statement that was already paid, voided or extended.
+
+Read immutable business-scoped statement coordinates without locking, acquire
+the owning customer plan, and re-read/validate the statement under its lock.
+Statement-only writers need no subscription or ledger lock afterward. Paths
+that need the wider lifecycle retain subscription → plan → journal → ledger →
+statement ordering; journal void takes no plan after its document locks.
+Reconciliation callers must own the plan before invoking statement allocation.
+No deadlock retry conceals an inverse edge.
+
+The overdue pass reads keyset pages of possible work, then uses `SKIP LOCKED`
+for plan and statement inside each short transaction. It rechecks state,
+outstanding amount, due date, grace and suspension before changing either row.
+Skipped or no-longer-eligible rows consume no transition budget, and a page
+cursor continues beyond a locked oldest prefix. The pass limit bounds changed
+statements, not scan volume; an entirely locked backlog can be read across
+several pages but never waits for those row owners. Already-suspended or
+inside-grace past-due rows are omitted from candidate work. Counters report
+only committed first transitions.
+
+Controlled PostgreSQL tests observe `pg_blocking_pids` and attempt `NOWAIT`
+locks while operations are paused at real plan or ledger locks. They cover
+staff grace/void review, a verified refund beside review, locked plan/statement
+progress, pending payment/grace updates and concurrent workers. The original
+code fails the lock-ownership and locked-oldest progress cases; fixed code
+retains exact cash, journal and statement amounts.

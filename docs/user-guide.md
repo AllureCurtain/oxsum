@@ -952,7 +952,14 @@ while it waits, `paid` once its own allocations cover it, `pastDue`
 past its due date, `void` if staff cancelled it. An unpaid statement past
 `dueAt + graceDays` suspends your plan's new holds — the plan reads
 `pastDue` the same way — and paying the receivable lifts the suspension in
-the same commit. `GET /api/v1/org/plan` carries the `credit` block beside
+the same commit. The overdue pass uses the current unpaid balance and due
+date under the same plan/statement locks as lifecycle changes: a payment,
+void or grace extension committed before that check is respected. A busy
+statement is retried on a later pass while other customers can progress.
+The current statement-review `void` action cancels the document only; it does
+not write off the journal receivable or clear debt suspension. That combined
+financial workflow is being corrected separately under N10.
+`GET /api/v1/org/plan` carries the `credit` block beside
 the binding: `creditLimitMinor` the facility's cap (null when uncapped),
 `outstandingMinor` the open statements' remainder plus your current holds,
 `nextDueAt` the earliest open statement's due date. A plan over its credit
