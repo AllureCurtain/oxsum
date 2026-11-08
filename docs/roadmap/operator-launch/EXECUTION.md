@@ -19,9 +19,9 @@ Read this file on every resume, then reconcile actual main, worktrees, issues/PR
   The 39 core and 13 HTTP PostgreSQL checks passed, zero skipped; the full suite
   passed 2,003 tests with six existing opt-ins skipped. Strict Clippy and final
   independent review passed; PR #855 integrated as `42b80a24`. [Evidence](evidence/application-accounts.md).
-  Owner portal #853 and full embedded J18 remain pending.
+  Owner portal #853 integrated in PR #857 (`8f92546d`); full embedded J18 remains pending.
 
-- Current integration checkpoint: `b3eb063a`, including #838 daily accounting, #835 checkout routing,
+- Current integration checkpoint: `8f92546d`, including #838 daily accounting, #835 checkout routing,
   #843 actor-scoped business readiness, #840 non-plan chargeback cash and #850
   durable payment-worker test completion. Earlier `8a51109` includes required green checks and
   independent review for #821 historical usage compensation, #823 model/routing
@@ -33,7 +33,7 @@ Read this file on every resume, then reconcile actual main, worktrees, issues/PR
 - #835 integrated in PR #844 (`23b6547`): explicit per-rail merchant selection,
   safe customer choices and retained-version checkout retry; 1,948 full workspace
   checks, strict Clippy and independent review passed. Browser/PSP acceptance remains. Remaining main
-  software includes #777 debt repayment, #838 normal integration, #848 runtime
+  software includes #777 debt repayment, #848 runtime
   independent reconciliation, #841/#842 refund/legacy cash repairs, customer
   N09 readiness and full N21 embedding.
 
@@ -64,7 +64,7 @@ Status describes implementation: `planned`, `in_progress`, or `integrated`. `int
 | N09 [#735](https://github.com/AllureCurtain/oxsum/issues/735) — Readiness and first bill | N03–N08; N10 outcomes | in_progress | [#845](https://github.com/AllureCurtain/oxsum/pull/845) / `df4ad4f` | #843 actor-scoped business setup integrated after 1,950 workspace and 25 focused core/HTTP checks, strict Clippy, contract/frontend build, source review and normal protected merge. Customer readiness first needs actual fully funded/free-call admission correction #849, then permitted key/model, authorized funding and immediate real bill proof. Browser J02/J08 remain pending. |
 | N10 [#736](https://github.com/AllureCurtain/oxsum/issues/736) — Commercial journeys and repairs | N05–N09; N11 financial policy | in_progress | [#761](https://github.com/AllureCurtain/oxsum/pull/761) / `c9297d7`; [#764](https://github.com/AllureCurtain/oxsum/pull/764) / `c7926fe`; [#766](https://github.com/AllureCurtain/oxsum/pull/766) / `90a25ea`; [#778](https://github.com/AllureCurtain/oxsum/pull/778) / `8cf0794`; [#780](https://github.com/AllureCurtain/oxsum/pull/780) / `c79a588`; [#784](https://github.com/AllureCurtain/oxsum/pull/784) / `65e8b07` | Refund correlation/recovery, bundle offers and paid plan authority integrated. Repairs #793/#795 are integrated (#797/#798); #805 complete-run regressions and #802 refund cash repairs are integrated; #803 integrated in #815; finish #809/#811, implement explicit partial/full statement repayment #777, and close #779 financial defects and J09–J12 browser/concurrency/recovery checks. |
 | N11 [#737](https://github.com/AllureCurtain/oxsum/issues/737) — Daily revenue and reconciliation | N00; #779 integration | in_progress | [#783](https://github.com/AllureCurtain/oxsum/pull/783) / `2e11e9b`; [#784](https://github.com/AllureCurtain/oxsum/pull/784) / `65e8b07` | #838 implements immutable v2 paid-activation invoices, completed-day recognition, source-linked refund/void/dispute effects, financial clocks and captured evidence. PR #851 passed 1,995 complete workspace checks on `561bfb5` plus 25 new accounting/fault, 49 HTTP, 12 upgrade and 93 verifier checks, strict Clippy/wasm and independent review; normal integration remains. Historical compensation #809 and lifecycle locking #811 are integrated. Independent runtime reconciliation remains #848; browser/candidate conservation acceptance remains. [Daily evidence](evidence/daily-plan-recognition.md); [retained refund evidence](evidence/plan-refund-conservation.md). |
-| N12 [#738](https://github.com/AllureCurtain/oxsum/issues/738) — Independent evidence delivery | N09–N11 | planned | — | Reuse existing verifier/exports; complete discoverable retained trust/evidence flows and genuine candidate exports verified offline with rejection matrix. |
+| N12 [#738](https://github.com/AllureCurtain/oxsum/issues/738) — Independent evidence delivery | N09–N11 | in_progress | #858 | Retained-head WASM verification and customer-scoped trust export prepared in #858; complete discoverable retained trust/evidence flows and genuine candidate exports verified offline with rejection matrix. |
 | N13 [#739](https://github.com/AllureCurtain/oxsum/issues/739) — Artifact promotion and deployment | N00 | in_progress | [#753](https://github.com/AllureCurtain/oxsum/pull/753) / `1cc5e0a` | Byte/provenance gate and original config/layer promotion integrated (#806 / `0b06184`), with isolated registry transport checks passed. #810 explicit digest deployment/runtime evidence and compatible rollback are integrated in #813 (`941434a`); 16 focused tests passed. #814 original SDK publication integrated in #816 (`45a833e`), with 11 checks and real npm loopback-registry byte/lifecycle/conflict/redirect rehearsal passed. Actual candidate publication/runtime/rollback acceptance remains. [Gate](evidence/candidate-format.md); [promotion](evidence/candidate-image-promotion.md); [deployment](evidence/candidate-digest-deploy.md); [SDK publication](evidence/candidate-sdk-publication.md). |
 | N14 [#740](https://github.com/AllureCurtain/oxsum/issues/740) — Selected real-provider certification | N04,N05,N12 | planned | — | Update bounded current-authority harness; verify price/DNS, reserve the shared budget, then run permitted DeepSeek whole/SSE checks. Other real-provider rows need their own access and evidence. |
 | N15 [#741](https://github.com/AllureCurtain/oxsum/issues/741) — Primary PSP certification | N06,N10,N12 | planned | — | Complete connector/local fixture preparation. Genuine PSP sandbox credential is absent; sandbox and live verdicts remain separate and live payment is excluded. |
@@ -73,7 +73,7 @@ Status describes implementation: `planned`, `in_progress`, or `integrated`. `int
 | N18 [#744](https://github.com/AllureCurtain/oxsum/issues/744) — Final integrated candidate | N01–N17,N21 | planned | — | Freeze only after software dependencies and repaired main. Execute full CI including engine/process-shared checks and actual artifact portal/embedded/offline/deploy/restore acceptance. |
 | N19 [#745](https://github.com/AllureCurtain/oxsum/issues/745) — Two independent operator pilots | N18 + participants | planned | — | Prepare portal and embedded pilot kits now; actual two outsiders are absent. Internal agents cannot supply J17 evidence. |
 | N20 [#746](https://github.com/AllureCurtain/oxsum/issues/746) — Selected publication/deployment | N18 + action authority | planned | — | Complete tools and isolated rehearsal. Public registry/package/release publication and existing-service upgrades remain unperformed under this run. |
-| N21 [#747](https://github.com/AllureCurtain/oxsum/issues/747) — Embedded application integration | N03,N05–N07,N10–N12 | in_progress | [#786](https://github.com/AllureCurtain/oxsum/pull/786) / `f9f637d`; [#791](https://github.com/AllureCurtain/oxsum/pull/791) / `d2b12ab` | customersProvision and billingRead are integrated with explicit customer grants. Stable application/account lifecycle and rotated metering replay in PR #855 passed 2,003 full checks and independent review; integrated as `42b80a24`. Owner portal #853, verified human linking, key/entitlement/checkout/evidence scopes, signed notifications and a clean external app J18 remain. [Provisioning](evidence/integration-scopes.md); [billing](evidence/integration-billing-read.md). |
+| N21 [#747](https://github.com/AllureCurtain/oxsum/issues/747) — Embedded application integration | N03,N05–N07,N10–N12 | in_progress | [#786](https://github.com/AllureCurtain/oxsum/pull/786) / `f9f637d`; [#791](https://github.com/AllureCurtain/oxsum/pull/791) / `d2b12ab` | customersProvision and billingRead are integrated with explicit customer grants. Stable application/account lifecycle and rotated metering replay in PR #855 passed 2,003 full checks and independent review; integrated as `42b80a24`. Owner portal #853 integrated in PR #857 (`8f92546d`); verified human linking, key/entitlement/checkout/evidence scopes, signed notifications and a clean external app J18 remain. [Provisioning](evidence/integration-scopes.md); [billing](evidence/integration-billing-read.md). |
 
 ### Active repair and reconciliation
 
@@ -214,7 +214,7 @@ These are historical checkpoints. Earlier open/review-pending statements remain 
 
 | 2026-11-08 | Statement financial review and historical correction combined | #820 runtime snapshot `a478413` on integrated #809 main `68b3441`: 1,937 workspace passes, six existing opt-ins skipped. Retained document-only void debt remains in customer/admission projections; both financial void routes preserve correction payable. [Evidence](evidence/statement-review-finance.md) | Final explicit already-void debt restoration passed in 66 focused core/HTTP checks; PR integration remains. Repayment #777, dispute atomicity #826 and N11 remain separate. |
 
-| 2026-11-09 | Daily policy implementation and review | #838 focused snapshot `65aad22`: 25 daily/arithmetic/evidence-fault checks, 49 HTTP, 12 migration/upgrade and 93 verifier checks passed; strict Clippy, wasm, contract/frontend and formatting passed. The earlier legacy/core selection passed 135 checks. Durable exact evidence inputs repaired the independently reviewed mint/crash race. [Evidence](evidence/daily-plan-recognition.md). | Final runtime/test snapshot `561bfb5` on main `5dc49dc` (including #840/#850) passed 1,995 complete workspace checks, zero failures and six existing opt-ins in 292.685 seconds; required PR checks passed. PR #851 normal integration remains. Independent runtime ledger reconciliation is #848; no candidate or external acceptance claim. |
+| 2026-11-09 | Daily policy implementation and review | #838 focused snapshot `65aad22`: 25 daily/arithmetic/evidence-fault checks, 49 HTTP, 12 migration/upgrade and 93 verifier checks passed; strict Clippy, wasm, contract/frontend and formatting passed. The earlier legacy/core selection passed 135 checks. Durable exact evidence inputs repaired the independently reviewed mint/crash race. [Evidence](evidence/daily-plan-recognition.md). | Final runtime/test snapshot `561bfb5` on main `5dc49dc` (including #840/#850) passed 1,995 complete workspace checks, zero failures and six existing opt-ins in 292.685 seconds; required PR checks passed. PR #851 integrated as `b3eb063a`. Independent runtime ledger reconciliation is #848; no candidate or external acceptance claim. |
 
 
 N11's remaining runtime reconciliation is tracked explicitly by [#848](https://github.com/AllureCurtain/oxsum/issues/848).
@@ -226,6 +226,13 @@ complete.
 - #853 implements the owner application and credential portal on #846 integrated as `42b80a24`.
   Explicit grant/expiry/scopes, frozen retry identity and one-time secret recovery
   replace the incomplete credential form. Three behavioral checks, four contract
-  checks, production build, formatting and source review passed; PR integration
-  and browser acceptance remain pending. [Evidence](evidence/application-grants.md).
+  checks, production build, formatting and source review passed; PR #857 integrated
+  as `8f92546d`; browser acceptance remains. [Evidence](evidence/application-grants.md).
   No J18 completion follows.
+
+
+- #858 repairs the Bills page's HTTP-only consistency verdict, retains identified
+  customer trust and exports original key/origin/head plus checked proof. Five
+  behavior tests and four actual-WASM groups pass; frontend build passes.
+  [Evidence](evidence/retained-head-verification.md). Period evidence delivery and
+  final-candidate offline rejection matrix remain separate N12 work.

@@ -6,6 +6,7 @@ where that discipline is auditable.
 
 | Surface | What it proves | What it does not prove |
 | --- | --- | --- |
+| Bills retained-head check | local WASM authenticates the original/current signatures under the retained key and verifies the consistency proof against the retained root; equal heads match exactly | the first server-supplied key or newly served verifier is independently trusted; an empty head establishes prior history; token counts or all bill arithmetic/completeness were checked |
 | `oxsum_verify::verify_bundle` | the entry bytes hash to the independently retained expected hash and its inclusion proof reaches the supplied head | the head's signature, the operator's identity, arithmetic or completeness; signatures and consistency are separate checks |
 | `verify_bill` / SDK `verifyBill` / `/verify` | entry inclusion plus the supported charge check, with separate price/sale-binding sentences | `ok: true` alone does not mean the price/sale binding verified: read those sentences, including absent/invalid bindings and old/new-schema arithmetic skips. Operator head trust is checked separately |
 | `oxsum_verify::verify_charge` (settlement descriptions, schema v6+) | the recorded charge recomputes from the metered usage and the priced lines inside the entry; a schema the verifier does not know reports inclusion only, with the reason named | that upstream really returned those tokens — the count is what the writer recorded, and your own response log is the counter-check |

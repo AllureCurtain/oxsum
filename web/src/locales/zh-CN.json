@@ -258,7 +258,21 @@
     "checkConsistency": "一致性检查",
     "check": "检查",
     "entries": "条分录",
-    "consistencyOk": "大小为 {{headSize}} 的日志延伸自你归档的大小 {{oldSize}} 的头 —— 证明携带 {{nodes}} 个节点。"
+    "consistencyOk": "大小为 {{headSize}} 的日志延伸自你归档的大小 {{oldSize}} 的头 —— 证明携带 {{nodes}} 个节点。",
+    "retainedTrust": "已保留的账本信任记录",
+    "trustIntro": "为当前客户保留运营方公钥、账本来源和签名根。首次公钥来自本服务器，请通过独立可信渠道核对。",
+    "trustScope": "校验在本地 WebAssembly 中执行，验证保留公钥下的签名和仅追加的连续性，不证明用量诚实或账单完整。原始记录会保留。从本服务器下载的校验器不构成独立可信分发。",
+    "noRetainedTrust": "当前客户尚无可识别的信任记录。不会导入旧版未标明客户的根记录。",
+    "retainVerified": "验证并保留首次账本根",
+    "downloadTrust": "下载保留的验证材料",
+    "offlineGuide": "离线验证指南",
+    "verified_unchanged": "签名已验证：大小 {{size}} 的根与保留记录一致。",
+    "verified_extended": "本地验证通过：大小 {{size}} 的签名根延续了大小 {{oldSize}} 的保留账本。",
+    "verified_emptyAnchor": "大小 {{size}} 的签名已验证。保留的账本为空，无法证明此前历史的连续性。",
+    "verificationFailed": "验证或保存失败，未判定通过。",
+    "archiveChanged": "另一标签页更改了保留记录。请刷新并检查记录后重新验证。",
+    "storageUnavailable": "安全浏览器存储不可用。请使用安全浏览器环境或离线验证指南。",
+    "trustLoadError": "无法读取当前客户身份。"
   },
   "requests": {
     "title": "请求",

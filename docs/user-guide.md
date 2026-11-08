@@ -1502,3 +1502,26 @@ only in the first successful response and are not saved by the portal. If a retr
 returns metadata without a secret and you did not retain the original secret,
 revoke that credential and issue a replacement. Refreshing a page does not
 reissue a credential. The list distinguishes active, expired and revoked records.
+
+
+### Retain and check a customer ledger head
+
+On **Bills**, the **Retained ledger trust** card records the current customer's
+organization, ledger origin, operator public key, signed head and timestamp after
+local WASM signature verification. Storage is isolated by site, organization and
+ledger. The former unscoped `oxsum.head-archive` is deliberately not imported.
+Compare the full public key through a separate trusted channel: fetching and
+checking a key on the same server establishes only a first observation.
+
+**Check consistency** checks the original signature, the current signature and,
+when the log has grown, the actual consistency proof against the original root.
+A successful HTTP request alone cannot produce a pass. Changed keys/origins,
+rollback, same-size forks, invalid proofs and missing WASM fail visibly. An empty
+retained log can establish a signature but cannot anchor a previous history.
+Checks preserve the original record; another tab cannot silently replace it.
+
+**Download retained inputs** saves the original record and the latest checked
+head/proof for the [offline guide](verify-your-bill.md). No browser-stored key or
+newly served verifier proves an independently trusted distribution or honest
+upstream metering. Clearing browser data loses this local record; keep the export
+outside the browser. Storage errors leave verification/retention visibly failed.
