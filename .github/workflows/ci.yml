@@ -145,6 +145,8 @@ jobs:
         run: python3 scripts/test-operator-diagnostics.py
       - name: Test explicit backup and restore boundaries
         run: python3 scripts/test-backup-restore.py
+      - name: Test artifact recovery refusal boundaries
+        run: python3 scripts/test-artifact-recovery.py
       - name: Test isolated example runner failure paths
         run: |
           python3 -m venv /tmp/oxsum-example-test-venv
