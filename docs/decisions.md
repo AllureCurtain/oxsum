@@ -3310,3 +3310,46 @@ cash conservation and historical correction before #777 repayment launches.
 Stop and drain old writers during deployment: concurrent old binaries do not
 participate in the new transaction boundary. Controlled lock and audit-failure
 fixtures prove the new code's boundary, not mixed-version write safety.
+
+
+## 2026-11-08 — Preserve non-plan chargeback cash without inventing debt (#840)
+
+Every newly resolved non-plan loss credits Cash for its complete authenticated
+amount. A partial fiat dispute must convert exactly using the pinned order
+amounts. Missing amounts, currencies, case identifiers, fractional credit-minor
+results and incompatible duplicate cases are refused with durable inbox reasons.
+
+The original same-customer confirmed order, immutable fulfillment and exact
+`payment-order:<order_id>` sequenced entry must agree. Verify its content hash,
+settled positive USD postings and absence of reversal. Only the original Wallet
+credit can fund a take-back: subtract all subsequent settled Wallet debits and
+current pending Wallet reservations. Later credits never replenish this source.
+Bound it again by complete prior actual chargeback cash and the current loss.
+Any refund history or unsupported previous chargeback forces the whole new loss
+into `Equity:Adjustments` suspense. Its audit retains the source and review reason.
+Repayment-origin and consumed funding also remain suspense: directly debiting
+CreditLine would invent new-period draws and cannot reopen already-paid monthly
+statements safely. No debt document, revenue or entitlement is changed.
+
+A source advisory lock spans non-plan fulfillment grants and their final record.
+Resolution takes the same lock before the dispute and ledger append locks.
+New grants after a lost dispute are refused; new refund requests and approval
+are fenced. Ledger append locking serializes source reads with spends and holds.
+Bundle promo cancellation uses the same loss transaction; reserved releases burn
+under the existing closed-lot policy. Plan ownership ordering stays unchanged.
+Stop and drain old writers when deploying. This fixes forward losses only;
+#841 owns non-plan refunds and #842 owns explicit legacy chargeback compensation.
+
+
+The source lock is claimed with `pg_try_advisory_xact_lock`. A contested
+resolution/refund/inbox attempt returns `PoolBusy` and drops its transaction; a
+fulfillment retries off the pool for at most five seconds. A `Db`-shared semaphore
+queues non-plan grants before they hold a pooled connection, with width
+`max(1, (max_connections - 1) / 3)`. Existing independent grant paths can need the
+source guard plus two connections. Pools below three refuse non-plan fulfillment
+with `PoolBusy` before grant; the operator recommendation remains at least ten.
+Clones share the semaphore; separately constructed `Db::from_pool` wrappers over
+one pool do not, and callers must reuse/clone their handle. Independent processes
+have separate pools and still coordinate through the nonblocking database lock.
+Cancellation drops the permit and guard. This bounds this new source-lock flow;
+it is not a general throughput or arbitrary concurrent workload guarantee.

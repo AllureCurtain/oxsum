@@ -1398,3 +1398,30 @@ With the explicit local PostgreSQL test URL, run core `merchant_routes`,
 new owner-created merchants without environment bootstrap, and counts provider
 calls to distinguish recovery from a new checkout. Migration 0112 requires the
 full workspace gate before integration. Browser/PSP certification is separate.
+
+### Non-plan chargeback source checks (#840)
+
+With explicit local PostgreSQL URLs and an empty worktree `.env`, run:
+
+```bash
+cargo nextest run -p oxsum-core --test nonplan_chargebacks --test refunds --test dispute_atomicity --test bundles --test payment_orders --test merchant_events
+cargo nextest run -p oxsum-server --test refunds
+```
+
+`nonplan_chargebacks` covers original unspent/spent/repayment funding, later
+top-ups, pending reservations, exact partial amounts, fractional rejection,
+prior refunds, excessive cumulative case cash, unsupported legacy effects,
+missing fulfillment, source locking and atomic promo rollback. Concurrency tests
+observe real blocked PostgreSQL backends. No PSP or paid service is called.
+The [source-review runbook](dispute-resolution-review.md) describes review
+suspense and the remaining #841/#842 historical correction boundaries.
+
+Non-plan fulfillment uses a shared `Db` pre-checkout queue of
+`max(1, (max_connections - 1) / 3)` slots; reuse/clone the process handle rather
+than creating independent wrappers around one pool. It needs three connections
+for the guard and existing independent grant operations; a smaller pool returns
+`PoolBusy` before a grant. The production recommendation is still a floor of ten.
+Contended source locks do not park pool connections: finance and inbox retries
+receive `PoolBusy`; fulfillment retries off-pool within five seconds. Separate
+processes coordinate through the same PostgreSQL try-lock. These are bounded
+retry semantics, not an unlimited-load guarantee.

@@ -1449,6 +1449,16 @@ cash effect.
 If resolution reports that ledger or audit history requires source review, retain
 the dispute/order/merchant identifiers and follow the
 [review procedure](dispute-resolution-review.md). Do not create a replacement
-payment, dispute or refund to clear the error. The non-plan chargeback allocation
-still has a known cash-direction defect (#829); plan chargeback cash and explicit
-review suspense have separate verified allocation rules.
+payment, dispute or refund to clear the error. New wallet/bundle/credit-repayment
+losses record the complete Cash loss. Only funds demonstrably retained from that
+original Wallet top-up are taken back. Previously spent money, credit repayment
+and uncertain source history require review in the finance audit; the application
+does not guess a replacement debt. A lost order cannot receive new refund approval
+or an unperformed fulfillment grant. Bundle promotion is cancelled without cash
+reimbursement. Historical wrong-direction entries still need the explicit #842
+recovery; adjacent non-plan refunds remain #841. These are not silently fixed by
+retrying the resolution.
+
+The dispute list displays credit amounts in `cr` and shows the original collection
+currency separately in the expanded detail. The current Close action ends the
+case without moving funds; it is not the Lost financial resolution.
