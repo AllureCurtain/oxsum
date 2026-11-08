@@ -122,18 +122,10 @@ pub(crate) async fn apply_legacy_event(
             db.mark_merchant_event_applied(receipt.id).await
         }
         MerchantEventKind::RefundSucceeded | MerchantEventKind::RefundFailed => {
-            // Refunds and disputes are Hyperswitch's only legacy notifications.
             if rail == "hyperswitch"
                 && let Some(event) = db.merchant_event_data(receipt.id).await?
-                && let Some(refund_id) = event.refund_id.as_deref()
             {
-                let status = if receipt.kind == MerchantEventKind::RefundSucceeded {
-                    "succeeded"
-                } else {
-                    "failed"
-                };
-                db.settle_hyperswitch_refund(payment_id, refund_id, status)
-                    .await?;
+                db.apply_deposit_refund_event(receipt, &event).await?;
             }
             db.mark_merchant_event_applied(receipt.id).await
         }
@@ -157,7 +149,15 @@ pub(crate) async fn apply_legacy_event(
 pub(crate) async fn recover(db: &Db, tenants: &Tenants) -> Result<(), WalletError> {
     for event in db.recoverable_merchant_events(100).await? {
         let event = db.retry_merchant_event(event.id).await?;
-        apply_legacy_event(db, tenants, &event).await?;
+        match apply_legacy_event(db, tenants, &event).await {
+            Ok(()) => {}
+            Err(WalletError::Conflict(_)) => {
+                // A verified but unresolved deposit refund must remain
+                // available for reconciliation without blocking other events.
+                tracing::warn!(receipt_id = %event.id, "legacy refund event requires reconciliation");
+            }
+            Err(error) => return Err(error),
+        }
         match apply_order_event(db, tenants, &event).await {
             Ok(()) => {}
             Err(WalletError::Conflict(_)) => {

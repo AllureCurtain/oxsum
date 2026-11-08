@@ -238,3 +238,21 @@ This guarantee covers purpose-scoped payment orders and merchant-bound checkout.
 The older deployment-admin deposit reversal adapter remains a distinct legacy
 path; its retry conversion is tracked separately in #763 and is not certified by these
 order tests. Real PSP certification remains separate from local switch evidence.
+
+### Legacy Hyperswitch reversal recovery (#763)
+
+A deployment-admin deposit reversal is distinct from an order refund. New
+reversals persist one UUID in the v1.129 `refund_id` body and pin the original
+payment merchant/version before I/O. Exact `HE_02` absence permits create; other
+HTTP errors remain unknown, and duplicates/lost responses are read back. Every
+handle must match payment, amount, currency and local metadata. The client uses
+the stored destination policy and bounded requests, never a current environment
+credential substituted for the original merchant version. The signed callback
+must additionally match customer and refund identity. An unbound legacy callback
+is retained but cannot assert a terminal result for a guessed deposit.
+
+Historical reversals preserve original metadata without treating an old HTTP
+success as authenticated terminal evidence. Known pinned handles are read-only;
+unknown old outcomes are fenced. Five leased attempts bound recovery. Exhaustion
+retains unknown/pending state, and only an exact signed outcome settles it.
+Local fixtures prove retry and accounting behavior, not real PSP certification.

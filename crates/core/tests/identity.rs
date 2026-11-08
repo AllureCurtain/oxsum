@@ -508,6 +508,7 @@ async fn migrating_twice_and_concurrently_is_safe() {
             "credit_notes".to_owned(),
             "customer_plans".to_owned(),
             "customer_profiles".to_owned(),
+            "deposit_refunds".to_owned(),
             "deposits".to_owned(),
             "device_codes".to_owned(),
             "disputes".to_owned(),

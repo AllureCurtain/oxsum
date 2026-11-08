@@ -13151,18 +13151,20 @@ export interface paths {
          *     not `credited` (`pending`, `confirmed`, `expired`) is `409 CONFLICT`,
          *     and one that does not exist is `404`. An empty reason is `400`.
          *
-         *     A `hyperswitch` deposit also returns the customer's money through the
-         *     switch (issue #360): after the reversal commits, `POST /refunds` goes
-         *     to the switch with the payment's id, the deposit's `received_minor`
-         *     (falling back to `amount_minor`), the operator's `reason`, and the
-         *     deposit id in `metadata`. The row's `meta` gains `hyperswitchRefundId`
-         *     and `refundStatus` (`pending` at issue, `succeeded`/`failed` as the
-         *     rail's webhooks land); the answer carries the same `refundStatus`. A
-         *     switch-side refusal records `failed` — the reversal stands, because
-         *     the books are right regardless — and a replayed reversal on a
-         *     `failed` refund re-issues the call, so an operator's retry reaches the
-         *     rail. Other rails answer `refundStatus: null`: their PSP calls are
-         *     separate issues.
+         *     A bound `hyperswitch` deposit commits a durable refund identity beside
+         *     its local reversal before any provider I/O. New refunds send that UUID
+         *     as Hyperswitch's body `refund_id`; recovery reads and validates the
+         *     same merchant/version/payment/amount/currency before a create. At most
+         *     five leased attempts run, with 1m/2m/5m/15m delays. Repeating this
+         *     endpoint does not bypass the lease or allocate a new refund identity.
+         *     A successful HTTP response records a handle, not terminal payment truth;
+         *     only an authenticated matching refund event establishes succeeded/failed.
+         *     Transport errors, mismatched replies and exhausted attempts stay unknown
+         *     and require reconciliation. Historical reversed deposits never receive a
+         *     new create identity: a known handle can be read, an unbound result is
+         *     fenced. The original metadata and local reversal remain intact.
+         *     Other rails answer `refundStatus: null`; a local reversal never proves
+         *     the external processor returned money.
          */
         post: {
             parameters: {
@@ -18930,15 +18932,16 @@ export interface components {
              */
             reversedAt?: string | null;
             /**
-             * @description the payment-provider refund's standing, when the rail issued one
-             *     (issue #360): `pending` while the rail works it, `succeeded` when the
-             *     money moved, `failed` when the call was refused (the reversal stands;
-             *     a retry re-issues it). `null` means the rail issued no refund — the
-             *     deposit was never reversed through a rail, or the rail carries no
-             *     refund path.
+             * @description The durable external refund outcome. `pending` means a matching
+             *     provider handle was observed; `unknown` means no terminal result is
+             *     established, including timeout, historical unbound operation or
+             *     exhausted recovery. Only exact signed terminal evidence establishes
+             *     `succeeded`/`failed`. The local reversal stands independently; a retry
+             *     never allocates another external identity. `null` means no reversal
+             *     refund has been requested or the rail has no external refund path.
              * @enum {string|null}
              */
-            refundStatus?: "pending" | "succeeded" | "failed" | null;
+            refundStatus?: "pending" | "unknown" | "succeeded" | "failed" | null;
             /**
              * Format: date-time
              * @description when a dispute opened on the payment, when the rail reported one (issue #360)

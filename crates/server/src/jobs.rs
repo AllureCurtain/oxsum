@@ -296,6 +296,7 @@ async fn run_one(
                     "refund-retries has no sealing key configured".into(),
                 ));
             };
+            crate::deposit_refunds::recover_due(db, secret).await?;
             let report = retry_due_refunds(db, secret).await;
             match report {
                 Ok(report) => {

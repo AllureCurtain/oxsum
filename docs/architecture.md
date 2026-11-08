@@ -315,7 +315,7 @@ Migration 0085 adds `merchant_accounts`, `merchant_versions` and immutable `merc
 
 Migration 0087 adds the scoped intake (issue #649): `merchant_payment_bindings` pins the expected payment — local payment UUID, business, customer, merchant/version, exact amount and currency, and an `order`/`legacyDeposit` purpose — committed *before* any provider call so an early signed callback and the later synchronous response resolve the same expectation, and `merchant_payment_refs` gives each provider payment id a single local owner (`UNIQUE (merchant_id, provider_payment_id)`). `merchant_event_inbox` is the durable record: scoped by `(merchant_id, event_id)` across every retained version, holding the raw SHA-256 payload digest plus the normalized coordinates, walking `pending → accepted → applied` (or `rejected`/`ignored`), guarded by a trigger that forbids identity rewrites and terminal-state regressions. `merchant_environment_bootstrap` maps each deployment rail to its one explicit merchant so environment credentials never select a payload's account and later drift never swaps identity.
 
-`merchant_events.rs` classifies: signature verification under the path-selected `MerchantSigningContext` precedes normalization, and a recognized event must match the pinned binding on merchant, version, customer, provider account, mode, amount and currency before `accepted` — mismatches reject, unknown local payments stay `pending` for recovery, refund/dispute kinds are authenticated and retained without establishing a reference or crediting. `receive_merchant_event` dedupes on `(merchant_id, event_id)` under an advisory lock — a replay returns the stored receipt, a reused id with different bytes conflicts. The legacy adapter applies only an `accepted` `legacyDeposit` success: it confirms the deposit and credits under a merchant-scoped ledger key (`<rail>:merchant:<merchant_id>:payment:<provider_id>`), so a verified event idempotently lands once; expiry, refund and dispute kinds drive the existing `expire`/`settle`/`record_dispute` settles. `merchant_checkout.rs` commits binding and provider reference around the checkout create, and `reconcile`'s job pass retries `pending`/`accepted` work in bounded pages. T15 reuses the local binding UUID as the order UUID and owns paid/fulfilled/outbox; T14.b does not grant entitlement itself.
+`merchant_events.rs` classifies: signature verification under the path-selected `MerchantSigningContext` precedes normalization, and a recognized event must match the pinned binding on merchant, version, customer, provider account, mode, amount and currency before `accepted` — mismatches reject, unknown local payments stay `pending` for recovery, refund/dispute kinds are authenticated and retained without establishing a reference or crediting. `receive_merchant_event` dedupes on `(merchant_id, event_id)` under an advisory lock — a replay returns the stored receipt, a reused id with different bytes conflicts. The legacy adapter applies only an `accepted` `legacyDeposit` success: it confirms the deposit and credits under a merchant-scoped ledger key (`<rail>:merchant:<merchant_id>:payment:<provider_id>`), so a verified event idempotently lands once; expiry and dispute kinds drive `expire`/`record_dispute`; Hyperswitch refunds require an exact durable `deposit_refunds` match before changing its external outcome. `merchant_checkout.rs` commits binding and provider reference around the checkout create, and `reconcile`'s job pass retries `pending`/`accepted` work in bounded pages. T15 reuses the local binding UUID as the order UUID and owns paid/fulfilled/outbox; T14.b does not grant entitlement itself.
 
 Migration 0088 adds the payment orders (issue #606): `payment_orders` pins immutable terms before any provider call — the ledger `amount_minor`/`currency`, the quoted `display_amount_minor`/`display_currency`, the server-rated `rate_mantissa`/`rate_scale` conversion, the one `purpose` arm (`wallet_topup`/`bundle`/`plan_period`/`invoice_repayment`) and its `purpose_ref` — reusing the `order`-purpose `merchant_payment_bindings` row under the order's own UUID so T14.b's intake and provider-idempotency dedup apply unchanged, and a `protect_payment_order` trigger freezes the terms and the terminal/`needs_attention` states. `payment_fulfillments` records exactly one grant per order — the `purpose_payload` audit of what was granted — beside its `payment_outbox` dispatch row, written in the same transaction so the grant and the dispatch commit or roll back together.
 
@@ -381,3 +381,23 @@ or race a revision. The existing immutable order columns keep each exact
 mantissa/scale and quote. No old financial data is rewritten. Environment
 bootstrap is insert-only, owner mutations require current authority plus audit
 and expected revision, and browser quote preconditions protect new intent.
+### Legacy deposit refund recovery (#763)
+
+Migration 0100 adds `oxsum.deposit_refunds`; 0098 and 0099 are reserved by the
+independent profile and order-recovery changes. A reversal queues one operation
+inside the ledger transaction, with immutable original merchant/version,
+provider payment, customer, provider amount/currency, request UUID and reason.
+The historical import leaves deposit JSON/entry references unchanged and fences
+all create operations. A known historical handle is eligible for retrieval only
+when its original payment binding matches; an unbound row remains unknown.
+
+`deposit_refunds.rs` in core owns claims and exact authenticated event matching;
+the integration module uses `ProviderHttp` destination policy and ten-second
+HTTP limits; the server bridge runs after reversal and from `refund-retries`.
+At most five attempts are durably claimed before I/O, with 60/120/300/900-second
+retry delays. A callback may win the HTTP race; observing a handle cannot
+replace a terminal state. A late success may supersede an earlier failed event,
+but success cannot be downgraded. Neither outcome posts another ledger reversal.
+Unknown/pending operations stop being due at exhaustion and retain their
+identity for a late authenticated outcome. No historical refund is reissued
+with current environment credentials.

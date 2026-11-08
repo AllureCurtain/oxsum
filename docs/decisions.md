@@ -2673,6 +2673,7 @@ work; the presence of a switch key cannot stand in for them.
 - A successful job without its required successful steps is insufficient release evidence. Manual/nightly CI builds the WASM/frontend stages, and the candidate gate requires named fmt, Clippy, lib/doc, archive, shard, process-shared and engine execution steps. Old path-filtered runs cannot be grandfathered in.
 - Version-2 candidate manifests distinguish source SHA from workflow revision, Docker configuration ID from archive checksum and registry digest, and bind platform/source labels to the actual saved image. The SDK is copied after the clean consumer verifies it, never repacked. Archive inspection does not extract Docker layers or execute package scripts.
 - Offline validation establishes internal consistency only. Online validation additionally requires the successful exact workflow attempt, its available unexpired bundle, byte-equivalent manifest, and the successful referenced full-CI attempt. Public promotion/deployment is separate; creating a valid local manifest grants no authority to publish it.
+
 ## 2026-11-08 — Preserve external identity and uncertain refund bounds (#760)
 
 Pinned Hyperswitch v1.129.0 source proves that `payment_id`/`refund_id` in the
@@ -2824,3 +2825,25 @@ Touched payment inputs parse decimal strings through BigInt, reject excess
 precision/unsafe integers and retain one idempotency key for unchanged retries.
 The separate N10 commercial offer authority audit is #768.
 >>>>>>> e8cb541 (fix: move payment collection conversion to business authority)
+
+## 2026-11-08 — Separate legacy reversal from authenticated external outcome (#763)
+
+The old admin reversal used current deployment credentials and an idempotency
+header that pinned Hyperswitch v1.129 does not use as its refund identity. It
+also treated an HTTP result as terminal and retried failures without a durable
+bound. Keep the already-booked local reversal, but queue a separate immutable
+operation in the same transaction. Pin original payment terms and credentials,
+use a body UUID only for genuinely new operations, and spend leased attempts
+before bounded read/create/read I/O. Unknown is an explicit API state. Exhaustion
+cannot imply either external success or definite failure.
+
+Migration 0100 preserves historical deposit JSON and ledger references. Existing
+handles can be read with their original pinned context; no old row receives new
+create authority. Rows written by an old binary after migration are fenced on
+replay and projected as unknown until durable evidence exists. Authenticated
+callbacks match exact merchant/version/payment/customer/refund/amount/currency;
+old unbound callbacks remain retained observations only. A late success may
+supersede a failed event, because money actually returned cannot be erased by
+event delivery order. Success never downgrades and no callback repeats the local
+wallet debit. This change introduces no external reconciliation guesses or
+ledger rewrites. Migration numbers 0098/0099 belong to independent task PRs.

@@ -21,6 +21,7 @@ pub mod airwallex;
 pub mod anthropic_costs;
 pub mod antibot;
 pub mod bill_providers;
+pub mod deposit_refund;
 pub mod facilitator;
 pub mod hyperswitch;
 pub mod mail;

@@ -50,6 +50,9 @@ struct SwitchStub {
     /// body that makes it answer a non-2xx instead.
     answer_refund: Arc<Mutex<Value>>,
     refund_refusal: Arc<Mutex<Option<(StatusCode, Value)>>>,
+    stored_refunds: Arc<Mutex<std::collections::HashMap<String, Value>>>,
+    lost_refund_response: Arc<Mutex<bool>>,
+    refund_reads_unavailable: Arc<Mutex<bool>>,
 }
 
 async fn stub_switch() -> (String, SwitchStub) {
@@ -86,16 +89,29 @@ async fn stub_switch() -> (String, SwitchStub) {
                     if let Some((status, refusal)) = stub.refund_refusal.lock().unwrap().clone() {
                         return (status, axum::Json(refusal));
                     }
-                    (
-                        StatusCode::OK,
-                        axum::Json(stub.answer_refund.lock().unwrap().clone()),
-                    )
+                    let id=body["refund_id"].as_str().unwrap().to_owned();
+                    let value=json!({"refund_id":id,"payment_id":body["payment_id"],"amount":body["amount"],
+                        "currency":"USD","metadata":body["metadata"],"status":stub.answer_refund.lock().unwrap()["status"]});
+                    if stub.stored_refunds.lock().unwrap().insert(id,value.clone()).is_some() {
+                        return (StatusCode::BAD_REQUEST,axum::Json(json!({"error":{"code":"HE_01"}})));
+                    }
+                    if *stub.lost_refund_response.lock().unwrap() {
+                        *stub.refund_reads_unavailable.lock().unwrap()=true;
+                        return (StatusCode::BAD_GATEWAY,axum::Json(json!({"error":"response lost"})));
+                    }
+                    (StatusCode::OK,axum::Json(value))
                 },
             ),
         )
         .route("/payments/{id}", axum::routing::get(|State(stub):State<SwitchStub>, axum::extract::Path(id):axum::extract::Path<String>| async move {
             let value = stub.stored.lock().unwrap().get(&id).cloned();
             value.map_or((StatusCode::NOT_FOUND, axum::Json(json!({"error":{"code":"HE_02"}}))), |v| (StatusCode::OK,axum::Json(v)))
+        }))
+        .route("/refunds/{id}",axum::routing::get(|State(stub):State<SwitchStub>,axum::extract::Path(id):axum::extract::Path<String>|async move {
+            if *stub.refund_reads_unavailable.lock().unwrap() { return (StatusCode::SERVICE_UNAVAILABLE,axum::Json(json!({}))); }
+            stub.stored_refunds.lock().unwrap().get(&id).cloned().map_or(
+                (StatusCode::NOT_FOUND,axum::Json(json!({"error":{"code":"HE_02"}}))),
+                |value|(StatusCode::OK,axum::Json(value)))
         }))
         .with_state(stub.clone());
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -609,8 +625,8 @@ async fn a_reversal_issues_the_switch_refund() {
     .await;
     assert_eq!(status, StatusCode::OK, "{body}");
     assert_eq!(body["data"]["status"].as_str().unwrap(), "reversed");
-    // The stub answered succeeded, so the deposit reports the standing.
-    assert_eq!(body["data"]["refundStatus"].as_str().unwrap(), "succeeded");
+    // The HTTP answer is acknowledged, but only a signed event is terminal.
+    assert_eq!(body["data"]["refundStatus"].as_str().unwrap(), "pending");
     // The refund call carried the payment id, the deposit's amount and the
     // deposit id in metadata.
     let refunds = stub.refunds.lock().unwrap().clone();
@@ -626,7 +642,7 @@ async fn a_reversal_issues_the_switch_refund() {
     );
 
     // A replayed reversal answers the standing reversal and does not refund
-    // again — refundStatus is not "failed", so no second call goes out.
+    // again: its durable attempt lease prevents another provider request.
     let (status, _body) = call(
         &app,
         "POST",
@@ -639,11 +655,11 @@ async fn a_reversal_issues_the_switch_refund() {
     assert_eq!(stub.refunds.lock().unwrap().len(), 1);
 }
 
-/// A refund the switch refuses is recorded `failed` and the reversal stands;
-/// the retry re-issues the call.
+/// An HTTP refusal cannot disprove creation. The reversal stands and the
+/// unknown operation keeps its identity; retries respect the durable lease.
 #[tokio::test]
-async fn a_refused_refund_is_recorded_and_retried() {
-    let Some((app, _db, stub)) = admin_world().await else {
+async fn a_refused_refund_stays_unknown_and_retries_the_same_identity() {
+    let Some((app, db, stub)) = admin_world().await else {
         return;
     };
     let key = register_session(&app).await;
@@ -681,9 +697,19 @@ async fn a_refused_refund_is_recorded_and_retried() {
     .await;
     assert_eq!(status, StatusCode::OK, "{body}");
     assert_eq!(body["data"]["status"].as_str().unwrap(), "reversed");
-    assert_eq!(body["data"]["refundStatus"].as_str().unwrap(), "failed");
+    assert_eq!(body["data"]["refundStatus"].as_str().unwrap(), "unknown");
 
-    // The refusal cleared — a retry on the `failed` standing re-issues the call.
+    // Immediate repeated submission cannot bypass the lease.
+    let id = Uuid::parse_str(&deposit_id).unwrap();
+    let target = db.deposit_refund(id).await.unwrap().unwrap();
+    assert_eq!(target.attempt_count, 1);
+    assert!(db.claim_deposit_refund(id).await.unwrap().is_none());
+    sqlx::query("UPDATE oxsum.deposit_refunds SET next_attempt_at=now() WHERE deposit_id=$1")
+        .bind(id)
+        .execute(db.pool())
+        .await
+        .unwrap();
+    // The refusal cleared; a due retry uses the same body ID.
     *stub.refund_refusal.lock().unwrap() = None;
     let (status, body) = call(
         &app,
@@ -694,9 +720,11 @@ async fn a_refused_refund_is_recorded_and_retried() {
     )
     .await;
     assert_eq!(status, StatusCode::OK, "{body}");
-    assert_eq!(body["data"]["refundStatus"].as_str().unwrap(), "succeeded");
+    assert_eq!(body["data"]["refundStatus"].as_str().unwrap(), "pending");
     // Two refund calls total: the refused one and the re-issued one.
-    assert_eq!(stub.refunds.lock().unwrap().len(), 2);
+    let calls = stub.refunds.lock().unwrap();
+    assert_eq!(calls.len(), 2);
+    assert_eq!(calls[0]["refund_id"], calls[1]["refund_id"]);
 }
 
 /// A `refund_succeeded` webhook settles the standing the reversal wrote.
@@ -739,14 +767,17 @@ async fn a_refund_webhook_settles_the_standing() {
     assert_eq!(body["data"]["refundStatus"].as_str().unwrap(), "pending");
 
     // The rail's webhook walks the standing to succeeded — the deposit lists it.
+    // The event must name the durable refund identity the server sent and the
+    // durable payment identity the charge used.
+    let refund_id = stub.refunds.lock().unwrap()[0]["refund_id"].clone();
     let event = json!({
         "event_id": "evt_refund_done",
         "event_type": "refund_succeeded",
         "content": {"type": "refund_details", "object": {
-            "refund_id": "ref_test_9",
+            "refund_id": refund_id,
             "payment_id": stub.deposits.lock().unwrap().last().unwrap().clone(),
             "status": "succeeded",
-            "amount": 1500
+            "amount": 1500, "currency":"USD"
         }}
     });
     let (headers, body) = signed_webhook(WEBHOOK_SECRET, &event.to_string());
@@ -829,4 +860,326 @@ async fn a_dispute_opened_is_recorded() {
         .cloned()
         .unwrap();
     assert!(row["disputedAt"].as_str().is_some(), "{row}");
+}
+
+/// Lost responses, concurrent retries and late signed events share one external
+/// identity while the original local reversal remains exactly once.
+#[tokio::test]
+async fn a_lost_deposit_refund_response_recovers_without_another_refund() {
+    let Some((app, db, stub)) = admin_world().await else {
+        return;
+    };
+    let key = register_session(&app).await;
+    let (status, body) = call(
+        &app,
+        "POST",
+        "/api/v1/topups/hyperswitch",
+        Some(json!({"idempotencyKey":"lost-reversal","amountMinor":2000})),
+        Some(&key),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let id = Uuid::parse_str(body["data"]["depositId"].as_str().unwrap()).unwrap();
+    let event = json!({"event_id":"paid-lost","event_type":"payment_succeeded","content":{"type":"payment_details","object":{
+        "payment_id":id.to_string(),"amount":2000,"currency":"USD"}}});
+    let (headers, body) = signed_webhook(WEBHOOK_SECRET, &event.to_string());
+    assert_eq!(post_webhook(&app, headers, body).await, StatusCode::OK);
+    *stub.lost_refund_response.lock().unwrap() = true;
+    let path = format!("/api/v1/admin/deposits/{id}/reverse");
+    let (status, body) = call(
+        &app,
+        "POST",
+        &path,
+        Some(json!({"reason":"lost external reply"})),
+        Some(ADMIN_TOKEN),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["data"]["refundStatus"], "unknown");
+    let entry = body["data"]["reversalEntryId"].clone();
+    let target = db.deposit_refund(id).await.unwrap().unwrap();
+    assert_eq!(target.attempt_count, 1);
+    assert!(target.body_identity);
+    assert_eq!(stub.refunds.lock().unwrap().len(), 1);
+    *stub.refund_reads_unavailable.lock().unwrap() = false;
+    sqlx::query("UPDATE oxsum.deposit_refunds SET next_attempt_at=now() WHERE deposit_id=$1")
+        .bind(id)
+        .execute(db.pool())
+        .await
+        .unwrap();
+    let (a, b) = tokio::join!(
+        call(
+            &app,
+            "POST",
+            &path,
+            Some(json!({"reason":"lost external reply"})),
+            Some(ADMIN_TOKEN)
+        ),
+        call(
+            &app,
+            "POST",
+            &path,
+            Some(json!({"reason":"lost external reply"})),
+            Some(ADMIN_TOKEN)
+        )
+    );
+    assert_eq!(a.0, StatusCode::OK);
+    assert_eq!(b.0, StatusCode::OK);
+    assert_eq!(a.1["data"]["reversalEntryId"], entry);
+    assert_eq!(b.1["data"]["reversalEntryId"], entry);
+    let recovered = db.deposit_refund(id).await.unwrap().unwrap();
+    assert_eq!(recovered.attempt_count, 2);
+    assert_eq!(
+        recovered.provider_refund_id.as_deref(),
+        Some(target.request_id.to_string().as_str())
+    );
+    assert_eq!(stub.refunds.lock().unwrap().len(), 1);
+    for (suffix, amount, refund_id, currency, expected) in [
+        (
+            "wrong-amount",
+            1999,
+            target.request_id.to_string(),
+            "USD",
+            StatusCode::CONFLICT,
+        ),
+        (
+            "wrong-id",
+            2000,
+            Uuid::new_v4().to_string(),
+            "USD",
+            StatusCode::CONFLICT,
+        ),
+        (
+            "wrong-currency",
+            2000,
+            target.request_id.to_string(),
+            "EUR",
+            StatusCode::CONFLICT,
+        ),
+        (
+            "correct",
+            2000,
+            target.request_id.to_string(),
+            "USD",
+            StatusCode::OK,
+        ),
+    ] {
+        let event = json!({"event_id":suffix,"event_type":"refund_succeeded","content":{"type":"refund_details","object":{
+            "refund_id":refund_id,"payment_id":id.to_string(),"amount":amount,"currency":currency,"status":"succeeded"}}});
+        let (headers, body) = signed_webhook(WEBHOOK_SECRET, &event.to_string());
+        assert_eq!(
+            post_webhook(&app, headers, body).await,
+            expected,
+            "{suffix}"
+        );
+    }
+    assert_eq!(
+        db.deposit_refund(id).await.unwrap().unwrap().state,
+        "succeeded"
+    );
+    assert_eq!(balance(&app, &key).await, 0);
+    assert!(db.claim_deposit_refund(id).await.unwrap().is_none());
+}
+
+/// A pre-upgrade reversal can retrieve its known handle, but an unbound old
+/// outcome and a missing old provider record must never authorize a new POST.
+#[tokio::test]
+async fn historical_deposit_reversals_are_fenced_or_read_only() {
+    let Some((app, db, stub)) = admin_world().await else {
+        return;
+    };
+    let key = register_session(&app).await;
+    let (status, body) = call(
+        &app,
+        "POST",
+        "/api/v1/topups/hyperswitch",
+        Some(json!({"idempotencyKey":"old-reversal","amountMinor":2000})),
+        Some(&key),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let id = Uuid::parse_str(body["data"]["depositId"].as_str().unwrap()).unwrap();
+    let event = json!({"event_id":"paid-old","event_type":"payment_succeeded","content":{"type":"payment_details","object":{
+        "payment_id":id.to_string(),"amount":2000,"currency":"USD"}}});
+    let (headers, body) = signed_webhook(WEBHOOK_SECRET, &event.to_string());
+    assert_eq!(post_webhook(&app, headers, body).await, StatusCode::OK);
+    // Simulate an old binary's reversed row: it has no new recovery record.
+    // The old provider status is intentionally retained but cannot establish
+    // new terminal evidence under the upgraded projection.
+    sqlx::query("UPDATE oxsum.deposits SET status='reversed',reversed_at=now(),meta=meta||'{\"refundStatus\":\"failed\",\"hyperswitchRefundId\":\"ref_historical\"}'::jsonb WHERE deposit_id=$1")
+        .bind(id).execute(db.pool()).await.unwrap();
+    stub.stored_refunds.lock().unwrap().insert("ref_historical".into(),json!({
+        "refund_id":"ref_historical","payment_id":"pay_test_123","amount":2000,"currency":"USD","status":"succeeded",
+        "metadata":{"deposit_id":id}
+    }));
+    let path = format!("/api/v1/admin/deposits/{id}/reverse");
+    let (status, body) = call(
+        &app,
+        "POST",
+        &path,
+        Some(json!({"reason":"historical recovery"})),
+        Some(ADMIN_TOKEN),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["data"]["refundStatus"], "pending");
+    let target = db.deposit_refund(id).await.unwrap().unwrap();
+    assert!(!target.body_identity);
+    assert!(stub.refunds.lock().unwrap().is_empty());
+    let context = db
+        .merchant_signing_context(
+            target.merchant_id.unwrap(),
+            target.version_id.unwrap(),
+            &sealing_key(),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+    let http = oxsum_integrations::provider_http::ProviderHttp::default();
+    let mut unbound = target.clone();
+    unbound.provider_refund_id = None;
+    assert!(
+        oxsum_integrations::deposit_refund::recover(&context, &unbound, &http)
+            .await
+            .is_err()
+    );
+    stub.stored_refunds.lock().unwrap().remove("ref_historical");
+    assert!(
+        oxsum_integrations::deposit_refund::recover(&context, &target, &http)
+            .await
+            .is_err()
+    );
+    assert!(stub.refunds.lock().unwrap().is_empty());
+    let original: Value = sqlx::query_scalar("SELECT meta FROM oxsum.deposits WHERE deposit_id=$1")
+        .bind(id)
+        .fetch_one(db.pool())
+        .await
+        .unwrap();
+    assert_eq!(original["refundStatus"], "failed");
+    assert_eq!(original["hyperswitchRefundId"], "ref_historical");
+    assert!(
+        sqlx::query("UPDATE oxsum.deposit_refunds SET body_identity=true WHERE deposit_id=$1")
+            .bind(id)
+            .execute(db.pool())
+            .await
+            .is_err()
+    );
+    // No known handle and no merchant binding must also surface as unknown.
+    let org = target.organization_id;
+    let other = Uuid::new_v4();
+    sqlx::query("INSERT INTO oxsum.deposits(deposit_id,organization_id,rail,payment_ref,amount_minor,status) VALUES($1,$2,'hyperswitch','pre-upgrade-unbound',100,'reversed')")
+        .bind(other).bind(org).execute(db.pool()).await.unwrap();
+    let (status, body) = call(
+        &app,
+        "POST",
+        &format!("/api/v1/admin/deposits/{other}/reverse"),
+        Some(json!({"reason":"reconcile unknown"})),
+        Some(ADMIN_TOKEN),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["data"]["refundStatus"], "unknown");
+    let target = db.deposit_refund(other).await.unwrap().unwrap();
+    assert!(!target.body_identity);
+    assert!(target.next_attempt_at.is_none());
+    assert!(stub.refunds.lock().unwrap().is_empty());
+}
+
+/// Exhaustion is an unresolved external outcome, not proof that money stayed
+/// with the merchant. The local reversal and request ID remain immutable.
+#[tokio::test]
+async fn exhausted_deposit_recovery_accepts_exact_late_success_without_recreating() {
+    let Some((app, db, stub)) = admin_world().await else {
+        return;
+    };
+    let key = register_session(&app).await;
+    let (status, body) = call(
+        &app,
+        "POST",
+        "/api/v1/topups/hyperswitch",
+        Some(json!({"idempotencyKey":"exhausted-reversal","amountMinor":2000})),
+        Some(&key),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let id = Uuid::parse_str(body["data"]["depositId"].as_str().unwrap()).unwrap();
+    let event = json!({"event_id":"paid-exhausted","event_type":"payment_succeeded","content":{"type":"payment_details","object":{
+        "payment_id":id.to_string(),"amount":2000,"currency":"USD"}}});
+    let (headers, body) = signed_webhook(WEBHOOK_SECRET, &event.to_string());
+    assert_eq!(post_webhook(&app, headers, body).await, StatusCode::OK);
+    *stub.lost_refund_response.lock().unwrap() = true;
+    let path = format!("/api/v1/admin/deposits/{id}/reverse");
+    let (status, body) = call(
+        &app,
+        "POST",
+        &path,
+        Some(json!({"reason":"one reversal"})),
+        Some(ADMIN_TOKEN),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let entry = body["data"]["reversalEntryId"].clone();
+    let initial = db.deposit_refund(id).await.unwrap().unwrap();
+    for attempt in 2..=5 {
+        sqlx::query("UPDATE oxsum.deposit_refunds SET next_attempt_at=now() WHERE deposit_id=$1")
+            .bind(id)
+            .execute(db.pool())
+            .await
+            .unwrap();
+        let (a, b) = tokio::join!(
+            call(
+                &app,
+                "POST",
+                &path,
+                Some(json!({"reason":"retry cannot replace the reason"})),
+                Some(ADMIN_TOKEN)
+            ),
+            call(
+                &app,
+                "POST",
+                &path,
+                Some(json!({"reason":"one reversal"})),
+                Some(ADMIN_TOKEN)
+            )
+        );
+        assert_eq!(a.0, StatusCode::OK);
+        assert_eq!(b.0, StatusCode::OK);
+        assert_eq!(a.1["data"]["reversalEntryId"], entry);
+        let standing = db.deposit_refund(id).await.unwrap().unwrap();
+        assert_eq!(standing.attempt_count, attempt);
+        assert_eq!(standing.request_id, initial.request_id);
+        assert_eq!(standing.reason, "one reversal");
+        assert_eq!(standing.state, "unknown");
+        assert_eq!(standing.next_attempt_at.is_none(), attempt == 5);
+    }
+    assert!(db.claim_deposit_refund(id).await.unwrap().is_none());
+    assert!(
+        db.due_deposit_refunds(100)
+            .await
+            .unwrap()
+            .iter()
+            .all(|r| r.deposit_id != id)
+    );
+    assert_eq!(stub.refunds.lock().unwrap().len(), 1);
+    for (suffix, kind) in [
+        ("late-failure", "refund_failed"),
+        ("late-success", "refund_succeeded"),
+        ("older-failure", "refund_failed"),
+    ] {
+        let event = json!({"event_id":suffix,"event_type":kind,"content":{"type":"refund_details","object":{
+            "refund_id":initial.request_id,"payment_id":id.to_string(),"amount":2000,"currency":"USD"}}});
+        let (headers, body) = signed_webhook(WEBHOOK_SECRET, &event.to_string());
+        assert_eq!(post_webhook(&app, headers, body).await, StatusCode::OK);
+    }
+    let final_state = db.deposit_refund(id).await.unwrap().unwrap();
+    assert_eq!(final_state.state, "succeeded");
+    assert_eq!(final_state.attempt_count, 5);
+    assert!(final_state.next_attempt_at.is_none());
+    assert!(
+        db.note_deposit_refund(id, "a-different-provider-handle")
+            .await
+            .is_err()
+    );
+    assert_eq!(balance(&app, &key).await, 0);
+    assert_eq!(stub.refunds.lock().unwrap().len(), 1);
 }

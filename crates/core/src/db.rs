@@ -417,6 +417,10 @@ const MIGRATIONS: &[(&str, &str)] = &[
         "0101_collection_terms",
         include_str!("../migrations/0101_collection_terms.sql"),
     ),
+    (
+        "0107_deposit_refund_recovery",
+        include_str!("../migrations/0107_deposit_refund_recovery.sql"),
+    ),
 ];
 
 /// Advisory-lock key serialising the migration runner across processes.
