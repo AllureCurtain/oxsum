@@ -4,6 +4,8 @@ Updated: 2026-11-09
 
 ## In progress
 
+- [ ] [#862](https://github.com/AllureCurtain/oxsum/issues/862) — Repair the pool saturation fixture deadline race observed in main CI 42518492586; require PoolBusy and exact balance recovery. Validation pending.
+
 - [ ] [#858](https://github.com/AllureCurtain/oxsum/issues/858) — Execute dashboard signed-head/consistency verification against customer-scoped retained trust; implementation and validation in progress.
 
 - [x] [#853](https://github.com/AllureCurtain/oxsum/issues/853) — Owner application and typed scoped-credential forms with exact retry identity and one-time secret recovery; three behavioral checks, four contract checks, frontend build and independent source review passed on integrated #846. Integrated in PR #857 (`8f92546d`); browser acceptance remains.
