@@ -349,3 +349,103 @@ async fn documented_python_client_reads_meters_replays_and_refuses_foreign_custo
     }
     server.abort();
 }
+
+#[tokio::test]
+async fn provision_grant_creates_namespace_bounded_customers_over_http() {
+    let Some(url) = oxsum_testkit::suite_db_url("integration_provision_http") else {
+        return;
+    };
+    let db = Db::connect(&url, 10).await.unwrap();
+    db.migrate().await.unwrap();
+    let owner = setup::owner(&db).await;
+    let app = oxsum_server::app(db.clone(), Config::new(Signup::Invite, None));
+    // A customersProvision-only credential mints with an empty allowlist.
+    let mint = serde_json::to_value(setup::request(
+        vec![],
+        vec![IntegrationScope::CustomersProvision],
+    ))
+    .unwrap();
+    let (status, created) = call(
+        &app,
+        "POST",
+        "/api/v1/business/integration-credentials",
+        mint,
+        Some(&owner),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{created}");
+    let secret = created["data"]["secret"].as_str().unwrap();
+    let provision = json!({
+        "idempotencyKey": Uuid::new_v4(),
+        "externalId": "acme-http-001",
+        "name": "Acme tenant",
+        "contactEmail": "ops@acme.test"
+    });
+    // A session cannot provision — provisioning is a service grant only.
+    let (status, _) = call(
+        &app,
+        "POST",
+        "/api/v1/business/customers",
+        provision.clone(),
+        Some(&owner),
+        None,
+    )
+    .await;
+    assert!(status.is_client_error());
+    // The credential provisions a namespace-bounded account.
+    let (status, made) = call(
+        &app,
+        "POST",
+        "/api/v1/business/customers",
+        provision.clone(),
+        None,
+        Some(secret),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{made}");
+    assert_eq!(made["data"]["externalId"], "acme-http-001");
+    let org = made["data"]["organizationId"].as_str().unwrap().to_string();
+    // Exact replay returns the standing account, not a second one.
+    let (status, replay) = call(
+        &app,
+        "POST",
+        "/api/v1/business/customers",
+        provision,
+        None,
+        Some(secret),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(replay["data"]["organizationId"], org);
+    // The provisioned account is reachable by the creating credential's own
+    // grant (namespace), but a customersRead-only credential cannot see it.
+    let reader_mint = serde_json::to_value(setup::request(
+        vec![],
+        vec![IntegrationScope::CustomersProvision],
+    ))
+    .unwrap();
+    let (_s, second) = call(
+        &app,
+        "POST",
+        "/api/v1/business/integration-credentials",
+        reader_mint,
+        Some(&owner),
+        None,
+    )
+    .await;
+    let secret2 = second["data"]["secret"].as_str().unwrap();
+    let (status, _) = call(
+        &app,
+        "GET",
+        &format!("/api/v1/business/customers/{org}"),
+        Value::Null,
+        None,
+        Some(secret2),
+    )
+    .await;
+    assert!(
+        status.is_client_error(),
+        "a different credential cannot reach the provisioned account: {status}"
+    );
+}
