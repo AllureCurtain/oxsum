@@ -35,3 +35,9 @@ versus recovery, and plan-dunning overage-only behavior.
 Results, exact runtime SHA, final focused/combined regression gates and review
 will be recorded after execution. Customer readiness follows this repair and the
 separate cancellation boundary issue #854.
+
+Source review also identified an existing team-deletion lock inversion: admission
+locks membership before team; deletion owns the team before its foreign-key
+action updates memberships. Issue #859 tracks a focused fix and controlled
+runtime evidence after #849/#854, before customer readiness. It is not covered by
+the current implementation or represented as an executed regression.

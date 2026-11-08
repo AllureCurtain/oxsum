@@ -46,6 +46,8 @@ Updated: 2026-11-09
 
 - [ ] [#854](https://github.com/AllureCurtain/oxsum/issues/854) — Follow #849 with the lazy cancellation boundary regression: a plan cancelled during admission must not draw the ended period's quota; preserve serving past-due remainder policy.
 
+- [ ] [#859](https://github.com/AllureCurtain/oxsum/issues/859) — After #849/#854, align team deletion's parent/team/member locks with admission and validate controlled deletion/reassignment races before customer readiness.
+
 - [x] [#835](https://github.com/AllureCurtain/oxsum/issues/835) — Integrated in PR #844 (`23b6547`): explicit audited checkout routes, safe customer choices and retained-version retry; 1,948 full workspace checks, strict Clippy and independent review passed. Browser/PSP acceptance remains.
 
 - [x] [#831](https://github.com/AllureCurtain/oxsum/issues/831) — Integrated in PR #834 (`0ea3ef3`): complete merchant configuration and redacted history; HTTP authority and required checks passed. Browser acceptance remains.
