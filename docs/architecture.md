@@ -20,7 +20,7 @@ monetary pending entries plus explicit zero-wallet watches, once per turn. Norma
 settlement and recovery release the watch together with quota, evidence, usage
 and terminal operation state. Missing legacy holds still create no receipt.
 
-The lock order is key advisory, organization admission, subscription lifecycle,
+The lock order is key advisory, organization admission and organization FK share, subscription lifecycle,
 ledger append, then key/member/team constraint rows. Gateway settlement takes
 the key advisory before subscription and append so its usage forecast cannot
 invert the admission order. Transactional calendar/anchor/hold reads borrow the
