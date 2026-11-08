@@ -829,3 +829,13 @@ text or `failureReasonCommitment` for a long reason. These fields are exclusive;
 the read projection does not claim separately retained full text was verified.
 Keyword configuration permits 1–64 patterns, each regex at most 4,096 UTF-8 bytes.
 Moderation bodies are limited to 65,536 bytes within the existing deadline.
+
+Historical non-plan chargeback compensation (#842) adds nullable
+`OrderDispute.cashCorrection` and finance audit action `nonplan_chargeback.recover`.
+The local owner/finance preview/apply has no HTTP mutation endpoint. Original
+wrong receipt B plus actual loss L produces appended Cash credit B + L, with
+separate fields for both components, original Wallet debit, review suspense,
+preserved credit benefit, exact entry/receipt identities, hashes and source
+revision. Null means no verified correction, not historical correctness. Original
+terminal/audit/debt history remains unchanged. A valid corrected `lost` replay
+retains its standing result without another money leg; another outcome conflicts.

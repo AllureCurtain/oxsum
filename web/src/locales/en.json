@@ -2257,5 +2257,12 @@
     "suspense": "Amount awaiting source review:",
     "walletRestored": "Historical purchased credit restored:",
     "stateRetained": "The original approval or note state is retained. This cash return cannot authorize another payout."
+  },
+  "chargebackCorrection": {
+    "actualLoss": "Confirmed chargeback loss",
+    "falseReceipt": "Original false cash receipt cancelled",
+    "totalCorrection": "Appended cash correction",
+    "entry": "Correction entry",
+    "retained": "The correction cancels the false receipt and records the actual loss. The original credit benefit, resolution and debt documents are retained for finance review; this is not a second provider loss."
   }
 }

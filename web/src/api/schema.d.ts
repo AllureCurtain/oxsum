@@ -21182,10 +21182,68 @@ export interface components {
              * @description the ledger entry retaining the lost dispute cash effect
              */
             rechargeEntryId: string | null;
+            /** @description Verified append-only compensation of a historical wrong-direction non-plan chargeback. The old entry and terminal outcome are preserved; null does not certify historical correctness. */
+            cashCorrection: components["schemas"]["NonplanChargebackCorrection"] | null;
             /** Format: date-time */
             createdAt: string;
             /** Format: date-time */
             updatedAt: string;
+        };
+        NonplanChargebackCorrection: {
+            /** @constant */
+            policy: "nonplan-chargeback-recovery-v1";
+            /** Format: uuid */
+            disputeId: string;
+            /** Format: uuid */
+            orderId: string;
+            /** Format: uuid */
+            organizationId: string;
+            /**
+             * Format: int64
+             * @description Original erroneous Cash debit B which must be cancelled
+             */
+            falseReceiptMinor: number;
+            /**
+             * Format: int64
+             * @description Complete independently confirmed chargeback loss L
+             */
+            actualLossMinor: number;
+            /**
+             * Format: int64
+             * @description Appended Cash credit B plus L; not a second provider loss
+             */
+            cashCorrectionMinor: number;
+            /**
+             * Format: int64
+             * @description Proven original retained Wallet allocated only to the actual loss
+             */
+            walletMinor: number;
+            /**
+             * Format: int64
+             * @description Correction debit not allocated to original Wallet; includes preserved credit benefit
+             */
+            suspenseMinor: number;
+            /**
+             * Format: int64
+             * @description Original CreditLine credit B retained without reopening debt or rewriting statements
+             */
+            preservedCreditBenefitMinor: number;
+            /** Format: uuid */
+            originalEntryId: string;
+            originalEntryHash: string;
+            /** Format: uuid */
+            correctionEntryId: string;
+            correctionEntryHash: string;
+            /** Format: date */
+            correctionBookingDate: string;
+            /** Format: uuid */
+            eventReceiptId: string;
+            sourceRevision: string;
+            /** @constant */
+            requiresReview: true;
+            reviewReasons: string[];
+            /** Format: date-time */
+            bookedAt: string;
         };
         OrderDisputePage: {
             disputes: components["schemas"]["OrderDispute"][];
@@ -21205,7 +21263,7 @@ export interface components {
              * @description the audited financial action — the same vocabulary `finance_audit`'s check constraint bounds
              * @enum {string}
              */
-            action: "refund.approve" | "refund.decline" | "refund.release" | "dispute.resolve" | "journal.void" | "statement.release" | "reconciliation.resolve" | "reconciliation.waive" | "reconciliation.repair" | "plan_refund.recover" | "plan_usage.correct" | "nonplan_refund.recover";
+            action: "refund.approve" | "refund.decline" | "refund.release" | "dispute.resolve" | "journal.void" | "statement.release" | "reconciliation.resolve" | "reconciliation.waive" | "reconciliation.repair" | "plan_refund.recover" | "plan_usage.correct" | "nonplan_refund.recover" | "nonplan_chargeback.recover";
             /** @description the entity the action corrected — a refund */
             target: string;
             /** @description the action's safe fields — reason */

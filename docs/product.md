@@ -677,3 +677,14 @@ settlement must fit its documented encoded-byte envelope before a call reserves
 funds or executes. Long reasons remain auditable through an explicit digest and
 byte length with separately retained full text; no shortened reason claims to
 be the full provider/policy output. See [the evidence contract](gateway-evidence-budget.md).
+### Historical non-plan chargeback compensation (#842)
+
+An exact reviewed historical wrong-direction chargeback may be compensated with
+an appended entry. It cancels the old false cash receipt and records the full
+confirmed loss, which can exceed the old clamped credit repayment. Only proven
+retained original Wallet funds the actual loss; other amounts remain finance
+review suspense. The old credit benefit and debt/statement history stay intact.
+The original lost outcome, audit and entry are retained beside `cashCorrection`.
+Operators preview an exact dispute and authenticated receipt, review the source
+revision and explicitly apply it under current owner/finance authority. Unsupported
+or conflicting history refuses; no generic recovery grants new credit or debt.

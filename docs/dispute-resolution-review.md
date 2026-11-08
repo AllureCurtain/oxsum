@@ -51,8 +51,9 @@ automatic retry.
 
 Compare these retained facts with the provider's actual outcome. Preserve the
 original bytes and prepare an issue-specific append-only correction with explicit
-source amounts and independent review. This release provides no generic apply
-command for a conflicting dispute history. Do not hand-edit ledger tables,
+source amounts and independent review. There is no generic apply command for conflicting dispute history. The
+[exact historical non-plan workflow](nonplan-chargeback-recovery.md) supports
+only its independently proved old terminal loss shape after migration 0119. Do not hand-edit ledger tables,
 disable guards, create a replacement payment/dispute, or choose another outcome
 merely to make the endpoint succeed.
 
@@ -77,10 +78,13 @@ amount and matching fiat currency. Partial fiat loss must convert exactly to
 integer credit minor units. Missing or contradictory old accepted events remain
 review-required, with their original bytes preserved.
 
-Historical Dr Cash / Cr CreditLine chargebacks are not accepted as new correct
-cash evidence. #842 owns their explicit source-bound compensation. #841 owns
-complete non-plan refund cash and historical missing/wrong-source effects. Both
-remain under #829 before #777 exposes statement repayment. Stop and drain old
+Historical Dr Cash / Cr CreditLine chargebacks are not accepted as correct cash
+evidence. #842 provides exact preview/apply for proven terminal losses: original
+false receipt B plus authenticated loss L requires appended Cash credit B + L.
+The old credit benefit and documents remain unchanged for review. Unsupported
+history still refuses. #841's complete refund cash/recovery is integrated; #829
+remains open until historical boundaries and acceptance are accounted for before
+#777 exposes statement repayment. Stop and drain old
 writers when deploying; mixed-version writers do not honor the new source lock.
 
 Finance `fundingMinor` remains a gross receipt metric and `refundMinor` follows

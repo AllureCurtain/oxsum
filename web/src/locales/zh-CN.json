@@ -2257,5 +2257,12 @@
     "suspense": "等待来源复核的金额：",
     "walletRestored": "补回的历史购买额度：",
     "stateRetained": "原审批或贷项通知单状态予以保留。此现金退回不会授权再次付款。"
+  },
+  "chargebackCorrection": {
+    "actualLoss": "已确认的拒付损失",
+    "falseReceipt": "撤销的原错误现金收入",
+    "totalCorrection": "追加的现金纠正金额",
+    "entry": "纠正记账凭证",
+    "retained": "此纠正撤销原错误现金收入并记录实际损失。原信用额度变化、处理结论和债务单据保留供财务复核；这不是第二次支付机构拒付。"
   }
 }
