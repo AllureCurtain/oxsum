@@ -12,8 +12,8 @@ and "a version is published". Publishing (`release.yml`) and deploying
 | 0 | Full CI heavy tier — all three nextest shards, process-shared suites and doubleentry Postgres conformance, executed successfully | `ci.yml` on main; dispatch a full run when a push skips anything | the exact candidate SHA |
 | 1 | `release-candidate.yml` — fmt, clippy, lib/doc tests, wasm build, frontend build, verify-consumer, candidate image build, manifest + checksums + notes draft | manual `gh workflow run release-candidate.yml -f sha=<sha>` | the exact promoted SHA |
 | 2 | `scripts/release-candidate-smoke.sh` — live smoke, including an exact version SHA assertion | candidate image job, automatically; repeatable locally | the image built in gate 1 |
-| 3 | `release.yml` — build + push `latest`, `sha-<sha>`, optional version tag | manual dispatch | the reviewed candidate SHA |
-| 4 | `deploy.yml` — publish + deploy | manual dispatch, separately authorized | a published tag |
+| 3 | `release.yml` — validate online provenance, upload the original image config/layer bytes, retain immutable digest receipt | manual dispatch with candidate run/attempt/source and explicit version | the saved candidate archive |
+| 4 | Explicit digest deployment and compatible rollback | N13.c pending; legacy `deploy.yml` fails closed before publication | an authorized immutable image reference |
 
 Gate 1 fails closed unless `check-candidate-ci.py` finds a successful
 completed `ci.yml` run on exactly the candidate SHA and main branch. Every
@@ -137,20 +137,87 @@ external/limitation decisions are satisfied:
 1. Review `candidate-bundle` from the gate-1 run — the manifest names the
    exact commit every gate ran against.
 2. Draft the release notes from `RELEASE-NOTES-DRAFT.md`.
-3. After explicit publication authorization, select a branch/tag whose
-   resolved commit is exactly the approved SHA and dispatch
-   `gh workflow run release.yml --ref <reviewed-ref> -f image_tag=v<x.y.z>`.
-   This workflow rebuilds its selected ref; `image_tag` is only an output
-   label, not a source selector, and it does not promote the saved tar
-   byte-for-byte. Verify the selected ref and resulting image SHA/digest.
-   An unqualified dispatch against a moving main can publish different code.
-   This publishes `latest`, `sha-<sha>` and the version tag to GHCR; no such
-   dispatch is part of candidate validation.
-4. Deploy stays separate: `deploy.yml` calls `release.yml` and adds the
-   deploy job — a separately authorized, manual action (gate 4/G5 in
-   ACCEPTANCE.md).
+3. After explicit publication authorization, dispatch the current reviewed promotion
+   workflow with the exact candidate selectors and a new version:
 
-An upgrade to the published tag follows `docs/self-hosted-upgrade.md`:
-`OXSUM_IMAGE_TAG=v<x.y.z>` in `deploy/.env`, the `oxsum-migrate` one-shot
-runs ahead of the serving container, `/api/v1/version` confirms the
-landed build.
+   ```bash
+   gh workflow run release.yml --ref main \
+     -f source_sha=<40-character-source-sha> \
+     -f candidate_run=<successful-run-id> -f candidate_attempt=<attempt> \
+     -f image_tag=v<x.y.z>
+   ```
+
+   The workflow's checkout supplies the promotion tooling; it never selects or
+   rebuilds application source. The downloaded candidate's own manifest, image,
+   successful run/attempt and full-CI evidence determine what may be published.
+   It creates only the explicit version tag, with no implicit `latest` or SHA tag.
+4. Retain `image-promotion-receipt` alongside the original candidate bundle. It
+   names the archive hash, image config ID, platform and immutable registry
+   reference. Use that digest as the deployment input when N13.c is integrated.
+
+The legacy `deploy.yml` caller has no candidate selectors and now refuses before
+publication or its SSH job. Its compatible callable schema is retained solely
+until N13.c replaces the combined publish/deploy path. Do not dispatch it as a
+rollback mechanism. SDK publication, digest deployment and rollback rehearsal
+remain separate N13 work; image promotion alone does not close J14.
+
+## Image promotion checks and receipt
+
+`scripts/promote-candidate.py` requires Python 3.10+, authenticated `gh`, and
+`OXSUM_REGISTRY_USERNAME`/`OXSUM_REGISTRY_TOKEN` supplied by the operator's secret
+store (the workflow uses its ephemeral GitHub token). It does not load `.env`.
+The account needs permission to read candidate Actions artifacts and write the
+selected GHCR package. The workflow destination is fixed to
+`ghcr.io/allurecurtain/oxsum`; direct tooling accepts an explicitly named GHCR
+repository and `vX.Y.Z[-suffix]` version. Repository operators must authorize the
+specific destination and version before invoking it.
+
+```bash
+python3 scripts/promote-candidate.py /path/to/candidate-bundle \
+  --sha <40-character-source-sha> --repository AllureCurtain/oxsum \
+  --run <successful-run-id> --attempt <attempt> \
+  --destination ghcr.io/allurecurtain/oxsum:v<x.y.z> \
+  --receipt /path/outside-candidate/promotion-receipt.json
+```
+
+The helper copies the bundle to a private temporary snapshot and completes the
+version-2 offline and online checks before any registry write. It uploads the
+archive's original configuration and layer member bytes through the Distribution
+API. Docker archives contain no authoritative registry manifest, so the helper
+creates only the transport manifest that refers to those content-addressed
+bytes. It never rebuilds or recompresses layers. It then downloads by immutable
+digest, checks the configuration/platform/source, every blob size/hash, and each
+decompressed rootfs digest. A recognized missing manifest permits publication;
+authentication, network and unrecognized registry errors fail closed.
+
+An existing version succeeds only if config and ordered layer bytes match the
+candidate, followed by full pull verification. A different config/layer digest
+refuses overwrite. The workflow serializes all its publication jobs. Registries
+provide no atomic tag compare-and-swap: operators must also exclude external
+writers to the same repository during promotion. The helper rechecks before the
+tag write and after pull verification; it cannot make arbitrary concurrent
+external writers safe. Partial failure can leave content-addressed blobs or a
+tag without a receipt; rerun the same verified candidate/version with a new
+receipt path to finish verification. Never treat a missing receipt as success.
+
+The receipt is a new file outside the immutable candidate and refuses overwrite.
+Its schema is documented in [CANDIDATE-FORMAT.md](roadmap/operator-launch/CANDIDATE-FORMAT.md).
+Keep it with operator records before the workflow artifact's 90-day retention
+expires. It records a verified promotion, not deployment readiness or approval.
+
+For local transport checks, run `python3 scripts/test-candidate-promotion.py`.
+The optional real rehearsal requires the pinned `registry:2.8.3` image named by
+that script to be present locally; it never implicitly pulls a dependency:
+
+```bash
+python3 scripts/test-candidate-promotion.py --local-registry /new/rehearsal-output
+```
+
+It creates one random task-owned registry container, bound to a random
+`127.0.0.1` port with ephemeral storage, and removes only that container at exit.
+A tiny loadable linux/amd64 image fixture tests upload, immutable pull, repeated
+publication and conflict refusal without running the application. The dedicated
+`--local-fixture` mode bypasses online provenance only for an explicitly numeric
+`127.0.0.1:<port>` registry and marks all receipts `local-fixture`. It cannot
+publish to GHCR and is never used by the Release workflow. These results are
+transport development evidence; a final real candidate remains required.

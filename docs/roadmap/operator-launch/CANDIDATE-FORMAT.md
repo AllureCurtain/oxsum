@@ -44,12 +44,49 @@ workflow or a local JSON assertion cannot replace that provenance.
 
 Older version-1 bundles must be regenerated; they are not silently promoted.
 Every rebuild is a new artifact requiring validation. Promotion consumes these
-bytes and records the separate registry digest after upload. Deployment uses
-that digest and checks readiness plus the source SHA; those operations are a
-separate N13 child and require their action-specific authority.
+bytes and records the separate registry digest after upload. Image promotion is implemented by `scripts/promote-candidate.py` (#801).
+Digest deployment and readiness/source checks remain a separate N13 child and
+require their action-specific authority.
 
 Docker's containerd image store can report an OCI index digest as `.Id`, while
 classic Docker reports the config ID there. The manifest deliberately hashes the
 archive's configuration bytes and its rootfs layer digests. A promotion runner
 must inspect the registry manifest/config relationship rather than compare a
 containerd index ID to `configId` or label either one a tar checksum.
+
+
+## Image promotion receipt, version 1 (#801)
+
+A receipt is independent of the version-2 bundle: promotion never edits its
+manifest or checksum list. `promotion-receipt.json` is written only after online
+provenance and registry pull checks succeed (except the loopback-only fixture
+mode described below). It contains:
+
+- `formatVersion`: integer `1`; `evidenceTier`: `verified-candidate` or
+  `local-fixture`. Fixture receipts cannot attest GitHub provenance or a release.
+- `sourceSha`, `repository`, `workflow`: the candidate's exact source and
+  run/attempt/workflow revision/URL, checked against explicit caller selectors.
+- `candidateManifestSha256`, `archiveSha256`: hashes of original candidate files.
+- `configId`, `platform`: original configuration bytes and `linux/amd64`.
+- `destination`: explicit registry/repository/version tag.
+- `registryDigest`: top-level registry manifest or index digest.
+- `platformManifestDigest`: the selected linux/amd64 manifest digest; equal to
+  `registryDigest` for the single-platform manifest this helper uploads.
+- `immutableReference`: `registry/repository@sha256:<digest>` using the top-level
+  digest, never the configuration ID or archive checksum.
+- `result`: `published` or `already-present`; `promotedAt`: UTC RFC3339 time.
+
+The helper generates a registry transport manifest referring to the archive's
+unchanged config and ordered layer bytes. It checks existing config/layer
+hashes and sizes before accepting an idempotent version. Pull verification
+checks every registry blob and each uncompressed rootfs digest; a tar checksum
+cannot establish that identity. Registry indexes must select exactly one
+linux/amd64 image; only separately labeled unknown/unknown attestations may
+coexist. No additional serving platform is implicitly certified.
+
+Version tags require serialization across every writer; Distribution has no
+atomic tag compare-and-swap. The workflow serializes its own jobs, rechecks
+conflicts immediately before tagging and checks the final tag after pull.
+Direct or external writers must observe the same operator exclusion. Fixture
+mode permits only `127.0.0.1:<port>` and does not contact GitHub or certify the
+fixture's asserted CI. Production always uses online provenance and GHCR.

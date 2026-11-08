@@ -2918,3 +2918,40 @@ to planned numbers describe their development history, not current filenames.
 Fixtures stop immediately before the migration they exercise and still compare
 all old fields; new nullable authority fields are checked explicitly as null.
 An applied migration is not replayed or renamed, and no history is rewritten.
+
+
+## 2026-11-08 — Promote candidate image bytes through Distribution (#801)
+
+A successful candidate archive must determine the published image. Rebuilding
+its source in Release produced an independently unvalidated artifact, and
+implicit `latest`/SHA tags made the accepted output unclear. Release now requires
+source SHA, candidate workflow run/attempt and one explicit version, downloads
+the bundle, rechecks online provenance and transfers original configuration and
+layer member bytes through the registry Distribution API. Docker archives do
+not carry an authoritative registry manifest: a deterministic OCI transport
+manifest is created around the unchanged blobs. No layer recompression or image
+build occurs. This also avoids Docker Desktop daemon loopback differences and
+the containerd `.Id`/config-ID ambiguity in isolated rehearsals.
+
+The tool freezes a private bundle snapshot, distinguishes missing manifests
+from auth/network errors, rejects a version occupied by different config/layer
+bytes, and downloads by immutable digest to verify raw blob hashes and rootfs
+diff IDs. A separate receipt binds source, provenance, archive, config/platform
+and registry digests; it never mutates the candidate. Registry uploads accept
+only same-origin upload locations. The only cross-origin read is an allowlisted
+HTTPS GitHub blob redirect, without an Authorization header. Production token
+exchange accepts only GHCR's exact realm and the selected repository scope.
+
+Distribution offers no atomic compare-and-swap for tags. The workflow serializes
+all its jobs, and the helper checks before tagging and after download. Operators
+must exclude other registry writers during promotion; no global immutability is
+claimed. A partial write without a receipt remains incomplete and can be retried
+with the same candidate/version. A fixture-only mode requires a numeric loopback
+registry and marks receipts `local-fixture`; it cannot bypass production online
+provenance. It uses a pinned ephemeral registry and never runs the application.
+
+The legacy deploy caller receives only the Actions-read permission required by
+its reusable promotion workflow. Its missing explicit selectors now fail before
+publication/SSH; N13.c separately replaces combined publication/deployment with
+immutable reference deployment and database-compatible rollback. SDK publication
+and final candidate acceptance remain separate units.
