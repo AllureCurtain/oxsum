@@ -1,8 +1,7 @@
 # Recover an exact non-plan refund
 
-Issue #841's recovery interface is being implemented. Do not run this workflow
-until its migration and executable are integrated and validated. It applies to
-wallet top-ups, bundles and legacy CreditLine repayments; plan-period refunds
+The exact recovery command applies to wallet top-ups, bundles and legacy
+CreditLine repayments after migration 0115 has been applied. Plan-period refunds
 and historical wrong-direction chargebacks use their separate recovery paths.
 
 An actual provider cash return is separate from staff approval. The refund and
@@ -35,7 +34,7 @@ explicit `DATABASE_URL` for the reviewed installation. The command does not load
 
 ## Preview and apply
 
-The interface under implementation is:
+Preview one reviewed source:
 
 ```bash
 cargo run -p oxsum-core --example recover_nonplan_refund -- \
