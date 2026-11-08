@@ -4361,7 +4361,7 @@ export interface paths {
          * List the caller's plan-fee journals
          * @description The customer organization's own invoice journals (issue #611, T20),
          *     newest first — the per-period bills the plan lifecycle writes at each
-         *     close: base fee, usage overage, discounts and promo coverage as the
+         *     close: base fee, discounts and promo coverage as the
          *     lines sum to `totalMinor`. `posted` journals are the open receivable —
          *     the same fact the plan's `pastDue` state carries. `settledMinor` is how
          *     much of the total is already covered; `paidOrderId` names the
@@ -18933,7 +18933,7 @@ export interface components {
             /** Format: uuid */
             statementId: string;
             /**
-             * @description `planFee` the sold version's price, `usage` the overage, `discount` a credit or grant write-off, `refundCredit` a refund's note, `disputeChargeback` a lost dispute's restored receivable, `paymentApplied` a reconciling payment
+             * @description `planFee` the sold version's price, `usage` a retained historical overage line (new closes do not charge settled usage again), `discount` a credit or grant write-off, `refundCredit` a refund's note, `disputeChargeback` a lost dispute's restored receivable, `paymentApplied` a reconciling payment
              * @enum {string}
              */
             kind: "planFee" | "usage" | "discount" | "refundCredit" | "disputeChargeback" | "paymentApplied";
