@@ -1,105 +1,149 @@
-# Deploy to zhao-cloud: publish the release image through release.yml (the
-# publish-only path, which this workflow calls and which can equally run
-# alone — `gh workflow run release.yml` publishes the same tags and stops),
-# then pull and restart on the server over SSH.
+# Manual deployment only. Verify an already-published candidate digest, then
+# transfer a trusted plan/helper to the explicitly configured host. No Release
+# workflow, build, package write or implicit tag selection is part of this path.
 #
-# Manual trigger only: push-to-main auto-deploy can follow once the manual
-# path has proven itself, and no test may ever reach this workflow (issue
-# #619 — the deploy side effects stay behind workflow_dispatch).
-#
-# Server-side prerequisites (one-time, on zhao-cloud):
-#   - the deploy key's public half in ubuntu's ~/.ssh/authorized_keys
-#   - an `oxsum` database + role on the existing PostgreSQL container
-#   - /opt/oxsum/oxsum.env holding DATABASE_URL and the OXSUM_* secrets
-#     (never baked into the image; see docs/development.md, "Deployment runbook")
-#     with OXSUM_ADDR=127.0.0.1:<port> — `--network host` lets the container
-#     reach PostgreSQL on the host's loopback, where it only listens.
-#   - port 3001 free on loopback (3000 is taken by new-api)
-#
-# Secrets (repo settings -> Secrets and variables -> Actions):
-#   DEPLOY_SSH_KEY  the deploy private key
-#   DEPLOY_HOST     82.156.116.18
-#   DEPLOY_USER     ubuntu
-
+# Target prerequisites: Linux Docker + Python 3.10+, authenticated read access to
+# GHCR, /opt/oxsum/oxsum.env, and private managed state /opt/oxsum/deployment-state.
+# An existing unmanaged oxsum container is refused; follow the migration runbook.
+# Secrets: DEPLOY_SSH_KEY, DEPLOY_HOST, DEPLOY_USER, DEPLOY_KNOWN_HOSTS (pinned).
 name: Deploy
 
 on:
   workflow_dispatch:
     inputs:
+      operation:
+        description: 'Deploy a verified candidate or roll back to a retained compatible artifact'
+        type: choice
+        options: [deploy, rollback]
+        default: deploy
+        required: true
+      image_ref:
+        description: 'Explicit ghcr.io/allurecurtain/oxsum@sha256:<digest>'
+        required: true
+      source_sha:
+        description: 'Full source SHA expected in the selected artifact'
+        required: true
+      candidate_run:
+        description: 'Successful candidate run ID (required for deploy)'
+        required: false
+      candidate_attempt:
+        description: 'Successful candidate attempt (required for deploy)'
+        required: false
       port:
-        description: 'Host loopback port for the oxsum container'
+        description: 'Host loopback port for the managed oxsum container'
         default: '3001'
         required: true
-      image_tag:
-        description: 'Image tag to deploy (default: latest; use sha-<sha> for rollback)'
-        default: 'latest'
-        required: false
+      confirm_compatible_rollback:
+        description: 'Rollback only: operator has checked behavior and database compatibility'
+        type: boolean
+        default: false
+        required: true
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
+  group: oxsum-deployment
   cancel-in-progress: false
 
 jobs:
-  # The publish half: the same job deploy.yml used to inline, extracted into
-  # release.yml so it runs with no deployment side effects. `latest` and
-  # `sha-<sha>` are always pushed; this run's sha tag is what the deploy job
-  # pulls — the image it just built, not whatever `latest` happens to point
-  # at by the time SSH lands.
-  release:
-    name: build and push the release image
-    uses: ./.github/workflows/release.yml
-    with:
-      image_tag: ''
+  deploy:
+    name: deploy an immutable verified artifact
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
     permissions:
       actions: read
       contents: read
-      packages: write
-
-  deploy:
-    name: deploy to zhao-cloud
-    needs: release
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
+      packages: read
+    env:
+      OPERATION: ${{ inputs.operation }}
+      IMAGE_REF: ${{ inputs.image_ref }}
+      SOURCE_SHA: ${{ inputs.source_sha }}
+      CANDIDATE_RUN: ${{ inputs.candidate_run }}
+      CANDIDATE_ATTEMPT: ${{ inputs.candidate_attempt }}
+      DEPLOY_PORT: ${{ inputs.port }}
+      CONFIRM_ROLLBACK: ${{ inputs.confirm_compatible_rollback }}
     steps:
-      - name: Set up the deploy key
+      - uses: actions/checkout@v7
+      - name: Validate explicit deployment selectors
         run: |
-          mkdir -p ~/.ssh
-          printf '%s\n' "${{ secrets.DEPLOY_SSH_KEY }}" > ~/.ssh/deploy_key
-          chmod 600 ~/.ssh/deploy_key
-          ssh-keyscan -H "${{ secrets.DEPLOY_HOST }}" >> ~/.ssh/known_hosts 2>/dev/null
-      - name: Pull and restart
+          python3 - <<'PY'
+          import os, re
+          values = os.environ
+          checks = [values["OPERATION"] in {"deploy", "rollback"},
+                    bool(re.fullmatch(r"ghcr\.io/allurecurtain/oxsum@sha256:[0-9a-f]{64}", values["IMAGE_REF"])),
+                    bool(re.fullmatch(r"[0-9a-f]{40}", values["SOURCE_SHA"])),
+                    values["DEPLOY_PORT"].isdigit() and 1024 <= int(values["DEPLOY_PORT"]) <= 65535]
+          if values["OPERATION"] == "deploy":
+              checks += [bool(re.fullmatch(r"[1-9][0-9]*", values[name])) for name in ["CANDIDATE_RUN", "CANDIDATE_ATTEMPT"]]
+          else:
+              checks += [values["CONFIRM_ROLLBACK"] == "true"]
+          if not all(checks):
+              raise SystemExit("Invalid deployment selectors or missing explicit rollback compatibility decision")
+          PY
+      - name: Download and verify the selected candidate and registry digest
+        if: inputs.operation == 'deploy'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          OXSUM_REGISTRY_USERNAME: ${{ github.actor }}
+          OXSUM_REGISTRY_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          ssh -i ~/.ssh/deploy_key -o BatchMode=yes \
-            -o ServerAliveInterval=15 -o ServerAliveCountMax=10 \
-            "${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }}" << EOF
-          set -e
-          docker pull ghcr.io/allurecurtain/oxsum:${{ inputs.image_tag }}
-          docker stop oxsum 2>/dev/null || true
-          docker rm oxsum 2>/dev/null || true
-          # --network host: PostgreSQL only listens on the host's loopback, so the
-          # container must share it. OXSUM_ADDR in the env file binds 127.0.0.1:<port>.
-          docker run -d --name oxsum --restart unless-stopped --network host \
-            --env-file /opt/oxsum/oxsum.env \
-            ghcr.io/allurecurtain/oxsum:${{ inputs.image_tag }}
-          docker ps --filter name=oxsum --format '{{.Names}}: {{.Status}}'
-          EOF
-      # The binary migrates at startup and refuses to boot without the database,
-      # so /healthz answering means the deploy is genuinely up.
-      - name: Wait for a healthy server
+          gh run download "$CANDIDATE_RUN" --repo "$GITHUB_REPOSITORY" \
+            --name candidate-bundle --dir candidate-bundle
+          python3 scripts/deployment_plan.py candidate-bundle --sha "$SOURCE_SHA" \
+            --run "$CANDIDATE_RUN" --attempt "$CANDIDATE_ATTEMPT" \
+            --image-ref "$IMAGE_REF" --output deployment-plan.json
+      - name: Pin the host key and stage the trusted deployment tools
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_KNOWN_HOSTS: ${{ secrets.DEPLOY_KNOWN_HOSTS }}
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
         run: |
-          for attempt in $(seq 1 30); do
-            if ssh -i ~/.ssh/deploy_key -o BatchMode=yes \
-              -o ServerAliveInterval=15 -o ServerAliveCountMax=10 \
-              "${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }}" \
-              "curl --fail --silent http://127.0.0.1:${{ inputs.port }}/healthz" >/dev/null 2>&1; then
-              echo "oxsum answered /healthz after ${attempt} attempt(s)"
-              exit 0
-            fi
-            sleep 5
-          done
-          echo "oxsum never answered /healthz"
-          ssh -i ~/.ssh/deploy_key -o BatchMode=yes \
-            -o ServerAliveInterval=15 -o ServerAliveCountMax=10 \
-            "${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }}" \
-            "docker logs oxsum 2>&1 | tail -30" || true
-          exit 1
+          python3 - <<'PY'
+          import os, pathlib, re
+          for name, pattern in {"DEPLOY_HOST": r"[A-Za-z0-9][A-Za-z0-9.-]*", "DEPLOY_USER": r"[a-z_][a-z0-9_-]*"}.items():
+              if not re.fullmatch(pattern, os.environ[name]):
+                  raise SystemExit("Invalid " + name)
+          if not os.environ["DEPLOY_KNOWN_HOSTS"].strip():
+              raise SystemExit("Pinned DEPLOY_KNOWN_HOSTS is required")
+          path = pathlib.Path.home() / ".ssh"
+          path.mkdir(mode=0o700, exist_ok=True)
+          (path / "deploy_key").write_text(os.environ["DEPLOY_SSH_KEY"] + "\n")
+          (path / "deploy_key").chmod(0o600)
+          (path / "known_hosts").write_text(os.environ["DEPLOY_KNOWN_HOSTS"] + "\n")
+          PY
+          remote_dir="/tmp/oxsum-deploy-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          ssh -i "$HOME/.ssh/deploy_key" -o BatchMode=yes -o StrictHostKeyChecking=yes \
+            "$DEPLOY_USER@$DEPLOY_HOST" "umask 077; mkdir '$remote_dir'"
+          scp -i "$HOME/.ssh/deploy_key" -o BatchMode=yes -o StrictHostKeyChecking=yes \
+            scripts/deploy-candidate.py scripts/deployment_plan.py scripts/promote-candidate.py \
+            scripts/candidate_bundle.py scripts/check-candidate-ci.py "$DEPLOY_USER@$DEPLOY_HOST:$remote_dir/"
+          if [ "$OPERATION" = deploy ]; then
+            scp -i "$HOME/.ssh/deploy_key" -o BatchMode=yes -o StrictHostKeyChecking=yes \
+              deployment-plan.json "$DEPLOY_USER@$DEPLOY_HOST:$remote_dir/"
+          fi
+      - name: Apply the selected immutable image and verify readiness/version
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+        run: |
+          remote_dir="/tmp/oxsum-deploy-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          if [ "$OPERATION" = deploy ]; then
+            selection="--plan $remote_dir/deployment-plan.json"
+          else
+            selection="--image-ref $IMAGE_REF --source-sha $SOURCE_SHA --confirm-compatible-rollback"
+          fi
+          # Every interpolated selector passed the strict validation step; paths
+          # below are fixed or composed only from GitHub's numeric run identifiers.
+          ssh -i "$HOME/.ssh/deploy_key" -o BatchMode=yes -o StrictHostKeyChecking=yes \
+            -o ServerAliveInterval=15 -o ServerAliveCountMax=10 "$DEPLOY_USER@$DEPLOY_HOST" \
+            "python3 '$remote_dir/deploy-candidate.py' '$OPERATION' $selection --port '$DEPLOY_PORT' \
+              --env-file /opt/oxsum/oxsum.env --state-directory /opt/oxsum/deployment-state \
+              --receipt '$remote_dir/deployment-receipt.json'"
+          scp -i "$HOME/.ssh/deploy_key" -o BatchMode=yes -o StrictHostKeyChecking=yes \
+            "$DEPLOY_USER@$DEPLOY_HOST:$remote_dir/deployment-receipt.json" deployment-receipt.json
+      - name: Retain the deployment receipt
+        uses: actions/upload-artifact@v6
+        with:
+          name: deployment-receipt
+          path: deployment-receipt.json
+          if-no-files-found: error
+          retention-days: 90

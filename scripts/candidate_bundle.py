@@ -145,6 +145,20 @@ def validate_ci_record(ci, sha, repository):
             "executed full-CI steps incomplete")
 
 
+def runtime_identity(path, sha):
+    """Validate the actual version response retained by candidate image smoke."""
+    value = json.loads(path.read_text())
+    require(set(value) == {"data"} and isinstance(value["data"], dict), "invalid runtime version response")
+    value = value["data"]
+    require(set(value) == {"gitSha", "version", "schemaVersion"} and value["gitSha"] == sha,
+            "runtime source revision differs from candidate")
+    require(isinstance(value["version"], str) and re.fullmatch(r"\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?", value["version"]),
+            "invalid runtime package version")
+    require(isinstance(value["schemaVersion"], str) and re.fullmatch(r"[0-9]{4}_[a-z0-9_]+", value["schemaVersion"]),
+            "invalid runtime schema version")
+    return value
+
+
 def write_sums(root):
     paths = sorted(p for p in root.rglob("*") if p.is_file() and p != root / "SHA256SUMS")
     (root / "SHA256SUMS").write_text("".join(f"{digest(p)}  {p.relative_to(root).as_posix()}\n" for p in paths))
@@ -188,6 +202,8 @@ def validate(root, expected_sha):
     validate_ci_record(ci, expected_sha, repository)
     for kind in ["smokeLog", "consumerLog"]:
         require(local_file(root, evidence[kind]).stat().st_size > 0, "missing executed evidence: " + kind)
+    if "runtimeVersion" in evidence:
+        runtime_identity(local_file(root, evidence["runtimeVersion"]), expected_sha)
     return manifest
 
 
@@ -266,6 +282,9 @@ def create(args):
         "image": {"archive": args.image, **image}, "sdk": {"tarball": args.sdk, **sdk},
         "evidence": {"fullCi": args.full_ci, "smokeLog": args.smoke_log, "consumerLog": args.consumer_log},
         "artifacts": file_map(root)}
+    if getattr(args, "runtime_version", None):
+        runtime_identity(local_file(root, args.runtime_version), args.sha)
+        manifest["evidence"]["runtimeVersion"] = args.runtime_version
     (root / "candidate-manifest.json").write_text(json.dumps(manifest, indent=2) + "\n")
     write_sums(root)
     validate(root, args.sha)
@@ -278,6 +297,7 @@ def main():
     for name in ["sha", "repository", "workflow-sha", "run", "image", "sdk", "full-ci", "smoke-log", "consumer-log"]:
         make.add_argument("--" + name, required=True)
     make.add_argument("--attempt", type=int, required=True)
+    make.add_argument("--runtime-version", help="observed version JSON required for digest deployment")
     make.add_argument("directory", type=Path)
     check = sub.add_parser("validate")
     check.add_argument("directory", type=Path)
