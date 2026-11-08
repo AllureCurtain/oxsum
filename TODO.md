@@ -36,6 +36,7 @@ Updated: 2026-11-08
 
 - [ ] [#748](https://github.com/AllureCurtain/oxsum/issues/748) — N03.a: Initial owner browser consent and setup recovery implemented; local/browser checks passed, review pending.
 - [ ] [#779](https://github.com/AllureCurtain/oxsum/issues/779) — Plan refund and settled-usage conservation across journals: six audit hypotheses driven through real-ledger fixtures. The statement/`paid_minor` desync and the journal-void → statement sync are fixed; a lost-dispute chargeback is confirmed correct as designed; wallet-settled overage re-billing, the unconsumed mid-period refund note and over-receivable cash-vs-receivable refunds are confirmed defects deferred to N11's deferred/earned allocation, each with an `#[ignore]`'d reproduction.
+- [ ] [#733](https://github.com/AllureCurtain/oxsum/issues/733) — Complete customer invitation history, explicit local-mail delivery and owner registration controls; in progress.
 
 - [ ] [#754](https://github.com/AllureCurtain/oxsum/issues/754) — Owner provider connection and credential editor (N04.a): implemented with generated contracts, build/strict Clippy, 11 backend checks and isolated-listener replay/rotation checks; browser acceptance pending.
 - [ ] [#728](https://github.com/AllureCurtain/oxsum/issues/728) — N02: Isolated current-authority demo and shared bootstrap implemented; exact settlement/offline rejection/isolation checks passed, review pending.
