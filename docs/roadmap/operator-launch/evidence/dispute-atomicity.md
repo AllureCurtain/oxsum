@@ -1,6 +1,7 @@
 # Dispute resolution atomicity (#826)
 
-Base: `68b3441` (after historical correction PR #821). This unit repairs the
+Original base: `68b3441` (after historical correction PR #821). Rebased onto
+`6c03cf1` (statement financial review PR #836); runtime patch remained identical. This unit repairs the
 three-commit dispute outcome boundary, not the separate non-plan cash policy
 tracked by #829 or the statement repayment feature #777.
 
@@ -33,8 +34,14 @@ Validation:
   four OpenAPI contract tests and TypeScript/Vite build: passed.
 - Initial new fixture loops reused business-scoped request keys; per-dispute keys
   corrected those test collisions before the complete 48- and final 49-test passes.
-- Independent root source review found no introduced blocker; final rebase
-  integration checks and protected PR integration remain pending.
+- After the rebase, the six combined core suites (the four above plus
+  `statement_review_finance` and `plan_statement_locks`) passed **67/67, 0 skipped**,
+  run `f344adbe-1df8-4c86-aac2-0aee75ff9183`, 19.766 seconds. The nine HTTP cases
+  passed again, run `a7e663d0-8e3a-4395-99a3-d89310dfed10`, 12.307 seconds; strict
+  workspace Clippy passed again. Both independently added historical correction
+  tests and #820's all-debt admission fixtures remain present and green.
+- Independent root source and final documentation review passed. PR #837 is
+  awaiting its exact-head required checks and normal protected merge.
 
 No external PSP, browser, production correction or mixed-version write safety
 was validated. Deployments must stop/drain old writers. Source-review conflicts
