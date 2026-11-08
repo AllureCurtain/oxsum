@@ -4,7 +4,7 @@ Updated: 2026-11-08
 
 ## In progress
 
-- [ ] [#803](https://github.com/AllureCurtain/oxsum/issues/803) — Stop new period closes rebilling settled wallet/credit usage; historical compensation is #809.
+- [ ] [#803](https://github.com/AllureCurtain/oxsum/issues/803) — Forward once-only wallet/credit usage fix validated: 69 focused and 1,899 workspace passes, all H1–H6 active; PR integration pending. Historical compensation is #809.
 - [ ] [#809](https://github.com/AllureCurtain/oxsum/issues/809) — Compensate retained historical duplicated usage with source-linked, audited corrections.
 
 ### Operator launch (#725)
@@ -25,7 +25,7 @@ Updated: 2026-11-08
 - [ ] [#736](https://github.com/AllureCurtain/oxsum/issues/736) — N10: Payment/refund authority and recovery repairs integrated; explicit statement repayment, remaining conservation fixes and complete commercial journeys remain.
 - [ ] [#737](https://github.com/AllureCurtain/oxsum/issues/737) — N11: Versioned daily revenue policy adopted (#783); implementation and deferred/earned conservation remain.
 - [ ] [#738](https://github.com/AllureCurtain/oxsum/issues/738) — N12: Complete evidence delivery, retained trust inputs and candidate offline-verifier acceptance using the existing verifier foundations.
-- [ ] [#739](https://github.com/AllureCurtain/oxsum/issues/739) — N13: Candidate byte/provenance gate integrated (#753); original-byte image promotion integrated (#806); digest deployment, SDK publication and rollback rehearsal remain.
+- [ ] [#739](https://github.com/AllureCurtain/oxsum/issues/739) — N13: Candidate byte/provenance gate integrated (#753); original-byte image promotion integrated (#806); digest deployment tooling integrated (#813); SDK publication #814 and actual candidate deployment/rollback rehearsal remain.
 - [ ] [#740](https://github.com/AllureCurtain/oxsum/issues/740) — N14: Real-provider certification remains; DeepSeek shared budget records 0/5 attempts and CNY 0.
 - [ ] [#741](https://github.com/AllureCurtain/oxsum/issues/741) — N15: Genuine PSP sandbox certification remains external pending; local payment/callback fixtures do not close that gate.
 - [ ] [#742](https://github.com/AllureCurtain/oxsum/issues/742) — N16: Job-clock fixture correction integrated (#773); reference capacity, fairness and eight-hour soak remain.
@@ -49,12 +49,12 @@ Updated: 2026-11-08
 - [x] [#774](https://github.com/AllureCurtain/oxsum/issues/774) — Immutable published bundle grants integrated (#778); merged replay regression is tracked by #793.
 - [x] [#776](https://github.com/AllureCurtain/oxsum/issues/776) — Paid plan activation bound to customer/period quotes integrated (#780); full combined/browser acceptance remains.
 - [ ] [#777](https://github.com/AllureCurtain/oxsum/issues/777) — Implement explicit scoped partial/full plan-statement repayment and recovery; renewal is not debt repayment.
-- [ ] [#779](https://github.com/AllureCurtain/oxsum/issues/779) — Statement prepayment and journal-void synchronization changes integrated (#784); the combined prepayment regression is tracked by #795. Settled-usage re-billing remains an ignored H1 reproduction; #802 implements H2/H3 cash and source recovery with active tests, pending integration.
+- [ ] [#779](https://github.com/AllureCurtain/oxsum/issues/779) — Prepayment/void and H2/H3 refund cash repairs integrated (#784/#798/#812). H1 forward fix #803 passed with all financial hypotheses active; historical compensation #809 and lifecycle locking #811 remain. Daily recognition is N11.
 - [x] [#785](https://github.com/AllureCurtain/oxsum/issues/785) — N21.a scoped service-managed customer provisioning integrated (#786); no blanket customer grant.
 - [x] [#788](https://github.com/AllureCurtain/oxsum/issues/788) — N21.b scoped customer balance and bill reads integrated (#791); four core and two HTTP development checks passed.
 - [x] [#793](https://github.com/AllureCurtain/oxsum/issues/793) — Published-bundle replay and historical payment preservation repaired in PR #797 (`04e4bec`); combined regression checks passed for those paths.
 - [x] [#794](https://github.com/AllureCurtain/oxsum/issues/794) — Reconcile integrated progress and remaining acceptance; integrated in PR #796.
-- [x] [#795](https://github.com/AllureCurtain/oxsum/issues/795) — Closing plan prepayments reach statements once with payment-source evidence; integrated in PR #798 (`c97e5f7`). H1/H2/H3 remain separate defects.
+- [x] [#795](https://github.com/AllureCurtain/oxsum/issues/795) — Closing plan prepayments reach statements once with payment-source evidence; integrated in PR #798 (`c97e5f7`). H2/H3 later repaired in #812; H1 forward fix tracked by #803.
 - [x] [#799](https://github.com/AllureCurtain/oxsum/issues/799) — Checkout authority descriptions and generated type drift reconciled in PR #804 (`465061d`).
 - [x] [#800](https://github.com/AllureCurtain/oxsum/issues/800) — Align 19 OpenAPI operations with existing credential authority; four contract checks and frontend build passed; integrated in PR #808 (`a22e50b`).
 - [x] [#802](https://github.com/AllureCurtain/oxsum/issues/802) — Conserve confirmed plan-refund cash, synchronize documents and recover legacy allocations; 18 refund scenarios and 1,897 complete workspace tests passed; strict Clippy and independent review passed; integrated in PR #812 (`de3bbca`).
@@ -62,7 +62,7 @@ Updated: 2026-11-08
 
 - [x] [#801](https://github.com/AllureCurtain/oxsum/issues/801) — N13.b: Original candidate config/layer promotion and immutable registry receipts implemented; 39 Python checks and isolated registry upload/pull/idempotency/conflict/gzip checks passed. Integrated in PR #806 (`0b06184`); no public publication or deployment.
 
-- [ ] [#810](https://github.com/AllureCurtain/oxsum/issues/810) — N13.c: Explicit digest deployment, shared Compose image, observed runtime/schema evidence and compatible retained rollback implemented; 16 focused checks and loopback HTTP/mocked Docker state rehearsal passed. Review/integration pending; actual candidate runtime rehearsal remains.
+- [x] [#810](https://github.com/AllureCurtain/oxsum/issues/810) — N13.c: Explicit digest deployment, shared Compose image, observed runtime/schema evidence and compatible retained rollback implemented; 55 candidate Python checks and loopback HTTP/mocked Docker state rehearsal passed. Integrated in PR #813 (`941434a`); actual candidate runtime rehearsal remains.
 
 - [x] [#723](https://github.com/AllureCurtain/oxsum/issues/723) — Serialized promo writers on the ledger append advisory lock before their promo row locks, fixing the post-merge hold/expiry deadlock; integrated in PR #724.
 
