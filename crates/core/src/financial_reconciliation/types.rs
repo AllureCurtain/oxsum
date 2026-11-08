@@ -3,16 +3,22 @@
 use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
-use time::OffsetDateTime;
+use time::{Date, OffsetDateTime};
 use uuid::Uuid;
 
 use crate::{TimeBasis, WalletError, error};
 
 pub(super) const SOURCE_LIMIT: usize = 10_000;
 pub(super) const ENTRY_LIMIT: usize = 20_000;
+pub(super) const ORGANIZATION_LIMIT: usize = 1_000;
 pub(super) const BYTE_LIMIT: usize = 16 * 1024 * 1024;
 pub(super) const FIELDS: [&str; 6] = [
-    "billedMinor", "earnedMinor", "deferredMinor", "collectedMinor", "receivableMinor", "refundMinor",
+    "billedMinor",
+    "earnedMinor",
+    "deferredMinor",
+    "collectedMinor",
+    "receivableMinor",
+    "refundMinor",
 ];
 
 /// What a run actually compared; a matched result attests only this scope.
@@ -33,7 +39,7 @@ pub struct ReconciliationCoverage {
     pub sources: usize,
     /// Source units with valid complete ledger and ownership evidence.
     pub verified_sources: usize,
-    /// Official financial entries examined.
+    /// All captured tenant entries examined, including nonfinancial selectors.
     pub entries: usize,
     /// Entries whose full bytes and recorded content hash agree.
     pub verified_entries: usize,
@@ -46,12 +52,37 @@ pub struct ReconciliationCoverage {
 impl ReconciliationCoverage {
     pub(super) fn new(basis: TimeBasis) -> Self {
         Self {
-            version: 1, complete: true,
+            version: 1,
+            complete: true,
             compared_fields: FIELDS.iter().map(|v| (*v).into()).collect(),
-            not_compared: ["usageMinor", "ratedMinor", "entitlementMinor", "fundingMinor", "discountMinor", "legacyDeferredBalance", "actualServiceDelivery", "providerCosts"].map(str::to_owned).to_vec(),
-            organizations: 0, sources: 0, verified_sources: 0, entries: 0, verified_entries: 0,
-            basis: format!("V1: captured net journal positions selected by original posted date. V2: signed effect movements under {basis:?}; booking comes from official entries, service/payment attribution from original immutable sources. Refunds follow their retained cash-source cohort. Payable and suspense are separate source movements in evidence, excluded from income and receivables. This is not complete business accounting."),
-            limits: [("sources".into(), SOURCE_LIMIT),("entries".into(),ENTRY_LIMIT),("evidenceBytes".into(),BYTE_LIMIT),("periodDays".into(),366)].into(),
+            not_compared: [
+                "usageMinor",
+                "ratedMinor",
+                "entitlementMinor",
+                "fundingMinor",
+                "discountMinor",
+                "legacyDeferredBalance",
+                "actualServiceDelivery",
+                "providerCosts",
+            ]
+            .map(str::to_owned)
+            .to_vec(),
+            organizations: 0,
+            sources: 0,
+            verified_sources: 0,
+            entries: 0,
+            verified_entries: 0,
+            basis: format!(
+                "V1: captured net journal positions selected by original posted date. V2: signed effect movements under {basis:?}; booking comes from official entries, service/payment attribution from original immutable sources. Refunds follow their retained cash-source cohort. Payable and suspense are separate source movements in evidence, excluded from income and receivables. This is not complete business accounting."
+            ),
+            limits: [
+                ("sources".into(), SOURCE_LIMIT),
+                ("organizations".into(), ORGANIZATION_LIMIT),
+                ("entries".into(), ENTRY_LIMIT),
+                ("evidenceBytes".into(), BYTE_LIMIT),
+                ("periodDays".into(), 366),
+            ]
+            .into(),
         }
     }
 }
@@ -101,13 +132,28 @@ impl Amounts {
         self.refund_minor = add(self.refund_minor, other.refund_minor)?;
         Ok(())
     }
-    pub fn fields(&self) -> [i64; 6] { [self.billed_minor,self.earned_minor,self.deferred_minor,self.collected_minor,self.receivable_minor,self.refund_minor] }
+    pub fn fields(&self) -> [i64; 6] {
+        [
+            self.billed_minor,
+            self.earned_minor,
+            self.deferred_minor,
+            self.collected_minor,
+            self.receivable_minor,
+            self.refund_minor,
+        ]
+    }
 }
-pub(super) fn add(a: i64, b: i64) -> Result<i64,WalletError> { a.checked_add(b).ok_or_else(|| error::invalid("reconciliation amount overflows")) }
-pub(super) fn sub(a: i64, b: i64) -> Result<i64,WalletError> { a.checked_sub(b).ok_or_else(|| error::invalid("reconciliation amount overflows")) }
+pub(super) fn add(a: i64, b: i64) -> Result<i64, WalletError> {
+    a.checked_add(b)
+        .ok_or_else(|| error::invalid("reconciliation amount overflows"))
+}
+pub(super) fn sub(a: i64, b: i64) -> Result<i64, WalletError> {
+    a.checked_sub(b)
+        .ok_or_else(|| error::invalid("reconciliation amount overflows"))
+}
 
 #[derive(Serialize)]
-#[serde(rename_all="camelCase")]
+#[serde(rename_all = "camelCase")]
 pub(super) struct Difference {
     pub organization_id: Uuid,
     pub kind: String,
@@ -120,6 +166,8 @@ pub(super) struct Difference {
 }
 
 pub(super) struct Comparison {
+    pub captured_rows: usize,
+    pub captured_bytes: usize,
     pub expected: Amounts,
     pub actual: Amounts,
     pub coverage: ReconciliationCoverage,
@@ -127,17 +175,86 @@ pub(super) struct Comparison {
     pub evidence: Vec<serde_json::Value>,
 }
 impl Comparison {
-    pub fn new(basis: TimeBasis) -> Self { Self { expected: Amounts::default(),actual:Amounts::default(),coverage:ReconciliationCoverage::new(basis),differences:Vec::new(),evidence:Vec::new() } }
-    pub fn difference(&mut self, org:Uuid, table:&str, source:&str, fact:&str, expected:Option<i64>, actual:Option<i64>, detail:&str) {
-        self.differences.push(Difference { organization_id:org,kind: if expected.is_some() && actual.is_some() { "amount_drift" } else { "unmatched_journal" }.into(),source_table:table.into(),source_ref:source.into(),fact:fact.into(),expected,actual,detail:detail.into() });
-    }
-    pub fn compare(&mut self, org:Uuid, table:&str, source:&str, expected:&Amounts, actual:&Amounts) {
-        for ((field,expected),actual) in FIELDS.into_iter().zip(expected.fields()).zip(actual.fields()) {
-            if expected != actual { self.difference(org,table,source,field,Some(expected),Some(actual),"Captured financial source differs from independently verified official postings"); }
+    pub fn new(basis: TimeBasis) -> Self {
+        Self {
+            captured_rows: 0,
+            captured_bytes: 0,
+            expected: Amounts::default(),
+            actual: Amounts::default(),
+            coverage: ReconciliationCoverage::new(basis),
+            differences: Vec::new(),
+            evidence: Vec::new(),
         }
     }
-    pub fn unsupported(&mut self,org:Uuid,table:&str,source:&str,fact:&str,detail:&str) {
-        self.coverage.complete=false;
-        self.difference(org,table,source,fact,None,None,detail);
+    #[allow(clippy::too_many_arguments)]
+    pub fn difference(
+        &mut self,
+        org: Uuid,
+        table: &str,
+        source: &str,
+        fact: &str,
+        expected: Option<i64>,
+        actual: Option<i64>,
+        detail: &str,
+    ) {
+        if self.differences.iter().any(|d| {
+            d.organization_id == org
+                && d.source_table == table
+                && d.source_ref == source
+                && d.fact == fact
+                && d.expected == expected
+                && d.actual == actual
+        }) {
+            return;
+        }
+        self.differences.push(Difference {
+            organization_id: org,
+            kind: if expected.is_some() && actual.is_some() {
+                "amount_drift"
+            } else {
+                "unmatched_journal"
+            }
+            .into(),
+            source_table: table.into(),
+            source_ref: source.into(),
+            fact: fact.into(),
+            expected,
+            actual,
+            detail: detail.into(),
+        });
+    }
+    pub fn compare(
+        &mut self,
+        org: Uuid,
+        table: &str,
+        source: &str,
+        expected: &Amounts,
+        actual: &Amounts,
+    ) {
+        for ((field, expected), actual) in FIELDS
+            .into_iter()
+            .zip(expected.fields())
+            .zip(actual.fields())
+        {
+            if expected != actual {
+                self.difference(org,table,source,field,Some(expected),Some(actual),"Captured financial source differs from independently verified official postings");
+            }
+        }
+    }
+    pub fn unsupported(&mut self, org: Uuid, table: &str, source: &str, fact: &str, detail: &str) {
+        self.coverage.complete = false;
+        self.difference(org, table, source, fact, None, None, detail);
+    }
+}
+
+#[derive(Clone, Copy)]
+pub(super) struct Scope {
+    pub start: Date,
+    pub end: Date,
+    pub basis: TimeBasis,
+}
+impl Scope {
+    pub fn contains(self, day: Option<Date>) -> bool {
+        day.is_some_and(|day| self.start <= day && day <= self.end)
     }
 }
