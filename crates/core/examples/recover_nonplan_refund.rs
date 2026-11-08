@@ -13,8 +13,14 @@ async fn main() {
     }
 }
 
-async fn run() -> Result<(), Box<dyn std::error::Error>> {
-    let mut args = std::env::args().skip(1);
+struct Arguments {
+    request: NonplanRefundRecoveryRequest,
+    session_file: PathBuf,
+    apply: bool,
+}
+
+fn arguments(raw: Vec<String>) -> Result<Arguments, Box<dyn std::error::Error>> {
+    let mut args = raw.into_iter();
     let mut refund = None;
     let mut receipt = None;
     let mut session_file = None;
@@ -37,14 +43,26 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
     if apply && expected.is_none() {
         return Err("--apply requires --expected-revision from an inspected preview".into());
     }
-    let request = NonplanRefundRecoveryRequest {
-        refund_id: refund.ok_or("--refund is required")?,
-        event_receipt_id: receipt.ok_or("--receipt is required")?,
-        idempotency_key: key.ok_or("--key is required")?,
-        reason: reason.ok_or("--reason is required")?,
-        expected_revision: expected,
-    };
-    let session = std::fs::read_to_string(session_file.ok_or("--session-file is required")?)?;
+    Ok(Arguments {
+        request: NonplanRefundRecoveryRequest {
+            refund_id: refund.ok_or("--refund is required")?,
+            event_receipt_id: receipt.ok_or("--receipt is required")?,
+            idempotency_key: key.ok_or("--key is required")?,
+            reason: reason.ok_or("--reason is required")?,
+            expected_revision: expected,
+        },
+        session_file: session_file.ok_or("--session-file is required")?,
+        apply,
+    })
+}
+
+async fn run() -> Result<(), Box<dyn std::error::Error>> {
+    let Arguments {
+        request,
+        session_file,
+        apply,
+    } = arguments(std::env::args().skip(1).collect())?;
+    let session = std::fs::read_to_string(session_file)?;
     // No dotenv discovery, migrations, scans or lazy wallet creation.
     let db = Db::connect(
         &std::env::var("DATABASE_URL")
@@ -70,4 +88,58 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
         std::process::exit(2);
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn exact() -> Vec<String> {
+        [
+            "--refund",
+            "00000000-0000-0000-0000-000000000001",
+            "--receipt",
+            "00000000-0000-0000-0000-000000000002",
+            "--session-file",
+            "/private/business-session",
+            "--reason",
+            "inspected original evidence",
+            "--key",
+            "recovery-key",
+        ]
+        .into_iter()
+        .map(str::to_owned)
+        .collect()
+    }
+
+    #[test]
+    fn exact_target_defaults_to_preview_and_never_accepts_unpinned_apply() {
+        let preview = arguments(exact()).expect("exact preview arguments");
+        assert!(!preview.apply);
+        assert!(preview.request.expected_revision.is_none());
+        let mut apply = exact();
+        apply.push("--apply".into());
+        assert!(arguments(apply.clone()).is_err());
+        apply.extend(["--expected-revision".into(), "a".repeat(64)]);
+        let apply = arguments(apply).expect("pinned apply arguments");
+        assert!(apply.apply);
+        assert_eq!(
+            apply.request.expected_revision.as_deref(),
+            Some("a".repeat(64).as_str())
+        );
+        assert_eq!(apply.request.reason, "inspected original evidence");
+    }
+
+    #[test]
+    fn missing_receipt_missing_value_and_unknown_options_refuse() {
+        let mut missing_receipt = exact();
+        missing_receipt.drain(2..4);
+        assert!(arguments(missing_receipt).is_err());
+        let mut missing_value = exact();
+        missing_value.push("--expected-revision".into());
+        assert!(arguments(missing_value).is_err());
+        let mut unknown = exact();
+        unknown.push("--all".into());
+        assert!(arguments(unknown).is_err());
+    }
 }

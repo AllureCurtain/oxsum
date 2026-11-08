@@ -156,13 +156,15 @@ pub(super) async fn event_in(
             return Err(review("provider refund identity differs"));
         }
     } else {
+        let retained: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM oxsum.nonplan_refund_effects WHERE refund_id=$1 AND event_receipt_id=$2)")
+            .bind(source.refund_id).bind(receipt).fetch_one(&mut **tx).await?;
         let count: i64 = sqlx::query_scalar(
             "SELECT count(*) FROM oxsum.refunds WHERE order_id=$1 AND state='provider_pending'",
         )
         .bind(source.order_id)
         .fetch_one(&mut **tx)
         .await?;
-        if !allow_legacy || source.state != "provider_pending" || count != 1 {
+        if !allow_legacy || (!retained && (source.state != "provider_pending" || count != 1)) {
             return Err(review(
                 "historical payment-only receipt is not an exact refund identity",
             ));
@@ -212,7 +214,12 @@ pub(crate) async fn return_entry_in(
     }
     let row = &rows[0];
     let hash: String = row.try_get("hash")?;
-    if wallet.verified_source_hash(id).await?.as_deref() != Some(hash.as_str()) {
+    if wallet
+        .verified_source_hash_in(&mut **tx, id)
+        .await?
+        .as_deref()
+        != Some(hash.as_str())
+    {
         return Err(review("retained Cash content hash differs"));
     }
     let reversed: bool = sqlx::query_scalar(&format!(
@@ -233,7 +240,7 @@ pub(crate) async fn return_entry_in(
         suspense: 0,
         cash: 0,
     };
-    let postings = sqlx::query(&format!("SELECT a.path,p.direction,p.amount_minor,p.currency,p.layer FROM ledger_{tenant}.postings p JOIN ledger_{tenant}.accounts a USING(account_index) WHERE p.entry_id=$1"))
+    let postings = sqlx::query(&format!("SELECT a.path,p.account_index,p.direction,p.amount_minor,p.currency,p.layer FROM ledger_{tenant}.postings p JOIN ledger_{tenant}.accounts a USING(account_index) WHERE p.entry_id=$1"))
         .bind(id).fetch_all(&mut **tx).await?;
     for posting in postings {
         let amount: i64 = posting.try_get("amount_minor")?;
@@ -245,6 +252,14 @@ pub(crate) async fn return_entry_in(
         }
         let path: String = posting.try_get("path")?;
         let direction: String = posting.try_get("direction")?;
+        if wallet
+            .source_account(&path)
+            .map(|account| account.index())
+            .ok()
+            != u32::try_from(posting.try_get::<i32, _>("account_index")?).ok()
+        {
+            return Err(review("retained Cash account identity differs"));
+        }
         let target = match (path.as_str(), direction.as_str()) {
             ("Assets:Cash", "C") => &mut result.cash,
             ("Liabilities:Wallet", "D") => &mut result.wallet,

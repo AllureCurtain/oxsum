@@ -53,6 +53,16 @@ pub(crate) async fn effect_in(
     {
         return Err(evidence::review("retained allocation metadata differs"));
     }
+    let source = evidence::source_in(tx, wallet, refund).await?;
+    let event = evidence::event_in(tx, &source, effect.event_receipt_id, true).await?;
+    if retained_source["event"] != event
+        || source.order_id != effect.order_id
+        || source.organization_id != effect.organization_id
+        || source.amount != effect.cash_minor
+        || source.note_id != row.try_get::<Option<Uuid>, _>("credit_note_id")?
+    {
+        return Err(evidence::review("retained refund source identity differs"));
+    }
     let old = evidence::return_entry_in(tx, wallet, refund, effect.cash_minor)
         .await?
         .ok_or_else(|| evidence::review("retained effect has no Cash entry"))?;
@@ -82,7 +92,7 @@ async fn verify_restitution_in(
     let key = format!("nonplan-refund-restitution/{}", effect.refund_id);
     let id = *crate::entry_id_for(&key).as_uuid();
     if effect.correction_entry_id != Some(id)
-        || wallet.verified_source_hash(id).await? != effect.correction_entry_hash
+        || wallet.verified_source_hash_in(&mut **tx, id).await? != effect.correction_entry_hash
     {
         return Err(evidence::review("restitution identity or hash differs"));
     }
@@ -92,7 +102,7 @@ async fn verify_restitution_in(
     if !valid {
         return Err(evidence::review("restitution is missing or reversed"));
     }
-    let rows=sqlx::query(&format!("SELECT a.path,p.direction,p.amount_minor,p.currency,p.layer FROM ledger_{tenant}.postings p JOIN ledger_{tenant}.accounts a USING(account_index) WHERE p.entry_id=$1"))
+    let rows=sqlx::query(&format!("SELECT a.path,p.account_index,p.direction,p.amount_minor,p.currency,p.layer FROM ledger_{tenant}.postings p JOIN ledger_{tenant}.accounts a USING(account_index) WHERE p.entry_id=$1"))
         .bind(id).fetch_all(&mut **tx).await?;
     if rows.len() != 2 {
         return Err(evidence::review("restitution posting shape differs"));
@@ -106,8 +116,17 @@ async fn verify_restitution_in(
         {
             return Err(evidence::review("restitution posting terms differ"));
         }
+        let path: String = row.try_get("path")?;
+        if wallet
+            .source_account(&path)
+            .map(|account| account.index())
+            .ok()
+            != u32::try_from(row.try_get::<i32, _>("account_index")?).ok()
+        {
+            return Err(evidence::review("restitution account identity differs"));
+        }
         match (
-            row.try_get::<String, _>("path")?.as_str(),
+            path.as_str(),
             row.try_get::<String, _>("direction")?.as_str(),
         ) {
             ("Equity:Adjustments", "D") => debit = true,

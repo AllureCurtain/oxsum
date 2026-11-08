@@ -628,7 +628,10 @@ actual Cash, source promotion cancellation, note projection, effect and applicab
 human finance audit commit together. External unapproved cash uses null-note
 source evidence and review suspense, never a fabricated staff actor.
 
-Original funding is verified through the ledger engine's content-hash read.
+Original funding and intervening activity use the engine's canonical content-hash
+verification on the borrowed transaction connection (#856). The bounded source
+inspection verifies at most 20,000 sequenced entries; a larger history retains
+fresh Cash in review suspense and refuses historical Wallet restitution.
 The conservative bound excludes later credits, subtracts settled debits and
 outstanding pending reservations, and counts previous actual returns once. New
 atomic refund rows can prove no effect; old rows retain an uncertain-source fence.

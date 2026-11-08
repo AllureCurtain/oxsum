@@ -889,6 +889,24 @@ impl Db {
         if receipt.state != "accepted" {
             return Ok(());
         }
+        // Only the retained receipt selects kind, merchant and order. Public
+        // receipt fields are a routing convenience, never source authority.
+        let standing = self.retry_merchant_event(receipt.id).await?;
+        if !matches!(standing.state.as_str(), "accepted" | "applied") {
+            return Err(WalletError::Conflict(
+                "merchant event is not accepted".into(),
+            ));
+        }
+        if standing.kind != receipt.kind
+            || standing.merchant_id != receipt.merchant_id
+            || standing.version_id != receipt.version_id
+            || standing.payment_id != receipt.payment_id
+            || standing.event_id != receipt.event_id
+        {
+            return Err(WalletError::Conflict(
+                "merchant receipt coordinates changed".into(),
+            ));
+        }
         let event = self
             .merchant_event_data(receipt.id)
             .await?
@@ -1033,12 +1051,19 @@ impl Db {
                  (r.provider_refund_id IS NULL AND r.hyperswitch_body_id AND r.refund_id::text=$2)) FOR UPDATE OF r"
             )).bind(order_id).bind(provider_refund).fetch_all(&mut **tx).await?
         } else {
-            sqlx::query(&format!(
-                "{REFUND_SELECT} WHERE r.order_id=$1 AND r.state='provider_pending' FOR UPDATE OF r"
-            ))
-            .bind(order_id)
-            .fetch_all(&mut **tx)
-            .await?
+            let retained = sqlx::query(&format!(
+                "{REFUND_SELECT} WHERE r.order_id=$1 AND EXISTS(SELECT 1 FROM oxsum.nonplan_refund_effects e WHERE e.refund_id=r.refund_id AND e.event_receipt_id=$2) FOR UPDATE OF r"
+            )).bind(order_id).bind(receipt.id).fetch_all(&mut **tx).await?;
+            if retained.is_empty() {
+                sqlx::query(&format!(
+                    "{REFUND_SELECT} WHERE r.order_id=$1 AND r.state='provider_pending' FOR UPDATE OF r"
+                ))
+                .bind(order_id)
+                .fetch_all(&mut **tx)
+                .await?
+            } else {
+                retained
+            }
         };
         // A legacy payment-only event is usable only with one unambiguous
         // reservation. Amount, currency and customer must still agree.

@@ -67,12 +67,17 @@ async fn retained_effect(
         .bind(id)
         .fetch_one(&mut **tx)
         .await?;
-        if reversed || wallet.verified_source_hash(id).await?.is_none() {
+        if reversed
+            || wallet
+                .verified_source_hash_in(&mut **tx, id)
+                .await?
+                .is_none()
+        {
             return Err(review());
         }
     }
     let postings = sqlx::query(&format!(
-        "SELECT a.path,p.direction,p.amount_minor,p.currency,p.layer FROM ledger_{tenant}.postings p \
+        "SELECT a.path,p.account_index,p.direction,p.amount_minor,p.currency,p.layer FROM ledger_{tenant}.postings p \
          JOIN ledger_{tenant}.accounts a USING(account_index) WHERE p.entry_id=$1"
     ))
     .bind(id)
@@ -86,6 +91,15 @@ async fn retained_effect(
     for row in postings {
         let path: String = row.try_get("path")?;
         let direction: String = row.try_get("direction")?;
+        if !plan
+            && wallet
+                .source_account(&path)
+                .map(|account| account.index())
+                .ok()
+                != u32::try_from(row.try_get::<i32, _>("account_index")?).ok()
+        {
+            return Err(review());
+        }
         let minor: i64 = row.try_get("amount_minor")?;
         if minor <= 0
             || row.try_get::<String, _>("currency")? != "USD"

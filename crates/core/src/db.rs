@@ -450,6 +450,10 @@ const MIGRATIONS: &[(&str, &str)] = &[
         "0114_application_accounts",
         include_str!("../migrations/0114_application_accounts.sql"),
     ),
+    (
+        "0115_nonplan_refund_effects",
+        include_str!("../migrations/0115_nonplan_refund_effects.sql"),
+    ),
 ];
 
 /// Advisory-lock key serialising the migration runner across processes.
