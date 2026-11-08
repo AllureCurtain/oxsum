@@ -1136,11 +1136,14 @@ paths:
       description: |
         The token authorizes registration even with invite-only business policy.
         A team invitation joins the existing customer as member; a business invitation
-        creates its reserved customer and initial customer owner. A bound email must
-        match. Registration, membership, first key, consumption and audit are atomic.
-        No staff authority or promotional funding is granted. Unknown, spent, revoked,
-        expired and wrong-email tokens return 404. Existing accounts must log in and
-        explicitly accept instead. The spent token cannot retrieve the first key again.
+        creates its reserved customer and initial customer owner. A staff invitation
+        registers a staff-only account: it lands the invited seat and creates no
+        customer organization or API key. A bound email must match. Registration,
+        membership, first key, consumption and audit are atomic. No staff authority
+        beyond the invited role or promotional funding is granted. Unknown, spent,
+        revoked, expired and wrong-email tokens return 404. Existing accounts must
+        log in and explicitly accept instead. The spent token cannot retrieve the
+        first key again.
       security: []
       requestBody:
         required: true
@@ -1149,14 +1152,14 @@ paths:
             schema: { $ref: "#/components/schemas/RedeemInvitationRequest" }
       responses:
         "200":
-          description: The new user and organization, plus the one API key secret
+          description: A staff-only account for a staff invitation, else the new user and organization plus the one API key secret
           content:
             application/json:
               schema:
                 type: object
                 required: [data]
                 properties:
-                  data: { $ref: "#/components/schemas/Registration" }
+                  data: { $ref: "#/components/schemas/RedeemOutcome" }
         "400": { $ref: "#/components/responses/Error" }
         "404": { $ref: "#/components/responses/Error" }
         "409": { $ref: "#/components/responses/Error" }
@@ -7482,6 +7485,91 @@ paths:
         "403": { $ref: "#/components/responses/Error" }
         "404": { $ref: "#/components/responses/Error" }
         "409": { $ref: "#/components/responses/Error" }
+  /api/v1/business/staff-invitations:
+    get:
+      operationId: listBusinessStaffInvitations
+      summary: List business staff invitations
+      description: StaffManage required (owner). Lists only this business's staff invitations, never token hashes or plaintext.
+      security: [{ sessionCookie: [] }]
+      parameters:
+        - { in: query, name: after, schema: { type: string, format: uuid } }
+        - { in: query, name: limit, schema: { type: integer, minimum: 1, maximum: 100, default: 25 } }
+      responses:
+        "200":
+          description: Staff invitation history and whether the server holds an SMTP configuration
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data: { $ref: "#/components/schemas/StaffInvitationPage" }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+    post:
+      operationId: createBusinessStaffInvitation
+      summary: Invite a new staff member by email
+      description: |
+        StaffManage required (owner only). Creates a seven-day, email-bound,
+        single-use invitation carrying an explicit staff role. Grantable roles
+        are admin/finance/support/viewer — owner is refused in the contract and
+        in core, and ownership still moves only through ownership transfer.
+        sendEmail requests one SMTP submission to the bound recipient; the
+        attempt is claimed before transmission so an idempotent replay never
+        resends. Returns the token once; identical retries return the same ID
+        with token null. Acceptance requires the recipient to act through their
+        own session on the bound email.
+      security: [{ sessionCookie: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/StaffInvitationRequest" }
+      responses:
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data: { $ref: "#/components/schemas/StaffInvitationResult" }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "409": { $ref: "#/components/responses/Error" }
+  /api/v1/business/staff-invitations/{invitationId}/revoke:
+    post:
+      operationId: revokeBusinessStaffInvitation
+      summary: Revoke a pending staff invitation
+      description: StaffManage required (owner). Accepted invitations cannot be revoked; manage the staff seat instead.
+      security: [{ sessionCookie: [] }]
+      parameters:
+        - { in: path, name: invitationId, required: true, schema: { type: string, format: uuid } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/InvitationRevokeRequest" }
+      responses:
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data: { $ref: "#/components/schemas/BusinessMutationResult" }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "409": { $ref: "#/components/responses/Error" }
   /api/v1/business/staff/revoke:
     post:
       operationId: revokeBusinessStaff
@@ -10814,6 +10902,49 @@ components:
         idempotencyKey: { type: string, minLength: 1, maxLength: 200 }
         userId: { type: string, format: uuid }
         reason: { type: string, minLength: 1, maxLength: 500 }
+    InvitationDeliveryState:
+      type: string
+      enum: [notRequested, notAttempted, submitted, unavailable, unknown]
+      description: SMTP submission state only. unknown includes interrupted, timed-out or rejected transport attempts and must never trigger an automatic resend.
+    StaffInvitationRequest:
+      type: object
+      additionalProperties: false
+      required: [idempotencyKey, email, role, reason]
+      properties:
+        idempotencyKey: { type: string, minLength: 1, maxLength: 200 }
+        email: { type: string, format: email, maxLength: 320, description: "Bind and mail the staff invitation" }
+        role: { type: string, enum: [admin, finance, support, viewer], description: "Staff role to grant on acceptance; owner is never offered" }
+        sendEmail: { type: boolean, default: false, description: "Request one SMTP submission to the bound email; replay never resends" }
+        reason: { type: string, minLength: 1, maxLength: 500 }
+    StaffInvitationSummary:
+      type: object
+      required: [id, email, role, state, expiresAt, createdAt, acceptedAt, revokedAt, mailState, mailAttemptedAt, mailSubmittedAt]
+      properties:
+        id: { type: string, format: uuid }
+        email: { type: string, format: email }
+        role: { type: string, enum: [admin, finance, support, viewer] }
+        state: { type: string, enum: [pending, accepted, revoked, expired] }
+        expiresAt: { type: string, format: date-time }
+        createdAt: { type: string, format: date-time }
+        acceptedAt: { type: string, format: date-time, nullable: true }
+        revokedAt: { type: string, format: date-time, nullable: true }
+        mailState: { $ref: "#/components/schemas/InvitationDeliveryState" }
+        mailAttemptedAt: { type: string, format: date-time, nullable: true }
+        mailSubmittedAt: { type: string, format: date-time, nullable: true }
+    StaffInvitationPage:
+      type: object
+      required: [invitations, nextCursor, mailConfigured]
+      properties:
+        invitations: { type: array, items: { $ref: "#/components/schemas/StaffInvitationSummary" } }
+        nextCursor: { type: string, format: uuid, nullable: true }
+        mailConfigured: { type: boolean, description: "The server has an SMTP configuration; delivery remains unverified" }
+    StaffInvitationResult:
+      allOf:
+        - $ref: "#/components/schemas/CreatedInvitation"
+        - type: object
+          required: [mailState]
+          properties:
+            mailState: { $ref: "#/components/schemas/InvitationDeliveryState" }
     BusinessOwnershipRequest:
       type: object
       additionalProperties: false
@@ -10980,17 +11111,36 @@ components:
       type: object
       required: [organizationId, name, role, expiresAt]
       properties:
-        organizationId: { type: string, format: uuid }
+        organizationId: { type: string, format: uuid, description: "The customer organization, or the nil UUID for a business-scoped staff invitation" }
         name: { type: string }
-        role: { type: string, enum: [owner, member] }
+        role: { type: string, enum: [owner, member], description: "The customer membership role; staff invitations carry the staff role instead" }
+        staffRole: { type: string, enum: [admin, finance, support, viewer], nullable: true, description: "The business staff role a staff invitation grants" }
         expiresAt: { type: string, format: date-time }
     InvitationAcceptance:
       type: object
       required: [id, organizationId, role]
       properties:
         id: { type: string, format: uuid, description: "Invitation ID, a stable acceptance receipt" }
-        organizationId: { type: string, format: uuid }
+        organizationId: { type: string, format: uuid, description: "The joined customer organization, or the nil UUID for a staff seat" }
         role: { type: string, enum: [owner, member], description: "Originally accepted customer role, not current authorization" }
+        staffRole: { type: string, enum: [admin, finance, support, viewer], nullable: true, description: "The business staff role a staff invitation granted" }
+    RedeemOutcome:
+      oneOf:
+        - type: object
+          required: [kind, user, verificationSent]
+          properties:
+            kind: { type: string, enum: [staff] }
+            user: { $ref: "#/components/schemas/User" }
+            verificationSent: { type: boolean }
+        - type: object
+          required: [kind, user, organization, apiKey, verificationSent]
+          properties:
+            kind: { type: string, enum: [customer] }
+            user: { $ref: "#/components/schemas/User" }
+            organization: { $ref: "#/components/schemas/Organization" }
+            apiKey: { $ref: "#/components/schemas/CreatedApiKey" }
+            verificationSent: { type: boolean }
+      description: "A staff redemption returns the user and no org/key; a customer or team redemption returns the registration fields."
     RedeemInvitationRequest:
       type: object
       required: [token, email, password]

@@ -5,8 +5,7 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use oxsum_core::{
-    Member, NewUser, Organization, Ownership, Principal, Registration, Role, UserOrganization,
-    WalletError,
+    Member, NewUser, Organization, Ownership, Principal, Role, UserOrganization, WalletError,
 };
 
 use crate::AppState;
@@ -264,22 +263,71 @@ pub(crate) async fn revoke_invitation(
         .revoke_invitation(
             &super::business::personal_token(&headers)?,
             id,
-            false,
+            oxsum_core::InvitationScope::Team,
             &request,
         )
         .await?)
 }
 
+/// What redeeming an invitation produced. A staff invitation grants a seat and
+/// no customer organization or API key; a customer/team invitation returns the
+/// new user's personal organization and first key.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase", tag = "kind")]
+pub(crate) enum RedeemOutcome {
+    /// A staff seat; the user signs in and selects business context.
+    Staff {
+        /// The newly registered staff user.
+        user: oxsum_core::User,
+        /// Whether a verification mail went out.
+        #[serde(rename = "verificationSent")]
+        verification_sent: bool,
+    },
+    /// A customer/team registration with its organization and first key.
+    Customer {
+        /// The newly registered user.
+        user: oxsum_core::User,
+        /// The personal organization created for the user.
+        organization: oxsum_core::Organization,
+        /// The first API key, with its secret shown once.
+        #[serde(rename = "apiKey")]
+        api_key: Box<oxsum_core::CreatedApiKey>,
+        /// Whether a verification mail went out.
+        #[serde(rename = "verificationSent")]
+        verification_sent: bool,
+    },
+}
+
 /// Registers through an invitation link. Open in every signup mode — an `invite`
-/// deployment's registrations all come through here.
+/// deployment's registrations all come through here. A staff invitation token
+/// lands a staff-only account; any other token creates the customer account and
+/// first key.
 pub(crate) async fn redeem_invitation(
     State(state): State<AppState>,
     ApiJson(request): ApiJson<RedeemReq>,
-) -> ApiResult<Registration> {
+) -> ApiResult<RedeemOutcome> {
     // Before touching the invitation: a forged token costs the check a
     // verifier call, which the verifier rate-limits far better than our
     // redemption table would take it.
     require_bot_check(&state, request.turnstile_token.as_deref()).await?;
+    if state.db.staff_invitation_pending(&request.token).await? {
+        let user = state
+            .db
+            .redeem_staff_invitation(
+                &request.token,
+                NewUser {
+                    email: request.email,
+                    password: request.password,
+                    organization_name: None,
+                },
+            )
+            .await?;
+        let sent = send_verification(&state, user.id).await;
+        return ok(RedeemOutcome::Staff {
+            user,
+            verification_sent: sent,
+        });
+    }
     let mut registration = state
         .db
         .redeem_invitation(
@@ -292,7 +340,12 @@ pub(crate) async fn redeem_invitation(
         )
         .await?;
     registration.verification_sent = send_verification(&state, registration.user.id).await;
-    ok(registration)
+    ok(RedeemOutcome::Customer {
+        user: registration.user,
+        organization: registration.organization,
+        api_key: Box::new(registration.api_key),
+        verification_sent: registration.verification_sent,
+    })
 }
 
 #[derive(Deserialize)]

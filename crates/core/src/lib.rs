@@ -69,6 +69,7 @@ mod seed;
 mod service_credentials;
 mod serving_access;
 mod sessions;
+mod staff_invitations;
 mod statement_pdf;
 mod statements;
 mod subscriptions;
@@ -197,7 +198,8 @@ pub use invitation_management::{
 };
 pub use invitations::{
     CreatedInvitation, CustomerInvitationRequest, InvitationAcceptRequest, InvitationAcceptance,
-    InvitationPreview, InvitationRevokeRequest, TeamInvitationRequest,
+    InvitationPreview, InvitationRevokeRequest, InvitationScope, StaffInvitationRequest,
+    TeamInvitationRequest,
 };
 pub use jobs::{
     CLAIM_LEASE_SECS, DEAD_RESCHEDULE, Job, JobOutcome, MAX_ATTEMPTS, Retention, RetentionReport,
@@ -267,6 +269,9 @@ pub use serving_access::ServingAccess;
 pub use sessions::{
     CreatedSession, KeyPrincipal, KeyScope, Principal, SESSION_COOKIE, SESSION_LIFETIME, Session,
     SessionPrincipal,
+};
+pub use staff_invitations::{
+    InvitationDeliveryState, StaffInvitationPage, StaffInvitationSummary, StaffMailTarget,
 };
 pub use statement_pdf::render_statement_pdf;
 pub use statements::{

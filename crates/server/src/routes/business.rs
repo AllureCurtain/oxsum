@@ -207,7 +207,12 @@ pub(crate) async fn revoke_customer_invitation(
 ) -> ApiResult<oxsum_core::BusinessMutationResult> {
     ok(state
         .db
-        .revoke_invitation(&personal_token(&headers)?, id, true, &request)
+        .revoke_invitation(
+            &personal_token(&headers)?,
+            id,
+            oxsum_core::InvitationScope::Customer,
+            &request,
+        )
         .await?)
 }
 
