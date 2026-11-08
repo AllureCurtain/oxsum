@@ -7,6 +7,8 @@
 
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
+#[path = "../../core/tests/support/plan_payment.rs"]
+mod plan_payment;
 #[path = "../../core/tests/support/integration.rs"]
 mod setup;
 mod support;
@@ -126,7 +128,7 @@ async fn publish(world: &World, name: &str, price: i64) -> Uuid {
             "currency": "USD",
             "quotaMinor": 10_000_000,
             "periodKind": "calendarMonth",
-            "overageEnabled": false,
+            "overageEnabled": true,
         }),
         Some(&world.owner),
     )
@@ -135,9 +137,8 @@ async fn publish(world: &World, name: &str, price: i64) -> Uuid {
     Uuid::parse_str(body["data"]["planVersionId"].as_str().unwrap()).unwrap()
 }
 
-/// Binds the customer to the sold version and activates period 0 under a
-/// (fixture) order id — the orderless activation leaves the close's bill
-/// unpaid, so the statement posts `issued` as the open receivable.
+/// Bind and activate using a real quoted paid fixture; separate overage leaves
+/// an outstanding receivable for the HTTP reporting/dunning assertions.
 async fn bound_and_active(world: &World, version: Uuid) -> Uuid {
     let (status, body) = call(
         &world.app,
@@ -152,9 +153,20 @@ async fn bound_and_active(world: &World, version: Uuid) -> Uuid {
         Uuid::parse_str(body["data"]["customerPlanId"].as_str().unwrap()).unwrap();
     world
         .db
-        .activate_plan_period(Uuid::new_v4(), customer_plan_id)
+        .activate_plan_period(
+            plan_payment::paid_order(
+                &world.db,
+                &world.owner,
+                world.customer_org,
+                customer_plan_id,
+            )
+            .await
+            .order_id,
+            customer_plan_id,
+        )
         .await
         .unwrap();
+    plan_payment::overage(&world.db, world.customer_org, customer_plan_id, 1000).await;
     customer_plan_id
 }
 
@@ -206,13 +218,12 @@ async fn the_customer_lists_and_reads_its_statements() {
     bound_and_active(&world, version).await;
     close_period(&world).await;
 
-    // The list bills the closed period: one statement, issued open — the
-    // orderless activation left no payment to reconcile it.
+    // The paid base fee reconciles; separate overage leaves this statement issued.
     let statement = the_statement(&world).await;
     assert_eq!(statement["state"].as_str().unwrap(), "issued");
     assert_eq!(statement["periodIndex"].as_i64().unwrap(), 0);
-    assert_eq!(statement["totalMinor"].as_i64().unwrap(), 2500);
-    assert_eq!(statement["paidMinor"].as_i64().unwrap(), 0);
+    assert_eq!(statement["totalMinor"].as_i64().unwrap(), 3500);
+    assert_eq!(statement["paidMinor"].as_i64().unwrap(), 2500);
     assert!(statement["dueAt"].is_string());
     let statement_id = statement["statementId"].as_str().unwrap();
 
@@ -277,7 +288,7 @@ async fn the_staff_lists_and_reads_statements() {
     .await;
     assert_eq!(status, StatusCode::OK, "{body}");
     assert_eq!(body["data"]["statementId"].as_str().unwrap(), statement_id);
-    assert_eq!(body["data"]["totalMinor"].as_i64().unwrap(), 2500);
+    assert_eq!(body["data"]["totalMinor"].as_i64().unwrap(), 3500);
 }
 
 #[tokio::test]

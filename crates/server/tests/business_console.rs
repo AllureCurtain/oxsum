@@ -7,6 +7,8 @@
 
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
+#[path = "../../core/tests/support/plan_payment.rs"]
+mod plan_payment;
 #[path = "../../core/tests/support/integration.rs"]
 mod setup;
 mod support;
@@ -313,7 +315,17 @@ async fn a_support_cannot_void_a_journal() {
         Uuid::parse_str(body["data"]["customerPlanId"].as_str().unwrap()).unwrap();
     world
         .db
-        .activate_plan_period(Uuid::new_v4(), customer_plan_id)
+        .activate_plan_period(
+            plan_payment::paid_order(
+                &world.db,
+                &world.owner,
+                world.customer_org,
+                customer_plan_id,
+            )
+            .await
+            .order_id,
+            customer_plan_id,
+        )
         .await
         .unwrap();
     sqlx::query(

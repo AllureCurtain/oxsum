@@ -3361,6 +3361,56 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/org/plan/payment-quote": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Quote the caller's next payable plan period
+         * @description Personal customer session. Quotes only the customer's assigned paid plan.
+         *     Manual renewal becomes payable at the current period's boundary; it cannot
+         *     close an active period early. Initial service begins on paid activation;
+         *     renewal service bounds continue from the preceding period. No money moves.
+         *     Quote changes require customer review before a new order. Existing orders
+         *     retain their original snapshot. An existing pending order is returned so
+         *     a lost response never requires a second payment intent.
+         */
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Authoritative quote and any standing order */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            data: components["schemas"]["PlanPaymentQuote"];
+                        };
+                    };
+                };
+                401: components["responses"]["Error"];
+                404: components["responses"]["Error"];
+                409: components["responses"]["Error"];
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/org/plan/cancel": {
         parameters: {
             query?: never;
@@ -19597,6 +19647,38 @@ export interface components {
             id: string;
             offer: components["schemas"]["BundleOffer"];
         };
+        /** @description Immutable plan payment intent. The exact sold fee is prepaid solely for this period, never silently allocated to older receivables. The fiat amount rounds up to the nearest supported currency minor unit; it does not enlarge or reduce the sold credit-denominated fee. Null initial bounds mean service starts at paid activation; renewal bounds name the preceding boundary and sold next end. */
+        PlanPaymentTerms: {
+            /** Format: uuid */
+            customerPlanId: string;
+            /** Format: uuid */
+            planVersionId: string;
+            periodIndex: number;
+            /** Format: date-time */
+            periodStart: string | null;
+            /** Format: date-time */
+            periodEnd: string | null;
+            /** Format: int64 */
+            feeMinor: number;
+            /** Format: int64 */
+            collectionRevision: number;
+            displayCurrency: string;
+            /** Format: int64 */
+            displayAmountMinor: number;
+            /** @description Exact decimal integer numerator of currency-major units per credit */
+            rateMantissa: string;
+            rateScale: number;
+        };
+        PlanPaymentQuote: {
+            terms: components["schemas"]["PlanPaymentTerms"];
+            /** @description Expected plan quote required for a new planPeriod order */
+            fingerprint: string;
+            /**
+             * Format: uuid
+             * @description Resume this standing payment intent instead of creating another
+             */
+            existingOrderId: string | null;
+        };
         /**
          * @description The one fulfillment arm the order may take. `walletTopup` credits wallet cash only; `bundle` posts purchased credit plus a separate promo lot; `planPeriod` activates quota only; `invoiceRepayment` repays a drawn receivable only. No purpose both grants quota and wallet cash.
          * @enum {string}
@@ -19621,6 +19703,8 @@ export interface components {
              * @description Published `bundleVersionId` for a bundle
              */
             purposeRef?: string | null;
+            /** @description Required for new planPeriod orders; the fingerprint from the customer-scoped quote. Never overrides the authoritative terms. */
+            expectedPlanQuote?: string | null;
             /**
              * Format: int64
              * @description Deprecated assertion only; zero/absent or exactly the selected bundle offer promotion. Customers cannot choose promotional credit.
@@ -19673,6 +19757,8 @@ export interface components {
             promoMinor: number;
             /** @description Immutable publication snapshot for new bundle orders. Absent legacy unfulfilled bundles require operator review before checkout or granting. */
             bundleOffer: components["schemas"]["BundleOffer"] | null;
+            /** @description Immutable period payment intent; unsafe legacy unfulfilled plan orders require operator review */
+            planPayment: components["schemas"]["PlanPaymentTerms"] | null;
             providerPaymentId: string | null;
             /**
              * @description how the order's payment arrived — a rail's signed webhook or a staff-recorded receipt

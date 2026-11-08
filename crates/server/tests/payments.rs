@@ -1851,3 +1851,177 @@ async fn a_legacy_pending_bundle_cannot_resume_checkout_or_fulfill() {
     assert_eq!(wallet.available().await.unwrap(), 0);
     assert_eq!(*stub.calls.lock().unwrap(), 0);
 }
+
+/// The customer pays the reviewed plan quote; forged values never reach the PSP.
+#[tokio::test]
+async fn a_plan_quote_drives_one_checkout_and_a_signed_payment_grants_only_its_period() {
+    let Some((app, db, stub, merchant, version)) = world().await else {
+        return;
+    };
+    let customer = register(&app).await;
+    db.bootstrap_collection_terms(&oxsum_core::CollectionCurrency {
+        code: "USD".into(),
+        rate_per_credit: "1".into(),
+    })
+    .await
+    .unwrap();
+    let sold = db
+        .publish_sold_plan(
+            db.default_business().await.unwrap(),
+            &oxsum_core::NewSoldPlan {
+                plan_id: None,
+                name: "HTTP exact paid plan".into(),
+                price_minor: 1_000_001,
+                currency: "USD".into(),
+                quota_minor: Some(3_000_000),
+                period_kind: oxsum_core::PeriodKind::CalendarMonth,
+                overage_enabled: false,
+                sort_order: 0,
+            },
+        )
+        .await
+        .unwrap();
+    let plan = db
+        .bind_customer_plan(
+            customer.organization_id,
+            sold.plan_version_id,
+            oxsum_core::PeriodAuthorization::PaymentOrder(Uuid::nil()),
+        )
+        .await
+        .unwrap();
+    let (status, quote) = call(
+        &app,
+        "GET",
+        "/api/v1/org/plan/payment-quote",
+        None,
+        Some(&customer.cookie),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{quote}");
+    let request = json!({
+        "idempotencyKey":"http-plan-quoted","purpose":"planPeriod","rail":"hyperswitch",
+        "purposeRef":plan.customer_plan_id,"expectedPlanQuote":quote["data"]["fingerprint"],
+        "expectedCollectionRevision":quote["data"]["terms"]["collectionRevision"],
+        "displayAmountMinor":quote["data"]["terms"]["displayAmountMinor"],"displayCurrency":"USD",
+    });
+    assert_eq!(request["displayAmountMinor"], 101);
+    for field in ["displayAmountMinor", "purposeRef", "expectedPlanQuote"] {
+        let mut forged = request.clone();
+        forged[field] = match field {
+            "displayAmountMinor" => json!(1),
+            "purposeRef" => json!(Uuid::new_v4()),
+            _ => json!("0".repeat(64)),
+        };
+        let (status, _) = call(
+            &app,
+            "POST",
+            "/api/v1/orders",
+            Some(forged),
+            Some(&customer.cookie),
+        )
+        .await;
+        assert!(status == StatusCode::CONFLICT || status == StatusCode::NOT_FOUND);
+    }
+    assert_eq!(
+        *stub.calls.lock().unwrap(),
+        0,
+        "invalid terms fail before provider I/O"
+    );
+    let (status, result) = call(
+        &app,
+        "POST",
+        "/api/v1/orders",
+        Some(request.clone()),
+        Some(&customer.cookie),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{result}");
+    let order = Uuid::parse_str(result["data"]["order"]["orderId"].as_str().unwrap()).unwrap();
+    assert_eq!(result["data"]["order"]["amountMinor"], 1_000_001);
+    assert_eq!(result["data"]["order"]["planPayment"]["periodIndex"], 0);
+    let (status, replay) = call(
+        &app,
+        "POST",
+        "/api/v1/orders",
+        Some(request.clone()),
+        Some(&customer.cookie),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{replay}");
+    assert_eq!(replay["data"]["order"]["orderId"], order.to_string());
+    let mut duplicate = request;
+    duplicate["idempotencyKey"] = json!("second-intent-for-same-period");
+    assert_eq!(
+        call(
+            &app,
+            "POST",
+            "/api/v1/orders",
+            Some(duplicate),
+            Some(&customer.cookie)
+        )
+        .await
+        .0,
+        StatusCode::CONFLICT
+    );
+    assert_eq!(*stub.calls.lock().unwrap(), 1);
+    let (status, recover) = call(
+        &app,
+        "GET",
+        "/api/v1/org/plan/payment-quote",
+        None,
+        Some(&customer.cookie),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(recover["data"]["existingOrderId"], order.to_string());
+    let payload = succeeded(order, customer.organization_id, "pay_armed", 101);
+    assert_eq!(
+        post_webhook(
+            &app,
+            merchant,
+            version,
+            signed(WEBHOOK_SECRET, &payload),
+            payload.clone()
+        )
+        .await,
+        StatusCode::OK
+    );
+    run_reconcile(&db).await;
+    let periods = db.plan_periods(plan.customer_plan_id).await.unwrap();
+    assert_eq!(periods.len(), 1);
+    assert_eq!(periods[0].authorization_ref, order);
+    let wallet = Tenants::new(db.pool().clone())
+        .get(&tenant(&db, customer.organization_id).await)
+        .await
+        .unwrap();
+    assert_eq!(wallet.available().await.unwrap(), 0);
+    assert_eq!(
+        post_webhook(
+            &app,
+            merchant,
+            version,
+            signed(WEBHOOK_SECRET, &payload),
+            payload.clone()
+        )
+        .await,
+        StatusCode::OK
+    );
+    run_reconcile(&db).await;
+    assert_eq!(
+        db.plan_periods(plan.customer_plan_id).await.unwrap().len(),
+        1
+    );
+    assert_eq!(
+        call(
+            &app,
+            "GET",
+            "/api/v1/org/plan/payment-quote",
+            None,
+            Some(&customer.cookie)
+        )
+        .await
+        .0,
+        StatusCode::CONFLICT,
+        "early renewal is not a new checkout"
+    );
+}

@@ -54,6 +54,7 @@ async fn create(db: &Db, ctx: &MerchantSigningContext, org: Uuid, id: Uuid) -> P
 }
 fn new_order(id: Uuid) -> NewPaymentOrder {
     NewPaymentOrder {
+        expected_plan_quote: None,
         expected_collection_revision: None,
         purpose: PaymentOrderPurpose::Bundle,
         display_amount_minor: 500,
@@ -171,6 +172,7 @@ async fn published_bundle_pins_grants_retirement_expiry_and_replay() {
     ));
     let ctx = merchant(&db, &owner).await;
     let new = NewPaymentOrder {
+        expected_plan_quote: None,
         expected_collection_revision: None,
         purpose: PaymentOrderPurpose::Bundle,
         display_amount_minor: 500,

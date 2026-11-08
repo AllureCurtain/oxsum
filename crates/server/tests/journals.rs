@@ -7,6 +7,8 @@
 
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
+#[path = "../../core/tests/support/plan_payment.rs"]
+mod plan_payment;
 #[path = "../../core/tests/support/integration.rs"]
 mod setup;
 mod support;
@@ -126,7 +128,7 @@ async fn publish(world: &World, name: &str, price: i64) -> Uuid {
             "currency": "USD",
             "quotaMinor": 10_000_000,
             "periodKind": "calendarMonth",
-            "overageEnabled": false,
+            "overageEnabled": true,
         }),
         Some(&world.owner),
     )
@@ -135,9 +137,8 @@ async fn publish(world: &World, name: &str, price: i64) -> Uuid {
     Uuid::parse_str(body["data"]["planVersionId"].as_str().unwrap()).unwrap()
 }
 
-/// Binds the customer to the sold version and activates period 0 under a
-/// (fixture) order id — the journal tests never drive a PSP, so the order
-/// row's absence just means zero applied; the close still bills the period.
+/// Bind and activate using a real quoted paid fixture; separate overage leaves
+/// an outstanding receivable for the HTTP reporting/dunning assertions.
 async fn bound_and_active(world: &World, version: Uuid) -> Uuid {
     let (status, body) = call(
         &world.app,
@@ -152,9 +153,20 @@ async fn bound_and_active(world: &World, version: Uuid) -> Uuid {
         Uuid::parse_str(body["data"]["customerPlanId"].as_str().unwrap()).unwrap();
     world
         .db
-        .activate_plan_period(Uuid::new_v4(), customer_plan_id)
+        .activate_plan_period(
+            plan_payment::paid_order(
+                &world.db,
+                &world.owner,
+                world.customer_org,
+                customer_plan_id,
+            )
+            .await
+            .order_id,
+            customer_plan_id,
+        )
         .await
         .unwrap();
+    plan_payment::overage(&world.db, world.customer_org, customer_plan_id, 1000).await;
     customer_plan_id
 }
 
@@ -206,12 +218,11 @@ async fn the_customer_lists_and_reads_its_journals() {
     bound_and_active(&world, version).await;
     close_period(&world).await;
 
-    // The list bills the closed period: one journal, posted unpaid — the
-    // orderless activation left no prepay to settle it.
+    // The paid base fee reconciles; overage leaves a posted receivable.
     let journal = the_journal(&world).await;
     assert_eq!(journal["state"].as_str().unwrap(), "posted");
     assert_eq!(journal["periodIndex"].as_i64().unwrap(), 0);
-    assert_eq!(journal["totalMinor"].as_i64().unwrap(), 2500);
+    assert_eq!(journal["totalMinor"].as_i64().unwrap(), 3500);
     let journal_id = journal["journalId"].as_str().unwrap();
 
     // The detail carries the lines — the base fee the close billed.
@@ -225,7 +236,7 @@ async fn the_customer_lists_and_reads_its_journals() {
     .await;
     assert_eq!(status, StatusCode::OK, "{body}");
     let lines = body["data"]["lines"].as_array().unwrap();
-    assert_eq!(lines.len(), 1);
+    assert_eq!(lines.len(), 2);
     assert_eq!(lines[0]["kind"].as_str().unwrap(), "baseFee");
     assert_eq!(lines[0]["amountMinor"].as_i64().unwrap(), 2500);
 }
@@ -283,7 +294,7 @@ async fn the_staff_lists_and_reads_journals() {
     .await;
     assert_eq!(status, StatusCode::OK, "{body}");
     assert_eq!(body["data"]["journalId"].as_str().unwrap(), journal_id);
-    assert_eq!(body["data"]["totalMinor"].as_i64().unwrap(), 2500);
+    assert_eq!(body["data"]["totalMinor"].as_i64().unwrap(), 3500);
 }
 
 #[tokio::test]

@@ -6,6 +6,8 @@
 //! immutable. Needs DATABASE_URL; skips without it.
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
+#[path = "support/plan_payment.rs"]
+mod plan_payment;
 #[path = "support/integration.rs"]
 mod setup;
 
@@ -125,72 +127,20 @@ async fn end_period_ago(pool: &PgPool, organization_id: Uuid, ago_secs: i64) {
     .expect("the plan period moves");
 }
 
-/// A `fulfilled` `planPeriod` order row — the fixture's stand-in for the PSP
-/// half of T15, written directly so the statement tests never drive a
-/// provider. `status='fulfilled'` is terminal under the order's own guard.
+/// Exact paid order through the collection quote and local verified-event fixture.
 async fn plan_order(world: &World, customer_plan_id: Uuid, amount_minor: i64) -> Uuid {
-    let order_id = Uuid::new_v4();
-    let merchant = Uuid::new_v4();
-    let version = Uuid::new_v4();
-    // The account and its version reference each other — the deferred FK
-    // resolves only inside one transaction.
-    let mut tx = world.pool.begin().await.unwrap();
-    sqlx::query(
-        "INSERT INTO oxsum.merchant_accounts\
-         (merchant_id,business_id,name,rail,mode,account_id,current_version_id) \
-         VALUES($1,$2,$3,'hyperswitch','test',$4,$5)",
+    let order = plan_payment::paid_order(
+        &world.db,
+        &world.owner,
+        world.organization_id,
+        customer_plan_id,
     )
-    .bind(merchant)
-    .bind(world.business_id)
-    .bind(format!("m-{}", Uuid::new_v4().simple()))
-    .bind(format!("acct-{}", Uuid::new_v4().simple()))
-    .bind(version)
-    .execute(&mut *tx)
-    .await
-    .expect("the merchant lands");
-    sqlx::query(
-        "INSERT INTO oxsum.merchant_versions\
-         (version_id,merchant_id,revision,api_url,destination_policy,credentials_sealed,source) \
-         VALUES($1,$2,1,'https://sandbox.example','{}'::jsonb,'sealed','owner')",
-    )
-    .bind(version)
-    .bind(merchant)
-    .execute(&mut *tx)
-    .await
-    .expect("the merchant version lands");
-    sqlx::query(
-        "INSERT INTO oxsum.merchant_payment_bindings\
-         (payment_id,merchant_id,version_id,organization_id,amount_minor,currency,purpose) \
-         VALUES($1,$2,$3,$4,$5,'USD','order')",
-    )
-    .bind(order_id)
-    .bind(merchant)
-    .bind(version)
-    .bind(world.organization_id)
-    .bind(amount_minor)
-    .execute(&mut *tx)
-    .await
-    .expect("the binding lands");
-    sqlx::query(
-        "INSERT INTO oxsum.payment_orders\
-         (order_id,business_id,merchant_id,merchant_version_id,organization_id,\
-          purpose,amount_minor,currency,display_currency,display_amount_minor,\
-          rate_mantissa,rate_scale,purpose_ref,promo_minor,idempotency_key,status,paid_at) \
-         VALUES($1,$2,$3,$4,$5,'plan_period',$6,'USD','USD',$6,100,2,$7,0,$8,'fulfilled',now())",
-    )
-    .bind(order_id)
-    .bind(world.business_id)
-    .bind(merchant)
-    .bind(version)
-    .bind(world.organization_id)
-    .bind(amount_minor)
-    .bind(customer_plan_id)
-    .bind(format!("plan-stmt-test-{}", Uuid::new_v4().simple()))
-    .execute(&mut *tx)
-    .await
-    .expect("the order lands");
-    tx.commit().await.unwrap();
-    order_id
+    .await;
+    assert_eq!(
+        order.amount_minor, amount_minor,
+        "fixture pays the exact sold fee"
+    );
+    order.order_id
 }
 
 /// The org's plan statements, newest first.
@@ -277,75 +227,60 @@ async fn a_period_close_issues_the_statement() {
 // ── A23.2: a payment reconciles the statement — full and partial ────────────
 
 #[tokio::test]
-async fn a_payment_reconciles_the_statement() {
+async fn an_exact_paid_period_reconciles_its_statement() {
     let Some(world) = world().await else { return };
-    let (_pro, plan) = bound_plan(&world, 2500, false).await;
-    // An orderless activation leaves the close's bill unpaid: the journal and
-    // its statement post `issued`/`posted`, the receivable open.
+    let (_, plan) = bound_plan(&world, 2500, false).await;
+    let order = plan_order(&world, plan.customer_plan_id, 2500).await;
     world
         .db
-        .activate_plan_period(Uuid::new_v4(), plan.customer_plan_id)
+        .activate_plan_period(order, plan.customer_plan_id)
         .await
         .unwrap();
     end_period_ago(&world.pool, world.organization_id, 60).await;
     world.db.rollover_due_subscriptions().await.unwrap();
-    let statement = statements(&world.db, world.organization_id)
-        .await
-        .into_iter()
-        .find(|s| s.period_index == Some(0))
-        .unwrap();
-    assert_eq!(statement.state, PlanStatementState::Issued);
-    assert_eq!(statement.total_minor, 2500);
-    assert_eq!(statement.paid_minor, 0);
-
-    // A fulfilled order settles the receivable — the same apply path the
-    // journal walks marks the statement `paid`, a `paymentApplied` line
-    // netting its lines to zero, and `paidMinor` reaching the total.
-    let order_id = plan_order(&world, plan.customer_plan_id, 2500).await;
-    world
-        .db
-        .activate_plan_period(order_id, plan.customer_plan_id)
-        .await
-        .unwrap();
+    let statement = statements(&world.db, world.organization_id).await.remove(0);
     let bill = detail(&world.db, world.organization_id, statement.statement_id).await;
     assert_eq!(bill.statement.state, PlanStatementState::Paid);
-    assert_eq!(bill.statement.paid_minor, bill.statement.total_minor);
-    assert_eq!(bill.statement.paid_order_id, Some(order_id));
+    assert_eq!(bill.statement.paid_minor, 2500);
+    assert_eq!(bill.statement.paid_order_id, Some(order));
     assert!(
         bill.lines
             .iter()
-            .any(|l| l.kind == StatementLineKind::PaymentApplied)
+            .any(|line| line.kind == StatementLineKind::PaymentApplied)
     );
 }
 
 #[tokio::test]
-async fn a_partial_payment_leaves_the_statement_issued() {
+async fn renewal_does_not_clear_an_outstanding_statement() {
     let Some(world) = world().await else { return };
-    let (_pro, plan) = bound_plan(&world, 2500, false).await;
+    let (_, plan) = bound_plan(&world, 2500, true).await;
+    let order = plan_order(&world, plan.customer_plan_id, 2500).await;
     world
         .db
-        .activate_plan_period(Uuid::new_v4(), plan.customer_plan_id)
+        .activate_plan_period(order, plan.customer_plan_id)
         .await
         .unwrap();
+    plan_payment::overage(
+        &world.db,
+        world.organization_id,
+        plan.customer_plan_id,
+        1000,
+    )
+    .await;
     end_period_ago(&world.pool, world.organization_id, 60).await;
     world.db.rollover_due_subscriptions().await.unwrap();
-    let statement = statements(&world.db, world.organization_id)
-        .await
-        .into_iter()
-        .find(|s| s.period_index == Some(0))
-        .unwrap();
-    // The journal's receivable is 2500; the renewal order pays only 1000 —
-    // the receivable and the statement stay open with `paidMinor` partial.
-    let order_id = plan_order(&world, plan.customer_plan_id, 1000).await;
+    let statement = statements(&world.db, world.organization_id).await.remove(0);
+    let renewal = plan_order(&world, plan.customer_plan_id, 2500).await;
     world
         .db
-        .activate_plan_period(order_id, plan.customer_plan_id)
+        .activate_plan_period(renewal, plan.customer_plan_id)
         .await
         .unwrap();
     let bill = detail(&world.db, world.organization_id, statement.statement_id).await;
     assert_eq!(bill.statement.state, PlanStatementState::Issued);
-    assert_eq!(bill.statement.paid_minor, 1000);
-    assert!(bill.statement.total_minor > bill.statement.paid_minor);
+    assert_eq!(bill.statement.paid_minor, 2500);
+    assert_eq!(bill.statement.total_minor - bill.statement.paid_minor, 1000);
+    assert_ne!(bill.statement.paid_order_id, Some(renewal));
 }
 
 // ── A23.3: overdue → grace → suspend, and release-review restores ────────────
@@ -353,12 +288,29 @@ async fn a_partial_payment_leaves_the_statement_issued() {
 #[tokio::test]
 async fn overdue_grace_and_suspend_transitions() {
     let Some(world) = world().await else { return };
-    let (_pro, plan) = bound_plan(&world, 2500, false).await;
+    let (_pro, plan) = bound_plan(&world, 2500, true).await;
     world
         .db
-        .activate_plan_period(Uuid::new_v4(), plan.customer_plan_id)
+        .activate_plan_period(
+            plan_payment::paid_order(
+                &world.db,
+                &world.owner,
+                world.organization_id,
+                plan.customer_plan_id,
+            )
+            .await
+            .order_id,
+            plan.customer_plan_id,
+        )
         .await
         .unwrap();
+    plan_payment::overage(
+        &world.db,
+        world.organization_id,
+        plan.customer_plan_id,
+        1000,
+    )
+    .await;
     end_period_ago(&world.pool, world.organization_id, 60).await;
     world.db.rollover_due_subscriptions().await.unwrap();
     let statement = statements(&world.db, world.organization_id)
@@ -436,12 +388,29 @@ async fn overdue_grace_and_suspend_transitions() {
 #[tokio::test]
 async fn a_staff_release_review_restores_and_audits() {
     let Some(world) = world().await else { return };
-    let (_pro, plan) = bound_plan(&world, 2500, false).await;
+    let (_pro, plan) = bound_plan(&world, 2500, true).await;
     world
         .db
-        .activate_plan_period(Uuid::new_v4(), plan.customer_plan_id)
+        .activate_plan_period(
+            plan_payment::paid_order(
+                &world.db,
+                &world.owner,
+                world.organization_id,
+                plan.customer_plan_id,
+            )
+            .await
+            .order_id,
+            plan.customer_plan_id,
+        )
         .await
         .unwrap();
+    plan_payment::overage(
+        &world.db,
+        world.organization_id,
+        plan.customer_plan_id,
+        1000,
+    )
+    .await;
     end_period_ago(&world.pool, world.organization_id, 60).await;
     world.db.rollover_due_subscriptions().await.unwrap();
     let statement = statements(&world.db, world.organization_id)
@@ -555,12 +524,29 @@ async fn the_credit_limit_refuses_wallet_overage() {
 #[tokio::test]
 async fn an_issued_statement_refuses_edits_and_deletes() {
     let Some(world) = world().await else { return };
-    let (_pro, plan) = bound_plan(&world, 2500, false).await;
+    let (_pro, plan) = bound_plan(&world, 2500, true).await;
     world
         .db
-        .activate_plan_period(Uuid::new_v4(), plan.customer_plan_id)
+        .activate_plan_period(
+            plan_payment::paid_order(
+                &world.db,
+                &world.owner,
+                world.organization_id,
+                plan.customer_plan_id,
+            )
+            .await
+            .order_id,
+            plan.customer_plan_id,
+        )
         .await
         .unwrap();
+    plan_payment::overage(
+        &world.db,
+        world.organization_id,
+        plan.customer_plan_id,
+        1000,
+    )
+    .await;
     end_period_ago(&world.pool, world.organization_id, 60).await;
     world.db.rollover_due_subscriptions().await.unwrap();
     let statement = statements(&world.db, world.organization_id)
@@ -606,4 +592,52 @@ async fn an_issued_statement_refuses_edits_and_deletes() {
             .execute(&world.pool)
             .await;
     assert!(backward.is_err(), "the state machine only walks forward");
+}
+
+#[tokio::test]
+async fn a_partial_payment_line_does_not_change_the_statement_charge_total() {
+    let Some(world) = world().await else { return };
+    let (_, plan) = bound_plan(&world, 2500, true).await;
+    let order = plan_order(&world, plan.customer_plan_id, 2500).await;
+    world
+        .db
+        .activate_plan_period(order, plan.customer_plan_id)
+        .await
+        .unwrap();
+    plan_payment::overage(
+        &world.db,
+        world.organization_id,
+        plan.customer_plan_id,
+        1000,
+    )
+    .await;
+    end_period_ago(&world.pool, world.organization_id, 60).await;
+    world.db.rollover_due_subscriptions().await.unwrap();
+    let statement = statements(&world.db, world.organization_id).await.remove(0);
+    let mut tx = world.pool.begin().await.unwrap();
+    // Exercise the document invariant with an appended credit. The later
+    // accounting repair owns the coordinated journal/cash correction path.
+    sqlx::query("INSERT INTO oxsum.plan_statement_lines (line_id,statement_id,kind,amount_minor,description,source_ref) VALUES($1,$2,'discount',-100,'document invariant fixture',$3)")
+        .bind(Uuid::new_v4()).bind(statement.statement_id).bind(Uuid::new_v4()).execute(&mut *tx).await.unwrap();
+    sqlx::query("UPDATE oxsum.plan_statements SET total_minor=3400 WHERE statement_id=$1")
+        .bind(statement.statement_id)
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+    let paid: i64 =
+        sqlx::query_scalar("SELECT paid_minor FROM oxsum.plan_statements WHERE statement_id=$1")
+            .bind(statement.statement_id)
+            .fetch_one(&mut *tx)
+            .await
+            .unwrap();
+    assert_eq!(paid, 2500);
+    assert!(
+        sqlx::query("UPDATE oxsum.plan_statements SET total_minor=900 WHERE statement_id=$1")
+            .bind(statement.statement_id)
+            .execute(&mut *tx)
+            .await
+            .is_err(),
+        "payments cannot be subtracted from gross charges a second time"
+    );
+    tx.rollback().await.unwrap();
 }

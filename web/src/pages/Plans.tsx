@@ -1,4 +1,7 @@
-import { useState } from "react";
+import { useRef, useState } from "react";
+import { Link, useNavigate } from "react-router-dom";
+import { usePlanPaymentQuote } from "../api/hooks/plans";
+import { useCreateOrder } from "../api/hooks/orders";
 import { useTranslation } from "react-i18next";
 import { CalendarClock, CircleCheck, Layers, Tag } from "lucide-react";
 import { ApiError } from "../api/client";
@@ -57,6 +60,45 @@ function planStateBadge(state: string | undefined) {
   }
 }
 
+function PlanPayment({ enabled }: { enabled: boolean }) {
+  const quote = usePlanPaymentQuote(enabled);
+  const create = useCreateOrder();
+  const navigate = useNavigate();
+  const intent = useRef<{ fingerprint: string; key: string } | null>(null);
+  const [review, setReview] = useState(false);
+  if (!enabled) return null;
+  const payment = quote.data;
+  const terms = payment?.terms;
+  const amount = terms ? BigInt(terms.displayAmountMinor) : 0n;
+  const price = `${amount / 100n}.${(amount % 100n).toString().padStart(2, "0")} ${terms?.displayCurrency ?? ""}`;
+  const pay = () => {
+    if (!payment || !terms) return;
+    if (intent.current?.fingerprint !== payment.fingerprint) intent.current = { fingerprint: payment.fingerprint, key: crypto.randomUUID() };
+    create.mutate({
+      idempotencyKey: intent.current.key, purpose: "planPeriod", rail: "hyperswitch",
+      purposeRef: terms.customerPlanId, expectedPlanQuote: payment.fingerprint,
+      expectedCollectionRevision: terms.collectionRevision,
+      displayAmountMinor: terms.displayAmountMinor, displayCurrency: terms.displayCurrency,
+    }, { onSuccess: (result) => navigate(`/orders/${result.order.orderId}`) });
+  };
+  return <div className="flex flex-col gap-3">
+    <p className="text-sm text-muted">Plan payments fund one period. Renewal is manual and becomes available at the current UTC boundary. Old statement debt remains separate.</p>
+    {quote.isLoading ? <Skeleton className="h-8 w-full" /> : null}
+    {quote.error ? <Banner tone="warn">{quote.error instanceof Error ? quote.error.message : "Plan quote could not be loaded."}</Banner> : null}
+    {payment?.existingOrderId ? <Link className="text-primary" to={`/orders/${payment.existingOrderId}`}>Resume the existing period payment</Link> : terms ? <div className="flex flex-col gap-2">
+      <p>{price} pays the exact fee of <Cr minor={terms.feeMinor} /> for period {terms.periodIndex + 1}. {terms.periodStart ? `${terms.periodStart} – ${terms.periodEnd} (UTC).` : "The first period starts when paid activation completes."}</p>
+      <Button onClick={() => setReview(true)}>Review plan payment</Button>
+    </div> : null}
+    <Button tone="ghost" disabled={create.isPending} onClick={() => void quote.refetch()}>Refresh payment availability</Button>
+    <AlertDialog open={review} onOpenChange={(open) => { if (!create.isPending) setReview(open); }}>
+      <AlertDialogContent><AlertDialogHeader><AlertDialogTitle>Pay {price} for this plan period?</AlertDialogTitle><AlertDialogDescription>The payment creates plan entitlement after confirmed payment. It does not add spendable wallet credit or automatically renew. The fiat amount rounds up to the smallest currency unit; the sold credit fee stays exact.</AlertDialogDescription></AlertDialogHeader>
+        {create.error ? <Banner tone="error">{create.error.message}. Retry unchanged to recover this order, or refresh availability to resume it.</Banner> : null}
+        <AlertDialogFooter><Button tone="ghost" disabled={create.isPending} onClick={() => setReview(false)}>Keep reviewing</Button><Button isLoading={create.isPending} onClick={pay}>Continue to payment</Button></AlertDialogFooter>
+      </AlertDialogContent>
+    </AlertDialog>
+  </div>;
+}
+
 /** The live plan card: name, price, period kind, the credit standing beside
  * it (issue #612's `credit` block) and the cancel/change affordances. */
 function CurrentPlan() {
@@ -104,6 +146,7 @@ function CurrentPlan() {
   return (
     <Card title={t("plans.current")}>
       <div className="flex flex-col gap-4">
+        <PlanPayment enabled={sold ? sold.priceMinor > 0 : true} />
         <div className="flex flex-wrap items-center gap-2">
           <p className="text-lg font-semibold text-ink">{sold?.name ?? t("plans.unnamed")}</p>
           {planStateBadge(plan.state)}

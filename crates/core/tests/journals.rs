@@ -5,6 +5,8 @@
 //! refuses UPDATE/DELETE outright. Needs DATABASE_URL; skips without it.
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
+#[path = "support/plan_payment.rs"]
+mod plan_payment;
 #[path = "support/integration.rs"]
 mod setup;
 
@@ -131,74 +133,20 @@ async fn end_period_ago(pool: &PgPool, organization_id: Uuid, ago_secs: i64) {
     .expect("the plan period moves");
 }
 
-/// A `fulfilled` `planPeriod` order row — the fixture's stand-in for the PSP
-/// half of T15: the binding, merchant version and order row the production
-/// writer would have pinned, written directly so the journal tests never
-/// drive a provider. `status='fulfilled'` is terminal under the order's own
-/// guard — the row is created already paid.
+/// Exact paid order through the collection quote and local verified-event fixture.
 async fn plan_order(world: &World, customer_plan_id: Uuid, amount_minor: i64) -> Uuid {
-    let order_id = Uuid::new_v4();
-    let merchant = Uuid::new_v4();
-    let version = Uuid::new_v4();
-    // The account and its version reference each other — the deferred FK
-    // resolves only inside one transaction.
-    let mut tx = world.pool.begin().await.unwrap();
-    sqlx::query(
-        "INSERT INTO oxsum.merchant_accounts\
-         (merchant_id,business_id,name,rail,mode,account_id,current_version_id) \
-         VALUES($1,$2,$3,'hyperswitch','test',$4,$5)",
+    let order = plan_payment::paid_order(
+        &world.db,
+        &world.owner,
+        world.organization_id,
+        customer_plan_id,
     )
-    .bind(merchant)
-    .bind(world.business_id)
-    .bind(format!("m-{}", Uuid::new_v4().simple()))
-    .bind(format!("acct-{}", Uuid::new_v4().simple()))
-    .bind(version)
-    .execute(&mut *tx)
-    .await
-    .expect("the merchant lands");
-    sqlx::query(
-        "INSERT INTO oxsum.merchant_versions\
-         (version_id,merchant_id,revision,api_url,destination_policy,credentials_sealed,source) \
-         VALUES($1,$2,1,'https://sandbox.example','{}'::jsonb,'sealed','owner')",
-    )
-    .bind(version)
-    .bind(merchant)
-    .execute(&mut *tx)
-    .await
-    .expect("the merchant version lands");
-    sqlx::query(
-        "INSERT INTO oxsum.merchant_payment_bindings\
-         (payment_id,merchant_id,version_id,organization_id,amount_minor,currency,purpose) \
-         VALUES($1,$2,$3,$4,$5,'USD','order')",
-    )
-    .bind(order_id)
-    .bind(merchant)
-    .bind(version)
-    .bind(world.organization_id)
-    .bind(amount_minor)
-    .execute(&mut *tx)
-    .await
-    .expect("the binding lands");
-    sqlx::query(
-        "INSERT INTO oxsum.payment_orders\
-         (order_id,business_id,merchant_id,merchant_version_id,organization_id,\
-          purpose,amount_minor,currency,display_currency,display_amount_minor,\
-          rate_mantissa,rate_scale,purpose_ref,promo_minor,idempotency_key,status,paid_at) \
-         VALUES($1,$2,$3,$4,$5,'plan_period',$6,'USD','USD',$6,100,2,$7,0,$8,'fulfilled',now())",
-    )
-    .bind(order_id)
-    .bind(world.business_id)
-    .bind(merchant)
-    .bind(version)
-    .bind(world.organization_id)
-    .bind(amount_minor)
-    .bind(customer_plan_id)
-    .bind(format!("journal-test-{}", Uuid::new_v4().simple()))
-    .execute(&mut *tx)
-    .await
-    .expect("the order lands");
-    tx.commit().await.unwrap();
-    order_id
+    .await;
+    assert_eq!(
+        order.amount_minor, amount_minor,
+        "fixture pays the exact sold fee"
+    );
+    order.order_id
 }
 
 /// The org's journals, newest first.
@@ -372,7 +320,7 @@ async fn close_bills_overage_on_an_overage_enabled_plan() {
 // ── A22.2: a fulfilled planPeriod order applies the journal ────────────────
 
 #[tokio::test]
-async fn a_paid_order_applies_the_journal() {
+async fn a_renewal_prepays_its_period_without_consuming_old_debt() {
     let Some(world) = world().await else { return };
     let pro = sold(
         &world.db,
@@ -381,7 +329,7 @@ async fn a_paid_order_applies_the_journal() {
         2500,
         Some(10 * ONE),
         PeriodKind::Anniversary,
-        false,
+        true,
     )
     .await;
     let plan = world
@@ -393,15 +341,21 @@ async fn a_paid_order_applies_the_journal() {
         )
         .await
         .unwrap();
-    // The activation order underpaid the period — 1000 of 2500. Its prepay
-    // is what the close settles; the rest posts as the open receivable.
-    let partial = plan_order(&world, plan.customer_plan_id, 1000).await;
+    // The exact base fee is prepaid. Separate overage remains a receivable.
+    let partial = plan_order(&world, plan.customer_plan_id, 2500).await;
     world
         .db
         .activate_plan_period(partial, plan.customer_plan_id)
         .await
         .unwrap();
 
+    plan_payment::overage(
+        &world.db,
+        world.organization_id,
+        plan.customer_plan_id,
+        1500,
+    )
+    .await;
     end_period_ago(&world.pool, world.organization_id, 60).await;
     world.db.rollover_due_subscriptions().await.unwrap();
     assert_eq!(
@@ -416,8 +370,7 @@ async fn a_paid_order_applies_the_journal() {
     assert_eq!(journal.state, JournalState::Posted);
     assert_eq!(journal.total_minor - journal.settled_minor, 1500);
 
-    // The renewal order fulfills: it settles the open receivable first —
-    // `debit Cash / credit Receivables` — then prepays the next period.
+    // The renewal fee funds its exact new period; the old debt remains due.
     let renewal = plan_order(&world, plan.customer_plan_id, 2500).await;
     world
         .db
@@ -426,9 +379,9 @@ async fn a_paid_order_applies_the_journal() {
         .unwrap();
 
     let bill = detail(&world.db, world.organization_id, journal.journal_id).await;
-    assert_eq!(bill.journal.state, JournalState::Paid);
+    assert_eq!(bill.journal.state, JournalState::Posted);
     assert_eq!(bill.journal.settled_minor, 2500);
-    assert_eq!(bill.journal.paid_order_id, Some(renewal));
+    assert_eq!(bill.journal.total_minor - bill.journal.settled_minor, 1500);
 
     // Period 1 stands authorized by the renewal order; the plan is active.
     let plan = live(&world.db, world.organization_id).await;
@@ -667,8 +620,8 @@ async fn a_lost_dispute_restores_the_journal_receivable() {
     // The opened dispute counted once at record, the lost recharge again —
     // `disputed_minor` is the cumulative contested figure.
     assert_eq!(bill.journal.disputed_minor, 5000);
-    // A later payment can settle it again — the receivable is really open:
-    // the renewal order pays it first, then prepays the next period.
+    // Renewal funds only the next period; this chargeback remains a distinct
+    // receivable for the explicit statement repayment path (#777).
     let recovery = plan_order(&world, plan.customer_plan_id, 2500).await;
     world
         .db
@@ -676,7 +629,8 @@ async fn a_lost_dispute_restores_the_journal_receivable() {
         .await
         .unwrap();
     let recovered = detail(&world.db, world.organization_id, journal.journal_id).await;
-    assert_eq!(recovered.journal.state, JournalState::Paid);
+    assert_eq!(recovered.journal.state, JournalState::Posted);
+    assert_eq!(recovered.journal.settled_minor, 0);
 }
 
 // ── A22.5: a posted journal is immutable ────────────────────────────────────
@@ -691,7 +645,7 @@ async fn a_posted_journal_refuses_edits_and_deletes() {
         2500,
         Some(10 * ONE),
         PeriodKind::CalendarMonth,
-        false,
+        true,
     )
     .await;
     let plan = world
@@ -703,13 +657,29 @@ async fn a_posted_journal_refuses_edits_and_deletes() {
         )
         .await
         .unwrap();
-    // An orderless activation leaves the period's authorization dangling —
-    // the close settles nothing and the journal posts unpaid.
+    // An exact paid activation with overage leaves a real posted receivable.
     world
         .db
-        .activate_plan_period(Uuid::new_v4(), plan.customer_plan_id)
+        .activate_plan_period(
+            plan_payment::paid_order(
+                &world.db,
+                &world.owner,
+                world.organization_id,
+                plan.customer_plan_id,
+            )
+            .await
+            .order_id,
+            plan.customer_plan_id,
+        )
         .await
         .unwrap();
+    plan_payment::overage(
+        &world.db,
+        world.organization_id,
+        plan.customer_plan_id,
+        1000,
+    )
+    .await;
     end_period_ago(&world.pool, world.organization_id, 60).await;
     world.db.rollover_due_subscriptions().await.unwrap();
     let journal = journals(&world.db, world.organization_id)

@@ -6,6 +6,8 @@
 
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
+#[path = "../../core/tests/support/plan_payment.rs"]
+mod plan_payment;
 #[path = "../../core/tests/support/integration.rs"]
 mod setup;
 mod support;
@@ -207,6 +209,50 @@ async fn the_catalogue_publishes_and_binds_over_http() {
     );
     assert!(body["data"]["periods"].as_array().unwrap().is_empty());
 
+    world
+        .db
+        .bootstrap_collection_terms(&oxsum_core::CollectionCurrency {
+            code: "USD".into(),
+            rate_per_credit: "1".into(),
+        })
+        .await
+        .unwrap();
+    let (status, quote) = call(
+        &world.app,
+        "GET",
+        "/api/v1/org/plan/payment-quote",
+        Value::Null,
+        Some(&world.customer),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{quote}");
+    assert_eq!(
+        quote["data"]["terms"]["customerPlanId"],
+        customer_plan_id.to_string()
+    );
+    assert_eq!(quote["data"]["terms"]["planVersionId"], version.to_string());
+    assert_eq!(quote["data"]["terms"]["periodIndex"], 0);
+    assert!(quote["data"]["terms"]["periodStart"].is_null());
+    assert_eq!(quote["data"]["fingerprint"].as_str().unwrap().len(), 64);
+    let (status, _) = call(
+        &world.app,
+        "GET",
+        "/api/v1/org/plan/payment-quote",
+        Value::Null,
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+    let (status, _) = call(
+        &world.app,
+        "GET",
+        "/api/v1/org/plan/payment-quote",
+        Value::Null,
+        Some(&world.owner),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+
     // A second live bind conflicts — one active plan per customer.
     let (status, _) = call(
         &world.app,
@@ -222,7 +268,17 @@ async fn the_catalogue_publishes_and_binds_over_http() {
     // read shows the live plan and its `paymentOrder`-authorized period.
     world
         .db
-        .activate_plan_period(Uuid::new_v4(), customer_plan_id)
+        .activate_plan_period(
+            plan_payment::paid_order(
+                &world.db,
+                &world.owner,
+                world.customer_org,
+                customer_plan_id,
+            )
+            .await
+            .order_id,
+            customer_plan_id,
+        )
         .await
         .unwrap();
     let (status, body) = call(
@@ -295,7 +351,17 @@ async fn the_customer_cancels_and_schedules_at_the_boundary() {
         Uuid::parse_str(body["data"]["customerPlanId"].as_str().unwrap()).unwrap();
     world
         .db
-        .activate_plan_period(Uuid::new_v4(), customer_plan_id)
+        .activate_plan_period(
+            plan_payment::paid_order(
+                &world.db,
+                &world.owner,
+                world.customer_org,
+                customer_plan_id,
+            )
+            .await
+            .order_id,
+            customer_plan_id,
+        )
         .await
         .unwrap();
 

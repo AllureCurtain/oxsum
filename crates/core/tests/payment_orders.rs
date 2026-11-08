@@ -102,6 +102,7 @@ async fn context(db: &Db, m: &MerchantMutationResult, version: Uuid) -> Merchant
 fn new_order(purpose: PaymentOrderPurpose, key: &str, display_minor: i64) -> NewPaymentOrder {
     NewPaymentOrder {
         expected_collection_revision: None,
+        expected_plan_quote: None,
         purpose,
         display_amount_minor: display_minor,
         display_currency: "USD".into(),
@@ -319,11 +320,23 @@ async fn a_plan_period_order_grants_quota_never_wallet_cash() {
         .unwrap();
     assert_eq!(customer_plan.state, CustomerPlanState::PendingPayment);
 
-    let mut new = new_order(PaymentOrderPurpose::PlanPeriod, "pp-1", 210);
+    let quote = db.plan_payment_quote(org).await.unwrap();
+    let mut new = new_order(
+        PaymentOrderPurpose::PlanPeriod,
+        "pp-1",
+        quote.terms.display_amount_minor,
+    );
+    new.expected_plan_quote = Some(quote.fingerprint);
     new.purpose_ref = Some(customer_plan.customer_plan_id);
     let order = db.create_payment_order(&ctx, org, &new).await.unwrap();
 
-    let ev = succeeded_event(order.order_id, "pay_pp_1", org, &account, 210);
+    let ev = succeeded_event(
+        order.order_id,
+        "pay_pp_1",
+        org,
+        &account,
+        order.display_amount_minor,
+    );
     let receipt = db
         .receive_merchant_event(&ctx, &ev, &[8u8; 32])
         .await
