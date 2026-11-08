@@ -214,3 +214,14 @@ database with thousands of ledger schemas the dump and restore take minutes
 each — the runbook says *measure your database*, because the recovery time
 is dominated by how many `ledger_*` schemas `pg_restore` rebuilds. No RPO or
 RTO figure is promised here that a drill has not measured on your data.
+
+
+## Development artifact recovery evidence
+
+The reusable [artifact recovery rehearsal](artifact-recovery-rehearsal.md) takes
+explicit binaries and a verifier tarball, freezes their hashes and exercises real
+stream drain, schema upgrade, separate PostgreSQL restore, retained credentials
+and signing identity, compatible same-schema rollback, old proofs and new calls.
+The [recorded development run](roadmap/operator-launch/evidence/artifact-recovery.md)
+is a small isolated fixture; it does not certify the current release candidate,
+all previous releases or production recovery objectives.
