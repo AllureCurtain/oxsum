@@ -647,6 +647,24 @@ impl Db {
                 .await?;
                 consumed = fresh.try_get("consumed_minor")?;
             }
+            // A boundary cancellation also answers "no new window", but its
+            // ended quota no longer serves. Re-read the row under the same
+            // subscription lock so this very first request pays from wallet.
+            let active: bool = sqlx::query_scalar(
+                "SELECT state = 'active' FROM oxsum.org_subscriptions \
+                 WHERE subscription_id = $1",
+            )
+            .bind(subscription_id)
+            .fetch_one(&mut **tx)
+            .await?;
+            if !active {
+                return Ok(SubscriptionAdmission {
+                    drawn_minor: 0,
+                    draw_id: Uuid::nil(),
+                    period_id: Uuid::nil(),
+                    subscription_id: Uuid::nil(),
+                });
+            }
             // Past-due: the subscription stays in its ended window — the
             // period's remaining quota still draws (its counter kept what it
             // did not spend), and the wallet sees only the overflow the plan
