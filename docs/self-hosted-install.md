@@ -233,10 +233,14 @@ docker compose --env-file deploy/.env -f deploy/docker-compose.core.yml logs oxs
 ## Backup from day one
 
 ```bash
-scripts/backup.sh backups/
+env -u DATABASE_URL CONTAINER=oxsum-core-postgres-1 POSTGRES_DB=oxsum \
+  scripts/backup.sh /private/backups
 ```
 
-produces `backups/oxsum-backup-<utc>-*.dump` plus a `.manifest.json` naming
-the schema version, organization count and SHA-256. The dump contains live
+produces a private dump and version-2 portable `.manifest.json` under the
+selected output directory, recording snapshot schema/counts and SHA-256. Both files are
+private and non-overwriting. Connection selection is explicit; `.env` is never
+executed. See [backup/restore](operator-backup-restore.md) for local-URL mode and
+the strict manifest contract. The dump contains live
 secrets — encrypt at rest. `scripts/restore.sh` and
 `docs/self-hosted-upgrade.md` cover the restore half.

@@ -721,120 +721,40 @@ operator configuration — `docs/self-hosted-install.md` is the runbook and
 `docs/self-hosted-upgrade.md` the upgrade/rollback/restore half (issue
 #619); what follows here is the same procedures in their development form.
 
-### Backup
+### Backup and fresh restore
 
-Everything that matters lives in the database: the shared `oxsum` schema and one
-`ledger_<tenant_id>` schema per organization. A dump of the whole database is the
-backup — do not filter to the `oxsum` schema, or every organization's ledger
-comes back empty:
-
-```bash
-pg_dump --format=custom --file=oxsum.dump "$DATABASE_URL"
-```
-
-Two cluster settings matter once a deployment carries many organizations (one
-`ledger_*` schema each):
-
-- **`max_locks_per_transaction`.** `pg_dump` takes a lock per table, and the
-  stock 64 per transaction fails with `out of shared memory` once a database has
-  grown past a few hundred organizations. Set it to at least 1024 in the cluster
-  (`ALTER SYSTEM SET max_locks_per_transaction = 1024`, then restart); the
-  Compose database ships that value.
-- **Docker's `/dev/shm`.** A restore builds indexes in parallel and needs more
-  than the default 64 MB — without it `pg_restore` fails with `could not resize
-  shared memory segment … No space left on device`. The Compose service sets
-  `shm_size: 1gb`; a self-hosted PostgreSQL wants the host's usual
-  `shared_buffers`-sized `/dev/shm`.
-
-`scripts/backup-restore-drill.sh` proves the dump both restores and serves; it
-is the next section.
-
-The ledgers are append-only, so a dump is a consistent snapshot by construction:
-nothing it captured is ever rewritten underneath the backup. Take the dump
-against a quiet hour if the database is busy — `pg_dump` holds its snapshot
-isolation for the run — and keep dumps long enough to cover the audit window the
-deployment answers for, because a restored ledger is the only way to re-prove an
-old bill after data is gone.
-
-Continuous archiving (WAL shipping / PITR) is the production-grade alternative
-and works unchanged — the database is ordinary PostgreSQL — but it is the
-operator's tooling to run; oxsum ships no backup machinery of its own.
-
-One non-database item survives a dump: nothing. Signing seeds, the credential
-seal and the admin token are environment configuration, not data — losing the
-dump loses the books; losing the environment loses only what "Key rotation"
-below spells out.
-
-### Restore
-
-Restore into an empty database of the same major PostgreSQL version, then start
-the server against it:
+Use the [explicit backup/restore procedure](operator-backup-restore.md), which
+requires a selected container/database or PostgreSQL URL, publishes a private
+snapshot-bound dump/manifest pair and restores only into a new database. Both
+shell wrappers remain available; they never source `.env` or discover containers.
 
 ```bash
-createdb oxsum-restored
-pg_restore --dbname=oxsum-restored --no-owner --no-privileges oxsum.dump
-# point DATABASE_URL at oxsum-restored and start the binary
+env -u DATABASE_URL CONTAINER=oxsum-core-postgres-1 POSTGRES_DB=oxsum \
+  scripts/backup.sh /private/backups
 ```
 
-`pg_restore` replays every schema — `oxsum`, every `ledger_*`, the migration
-ledger `oxsum._migrations` — so the server boots onto the restored state without
-a migrate step. Startup migrations are idempotent: a dump of an older release
-restores, then the newer binary's `Db::migrate` applies only what is missing.
+`backup-restore-drill.sh` now requires explicit `SOURCE`, `TARGET`, `OUT_DIR` and
+connection selection. It never drops the target. Its count comparison verifies
+transport/inventory, not whether a server can serve traffic or old proofs.
+`rehearse-backup-restore.py --output /new/private/path` tests both connection
+modes and snapshot isolation in two disposable containers, retaining private
+measured evidence. Old October 22 same-cluster drill measurements do not certify
+the current artifact or a representative capacity dataset.
 
-After a restore, in-flight state is what the dump held: open holds older than
-`OXSUM_HOLD_TIMEOUT` sweep to zero on the next pass, which is the designed answer
-to a gateway that went away mid-turn — the client's reservation releases, nothing
-is charged for a turn nobody can settle.
+A snapshot includes `oxsum` and every ledger schema; never back up only `oxsum`.
+The helper's repeatable-read snapshot also binds its inventory counts. Retain
+sealing/signing keys and runtime image identity separately from the database.
+WAL/PITR remains separate operator tooling. Measure your dataset's duration and
+disk needs, and check `max_locks_per_transaction`, shared memory and available
+storage: the historical ~46,000-table fixture exhausted stock settings. The
+Compose PostgreSQL configuration remains the documented starting point, not a
+capacity promise. The helper reports settings; it never changes the cluster.
 
-### The restore drill
-
-`scripts/backup-restore-drill.sh` dumps the source, restores it into a second
-database on the same cluster, and compares the counts that prove the move —
-organizations, statements, deposits, usage records and the `ledger_*` schemas —
-exiting non-zero on a mismatch. It never restores over its source, and after the
-counts match it prints the command that starts a server against the restored
-copy.
-
-A recorded run (2026-10-22, local Compose, the development database reset to the
-demo world):
-
-```text
-$ CONTAINER=oxsum-postgres-1 bash scripts/backup-restore-drill.sh
-dumping oxsum to /tmp/oxsum-backup.dump
-dump size: 135111 bytes
-restoring into oxsum_drill_restore
-check                  source     restored
-organizations               2            2
-statements                  0            0
-deposits                    3            3
-usage records               0            0
-ledger schemas              1            1
-the restored copy matches the source.
-```
-
-Then the three checks that say the restore serves:
-
-```text
-start the server against the restored copy
-  DATABASE_URL=postgres://postgres@127.0.0.1:5432/oxsum_drill_restore \
-  OXSUM_ADDR=127.0.0.1:3012 cargo run -p oxsum-server
-
-GET  /healthz                                 200
-POST /api/v1/auth/login (admin@oxsum.local)   200
-GET  /api/v1/bills?limit=1                    the seeded top-ups
-GET  /api/v1/entries/{entryId}/proof          the bundle
-POST /verify  bundle=… expected_hash=…        "The bill verifies."
-```
-
-The same run also produced the two settings above the hard way. The first
-attempt ran against a development database that had accumulated 4,192 test
-organizations from before the per-suite isolation (about 46,000 tables): the dump
-failed at the stock lock limit, the restore failed at Docker's stock `/dev/shm`,
-and the container needed minutes to fsync after a restart. After the reset to the
-demo world — 2 organizations, 11 ledger tables, 10 MB — the whole drill runs in
-seconds. The lesson is the reset, not the drill: a development database left
-unreset is what turns a five-second check into an hour, and the reset path is
-`scripts/reset-dev-database.sql` (see "Test residue in the development database").
+Restore preserves the backed-up schema first; migration is an explicit subsequent
+step using the selected artifact. Confirm exact schema/runtime, retained keys,
+old bill evidence and new calls before shifting traffic. In-flight reservations
+and operation recovery require their own drill; a successful dump/restore count
+check does not exercise those workers.
 
 ### Migration ordering
 

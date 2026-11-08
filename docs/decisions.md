@@ -3204,3 +3204,25 @@ requires a positive duration or an explicit no-expiry choice. Every mutation
 retains one key for unchanged retry, creates a new key after an edit, and keeps
 drafts in memory through failures. UI labels are available in both locales.
 Actual browser acceptance remains distinct from source/build/input tests.
+
+
+## 2026-11-08 — Bind backup evidence and restore to explicit targets (#827)
+
+Auto-detecting a Compose database after the operator selected DATABASE_URL could
+mix the dump, inventory and restore across clusters. A shared standard-library
+helper now requires one explicit container/database or PostgreSQL URL, never
+sources `.env` and removes ambient libpq overrides. Credentials stay in private
+files/process environment, not argv or errors. Exported repeatable-read snapshot
+identity binds pg_dump and logical schema/counts; physical settings remain
+observations. Dump and portable version-2 manifest are private, flushed and
+published without overwriting, with the manifest last as completion marker.
+
+Restoration requires the complete manifest, freezes the adjacent private dump,
+verifies its size and SHA-256, and creates only a fresh safely quoted target.
+Transactional pg_restore and exact inventory/schema comparison precede an atomic
+success receipt. A created target remains after failure; lost creation responses
+are recorded as unknown outcomes, never cleaned up by guessing. The drill shares
+this path and no longer drops a default target. Old manifests/dumps are retained
+but require a separately reviewed legacy recovery procedure instead of fabricated
+checksums or silently weaker validation. Migrations, traffic switches, old-proof
+checks and candidate acceptance remain explicit separate operations.

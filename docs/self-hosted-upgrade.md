@@ -16,12 +16,19 @@ behavior and data compatibility; equal schema alone does not prove that policy.
 
 ```bash
 # 1. A backup you have verified — the rollback is this file.
-scripts/backup.sh backups/
+env -u DATABASE_URL CONTAINER=oxsum-core-postgres-1 POSTGRES_DB=oxsum \
+  scripts/backup.sh /private/backups
 
 # 2. What you are running now, for the compare afterwards.
 curl -s http://127.0.0.1:3000/api/v1/version
 # {"data":{"version":"0.1.0","gitSha":"…","schemaVersion":"0095_plan_statements"}}
 ```
+
+The pair now requires an explicit container/database or PostgreSQL URL, a private
+version-2 portable manifest, and a fresh restore target. No `.env` is sourced or
+existing database dropped. See [backup and restore](operator-backup-restore.md)
+for target selection, credentials, old-backup compatibility and retained failure
+receipts.
 
 The manifest's `schemaVersion` tells you exactly which schema level the dump
 holds; the version endpoint's `schemaVersion` tells you the level the *new*
@@ -154,14 +161,18 @@ since is gone, which is why the backup is step 1, not a nicety.
 ```bash
 # 1. Restore the pre-upgrade dump into a fresh database name — never over
 #    the live one. The script refuses both mistakes.
-scripts/restore.sh backups/oxsum-backup-<utc>-*.manifest.json oxsum-rollback
+env -u DATABASE_URL CONTAINER=oxsum-core-postgres-1 POSTGRES_DB=oxsum \
+  scripts/restore.sh /private/backups/oxsum-backup-<utc>-<id>.manifest.json oxsum-rollback
 
 # 2. Bring the restored schema to the level the rollback binary serves
 #    (the dump held an older level; --migrate-only closes the gap the old
 #    image expects).
-DATABASE_URL=postgres://postgres:<password>@localhost:5432/oxsum-rollback \
-  docker run --rm --env-file deploy/.env \
-    ghcr.io/allurecurtain/oxsum@sha256:<retained-old-digest> --migrate-only
+docker run --rm --network <reviewed-database-network> \
+  --env-file /private/rollback.env \
+  ghcr.io/allurecurtain/oxsum@sha256:<retained-old-digest> --migrate-only
+# rollback.env must point DATABASE_URL at oxsum-rollback on that network and
+# retain the original sealing/signing keys. A host env assignment alone is
+# not automatically passed through docker run.
 
 # 3. Point the deployment at the restored database and the old image.
 $EDITOR deploy/.env
