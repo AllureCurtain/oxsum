@@ -558,3 +558,10 @@ recover original provisioning and metering operations; they cannot claim portal
 customers by email or business identifier. Archival blocks new service admission
 and keeps existing financial history. Verified human linking and the remaining
 embedded key, checkout, evidence and notification surfaces remain under #747.
+
+The owner portal exposes stable application namespace creation and explicit
+integration credential grants. It supports application-only or named-customer
+authority, distinct scopes, expiry and reason. It retains an unchanged submitted
+operation for retry, displays secrets once and explains metadata-only recovery.
+List state distinguishes expiry from revocation; no owner credential is delegated
+to an external application's runtime.

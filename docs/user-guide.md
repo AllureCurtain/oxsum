@@ -1487,3 +1487,19 @@ mapping and retries the original operation. Archive requires the separate
 while blocking new calls. A provisioning retry returns its original receipt, so
 use the GET route for current archived/suspended state. Application metering
 retries preserve the original operation across credential replacement as well.
+
+Owners manage application namespaces and integration credentials from **Business →
+Integrations**. Create or select an application, choose only the scopes its runtime
+needs, set an expiry and provide a reason. The application account limit includes
+archived accounts. Existing-customer grants use named selections; legacy
+provision-only grants remain separate and do not survive credential rotation as
+an application namespace does.
+
+The form freezes the selected identities, scopes, absolute expiry, reason and
+operation key when submitted. Retry sends that same request. Starting a new
+operation is deliberate: if the previous response was lost, inspect issued
+credentials first to avoid keeping unwanted authority. Credential secrets appear
+only in the first successful response and are not saved by the portal. If a retry
+returns metadata without a secret and you did not retain the original secret,
+revoke that credential and issue a replacement. Refreshing a page does not
+reissue a credential. The list distinguishes active, expired and revoked records.

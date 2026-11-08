@@ -7,10 +7,7 @@ import {
   useBusiness,
   useCapability,
   useBusinessStaff,
-  useCreateIntegrationCredential,
-  useIntegrationCredentials,
   useCreateStaffInvitation,
-  useRevokeIntegrationCredential,
   useRevokeStaff,
   useRevokeStaffInvitation,
   useSetStaff,
@@ -31,6 +28,7 @@ import {
 } from "../../components/ui";
 import { AuditAction } from "./biz";
 import { MerchantSettings } from "./merchants";
+import { ApplicationAccess } from "./application-access";
 
 // ---------------------------------------------------------------------------
 // /app/business#business/staff + #business/integrations + #business/audit —
@@ -227,87 +225,6 @@ function StaffInvitations() {
 // partner reaches the API under (T04), with mint + revoke.
 // ---------------------------------------------------------------------------
 
-function Credentials() {
-  const { t } = useTranslation();
-  const creds = useIntegrationCredentials();
-  const create = useCreateIntegrationCredential();
-  const revoke = useRevokeIntegrationCredential();
-  const [name, setName] = useState("");
-  const [scopes, setScopes] = useState("customersRead");
-
-  return (
-    <Card title={t("biz.integrations.credentialsTitle")}>
-      <form
-        className="mb-4 grid grid-cols-1 gap-2 sm:grid-cols-3"
-        onSubmit={(e) => {
-          e.preventDefault();
-          create.mutate(
-            { idempotencyKey: idem(), name: name || null, scopes: scopes.split(",").map((s) => s.trim()).filter(Boolean), reason: "console mint" },
-            { onSuccess: () => setName("") },
-          );
-        }}
-      >
-        <Field label={t("biz.integrations.colName")}>
-          <TextInput value={name} onChange={(e) => setName(e.target.value)} />
-        </Field>
-        <Field label={t("biz.integrations.colScopes")} hint={t("biz.integrations.scopesHint")}>
-          <TextInput value={scopes} onChange={(e) => setScopes(e.target.value)} required />
-        </Field>
-        <div className="flex items-end">
-          <Button type="submit" isLoading={create.isPending}>{t("biz.integrations.mint")}</Button>
-        </div>
-      </form>
-      {create.error instanceof ApiError ? <Banner tone="error">{create.error.message}</Banner> : null}
-      {create.data?.secret ? (
-        <Banner tone="warn" className="mb-3">
-          {t("biz.integrations.secretOnce")} <code className="mono">{create.data.secret}</code>
-        </Banner>
-      ) : null}
-      {creds.isError ? (
-        <Banner tone="error">{t("biz.loadError")}</Banner>
-      ) : (
-        <TableShell
-          density="compact"
-          head={[t("biz.integrations.colName"), t("biz.integrations.colPrefix"), t("biz.integrations.colScopes"), t("biz.integrations.colExpires"), t("common.status"), ""]}
-          loading={creds.isLoading ? 3 : 0}
-          sticky={false}
-        >
-          {!creds.isLoading &&
-            (creds.data?.credentials ?? []).map((c) => (
-              <tr key={c.credentialId}>
-                <td>{c.name ?? "—"}</td>
-                <Td mono>{c.prefix}</Td>
-                <Td truncate>{c.scopes.join(", ")}</Td>
-                <Td mono>{c.expiresAt.slice(0, 10)}</Td>
-                <td>{c.revokedAt ? <Badge tone="secondary">{t("biz.integrations.revoked")}</Badge> : <Badge tone="success">{t("biz.integrations.live")}</Badge>}</td>
-                <td className="text-right">
-                  {!c.revokedAt ? (
-                    <AuditAction
-                      trigger={<Button tone="danger">{t("biz.integrations.revoke")}</Button>}
-                      title={t("biz.integrations.revokeTitle")}
-                      description={t("biz.integrations.revokeExplain")}
-                      confirmLabel={t("biz.integrations.revoke")}
-                      tone="danger"
-                      reasonLabel={t("biz.reason")}
-                      isPending={revoke.isPending}
-                      error={revoke.error}
-                      onConfirm={(reason, key) =>
-                        revoke.mutate({ credentialId: c.credentialId, idempotencyKey: key, reason })
-                      }
-                    />
-                  ) : null}
-                </td>
-              </tr>
-            ))}
-          {!creds.isLoading && (creds.data?.credentials.length ?? 0) === 0 ? (
-            <EmptyRows colSpan={6}>{t("biz.integrations.noCredentials")}</EmptyRows>
-          ) : null}
-        </TableShell>
-      )}
-    </Card>
-  );
-}
-
 export function BusinessIntegrations() {
   const { t } = useTranslation();
   const business = useBusiness();
@@ -316,7 +233,7 @@ export function BusinessIntegrations() {
     <div className="flex flex-col gap-6">
       <h2 className="text-xl font-bold">{t("biz.integrations.title")}</h2>
       <MerchantSettings />
-      {canManage ? <Credentials /> : null}
+      {canManage ? <ApplicationAccess /> : null}
     </div>
   );
 }

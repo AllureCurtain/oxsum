@@ -1,0 +1,36 @@
+import assert from "node:assert/strict";
+import test from "node:test";
+import { credentialRequest, type GrantDraft } from "../src/lib/integration-grant.ts";
+
+const draft: GrantDraft = { mode: "application", applicationId: "app-a", customerIds: ["portal-customer"], scopes: ["customersRead", "meteringWrite"], name: "My app", days: "30", reason: "runtime grant" };
+
+test("application grants exclude unrelated customers and freeze exact expiry and identity", () => {
+  const request = credentialRequest(draft, "operation-a", Date.UTC(2026, 10, 9));
+  assert.deepEqual(request.customerIds, []);
+  assert.equal(request.applicationId, "app-a");
+  assert.equal(request.expiresAt, "2026-12-09T00:00:00.000Z");
+  const transmitted = JSON.stringify(request);
+  draft.customerIds.push("later-customer");
+  draft.scopes.push("billingRead");
+  assert.equal(JSON.stringify(request), transmitted);
+  assert.equal(request.idempotencyKey, "operation-a");
+});
+
+test("legacy grant paths cannot inherit an application or its lifecycle scope", () => {
+  assert.throws(() => credentialRequest({ ...draft, mode: "customers", scopes: ["customersLifecycleWrite"] }, "key", 0), /scopes/);
+  assert.throws(() => credentialRequest({ ...draft, mode: "customers", customerIds: [] }, "key", 0), /customers/);
+  const provision = credentialRequest({ ...draft, mode: "provision" }, "key", 0);
+  assert.equal(provision.applicationId, undefined);
+  assert.deepEqual(provision.customerIds, []);
+  assert.deepEqual(provision.scopes, ["customersProvision"]);
+  const selected = credentialRequest({ ...draft, mode: "customers", customerIds: ["b", "a", "b"] }, "key", 0);
+  assert.equal(selected.applicationId, undefined);
+  assert.deepEqual(selected.customerIds, ["a", "b"]);
+});
+
+test("malformed and out-of-range expiries or missing authority fail before submission", () => {
+  for (const days of ["0", "366", "1.5", "1e2", "-1", "NaN"]) assert.throws(() => credentialRequest({ ...draft, days }, "key", 0), /expiry/);
+  assert.throws(() => credentialRequest({ ...draft, applicationId: "" }, "key", 0), /application/);
+  assert.throws(() => credentialRequest({ ...draft, scopes: [] }, "key", 0), /scopes/);
+  assert.throws(() => credentialRequest({ ...draft, reason: " " }, "key", 0), /details/);
+});

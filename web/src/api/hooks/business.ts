@@ -650,7 +650,7 @@ export function useIntegrationCredentials(after?: string) {
 export function useCreateIntegrationCredential() {
   const client = useQueryClient();
   return useMutation({
-    mutationFn: (body: Record<string, unknown>) =>
+    mutationFn: (body: components["schemas"]["IntegrationCredentialRequest"]) =>
       api<CreatedIntegrationCredential>("/business/integration-credentials", { method: "POST", body }),
     onSuccess: () => client.invalidateQueries({ queryKey: ["biz-int-credentials"] }),
   });
