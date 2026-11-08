@@ -9674,7 +9674,7 @@ export interface paths {
         put?: never;
         /**
          * Resolve an open dispute
-         * @description Current business staff with refunds-write capability; a personal session. `evidenceDue` moves the dispute to the contesting state, `won` or `closed` end the record, and `lost` re-charges the drawn receivable through the dispute's own ledger entry — `dispute-recharge/<dispute_id>` — so the customer-visible ledger reads a contested-charge restoration, never a granted refund. Every resolution writes its finance audit naming the actor and reason.
+         * @description Current business staff with refunds-write capability; a personal session. `evidenceDue` moves the dispute to the contesting state; `won` or `closed` end it without money. Authority, the selected outcome, any ledger and document effects, and finance audit commit atomically. An unchanged idempotency key replays its original request; a different target, resolution or trimmed reason under that key is 409. A different terminal outcome or inconsistent historical ledger/audit evidence is also 409 and requires source review. A plan `lost` outcome records complete chargeback cash against its original receivable, refund payable or explicit review suspense under `dispute-recharge/<dispute_id>`. The legacy non-plan debit-Cash/credit-CreditLine allocation remains a known financial defect tracked by #829; this transaction fix does not certify that allocation.
          */
         post: {
             parameters: {

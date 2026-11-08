@@ -19,14 +19,17 @@
 //!   the `refund-retries` job to re-issue inside a bounded attempt budget.
 //!
 //! A **dispute** is not a refund: the `dispute` event kind opens a contested
-//! record of its own (`opened → evidence_due → won | lost | closed`). A lost
-//! dispute re-charges the drawn receivable through [`crate::Wallet`]'s
-//! `repay_credit` shape under the dispute's own ledger key, so the ledger
-//! never confuses a contested reversal with a granted refund.
+//! record of its own (`opened → evidence_due → won | lost | closed`). Each
+//! resolution commits authority, ledger/documents, terminal state and audit
+//! together. Historical interrupted effects require source review. The legacy
+//! non-plan Dr Cash / Cr CreditLine allocation is a known defect (#829), not a
+//! correct cash-loss representation; plan chargebacks retain complete cash.
 //!
 //! The promo leg of a `bundle` order is never refundable cash: the bound is
 //! `amount_minor` alone, and cancelling the promo lot is T18's seam — a
 //! refund never converts grant into money.
+
+mod dispute_resolution;
 
 use crate::{
     BusinessCapability, Db, MerchantEventKind, MerchantEventReceipt, WalletError,
@@ -1579,186 +1582,5 @@ impl DisputeResolution {
             Self::Lost => "lost",
             Self::Closed => "closed",
         }
-    }
-}
-
-impl Db {
-    /// The staff resolution on an open dispute — `RefundsWrite`, audited like
-    /// a refund's. `won`/`closed` end the record; `evidence_due` moves it to
-    /// the contesting state; `lost` re-charges the drawn receivable through
-    /// [`crate::Wallet`]'s `repay_credit` shape under the dispute's own
-    /// ledger key — `dispute-recharge/<dispute_id>` — so the customer-visible
-    /// ledger reads a contested-charge restoration, distinct from a granted
-    /// refund. A re-charge the line no longer carries is refused rather than
-    /// booked into a pool the outcome forbids.
-    ///
-    /// `wallet` is the dispute organization's ledger. Replaying a resolved
-    /// dispute answers the standing row — the entry's own idempotency makes
-    /// a re-run a single charge.
-    #[allow(clippy::too_many_arguments)]
-    pub async fn resolve_order_dispute(
-        &self,
-        wallet: &crate::Wallet,
-        token: &str,
-        dispute_id: Uuid,
-        resolution: DisputeResolution,
-        reason: Option<&str>,
-        idempotency_key: &str,
-        on: time::Date,
-    ) -> Result<OrderDispute, WalletError> {
-        authority::validate(idempotency_key, reason)?;
-        let mut tx = self.pool().begin().await?;
-        let business = authority::lock_business(&mut tx).await?;
-        let actor = authority::require_capability(
-            &mut tx,
-            business,
-            token,
-            BusinessCapability::RefundsWrite,
-        )
-        .await?;
-        let row = sqlx::query(
-            "SELECT d.dispute_id,d.order_id,d.organization_id,d.provider_dispute_id,\
-                    d.amount_minor,d.currency,d.state,d.recharge_entry_id,d.created_at,d.updated_at \
-             FROM oxsum.disputes d JOIN oxsum.merchant_accounts m USING(merchant_id) \
-             WHERE d.dispute_id=$1 AND m.business_id=$2 FOR UPDATE OF d",
-        )
-        .bind(dispute_id)
-        .bind(business)
-        .fetch_optional(&mut *tx)
-        .await?;
-        let Some(dispute) = row.as_ref().map(dispute_from_row).transpose()? else {
-            return Err(WalletError::NotFound("unknown dispute".into()));
-        };
-        if matches!(dispute.state.as_str(), "won" | "lost" | "closed") {
-            tx.commit().await?;
-            return Ok(dispute);
-        }
-        let state = resolution.as_str();
-        tx.commit().await?;
-        // The order's purpose routes the re-charge: a `plan_period` dispute
-        // restores the journal's receivable (`debit Receivables / credit
-        // Cash`, journal `paid → posted`) — the contested plan fee is owed
-        // again as past-due, never a wallet line's debt (issue #611).
-        let purpose: Option<String> =
-            sqlx::query_scalar("SELECT purpose FROM oxsum.payment_orders WHERE order_id=$1")
-                .bind(dispute.order_id)
-                .fetch_optional(self.pool())
-                .await?;
-        let plan_fee = purpose.as_deref() == Some("plan_period");
-        // The re-charge runs outside the held row lock, keyed on the dispute
-        // id: a retried resolve replays the standing entry. `repay_credit`
-        // refuses outright over the outstanding draw rather than capping, so
-        // the recharge is clamped to what the line still carries — a dispute
-        // contested past the receivable restores the draw, not the full order.
-        let mut recharged = None;
-        let mut recharge_entry = None;
-        let mut unallocated_chargeback = 0i64;
-        let mut payable_chargeback = 0i64;
-        let mut corrected_journals = Vec::new();
-        let recharge = if resolution == DisputeResolution::Lost && !plan_fee {
-            let drawn = wallet.credit_used().await?;
-            if drawn <= 0 {
-                return Err(invalid("a lost dispute has no drawn receivable to restore"));
-            }
-            let amount = dispute.amount_minor.min(drawn);
-            recharged = Some(amount);
-            Some(wallet.dispute_recharge(&dispute_id, amount, on).await?)
-        } else {
-            None
-        };
-        if let Some(receipt) = &recharge {
-            recharge_entry = Some(*receipt.entry_id.as_uuid());
-        }
-        if resolution == DisputeResolution::Lost && plan_fee {
-            // Restore the journal's receivable inside a fresh transaction —
-            // the entry posts under the dispute's own key so a replay is a
-            // no-op, and the journal walks `paid → posted` with the contested
-            // figure already tracked. The dispute row names the same
-            // derived entry id the wallet-funded arm would record.
-            let mut jtx = self.pool().begin().await?;
-            let restored = self
-                .recharge_journal_dispute_in(
-                    &mut jtx,
-                    wallet,
-                    dispute.order_id,
-                    dispute_id,
-                    dispute.amount_minor,
-                    on,
-                )
-                .await?;
-            let key = format!("dispute-recharge/{dispute_id}");
-            let allocated = wallet
-                .plan_source_debit_in(&mut jtx, &key, crate::wallet::RECEIVABLES)
-                .await?;
-            payable_chargeback = wallet
-                .plan_source_debit_in(&mut jtx, &key, crate::wallet::REFUND_PAYABLE)
-                .await?;
-            unallocated_chargeback = dispute.amount_minor - allocated - payable_chargeback;
-            corrected_journals = crate::plan_usage_corrections::corrected_order_journals_in(
-                &mut jtx,
-                dispute.order_id,
-            )
-            .await?;
-            recharged = Some(allocated);
-            jtx.commit().await?;
-            if restored.is_none() {
-                return Err(invalid(
-                    "a lost dispute has no journal receivable to restore",
-                ));
-            }
-            recharge_entry =
-                Some(*crate::entry_id_for(&format!("dispute-recharge/{dispute_id}")).as_uuid());
-        }
-        let amount_minor = dispute.amount_minor;
-        let mut tx = self.pool().begin().await?;
-        let audit_id = Uuid::new_v4();
-        sqlx::query(
-            "UPDATE oxsum.disputes SET state=$2,recharge_entry_id=$3,resolved_by=$4,\
-             audit_ref=$5,updated_at=now() WHERE dispute_id=$1",
-        )
-        .bind(dispute_id)
-        .bind(state)
-        .bind(recharge_entry)
-        .bind(actor.user_id)
-        .bind(audit_id)
-        .execute(&mut *tx)
-        .await?;
-        sqlx::query(
-            "INSERT INTO oxsum.finance_audit\
-             (audit_id,business_id,actor_user_id,action,target,detail,idempotency_key) \
-             VALUES($1,$2,$3,'dispute.resolve',$4,$5,$6)",
-        )
-        .bind(audit_id)
-        .bind(business)
-        .bind(actor.user_id)
-        .bind(dispute_id.to_string())
-        .bind(json!({
-            "orderId": dispute.order_id,
-            "resolution": state,
-            "contestedMinor": amount_minor,
-            "rechargedMinor": recharged,
-            "payableMinor": payable_chargeback,
-            "unallocatedMinor": unallocated_chargeback,
-            "requiresReview": unallocated_chargeback>0,
-            "correctedJournals":corrected_journals,
-            "reviewReason":if corrected_journals.is_empty(){None}else{Some("historical usage correction requires explicit payable allocation")},
-            "currency": dispute.currency,
-            "rechargeEntryId": recharge_entry,
-            "reason": reason,
-        }))
-        .bind(idempotency_key)
-        .execute(&mut *tx)
-        .await?;
-        let resolved = sqlx::query(
-            "SELECT d.dispute_id,d.order_id,d.organization_id,d.provider_dispute_id,\
-                    d.amount_minor,d.currency,d.state,d.recharge_entry_id,d.created_at,d.updated_at \
-             FROM oxsum.disputes d WHERE d.dispute_id=$1",
-        )
-        .bind(dispute_id)
-        .fetch_one(&mut *tx)
-        .await?;
-        let dispute = dispute_from_row(&resolved)?;
-        tx.commit().await?;
-        Ok(dispute)
     }
 }
