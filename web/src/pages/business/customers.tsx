@@ -1,3 +1,4 @@
+import { CustomerInvitations } from "./customer-invitations";
 import { useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Users } from "lucide-react";
@@ -361,7 +362,7 @@ export function BusinessCustomers() {
       {picked ? (
         <CustomerDetail customer={picked} onBack={() => setPicked(null)} />
       ) : (
-        <CustomerList onPick={setPicked} />
+        <><CustomerInvitations /><CustomerList onPick={setPicked} /></>
       )}
     </div>
   );
