@@ -127,7 +127,7 @@ def apply_locked(args, state):
         docker("image", "save", "--platform", plan["image"]["platform"], "--output", str(archive), reference)
         expected = {"sourceSha": plan["sourceSha"], "configId": plan["image"]["configId"], "platform": plan["image"]["platform"]}
         gate.require(gate.image_identity(archive, plan["sourceSha"]) == expected, "pulled image differs from deployment plan")
-    options = ["--network", "host", "--env-file", str(args.env_file.resolve()),
+    options = ["--platform", plan["image"]["platform"], "--network", "host", "--env-file", str(args.env_file.resolve()),
                "--env", f"OXSUM_ADDR=127.0.0.1:{args.port}"]
     docker("run", "--rm", *options, reference, "--check-config")
     # All target identity/config checks precede downtime. A failure after this
