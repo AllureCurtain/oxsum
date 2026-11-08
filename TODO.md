@@ -4,9 +4,9 @@ Updated: 2026-11-09
 
 ## In progress
 
-- [ ] [#853](https://github.com/AllureCurtain/oxsum/issues/853) — Owner application and typed scoped-credential forms, exact retry identity and safe one-time secrets; depends on #846.
+- [ ] [#853](https://github.com/AllureCurtain/oxsum/issues/853) — Owner application and typed scoped-credential forms with exact retry identity and one-time secret recovery; three behavioral checks, four contract checks, frontend build and independent source review passed on integrated #846. PR integration and browser acceptance pending.
 
-- [ ] [#846](https://github.com/AllureCurtain/oxsum/issues/846) — Stable application namespaces, bounded customer lifecycle and rotated metering replay; 2,003 full workspace passes plus 39 core and 13 HTTP checks, strict Clippy and final independent review passed. PR #855 integration pending; owner portal follows in #853.
+- [x] [#846](https://github.com/AllureCurtain/oxsum/issues/846) — Stable application namespaces, bounded customer lifecycle and rotated metering replay; 2,003 full workspace passes plus 39 core and 13 HTTP checks, strict Clippy and final independent review passed. Integrated in PR #855 (`42b80a24`); owner portal follows in #853.
 
 - [ ] [#848](https://github.com/AllureCurtain/oxsum/issues/848) — Compare runtime financial projections with independent official ledger/source totals after #838; current reconciliation actual totals still clone the projection. N11 remains open.
 
