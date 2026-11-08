@@ -91,3 +91,9 @@ zero skipped**, 14.012 seconds. H1–H6, all refund scenarios and the six contro
 lock cases executed. The subsequent rebase onto `45a833e` only integrated SDK
 publication tooling and documentation; this implementation and its tests are
 unchanged. No additional source correction was required.
+
+
+The financial review limitations above describe the #811 checkpoint. #820
+subsequently makes supported journal/statement voids atomic and restores dunning
+from aggregate debt; [its evidence](statement-review-finance.md) records the
+separate conservation, legacy compatibility and admission checks.

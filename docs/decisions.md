@@ -3266,6 +3266,9 @@ when another statement remained overdue. Both violate the existing debt model.
 - Exact target/action/reason/key replays are inert. Conflicting key reuse refuses;
   audit names the real reversal entry or null for a zero-money operation.
   `outstandingMinor` describes debt; overage admission additionally counts holds.
+  A new explicit request for an already-financially-void source may clear an
+  old writer's stale debt marker, with a new audit and no ledger entry; exact
+  audited retries still return before that action.
 
 This adds no payout, repayment or daily recognition feature. Validation and
 remaining release limits are recorded in
