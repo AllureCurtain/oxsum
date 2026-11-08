@@ -668,11 +668,10 @@ async fn a_dispute_is_not_a_refund() {
     assert_eq!(wallet.available().await.unwrap(), 1_500_000_000);
 }
 
-/// A lost dispute re-charges through the repay shape under the dispute's own
-/// ledger key — the ledger reads a contested-charge restoration, never a
-/// refund — and the charge is capped at what the line still carries.
+/// Spent original funding becomes review suspense. The complete Cash loss
+/// neither repays current credit nor invents an old-period debt reversal.
 #[tokio::test]
-async fn a_lost_dispute_recharges_the_drawn_receivable() {
+async fn a_lost_dispute_retains_cash_without_repaying_drawn_credit() {
     let Some((db, owner, org, tenant)) = world().await else {
         return;
     };
@@ -711,11 +710,7 @@ async fn a_lost_dispute_recharges_the_drawn_receivable() {
         .unwrap()
         .disputes
         .remove(0);
-    // `lost` re-charges the drawn receivable: the dispute's contested amount
-    // is the order's funded 1_500_000_000 credit-minor, clamped to the
-    // 500_000_000 the line still carries, booked under the dispute's own
-    // ledger key — the restoration reads as a contested-charge re-charge, not
-    // a voluntary repayment.
+    // The complete authenticated loss is retained even after the funds were spent.
     let lost = db
         .resolve_order_dispute(
             &wallet,
@@ -730,8 +725,7 @@ async fn a_lost_dispute_recharges_the_drawn_receivable() {
         .unwrap();
     assert_eq!(lost.state, "lost");
     assert!(lost.recharge_entry_id.is_some());
-    // The draw restored in whole — the recharge clamped to the receivable.
-    assert_eq!(wallet.credit_used().await.unwrap(), 0);
+    assert_eq!(wallet.credit_used().await.unwrap(), 500_000_000);
     // Replaying the resolve answers the standing terminal state.
     let replay = db
         .resolve_order_dispute(
@@ -748,11 +742,9 @@ async fn a_lost_dispute_recharges_the_drawn_receivable() {
     assert_eq!(replay.state, "lost");
 }
 
-/// A lost dispute over money the line no longer carries is refused outright —
-/// the repay shape is bounded by what is drawn, so a re-charge past the
-/// receivable surfaces rather than booking into a pool the outcome forbids.
+/// An unspent original wallet source can be taken back without credit debt.
 #[tokio::test]
-async fn a_lost_dispute_beyond_the_draw_is_refused() {
+async fn a_lost_dispute_reclaims_original_unspent_wallet() {
     let Some((db, owner, org, tenant)) = world().await else {
         return;
     };
@@ -779,10 +771,8 @@ async fn a_lost_dispute_beyond_the_draw_is_refused() {
         .unwrap()
         .disputes
         .remove(0);
-    // Nothing drawn → `lost` has no receivable to restore — refused, and the
-    // dispute stays open for an outcome the ledger can carry.
-    assert!(
-        db.resolve_order_dispute(
+    let lost = db
+        .resolve_order_dispute(
             &wallet,
             &owner,
             dispute.dispute_id,
@@ -792,8 +782,10 @@ async fn a_lost_dispute_beyond_the_draw_is_refused() {
             on,
         )
         .await
-        .is_err()
-    );
+        .unwrap();
+    assert_eq!(lost.state, "lost");
+    assert_eq!(wallet.available().await.unwrap(), 0);
+    assert_eq!(wallet.credit_used().await.unwrap(), 0);
 }
 
 /// A claimed attempt survives restart, excludes another worker, and never

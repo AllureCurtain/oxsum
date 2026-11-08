@@ -318,16 +318,12 @@ async fn a_blocked_loss_holds_the_decision_until_its_effect_and_audit_commit() {
             let after = snapshot(&w).await;
             assert_eq!(after["audits"], 1);
             let cash = before["accounts"]["Assets:Cash"].as_i64().unwrap();
-            // #829 repairs this known legacy incoming-cash sign separately.
-            assert_eq!(
-                after["accounts"]["Assets:Cash"],
-                cash + if plan { FEE } else { -LEGACY_DRAW }
-            );
+            assert_eq!(after["accounts"]["Assets:Cash"], cash + FEE);
             if plan {
                 assert_eq!(after["accounts"]["Assets:Receivables"], -FEE);
                 assert_eq!(after["journals"][0]["settled_minor"], 0);
             } else {
-                assert_eq!(w.wallet.credit_used().await.unwrap(), 0);
+                assert_eq!(w.wallet.credit_used().await.unwrap(), LEGACY_DRAW);
             }
             assert_eq!(
                 after["logSize"].as_u64().unwrap(),
