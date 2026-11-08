@@ -51,6 +51,7 @@ Updated: 2026-11-08
 - [x] [#788](https://github.com/AllureCurtain/oxsum/issues/788) — N21.b scoped customer balance and bill reads integrated (#791); four core and two HTTP development checks passed.
 - [ ] [#793](https://github.com/AllureCurtain/oxsum/issues/793) — Restore published-bundle replay and historical payment upgrade preservation; 14 PostgreSQL checks and strict workspace Clippy passed, integration pending.
 - [x] [#794](https://github.com/AllureCurtain/oxsum/issues/794) — Reconcile integrated progress and remaining acceptance; integrated in PR #796.
+- [ ] [#795](https://github.com/AllureCurtain/oxsum/issues/795) — Apply closing plan prepayments to statements once and retain payment-source evidence; 55 focused PostgreSQL checks, baseline failure reproduction and strict Clippy passed. Review/integration pending; H1/H2/H3 remain N11 defects.
 
 - [x] [#723](https://github.com/AllureCurtain/oxsum/issues/723) — Serialized promo writers on the ledger append advisory lock before their promo row locks, fixing the post-merge hold/expiry deadlock; integrated in PR #724.
 

@@ -341,18 +341,16 @@ impl Db {
         .await?;
         let lines = crate::journals::lines_for_statement_in(tx, journal.journal_id).await?;
         let total: i64 = lines.iter().map(|l| l.amount_minor).sum();
-        // Seed the settled figure from the journal: a prepaid order reclassifies
-        // into the receivable inside the same close, so the statement's
-        // `paid_minor` must carry the share the prepay already covered — a
-        // partial prepay issues the statement partly paid, never as though the
-        // whole bill were still owed (issue #779).
-        let paid = journal.settled_minor.clamp(0, total);
+        // The close applies the journal's settled amount through
+        // reconcile_statement_for_journal_in after issuance. Start at zero so
+        // that one path records the source-linked payment line, paid amount
+        // and state transition together, without counting prepayment twice.
         let statement_id = Uuid::new_v4();
         sqlx::query(
             "INSERT INTO oxsum.plan_statements \
                  (statement_id,customer_plan_id,organization_id,business_id,period_index,\
-                  period_start,period_end,journal_id,state,total_minor,paid_minor,currency) \
-             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'open',$9,$10,$11)",
+                  period_start,period_end,journal_id,state,total_minor,currency) \
+             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'open',$9,$10)",
         )
         .bind(statement_id)
         .bind(journal.customer_plan_id)
@@ -363,7 +361,6 @@ impl Db {
         .bind(period_end)
         .bind(journal.journal_id)
         .bind(total)
-        .bind(paid)
         .bind(&journal.currency)
         .execute(&mut **tx)
         .await?;
@@ -396,7 +393,7 @@ impl Db {
     /// reducing `total_minor − paid_minor` to zero and walks `issued|past_due
     /// → paid`; a partial one leaves `issued` with `paid_minor > 0`. A
     /// statement that just cleared also lifts the plan's dunning suspension
-    /// in the same transaction — paying the receivable restores `active`.
+    /// in the same transaction. Renewal and manual suspension remain separate.
     ///
     /// Runs inside the caller's transaction beside the journal update.
     ///

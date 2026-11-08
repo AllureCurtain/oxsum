@@ -243,11 +243,34 @@ async fn an_exact_paid_period_reconciles_its_statement() {
     assert_eq!(bill.statement.state, PlanStatementState::Paid);
     assert_eq!(bill.statement.paid_minor, 2500);
     assert_eq!(bill.statement.paid_order_id, Some(order));
-    assert!(
-        bill.lines
-            .iter()
-            .any(|line| line.kind == StatementLineKind::PaymentApplied)
-    );
+    let payments = bill
+        .lines
+        .iter()
+        .filter(|line| line.kind == StatementLineKind::PaymentApplied)
+        .collect::<Vec<_>>();
+    assert_eq!(payments.len(), 1);
+    assert_eq!(payments[0].amount_minor, -2500);
+    assert_eq!(payments[0].source_ref, Some(order));
+    let journal = world
+        .db
+        .plan_journal(world.organization_id, bill.statement.journal_id.unwrap())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(bill.statement.total_minor, journal.journal.total_minor);
+    assert_eq!(bill.statement.paid_minor, journal.journal.settled_minor);
+
+    // Rollover and payment recovery both revisit the same committed period.
+    world.db.rollover_due_subscriptions().await.unwrap();
+    world
+        .db
+        .activate_plan_period(order, plan.customer_plan_id)
+        .await
+        .unwrap();
+    let replayed = detail(&world.db, world.organization_id, statement.statement_id).await;
+    assert_eq!(replayed.statement.state, PlanStatementState::Paid);
+    assert_eq!(replayed.statement.paid_minor, 2500);
+    assert_eq!(replayed.lines.len(), bill.lines.len());
 }
 
 #[tokio::test]
