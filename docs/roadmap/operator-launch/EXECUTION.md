@@ -15,10 +15,12 @@ Read this file on every resume, then reconcile actual main, worktrees, issues/PR
 - #846 implements the N21 stable application/account foundation in
   `.worktrees/application-accounts` (`feat/application-accounts`), including exact
   provisioning/archive and rotated-credential metering replay. Contract and
-  frontend checks passed; migration 0114 waits for #838 migration 0113 before
-  database validation and integration. Full embedded J18 remains pending.
+  frontend checks passed; migration 0114 follows integrated 0113 on `b3eb063a`.
+  The 39 core and 13 HTTP PostgreSQL checks passed, zero skipped; full validation
+  and integration are pending. [Evidence](evidence/application-accounts.md).
+  Owner portal #853 and full embedded J18 remain pending.
 
-- Current integration checkpoint: `5dc49dc`, including #835 checkout routing,
+- Current integration checkpoint: `b3eb063a`, including #838 daily accounting, #835 checkout routing,
   #843 actor-scoped business readiness, #840 non-plan chargeback cash and #850
   durable payment-worker test completion. Earlier `8a51109` includes required green checks and
   independent review for #821 historical usage compensation, #823 model/routing
