@@ -26,15 +26,27 @@ Development validation on integrated checkout selection `23b6547`:
   token boundary and existing provider/sale/staff/checkout transport suites.
 - Strict workspace Clippy with all targets and `-D warnings` passed, as did
   formatting, four OpenAPI security checks, generated types and frontend build.
-- Independent parent source review found no blocking issue. Complete workspace
-  regression and protected PR checks are still pending at this checkpoint.
+- Independent parent source review found no blocking issue. Full workspace
+  regression on `d0ea03ca2b23ae4444e83f5e0681f41b0b8fb3fb` passed all
+  1,950 executed tests across 191 binaries: build 2m 05s, execution 287.275s.
+  Six existing opt-ins remain skipped: two real-provider tests, the gateway
+  load and sustained-capacity checks, and two fixture/vector regeneration
+  helpers. The worktree used an empty ignored `.env` and explicit local
+  PostgreSQL URLs for both oxsum and the engine suites.
+- PR #845's standard checks passed on that same implementation SHA in
+  [run 42501845505](https://github.com/AllureCurtain/oxsum/actions/runs/42501845505).
+  Entire's external trail gate reports missing reviewer approval; its CI,
+  findings and up-to-date subchecks passed. Normal PR integration is pending.
 
 The task worktree is `.worktrees/business-readiness` on
 `feat/business-readiness`. Local logs are `/tmp/oxsum-843-core-focused.log`,
-`/tmp/oxsum-843-http-focused.log` and `/tmp/oxsum-843-clippy.log`.
+`/tmp/oxsum-843-http-focused.log`, `/tmp/oxsum-843-clippy.log` and
+`/tmp/oxsum-843-workspace.log`.
 
 This is configuration evidence, not external provider/PSP certification, SMTP
 delivery, browser acceptance or final-candidate acceptance. The previous browser
 task space is unavailable; no unrelated browser space was used. N09 still needs
 customer model/key/funding readiness, fully entitled zero-wallet use, immediate
-real bill proof and the complete J02/J08 journeys.
+real bill proof and the complete J02/J08 journeys. Preparation found actual
+fully-funded/free-call admission defects tracked by #849; customer readiness
+must follow that correction rather than claiming an unavailable journey ready.
