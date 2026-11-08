@@ -6581,7 +6581,7 @@ paths:
   /api/v1/orders:
     post:
       summary: Create a payment order
-      description: The customer pins an immutable order in the display currency it was quoted. A bundle requires a published version in purposeRef; its exact price, purchased credit, promotion and lifetime come from that version. Other purposes rate through the stored business collection rate — `amountMinor`/`rate` are not request fields, so a client-supplied figure is a schema rejection, not a negotiated term. The expected payment and the order terms commit before the provider is called; the provider idempotency key is the order's durable local UUID, so a replayed `idempotencyKey` returns the standing order and its original checkout rather than a second charge. `purpose` fixes the one fulfillment arm the order may take — `walletTopup`, `bundle`, `planPeriod` or `invoiceRepayment`. The answer is a checkout to complete, never a paid order — `paid` is established only by the signed provider webhook.
+      description: The customer pins an immutable order in its quoted payment currency. A bundle requires a published version in purposeRef; its exact price, purchased credit, promotion and lifetime come from that version. A planPeriod order requires the customer-scoped quote fingerprint, pins its exact sold fee and rounds only the fiat quote upward to the smallest supported currency unit. Other purposes rate through the stored Business collection rate — `amountMinor`/`rate` are not request fields, so a client-supplied figure is a schema rejection, not a negotiated term. The expected payment and the order terms commit before the provider is called; the provider idempotency key is the order's durable local UUID, so a replayed `idempotencyKey` returns the standing order and its original checkout rather than a second charge. `purpose` fixes the one fulfillment arm the order may take — `walletTopup`, `bundle`, `planPeriod` or `invoiceRepayment`. The answer is a checkout to complete, never a paid order — `paid` is established only by the signed provider webhook.
       security: [{ sessionCookie: [], apiKey: [] }]
       requestBody:
         required: true
@@ -6721,7 +6721,7 @@ paths:
         "500": { $ref: "#/components/responses/Error" }
     post:
       summary: Record a manual receipt as a payment order
-      description: Current business staff with funds-write capability; a personal session, never a machine credential (issue #607). Records a verified out-of-band payment — a bank transfer, a remittance — as a `source: manual` `walletTopup` order: the fiat amount rates to credits at the customer's own display rate, the order lands `paid` on the receipt's own `evidence` (`reference` unique per business, so one receipt can never fund twice), and the same fulfillment path a webhook-paid order takes books the wallet cash exactly once. A replayed `idempotencyKey` returns the standing fulfilled order; a reused `reference` conflicts.
+      description: Current business staff with funds-write capability; a personal session, never a machine credential (issue #607). Records a verified out-of-band payment — a bank transfer, a remittance — as a `source: manual` `walletTopup` order: the fiat amount rates to credits at the persisted Business collection rate, the order lands `paid` on the receipt's own `evidence` (`reference` unique per business, so one receipt can never fund twice), and the same fulfillment path a webhook-paid order takes books the wallet cash exactly once. A replayed `idempotencyKey` returns the standing fulfilled order; a reused `reference` conflicts.
       security: [{ sessionCookie: [] }]
       requestBody:
         required: true
@@ -14992,7 +14992,7 @@ components:
       type: object
       additionalProperties: false
       required: [idempotencyKey, rail, purpose, displayAmountMinor, displayCurrency]
-      description: The quoted display terms. The ledger amount is never client input — the server derives it from `displayAmountMinor` at the rate it owns, so a client-supplied `amountMinor` or `rate` is a schema rejection.
+      description: The quoted payment terms. The server pins bundle amounts to the published offer and plan-period fees to the customer-scoped sold quote; other purposes derive credits from `displayAmountMinor` at the persisted Business collection rate. Customer display preferences cannot change these terms. A client-supplied `amountMinor` or `rate` is a schema rejection.
       properties:
         idempotencyKey: { type: string, minLength: 1, maxLength: 200 }
         rail: { $ref: "#/components/schemas/MerchantRail" }

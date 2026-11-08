@@ -8982,7 +8982,7 @@ export interface paths {
         put?: never;
         /**
          * Create a payment order
-         * @description The customer pins an immutable order in the display currency it was quoted. A bundle requires a published version in purposeRef; its exact price, purchased credit, promotion and lifetime come from that version. Other purposes rate through the stored business collection rate — `amountMinor`/`rate` are not request fields, so a client-supplied figure is a schema rejection, not a negotiated term. The expected payment and the order terms commit before the provider is called; the provider idempotency key is the order's durable local UUID, so a replayed `idempotencyKey` returns the standing order and its original checkout rather than a second charge. `purpose` fixes the one fulfillment arm the order may take — `walletTopup`, `bundle`, `planPeriod` or `invoiceRepayment`. The answer is a checkout to complete, never a paid order — `paid` is established only by the signed provider webhook.
+         * @description The customer pins an immutable order in its quoted payment currency. A bundle requires a published version in purposeRef; its exact price, purchased credit, promotion and lifetime come from that version. A planPeriod order requires the customer-scoped quote fingerprint, pins its exact sold fee and rounds only the fiat quote upward to the smallest supported currency unit. Other purposes rate through the stored Business collection rate — `amountMinor`/`rate` are not request fields, so a client-supplied figure is a schema rejection, not a negotiated term. The expected payment and the order terms commit before the provider is called; the provider idempotency key is the order's durable local UUID, so a replayed `idempotencyKey` returns the standing order and its original checkout rather than a second charge. `purpose` fixes the one fulfillment arm the order may take — `walletTopup`, `bundle`, `planPeriod` or `invoiceRepayment`. The answer is a checkout to complete, never a paid order — `paid` is established only by the signed provider webhook.
          */
         post: {
             parameters: {
@@ -15766,11 +15766,6 @@ export interface components {
              */
             email?: string | null;
         };
-        /**
-         * @description SMTP submission state only. unknown includes interrupted, timed-out or rejected transport attempts and must never trigger an automatic resend.
-         * @enum {string}
-         */
-        InvitationDeliveryState: "notRequested" | "notAttempted" | "submitted" | "unavailable" | "unknown";
         CustomerInvitationResult: components["schemas"]["CreatedInvitation"] & {
             mailState: components["schemas"]["InvitationDeliveryState"];
         };
@@ -19684,7 +19679,7 @@ export interface components {
          * @enum {string}
          */
         OrderPurpose: "walletTopup" | "bundle" | "planPeriod" | "invoiceRepayment";
-        /** @description The quoted display terms. The ledger amount is never client input — the server derives it from `displayAmountMinor` at the rate it owns, so a client-supplied `amountMinor` or `rate` is a schema rejection. */
+        /** @description The quoted payment terms. The server pins bundle amounts to the published offer and plan-period fees to the customer-scoped sold quote; other purposes derive credits from `displayAmountMinor` at the persisted Business collection rate. Customer display preferences cannot change these terms. A client-supplied `amountMinor` or `rate` is a schema rejection. */
         OrderCreateRequest: {
             idempotencyKey: string;
             rail: components["schemas"]["MerchantRail"];

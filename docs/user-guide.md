@@ -458,6 +458,8 @@ reason, or `off` for a revoked key.
 
 Purpose: add balance to the organization's wallet.
 
+Checkout and code redemption require a personal session in customer context.
+
 Steps:
 
 1. Open Top up and choose a configured checkout or redeem a code. Credit arrives after payment verification.
@@ -525,9 +527,10 @@ fulfillment granted.
 
 The Orders pages (issue #607) are where that journey lives in the dashboard:
 `/app/orders` lists every order and manual receipt newest first, filterable by
-purpose and status; `/app/orders/new` pins a top-up or bundle order in the
-organization's display currency and lands on `/app/orders/{id}`, which mounts
-the provider's checkout element from `GET …/checkout-session` — the recovery
+purpose and status; `/app/orders/new` pins a top-up in the Business collection
+currency or a bundle at its published offer's price and currency, then lands
+on `/app/orders/{id}`, which mounts the provider's checkout element from
+`GET …/checkout-session` — the recovery
 read a refreshed or returned browser polls — and shows the order's truth as it
 moves `created → provider_pending → paid → fulfilled` (or `failed`, `expired`,
 `needs_attention`). A provider's return URL lands on the list page with
