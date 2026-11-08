@@ -151,6 +151,9 @@ async fn expected(w: &World, fee: i64) -> i64 {
     (i128::from(fee) * elapsed / duration) as i64
 }
 async fn refund(w: &World, amount: i64) -> crate::OrderRefund {
+    refund_with_failure(w, amount, false).await
+}
+async fn refund_with_failure(w: &World, amount: i64, fail_first: bool) -> crate::OrderRefund {
     let r =
         w.db.request_order_refund(
             w.org,
@@ -179,6 +182,35 @@ async fn refund(w: &World, amount: i64) -> crate::OrderRefund {
     w.db.note_refund_provider(r.refund_id, &provider)
         .await
         .unwrap();
+    if fail_first {
+        let receipt =
+            w.db.receive_merchant_event(
+                &w.context,
+                &VerifiedMerchantEvent {
+                    event_id: Uuid::new_v4().to_string(),
+                    kind: MerchantEventKind::RefundFailed,
+                    payment_id: Some(w.order.order_id),
+                    provider_payment_id: Some(format!("pay_{}", w.order.order_id)),
+                    organization_id: Some(w.org),
+                    provider_account_id: Some(w.context.account_id.clone()),
+                    mode: Some(MerchantMode::Test),
+                    amount_minor: Some(r.display_amount_minor),
+                    currency: Some(r.display_currency.clone()),
+                    refund_id: Some(provider.clone()),
+                },
+                &[85; 32],
+            )
+            .await
+            .unwrap();
+        w.db.apply_refund_event(&w.wallet, &receipt, OffsetDateTime::now_utc().date())
+            .await
+            .unwrap();
+        assert_eq!(
+            net(w, "Assets:Cash").await,
+            -FEE,
+            "failure alone returns no cash"
+        );
+    }
     let receipt =
         w.db.receive_merchant_event(
             &w.context,
@@ -1296,4 +1328,146 @@ async fn concurrent_exports_finish_with_one_pool_connection() {
         );
     }
     verify_export(&w, &a).await;
+}
+
+#[tokio::test]
+async fn late_success_on_reversed_note_keeps_daily_allocation_and_cash_once() {
+    let _guard = TEST_LOCK.lock().await;
+    let Some(w) = world(10, false).await else {
+        return;
+    };
+    let r = refund_with_failure(&w, 1_000_000, true).await;
+    assert_books(
+        &w,
+        FEE - 1_000_000,
+        expected(&w, FEE - 1_000_000).await,
+        FEE - 1_000_000,
+        1_000_000,
+    )
+    .await;
+    let state: String =
+        sqlx::query_scalar("SELECT state FROM oxsum.credit_notes WHERE credit_note_id=$1")
+            .bind(r.note_id)
+            .fetch_one(w.db.pool())
+            .await
+            .unwrap();
+    assert_eq!(state, "reversed");
+    assert_eq!(net(&w, "Assets:Cash").await, -(FEE - 1_000_000));
+}
+
+#[tokio::test]
+async fn close_and_refund_race_cannot_recognize_or_invoice_the_fee_twice() {
+    let _guard = TEST_LOCK.lock().await;
+    let Some(w) = world(40, false).await else {
+        return;
+    };
+    let (closed, _) = tokio::join!(w.db.rollover_due_subscriptions(), refund(&w, 1_000_000));
+    closed.unwrap();
+    assert_books(
+        &w,
+        FEE - 1_000_000,
+        FEE - 1_000_000,
+        FEE - 1_000_000,
+        1_000_000,
+    )
+    .await;
+    assert_eq!(
+        w.db.plan_journals(w.org, None, 50)
+            .await
+            .unwrap()
+            .journals
+            .len(),
+        1
+    );
+    assert_eq!(net(&w, "Assets:Cash").await, -(FEE - 1_000_000));
+}
+
+#[tokio::test]
+async fn tiny_month_end_fees_keep_exact_final_remainder_in_real_entries() {
+    let _guard = TEST_LOCK.lock().await;
+    let Some(w) = world(0, false).await else {
+        return;
+    };
+    for fee in [1, 17] {
+        let user =
+            w.db.register(NewUser {
+                email: format!("{}@example.com", Uuid::new_v4()),
+                password: "tiny daily fixture password".into(),
+                organization_name: None,
+            })
+            .await
+            .unwrap();
+        let sold =
+            w.db.publish_sold_plan(
+                w.db.default_business().await.unwrap(),
+                &NewSoldPlan {
+                    plan_id: None,
+                    name: "Tiny daily fee".into(),
+                    price_minor: fee,
+                    currency: "USD".into(),
+                    quota_minor: Some(500),
+                    period_kind: PeriodKind::Anniversary,
+                    overage_enabled: false,
+                    sort_order: 0,
+                },
+            )
+            .await
+            .unwrap();
+        let plan =
+            w.db.bind_customer_plan(
+                user.organization.id,
+                sold.plan_version_id,
+                PeriodAuthorization::PaymentOrder(Uuid::nil()),
+            )
+            .await
+            .unwrap();
+        let order = payment::created_order(
+            &w.db,
+            &w.context,
+            user.organization.id,
+            plan.customer_plan_id,
+        )
+        .await;
+        payment::mark_paid(&w.db, &w.context, &order).await;
+        let start = time::macros::datetime!(2024-01-31 12:00 UTC);
+        w.db.activate_plan_period_at(order.order_id, plan.customer_plan_id, start)
+            .await
+            .unwrap();
+        let period =
+            w.db.plan_periods(plan.customer_plan_id)
+                .await
+                .unwrap()
+                .remove(0);
+        assert_eq!(
+            period.period_end.date(),
+            time::macros::date!(2024 - 02 - 29)
+        );
+        let journal =
+            w.db.plan_journals(user.organization.id, None, 50)
+                .await
+                .unwrap()
+                .journals
+                .remove(0);
+        let wallet = Wallet::open_existing(w.db.pool().clone(), &user.organization.tenant_id)
+            .await
+            .unwrap();
+        let mut tx = w.db.pool().begin().await.unwrap();
+        sqlx::query("SELECT customer_plan_id FROM oxsum.customer_plans WHERE customer_plan_id=$1 FOR UPDATE").bind(plan.customer_plan_id).fetch_one(&mut *tx).await.unwrap();
+        w.db.recognize_plan_period_in(
+            &mut tx,
+            &wallet,
+            journal.journal_id,
+            period.period_end,
+            OffsetDateTime::now_utc().date(),
+        )
+        .await
+        .unwrap();
+        let totals = super::totals_in(&mut tx, period.plan_period_id)
+            .await
+            .unwrap();
+        assert_eq!((totals.earned, totals.deferred), (fee, 0));
+        tx.commit().await.unwrap();
+        let sum:i64=sqlx::query_scalar(&format!("SELECT COALESCE(SUM(p.amount_minor),0)::bigint FROM ledger_{}.postings p JOIN ledger_{}.accounts a USING(account_index) WHERE a.path='Income:PlanFees' AND p.direction='C' AND p.layer='settled'",user.organization.tenant_id,user.organization.tenant_id)).fetch_one(w.db.pool()).await.unwrap();
+        assert_eq!(sum, fee);
+    }
 }
