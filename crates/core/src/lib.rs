@@ -55,6 +55,7 @@ mod oauth;
 mod operations;
 mod orgs;
 mod payment_orders;
+mod plan_payments;
 mod plan_statements;
 mod plans;
 mod pools;
@@ -243,6 +244,7 @@ pub use payment_orders::{
     NewManualOrder, NewPaymentOrder, OrderRate, PaymentFulfillment, PaymentOrder, PaymentOrderPage,
     PaymentOrderPurpose, PaymentReconciliation,
 };
+pub use plan_payments::{PlanPaymentQuote, PlanPaymentTerms};
 pub use plan_statements::{
     PastDueReport, PlanCreditStanding, PlanStatement, PlanStatementDetail, PlanStatementLine,
     PlanStatementPage, PlanStatementState, StatementLineKind,

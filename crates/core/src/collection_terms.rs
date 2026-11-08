@@ -89,7 +89,7 @@ async fn historical_in(
     Ok(sqlx::query_scalar("SELECT currency FROM (SELECT display_currency AS currency FROM oxsum.payment_orders WHERE business_id=$1 UNION SELECT b.currency FROM oxsum.merchant_payment_bindings b JOIN oxsum.merchant_accounts m USING(merchant_id) WHERE m.business_id=$1 UNION SELECT 'USD' FROM oxsum.deposits d JOIN oxsum.customer_profiles c USING(organization_id) WHERE c.business_id=$1 AND d.rail IN ('stripe','hyperswitch','airwallex') AND NOT EXISTS(SELECT 1 FROM oxsum.merchant_payment_bindings b WHERE b.payment_id=d.deposit_id)) currencies ORDER BY currency")
         .bind(business).fetch_all(&mut **tx).await?)
 }
-async fn terms_in(
+pub(crate) async fn terms_in(
     tx: &mut Transaction<'_, Postgres>,
     business: Uuid,
 ) -> Result<CollectionTerms, WalletError> {

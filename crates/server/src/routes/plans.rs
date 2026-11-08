@@ -21,6 +21,17 @@ use uuid::Uuid;
 
 // ---- customer surface -------------------------------------------------------
 
+/// Customer-scoped, authoritative fee and period quote; no provider I/O.
+pub(crate) async fn payment_quote(
+    State(state): State<AppState>,
+    Extension(principal): Extension<Principal>,
+) -> ApiResult<oxsum_core::PlanPaymentQuote> {
+    ok(state
+        .db
+        .plan_payment_quote(principal.organization().id)
+        .await?)
+}
+
 /// `GET /api/v1/plans`: the published catalogue — every version still on sale
 /// across the business's plans. A customer reads this to choose a bind.
 pub(crate) async fn list_plans(State(state): State<AppState>) -> ApiResult<Vec<SoldPlan>> {

@@ -657,7 +657,7 @@ impl Db {
             // Open period 0 and the quota engine row under the grant — the
             // free plan's authorization lands the entitlement directly.
             let subscription_id =
-                open_subscription_in(&mut tx, organization_id, plan_version_id, &plan, now).await?;
+                open_subscription_in(&mut tx, organization_id, &plan, now).await?;
             sqlx::query(
                 "UPDATE oxsum.customer_plans SET subscription_id = $2 WHERE customer_plan_id = $1",
             )
@@ -704,54 +704,112 @@ impl Db {
         customer_plan_id: Uuid,
     ) -> Result<CustomerPlan, WalletError> {
         let mut tx = self.pool().begin().await?;
-        // Serialize on the plan: a racing cancel or a second renewal order
-        // cannot interleave a half-activated period.
+        // Match the paid fact before taking entitlement locks. The subscription
+        // advisory lock precedes its row and the customer-plan row, matching
+        // admission and the boundary worker so renewal cannot deadlock them.
+        let order = crate::payment_orders::order_in(&mut tx, order_id)
+            .await?
+            .ok_or_else(|| WalletError::NotFound("no such payment order".into()))?;
+        if order.purpose != crate::PaymentOrderPurpose::PlanPeriod
+            || order.purpose_ref != Some(customer_plan_id)
+            || !matches!(order.status.as_str(), "paid" | "fulfilled")
+            || order.paid_at.is_none()
+        {
+            return Err(WalletError::Conflict(
+                "plan activation requires its matching paid order".into(),
+            ));
+        }
+        let organization_id = order.organization_id;
         sqlx::query(
-            "SELECT pg_advisory_xact_lock(hashtextextended('oxsum.customer_plan_row' || $1::text, 0))",
+            "SELECT pg_advisory_xact_lock(hashtextextended('oxsum.subscription' || $1::text,0))",
         )
-        .bind(customer_plan_id.to_string())
+        .bind(organization_id.to_string())
         .execute(&mut *tx)
         .await?;
-        let Some(plan_row) = sqlx::query(
+        sqlx::query("SELECT subscription_id FROM oxsum.org_subscriptions WHERE organization_id=$1 AND state='active' FOR UPDATE")
+            .bind(organization_id).fetch_optional(&mut *tx).await?;
+        let plan_row = sqlx::query(
             "SELECT customer_plan_id, organization_id, plan_version_id, subscription_id, \
-                    state, activated_at \
-             FROM oxsum.customer_plans WHERE customer_plan_id = $1 FOR UPDATE",
+                    state, activated_at, cancel_at_period_end, scheduled_change \
+             FROM oxsum.customer_plans WHERE customer_plan_id=$1 AND organization_id=$2 FOR UPDATE",
         )
         .bind(customer_plan_id)
+        .bind(organization_id)
         .fetch_optional(&mut *tx)
         .await?
-        else {
-            return Err(WalletError::NotFound("no such customer plan".into()));
-        };
-        let organization_id: Uuid = plan_row.try_get("organization_id")?;
-        let state = CustomerPlanState::parse(&plan_row.try_get::<String, _>("state")?)
-            .ok_or_else(|| invalid("unknown customer plan state"))?;
-        let plan_version_id: Uuid = plan_row.try_get("plan_version_id")?;
-        let Some(sold) = self.sold_plan(plan_version_id).await? else {
-            return Err(invalid("the bound plan version is gone"));
-        };
-        // Replay: the period this order already authorized answers the plan as
-        // it stands — the unique pair is the fulfillment's idempotency anchor.
-        let replayed = sqlx::query(
-            "SELECT 1 FROM oxsum.plan_periods \
-             WHERE authorization_kind = 'payment_order' AND authorization_ref = $1",
+        .ok_or_else(|| WalletError::NotFound("no such customer plan".into()))?;
+        // Historical fulfilled periods retain their original authorization. A
+        // replay cannot use one order to answer a different customer's plan.
+        let replayed: Option<Uuid> = sqlx::query_scalar(
+            "SELECT customer_plan_id FROM oxsum.plan_periods \
+             WHERE authorization_kind='payment_order' AND authorization_ref=$1",
         )
         .bind(order_id)
         .fetch_optional(&mut *tx)
         .await?;
-        if replayed.is_some() {
+        if let Some(owner) = replayed {
+            if owner != customer_plan_id {
+                return Err(WalletError::Conflict(
+                    "the order already authorized another plan".into(),
+                ));
+            }
             let standing = customer_plan_in(&mut tx, customer_plan_id).await?;
             tx.commit().await?;
             return standing.ok_or_else(|| invalid("the customer plan did not land"));
         }
-        let now = OffsetDateTime::now_utc();
+        let returning_funds: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM oxsum.refunds WHERE order_id=$1 AND state IN ('requested','provider_pending','succeeded'))")
+            .bind(order_id).fetch_one(&mut *tx).await?;
+        if returning_funds {
+            return Err(WalletError::Conflict(
+                "a refund-reserved payment cannot activate a new period".into(),
+            ));
+        }
+        let terms = order.plan_payment.as_ref().ok_or_else(|| {
+            WalletError::Conflict(
+                "legacy plan payment has no verified period intent; finance review is required"
+                    .into(),
+            )
+        })?;
+        crate::plan_payments::validate_order(&order, terms)?;
+        let state = CustomerPlanState::parse(&plan_row.try_get::<String, _>("state")?)
+            .ok_or_else(|| invalid("unknown customer plan state"))?;
+        let plan_version_id: Uuid = plan_row.try_get("plan_version_id")?;
+        let sold = self
+            .sold_plan(plan_version_id)
+            .await?
+            .ok_or_else(|| invalid("the bound plan version is gone"))?;
+        if terms.plan_version_id != plan_version_id
+            || terms.fee_minor != sold.price_minor
+            || terms.display_currency != sold.currency
+            || plan_row.try_get::<bool, _>("cancel_at_period_end")?
+            || plan_row
+                .try_get::<Option<Uuid>, _>("scheduled_change")?
+                .is_some()
+        {
+            return Err(WalletError::Conflict(
+                "the paid intent no longer matches the plan; finance review is required".into(),
+            ));
+        }
+        let now: OffsetDateTime = sqlx::query_scalar("SELECT clock_timestamp()")
+            .fetch_one(&mut *tx)
+            .await?;
+        // Open once before any ledger writes. Reopening this wallet after the
+        // closing journal has appended would run bootstrap DDL on another pool
+        // connection while this transaction still holds the ledger locks.
+        let wallet = self.journal_wallet(&mut tx, organization_id).await?;
         match state {
             CustomerPlanState::PendingPayment => {
-                // First activation: open the quota engine and period 0 under
-                // this order.
+                if terms.period_index != 0
+                    || terms.period_start.is_some()
+                    || terms.period_end.is_some()
+                {
+                    return Err(WalletError::Conflict(
+                        "payment is not for the initial plan period".into(),
+                    ));
+                }
+                // Initial service starts when its paid activation commits.
                 let subscription_id =
-                    open_subscription_in(&mut tx, organization_id, plan_version_id, &sold, now)
-                        .await?;
+                    open_subscription_in(&mut tx, organization_id, &sold, now).await?;
                 sqlx::query(
                     "UPDATE oxsum.customer_plans \
                      SET subscription_id = $2, state = 'active', activated_at = $3, \
@@ -788,23 +846,34 @@ impl Db {
                 .bind(customer_plan_id)
                 .fetch_one(&mut *tx)
                 .await?;
-                let index: i32 = last.try_get::<i32, _>("period_index")? + 1;
+                let index = last
+                    .try_get::<i32, _>("period_index")?
+                    .checked_add(1)
+                    .ok_or_else(|| invalid("plan period index overflows"))?;
                 let start: OffsetDateTime = last.try_get("period_end")?;
                 let anchor = plan_row
                     .try_get::<Option<OffsetDateTime>, _>("activated_at")?
                     .unwrap_or(now)
                     .date();
                 let end = period_end_for(sold.period_kind, anchor, start);
+                if start > now
+                    || terms.period_index != index
+                    || terms.period_start != Some(start)
+                    || terms.period_end != Some(end)
+                {
+                    return Err(WalletError::Conflict(
+                        "payment is not for the due plan period".into(),
+                    ));
+                }
                 close_open_plan_period(&mut tx, customer_plan_id, "closed").await?;
-                // The closing period's journal lands inside this transaction —
-                // the bill for the period the order's payment is applied to
-                // below.
-                self.write_close_journal(&mut tx, &plan_row).await?;
+                // Close the preceding period with its own sold funding. The
+                // renewal's fee prepays only the period it authorizes.
+                self.write_close_journal_with_wallet(&mut tx, &plan_row, &wallet)
+                    .await?;
                 // The quota engine's window follows the authorized period:
                 // its own rollover is bypassed for plan-bound rows, so the
                 // renewal writes the window itself.
-                roll_subscription_window_in(&mut tx, organization_id, start, end, sold.quota_minor)
-                    .await?;
+                roll_subscription_window_in(&mut tx, organization_id, start, end, &sold).await?;
                 sqlx::query(
                     "UPDATE oxsum.customer_plans \
                      SET state = 'active', cancel_at_period_end = false, \
@@ -832,28 +901,11 @@ impl Db {
                 )));
             }
         }
-        // The order's journal step: settle any open receivable the plan still
-        // carries (a past-due or overage remainder, oldest first), then book
-        // the rest as the prepayment the next period close reclassifies —
-        // `debit Cash / credit Receivables|UnearnedPlanFees` inside the same
-        // transaction as the activation itself. A missing order row (direct
-        // calls in tests, or the T19 replay path) means zero applied.
-        let wallet = self.journal_wallet(&mut tx, organization_id).await?;
-        let amount: i64 =
-            sqlx::query_scalar("SELECT amount_minor FROM oxsum.payment_orders WHERE order_id=$1")
-                .bind(order_id)
-                .fetch_optional(&mut *tx)
-                .await?
-                .unwrap_or(0);
-        self.apply_order_to_journals_in(
-            &mut tx,
-            &wallet,
-            order_id,
-            customer_plan_id,
-            amount,
-            now.date(),
-        )
-        .await?;
+        // A period fee funds this period in full. Outstanding statements have
+        // their own repayment intent and never consume a renewal's prepayment.
+        wallet
+            .plan_prepay_in(&mut tx, &order_id, terms.fee_minor, now.date())
+            .await?;
         let standing = customer_plan_in(&mut tx, customer_plan_id).await?;
         tx.commit().await?;
         standing.ok_or_else(|| invalid("the customer plan did not land"))
@@ -872,19 +924,22 @@ impl Db {
         &self,
         organization_id: Uuid,
     ) -> Result<CustomerPlan, WalletError> {
+        let mut tx = self.pool().begin().await?;
+        lock_plan_change_in(&mut tx, organization_id).await?;
         let n = sqlx::query(
             "UPDATE oxsum.customer_plans \
              SET cancel_at_period_end = true, scheduled_change = NULL, updated_at = now() \
              WHERE organization_id = $1 AND state IN ('active','renewal_pending','past_due')",
         )
         .bind(organization_id)
-        .execute(self.pool())
+        .execute(&mut *tx)
         .await?;
         if n.rows_affected() == 0 {
             return Err(WalletError::NotFound(
                 "the customer has no live plan".into(),
             ));
         }
+        tx.commit().await?;
         self.customer_plan(organization_id)
             .await?
             .ok_or_else(|| invalid("the customer plan did not land"))
@@ -913,6 +968,8 @@ impl Db {
                 "the plan version is not on sale".into(),
             ));
         }
+        let mut tx = self.pool().begin().await?;
+        lock_plan_change_in(&mut tx, organization_id).await?;
         let n = sqlx::query(
             "UPDATE oxsum.customer_plans \
              SET scheduled_change = $2, cancel_at_period_end = false, updated_at = now() \
@@ -920,13 +977,14 @@ impl Db {
         )
         .bind(organization_id)
         .bind(plan_version_id)
-        .execute(self.pool())
+        .execute(&mut *tx)
         .await?;
         if n.rows_affected() == 0 {
             return Err(WalletError::NotFound(
                 "the customer has no live plan".into(),
             ));
         }
+        tx.commit().await?;
         self.customer_plan(organization_id)
             .await?
             .ok_or_else(|| invalid("the customer plan did not land"))
@@ -1045,8 +1103,7 @@ impl Db {
         }
         close_open_plan_period(tx, customer_plan_id, "expired").await?;
         // Past-due: the closed period's journal lands `posted` — the open
-        // receivable a renewal order will settle, the same fact the plan's
-        // `past_due` state carries.
+        // receivable tracked separately from the next period's renewal fee.
         self.write_close_journal(tx, &plan_row).await?;
         sqlx::query(
             "UPDATE oxsum.customer_plans \
@@ -1097,8 +1154,19 @@ impl Db {
         tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
         plan_row: &sqlx::postgres::PgRow,
     ) -> Result<(), WalletError> {
-        let customer_plan_id: Uuid = plan_row.try_get("customer_plan_id")?;
         let organization_id: Uuid = plan_row.try_get("organization_id")?;
+        let wallet = self.journal_wallet(tx, organization_id).await?;
+        self.write_close_journal_with_wallet(tx, plan_row, &wallet)
+            .await
+    }
+
+    async fn write_close_journal_with_wallet(
+        &self,
+        tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+        plan_row: &sqlx::postgres::PgRow,
+        wallet: &crate::Wallet,
+    ) -> Result<(), WalletError> {
+        let customer_plan_id: Uuid = plan_row.try_get("customer_plan_id")?;
         let plan_version_id: Uuid = plan_row.try_get("plan_version_id")?;
         let Some(period) = crate::journals::closing_period_in(tx, customer_plan_id).await? else {
             return Ok(());
@@ -1106,10 +1174,9 @@ impl Db {
         let Some(sold) = self.sold_plan(plan_version_id).await? else {
             return Err(invalid("the bound plan version is gone"));
         };
-        let wallet = self.journal_wallet(tx, organization_id).await?;
         self.journal_closing_period_in(
             tx,
-            &wallet,
+            wallet,
             plan_row,
             &period,
             &sold,
@@ -1118,6 +1185,25 @@ impl Db {
         .await?;
         Ok(())
     }
+}
+
+/// A captured period-payment intent must resolve before changing its assignment.
+/// Lock the assignment like the quote writer; order reads need no row lock.
+async fn lock_plan_change_in(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    organization: Uuid,
+) -> Result<(), WalletError> {
+    let plan: Option<Uuid> = sqlx::query_scalar("SELECT customer_plan_id FROM oxsum.customer_plans WHERE organization_id=$1 AND state IN ('active','renewal_pending','past_due') FOR UPDATE")
+        .bind(organization).fetch_optional(&mut **tx).await?;
+    let plan = plan.ok_or_else(|| WalletError::NotFound("the customer has no live plan".into()))?;
+    let pending: bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM oxsum.payment_orders WHERE purpose='plan_period' AND purpose_ref=$1 AND status IN ('created','provider_pending','paid','needs_attention') AND plan_payment IS NOT NULL AND NOT EXISTS(SELECT 1 FROM oxsum.plan_periods p WHERE p.authorization_kind='payment_order' AND p.authorization_ref=payment_orders.order_id))")
+        .bind(plan).fetch_one(&mut **tx).await?;
+    if pending {
+        return Err(WalletError::Conflict(
+            "resolve the existing period payment before changing or cancelling the plan".into(),
+        ));
+    }
+    Ok(())
 }
 
 /// The plan-bound check `subscriptions.rs` calls before its lazy rollover:
@@ -1151,7 +1237,6 @@ pub(crate) async fn plan_bound_subscription(
 async fn open_subscription_in(
     tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     organization_id: Uuid,
-    plan_version_id: Uuid,
     sold: &SoldPlan,
     now: OffsetDateTime,
 ) -> Result<Uuid, WalletError> {
@@ -1159,23 +1244,7 @@ async fn open_subscription_in(
     // version, named by the version id so it is stable and unique. Its terms
     // snapshot the version's; `allow_wallet_overflow` is the plan's
     // `overage_enabled` — the explicit opt-in, never a silent default.
-    let mirror_name = format!("sold-plan:{plan_version_id}");
-    let plan_id = sqlx::query_scalar::<_, Uuid>(
-        "INSERT INTO oxsum.subscription_plans \
-             (plan_id, name, quota_minor, reset_period, allow_wallet_overflow, \
-              price_minor, enabled, sort_order) \
-         VALUES ($1, $2, $3, 'never', $4, $5, false, $6) \
-         ON CONFLICT (name) DO UPDATE SET name = EXCLUDED.name \
-         RETURNING plan_id",
-    )
-    .bind(Uuid::new_v4())
-    .bind(&mirror_name)
-    .bind(sold.quota_minor)
-    .bind(sold.overage_enabled)
-    .bind(sold.price_minor)
-    .bind(sold.sort_order)
-    .fetch_one(&mut **tx)
-    .await?;
+    let plan_id = mirror_sold_plan_in(tx, sold).await?;
     // Any prior live binding for this org has already been cancelled by the
     // one-live-plan index plus the bind path's conflict check, so the insert
     // under the org's advisory lock cannot meet a second active row.
@@ -1213,6 +1282,32 @@ async fn open_subscription_in(
     .execute(&mut **tx)
     .await?;
     Ok(subscription_id)
+}
+
+/// Resolve the quota engine's immutable mirror of the sold version.
+async fn mirror_sold_plan_in(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    sold: &SoldPlan,
+) -> Result<Uuid, WalletError> {
+    let plan_version_id = sold.plan_version_id;
+    let mirror_name = format!("sold-plan:{plan_version_id}");
+    let plan_id = sqlx::query_scalar::<_, Uuid>(
+        "INSERT INTO oxsum.subscription_plans \
+             (plan_id, name, quota_minor, reset_period, allow_wallet_overflow, \
+              price_minor, enabled, sort_order) \
+         VALUES ($1, $2, $3, 'never', $4, $5, false, $6) \
+         ON CONFLICT (name) DO UPDATE SET name = EXCLUDED.name \
+         RETURNING plan_id",
+    )
+    .bind(Uuid::new_v4())
+    .bind(&mirror_name)
+    .bind(sold.quota_minor)
+    .bind(sold.overage_enabled)
+    .bind(sold.price_minor)
+    .bind(sold.sort_order)
+    .fetch_one(&mut **tx)
+    .await?;
+    Ok(plan_id)
 }
 
 /// Writes a `plan_periods` row — a period that exists because its
@@ -1277,7 +1372,7 @@ async fn roll_subscription_window_in(
     organization_id: Uuid,
     start: OffsetDateTime,
     end: OffsetDateTime,
-    quota_minor: Option<i64>,
+    sold: &SoldPlan,
 ) -> Result<(), WalletError> {
     let sub = sqlx::query(
         "SELECT subscription_id, plan_id, consumed_minor \
@@ -1291,11 +1386,11 @@ async fn roll_subscription_window_in(
         return Ok(());
     };
     let subscription_id: Uuid = sub.try_get("subscription_id")?;
-    let plan_id: Uuid = sub.try_get("plan_id")?;
+    let plan_id = mirror_sold_plan_in(tx, sold).await?;
     let consumed: i64 = sub.try_get("consumed_minor")?;
     sqlx::query(
         "UPDATE oxsum.subscription_periods \
-         SET period_end = now(), consumed_minor = $2, outcome = 'boundary' \
+         SET consumed_minor = $2, outcome = 'boundary' \
          WHERE subscription_id = $1 AND outcome = 'open'",
     )
     .bind(subscription_id)
@@ -1305,13 +1400,15 @@ async fn roll_subscription_window_in(
     sqlx::query(
         "UPDATE oxsum.org_subscriptions \
          SET current_period_start = $2, current_period_end = $3, consumed_minor = 0, \
-             quota_minor = $4, updated_at = now() \
+             quota_minor = $4, plan_id = $5, allow_wallet_overflow = $6, updated_at = now() \
          WHERE subscription_id = $1",
     )
     .bind(subscription_id)
     .bind(start)
     .bind(end)
-    .bind(quota_minor)
+    .bind(sold.quota_minor)
+    .bind(plan_id)
+    .bind(sold.overage_enabled)
     .execute(&mut **tx)
     .await?;
     sqlx::query(
@@ -1326,7 +1423,7 @@ async fn roll_subscription_window_in(
     .bind(plan_id)
     .bind(start)
     .bind(end)
-    .bind(quota_minor)
+    .bind(sold.quota_minor)
     .execute(&mut **tx)
     .await?;
     Ok(())

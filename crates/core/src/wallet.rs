@@ -1204,41 +1204,6 @@ impl Wallet {
         }
     }
 
-    /// The payment a fulfilled `planPeriod` order posts against a posted
-    /// journal: `debit Cash / credit Receivables`, keyed
-    /// `payment-order/<order>/journal/<id>` so a replayed activation never
-    /// settles the same receivable twice.
-    pub(crate) async fn plan_journal_payment_in(
-        &self,
-        tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
-        order_id: &uuid::Uuid,
-        journal_id: &uuid::Uuid,
-        minor: i64,
-        on: Date,
-    ) -> Result<Receipt, WalletError> {
-        let amt = positive(minor)?;
-        let key = format!("payment-order/{order_id}/journal/{journal_id}");
-        let entry_id = entry_id_for(&key);
-        if let Some(stored) = self.store.get(entry_id).await? {
-            return Ok(stored_receipt(&stored));
-        }
-        let draft = Entry::<Draft, SCALE>::new(entry_id, idem(&key)?, on)
-            .with_description(description_of(&format!(
-                "plan fee journal {journal_id}: order payment"
-            ))?)
-            .debit(self.cash, amt, currency())
-            .credit(self.receivables, amt, currency());
-        match self.append_in(tx, draft).await {
-            Err(WalletError::Conflict(_)) => match self.store.get(entry_id).await? {
-                Some(stored) => Ok(stored_receipt(&stored)),
-                None => Err(WalletError::Conflict(format!(
-                    "idempotency key {key:?} is already taken"
-                ))),
-            },
-            other => other,
-        }
-    }
-
     /// The prepayment a fulfilled `planPeriod` order books for the period it
     /// authorizes: `debit Cash / credit UnearnedPlanFees` — deferred revenue,
     /// not yet the receivable the period close will post. Keyed
