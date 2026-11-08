@@ -1124,6 +1124,38 @@ impl Db {
             .bind(organization).fetch_optional(&mut **tx).await?;
         sqlx::query("SELECT customer_plan_id FROM oxsum.customer_plans WHERE customer_plan_id=(SELECT purpose_ref FROM oxsum.payment_orders WHERE order_id=$1) FOR UPDATE")
             .bind(order_id).fetch_optional(&mut **tx).await?;
+        let corrected =
+            crate::plan_usage_corrections::corrected_order_journals_in(tx, order_id).await?;
+        if let Some(original_journal) = corrected.first() {
+            // Corrected funding may span an old bill and a later prepayment.
+            // Keep the full observed cash loss without guessing which payable
+            // it extinguished. The immutable map and audit retain every source.
+            sqlx::query("SELECT journal_id FROM oxsum.invoice_journals WHERE journal_id=ANY($1) ORDER BY journal_id FOR UPDATE")
+                .bind(&corrected).fetch_all(&mut **tx).await?;
+            let key = format!("dispute-recharge/{dispute_id}");
+            let cash = wallet
+                .plan_source_credit_in(tx, &key, "Assets:Cash")
+                .await?;
+            if cash > 0 && cash != amount_minor {
+                return Err(WalletError::Conflict(
+                    "chargeback amount changed on replay".into(),
+                ));
+            }
+            if cash == 0 {
+                wallet
+                    .plan_journal_dispute_recharge_in(
+                        tx,
+                        original_journal,
+                        &dispute_id,
+                        amount_minor,
+                        0,
+                        0,
+                        on,
+                    )
+                    .await?;
+            }
+            return Ok(Some(*original_journal));
+        }
         let row=sqlx::query(&format!("SELECT {JOURNAL_COLS} FROM oxsum.invoice_journals j WHERE EXISTS(SELECT 1 FROM oxsum.plan_periods p WHERE p.plan_period_id=j.plan_period_id AND p.authorization_kind='payment_order' AND p.authorization_ref=$1) AND j.state IN ('posted','paid','void') ORDER BY j.created_at DESC LIMIT 1 FOR UPDATE OF j"))
             .bind(order_id).fetch_optional(&mut **tx).await?;
         let Some(journal) = row.as_ref().map(journal_from_row).transpose()? else {

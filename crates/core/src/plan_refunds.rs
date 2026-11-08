@@ -165,6 +165,9 @@ impl Db {
         {
             return effect(&row);
         }
+        let corrected_journals =
+            crate::plan_usage_corrections::corrected_order_journals_in(tx, source.order_id).await?;
+        let corrected_source = !corrected_journals.is_empty();
         let period: Option<Uuid> = sqlx::query_scalar("SELECT plan_period_id FROM oxsum.plan_periods WHERE authorization_kind='payment_order' AND authorization_ref=$1")
             .bind(source.order_id).fetch_optional(&mut **tx).await?;
         let journal = sqlx::query("SELECT journal_id,state,total_minor,settled_minor FROM oxsum.invoice_journals WHERE plan_period_id=$1 ORDER BY created_at DESC LIMIT 1 FOR UPDATE")
@@ -192,7 +195,10 @@ impl Db {
                 crate::wallet::UNEARNED_PLAN_FEES,
             )
             .await?;
-        if (period.is_some() || journal.is_some() || prepaid != 0) && prepaid != source.fee {
+        if !corrected_source
+            && (period.is_some() || journal.is_some() || prepaid != 0)
+            && prepaid != source.fee
+        {
             return Err(WalletError::Conflict(
                 "original plan prepayment requires finance review".into(),
             ));
@@ -217,8 +223,8 @@ impl Db {
         let mut result = PlanRefundRecovery {
             refund_id,
             order_id: source.order_id,
-            plan_period_id: period,
-            journal_id,
+            plan_period_id: if corrected_source { None } else { period },
+            journal_id: if corrected_source { None } else { journal_id },
             cash_minor: source.amount,
             deferred_minor: 0,
             earned_minor: 0,
@@ -230,7 +236,12 @@ impl Db {
         };
         let mut old_discount = 0;
         let mut target_settled = None;
-        if let Some(journal) = &journal {
+        if corrected_source {
+            // A historical arrears order may also authorize another period.
+            // Retain this external cash fact, but never borrow that period's
+            // deferred balance or pay the corrected payable twice by guessing.
+            result.unallocated_minor = source.amount;
+        } else if let Some(journal) = &journal {
             let id: Uuid = journal.try_get("journal_id")?;
             let state: String = journal.try_get("state")?;
             let settled: i64 = journal.try_get("settled_minor")?;
@@ -291,7 +302,7 @@ impl Db {
         }
         // Paid-but-not-activated orders have no prepayment entry yet. Recording
         // the original cash fact is idempotent and never activates entitlement.
-        if prepaid == 0 {
+        if prepaid == 0 && !corrected_source {
             wallet
                 .plan_prepay_in(tx, &source.order_id, source.fee, on)
                 .await?;
@@ -317,13 +328,13 @@ impl Db {
                 .bind(source.note_id).bind(result.entry_id).execute(&mut **tx).await?;
         }
         sqlx::query("INSERT INTO oxsum.plan_refund_effects(refund_id,order_id,organization_id,plan_period_id,journal_id,credit_note_id,event_receipt_id,cash_minor,deferred_minor,earned_minor,payable_minor,unallocated_minor,entry_id,original_entry_id,legacy_recovery) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)")
-            .bind(refund_id).bind(source.order_id).bind(source.organization_id).bind(period).bind(journal_id).bind(source.note_id).bind(event_receipt)
+            .bind(refund_id).bind(source.order_id).bind(source.organization_id).bind(result.plan_period_id).bind(result.journal_id).bind(source.note_id).bind(event_receipt)
             .bind(result.cash_minor).bind(result.deferred_minor).bind(result.earned_minor).bind(result.payable_minor).bind(result.unallocated_minor)
             .bind(result.entry_id).bind(result.original_entry_id).bind(recovery).execute(&mut **tx).await?;
         if result.unallocated_minor > 0 || source.note_state == "reversed" {
             sqlx::query("INSERT INTO oxsum.finance_audit(audit_id,business_id,actor_user_id,action,target,detail,idempotency_key) SELECT $1,$2,COALESCE(resolved_by,$3),'refund.approve',$4,$5,$6 FROM oxsum.refunds WHERE refund_id=$7 ON CONFLICT DO NOTHING")
                 .bind(Uuid::new_v4()).bind(source.business_id).bind(Uuid::nil()).bind(refund_id.to_string())
-                .bind(serde_json::json!({"compensation":"bookedWithReview","allocation":result,"reversedNoteRetained":source.note_state=="reversed"}))
+                .bind(serde_json::json!({"compensation":"bookedWithReview","allocation":result,"reversedNoteRetained":source.note_state=="reversed","correctedJournals":corrected_journals,"reviewReason":if corrected_source {Some("historical usage correction requires explicit payable allocation")} else {None}}))
                 .bind(format!("plan-refund-review:{refund_id}")).bind(refund_id).execute(&mut **tx).await?;
         }
         Ok(result)
