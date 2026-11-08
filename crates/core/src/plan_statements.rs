@@ -1238,6 +1238,21 @@ pub(crate) async fn statement_in(
     row.as_ref().map(statement_from_row).transpose()
 }
 
+/// Read one customer statement and its lines within the caller's snapshot.
+pub(crate) async fn statement_snapshot_in(
+    tx: &mut Transaction<'_, Postgres>,
+    organization: Uuid,
+    statement: Uuid,
+) -> Result<Option<PlanStatementDetail>, WalletError> {
+    let row=sqlx::query(&format!("SELECT {STATEMENT_COLS} FROM oxsum.plan_statements WHERE statement_id=$1 AND organization_id=$2 AND state<>'open'"))
+        .bind(statement).bind(organization).fetch_optional(&mut **tx).await?;
+    let Some(row) = row else { return Ok(None) };
+    Ok(Some(PlanStatementDetail {
+        statement: statement_from_row(&row)?,
+        lines: lines_in(tx, statement).await?,
+    }))
+}
+
 async fn lines_in(
     tx: &mut Transaction<'_, Postgres>,
     statement_id: Uuid,

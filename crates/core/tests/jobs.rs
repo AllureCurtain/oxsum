@@ -268,6 +268,7 @@ fn the_periodic_kinds_carry_their_cadence() {
     assert_eq!(next_run(kinds::RECONCILE), Some(Duration::days(1)));
     assert_eq!(next_run(kinds::STATEMENTS), Some(Duration::days(1)));
     assert_eq!(next_run(kinds::RETENTION), Some(Duration::days(1)));
+    assert_eq!(next_run(kinds::PLAN_RECOGNITION), Some(Duration::hours(1)));
     assert_eq!(next_run("not-a-kind"), None);
 }
 

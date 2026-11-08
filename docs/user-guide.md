@@ -983,7 +983,7 @@ does not skip the gap. `POST /api/v1/org/plan/cancel` marks
 closes without renewing. `POST /api/v1/org/plan/change` books a swap to
 another version at the next boundary; there is no mid-period pro-rating.
 
-Each closed period leaves an invoice journal — the bill for what that period
+Each period leaves an invoice journal (v2 at paid activation, legacy v1 at close) — the bill for what that period
 cost (issue #611). `GET /api/v1/org/plan/journals` lists yours newest first
 and `GET /api/v1/org/plan/journals/{journalId}` reads one with its lines:
 `baseFee` the version's price, `discount` a credit note or complimentary
@@ -991,8 +991,9 @@ write-off,
 `promoCredit` promo that covered the fee — `totalMinor` their sum. A journal
 is `posted` while it still owes (the unpaid receivable your `pastDue` plan
 carries), `paid` once a `planPeriod` order's payment settles it, `void` if
-staff cancelled it. The fee bills in arrears: your order prepays the period
-it authorizes and the close bills it. Each renewal fee funds that renewal
+staff cancelled it. A legacy v1 fee bills in arrears: your order prepays the period
+it authorizes and the close bills it. New v2 versions issue the paid invoice
+at activation and recognize income only as UTC service days complete. Each renewal fee funds that renewal
 period in full. Existing journal debt stays visible and separate; the explicit
 statement repayment workflow is tracked by #777. Partial prepayment coverage
 at close is also shown on the customer statement, so the paid base fee does
@@ -1462,3 +1463,11 @@ retrying the resolution.
 The dispute list displays credit amounts in `cr` and shows the original collection
 currency separately in the expanded detail. The current Close action ends the
 case without moving funds; it is not the Lost financial resolution.
+
+### Reading daily-plan financial facts
+
+The plan page states its revenue-recognition policy. Existing v1 versions remain at period close; an explicitly selected v2 version recognizes completed UTC service days. A paid invoice shows the fee collected for its full interval. Its paid state does not mean the business has already earned the whole fee.
+
+Business Reports separates net billed, recognized income, deferred movement, collection, cash returned, noncash discounts and receivable. Select booking, service or payment-cohort dates to inspect the documented source clock. Without a date filter, deferred is the remaining net deferred fee; with a filter it is the signed change inside that interval. Refunds recompute the net fee's earned/deferred split and leave the authorized service period and quota unchanged. A financial void leaves returned money payable until an actual refund occurs.
+
+Statement evidence includes the listed daily effects and original policy inputs captured at export. Saved exports stay identical when later days or refunds occur. They establish integrity of captured facts and ledger entries, not proof that the service was delivered or that the export contains future events.

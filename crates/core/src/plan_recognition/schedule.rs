@@ -27,6 +27,11 @@ pub(super) fn earned_at(
         return Err(error::invalid("invalid plan recognition interval or fee"));
     }
     let duration = (end - start).whole_microseconds();
+    if duration <= 0 {
+        return Err(error::invalid(
+            "recognition interval is below stored timestamp precision",
+        ));
+    }
     let elapsed = (cutoff.min(end).max(start) - start).whole_microseconds();
     let amount = i128::from(net_fee)
         .checked_mul(elapsed)

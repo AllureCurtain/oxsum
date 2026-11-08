@@ -400,6 +400,49 @@ pub fn verify_evidence_bundle(
         }
     }
 
+    // V2 plan accounting explicitly names every ledger entry behind its
+    // listed effects. Require those entries in the export, even if their proofs
+    // were simply removed rather than altered. Older artifacts stay unchanged.
+    if let Some(statements) = wire
+        .artifacts
+        .get("planStatement")
+        .and_then(serde_json::Value::as_object)
+    {
+        for artifact in statements.values() {
+            let Some(accounting) = artifact.get("accounting") else {
+                continue;
+            };
+            if accounting
+                .get("policyVersion")
+                .and_then(serde_json::Value::as_i64)
+                != Some(2)
+            {
+                return Err(EvidenceError::Malformed(
+                    "unknown plan accounting policy".into(),
+                ));
+            }
+            let effects = accounting
+                .get("effects")
+                .and_then(serde_json::Value::as_array)
+                .ok_or_else(|| {
+                    EvidenceError::Malformed("daily accounting effects missing".into())
+                })?;
+            for effect in effects {
+                if let Some(id) = effect.get("entry_id").and_then(serde_json::Value::as_str)
+                    && !wire
+                        .entries
+                        .iter()
+                        .skip(1)
+                        .any(|row| row.entry.id().to_string() == id)
+                {
+                    return Err(EvidenceError::Malformed(format!(
+                        "daily accounting ledger entry {id} missing"
+                    )));
+                }
+            }
+        }
+    }
+
     // The head's signature, when the deployment signs heads — the same check
     // `verify_signed_head` runs, mapped into this bundle's vocabulary.
     let Some(note) = wire.note.as_deref() else {

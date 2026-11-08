@@ -28,7 +28,7 @@ CREATE TABLE oxsum.plan_accounting_periods (
     accounting_policy_version smallint NOT NULL CHECK (accounting_policy_version=2),
     fee_minor bigint NOT NULL CHECK (fee_minor>=0),
     service_start timestamptz NOT NULL,
-    service_end timestamptz NOT NULL CHECK (service_end>service_start),
+    service_end timestamptz NOT NULL CHECK (service_end>service_start AND service_end-service_start<=interval '32 days'),
     authorization_kind text NOT NULL CHECK (authorization_kind IN ('payment_order','complimentary')),
     authorization_ref uuid NOT NULL,
     payment_on date NOT NULL,

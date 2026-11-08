@@ -1425,3 +1425,10 @@ Contended source locks do not park pool connections: finance and inbox retries
 receive `PoolBusy`; fulfillment retries off-pool within five seconds. Separate
 processes coordinate through the same PostgreSQL try-lock. These are bounded
 retry semantics, not an unlimited-load guarantee.
+
+
+### Daily plan recognition
+
+Migration 0113 retains old versions as policy 1 and pins new publications to policy 2. The durable hourly `plan-recognition` job catches up at most 200 eligible periods per pass through `Db::run_plan_recognition`; busy plan rows are skipped without starving later candidates. Current database time is authoritative. Exact period/day keys and the surrounding plan/journal/ledger transaction make retries safe; missed days post on the current UTC booking date with their original service dates retained. No new environment variable or recognition HTTP endpoint is required.
+
+Focused daily accounting acceptance: `cargo nextest run -p oxsum-core --lib -E 'test(plan_recognition)'` with the standard PostgreSQL variables. It uses original immutable service bounds established by a private test-only activation clock, verified merchant fixtures and the real ledger. Legacy financial regression suites explicitly seed historical v1 publications instead of changing current publisher behavior.
