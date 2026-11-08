@@ -453,3 +453,32 @@ partial as well as full prepayment to the customer statement, with an order-link
 allocation line. New sold-version renewal updates the quota engine's mirror,
 quota and overage policy together. Historical ledger entries and completed
 periods are not rewritten; daily versioned recognition remains N11/#737.
+
+### Plan refund cash allocations (#802)
+
+`plan_refunds.rs` owns the refund source and migration 0110's immutable
+`plan_refund_effects`. The verified event path in `refunds.rs` holds the refund
+lock, then follows activation's subscription advisory/row and plan-row order.
+It locks the original journal before ledger/document writes. The ledger entry,
+note application, bill/payment adjustments and allocation commit together.
+An interrupted callback repeats the same refund identity. No original cash
+allocation is selected from a different order or from the tenant's aggregate
+unearned balance.
+
+The allocation records full returned cash split between deferred prepayment,
+earned-fee contra, refund payable, and explicit unallocated review suspense.
+Closing a V1 period reads pre-close deferred allocations as source-linked
+credits and applies only its original payment less returned cash. Statements
+append a `refundCredit` and an opposing `paymentApplied` reversal after close:
+charge total and applied payment fall together, preserving outstanding debt.
+Zero-total refunded periods close paid. Voided journals retain their documents;
+subsequent refunds draw their original refund payable.
+
+Historical recovery reads the retained note's actual ledger postings, then
+appends only the difference from the required allocation. Both old and new
+entry identities stay in the effect. A correct historical cash entry requires
+only the missing document/effect projection. A succeeded refund with an issued
+note is recoverable before close; close refuses unresolved legacy sources.
+Multiple ambiguous legacy allocations or combined legacy-refund/void histories
+require explicit finance review. No migration rewrites ledger entries or
+customer documents. See [the recovery runbook](plan-refund-recovery.md).

@@ -757,7 +757,7 @@ impl Db {
             tx.commit().await?;
             return standing.ok_or_else(|| invalid("the customer plan did not land"));
         }
-        let returning_funds: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM oxsum.refunds WHERE order_id=$1 AND state IN ('requested','provider_pending','succeeded'))")
+        let returning_funds: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM oxsum.refunds WHERE order_id=$1 AND (state IN ('requested','provider_pending','succeeded') OR EXISTS(SELECT 1 FROM oxsum.plan_refund_effects e WHERE e.refund_id=refunds.refund_id)))")
             .bind(order_id).fetch_one(&mut *tx).await?;
         if returning_funds {
             return Err(WalletError::Conflict(

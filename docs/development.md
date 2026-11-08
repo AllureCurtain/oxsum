@@ -1317,3 +1317,13 @@ node --experimental-strip-types --test web/tests/money.test.ts
 The script uses the project's supported Node 22+ runtime and no network or paid
 service. Backend collection fixtures explicitly adopt their rate; setting only a
 customer display preference no longer configures collection.
+
+### Recover a historical plan-refund allocation
+
+`cargo run -p oxsum-core --example recover_plan_refund -- --refund <uuid>
+--session-file <private-file>` previews one confirmed plan refund against the
+explicit `DATABASE_URL`; `--apply` commits its source-linked correcting entry
+and document allocation. A personal business-context `FundsWrite` session is
+required. The command does not load `.env`, migrate the database or call a PSP.
+The [recovery runbook](plan-refund-recovery.md) defines amount checks, replay,
+review suspense and unsupported legacy combinations.

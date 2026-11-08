@@ -140,3 +140,108 @@ pub async fn fulfill(db: &Db, order: &PaymentOrder) {
     .await
     .unwrap();
 }
+
+/// Seed an old binary's partially paid journal before running today's rollover.
+///
+/// This deliberately reproduces historical duplicated overage for recovery,
+/// refund and dunning tests. New production closes must never create it. The
+/// real authorizing order has already prepaid its exact fee; all fixture ledger
+/// writes use the engine's public transaction API and normal immutable guards.
+pub async fn legacy_close(db: &Db, organization: Uuid, plan: Uuid, overage_minor: i64) -> Uuid {
+    use doubleentry::storage::postgres::PostgresStore;
+    use doubleentry::{
+        AccountRegistry, Amount, Currency, Draft, Entry, EntryBatch, IdempotencyKey, LedgerId,
+        LedgerPolicy, LedgerStore, SealContext,
+    };
+    use sqlx::Row;
+
+    assert!(overage_minor > 0);
+    sqlx::query("UPDATE oxsum.plan_periods SET period_start=LEAST(period_start,period_end-interval '1 day') WHERE customer_plan_id=$1 AND state='active'")
+        .bind(plan).execute(db.pool()).await.unwrap();
+    let row = sqlx::query("SELECT p.plan_period_id,p.period_index,p.period_start,p.period_end,p.authorization_ref,s.price_minor,s.currency,s.business_id,o.tenant_id,c.net_terms_days FROM oxsum.plan_periods p JOIN oxsum.customer_plans c USING(customer_plan_id) JOIN oxsum.sold_plans s USING(plan_version_id) JOIN oxsum.organizations o ON o.organization_id=c.organization_id JOIN oxsum.payment_orders pay ON pay.order_id=p.authorization_ref WHERE c.customer_plan_id=$1 AND c.organization_id=$2 AND p.state='active' AND p.authorization_kind='payment_order' AND pay.status IN ('paid','fulfilled') AND pay.amount_minor=s.price_minor")
+        .bind(plan).bind(organization).fetch_one(db.pool()).await.unwrap();
+    let tenant: String = row.get("tenant_id");
+    let period: Uuid = row.get("plan_period_id");
+    let index: i32 = row.get("period_index");
+    let start: time::OffsetDateTime = row.get("period_start");
+    let end: time::OffsetDateTime = row.get("period_end");
+    let order: Uuid = row.get("authorization_ref");
+    let fee: i64 = row.get("price_minor");
+    let currency: String = row.get("currency");
+    let business: Uuid = row.get("business_id");
+    let net_terms: i32 = row.get("net_terms_days");
+    assert!(fee > 0);
+    let total = fee.checked_add(overage_minor).unwrap();
+    let journal = Uuid::new_v4();
+    let statement = Uuid::new_v4();
+    let store = PostgresStore::<6>::new(
+        db.pool().clone(),
+        LedgerId::new(format!("tenant-{tenant}")).unwrap(),
+    )
+    .in_schema(&format!("ledger_{tenant}"));
+    let accounts = AccountRegistry::from_records(store.accounts().await.unwrap()).unwrap();
+    let calendar = store.calendar().await.unwrap();
+    let find = |path: &str| {
+        accounts
+            .records()
+            .iter()
+            .find(|r| r.account.path.to_string() == path)
+            .unwrap_or_else(|| panic!("account {path} exists"))
+            .id
+    };
+    let mut tx = db.pool().begin().await.unwrap();
+    sqlx::query("INSERT INTO oxsum.invoice_journals(journal_id,customer_plan_id,organization_id,business_id,plan_period_id,period_index,state,total_minor,currency) VALUES($1,$2,$3,$4,$5,$6,'draft',$7,$8)")
+        .bind(journal).bind(plan).bind(organization).bind(business).bind(period).bind(index).bind(total).bind(&currency).execute(&mut *tx).await.unwrap();
+    sqlx::query("INSERT INTO oxsum.plan_statements(statement_id,customer_plan_id,organization_id,business_id,period_index,period_start,period_end,journal_id,state,total_minor,currency) VALUES($1,$2,$3,$4,$5,$6,$7,$8,'open',$9,$10)")
+        .bind(statement).bind(plan).bind(organization).bind(business).bind(index).bind(start).bind(end).bind(journal).bind(total).bind(&currency).execute(&mut *tx).await.unwrap();
+    for (journal_kind, statement_kind, amount) in [
+        ("base_fee", "plan_fee", fee),
+        ("usage_overage", "usage", overage_minor),
+    ] {
+        sqlx::query("INSERT INTO oxsum.invoice_journal_lines(line_id,journal_id,kind,amount_minor,description,source_ref) VALUES($1,$2,$3,$4,'Historical close fixture',$5)")
+            .bind(Uuid::new_v4()).bind(journal).bind(journal_kind).bind(amount).bind(period).execute(&mut *tx).await.unwrap();
+        sqlx::query("INSERT INTO oxsum.plan_statement_lines(line_id,statement_id,kind,amount_minor,description,source_ref) VALUES($1,$2,$3,$4,'Historical close fixture',$5)")
+            .bind(Uuid::new_v4()).bind(statement).bind(statement_kind).bind(amount).bind(period).execute(&mut *tx).await.unwrap();
+    }
+    for (key, debit, credit, minor) in [
+        (
+            format!("plan-journal/{journal}/accrual"),
+            "Assets:Receivables",
+            "Income:PlanFees",
+            total,
+        ),
+        (
+            format!("plan-journal/{journal}/prepay-settle"),
+            "Liabilities:UnearnedPlanFees",
+            "Assets:Receivables",
+            fee,
+        ),
+    ] {
+        let amount = Amount::<6>::from_minor(minor);
+        let sealed = Entry::<Draft, 6>::new(
+            oxsum_core::entry_id_for(&key),
+            IdempotencyKey::new(key.as_bytes().to_vec()).unwrap(),
+            time::OffsetDateTime::now_utc().date(),
+        )
+        .debit(find(debit), amount, Currency::USD)
+        .credit(find(credit), amount, Currency::USD)
+        .seal(&SealContext {
+            accounts: &accounts,
+            calendar: &calendar,
+            policy: &LedgerPolicy::default(),
+        })
+        .unwrap();
+        store
+            .append_in_tx(&mut tx, &EntryBatch::single(sealed))
+            .await
+            .unwrap();
+    }
+    sqlx::query("UPDATE oxsum.invoice_journals SET state='posted',settled_minor=$2,posted_at=now() WHERE journal_id=$1")
+        .bind(journal).bind(fee).execute(&mut *tx).await.unwrap();
+    sqlx::query("INSERT INTO oxsum.plan_statement_lines(line_id,statement_id,kind,amount_minor,description,source_ref) VALUES($1,$2,'payment_applied',$3,'Historical prepayment fixture',$4)")
+        .bind(Uuid::new_v4()).bind(statement).bind(-fee).bind(order).execute(&mut *tx).await.unwrap();
+    sqlx::query("UPDATE oxsum.plan_statements SET state='issued',paid_minor=$2,issued_at=now(),due_at=now()+($3 * interval '1 day') WHERE statement_id=$1")
+        .bind(statement).bind(fee).bind(net_terms).execute(&mut *tx).await.unwrap();
+    tx.commit().await.unwrap();
+    journal
+}

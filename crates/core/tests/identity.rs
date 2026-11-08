@@ -553,6 +553,7 @@ async fn migrating_twice_and_concurrently_is_safe() {
             "payment_orders".to_owned(),
             "payment_outbox".to_owned(),
             "plan_periods".to_owned(),
+            "plan_refund_effects".to_owned(),
             "plan_statement_lines".to_owned(),
             "plan_statements".to_owned(),
             "pricing_discounts".to_owned(),

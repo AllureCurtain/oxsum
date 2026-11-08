@@ -6,6 +6,8 @@ Six hypotheses from the source audit were each driven through a real-ledger fixt
 
 Suite: `crates/core/tests/plan_refund_conservation.rs`.
 
+Current correction: [#802 cash allocation evidence](plan-refund-cash.md) supersedes the H2/H3 deferral and the old H3 cash split below. Confirmed refunds return the full external amount; the historical text is retained as the original failed hypothesis record. H2/H3 reproductions are active after #802.
+
 ## Verdicts
 
 ### H1 — wallet-settled usage re-billed as a plan receivable — CONFIRMED, deferred to N11

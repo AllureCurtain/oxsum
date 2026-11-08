@@ -1316,3 +1316,17 @@ Existing orders keep their original rate. Currency with payment history cannot
 be relabeled; mixed historical currency requires reconciliation. A saved rate
 alone does not mean the payment provider is working. Current provider amounts
 use two decimal minor digits; zero/six-decimal currency support is not implied.
+
+### Understanding a plan refund
+
+A confirmed plan refund records the full returned cash. Before a period closes,
+it reduces that period's prepaid fee; its closing bill includes the refund once.
+After close, the original statement shows a refund credit and a reversal of the
+returned part of its payment. The bill and amount paid decrease together, so
+other outstanding debt is unchanged. A voided bill's refund pays the money
+already owed back to you. Quota is not a cash wallet grant.
+
+Finance can review source-linked historical corrections using the
+[plan-refund recovery runbook](plan-refund-recovery.md). A refund that intersects
+an already-lost payment dispute can retain an explicit amount needing review;
+that status is not proof that every part has been allocated to the bill.
