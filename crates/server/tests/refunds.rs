@@ -661,10 +661,8 @@ async fn a_refund_is_reviewed_then_the_signed_event_settles() {
     assert_eq!(wallet.available().await.unwrap(), 0);
 }
 
-/// A refund the customer already spent cannot book its take-back: the signed
-/// success is fact — the refund lands `succeeded` — but the ledger refuses the
-/// debit it cannot fund, so the wallet never goes negative and the audit
-/// records the compensation the take-back owes.
+/// A spent source retains complete Cash against review suspense. The purchased
+/// pool never goes negative; customer and finance see the actual retained fact.
 #[tokio::test]
 async fn a_refund_on_spent_credit_never_goes_negative() {
     let Some((app, db, stub, merchant, version)) = world().await else {
@@ -718,9 +716,8 @@ async fn a_refund_on_spent_credit_never_goes_negative() {
     .await;
     assert_eq!(status, StatusCode::OK);
 
-    // The signed success is fact — the refund lands `succeeded` — but the
-    // take-back refuses at the ledger: the wallet stays at zero, never
-    // negative, and the note stays `issued` (uncompensated).
+    // The signed success is fact. Its complete Cash outflow is retained even
+    // though the original Wallet funding was consumed.
     let body_text = refund(
         "refund_succeeded",
         order_id,
@@ -748,6 +745,34 @@ async fn a_refund_on_spent_credit_never_goes_negative() {
     .await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(body["data"]["state"].as_str().unwrap(), "succeeded");
+    assert_eq!(body["data"]["cashEffect"]["cashMinor"], 1_500_000_000i64);
+    assert_eq!(body["data"]["cashEffect"]["walletMinor"], 0);
+    assert_eq!(
+        body["data"]["cashEffect"]["suspenseMinor"],
+        1_500_000_000i64
+    );
+    assert_eq!(body["data"]["cashEffect"]["requiresReview"], true);
+    let (status, customer) = call(
+        &app,
+        "GET",
+        &format!("/api/v1/orders/{order_id}/refunds"),
+        None,
+        Some(&account.cookie),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        customer["data"]["refunds"][0]["cashEffect"],
+        body["data"]["cashEffect"]
+    );
+    let note: Option<Uuid> = sqlx::query_scalar(
+        "SELECT entry_id FROM oxsum.credit_notes WHERE refund_id=$1 AND state='applied'",
+    )
+    .bind(refund_id)
+    .fetch_one(db.pool())
+    .await
+    .unwrap();
+    assert!(note.is_some());
     // No silent negative: the purchased pool never dips below zero.
     assert_eq!(wallet.available().await.unwrap(), 0);
     assert!(wallet.settled().await.unwrap() >= 0);

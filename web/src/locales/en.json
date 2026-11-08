@@ -2247,5 +2247,13 @@
     "verified_retainedKey": "Committed artifacts and inclusion verified; the signed head matches the retained operator key and your customer ledger origin. Original key trust and verifier distribution still require an independent channel.",
     "verified_suppliedKey": "Committed artifacts, inclusion and signature verified using the bundle-supplied key. This does not independently authenticate that key.",
     "verified_unsigned": "Committed artifacts and inclusion verified. This bundle has no signed head; no operator signature or historical continuity is established."
+  },
+  "refundCash": {
+    "returned": "Confirmed cash return:",
+    "review": "Finance review required",
+    "walletTaken": "Original purchased credit reclaimed:",
+    "suspense": "Amount awaiting source review:",
+    "walletRestored": "Historical purchased credit restored:",
+    "stateRetained": "The original approval or note state is retained. This cash return cannot authorize another payout."
   }
 }

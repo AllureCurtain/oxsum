@@ -1557,3 +1557,23 @@ The page shows the committed scope and exclusions. It does not establish every
 settlement's price arithmetic, honest upstream usage, unprovided supplier books,
 historical continuity or witness independence. Keep the bundle and expected
 inputs outside the browser and follow [the offline guide](verify-your-bill.md).
+
+### Confirmed cash beside an old refund state
+
+The order's refunds and business refund/credit-note lists show a **Confirmed cash
+return** when the retained provider event has a complete ledger effect. The old
+approval or note state can remain declined, failed, released or reversed after a
+late success. Finance review does not authorize another payout; the recorded
+cash still consumes the original order's refundable amount.
+
+Purchased credit can be reclaimed only from the original retained funding.
+Amounts already used, held or originally used to repay a credit line are shown
+for source review; later top-ups are not substituted. A historical correction
+may separately show purchased credit restored. That restores a proved erroneous
+Wallet debit and does not mean the provider sent a second cash refund.
+
+Operators reviewing historical missing or wrong-source effects use the
+[exact non-plan refund recovery workflow](nonplan-refund-recovery.md), with a
+current owner/finance session and trusted event receipt. A source-review refusal
+must be investigated using original evidence; new payment/refund identities do
+not repair it.

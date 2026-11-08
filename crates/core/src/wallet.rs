@@ -1092,48 +1092,56 @@ impl Wallet {
         .await
     }
 
-    /// Takes back wallet credit a payment-order refund returned in cash
-    /// (issue #608): one ledger entry that mirrors the funding leg —
-    /// `debit Wallet, credit Cash` — so the purchased pool shrinks by exactly
-    /// what the PSP gave back. The refund's own credit note records the
-    /// correction beside it; nothing is rewritten.
-    ///
-    /// The draw is on the purchased pool alone: granted credit never stood
-    /// behind a rail payment, and drawn credit-line debt is the dispute
-    /// re-charge's to restore, not a refund's. `FundedReservations` is what
-    /// refuses a take-back the pool cannot carry — the customer already spent
-    /// the refunded credit — surfacing [`WalletError::InsufficientFunds`]
-    /// enforced inside the append, so the bound holds under a consume racing
-    /// the refund, never as a read-then-write check.
-    ///
-    /// `pub(crate)`: only [`crate::Db::settle_order_refund`] calls it, under a
-    /// key derived from the refund id — a retried or recovered settlement
-    /// replays the standing entry rather than debiting twice.
-    ///
-    /// # Errors
-    ///
-    /// [`WalletError::InvalidInput`] for a non-positive amount, an empty
-    /// reason, or a malformed key; [`WalletError::InsufficientFunds`] when
-    /// the purchased pool cannot cover the debit.
-    pub(crate) async fn refund_debit(
+    /// Retain complete refund Cash and its proven original Wallet allocation.
+    /// The source owner holds the ledger append lock and commits its effect.
+    pub(crate) async fn nonplan_refund_in(
         &self,
-        idempotency_key: &str,
-        reason: &str,
-        minor: i64,
+        tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+        refund: Uuid,
+        cash: i64,
+        wallet: i64,
         on: Date,
     ) -> Result<Receipt, WalletError> {
-        if reason.trim().is_empty() {
-            return Err(WalletError::InvalidInput(
-                "a refund take-back needs a reason".into(),
-            ));
+        let amount = positive(cash)?;
+        if !(0..=cash).contains(&wallet) {
+            return Err(invalid("invalid non-plan refund allocation"));
         }
-        let amt = positive(minor)?;
-        let key = format!("order-refund/{idempotency_key}");
-        self.append(
+        let key = format!("order-refund/{refund}");
+        let mut draft = Entry::<Draft, SCALE>::new(entry_id_for(&key), idem(&key)?, on).credit(
+            self.cash,
+            amount,
+            currency(),
+        );
+        if wallet > 0 {
+            draft = draft.debit(self.wallet, Credits::from_minor(wallet), currency());
+        }
+        if cash > wallet {
+            draft = draft.debit(
+                self.adjustments,
+                Credits::from_minor(cash - wallet),
+                currency(),
+            );
+        }
+        self.append_in(tx, draft).await
+    }
+
+    /// Restore a proven historical wrong-source debit without another Cash leg.
+    pub(crate) async fn nonplan_refund_restitution_in(
+        &self,
+        tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+        refund: Uuid,
+        minor: i64,
+        revision: &str,
+        on: Date,
+    ) -> Result<Receipt, WalletError> {
+        let amount = positive(minor)?;
+        let key = format!("nonplan-refund-restitution/{refund}");
+        self.append_in(
+            tx,
             Entry::<Draft, SCALE>::new(entry_id_for(&key), idem(&key)?, on)
-                .with_description(description_of(reason)?)
-                .debit(self.wallet, amt, currency())
-                .credit(self.cash, amt, currency()),
+                .with_description(description_of(&format!("nonplan-refund-v1:{revision}"))?)
+                .debit(self.adjustments, amount, currency())
+                .credit(self.wallet, amount, currency()),
         )
         .await
     }

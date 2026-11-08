@@ -563,6 +563,12 @@ function RefundCard({ order }: { order: PaymentOrder }) {
                   <span className="text-xs text-muted">{r.reason}</span>
                 </div>
                 <span className="text-xs text-muted">{r.createdAt.slice(0, 10)}</span>
+                {r.cashEffect ? <div className="w-full text-sm">
+                  <p>{t("refundCash.returned")} <Cr minor={r.cashEffect.cashMinor} /></p>
+                  {r.cashEffect.requiresReview ? <p>{t("refundCash.review")}</p> : null}
+                  {r.cashEffect.walletRestoredMinor > 0 ? <p>{t("refundCash.walletRestored")} <Cr minor={r.cashEffect.walletRestoredMinor} /></p> : null}
+                  <p className="text-xs text-muted">{t("refundCash.stateRetained")}</p>
+                </div> : null}
               </li>
             ))}
           </ul>

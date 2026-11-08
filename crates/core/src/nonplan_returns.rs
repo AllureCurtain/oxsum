@@ -3,6 +3,7 @@
 use std::time::Duration;
 
 use serde::Serialize;
+use sha2::{Digest, Sha256};
 use sqlx::{Postgres, Row, Transaction};
 use tokio::time::Instant;
 use uuid::Uuid;
@@ -69,6 +70,26 @@ pub(crate) async fn guard_lost_in(
     Ok(())
 }
 
+/// Actual refund Cash before fulfillment prevents an unperformed purchase grant.
+pub(crate) async fn guard_grant_in(
+    tx: &mut Transaction<'_, Postgres>,
+    order: Uuid,
+) -> Result<(), WalletError> {
+    guard_lost_in(tx, order).await?;
+    let returned: bool = sqlx::query_scalar(
+        "SELECT EXISTS(SELECT 1 FROM oxsum.nonplan_refund_effects WHERE order_id=$1)",
+    )
+    .bind(order)
+    .fetch_one(&mut **tx)
+    .await?;
+    if returned {
+        return Err(WalletError::Conflict(
+            "non-plan order has returned Cash before fulfillment; source review is required".into(),
+        ));
+    }
+    Ok(())
+}
+
 /// Convert authenticated fiat into credit minor units without rounding or fallback.
 pub(crate) fn disputed_minor(
     amount: i64,
@@ -105,14 +126,19 @@ pub(crate) fn disputed_minor(
 pub(crate) struct SourceEvidence {
     policy: &'static str,
     order_id: Uuid,
-    entry_id: Option<Uuid>,
-    content_hash: Option<String>,
+    pub(crate) entry_id: Option<Uuid>,
+    pub(crate) content_hash: Option<String>,
     fulfillment_id: Option<Uuid>,
     source_wallet_minor: i64,
     source_repayment_minor: i64,
     subsequent_wallet_debit_minor: i64,
     pending_wallet_minor: i64,
     prior_chargeback_cash_minor: i64,
+    prior_refund_cash_minor: i64,
+    before_log_index: Option<i64>,
+    ledger_boundary: Option<i64>,
+    wallet_activity_sha256: Option<String>,
+    prior_returns: Vec<serde_json::Value>,
     /// Only the retained original Wallet amount may be reclaimed.
     pub(crate) wallet_minor: i64,
     /// The full known loss less the proven Wallet amount requires review.
@@ -138,10 +164,58 @@ pub(crate) async fn inspect_in(
     dispute: Uuid,
     loss: i64,
 ) -> Result<SourceEvidence, WalletError> {
+    inspect_source_in(
+        tx,
+        wallet,
+        order,
+        organization,
+        Some(dispute),
+        None,
+        loss,
+        None,
+    )
+    .await
+}
+
+/// Inspect a refund at the current boundary or immediately before its old entry.
+pub(crate) async fn inspect_refund_in(
+    tx: &mut Transaction<'_, Postgres>,
+    wallet: &Wallet,
+    order: Uuid,
+    organization: Uuid,
+    refund: Uuid,
+    loss: i64,
+    before: Option<i64>,
+) -> Result<SourceEvidence, WalletError> {
+    inspect_source_in(
+        tx,
+        wallet,
+        order,
+        organization,
+        None,
+        Some(refund),
+        loss,
+        before,
+    )
+    .await
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn inspect_source_in(
+    tx: &mut Transaction<'_, Postgres>,
+    wallet: &Wallet,
+    order: Uuid,
+    organization: Uuid,
+    dispute: Option<Uuid>,
+    refund: Option<Uuid>,
+    loss: i64,
+    before: Option<i64>,
+) -> Result<SourceEvidence, WalletError> {
     let mut proof = SourceEvidence {
         policy: "nonplan-cash-v1",
         order_id: order,
         suspense_minor: loss,
+        before_log_index: before,
         ..SourceEvidence::default()
     };
     let row = sqlx::query("SELECT p.organization_id,p.purpose,p.status,p.amount_minor,p.paid_at,f.fulfillment_id,f.purpose AS fulfilled_purpose,f.purpose_payload FROM oxsum.payment_orders p LEFT JOIN oxsum.payment_fulfillments f USING(order_id) WHERE p.order_id=$1")
@@ -241,17 +315,51 @@ pub(crate) async fn inspect_in(
     {
         return Ok(proof.uncertain("originalEntryAmountUnproven"));
     }
-    // Existing refund writers are not transaction-owned yet (#841). Any refund
-    // history excludes a take-back, including an already-retained orphan effect.
-    let refunds: bool =
-        sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM oxsum.refunds WHERE order_id=$1)")
-            .bind(order)
-            .fetch_one(&mut **tx)
-            .await?;
-    if refunds {
-        return Ok(proof.uncertain("priorRefundHistory"));
+    // An unknown old refund may have an interrupted Cash leg. Only a verified
+    // immutable effect makes its source consumption safe to count automatically.
+    let refunds = sqlx::query("SELECT refund_id,amount_minor,state,cash_policy_version FROM oxsum.refunds WHERE order_id=$1 AND ($2::uuid IS NULL OR refund_id<>$2) ORDER BY refund_id")
+        .bind(order).bind(refund).fetch_all(&mut **tx).await?;
+    for previous in refunds {
+        let id: Uuid = previous.try_get("refund_id")?;
+        let effect = match crate::nonplan_refunds::effect_in(tx, wallet, id).await {
+            Ok(effect) => effect,
+            Err(WalletError::Conflict(_)) => {
+                return Ok(proof.uncertain("priorRefundEffectUnproven"));
+            }
+            Err(error) => return Err(error),
+        };
+        let Some(effect) = effect else {
+            if refund.is_some()
+                && previous.try_get::<i16, _>("cash_policy_version")? == 1
+                && previous.try_get::<String, _>("state")? != "succeeded"
+                && crate::nonplan_refunds::return_entry_in(
+                    tx,
+                    wallet,
+                    id,
+                    previous.try_get("amount_minor")?,
+                )
+                .await?
+                .is_none()
+            {
+                continue;
+            }
+            return Ok(proof.uncertain("priorRefundHistory"));
+        };
+        let position: i64 = sqlx::query_scalar(&format!(
+            "SELECT log_index FROM ledger_{tenant}.entries WHERE entry_id=$1"
+        ))
+        .bind(effect.cash_entry_id)
+        .fetch_one(&mut **tx)
+        .await?;
+        if before.is_none_or(|upper| position < upper) {
+            proof.prior_returns.push(serde_json::json!({"refundId":id,"entryId":effect.cash_entry_id,"contentHash":effect.cash_entry_hash,"cashMinor":effect.cash_minor,"logIndex":position}));
+            proof.prior_refund_cash_minor = proof
+                .prior_refund_cash_minor
+                .checked_add(effect.cash_minor)
+                .ok_or_else(|| WalletError::Conflict("prior refund amount overflows".into()))?;
+        }
     }
-    let previous = sqlx::query("SELECT dispute_id,amount_minor,state,recharge_entry_id FROM oxsum.disputes WHERE order_id=$1 AND dispute_id<>$2 ORDER BY dispute_id")
+    let previous = sqlx::query("SELECT dispute_id,amount_minor,state,recharge_entry_id FROM oxsum.disputes WHERE order_id=$1 AND ($2::uuid IS NULL OR dispute_id<>$2) ORDER BY dispute_id")
         .bind(order).bind(dispute).fetch_all(&mut **tx).await?;
     for prior in previous {
         let prior_id: Uuid = prior.try_get("dispute_id")?;
@@ -259,6 +367,23 @@ pub(crate) async fn inspect_in(
         let Some(cash) = prior_cash_in(tx, wallet, prior_id, expected).await? else {
             return Ok(proof.uncertain("priorChargebackUnproven"));
         };
+        if cash > 0
+            && let Some(upper) = before
+        {
+            let position: i64 = sqlx::query_scalar(&format!(
+                "SELECT log_index FROM ledger_{tenant}.entries WHERE entry_id=$1"
+            ))
+            .bind(crate::entry_id_for(&format!("dispute-recharge/{prior_id}")).as_uuid())
+            .fetch_one(&mut **tx)
+            .await?;
+            if position >= upper {
+                continue;
+            }
+        }
+        if cash > 0 {
+            let id = *crate::entry_id_for(&format!("dispute-recharge/{prior_id}")).as_uuid();
+            proof.prior_returns.push(serde_json::json!({"disputeId":prior_id,"entryId":id,"contentHash":wallet.verified_source_hash(id).await?,"cashMinor":cash}));
+        }
         if cash == 0
             && (prior.try_get::<String, _>("state")? == "lost"
                 || prior
@@ -273,8 +398,21 @@ pub(crate) async fn inspect_in(
             .ok_or_else(|| WalletError::Conflict("prior chargeback amount overflows".into()))?;
     }
     let position: i64 = rows[0].try_get("log_index")?;
-    let used = sqlx::query(&format!("SELECT COALESCE(SUM(p.amount_minor) FILTER(WHERE p.layer='settled' AND p.direction='D' AND e.log_index>$1),0)::bigint AS debits,COALESCE(SUM(CASE WHEN p.direction='D' THEN p.amount_minor ELSE -p.amount_minor END) FILTER(WHERE p.layer='pending'),0)::bigint AS reserved FROM ledger_{tenant}.postings p JOIN ledger_{tenant}.entries e USING(entry_id) JOIN ledger_{tenant}.accounts a USING(account_index) WHERE e.log_index IS NOT NULL AND a.path='Liabilities:Wallet'"))
-        .bind(position).fetch_one(&mut **tx).await?;
+    if before.is_some_and(|upper| position >= upper) {
+        return Ok(proof.uncertain("originalEntryAfterReturn"));
+    }
+    proof.ledger_boundary=sqlx::query_scalar(&format!("SELECT MAX(log_index) FROM ledger_{tenant}.entries WHERE $1::bigint IS NULL OR log_index<$1"))
+        .bind(before).fetch_one(&mut **tx).await?;
+    let activity:serde_json::Value=sqlx::query_scalar(&format!("SELECT COALESCE(jsonb_agg(jsonb_build_object('id',entry_id,'hash',hash,'position',log_index,'debit',debit,'pending',pending) ORDER BY log_index),'[]'::jsonb) FROM (SELECT e.entry_id,encode(e.content_hash,'hex') AS hash,e.log_index,SUM(p.amount_minor) FILTER(WHERE p.layer='settled' AND p.direction='D' AND e.log_index>$1) AS debit,SUM(CASE WHEN p.direction='D' THEN p.amount_minor ELSE -p.amount_minor END) FILTER(WHERE p.layer='pending') AS pending FROM ledger_{tenant}.postings p JOIN ledger_{tenant}.entries e USING(entry_id) JOIN ledger_{tenant}.accounts a USING(account_index) WHERE e.log_index IS NOT NULL AND ($2::bigint IS NULL OR e.log_index<$2) AND a.path='Liabilities:Wallet' GROUP BY e.entry_id,e.content_hash,e.log_index) q"))
+        .bind(position).bind(before).fetch_one(&mut **tx).await?;
+    proof.wallet_activity_sha256 = Some(
+        Sha256::digest(serde_json::to_vec(&activity).map_err(crate::error::invalid)?)
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect(),
+    );
+    let used = sqlx::query(&format!("SELECT COALESCE(SUM(p.amount_minor) FILTER(WHERE p.layer='settled' AND p.direction='D' AND e.log_index>$1),0)::bigint AS debits,COALESCE(SUM(CASE WHEN p.direction='D' THEN p.amount_minor ELSE -p.amount_minor END) FILTER(WHERE p.layer='pending'),0)::bigint AS reserved FROM ledger_{tenant}.postings p JOIN ledger_{tenant}.entries e USING(entry_id) JOIN ledger_{tenant}.accounts a USING(account_index) WHERE e.log_index IS NOT NULL AND ($2::bigint IS NULL OR e.log_index<$2) AND a.path='Liabilities:Wallet'"))
+        .bind(position).bind(before).fetch_one(&mut **tx).await?;
     proof.subsequent_wallet_debit_minor = used.try_get("debits")?;
     proof.pending_wallet_minor = used.try_get::<i64, _>("reserved")?.max(0);
     proof.wallet_minor = proof
@@ -285,6 +423,7 @@ pub(crate) async fn inspect_in(
         .min(
             total
                 .saturating_sub(proof.prior_chargeback_cash_minor)
+                .saturating_sub(proof.prior_refund_cash_minor)
                 .max(0),
         )
         .min(loss);
