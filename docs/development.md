@@ -1365,3 +1365,21 @@ Receivables and RefundPayable postings, block real wallet admission, and inject 
 statement-write fault after the ledger append to prove transaction rollback.
 No provider is called. The [evidence](roadmap/operator-launch/evidence/statement-review-finance.md)
 records baseline failures and final checks; complete release acceptance is separate.
+
+### Dispute resolution transaction checks (#826)
+
+With an explicit local test `DATABASE_URL`, run:
+
+```bash
+cargo nextest run -p oxsum-core --test dispute_atomicity --test refunds --test plan_refunds --test plan_usage_corrections
+cargo nextest run -p oxsum-server --test refunds
+```
+
+`dispute_atomicity` observes real PostgreSQL blockers while a chargeback waits
+at the ledger append lock, then proves a conflicting or same-lost decision waits
+behind its owner. It also checks plan-before-dispute ordering with `NOWAIT`,
+injects an audit-insert failure after ledger append, and compares original ledger,
+journal, statement, dispute and audit snapshots after rollback. Old middle-phase
+entries are created through the existing public ledger seam and refused without
+new cash. The corrected-source fixture repeats the rollback check for review
+suspense. No payment provider or live customer data is used.
