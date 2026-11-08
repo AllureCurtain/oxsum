@@ -1404,3 +1404,19 @@ Finance can review source-linked historical corrections using the
 [plan-refund recovery runbook](plan-refund-recovery.md). A refund that intersects
 an already-lost payment dispute can retain an explicit amount needing review;
 that status is not proof that every part has been allocated to the bill.
+
+
+### Retrying or reviewing a payment dispute
+
+Keep a failed resolution's fields unchanged to retry its same operation. Changing
+its outcome or reason under the same key returns a conflict. A completed dispute
+cannot be changed to another terminal outcome. New decisions commit the money,
+documents and audit together, so an audit failure does not leave an unrecorded
+cash effect.
+
+If resolution reports that ledger or audit history requires source review, retain
+the dispute/order/merchant identifiers and follow the
+[review procedure](dispute-resolution-review.md). Do not create a replacement
+payment, dispute or refund to clear the error. The non-plan chargeback allocation
+still has a known cash-direction defect (#829); plan chargeback cash and explicit
+review suspense have separate verified allocation rules.

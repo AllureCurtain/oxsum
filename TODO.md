@@ -6,6 +6,8 @@ Updated: 2026-11-08
 
 - [ ] [#831](https://github.com/AllureCurtain/oxsum/issues/831) — Owner merchant creation, full credential rotation, enablement and redacted paginated history/events implemented; review and integration in progress, browser and checkout selection remain separate gates.
 
+- [ ] [#826](https://github.com/AllureCurtain/oxsum/issues/826) — Atomic dispute authority, ledger/documents, outcome and audit implemented; 49 core and nine HTTP checks, strict Clippy and frontend contract/build passed. Final review/integration pending; non-plan cash policy remains #829 before statement repayment.
+
 - [ ] [#828](https://github.com/AllureCurtain/oxsum/issues/828) — Reuse reverified CI tool archives and bounded official URL fallback through transient upstream failures; preserve all required gates.
 
 - [ ] [#818](https://github.com/AllureCurtain/oxsum/issues/818) — Business model versions, aliases, routing weights, fallback and cache editors implemented; exact inputs, HTTP authority, frontend build and strict Clippy passed. PR integration and actual browser acceptance remain.

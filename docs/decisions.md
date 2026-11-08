@@ -3273,3 +3273,29 @@ when another statement remained overdue. Both violate the existing debt model.
 This adds no payout, repayment or daily recognition feature. Validation and
 remaining release limits are recorded in
 [the review evidence](roadmap/operator-launch/evidence/statement-review-finance.md).
+
+## 2026-11-08 — Resolve one dispute in the ledger transaction (#826)
+
+The former three committed phases released authority and the dispute lock before
+posting money, then acquired a new transaction for terminal state and audit. A
+second decision or failure could therefore leave a won/open dispute with a lost
+chargeback entry. Keep the business and live session locks until the complete
+resolution commits. Read immutable coordinates first, then use subscription →
+plan → dispute → journal → ledger → statement order; never acquire the order row
+after these owners. Non-plan legacy allocation also uses `append_in`, under the
+credit lock, so audit failure rolls back its entry and idempotency claim.
+
+Retained entries must use the exact derived key/id, sequenced settled USD legs,
+expected allocation shape and amount. Terminal dispute pointers and immutable
+audit identity/allocation must agree. An orphaned old middle-phase effect refuses
+with explicit source review; no generic retry guesses a compensation or rewrites
+terminal history. Keys bind actor, target, outcome and trimmed optional reason.
+An unchanged key is inert; a different terminal outcome conflicts; an unused key
+requesting the standing terminal outcome returns that row without another audit.
+
+This boundary does not repair the separate legacy non-plan incoming-cash sign,
+drawn-debt clamp or partial-event amount problem. #829 owns that original-source
+cash conservation and historical correction before #777 repayment launches.
+Stop and drain old writers during deployment: concurrent old binaries do not
+participate in the new transaction boundary. Controlled lock and audit-failure
+fixtures prove the new code's boundary, not mixed-version write safety.
