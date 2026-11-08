@@ -15,6 +15,8 @@
 //! `invoice_repayment` repays a drawn receivable — no purpose may both grant
 //! quota and wallet cash.
 
+use std::time::Duration;
+
 use crate::{
     BusinessCapability, Db, MerchantEventKind, MerchantEventReceipt, WalletError,
     business_staff as authority,
@@ -1051,6 +1053,7 @@ impl Db {
     /// Recovery's work list: `paid` orders that can fulfill automatically.
     /// Legacy bundles without trusted terms remain visible in reconciliation
     /// but cannot occupy the bounded worker queue and block unrelated payments.
+    /// Lost non-plan sources are similarly review-only and excluded from grants.
     /// Paid-unfulfilled is the sweep's backlog; a restart re-scans it and the
     /// fulfillment's own idempotency makes the retry a single grant.
     pub async fn unfulfilled_payment_orders(
@@ -1063,6 +1066,7 @@ impl Db {
         let rows = sqlx::query(&format!(
             "SELECT {ORDER_COLS} FROM oxsum.payment_orders \
              WHERE status='paid' AND (purpose <> 'bundle' OR bundle_offer IS NOT NULL) \
+               AND (purpose='plan_period' OR NOT EXISTS(SELECT 1 FROM oxsum.disputes d WHERE d.order_id=payment_orders.order_id AND d.state='lost')) \
                AND (purpose <> 'plan_period' OR \
                EXISTS(SELECT 1 FROM oxsum.plan_periods p WHERE p.authorization_kind='payment_order' \
                  AND p.authorization_ref=payment_orders.order_id) OR (plan_payment IS NOT NULL \
@@ -1136,6 +1140,36 @@ impl Db {
         wallet: &crate::Wallet,
         on: time::Date,
     ) -> Result<PaymentFulfillment, WalletError> {
+        // The non-plan source guard spans independent, replayable grants and
+        // the final fulfillment record. A loss either sees the complete source
+        // or fences a grant that has not begun. Plans retain their owner locks.
+        let purpose: Option<String> =
+            sqlx::query_scalar("SELECT purpose FROM oxsum.payment_orders WHERE order_id=$1")
+                .bind(order_id)
+                .fetch_optional(self.pool())
+                .await?;
+        let nonplan = purpose.as_deref().is_some_and(|p| p != "plan_period");
+        let _permit = if nonplan {
+            if self.pool().options().get_max_connections() < 3 {
+                return Err(WalletError::PoolBusy);
+            }
+            Some(
+                tokio::time::timeout(
+                    Duration::from_secs(5),
+                    self.fulfillment_queue.clone().acquire_owned(),
+                )
+                .await
+                .map_err(|_| WalletError::PoolBusy)?
+                .map_err(|_| WalletError::PoolBusy)?,
+            )
+        } else {
+            None
+        };
+        let mut source_guard = if nonplan {
+            Some(crate::nonplan_returns::fulfillment_guard(self, order_id).await?)
+        } else {
+            None
+        };
         let mut tx = self.pool().begin().await?;
         // Serialize the status read; replayable effects survive releasing this
         // transaction before their independent ledger transactions.
@@ -1152,6 +1186,9 @@ impl Db {
                 .ok_or_else(|| WalletError::Storage(sqlx::Error::RowNotFound.into()))?;
             tx.commit().await?;
             return Ok(standing);
+        }
+        if let Some(guard) = source_guard.as_mut() {
+            crate::nonplan_returns::guard_lost_in(guard, order_id).await?;
         }
         if existing.status != "paid" {
             return Err(WalletError::Conflict(format!(

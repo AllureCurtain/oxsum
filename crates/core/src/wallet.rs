@@ -1135,47 +1135,50 @@ impl Wallet {
         .await
     }
 
-    /// Retain the legacy non-plan allocation inside the resolution transaction.
-    ///
-    /// This Dr Cash / Cr CreditLine policy is a known financial defect (#829).
-    /// #826 only makes its append atomic with the dispute state and audit. The
-    /// caller checks that no historical effect exists before using this helper.
-    pub(crate) async fn dispute_recharge_in(
+    /// Read through the engine's content-hash verification. Corrupt source bytes
+    /// cannot justify a Wallet take-back; operational storage errors still fail.
+    pub(crate) async fn verified_source_hash(
+        &self,
+        id: Uuid,
+    ) -> Result<Option<String>, WalletError> {
+        match self.store.get(EntryId::from_uuid(id)).await {
+            Ok(Some(stored)) => Ok(Some(stored.content_hash.to_hex())),
+            Ok(None) | Err(PostgresError::Integrity(_) | PostgresError::Malformed(_)) => Ok(None),
+            Err(error) => Err(error.into()),
+        }
+    }
+
+    /// Retain complete chargeback Cash outflow and only the proven Wallet part.
+    /// The caller holds the source and ledger locks; no CreditLine debt is invented.
+    pub(crate) async fn nonplan_dispute_in(
         &self,
         tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
-        dispute_id: &Uuid,
-        contested_minor: i64,
+        dispute_id: Uuid,
+        loss: i64,
+        wallet_minor: i64,
         on: Date,
-    ) -> Result<(Receipt, i64), WalletError> {
-        positive(contested_minor)?;
-        sqlx::query("SELECT pg_advisory_xact_lock($1)")
-            .bind(credit_lock_key(&self.tenant_id))
-            .execute(&mut **tx)
-            .await?;
+    ) -> Result<Receipt, WalletError> {
+        let amount = positive(loss)?;
+        if !(0..=loss).contains(&wallet_minor) {
+            return Err(invalid("invalid non-plan chargeback allocation"));
+        }
         let key = format!("dispute-recharge/{dispute_id}");
-        let exists: bool = sqlx::query_scalar(&format!(
-            "SELECT EXISTS(SELECT 1 FROM ledger_{}.entries WHERE entry_id=$1 OR idempotency_key=$2)",
-            self.tenant_id
-        ))
-        .bind(entry_id_for(&key).as_uuid())
-        .bind(key.as_bytes())
-        .fetch_one(&mut **tx)
-        .await?;
-        if exists {
-            return Err(WalletError::Conflict(
-                "dispute ledger or audit history requires explicit source review".into(),
-            ));
+        let mut draft = Entry::<Draft, SCALE>::new(entry_id_for(&key), idem(&key)?, on).credit(
+            self.cash,
+            amount,
+            currency(),
+        );
+        if wallet_minor > 0 {
+            draft = draft.debit(self.wallet, Credits::from_minor(wallet_minor), currency());
         }
-        let drawn = self.credit_drawn_in(tx).await?;
-        if drawn <= 0 {
-            return Err(invalid("a lost dispute has no drawn receivable to restore"));
+        if loss > wallet_minor {
+            draft = draft.debit(
+                self.adjustments,
+                Credits::from_minor(loss - wallet_minor),
+                currency(),
+            );
         }
-        let minor = contested_minor.min(drawn);
-        let amount = positive(minor)?;
-        let draft = Entry::<Draft, SCALE>::new(entry_id_for(&key), idem(&key)?, on)
-            .debit(self.cash, amount, currency())
-            .credit(self.credit_line, amount, currency());
-        Ok((self.append_in(tx, draft).await?, minor))
+        self.append_in(tx, draft).await
     }
 
     // ── plan-fee journal legs (issue #611, T20) ──────────────────────────────

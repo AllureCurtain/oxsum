@@ -199,7 +199,7 @@ export function BusinessDisputes() {
                     <Td mono truncate>{d.disputeId.slice(0, 8)}</Td>
                     <Td mono truncate>{d.orderId.slice(0, 8)}</Td>
                     <Td mono truncate>{d.providerDisputeId}</Td>
-                    <Td mono align="right">{d.amountMinor} {d.currency}</Td>
+                    <Td mono align="right"><Cr minor={d.amountMinor} /></Td>
                     <td>{stateBadge(d.state)}</td>
                     <Td mono>{d.createdAt.slice(0, 10)}</Td>
                     <td className="text-right">
@@ -226,6 +226,7 @@ export function BusinessDisputes() {
                           <Field2 label={t("biz.disputes.colOrg")}>
                             <span className="mono text-xs">{d.organizationId}</span>
                           </Field2>
+                          <Field2 label={t("biz.disputes.collectionCurrency")}>{d.currency}</Field2>
                           <Field2 label={t("biz.disputes.recharge")}>
                             <span className="mono text-xs">{d.rechargeEntryId ?? "—"}</span>
                           </Field2>

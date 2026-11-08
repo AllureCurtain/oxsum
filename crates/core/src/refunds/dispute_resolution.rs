@@ -10,7 +10,8 @@ use super::{DisputeResolution, OrderDispute, dispute_from_row};
 use crate::{BusinessCapability, Db, Wallet, WalletError, business_staff as authority, error};
 
 const SCOPED_DISPUTE: &str = "SELECT d.*,p.purpose,p.purpose_ref,\
-    p.organization_id AS order_organization,p.merchant_id AS order_merchant,o.tenant_id \
+    p.organization_id AS order_organization,p.merchant_id AS order_merchant,\
+    p.amount_minor AS order_amount,p.display_amount_minor,p.display_currency,o.tenant_id \
     FROM oxsum.disputes d JOIN oxsum.merchant_accounts m USING(merchant_id) \
     JOIN oxsum.payment_orders p ON p.order_id=d.order_id \
     JOIN oxsum.organizations o ON o.organization_id=d.organization_id \
@@ -26,6 +27,7 @@ struct Allocation {
     recharged: Option<i64>,
     payable: i64,
     unallocated: i64,
+    wallet: i64,
 }
 
 /// Read exact sequenced postings, including old effects orphaned before the
@@ -58,6 +60,17 @@ async fn retained_effect(
     {
         return Err(review());
     }
+    if !plan {
+        let reversed: bool = sqlx::query_scalar(&format!(
+            "SELECT EXISTS(SELECT 1 FROM ledger_{tenant}.entries WHERE reverses=$1)"
+        ))
+        .bind(id)
+        .fetch_one(&mut **tx)
+        .await?;
+        if reversed || wallet.verified_source_hash(id).await?.is_none() {
+            return Err(review());
+        }
+    }
     let postings = sqlx::query(&format!(
         "SELECT a.path,p.direction,p.amount_minor,p.currency,p.layer FROM ledger_{tenant}.postings p \
          JOIN ledger_{tenant}.accounts a USING(account_index) WHERE p.entry_id=$1"
@@ -69,6 +82,7 @@ async fn retained_effect(
     let mut debt = 0i64;
     let mut payable = 0i64;
     let mut suspense = 0i64;
+    let mut wallet_minor = 0i64;
     for row in postings {
         let path: String = row.try_get("path")?;
         let direction: String = row.try_get("direction")?;
@@ -80,20 +94,21 @@ async fn retained_effect(
             return Err(review());
         }
         let target = match (plan, path.as_str(), direction.as_str()) {
-            (true, "Assets:Cash", "C") | (false, "Assets:Cash", "D") => &mut cash,
-            (true, "Assets:Receivables", "D") | (false, "Liabilities:CreditLine", "C") => &mut debt,
+            (_, "Assets:Cash", "C") => &mut cash,
+            (true, "Assets:Receivables", "D") => &mut debt,
+            (false, "Liabilities:Wallet", "D") => &mut wallet_minor,
             (true, "Liabilities:RefundPayable", "D") => &mut payable,
-            (true, "Equity:Adjustments", "D") => &mut suspense,
+            (_, "Equity:Adjustments", "D") => &mut suspense,
             _ => return Err(review()),
         };
         *target = target.checked_add(minor).ok_or_else(review)?;
     }
     if cash <= 0
-        || (plan && cash != dispute.amount_minor)
-        || (!plan && cash > dispute.amount_minor)
+        || cash != dispute.amount_minor
         || debt
             .checked_add(payable)
             .and_then(|v| v.checked_add(suspense))
+            .and_then(|v| v.checked_add(wallet_minor))
             != Some(cash)
     {
         return Err(review());
@@ -103,6 +118,7 @@ async fn retained_effect(
         recharged: Some(debt),
         payable,
         unallocated: suspense,
+        wallet: wallet_minor,
     })
 }
 
@@ -143,6 +159,10 @@ async fn verify_history(
         || (lost
             && detail.get("unallocatedMinor").is_some()
             && detail["unallocatedMinor"] != allocation.unallocated)
+        || (lost
+            && row.try_get::<String, _>("purpose")? != "plan_period"
+            && (detail["walletTakenMinor"] != allocation.wallet
+                || detail["source"]["policy"] != "nonplan-cash-v1"))
     {
         return Err(review());
     }
@@ -154,8 +174,9 @@ impl Db {
     /// ledger/documents and audit in one transaction. Matching request keys
     /// replay; changed terms and inconsistent retained effects are conflicts.
     ///
-    /// The legacy non-plan financial allocation remains tracked by #829. This
-    /// method does not reinterpret or repair old postings implicitly.
+    /// Non-plan losses credit complete Cash and reclaim only proven original
+    /// Wallet funding; other amounts remain explicit review suspense. Historical
+    /// wrong-direction or interrupted postings require separate source recovery.
     #[allow(clippy::too_many_arguments)]
     pub async fn resolve_order_dispute(
         &self,
@@ -207,12 +228,45 @@ impl Db {
                 .bind(scope.try_get::<Option<Uuid>, _>("purpose_ref")?).bind(organization)
                 .fetch_optional(&mut *tx).await?.ok_or_else(review)?;
         }
+        if !plan {
+            crate::nonplan_returns::lock_source_in(&mut tx, scope.try_get("order_id")?).await?;
+        }
         let row = sqlx::query(&format!("{SCOPED_DISPUTE} FOR UPDATE OF d"))
             .bind(dispute_id)
             .bind(business)
             .fetch_one(&mut *tx)
             .await?;
         let dispute = dispute_from_row(&row)?;
+        if !plan {
+            let event_id: Option<Uuid> = row.try_get("inbox_receipt_id")?;
+            let event_id = event_id.ok_or_else(review)?;
+            let valid_receipt: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM oxsum.merchant_event_inbox e JOIN oxsum.payment_orders p ON p.order_id=$2 WHERE e.receipt_id=$1 AND e.merchant_id=p.merchant_id AND e.version_id=p.merchant_version_id AND e.state IN ('accepted','applied'))")
+                .bind(event_id).bind(dispute.order_id).fetch_one(&mut *tx).await?;
+            if !valid_receipt {
+                return Err(review());
+            }
+            let event = self
+                .merchant_event_data(event_id)
+                .await?
+                .ok_or_else(review)?;
+            let amount = crate::nonplan_returns::disputed_minor(
+                row.try_get("order_amount")?,
+                row.try_get("display_amount_minor")?,
+                &row.try_get::<String, _>("display_currency")?,
+                &event,
+            )
+            .map_err(|_| review())?;
+            if event.kind != crate::MerchantEventKind::Dispute
+                || amount != dispute.amount_minor
+                || event.currency.as_deref() != Some(dispute.currency.as_str())
+                || event.payment_id != Some(dispute.order_id)
+                || event.organization_id != Some(organization)
+                || event.refund_id.as_deref() != Some(dispute.provider_dispute_id.as_str())
+            {
+                return Err(review());
+            }
+            wallet.lock_append_in(&mut tx).await?;
+        }
         let retained = retained_effect(&mut tx, wallet, &dispute, plan).await?;
         verify_history(&mut tx, &row, business, &dispute, &retained).await?;
         if let Some(audit) = sqlx::query("SELECT target,actor_user_id,detail FROM oxsum.finance_audit WHERE business_id=$1 AND action='dispute.resolve' AND idempotency_key=$2")
@@ -238,6 +292,8 @@ impl Db {
         }
         let mut allocation = Allocation::default();
         let mut corrected_journals = Vec::new();
+        let mut source = None;
+        let mut cancelled_promo_lot = None;
         if resolution == DisputeResolution::Lost {
             if plan {
                 self.recharge_journal_dispute_in(
@@ -259,11 +315,37 @@ impl Db {
                 )
                 .await?;
             } else {
-                let (receipt, minor) = wallet
-                    .dispute_recharge_in(&mut tx, &dispute_id, dispute.amount_minor, on)
+                let evidence = crate::nonplan_returns::inspect_in(
+                    &mut tx,
+                    wallet,
+                    dispute.order_id,
+                    organization,
+                    dispute_id,
+                    dispute.amount_minor,
+                )
+                .await?;
+                let receipt = wallet
+                    .nonplan_dispute_in(
+                        &mut tx,
+                        dispute_id,
+                        dispute.amount_minor,
+                        evidence.wallet_minor,
+                        on,
+                    )
                     .await?;
                 allocation.entry = Some(*receipt.entry_id.as_uuid());
-                allocation.recharged = Some(minor);
+                allocation.recharged = Some(0);
+                allocation.wallet = evidence.wallet_minor;
+                allocation.unallocated = evidence.suspense_minor;
+                source = Some(evidence);
+                if row.try_get::<String, _>("purpose")? == "bundle" {
+                    let lot: Option<Uuid> = sqlx::query_scalar("SELECT lot_id FROM oxsum.promo_lots WHERE organization_id=$1 AND source='bundle_promo' AND source_ref=$2")
+                        .bind(organization).bind(dispute.order_id.to_string()).fetch_optional(&mut *tx).await?;
+                    if let Some(lot) = lot {
+                        self.cancel_promo_lot_in(&mut tx, wallet, lot, on).await?;
+                        cancelled_promo_lot = Some(lot);
+                    }
+                }
             }
         }
         let audit_id = Uuid::new_v4();
@@ -275,6 +357,7 @@ impl Db {
                 "orderId":dispute.order_id,"resolution":resolution.as_str(),
                 "contestedMinor":dispute.amount_minor,"rechargedMinor":allocation.recharged,
                 "payableMinor":allocation.payable,"unallocatedMinor":allocation.unallocated,
+                "walletTakenMinor":allocation.wallet,"source":source,"cancelledPromoLotId":cancelled_promo_lot,
                 "requiresReview":allocation.unallocated>0,"correctedJournals":corrected_journals,
                 "reviewReason":if corrected_journals.is_empty(){None}else{Some("historical usage correction requires explicit payable allocation")},
                 "currency":dispute.currency,"rechargeEntryId":allocation.entry,"reason":reason,

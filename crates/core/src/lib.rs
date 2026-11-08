@@ -54,6 +54,7 @@ mod merchant_events;
 mod merchant_routes;
 mod merchants;
 mod metering;
+mod nonplan_returns;
 mod oauth;
 mod operations;
 mod orgs;

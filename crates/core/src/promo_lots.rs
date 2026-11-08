@@ -164,19 +164,35 @@ impl Db {
         on: time::Date,
     ) -> Result<PromoLot, WalletError> {
         let mut tx = self.pool().begin().await?;
+        self.cancel_promo_lot_in(&mut tx, wallet, lot_id, on)
+            .await?;
+        tx.commit().await?;
+        self.promo_lot(lot_id)
+            .await?
+            .ok_or_else(|| WalletError::InvalidInput("the promo lot did not land".into()))
+    }
+
+    /// Cancel a lot inside the caller's cash-effect transaction. Source identity
+    /// must be checked by that caller; append precedes every promo row lock.
+    pub(crate) async fn cancel_promo_lot_in(
+        &self,
+        tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+        wallet: &Wallet,
+        lot_id: Uuid,
+        on: time::Date,
+    ) -> Result<(), WalletError> {
         // The lot row is locked below and the burn appends in the same
         // transaction; the append lock goes first so the order matches every
         // hold's promo pin — append advisory lock, then promo row locks
         // (issue #723).
-        wallet.lock_append_in(&mut tx).await?;
+        wallet.lock_append_in(tx).await?;
         let row = sqlx::query(
             "SELECT remaining_minor, closed_at FROM oxsum.promo_lots WHERE lot_id = $1 FOR UPDATE",
         )
         .bind(lot_id)
-        .fetch_optional(&mut *tx)
+        .fetch_optional(&mut **tx)
         .await?;
         let Some(row) = row else {
-            tx.rollback().await?;
             return Err(WalletError::NotFound("unknown promo lot".into()));
         };
         let remaining: i64 = row.try_get("remaining_minor")?;
@@ -188,7 +204,7 @@ impl Db {
                 // Burn the unreserved remainder — never back to a refundable
                 // pool. The ledger write rides this transaction.
                 wallet
-                    .burn_promo_in(&mut tx, &format!("promo-cancel:{lot_id}"), remaining, on)
+                    .burn_promo_in(tx, &format!("promo-cancel:{lot_id}"), remaining, on)
                     .await?;
             }
             sqlx::query(
@@ -196,13 +212,10 @@ impl Db {
                  close_reason = 'cancelled' WHERE lot_id = $1",
             )
             .bind(lot_id)
-            .execute(&mut *tx)
+            .execute(&mut **tx)
             .await?;
         }
-        tx.commit().await?;
-        self.promo_lot(lot_id)
-            .await?
-            .ok_or_else(|| WalletError::InvalidInput("the promo lot did not land".into()))
+        Ok(())
     }
 
     /// The expiry pass (job kind `expire-lots`): every open lot whose

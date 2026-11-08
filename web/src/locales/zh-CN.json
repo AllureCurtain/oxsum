@@ -1660,8 +1660,9 @@
       "colOpened": "发起时间",
       "resolve": "处理",
       "resolveTitle": "处理此争议?",
-      "resolveExplain": "败诉争议会通过其自身账本条目重新扣取已提取应收。",
-      "recharge": "重扣条目",
+      "resolveExplain": "此操作关闭争议，不变动资金。败诉结果会完整记录现金损失，并核对原始资金或明确保留待审核金额。",
+      "collectionCurrency": "原收款币种",
+      "recharge": "拒付分录",
       "updated": "更新时间",
       "empty": "暂无争议。"
     },

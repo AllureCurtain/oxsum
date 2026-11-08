@@ -9848,7 +9848,7 @@ export interface paths {
         put?: never;
         /**
          * Resolve an open dispute
-         * @description Current business staff with refunds-write capability; a personal session. `evidenceDue` moves the dispute to the contesting state; `won` or `closed` end it without money. Authority, the selected outcome, any ledger and document effects, and finance audit commit atomically. An unchanged idempotency key replays its original request; a different target, resolution or trimmed reason under that key is 409. A different terminal outcome or inconsistent historical ledger/audit evidence is also 409 and requires source review. A plan `lost` outcome records complete chargeback cash against its original receivable, refund payable or explicit review suspense under `dispute-recharge/<dispute_id>`. The legacy non-plan debit-Cash/credit-CreditLine allocation remains a known financial defect tracked by #829; this transaction fix does not certify that allocation.
+         * @description Current business staff with refunds-write capability; a personal session. `evidenceDue` moves the dispute to the contesting state; `won` or `closed` end it without money. Authority, the selected outcome, any ledger and document effects, and finance audit commit atomically. An unchanged idempotency key replays its original request; a different target, resolution or trimmed reason under that key is 409. A different terminal outcome or inconsistent historical ledger/audit evidence is also 409 and requires source review. A plan `lost` outcome records complete chargeback cash against its original receivable, refund payable or explicit review suspense under `dispute-recharge/<dispute_id>`. A non-plan `lost` outcome credits Cash for the complete authenticated loss. It debits only provably retained original Wallet funding, after subsequent settled debits and pending reservations; the remainder debits review suspense (`Equity:Adjustments`) with source evidence in finance audit. It does not reopen old credit debt. Missing or inconsistent source evidence and any prior refund history permit no Wallet take-back. Future refund requests/approvals and unperformed fulfillment are fenced after a non-plan loss. Historical wrong-direction entries still require explicit recovery (#842); resolving them does not silently repair them. Non-plan dispute intake requires an explicit provider case ID, amount and matching pinned fiat currency; a partial amount must convert exactly to integer ledger minor units.
          */
         post: {
             parameters: {
@@ -20605,15 +20605,16 @@ export interface components {
             providerDisputeId: string;
             /**
              * Format: int64
-             * @description the fiat figure contested
+             * @description contested credit amount in ledger minor units; for non-plan disputes exactly converted from the authenticated fiat amount using the order snapshot
              */
             amountMinor: number;
+            /** @description original collection fiat currency; amountMinor remains ledger credit minor units */
             currency: string;
             /** @enum {string} */
             state: "opened" | "evidence_due" | "won" | "lost" | "closed";
             /**
              * Format: uuid
-             * @description the ledger entry a lost dispute re-charged under
+             * @description the ledger entry retaining the lost dispute cash effect
              */
             rechargeEntryId: string | null;
             /** Format: date-time */
