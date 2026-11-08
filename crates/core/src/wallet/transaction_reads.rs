@@ -52,6 +52,29 @@ impl Wallet {
         }
     }
 
+    /// Resolve promo ownership without a nested checkout while the append lock is held.
+    pub(super) async fn organization_id_hint_in(
+        &self,
+        connection: &mut PgConnection,
+    ) -> Result<Option<Uuid>, WalletError> {
+        let exists: bool =
+            sqlx::query_scalar("SELECT to_regclass('oxsum.organizations') IS NOT NULL")
+                .fetch_one(&mut *connection)
+                .await?;
+        if !exists {
+            return Ok(None);
+        }
+        Ok(
+            sqlx::query_scalar(
+                "SELECT organization_id FROM oxsum.organizations WHERE tenant_id=$1",
+            )
+            .bind(&self.tenant_id)
+            .fetch_optional(connection)
+            .await?,
+        )
+    }
+
+    /// Check the day seal through the caller's snapshot.
     pub(super) async fn day_is_anchored_in(
         &self,
         connection: &mut PgConnection,
@@ -74,6 +97,7 @@ impl Wallet {
         .await?)
     }
 
+    /// Validate against the calendar visible on this connection.
     pub(super) async fn seal_in(
         &self,
         connection: &mut PgConnection,
@@ -88,24 +112,26 @@ impl Wallet {
         let mut periods = Vec::with_capacity(rows.len());
         for row in rows {
             let mut period = Period::new(
-                PeriodId::new(row.try_get::<String, _>("period_id")?).map_err(super::invalid)?,
+                PeriodId::new(row.try_get::<String, _>("period_id")?)
+                    .map_err(|error| PostgresError::Malformed(error.to_string()))?,
                 row.try_get("starts_on")?,
                 row.try_get("ends_on")?,
             )
-            .map_err(super::invalid)?;
+            .map_err(|error| PostgresError::Malformed(error.to_string()))?;
             period.state = match row.try_get::<&str, _>("state")? {
                 "open" => PeriodState::Open,
                 "closing" => PeriodState::Closing,
                 "sealed" => PeriodState::Sealed,
                 _ => {
-                    return Err(WalletError::Misconfigured(
+                    return Err(PostgresError::Malformed(
                         "unrecognized ledger period state".into(),
-                    ));
+                    )
+                    .into());
                 }
             };
             periods.push(period);
         }
-        let calendar = PeriodCalendar::from_periods(periods).map_err(super::invalid)?;
+        let calendar = PeriodCalendar::from_periods(periods).map_err(PostgresError::from)?;
         draft
             .seal(&SealContext {
                 accounts: &self.registry,
@@ -136,6 +162,11 @@ impl Wallet {
         stored: &StoredEntry<SCALE>,
         hold_key: &str,
     ) -> Result<(i64, i64, i64, i64, Option<String>, Option<String>), WalletError> {
+        if stored.entry.idempotency_key().as_bytes() != hold_key.as_bytes() {
+            return Err(WalletError::HoldNotFound(format!(
+                "key {hold_key:?} does not name this hold"
+            )));
+        }
         let mut amounts = [0i64; 4];
         for posting in stored.entry.postings() {
             if posting.layer != Layer::Pending {
