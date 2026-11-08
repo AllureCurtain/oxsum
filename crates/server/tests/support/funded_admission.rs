@@ -477,7 +477,28 @@ async fn a_funded_cache_hit_rechecks_organization_restrictions() {
         )
         .await
         .unwrap();
-    complete(&world).await;
+    let served = complete(&world).await;
+    let source = oxsum_core::entry_id_for(&oxsum_core::settlement_key_for(&format!(
+        "req-{}:hold",
+        served["request"].as_str().unwrap()
+    )));
+    tokio::time::timeout(Duration::from_secs(3), async {
+        loop {
+            let cached: bool = sqlx::query_scalar(
+                "SELECT EXISTS(SELECT 1 FROM oxsum.cached_responses WHERE source_entry_id=$1)",
+            )
+            .bind(source.as_uuid())
+            .fetch_one(&world.pool)
+            .await
+            .unwrap();
+            if cached {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .unwrap();
     let hit = chat(&world.app, &world.key, &world.model, json!({})).await;
     assert_eq!(hit.status(), StatusCode::OK);
     assert_eq!(hit.headers()["x-oxsum-cache"], "hit");
@@ -1247,16 +1268,6 @@ async fn a_funded_request_still_obeys_the_mandates_existing_monetary_cap() {
     // importing records). Admission must still inspect that monetary basis
     // when its new quota share requires zero wallet money.
     let wallet = world.wallet().await;
-    wallet
-        .usage_receipt(
-            "historical-mandate-marker",
-            "",
-            Some(&input.key.key_id.simple().to_string()),
-            Some(&presented.verified.mandate_id.simple().to_string()),
-            now.date(),
-        )
-        .await
-        .unwrap();
     let hold = format!("mandate-ledger-{}", Uuid::new_v4());
     let mut historical = presented.clone();
     historical.verified.cap_minor = 40;
