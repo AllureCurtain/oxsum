@@ -19069,6 +19069,11 @@ export interface components {
         };
         SoldPlan: {
             /**
+             * @description 1 retains historical period-close recognition; 2 invoices at paid activation and recognizes completed UTC service days. A version change applies only to a newly authorized period.
+             * @enum {integer}
+             */
+            accountingPolicyVersion: 1 | 2;
+            /**
              * Format: uuid
              * @description the version row's own id — what a binding and a `planPeriod` order's `purposeRef` name
              */
@@ -19151,6 +19156,11 @@ export interface components {
             updatedAt: string;
         };
         PlanPeriod: {
+            /**
+             * @description 1 retains historical period-close recognition; 2 invoices at paid activation and recognizes completed UTC service days. A version change applies only to a newly authorized period.
+             * @enum {integer}
+             */
+            accountingPolicyVersion: 1 | 2;
             /** Format: uuid */
             planPeriodId: string;
             /** Format: uuid */
@@ -19206,6 +19216,11 @@ export interface components {
             nextDueAt: string | null;
         };
         InvoiceJournal: {
+            /**
+             * @description 1 retains historical period-close recognition; 2 invoices at paid activation and recognizes completed UTC service days. A version change applies only to a newly authorized period.
+             * @enum {integer}
+             */
+            accountingPolicyVersion: 1 | 2;
             /** Format: uuid */
             journalId: string;
             /** Format: uuid */
@@ -20308,7 +20323,7 @@ export interface components {
             /** @description the paid orders the recovery sweep still owes a fulfillment */
             paidUnfulfilled: string[];
         };
-        /** @description The eight-category figures a period's books answer, all integer minor units — the customer's `/api/v1/org/usage-report` and the staff's `/api/v1/business/financial-facts` derive from the same source rows, so the filtered view is a projection, never a second total. */
+        /** @description The source-derived financial figures a period's books answer, all integer minor units — the customer's `/api/v1/org/usage-report` and the staff's `/api/v1/business/financial-facts` derive from the same source rows, so the filtered view is a projection, never a second total. */
         FinancialFacts: {
             /**
              * Format: int64
@@ -20332,22 +20347,37 @@ export interface components {
             fundingMinor: number;
             /**
              * Format: int64
-             * @description posted/paid invoice-journal totals — what the business billed
+             * @description net billed fee; v1 posted-journal cohort plus v2 signed effect movements under the selected clock
+             */
+            billedMinor: number;
+            /**
+             * Format: int64
+             * @description net deferred-fee change from immutable v2 accounting effects under the selected clock
+             */
+            deferredMinor: number;
+            /**
+             * Format: int64
+             * @description noncash journal discounts and promotion credits; cash-refund credits excluded
+             */
+            discountMinor: number;
+            /**
+             * Format: int64
+             * @description net plan-fee income from source-linked recognition and correction effects; v1 retains its historical closing policy
              */
             earnedMinor: number;
             /**
              * Format: int64
-             * @description the settled share of those journals — what was collected
+             * @description net billed collection; v1 posted-journal cohort plus v2 signed collection effects
              */
             collectedMinor: number;
             /**
              * Format: int64
-             * @description succeeded refunds plus journal credit lines — money back
+             * @description confirmed cash returns counted once; journal credit lines do not create a second refund
              */
             refundMinor: number;
             /**
              * Format: int64
-             * @description issued/past-due statements' outstanding plus unsurfaced posted journals — still owed
+             * @description legacy statement/journal outstanding plus v2 receivable movement; no filter gives the cumulative position
              */
             receivableMinor: number;
         };

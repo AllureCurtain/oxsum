@@ -118,7 +118,25 @@ async fn historical_authorization_replays_but_pending_legacy_intents_cannot_gran
         Err(WalletError::Conflict(_))
     ));
     assert!(db.activate_plan_period(Uuid::new_v4(), plan).await.is_err());
-    assert_eq!(db.plan_periods(plan).await.unwrap().len(), 1);
+    let periods = db.plan_periods(plan).await.unwrap();
+    assert_eq!(periods.len(), 1);
+    assert_eq!(periods[0].accounting_policy_version, 1);
+    assert_eq!(
+        db.sold_plan(sold.plan_version_id)
+            .await
+            .unwrap()
+            .unwrap()
+            .accounting_policy_version,
+        1
+    );
+    let daily: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM oxsum.plan_accounting_periods WHERE customer_plan_id=$1",
+    )
+    .bind(plan)
+    .fetch_one(db.pool())
+    .await
+    .unwrap();
+    assert_eq!(daily, 0);
     assert!(db.unfulfilled_payment_orders(100).await.unwrap().is_empty());
     assert!(
         sqlx::query(insert)

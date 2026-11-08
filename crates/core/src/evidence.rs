@@ -602,17 +602,22 @@ impl Db {
         collector: &mut Collector,
         detail: &crate::PlanStatementDetail,
     ) -> Result<(), WalletError> {
-        // The immutable accounting inputs/effects form one captured snapshot.
-        // It attests listed facts, not a complete live financial projection.
+        // Header, itemization and immutable effects share one database snapshot.
+        // Later financial changes cannot mix into this captured statement.
         let mut tx = self.pool().begin().await?;
         sqlx::query("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY")
             .execute(&mut *tx)
             .await?;
-        // The public detail serializer is retained for the original artifact
-        // shape; its snapshot is committed separately from accounting effects.
+        let detail = crate::plan_statements::statement_snapshot_in(
+            &mut tx,
+            collector.organization_id,
+            detail.statement.statement_id,
+        )
+        .await?
+        .ok_or_else(|| invalid("statement disappeared during evidence collection"))?;
         let journal = match detail.statement.journal_id {
             Some(journal_id) => {
-                self.plan_journal(collector.organization_id, journal_id)
+                crate::journals::journal_snapshot_in(&mut tx, collector.organization_id, journal_id)
                     .await?
             }
             None => None,
@@ -622,11 +627,11 @@ impl Db {
         if let Some(journal) = &journal
             && journal.journal.accounting_policy_version == 2
         {
-            let period: Option<serde_json::Value> = sqlx::query_scalar(
+            let period: serde_json::Value = sqlx::query_scalar(
                 "SELECT to_jsonb(a) FROM oxsum.plan_accounting_periods a WHERE journal_id=$1",
             )
             .bind(journal.journal.journal_id)
-            .fetch_optional(&mut *tx)
+            .fetch_one(&mut *tx)
             .await?;
             let effects:Vec<serde_json::Value>=sqlx::query_scalar("SELECT to_jsonb(e) FROM oxsum.plan_accounting_effects e JOIN oxsum.plan_accounting_periods a USING(plan_period_id) WHERE a.journal_id=$1 ORDER BY e.created_at,e.effect_id").bind(journal.journal.journal_id).fetch_all(&mut *tx).await?;
             for effect in &effects {

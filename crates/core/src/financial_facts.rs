@@ -1398,7 +1398,7 @@ impl Db {
                     .await?,
                 );
             }
-            // earned − collected = receivable: the statements' outstanding
+            // billed − collected = receivable: the statements' outstanding
             // must equal the journals' billed-minus-settled.
             if facts.billed_minor - facts.collected_minor != facts.receivable_minor {
                 let detail = format!(

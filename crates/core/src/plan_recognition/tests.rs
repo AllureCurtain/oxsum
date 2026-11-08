@@ -18,6 +18,7 @@ use time::{Duration, OffsetDateTime};
 use uuid::Uuid;
 
 const FEE: i64 = 2_500_000;
+static TEST_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 struct World {
     db: Db,
     owner: String,
@@ -241,6 +242,7 @@ async fn assert_books(w: &World, billed: i64, earned: i64, collected: i64, retur
 
 #[tokio::test]
 async fn paid_activation_invoices_without_recognizing_and_pins_inputs() {
+    let _guard = TEST_LOCK.lock().await;
     let Some(w) = world(0, false).await else {
         return;
     };
@@ -317,6 +319,7 @@ async fn paid_activation_invoices_without_recognizing_and_pins_inputs() {
 
 #[tokio::test]
 async fn catchup_is_once_per_day_and_final_close_does_not_bill_twice() {
+    let _guard = TEST_LOCK.lock().await;
     let Some(w) = world(40, false).await else {
         return;
     };
@@ -340,6 +343,7 @@ async fn catchup_is_once_per_day_and_final_close_does_not_bill_twice() {
 
 #[tokio::test]
 async fn refunds_before_during_and_after_service_reduce_net_consideration_once() {
+    let _guard = TEST_LOCK.lock().await;
     for days in [0, 10, 40] {
         for amount in [1_000_000, FEE] {
             let Some(w) = world(days, false).await else {
@@ -373,6 +377,7 @@ async fn refunds_before_during_and_after_service_reduce_net_consideration_once()
 
 #[tokio::test]
 async fn financial_void_reverses_daily_and_deferred_to_payable_without_cash() {
+    let _guard = TEST_LOCK.lock().await;
     for days in [0, 10, 40] {
         let Some(w) = world(days, false).await else {
             return;
@@ -422,6 +427,7 @@ async fn financial_void_reverses_daily_and_deferred_to_payable_without_cash() {
 
 #[tokio::test]
 async fn lost_dispute_keeps_service_revenue_and_restores_original_receivable() {
+    let _guard = TEST_LOCK.lock().await;
     for days in [0, 10, 40] {
         let Some(w) = world(days, false).await else {
             return;
@@ -451,6 +457,7 @@ async fn lost_dispute_keeps_service_revenue_and_restores_original_receivable() {
 
 #[tokio::test]
 async fn concurrent_catchup_has_one_ledger_entry_per_completed_day() {
+    let _guard = TEST_LOCK.lock().await;
     let Some(w) = world(10, false).await else {
         return;
     };
@@ -466,6 +473,7 @@ async fn concurrent_catchup_has_one_ledger_entry_per_completed_day() {
 
 #[tokio::test]
 async fn failed_effect_insert_rolls_back_the_ledger_and_retries_cleanly() {
+    let _guard = TEST_LOCK.lock().await;
     let Some(w) = world(10, false).await else {
         return;
     };
@@ -498,12 +506,18 @@ async fn failed_effect_insert_rolls_back_the_ledger_and_retries_cleanly() {
 
 #[tokio::test]
 async fn legacy_refund_cash_report_excludes_its_matching_journal_credit() {
+    let _guard = TEST_LOCK.lock().await;
     let Some(w) = world(40, true).await else {
         return;
     };
     assert_eq!(w.period.accounting_policy_version, 1);
     w.db.rollover_due_subscriptions().await.unwrap();
     refund(&w, 1_000_000).await;
+    // Reproduce the old report's source formula on this controlled history:
+    // succeeded refund cash plus its negative journal credit counts twice.
+    let old:i64=sqlx::query_scalar("SELECT (SELECT COALESCE(SUM(amount_minor),0) FROM oxsum.refunds WHERE organization_id=$1 AND state='succeeded')-(SELECT COALESCE(SUM(l.amount_minor),0) FROM oxsum.invoice_journal_lines l JOIN oxsum.invoice_journals j USING(journal_id) WHERE j.organization_id=$1 AND l.kind IN ('discount','promo_credit'))")
+        .bind(w.org).fetch_one(w.db.pool()).await.unwrap();
+    assert_eq!(old, 2_000_000);
     let f = facts(&w).await;
     assert_eq!(
         f.refund_minor, 1_000_000,
@@ -521,6 +535,7 @@ async fn legacy_refund_cash_report_excludes_its_matching_journal_credit() {
 
 #[tokio::test]
 async fn reporting_clocks_keep_service_recognition_separate_from_booking() {
+    let _guard = TEST_LOCK.lock().await;
     let Some(w) = world(10, false).await else {
         return;
     };
@@ -567,6 +582,7 @@ async fn reporting_clocks_keep_service_recognition_separate_from_booking() {
 
 #[tokio::test]
 async fn evidence_pins_daily_sources_and_keeps_previously_minted_bytes() {
+    let _guard = TEST_LOCK.lock().await;
     let Some(w) = world(10, false).await else {
         return;
     };
@@ -602,6 +618,17 @@ async fn evidence_pins_daily_sources_and_keeps_previously_minted_bytes() {
     )
     .unwrap();
     let mut wire: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    let mut missing = wire.clone();
+    missing["entries"].as_array_mut().unwrap().truncate(1);
+    assert!(
+        oxsum_verify::verify_evidence_bundle(
+            &missing.to_string(),
+            &format!("tenant-{}", w.tenant),
+            &w.org.to_string(),
+            None
+        )
+        .is_err()
+    );
     let artifact = &wire["artifacts"]["planStatement"][statement.statement_id.to_string()];
     assert_eq!(artifact["accounting"]["policyVersion"], 2);
     assert_eq!(artifact["accounting"]["period"]["fee_minor"], FEE);
@@ -643,4 +670,229 @@ async fn evidence_pins_daily_sources_and_keeps_previously_minted_bytes() {
             .unwrap(),
         bytes
     );
+}
+
+#[tokio::test]
+async fn ordinary_legacy_renewal_retains_v1_until_explicit_new_version_activation() {
+    let _guard = TEST_LOCK.lock().await;
+    let Some(w) = world(40, true).await else {
+        return;
+    };
+    let next = payment::created_order(&w.db, &w.context, w.org, w.plan).await;
+    payment::mark_paid(&w.db, &w.context, &next).await;
+    w.db.activate_plan_period(next.order_id, w.plan)
+        .await
+        .unwrap();
+    let periods = w.db.plan_periods(w.plan).await.unwrap();
+    assert_eq!(periods.len(), 2);
+    assert!(periods.iter().all(|p| p.accounting_policy_version == 1));
+    let count: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM oxsum.plan_accounting_periods WHERE customer_plan_id=$1",
+    )
+    .bind(w.plan)
+    .fetch_one(w.db.pool())
+    .await
+    .unwrap();
+    assert_eq!(count, 0);
+    // Explicit new-version selection is the only policy transition.
+    let Some(w) = world(40, true).await else {
+        return;
+    };
+    let current = w.db.customer_plan(w.org).await.unwrap().unwrap();
+    let old =
+        w.db.sold_plan(current.plan_version_id)
+            .await
+            .unwrap()
+            .unwrap();
+    let v2 =
+        w.db.publish_sold_plan(
+            old.business_id,
+            &NewSoldPlan {
+                plan_id: Some(old.plan_id),
+                name: old.name,
+                price_minor: FEE,
+                currency: "USD".into(),
+                quota_minor: Some(20_000_000),
+                period_kind: PeriodKind::Anniversary,
+                overage_enabled: true,
+                sort_order: 0,
+            },
+        )
+        .await
+        .unwrap();
+    w.db.schedule_customer_plan_change(w.org, v2.plan_version_id)
+        .await
+        .unwrap();
+    w.db.rollover_due_subscriptions().await.unwrap();
+    let quote = w.db.plan_payment_quote(w.org).await.unwrap();
+    assert_eq!(quote.terms.plan_version_id, v2.plan_version_id);
+    let next = payment::created_order(&w.db, &w.context, w.org, w.plan).await;
+    payment::mark_paid(&w.db, &w.context, &next).await;
+    w.db.activate_plan_period(next.order_id, w.plan)
+        .await
+        .unwrap();
+    let periods = w.db.plan_periods(w.plan).await.unwrap();
+    assert_eq!(periods.len(), 2);
+    assert_eq!(
+        periods
+            .iter()
+            .find(|p| p.period_index == 0)
+            .unwrap()
+            .accounting_policy_version,
+        1
+    );
+    assert_eq!(
+        periods
+            .iter()
+            .find(|p| p.period_index == 1)
+            .unwrap()
+            .accounting_policy_version,
+        2
+    );
+    assert_eq!(
+        w.db.plan_journals(w.org, None, 50)
+            .await
+            .unwrap()
+            .journals
+            .len(),
+        2
+    );
+}
+
+#[tokio::test]
+async fn free_daily_version_has_zero_invoice_and_no_cash_or_income() {
+    let _guard = TEST_LOCK.lock().await;
+    let Some(w) = world(0, false).await else {
+        return;
+    };
+    let user =
+        w.db.register(NewUser {
+            email: format!("{}@example.com", Uuid::new_v4()),
+            password: "free daily fixture password".into(),
+            organization_name: None,
+        })
+        .await
+        .unwrap();
+    let sold =
+        w.db.publish_sold_plan(
+            w.db.default_business().await.unwrap(),
+            &NewSoldPlan {
+                plan_id: None,
+                name: "Free daily".into(),
+                price_minor: 0,
+                currency: "USD".into(),
+                quota_minor: Some(5000),
+                period_kind: PeriodKind::CalendarMonth,
+                overage_enabled: false,
+                sort_order: 0,
+            },
+        )
+        .await
+        .unwrap();
+    let plan =
+        w.db.bind_customer_plan(
+            user.organization.id,
+            sold.plan_version_id,
+            PeriodAuthorization::Complimentary(Uuid::new_v4()),
+        )
+        .await
+        .unwrap();
+    let journal =
+        w.db.plan_journals(user.organization.id, None, 50)
+            .await
+            .unwrap()
+            .journals
+            .remove(0);
+    assert_eq!(
+        (
+            journal.total_minor,
+            journal.settled_minor,
+            journal.accounting_policy_version
+        ),
+        (0, 0, 2)
+    );
+    let wallet = Wallet::open_existing(w.db.pool().clone(), &user.organization.tenant_id)
+        .await
+        .unwrap();
+    let period =
+        w.db.plan_periods(plan.customer_plan_id)
+            .await
+            .unwrap()
+            .remove(0);
+    let mut tx = w.db.pool().begin().await.unwrap();
+    sqlx::query(
+        "SELECT customer_plan_id FROM oxsum.customer_plans WHERE customer_plan_id=$1 FOR UPDATE",
+    )
+    .bind(plan.customer_plan_id)
+    .fetch_one(&mut *tx)
+    .await
+    .unwrap();
+    w.db.recognize_plan_period_in(
+        &mut tx,
+        &wallet,
+        journal.journal_id,
+        period.period_end,
+        OffsetDateTime::now_utc().date(),
+    )
+    .await
+    .unwrap();
+    tx.commit().await.unwrap();
+    let nonzero:i64=sqlx::query_scalar("SELECT count(*) FROM oxsum.plan_accounting_effects WHERE plan_period_id=$1 AND (entry_id IS NOT NULL OR billed_minor<>0 OR earned_minor<>0 OR deferred_minor<>0 OR cash_minor<>0)").bind(period.plan_period_id).fetch_one(w.db.pool()).await.unwrap();
+    assert_eq!(nonzero, 0);
+    let f =
+        w.db.financial_facts(&FactFilter {
+            organization_id: Some(user.organization.id),
+            ..FactFilter::default()
+        })
+        .await
+        .unwrap();
+    assert_eq!(
+        (
+            f.billed_minor,
+            f.earned_minor,
+            f.deferred_minor,
+            f.collected_minor
+        ),
+        (0, 0, 0, 0)
+    );
+}
+
+#[tokio::test]
+async fn recognition_and_refund_serialize_to_the_same_net_fee() {
+    let _guard = TEST_LOCK.lock().await;
+    let Some(w) = world(10, false).await else {
+        return;
+    };
+    let now = OffsetDateTime::now_utc();
+    let (_, r) = tokio::join!(recognize(&w, now), refund(&w, 1_000_000));
+    assert!(r.refund_id != Uuid::nil());
+    assert_books(
+        &w,
+        FEE - 1_000_000,
+        expected(&w, FEE - 1_000_000).await,
+        FEE - 1_000_000,
+        1_000_000,
+    )
+    .await;
+    assert_eq!(net(&w, "Assets:Cash").await, -(FEE - 1_000_000));
+}
+
+#[tokio::test]
+async fn recognition_effects_book_today_when_service_days_are_old() {
+    let _guard = TEST_LOCK.lock().await;
+    let Some(w) = world(40, false).await else {
+        return;
+    };
+    let today = OffsetDateTime::now_utc().date();
+    // Seal the actual historical month before catching up. Posting by service
+    // date would now fail; current-date catch-up must still succeed.
+    w.wallet
+        .close_month(w.period.period_start.date().replace_day(1).unwrap())
+        .await
+        .unwrap();
+    recognize(&w, OffsetDateTime::now_utc()).await;
+    let bad:i64=sqlx::query_scalar("SELECT count(*) FROM oxsum.plan_accounting_effects WHERE plan_period_id=$1 AND kind='recognition' AND (booked_on<>$2 OR service_day>=$2)").bind(w.period.plan_period_id).bind(today).fetch_one(w.db.pool()).await.unwrap();
+    assert_eq!(bad, 0);
+    let wrong:i64=sqlx::query_scalar(&format!("SELECT count(*) FROM oxsum.plan_accounting_effects a JOIN ledger_{}.entries e ON e.entry_id=a.entry_id WHERE a.plan_period_id=$1 AND a.kind='recognition' AND e.booking_date<>$2",w.tenant)).bind(w.period.plan_period_id).bind(today).fetch_one(w.db.pool()).await.unwrap();
+    assert_eq!(wrong, 0);
 }

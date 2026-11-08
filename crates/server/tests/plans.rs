@@ -298,6 +298,37 @@ async fn the_catalogue_publishes_and_binds_over_http() {
         "paymentOrder"
     );
     assert_eq!(periods[0]["state"].as_str().unwrap(), "active");
+    assert_eq!(periods[0]["accountingPolicyVersion"], 2);
+    let (status, journals) = call(
+        &world.app,
+        "GET",
+        "/api/v1/org/plan/journals",
+        Value::Null,
+        Some(&world.customer),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{journals}");
+    assert_eq!(journals["data"]["journals"].as_array().unwrap().len(), 1);
+    assert_eq!(
+        journals["data"]["journals"][0]["accountingPolicyVersion"],
+        2
+    );
+    assert_eq!(journals["data"]["journals"][0]["state"], "paid");
+    let (status, facts) = call(
+        &world.app,
+        "GET",
+        "/api/v1/org/usage-report",
+        Value::Null,
+        Some(&world.customer),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{facts}");
+    assert_eq!(facts["data"]["earnedMinor"], 0);
+    assert_eq!(facts["data"]["deferredMinor"], facts["data"]["billedMinor"]);
+    assert_eq!(
+        facts["data"]["collectedMinor"],
+        facts["data"]["billedMinor"]
+    );
 }
 
 #[tokio::test]

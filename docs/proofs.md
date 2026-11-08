@@ -56,3 +56,10 @@ older, weaker statement.
 The customer-facing version of this page is [Verifying an oxsum bill](verify-your-bill.md); the
 operator-facing surfaces are described in [product.md](product.md). The wire-level companion —
 every object and check computed field-by-field — is [the transparency-log spec](transparency-log-v1.md).
+
+
+### Versioned plan recognition evidence (#838)
+
+A new v2 plan-statement artifact commits the policy number, immutable original version/authorization/fee/service bounds, capture time and listed accounting effects. Each effect names its actual official ledger entry (zero-money days have none); the bundle carries those entries and the pure verifier rejects an omitted referenced entry. Policy inputs/effects and statement itemization are collected from one repeatable-read database snapshot. Existing bundles and v1 verification remain readable and byte-stable.
+
+This is source integrity and ledger inclusion for the captured list. It does not independently attest actual service delivery, statutory accounting compliance, completeness of effects absent from the captured list, or financial changes after mint. A statement may export before service ends; its committed scope explicitly excludes future recognition and later adjustments. Re-minting its immutable scope returns the same bytes.

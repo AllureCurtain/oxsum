@@ -681,6 +681,21 @@ pub(crate) async fn journal_in(
     row.as_ref().map(journal_from_row).transpose()
 }
 
+/// Read one customer invoice and its lines within the caller's snapshot.
+pub(crate) async fn journal_snapshot_in(
+    tx: &mut Transaction<'_, Postgres>,
+    organization: Uuid,
+    journal: Uuid,
+) -> Result<Option<InvoiceJournalDetail>, WalletError> {
+    let row=sqlx::query(&format!("SELECT {JOURNAL_COLS} FROM oxsum.invoice_journals WHERE journal_id=$1 AND organization_id=$2 AND state<>'draft'"))
+        .bind(journal).bind(organization).fetch_optional(&mut **tx).await?;
+    let Some(row) = row else { return Ok(None) };
+    Ok(Some(InvoiceJournalDetail {
+        journal: journal_from_row(&row)?,
+        lines: lines_in(tx, journal).await?,
+    }))
+}
+
 async fn lines_in(
     tx: &mut Transaction<'_, Postgres>,
     journal_id: Uuid,
