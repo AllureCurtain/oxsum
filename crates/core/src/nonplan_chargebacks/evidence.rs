@@ -35,6 +35,8 @@ pub(super) struct Source {
     pub currency: String,
     pub merchant_id: Uuid,
     pub version_id: Uuid,
+    pub provider_account: String,
+    pub merchant_mode: String,
     pub provider_payment_id: String,
     pub provider_dispute_id: String,
     pub event_receipt_id: Uuid,
@@ -160,7 +162,7 @@ pub(super) async fn source_in(
     wallet: &Wallet,
     dispute: Uuid,
 ) -> Result<Source, WalletError> {
-    let row=sqlx::query("SELECT d.*,p.business_id,p.organization_id AS order_customer,p.merchant_id AS order_merchant,p.merchant_version_id,p.provider_payment_id,p.purpose,p.status,p.paid_at,p.amount_minor AS order_amount,p.display_amount_minor,p.display_currency,m.business_id AS merchant_business,o.tenant_id FROM oxsum.disputes d JOIN oxsum.payment_orders p USING(order_id) JOIN oxsum.merchant_accounts m ON m.merchant_id=d.merchant_id JOIN oxsum.organizations o ON o.organization_id=d.organization_id WHERE d.dispute_id=$1 FOR UPDATE OF d")
+    let row=sqlx::query("SELECT d.*,p.business_id,p.organization_id AS order_customer,p.merchant_id AS order_merchant,p.merchant_version_id,p.provider_payment_id,p.purpose,p.status,p.paid_at,p.amount_minor AS order_amount,p.display_amount_minor,p.display_currency,m.business_id AS merchant_business,m.account_id AS provider_account,m.mode AS merchant_mode,o.tenant_id FROM oxsum.disputes d JOIN oxsum.payment_orders p USING(order_id) JOIN oxsum.merchant_accounts m ON m.merchant_id=d.merchant_id JOIN oxsum.organizations o ON o.organization_id=d.organization_id WHERE d.dispute_id=$1 FOR UPDATE OF d")
         .bind(dispute).fetch_optional(&mut **tx).await?.ok_or_else(||WalletError::NotFound("unknown dispute".into()))?;
     let business: Uuid = row.try_get("business_id")?;
     let organization: Uuid = row.try_get("organization_id")?;
@@ -243,6 +245,8 @@ pub(super) async fn source_in(
         version_id: row
             .try_get::<Option<Uuid>, _>("merchant_version_id")?
             .ok_or_else(|| review("pinned merchant version is missing"))?,
+        provider_account: row.try_get("provider_account")?,
+        merchant_mode: row.try_get("merchant_mode")?,
         provider_payment_id: row
             .try_get::<Option<String>, _>("provider_payment_id")?
             .ok_or_else(|| review("provider payment is missing"))?,
@@ -265,7 +269,7 @@ pub(super) async fn event_in(
     if receipt != source.event_receipt_id {
         return Err(review("receipt is not the original exact case receipt"));
     }
-    let row=sqlx::query("SELECT e.*,b.payment_id AS bound_payment,b.organization_id AS bound_customer,b.amount_minor AS bound_amount,b.currency AS bound_currency FROM oxsum.merchant_event_inbox e LEFT JOIN oxsum.merchant_payment_refs r ON r.merchant_id=e.merchant_id AND r.provider_payment_id=e.normalized->>'providerPaymentId' LEFT JOIN oxsum.merchant_payment_bindings b ON b.payment_id=r.payment_id AND b.merchant_id=e.merchant_id AND b.version_id=e.version_id WHERE e.receipt_id=$1")
+    let row=sqlx::query("SELECT e.*,b.payment_id AS bound_payment,b.organization_id AS bound_customer,b.amount_minor AS bound_amount,b.currency AS bound_currency,b.purpose AS bound_purpose FROM oxsum.merchant_event_inbox e LEFT JOIN oxsum.merchant_payment_refs r ON r.merchant_id=e.merchant_id AND r.provider_payment_id=e.normalized->>'providerPaymentId' LEFT JOIN oxsum.merchant_payment_bindings b ON b.payment_id=r.payment_id AND b.merchant_id=e.merchant_id AND b.version_id=e.version_id WHERE e.receipt_id=$1")
         .bind(receipt).fetch_optional(&mut **tx).await?.ok_or_else(||review("exact authenticated receipt is missing"))?;
     let normalized: serde_json::Value = row.try_get("normalized")?;
     let mut event: VerifiedMerchantEvent =
@@ -292,6 +296,17 @@ pub(super) async fn event_in(
         || row.try_get::<Uuid, _>("version_id")? != source.version_id
         || row.try_get::<String, _>("event_id")? != event.event_id
         || event.kind != MerchantEventKind::Dispute
+        || event
+            .provider_account_id
+            .as_deref()
+            .is_some_and(|value| value != source.provider_account)
+        || event
+            .mode
+            .is_some_and(|value| value.as_str() != source.merchant_mode)
+        || row
+            .try_get::<Option<String>, _>("bound_purpose")?
+            .as_deref()
+            != Some("order")
         || amount != source.loss
         || event.payment_id != Some(source.order_id)
         || payment != Some(source.order_id)
