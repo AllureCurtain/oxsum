@@ -556,6 +556,8 @@ async fn migrating_twice_and_concurrently_is_safe() {
             "plan_refund_effects".to_owned(),
             "plan_statement_lines".to_owned(),
             "plan_statements".to_owned(),
+            "plan_usage_correction_sources".to_owned(),
+            "plan_usage_corrections".to_owned(),
             "pricing_discounts".to_owned(),
             "promo_draws".to_owned(),
             "promo_lots".to_owned(),
