@@ -38,6 +38,9 @@ event IDs, requested outcome and request key. Use read-only access to inspect:
 4. The `dispute.resolve` audit's target, actor, outcome, reason and allocations.
 5. For plan orders, original journal/statement sources, refunds, void payable,
    and any historical usage-correction source map.
+6. For non-plan orders, immutable fulfillment, original `payment-order:<id>`
+   entry/hash, later Wallet debits/reservations, prior actual Cash returns and
+   any reversal of either the funding entry or the chargeback itself.
 
 An entry alongside `opened`/`evidence_due`, or alongside `won`/`closed`, is a
 possible retained interrupted money phase. A lost dispute with missing or
@@ -56,8 +59,35 @@ merely to make the endpoint succeed.
 ## Remaining financial boundary
 
 Plan losses retain complete cash credits against original receivables, refund
-payable or explicit suspense. The legacy non-plan allocation still debits Cash
-and credits CreditLine, capped at current drawn debt. That is the known #829
-cash-direction/source-allocation defect, not a certified chargeback policy.
-Partial event amounts and adjacent non-plan refund recovery also remain in that
-financial follow-up. It must finish before #777 exposes statement repayment.
+payable or explicit suspense. New non-plan losses (#840) credit the complete
+Cash loss. They debit only proven retained original Wallet funding and place the
+rest in `Equity:Adjustments` suspense. Source proof includes the fulfilled order,
+exact original entry/id/key/hash and positive settled USD legs, plus all later
+settled Wallet debits, current pending reservations and prior actual case cash.
+Later top-ups never replenish the source. Any prior refund history excludes a
+Wallet take-back until that separate writer's recovery is implemented.
+
+The immutable `dispute.resolve` audit names `walletTakenMinor`,
+`unallocatedMinor`, `requiresReview`, `source` and `cancelledPromoLotId`. The source
+policy is `nonplan-cash-v1`; `source.reviewReasons` explains unproven fulfillment,
+entry, hash, reversal, allocation, prior refunds/chargebacks or funding no longer
+retained. Credit-repayment funds remain suspense: reopening an old statement is
+not authorized by a generic loss. Non-plan case intake requires an explicit ID,
+amount and matching fiat currency. Partial fiat loss must convert exactly to
+integer credit minor units. Missing or contradictory old accepted events remain
+review-required, with their original bytes preserved.
+
+Historical Dr Cash / Cr CreditLine chargebacks are not accepted as new correct
+cash evidence. #842 owns their explicit source-bound compensation. #841 owns
+complete non-plan refund cash and historical missing/wrong-source effects. Both
+remain under #829 before #777 exposes statement repayment. Stop and drain old
+writers when deploying; mixed-version writers do not honor the new source lock.
+
+Finance `fundingMinor` remains a gross receipt metric and `refundMinor` follows
+its documented refund sources; neither is a net-Cash-after-chargebacks balance.
+Review the chargeback's retained Cash entry and source audit directly. Review
+suspense is not recognized revenue or a reopened receivable.
+
+A paid order whose non-plan loss preceded fulfillment remains visible in payment
+reconciliation for review. It is excluded from the automatic fulfillment queue,
+so its deliberate grant refusal does not block unrelated paid orders.
