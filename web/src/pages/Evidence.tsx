@@ -5,26 +5,26 @@ import { useTranslation } from "react-i18next";
 import { CheckCircle2, FileCheck2, ShieldAlert } from "lucide-react";
 import { api } from "../api/client";
 import { useSession, type SessionInfo } from "../api/hooks";
-import { archiveKey, loadHeadVerifier, readArchive, type LedgerIdentity } from "../lib/retained-head";
+import { archiveKey, loadHeadVerifier, readArchive, type LedgerIdentity, type RetainedHead } from "../lib/retained-head";
 import { downloadEvidence, evidenceBody, evidencePeriod, expectedEvidence, verifyEvidence, type EvidenceBundle, type EvidenceExpected, type EvidenceResult, type EvidenceSummary, type EvidenceVerifier } from "../lib/evidence";
 import { Banner, Button, Card, CodeBlock, EmptyRows, Field, PageState, TableShell, Td, TextInput } from "../components/ui";
 
 export function Evidence() {
   const session = useSession();
+  const [search] = useSearchParams();
+  const statement = search.get("statement");
   const { t } = useTranslation();
   if (!session.data) return <PageState>{session.isError ? t("evidence.loadError") : t("common.loading")}</PageState>;
   if (session.data.role === "member") return <Banner tone="info">{t("evidence.roleRequired")}</Banner>;
   const org = session.data.organization;
   const identity = { site: window.location.origin, organizationId: org.id, tenantId: org.tenantId };
-  return <CustomerEvidence key={archiveKey(identity)} identity={identity} />;
+  return <CustomerEvidence key={`${archiveKey(identity)}:${statement ?? ""}`} identity={identity} statement={statement} />;
 }
 
 function utcDay(offset: number): string { return new Date(Date.now() - offset * 86_400_000).toISOString().slice(0, 10); }
-function CustomerEvidence({ identity }: { identity: LedgerIdentity }) {
+function CustomerEvidence({ identity, statement }: { identity: LedgerIdentity; statement: string | null }) {
   const { t } = useTranslation();
   const client = useQueryClient();
-  const [search] = useSearchParams();
-  const statement = search.get("statement");
   const validStatement = statement !== null && /^[0-9a-f-]{36}$/i.test(statement);
   const queryKey = ["evidence-bundles", identity.organizationId];
   const list = useQuery({ queryKey, queryFn: () => api<{ rows: EvidenceSummary[] }>("/org/evidence-bundles") });
@@ -32,7 +32,7 @@ function CustomerEvidence({ identity }: { identity: LedgerIdentity }) {
   const [to, setTo] = useState(utcDay(1));
   const [submitted, setSubmitted] = useState<{ from: string; to: string } | null>(null);
   const [selected, setSelected] = useState<{ bundle: EvidenceBundle; json: string; expected: EvidenceExpected } | null>(null);
-  const [result, setResult] = useState<EvidenceResult | null>(null);
+  const [result, setResult] = useState<(EvidenceResult & { retained: RetainedHead | null }) | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const working = useRef(false);
@@ -83,10 +83,13 @@ function CustomerEvidence({ identity }: { identity: LedgerIdentity }) {
   }
   async function verify() {
     if (!selected) return;
-    const retained = readArchive(localStorage.getItem(archiveKey(identity)), identity);
+    const raw = localStorage.getItem(archiveKey(identity));
+    const retained = readArchive(raw, identity);
     const module = await loadHeadVerifier() as EvidenceVerifier;
     const verdict = await verifyEvidence(selected.json, selected.expected, identity, retained, module);
-    if (current()) setResult(verdict);
+    if (!current()) return;
+    if (localStorage.getItem(archiveKey(identity)) !== raw) throw new Error(t("bills.archiveChanged"));
+    setResult({ ...verdict, retained });
   }
   return <div className="flex flex-col gap-6">
     <div><h1 className="text-2xl font-bold">{t("evidence.title")}</h1><p className="text-sm text-muted">{t("evidence.intro")}</p></div>
@@ -110,12 +113,12 @@ function CustomerEvidence({ identity }: { identity: LedgerIdentity }) {
       </TableShell>}
     </Card>
     {selected ? <Card title={t("evidence.selected")}>
-      <CodeBlock language="json" code={JSON.stringify({ expected: selected.expected, head: selected.bundle.head, scope: selected.bundle.scope }, null, 2)} />
+      <CodeBlock language="json" code={JSON.stringify({ expected: selected.expected, periodFrom: selected.bundle.periodFrom, periodTo: selected.bundle.periodTo, statementId: selected.bundle.statementId, head: selected.bundle.head, scope: selected.bundle.scope }, null, 2)} />
       <p className="mt-3 text-sm">{t("evidence.scopeNote")}</p>
       <div className="mt-3 flex flex-wrap gap-3">
         <Button tone="ghost" disabled={busy} onClick={() => run(async () => downloadEvidence(selected.json, `oxsum-evidence-${selected.expected.bundleId}.json`), false)}>{t("evidence.download")}</Button>
         <Button tone="ghost" disabled={busy} onClick={() => run(async () => {
-          const retained = readArchive(localStorage.getItem(archiveKey(identity)), identity);
+          const retained = result ? result.retained : readArchive(localStorage.getItem(archiveKey(identity)), identity);
           downloadEvidence({ expected: selected.expected, retained, suppliedKey: { keyName: selected.bundle.keyName, publicKey: selected.bundle.publicKey, keyHash: selected.bundle.keyHash }, verification: result }, `oxsum-evidence-inputs-${selected.expected.bundleId}.json`);
         }, false)}>{t("evidence.downloadInputs")}</Button>
         <Button disabled={busy} onClick={() => run(verify)}>{t("evidence.verify")}</Button>

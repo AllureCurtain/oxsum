@@ -33,3 +33,11 @@ network-disabled acceptance. The initial manifest and key remain server observat
 until separately retained/compared; unsigned records remain unsigned. No new
 arithmetic, upstream honesty, supplier-book or independent-witness claim is made.
 N12's candidate exports and rejection/compatibility matrix remain required.
+
+
+Independent review identified and corrected two async state boundaries: statement
+navigation remounts the customer-scoped view, so an old request cannot publish
+into the new statement; verification checks that browser trust did not change
+during the WASM load and freezes the exact trust snapshot in the verdict/export.
+Final combined verification ran nine behavior tests and seven actual-WASM groups,
+all passed, and the production build passed on integrated main `e53e303a`.
