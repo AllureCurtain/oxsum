@@ -4,11 +4,11 @@ Updated: 2026-11-09
 
 ## In progress
 
-- [ ] [#867](https://github.com/AllureCurtain/oxsum/issues/867) — Prevent a current wallet reopen from reapplying ledger DDL over an active settlement; atomic canonical schema revision and independent-pool regression prepared, runtime validation pending.
+- [ ] [#867](https://github.com/AllureCurtain/oxsum/issues/867) — Prevent a current wallet reopen from reapplying ledger DDL over an active settlement; baseline lock failure reproduced, 37 focused, 519 engine, 29 engine doc and 2,042 complete workspace checks passed. Strict Clippy, formatting and independent source review passed; normal PR integration pending.
 
 - [x] [#862](https://github.com/AllureCurtain/oxsum/issues/862) — Pool exhaustion deadline regression integrated in PR #864 (`e53e303a`); 17 PostgreSQL fault checks, strict Clippy and independent review passed.
 
-- [ ] [#841](https://github.com/AllureCurtain/oxsum/issues/841) — Implement complete non-plan refund Cash, exact original-source allocation, late cash/payout fences, customer/finance effect projections and explicit historical preview/apply. Implemented with exact preview/apply, original Cash-day reporting and awaited fulfillment source release; 69 focused core, 40 HTTP, eight executable CLI and two parser checks passed. Complete run passed 2,035/2,037: its table-inventory omission is fixed with 11 identity passes; the existing gateway DDL race remains #867. Strict Clippy and independent review passed; normal PR integration pending.
+- [x] [#841](https://github.com/AllureCurtain/oxsum/issues/841) — Complete non-plan refund Cash, exact source allocation, historical preview/apply and awaited fulfillment source release integrated in PR #868 (`f3802d5e`). Focused core/HTTP/executable checks, strict Clippy and independent review passed. The #867 repair's combined run passed all 2,042 workspace checks, including the earlier identity inventory and gateway DDL failures.
 
 - [x] [#863](https://github.com/AllureCurtain/oxsum/issues/863) — Customer period/statement evidence portal, exports and scoped local verification integrated in PR #865 (`cbabfafd`); five behavioral checks, three real-WASM groups, frontend build and independent review passed. Browser/candidate acceptance remains.
 
