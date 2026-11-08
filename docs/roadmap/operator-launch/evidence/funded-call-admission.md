@@ -35,9 +35,11 @@ versus recovery, and plan-dunning overage-only behavior.
 The implementation is rebased onto shared borrowed ledger reads #856 / PR #860
 (`4fc5581a`). Its duplicate transaction-read helper was removed; canonical entry
 verification, hold decoding, calendars and receipt reads use that integrated
-implementation. Migration 0116 remains unregistered until the preceding payment
-migration 0115 integrates. This dependency reconciliation is source work and does
-not constitute executed #849 validation.
+implementation. The branch is also rebased onto payment migration 0115 in
+PR #868 (`f3802d5e`), and migration 0116 is now registered immediately after it.
+The independent wallet-open DDL repair #867 must integrate before the combined
+admission run. This dependency reconciliation is source work and does not
+constitute executed #849 validation.
 
 Results, exact runtime SHA, final focused/combined regression gates and review
 will be recorded after execution. Customer readiness follows this repair and the
