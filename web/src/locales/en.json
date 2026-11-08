@@ -1905,6 +1905,7 @@
       "reload": "Reload",
       "notSet": "Not configured",
       "helpLink": "Contact and help"
+    },
     "staffInv": {
       "title": "Invite staff by email",
       "colEmail": "Email",

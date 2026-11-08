@@ -11114,10 +11114,6 @@ components:
         idempotencyKey: { type: string, minLength: 1, maxLength: 200 }
         intendedEmail: { type: string, format: email, nullable: true, maxLength: 320 }
         email: { type: string, format: email, nullable: true, maxLength: 254, description: "Bind and mail the invitation" }
-    InvitationDeliveryState:
-      type: string
-      enum: [notRequested, notAttempted, submitted, unavailable, unknown]
-      description: SMTP submission state only. unknown includes interrupted, timed-out or rejected transport attempts and must never trigger an automatic resend.
     CustomerInvitationResult:
       allOf:
         - $ref: "#/components/schemas/CreatedInvitation"

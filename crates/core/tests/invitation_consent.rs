@@ -599,9 +599,14 @@ async fn customer_invitation_history_is_scoped_and_never_contains_a_secret() {
         .create_customer_invitation(&owner, &customer("revoked", "revoked@example.com"))
         .await
         .unwrap();
-    db.revoke_invitation(&owner, revoked.id, true, &revoke("revoke-history"))
-        .await
-        .unwrap();
+    db.revoke_invitation(
+        &owner,
+        revoked.id,
+        InvitationScope::Customer,
+        &revoke("revoke-history"),
+    )
+    .await
+    .unwrap();
     let expired = db
         .create_customer_invitation(&owner, &customer("expired", "expired@example.com"))
         .await
@@ -761,9 +766,14 @@ async fn invitation_mail_claim_survives_replay_and_crash_without_a_second_send()
         .create_customer_invitation(&owner, &revoked)
         .await
         .unwrap();
-    db.revoke_invitation(&owner, revoked.id, true, &revoke("stop-mail"))
-        .await
-        .unwrap();
+    db.revoke_invitation(
+        &owner,
+        revoked.id,
+        InvitationScope::Customer,
+        &revoke("stop-mail"),
+    )
+    .await
+    .unwrap();
     assert!(
         db.begin_customer_invitation_mail(
             &owner,

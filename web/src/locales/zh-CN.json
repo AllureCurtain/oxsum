@@ -1905,6 +1905,7 @@
       "reload": "重新加载",
       "notSet": "未配置",
       "helpLink": "联系与帮助"
+    },
     "staffInv": {
       "title": "按邮箱邀请员工",
       "colEmail": "邮箱",

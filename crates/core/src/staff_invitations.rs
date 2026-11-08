@@ -9,25 +9,8 @@ use sqlx::Row;
 use time::OffsetDateTime;
 use uuid::Uuid;
 
+use crate::invitation_management::InvitationDeliveryState;
 use crate::{BusinessCapability, Db, WalletError, business_staff as authority};
-
-/// How far the one allowed SMTP submission got for an invitation.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub enum InvitationDeliveryState {
-    /// `sendEmail` was not requested; the link is copy-only.
-    NotRequested,
-    /// `sendEmail` was requested but the attempt was never claimed.
-    NotAttempted,
-    /// The configured transport accepted the message — not a delivery receipt.
-    Submitted,
-    /// `sendEmail` was requested but the server holds no mailer configuration.
-    Unavailable,
-    /// The attempt was claimed but the outcome is unknown (interrupted,
-    /// timed-out or refused transport); it must never trigger an automatic
-    /// resend.
-    Unknown,
-}
 
 /// One staff invitation row in the business's history.
 #[derive(Debug, Serialize)]
