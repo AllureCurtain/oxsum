@@ -1135,34 +1135,47 @@ impl Wallet {
         .await
     }
 
-    /// Re-charges a drawn receivable a lost dispute restored (issue #608):
-    /// the same `debit Cash, credit CreditLine` shape
-    /// [`Self::repay_credit`] posts — the platform's cash goes back out to the
-    /// card network and the line the customer drew is owed again — but under
-    /// the dispute's own ledger key, `dispute-recharge/<dispute_id>`, so the
-    /// customer-visible ledger reads a contested-charge restoration, never a
-    /// voluntary repayment, and a retried settle replays the standing entry.
+    /// Retain the legacy non-plan allocation inside the resolution transaction.
     ///
-    /// Like `repay_credit` the amount is capped at what is drawn: a dispute
-    /// lost over money the line no longer carries has nothing to restore, and
-    /// the refusal surfaces rather than booking into a pool the outcome
-    /// forbids.
-    ///
-    /// `pub(crate)`: only [`crate::Db::resolve_order_dispute`] calls it.
-    ///
-    /// # Errors
-    ///
-    /// [`WalletError::InvalidInput`] for a non-positive amount or one over
-    /// the drawn debt; [`WalletError::Conflict`] when the key is taken by a
-    /// different entry; storage failures surface as [`WalletError`].
-    pub(crate) async fn dispute_recharge(
+    /// This Dr Cash / Cr CreditLine policy is a known financial defect (#829).
+    /// #826 only makes its append atomic with the dispute state and audit. The
+    /// caller checks that no historical effect exists before using this helper.
+    pub(crate) async fn dispute_recharge_in(
         &self,
-        dispute_id: &uuid::Uuid,
-        minor: i64,
+        tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+        dispute_id: &Uuid,
+        contested_minor: i64,
         on: Date,
-    ) -> Result<Receipt, WalletError> {
-        self.repay_credit(&format!("dispute-recharge/{dispute_id}"), minor, on)
-            .await
+    ) -> Result<(Receipt, i64), WalletError> {
+        positive(contested_minor)?;
+        sqlx::query("SELECT pg_advisory_xact_lock($1)")
+            .bind(credit_lock_key(&self.tenant_id))
+            .execute(&mut **tx)
+            .await?;
+        let key = format!("dispute-recharge/{dispute_id}");
+        let exists: bool = sqlx::query_scalar(&format!(
+            "SELECT EXISTS(SELECT 1 FROM ledger_{}.entries WHERE entry_id=$1 OR idempotency_key=$2)",
+            self.tenant_id
+        ))
+        .bind(entry_id_for(&key).as_uuid())
+        .bind(key.as_bytes())
+        .fetch_one(&mut **tx)
+        .await?;
+        if exists {
+            return Err(WalletError::Conflict(
+                "dispute ledger or audit history requires explicit source review".into(),
+            ));
+        }
+        let drawn = self.credit_drawn_in(tx).await?;
+        if drawn <= 0 {
+            return Err(invalid("a lost dispute has no drawn receivable to restore"));
+        }
+        let minor = contested_minor.min(drawn);
+        let amount = positive(minor)?;
+        let draft = Entry::<Draft, SCALE>::new(entry_id_for(&key), idem(&key)?, on)
+            .debit(self.cash, amount, currency())
+            .credit(self.credit_line, amount, currency());
+        Ok((self.append_in(tx, draft).await?, minor))
     }
 
     // ── plan-fee journal legs (issue #611, T20) ──────────────────────────────
