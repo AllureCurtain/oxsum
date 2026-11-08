@@ -3626,3 +3626,22 @@ execution when either fails. This replaces silent moderation/error
 truncation. Verifiers retain old-version behavior and distinguish digest binding
 from comparison with separately supplied text and from policy semantics. The
 [contract](gateway-evidence-budget.md) defines the scope and runtime gates.
+## 2026-11-09 — Compensate proven old chargebacks without reopening debt (#842)
+
+The old non-plan loss writer debited Cash and credited CreditLine by B, clamped
+from authenticated loss L to drawn credit. Exact retained old audit and receipt
+can prove `0 < B <= L`. A new append credits Cash by B + L: false-receipt
+cancellation B and actual loss L are named separately. Proven retained original
+Wallet can supply only L. The preserved old credit benefit B and any unavailable
+original source remain explicit Adjustments review suspense; no CreditLine,
+receivable, statement or entitlement is rewritten or invented.
+
+Migration 0119 retains exact source revision, original and correction hashes,
+audit/receipt identity and both Cash components. The local command defaults to a
+pure preview and requires live personal Business FundsWrite plus an unchanged
+source revision for apply. Business/organization precede source/dispute/append
+ownership; correction/effect/audit commit together. Old terminal outcome and
+audit remain intact. Missing, foreign, reversed or contradictory historical
+sources refuse. Existing actual refunds and losses cap original source once;
+corrected chargebacks consume L, never the B + L repair amount. Gross receipt
+and refund reports retain their current meanings.

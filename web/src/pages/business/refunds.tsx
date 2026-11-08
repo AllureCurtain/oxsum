@@ -241,6 +241,15 @@ export function BusinessDisputes() {
                             <span className="mono text-xs">{d.rechargeEntryId ?? "—"}</span>
                           </Field2>
                           <Field2 label={t("biz.disputes.updated")}>{d.updatedAt.slice(0, 10)}</Field2>
+                          {d.cashCorrection ? <>
+                            <Field2 label={t("chargebackCorrection.actualLoss")}><Cr minor={d.cashCorrection.actualLossMinor} /></Field2>
+                            <Field2 label={t("chargebackCorrection.falseReceipt")}><Cr minor={d.cashCorrection.falseReceiptMinor} /></Field2>
+                            <Field2 label={t("chargebackCorrection.totalCorrection")}><Cr minor={d.cashCorrection.cashCorrectionMinor} /></Field2>
+                            <Field2 label={t("refundCash.walletTaken")}><Cr minor={d.cashCorrection.walletMinor} /></Field2>
+                            <Field2 label={t("refundCash.suspense")}><Cr minor={d.cashCorrection.suspenseMinor} /></Field2>
+                            <Field2 label={t("chargebackCorrection.entry")}><span className="mono text-xs">{d.cashCorrection.correctionEntryId}</span></Field2>
+                            <Field2 label={t("refundCash.review")}>{t("chargebackCorrection.retained")}</Field2>
+                          </> : null}
                         </DetailGrid>
                       </td>
                     </tr>

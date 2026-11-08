@@ -736,3 +736,24 @@ evidence within the settlement transaction; the immutable ledger carries either
 the complete bounded reason or its explicit SHA-256/UTF-8-byte-length commitment.
 The effective policy union is bounded separately. See
 [the exact evidence contract](gateway-evidence-budget.md).
+
+### Exact historical non-plan chargeback compensation (#842)
+
+`nonplan_chargebacks/{evidence,apply,recovery,types}.rs` separates immutable
+source validation from the exact preview/apply command. Canonical borrowed
+ledger reads verify the original DrCash/CrCreditLine and appended correction.
+The original terminal audit proves the old clamped B and loss L independently;
+the pinned merchant event and payment binding prove exact case/customer/amount.
+Shared non-plan source inspection verifies original fulfillment/funding and all
+intervening Wallet use and returns. Unproved history refuses instead of treating
+a conservative allocation as permission to debit a customer.
+
+The correction credits Cash B + L, debits at most retained original Wallet for
+L, and debits Adjustments for the remainder. The immutable correction records
+both components, both entry hashes, source revision and preserved credit benefit.
+Prior-source reads count its actual L and retain both old/correction identities.
+Business and organization parent locks precede source, dispute and append locks;
+only one transaction writes correction/effect/audit. No old state/audit or debt
+document changes. `OrderDispute.cashCorrection` exposes the separate compensation
+and review status; a corrected terminal `lost` replay cannot append another loss.
+

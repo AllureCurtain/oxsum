@@ -1537,3 +1537,22 @@ PostgreSQL cluster. The example needs explicit `OXSUM_APPLICATION_CREDENTIAL`,
 `OXSUM_APPLICATION_CUSTOMER_ID`, `OXSUM_APPLICATION_MODEL` and a task-owned
 `OXSUM_APPLICATION_KEY_STATE` file; see its README. These are example-only inputs,
 not server configuration or authorization to use an external paid provider.
+
+### Exact historical non-plan chargeback recovery (#842)
+
+`cargo run -p oxsum-core --example recover_nonplan_chargeback -- --dispute UUID
+--receipt UUID --session-file PATH --reason TEXT --key KEY` previews one exact
+old DrCash/CrCreditLine loss. Explicit DATABASE_URL, an existing wallet and live
+personal Business owner/finance authority are required; the command never loads
+dotenv, migrates, scans all disputes or calls a PSP. `--apply --expected-revision
+SHA256` pins the inspected source. Refusal/error exits 2. See the
+[recovery runbook](nonplan-chargeback-recovery.md).
+
+The `legacy_chargebacks` suite covers clamped/complete Cash, pure previews,
+partial cases, spent/held/replacement source, credit repayment origin, prior
+returns, exact revision/concurrent apply, current authority, audit rollback,
+canonical corruption, official reversals and one-connection recovery. Run it
+with `nonplan_chargebacks`, `nonplan_refunds`, `refunds`, `dispute_atomicity` and
+server `refunds`; a new migration and source-reader change require the full
+workspace gate. CLI parser checks use `cargo test -p oxsum-core --example
+recover_nonplan_chargeback`. Validation remains in progress until recorded.

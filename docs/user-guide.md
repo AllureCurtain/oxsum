@@ -1648,3 +1648,16 @@ complete explanation is long. The hash and byte length identify the separately
 retained full text; an ordinary proof check establishes the committed bytes,
 not that the policy's judgment was correct. An over-capacity guardrail setup is
 refused before the model call. See [the evidence contract](gateway-evidence-budget.md).
+### Read a corrected historical chargeback
+
+Expand a business dispute row to see its **Confirmed chargeback loss**, original
+false cash receipt cancelled and total appended correction. The total combines
+both components and is not a second provider loss. Original purchased credit,
+review suspense and the correction entry are shown separately. The original
+entry, terminal resolution and debt documents are preserved, including the old
+credit benefit that still requires finance review.
+
+Authorized owner/finance operators use the [exact local chargeback workflow](nonplan-chargeback-recovery.md)
+with one retained dispute receipt. Preview and inspect the complete source before
+applying its unchanged revision. A refusal needs source investigation; another
+key, replacement order or changed terminal outcome does not repair history.
