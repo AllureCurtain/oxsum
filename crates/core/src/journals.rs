@@ -200,7 +200,7 @@ pub struct InvoiceJournalDetail {
     /// The journal header.
     #[serde(flatten)]
     pub journal: InvoiceJournal,
-    /// The journal's lines in write order.
+    /// The journal's lines by creation time, with line-ID tie breaking.
     pub lines: Vec<InvoiceJournalLine>,
 }
 
@@ -349,7 +349,9 @@ impl Db {
         }))
     }
 
-    /// A journal's lines in write order — the bill's itemization.
+    /// A journal's itemization by creation time, with line-ID tie breaking.
+    /// Lines written in the same transaction can share a timestamp; their
+    /// position does not imply a billing-kind or insertion order.
     ///
     /// # Errors
     ///

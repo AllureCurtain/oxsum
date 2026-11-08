@@ -20,7 +20,7 @@ async fn upgrade_retains_fulfilled_history_and_fences_pending_bundles_and_old_wr
     files.sort();
     for file in files {
         let version = file.file_stem().unwrap().to_str().unwrap();
-        if version >= "0102" {
+        if version >= "0108_bundle_offers" {
             continue;
         }
         let mut tx = db.pool().begin().await.unwrap();

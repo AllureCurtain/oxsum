@@ -1009,7 +1009,7 @@ async fn historical_deposit_reversals_are_fenced_or_read_only() {
     sqlx::query("UPDATE oxsum.deposits SET status='reversed',reversed_at=now(),meta=meta||'{\"refundStatus\":\"failed\",\"hyperswitchRefundId\":\"ref_historical\"}'::jsonb WHERE deposit_id=$1")
         .bind(id).execute(db.pool()).await.unwrap();
     stub.stored_refunds.lock().unwrap().insert("ref_historical".into(),json!({
-        "refund_id":"ref_historical","payment_id":"pay_test_123","amount":2000,"currency":"USD","status":"succeeded",
+        "refund_id":"ref_historical","payment_id":id,"amount":2000,"currency":"USD","status":"succeeded",
         "metadata":{"deposit_id":id}
     }));
     let path = format!("/api/v1/admin/deposits/{id}/reverse");
@@ -1025,6 +1025,11 @@ async fn historical_deposit_reversals_are_fenced_or_read_only() {
     assert_eq!(body["data"]["refundStatus"], "pending");
     let target = db.deposit_refund(id).await.unwrap().unwrap();
     assert!(!target.body_identity);
+    assert_eq!(
+        target.provider_payment_id.as_deref(),
+        Some(id.to_string().as_str())
+    );
+    assert_eq!(target.attempt_count, 1);
     assert!(stub.refunds.lock().unwrap().is_empty());
     let context = db
         .merchant_signing_context(
@@ -1040,6 +1045,18 @@ async fn historical_deposit_reversals_are_fenced_or_read_only() {
     unbound.provider_refund_id = None;
     assert!(
         oxsum_integrations::deposit_refund::recover(&context, &unbound, &http)
+            .await
+            .is_err()
+    );
+    // A retained handle cannot authorize a different provider payment, even
+    // when the provider reports success and the amount/currency match.
+    stub.stored_refunds
+        .lock()
+        .unwrap()
+        .get_mut("ref_historical")
+        .unwrap()["payment_id"] = json!("different-provider-payment");
+    assert!(
+        oxsum_integrations::deposit_refund::recover(&context, &target, &http)
             .await
             .is_err()
     );

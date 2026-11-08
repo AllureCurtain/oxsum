@@ -2898,3 +2898,23 @@ wallet bootstrap waiting behind its own transaction's journal writes. Close
 now reconciles every prepaid amount and renewal reuses one opened wallet.
 New version renewal moves its exact quota mirror and overage policy together.
 N11 versioned daily recognition will retain historical policy and postings.
+
+
+## 2026-11-08 — Preserve migration identities and align upgrade fixtures (#805)
+
+The integrated migration registry had entries outside full-version order after
+parallel task integration. Upgrade fixtures sorted SQL files but still used
+pre-renumbering cutoffs 0100, 0102 and 0103. The refund fixture therefore called
+current collection code against a schema missing collection authority, and the
+plan fixture compared unrelated later columns as though they were old data.
+
+Keep every applied full migration name and SQL byte unchanged. Sort the embedded
+registry by its full version, matching the runner's max-version readiness value
+and the historical fixture order; assert that every SQL file appears once with
+identical contents. The two distinct 0098 names remain valid separate records.
+The already-integrated names are 0107_deposit_refund_recovery,
+0108_bundle_offers and 0109_plan_payment_authority. Earlier decision references
+to planned numbers describe their development history, not current filenames.
+Fixtures stop immediately before the migration they exercise and still compare
+all old fields; new nullable authority fields are checked explicitly as null.
+An applied migration is not replayed or renamed, and no history is rewritten.

@@ -580,6 +580,7 @@ async fn migrating_twice_and_concurrently_is_safe() {
             "service_credentials".to_owned(),
             "sessions".to_owned(),
             "sold_plans".to_owned(),
+            "staff_invitation_mail".to_owned(),
             "statement_lines".to_owned(),
             "statements".to_owned(),
             "subscription_draws".to_owned(),

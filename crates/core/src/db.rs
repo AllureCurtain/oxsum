@@ -390,32 +390,32 @@ const MIGRATIONS: &[(&str, &str)] = &[
         include_str!("../migrations/0097_evidence_bundles.sql"),
     ),
     (
-        "0105_integration_provision",
-        include_str!("../migrations/0105_integration_provision.sql"),
+        "0098_business_profile",
+        include_str!("../migrations/0098_business_profile.sql"),
     ),
     (
         "0098_staff_invitations",
         include_str!("../migrations/0098_staff_invitations.sql"),
     ),
     (
-        "0098_business_profile",
-        include_str!("../migrations/0098_business_profile.sql"),
+        "0099_hyperswitch_recovery",
+        include_str!("../migrations/0099_hyperswitch_recovery.sql"),
+    ),
+    (
+        "0101_collection_terms",
+        include_str!("../migrations/0101_collection_terms.sql"),
     ),
     (
         "0104_customer_invitation_delivery",
         include_str!("../migrations/0104_customer_invitation_delivery.sql"),
     ),
     (
-        "0099_hyperswitch_recovery",
-        include_str!("../migrations/0099_hyperswitch_recovery.sql"),
+        "0105_integration_provision",
+        include_str!("../migrations/0105_integration_provision.sql"),
     ),
     (
         "0106_integration_billing_read",
         include_str!("../migrations/0106_integration_billing_read.sql"),
-    ),
-    (
-        "0101_collection_terms",
-        include_str!("../migrations/0101_collection_terms.sql"),
     ),
     (
         "0107_deposit_refund_recovery",
@@ -644,4 +644,38 @@ async fn apply_migrations(conn: &mut PgConnection) -> Result<(), WalletError> {
         tx.commit().await?;
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::expect_used)]
+
+    use super::*;
+
+    #[test]
+    fn migration_registry_matches_every_file_in_version_order() {
+        let directory = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("migrations");
+        let mut files: Vec<_> = std::fs::read_dir(&directory)
+            .expect("migration directory exists")
+            .map(|file| file.expect("migration file is readable").path())
+            .filter(|path| path.extension().is_some_and(|extension| extension == "sql"))
+            .collect();
+        files.sort();
+        assert_eq!(files.len(), MIGRATIONS.len());
+        for (file, (version, sql)) in files.iter().zip(MIGRATIONS) {
+            assert_eq!(
+                file.file_stem().and_then(|name| name.to_str()),
+                Some(*version)
+            );
+            assert_eq!(
+                std::fs::read_to_string(file).expect("migration SQL is readable"),
+                *sql
+            );
+        }
+        assert!(MIGRATIONS.windows(2).all(|pair| pair[0].0 < pair[1].0));
+        assert_eq!(
+            Db::latest_schema_version(),
+            MIGRATIONS.last().expect("migrations exist").0
+        );
+    }
 }
