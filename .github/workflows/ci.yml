@@ -131,6 +131,8 @@ jobs:
       - name: Check pinned formatting
         if: needs.filter.outputs.rust == 'true'
         run: scripts/fmt-check.sh
+      - name: Test verified tool installation
+        run: python3 scripts/test-ci-tools.py
       - name: Test candidate evidence validation
         run: |
           python3 scripts/test-candidate-ci.py
@@ -159,13 +161,11 @@ jobs:
           components: rustfmt, clippy
       # The tracked .cargo/config.toml routes linking through mold
       # (-C link-arg=-fuse-ld=mold); the stock ubuntu-latest image does not
-      # ship it, so install it before anything links. Direct tarball download
-      # is faster than apt-get update (issue #237).
+      # ship it. Verify the pinned official asset before installing into the
+      # runner tool cache and exposing its bin directory (issue #822).
       - name: Install mold
         if: needs.filter.outputs.rust == 'true'
-        run: |
-          curl -sL https://github.com/rui314/mold/releases/download/v2.40.0/mold-2.40.0-x86_64-linux.tar.gz | sudo tar -xz -C /usr/local --strip-components=1
-          mold --version
+        run: python3 scripts/install-ci-tools.py mold
       - uses: Swatinem/rust-cache@v2
         if: needs.filter.outputs.rust == 'true'
         with:
@@ -176,9 +176,14 @@ jobs:
           # PR runs restore the cache but only main saves it (uv pattern):
           # keeps every push from thrashing the cache entry.
           save-if: ${{ github.ref == 'refs/heads/main' }}
+      - name: Verify pinned sccache archive
+        if: needs.filter.outputs.rust == 'true'
+        run: python3 scripts/install-ci-tools.py sccache
       - name: Configure sccache
         if: needs.filter.outputs.rust == 'true'
         uses: mozilla-actions/sccache-action@v0.0.11
+        with:
+          version: v0.19.0
       # No database is needed to compile: the tree uses no sqlx::query! macros,
       # so compilation never touches a live database.
       - name: Run strict Clippy
@@ -218,9 +223,7 @@ jobs:
       # sccache wrapper the same way the clippy job does.
       - name: Install mold
         if: steps.filter.outputs.crates == 'true'
-        run: |
-          curl -sL https://github.com/rui314/mold/releases/download/v2.40.0/mold-2.40.0-x86_64-linux.tar.gz | sudo tar -xz -C /usr/local --strip-components=1
-          mold --version
+        run: python3 scripts/install-ci-tools.py mold
       - if: steps.filter.outputs.crates == 'true'
         env:
           RUSTC_WRAPPER: ""
@@ -337,18 +340,21 @@ jobs:
         if: needs.filter.outputs.rust == 'true'
       - name: Install mold
         if: needs.filter.outputs.rust == 'true'
-        run: |
-          curl -sL https://github.com/rui314/mold/releases/download/v2.40.0/mold-2.40.0-x86_64-linux.tar.gz | sudo tar -xz -C /usr/local --strip-components=1
-          mold --version
+        run: python3 scripts/install-ci-tools.py mold
       - uses: Swatinem/rust-cache@v2
         if: needs.filter.outputs.rust == 'true'
         with:
           shared-key: "ci"
           cache-workspace-crates: "true"
           save-if: ${{ github.ref == 'refs/heads/main' }}
+      - name: Verify pinned sccache archive
+        if: needs.filter.outputs.rust == 'true'
+        run: python3 scripts/install-ci-tools.py sccache
       - name: Configure sccache
         if: needs.filter.outputs.rust == 'true'
         uses: mozilla-actions/sccache-action@v0.0.11
+        with:
+          version: v0.19.0
       # `--lib` only builds the lib test binaries — the heavy integration
       # targets (testcontainers, sqlx test deps) never compile here, which is
       # where most of the job's wall time used to go.
@@ -390,9 +396,7 @@ jobs:
         with:
           components: rustfmt, clippy
       - name: Install mold
-        run: |
-          curl -sL https://github.com/rui314/mold/releases/download/v2.40.0/mold-2.40.0-x86_64-linux.tar.gz | sudo tar -xz -C /usr/local --strip-components=1
-          mold --version
+        run: python3 scripts/install-ci-tools.py mold
       # The workspace's test binaries are big (testcontainers, sqlx):
       # without this the runner exhausts its disk compiling them ("No space left
       # on device" from rustc).
@@ -411,8 +415,12 @@ jobs:
           shared-key: "ci"
           cache-workspace-crates: "true"
           save-if: ${{ github.ref == 'refs/heads/main' }}
+      - name: Verify pinned sccache archive
+        run: python3 scripts/install-ci-tools.py sccache
       - name: Configure sccache
         uses: mozilla-actions/sccache-action@v0.0.11
+        with:
+          version: v0.19.0
       - name: Install nextest
         uses: taiki-e/install-action@v2
         with:

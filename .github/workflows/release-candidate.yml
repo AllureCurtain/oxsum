@@ -112,6 +112,8 @@ jobs:
         uses: actions/checkout@v7
         with:
           ref: ${{ steps.pin.outputs.sha }}
+      - name: Test verified tool installation
+        run: python3 scripts/test-ci-tools.py
       - name: Test candidate evidence validation
         run: |
           python3 scripts/test-candidate-ci.py
@@ -160,14 +162,17 @@ jobs:
         with:
           components: clippy
       - name: Install mold
-        run: |
-          curl -sL https://github.com/rui314/mold/releases/download/v2.40.0/mold-2.40.0-x86_64-linux.tar.gz | sudo tar -xz -C /usr/local --strip-components=1
+        run: python3 scripts/install-ci-tools.py mold
       - uses: Swatinem/rust-cache@v2
         with:
           shared-key: "ci"
           cache-workspace-crates: "true"
           save-if: false
+      - name: Verify pinned sccache archive
+        run: python3 scripts/install-ci-tools.py sccache
       - uses: mozilla-actions/sccache-action@v0.0.11
+        with:
+          version: v0.19.0
       - run: cargo clippy --workspace --all-targets -- -D warnings
 
   test:
@@ -181,14 +186,17 @@ jobs:
           ref: ${{ needs.resolve.outputs.sha }}
       - uses: dtolnay/rust-toolchain@stable
       - name: Install mold
-        run: |
-          curl -sL https://github.com/rui314/mold/releases/download/v2.40.0/mold-2.40.0-x86_64-linux.tar.gz | sudo tar -xz -C /usr/local --strip-components=1
+        run: python3 scripts/install-ci-tools.py mold
       - uses: Swatinem/rust-cache@v2
         with:
           shared-key: "ci"
           cache-workspace-crates: "true"
           save-if: false
+      - name: Verify pinned sccache archive
+        run: python3 scripts/install-ci-tools.py sccache
       - uses: mozilla-actions/sccache-action@v0.0.11
+        with:
+          version: v0.19.0
       - run: cargo test --workspace --lib
       - run: cargo test --workspace --doc
 
@@ -215,7 +223,11 @@ jobs:
       # compiles wasm-bindgen-cli, so the runner must have sccache on PATH —
       # the wrapper otherwise resolves to a missing binary and rustc never
       # executes (the first crates.io-install dispatch hit exactly this).
+      - name: Verify pinned sccache archive
+        run: python3 scripts/install-ci-tools.py sccache
       - uses: mozilla-actions/sccache-action@v0.0.11
+        with:
+          version: v0.19.0
       - name: Install wasm-bindgen-cli at the lockfile's version
         run: |
           version="$(sed -n '/name = "wasm-bindgen"/{n;s/.*version = "\(.*\)"/\1/p;q}' Cargo.lock)"
@@ -285,7 +297,11 @@ jobs:
       # compiles wasm-bindgen-cli, so the runner must have sccache on PATH the
       # same way the examples job does — the workflow-level wrapper otherwise
       # resolves to a missing binary and rustc never executes.
+      - name: Verify pinned sccache archive
+        run: python3 scripts/install-ci-tools.py sccache
       - uses: mozilla-actions/sccache-action@v0.0.11
+        with:
+          version: v0.19.0
       - name: Install wasm-bindgen-cli at the lockfile's version
         run: |
           version="$(sed -n '/name = "wasm-bindgen"/{n;s/.*version = "\(.*\)"/\1/p;q}' Cargo.lock)"
@@ -343,8 +359,7 @@ jobs:
           ref: ${{ needs.resolve.outputs.sha }}
       - uses: dtolnay/rust-toolchain@stable
       - name: Install mold
-        run: |
-          curl -sL https://github.com/rui314/mold/releases/download/v2.40.0/mold-2.40.0-x86_64-linux.tar.gz | sudo tar -xz -C /usr/local --strip-components=1
+        run: python3 scripts/install-ci-tools.py mold
       - uses: actions/setup-node@v6
         with:
           node-version: 22
@@ -353,7 +368,11 @@ jobs:
           shared-key: "ci"
           cache-workspace-crates: "true"
           save-if: false
+      - name: Verify pinned sccache archive
+        run: python3 scripts/install-ci-tools.py sccache
       - uses: mozilla-actions/sccache-action@v0.0.11
+        with:
+          version: v0.19.0
       - name: Install wasm-bindgen-cli at the lockfile's version
         run: |
           version="$(sed -n '/name = "wasm-bindgen"/{n;s/.*version = "\(.*\)"/\1/p;q}' Cargo.lock)"
