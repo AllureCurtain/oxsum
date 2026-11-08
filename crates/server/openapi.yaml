@@ -6021,6 +6021,42 @@ paths:
         "403": { $ref: "#/components/responses/Error" }
         "404": { $ref: "#/components/responses/Error" }
         "409": { $ref: "#/components/responses/Error" }
+  /api/v1/business/customers/{organizationId}/billing:
+    get:
+      x-integration-scope: billingRead
+      operationId: getBusinessCustomerBilling
+      summary: Read a customer's balance and recent bills
+      description: Integration billingRead for this granted customer only — no session-cookie access. Returns the customer's current balance and a cursor-paged window of the ledger entries that moved money. Unknown, ungranted or foreign customer is 404; a credential without billingRead is 403.
+      security: [{ integrationCredential: [] }]
+      parameters:
+        - name: organizationId
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+        - name: before
+          in: query
+          required: false
+          schema: { type: integer, format: int64, minimum: 0 }
+          description: page the bill log backwards — return rows older than this index
+        - name: limit
+          in: query
+          required: false
+          schema: { type: integer, format: int32, minimum: 1, maximum: 50, default: 20 }
+          description: bill rows per page, 1–50
+      responses:
+        "200":
+          description: Success
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data: { $ref: "#/components/schemas/CustomerBilling" }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
   /api/v1/business/customers/{organizationId}/lifecycle:
     post:
       operationId: setCustomerLifecycle
@@ -10740,6 +10776,31 @@ components:
         idempotencyKey: { type: string, minLength: 1, maxLength: 200 }
         suspended: { type: boolean }
         reason: { type: string, minLength: 1, maxLength: 500 }
+    CustomerBilling:
+      type: object
+      description: "a granted customer's current balance plus a window of the ledger entries that moved money — the service-facing mirror of the customer `balance` and `bills` surfaces"
+      required: [balance, bills]
+      properties:
+        balance:
+          type: object
+          required: [availableMinor, creditLimitMinor, creditUsedMinor, reservedMinor, spentThisMonthMinor]
+          properties:
+            availableMinor: { type: integer, format: int64, description: "everything the organization can still reserve: own funds plus the undrawn credit line" }
+            creditLimitMinor: { type: integer, format: int64, minimum: 0, description: "the credit facility the operator granted — 0 without one" }
+            creditUsedMinor: { type: integer, format: int64, minimum: 0, description: "the drawn plus reserved part of the credit line" }
+            reservedMinor: { type: integer, format: int64, minimum: 0, description: "what outstanding holds freeze right now" }
+            spentThisMonthMinor: { type: integer, format: int64, minimum: 0, description: "what this UTC calendar month has settled so far" }
+        bills:
+          type: object
+          required: [rows]
+          properties:
+            rows:
+              type: array
+              items: { $ref: "#/components/schemas/BillRow" }
+            nextCursor:
+              type: integer
+              format: int64
+              description: present while an older page exists
     BusinessRole:
       type: string
       enum: [owner, admin, finance, support, viewer]
@@ -15038,7 +15099,7 @@ components:
           additionalProperties: false
     IntegrationScope:
       type: string
-      enum: [customersRead, meteringWrite, customersProvision]
+      enum: [customersRead, meteringWrite, customersProvision, billingRead]
     ProvisionCustomerRequest:
       type: object
       additionalProperties: false
@@ -15059,7 +15120,7 @@ components:
       properties:
         idempotencyKey: { type: string, minLength: 1, maxLength: 200 }
         name: { type: [string, "null"], maxLength: 80 }
-        scopes: { type: array, minItems: 1, maxItems: 3, uniqueItems: true, items: { $ref: "#/components/schemas/IntegrationScope" } }
+        scopes: { type: array, minItems: 1, maxItems: 4, uniqueItems: true, items: { $ref: "#/components/schemas/IntegrationScope" } }
         customerIds: { type: array, minItems: 0, maxItems: 1000, uniqueItems: true, items: { type: string, format: uuid }, description: "Existing customers the credential may read or meter. May be empty only for a customersProvision-only grant, which grows its own namespace." }
         expiresAt: { type: string, format: date-time }
         reason: { type: string, minLength: 1, maxLength: 500 }

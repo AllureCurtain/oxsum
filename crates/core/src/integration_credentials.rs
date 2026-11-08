@@ -21,6 +21,8 @@ pub enum IntegrationScope {
     MeteringWrite,
     /// Provision service-managed customer accounts the credential then owns.
     CustomersProvision,
+    /// Read a granted customer's balance and bill log. Read-only.
+    BillingRead,
 }
 impl IntegrationScope {
     pub(crate) fn as_str(self) -> &'static str {
@@ -28,6 +30,7 @@ impl IntegrationScope {
             Self::CustomersRead => "customersRead",
             Self::MeteringWrite => "meteringWrite",
             Self::CustomersProvision => "customersProvision",
+            Self::BillingRead => "billingRead",
         }
     }
 }
@@ -141,6 +144,7 @@ fn from_row(row: &sqlx::postgres::PgRow) -> Result<IntegrationCredential, Wallet
             "customersRead" => Ok(IntegrationScope::CustomersRead),
             "meteringWrite" => Ok(IntegrationScope::MeteringWrite),
             "customersProvision" => Ok(IntegrationScope::CustomersProvision),
+            "billingRead" => Ok(IntegrationScope::BillingRead),
             _ => Err(WalletError::Forbidden("unknown integration scope".into())),
         })
         .collect::<Result<_, _>>()?;
@@ -513,5 +517,35 @@ impl Db {
             })
         })
         .transpose()
+    }
+    /// Resolves a granted customer's ledger tenant id for a billingRead service.
+    ///
+    /// The customer must be in the credential's grant (`require_integration`
+    /// `FOR SHARE` rechecks expiry, revocation, scope and grant on every call);
+    /// a foreign, ungranted or unknown customer is reported as not found. The
+    /// returned tenant id is what the caller opens a [`crate::Wallet`] for —
+    /// the actual balance and bill reads run against that tenant's ledger.
+    pub async fn integration_customer_tenant(
+        &self,
+        service: &ActingService,
+        customer: Uuid,
+    ) -> Result<String, WalletError> {
+        let mut tx = self.pool().begin().await?;
+        require_integration(
+            &mut tx,
+            service,
+            IntegrationScope::BillingRead,
+            Some(customer),
+        )
+        .await?;
+        let tenant: String = sqlx::query_scalar(
+            "SELECT tenant_id FROM oxsum.organizations WHERE organization_id=$1",
+        )
+        .bind(customer)
+        .fetch_optional(&mut *tx)
+        .await?
+        .ok_or_else(|| WalletError::NotFound("customer is not known".into()))?;
+        tx.commit().await?;
+        Ok(tenant)
     }
 }
