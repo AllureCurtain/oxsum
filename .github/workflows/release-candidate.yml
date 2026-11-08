@@ -408,7 +408,8 @@ jobs:
           cache-to: type=gha,mode=max,scope=candidate
       - name: Smoke the exact candidate image
         env:
-          OXSUM_IMAGE_TAG: sha-${{ needs.resolve.outputs.sha }}
+          OXSUM_IMAGE_REF: ghcr.io/allurecurtain/oxsum:sha-${{ needs.resolve.outputs.sha }}
+          SMOKE_VERSION_OUTPUT: candidate-runtime-version.json
           SMOKE_EXPECTED_SHA: ${{ needs.resolve.outputs.sha }}
           SMOKE_BUILD: "0"
           # The mandatory verify-consumer job validates the same SHA's packed
@@ -429,7 +430,9 @@ jobs:
         if: always()
         with:
           name: candidate-smoke
-          path: candidate-smoke.log
+          path: |
+            candidate-smoke.log
+            candidate-runtime-version.json
           if-no-files-found: ignore
           retention-days: 90
 
@@ -485,6 +488,7 @@ jobs:
             --sdk "${sdk#candidate-bundle/}" \
             --full-ci artifacts/candidate-full-ci/candidate-ci.json \
             --smoke-log artifacts/candidate-smoke/candidate-smoke.log \
+            --runtime-version artifacts/candidate-smoke/candidate-runtime-version.json \
             --consumer-log artifacts/verify-consumer-log/consumer.log
       - uses: actions/upload-artifact@v7
         with:

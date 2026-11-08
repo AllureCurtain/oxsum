@@ -78,11 +78,12 @@ def archive_manifest(path):
 class Registry:
     """Distribution API client; only a recognized missing manifest permits a write."""
 
-    def __init__(self, host, repository, fixture=False):
+    def __init__(self, host, repository, fixture=False, write=True):
         self.host = host
         self.repository = repository
         self.base = ("http://" if fixture else "https://") + host
         self.fixture = fixture
+        self.write = write
         self.authorization = None
         self.opener = urllib.request.build_opener(NoRedirect())
 
@@ -100,7 +101,8 @@ class Registry:
         user, token = os.environ.get("OXSUM_REGISTRY_USERNAME", ""), os.environ.get("OXSUM_REGISTRY_TOKEN", "")
         gate.require(user and token, "registry username and token are required for promotion")
         headers = {"Authorization": "Basic " + base64.b64encode(f"{user}:{token}".encode()).decode()}
-        query = urllib.parse.urlencode({"service": "ghcr.io", "scope": f"repository:{self.repository}:pull,push"})
+        actions = "pull,push" if self.write else "pull"
+        query = urllib.parse.urlencode({"service": "ghcr.io", "scope": f"repository:{self.repository}:{actions}"})
         try:
             with self.opener.open(urllib.request.Request(fields["realm"] + "?" + query, headers=headers), timeout=60) as response:
                 value = json.loads(response.read(2 * 1024 * 1024 + 1))
@@ -196,6 +198,7 @@ class Registry:
         return {"registryDigest": top_digest, "platformManifestDigest": platform_digest}
 
     def upload_blob(self, stream, size, checksum):
+        gate.require(self.write, "read-only registry client cannot upload")
         with self.open("POST", f"{self.base}/v2/{self.repository}/blobs/uploads/", data=b"") as response:
             location = urllib.parse.urljoin(self.base, response.headers.get("Location", ""))
             gate.require(response.status == 202, "registry did not start a blob upload")
@@ -211,6 +214,7 @@ class Registry:
                          "registry did not retain the uploaded blob digest")
 
     def publish(self, archive_path, manifest):
+        gate.require(self.write, "read-only registry client cannot publish")
         # Transfer the original config and layer member bytes. Docker save does
         # not retain a registry manifest, so create only that transport metadata.
         # No image build, layer recompression or application execution occurs.
@@ -233,6 +237,7 @@ class Registry:
         return checksum, raw
 
     def tag(self, version, checksum, raw):
+        gate.require(self.write, "read-only registry client cannot tag")
         with self.open("PUT", f"{self.base}/v2/{self.repository}/manifests/{version}", data=raw,
                        headers={"Content-Type": "application/vnd.oci.image.manifest.v1+json"}) as response:
             gate.require(response.status == 201 and response.headers.get("Docker-Content-Digest") == checksum,

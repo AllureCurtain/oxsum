@@ -35,7 +35,7 @@ known_names() {
     # operator.env.example's compose-side variables are legitimate too when
     # the file being checked is a deploy .env.
     printf '%s\n' POSTGRES_USER POSTGRES_PASSWORD POSTGRES_DB \
-        OXSUM_IMAGE_TAG OXSUM_BIND OXSUM_PORT OXSUM_RAILS \
+        OXSUM_IMAGE_REF OXSUM_IMAGE_TAG OXSUM_BIND OXSUM_PORT OXSUM_RAILS \
         OXSUM_BUSINESS_NAME OXSUM_BUSINESS_SLUG OXSUM_CUSTOMER_SELF_REGISTER \
         OXSUM_DEMO_SEED DOUBLEENTRY_DATABASE_URL
 }

@@ -14,9 +14,9 @@
 # healthy `postgres`. The explicit steps are what docs/self-hosted-install.md
 # walks so the operator sees each checkpoint answer before the next runs.
 #
-# The image tag is an environment variable, not a hardcoded `latest`: an
-# upgrade is `OXSUM_IMAGE_TAG=v<new>` in `.env`, a rollback the same line
-# pointing back, and `GET /api/v1/version` reports what actually landed.
+# Set OXSUM_IMAGE_REF to the verified promotion receipt's immutable reference.
+# Both migration and serving use that exact reference; there is no latest
+# default. Candidate smoke may explicitly select its local pre-publication tag.
 
 name: oxsum-core
 
@@ -57,7 +57,7 @@ services:
   # be holding traffic. `restart: "no"` keeps it a run-to-completion service:
   # `docker compose ps` shows `Exited (0)` beside the serving container.
   oxsum-migrate:
-    image: ghcr.io/allurecurtain/oxsum:${OXSUM_IMAGE_TAG:-latest}
+    image: ${OXSUM_IMAGE_REF:?set OXSUM_IMAGE_REF to an explicit image reference}
     command: ["--migrate-only"]
     # deploy/.env — the operator's file beside this compose file, copied from
     # operator.env.example and linted by scripts/check-secrets.sh. A
@@ -71,10 +71,10 @@ services:
         condition: service_healthy
     restart: "no"
     labels:
-      org.opencontainers.image.version: ${OXSUM_IMAGE_TAG:-latest}
+      org.oxsum.image.reference: ${OXSUM_IMAGE_REF}
 
   oxsum:
-    image: ghcr.io/allurecurtain/oxsum:${OXSUM_IMAGE_TAG:-latest}
+    image: ${OXSUM_IMAGE_REF:?set OXSUM_IMAGE_REF to an explicit image reference}
     restart: unless-stopped
     env_file: [.env]
     environment:
@@ -100,7 +100,7 @@ services:
       retries: 12
       start_period: 15s
     labels:
-      org.opencontainers.image.version: ${OXSUM_IMAGE_TAG:-latest}
+      org.oxsum.image.reference: ${OXSUM_IMAGE_REF}
       org.opencontainers.image.source: https://github.com/AllureCurtain/oxsum
 
 volumes:

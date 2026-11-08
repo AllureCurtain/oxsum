@@ -15,8 +15,8 @@
 # OXSUM_IMAGE_TAG defaults to `candidate-local`; when that tag is missing
 # locally and SMOKE_BUILD=1 (default) the script builds
 # `ghcr.io/allurecurtain/oxsum:candidate-local` from this checkout — the
-# compose files pin the ghcr namespace, so the tag is the only thing a
-# smoke run varies.
+# explicit OXSUM_IMAGE_REF can instead select a pre-pulled immutable digest.
+# The smoke forwards that one image reference to both Compose services.
 #
 # What it asserts, in order (each step fails loudly and names itself):
 #   1. oxsum --check-config inside the image parses the smoke env
@@ -32,7 +32,8 @@
 #      rejects the tampered fixtures (check-verify-consumer.sh — skipped
 #      with SMOKE_SKIP_CONSUMER=1)
 #
-# Env: OXSUM_IMAGE_TAG, SMOKE_EXPECTED_SHA (defaults to checkout HEAD),
+# Env: OXSUM_IMAGE_REF (explicit override), OXSUM_IMAGE_TAG (local compatibility),
+# SMOKE_VERSION_OUTPUT (new version JSON file), SMOKE_EXPECTED_SHA (defaults to checkout HEAD),
 # SMOKE_BUILD (default 1), SMOKE_PORT (default 3917),
 # SMOKE_SKIP_CONSUMER (default 0; CI uses its mandatory verify-consumer job).
 
@@ -42,7 +43,7 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
 
 OXSUM_IMAGE_TAG="${OXSUM_IMAGE_TAG:-candidate-local}"
-OXSUM_IMAGE="ghcr.io/allurecurtain/oxsum:${OXSUM_IMAGE_TAG}"
+OXSUM_IMAGE="${OXSUM_IMAGE_REF:-ghcr.io/allurecurtain/oxsum:${OXSUM_IMAGE_TAG}}"
 SMOKE_BUILD="${SMOKE_BUILD:-1}"
 SMOKE_PORT="${SMOKE_PORT:-3917}"
 SMOKE_SKIP_CONSUMER="${SMOKE_SKIP_CONSUMER:-0}"
@@ -60,7 +61,7 @@ cp deploy/docker-compose.core.yml "$WORKDIR/docker-compose.core.yml"
 DEPLOY_ENV="$WORKDIR/.env"
 compose() {
     env POSTGRES_USER=postgres POSTGRES_DB=oxsum POSTGRES_PASSWORD="$POSTGRES_PASSWORD" \
-        OXSUM_IMAGE_TAG="$OXSUM_IMAGE_TAG" OXSUM_BIND=127.0.0.1 OXSUM_PORT="$SMOKE_PORT" \
+        OXSUM_IMAGE_REF="$OXSUM_IMAGE" OXSUM_BIND=127.0.0.1 OXSUM_PORT="$SMOKE_PORT" \
         docker compose --project-directory "$WORKDIR" --env-file "$DEPLOY_ENV" \
         -p "$PROJECT" -f "$WORKDIR/docker-compose.core.yml" "$@"
 }
@@ -82,6 +83,7 @@ print(value)' "$2" <<<"$1"
 # --- image -----------------------------------------------------------------
 step "candidate image: $OXSUM_IMAGE"
 if ! docker image inspect "$OXSUM_IMAGE" >/dev/null 2>&1; then
+    [[ "$OXSUM_IMAGE" != *@* ]] || die "a digest image must already be pulled; never rebuild an immutable reference"
     [ "$SMOKE_BUILD" = "1" ] || die "image $OXSUM_IMAGE missing and SMOKE_BUILD=0"
     [ "$(git rev-parse HEAD)" = "$SMOKE_EXPECTED_SHA" ] || die "checkout does not match the image SHA to build"
     echo "building $OXSUM_IMAGE from $(git rev-parse --short HEAD)…"
@@ -129,6 +131,19 @@ VERSION="$(curl -fsS "$BASE/api/v1/version")" || die "/api/v1/version"
 echo "version: $VERSION"
 ACTUAL_SHA="$(json_field "$VERSION" data.gitSha)" || die "version payload lacks gitSha"
 [ "$ACTUAL_SHA" = "$SMOKE_EXPECTED_SHA" ] || die "image SHA $ACTUAL_SHA differs from $SMOKE_EXPECTED_SHA"
+if [ -n "${SMOKE_VERSION_OUTPUT:-}" ]; then
+    # The candidate bundle hashes these observed runtime bytes. Refuse overwrite
+    # so a previous smoke cannot silently masquerade as this run's evidence.
+    python3 - "$SMOKE_VERSION_OUTPUT" "$SMOKE_EXPECTED_SHA" "$VERSION" <<'PYVERSION'
+import json, pathlib, sys
+sys.path.insert(0, "scripts")
+import candidate_bundle
+path = pathlib.Path(sys.argv[1])
+with path.open("x") as output:
+    output.write(sys.argv[3] + "\n")
+candidate_bundle.runtime_identity(path, sys.argv[2])
+PYVERSION
+fi
 
 # --- 4. business surface ---------------------------------------------------
 step "4. business init + owner session + business-context read"
