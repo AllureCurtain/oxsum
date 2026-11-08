@@ -18,6 +18,8 @@ Updated: 2026-11-09
 - [x] [#873](https://github.com/AllureCurtain/oxsum/issues/873) — Complete quota/cache evidence under a bounded 16,384-character description: baseline reproduced, 2,047 full workspace, 521 engine, 29 engine doc, 94 native verifier and ten actual-WASM groups passed; strict Clippy, frontend and independent review passed. Integrated in PR #890 (`134a4aae`); admission validation follows in #849.
 
 
+- [ ] [#842](https://github.com/AllureCurtain/oxsum/issues/842) — Implement exact source-bound historical non-plan chargeback preview/apply; preserve original Cash/CreditLine and terminal/audit history while appending false-receipt correction plus actual loss. Contract accepted; migration 0119 reserved after #849/#848/#866.
+
 - [x] [#867](https://github.com/AllureCurtain/oxsum/issues/867) — Prevent a current wallet reopen from reapplying ledger DDL over an active settlement; baseline lock failure reproduced, 37 focused, 519 engine, 29 engine doc and 2,042 complete workspace checks passed. Strict Clippy, formatting and independent source review passed; integrated in PR #870 (`f89fcb65`).
 - [x] [#869](https://github.com/AllureCurtain/oxsum/issues/869) — Durable bounded provider harness; 15 boundary tests and complete local whole/SSE/offline fixture passed; independent source review passed; integrated in PR #871 (`2c2a739d`). Actual provider calls remain 0/5, CNY 0; candidate acceptance remains.
 

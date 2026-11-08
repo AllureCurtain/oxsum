@@ -16009,7 +16009,7 @@ components:
         nextCursor: { type: [string, "null"], format: uuid }
     OrderDispute:
       type: object
-      required: [disputeId, orderId, organizationId, providerDisputeId, amountMinor, currency, state, rechargeEntryId, createdAt, updatedAt]
+      required: [disputeId, orderId, organizationId, providerDisputeId, amountMinor, currency, state, rechargeEntryId, cashCorrection, createdAt, updatedAt]
       properties:
         disputeId: { type: string, format: uuid }
         orderId: { type: string, format: uuid }
@@ -16019,8 +16019,37 @@ components:
         currency: { type: string, description: original collection fiat currency; amountMinor remains ledger credit minor units }
         state: { type: string, enum: [opened, evidence_due, won, lost, closed] }
         rechargeEntryId: { type: [string, "null"], format: uuid, description: the ledger entry retaining the lost dispute cash effect }
+        cashCorrection:
+          oneOf:
+            - $ref: "#/components/schemas/NonplanChargebackCorrection"
+            - type: "null"
+          description: Verified append-only compensation of a historical wrong-direction non-plan chargeback. The old entry and terminal outcome are preserved; null does not certify historical correctness.
         createdAt: { type: string, format: date-time }
         updatedAt: { type: string, format: date-time }
+    NonplanChargebackCorrection:
+      type: object
+      required: [policy, disputeId, orderId, organizationId, falseReceiptMinor, actualLossMinor, cashCorrectionMinor, walletMinor, suspenseMinor, preservedCreditBenefitMinor, originalEntryId, originalEntryHash, correctionEntryId, correctionEntryHash, correctionBookingDate, eventReceiptId, sourceRevision, requiresReview, reviewReasons, bookedAt]
+      properties:
+        policy: { type: string, const: nonplan-chargeback-recovery-v1 }
+        disputeId: { type: string, format: uuid }
+        orderId: { type: string, format: uuid }
+        organizationId: { type: string, format: uuid }
+        falseReceiptMinor: { type: integer, format: int64, description: Original erroneous Cash debit B which must be cancelled }
+        actualLossMinor: { type: integer, format: int64, description: Complete independently confirmed chargeback loss L }
+        cashCorrectionMinor: { type: integer, format: int64, description: Appended Cash credit B plus L; not a second provider loss }
+        walletMinor: { type: integer, format: int64, description: Proven original retained Wallet allocated only to the actual loss }
+        suspenseMinor: { type: integer, format: int64, description: Correction debit not allocated to original Wallet; includes preserved credit benefit }
+        preservedCreditBenefitMinor: { type: integer, format: int64, description: Original CreditLine credit B retained without reopening debt or rewriting statements }
+        originalEntryId: { type: string, format: uuid }
+        originalEntryHash: { type: string, pattern: '^[0-9a-f]{64}$' }
+        correctionEntryId: { type: string, format: uuid }
+        correctionEntryHash: { type: string, pattern: '^[0-9a-f]{64}$' }
+        correctionBookingDate: { type: string, format: date }
+        eventReceiptId: { type: string, format: uuid }
+        sourceRevision: { type: string, pattern: '^[0-9a-f]{64}$' }
+        requiresReview: { type: boolean, const: true }
+        reviewReasons: { type: array, items: { type: string } }
+        bookedAt: { type: string, format: date-time }
     OrderDisputePage:
       type: object
       required: [disputes, nextCursor]
@@ -16036,7 +16065,7 @@ components:
         actorUserId: { type: string, format: uuid, description: the staff user who authorized the action }
         action:
           type: string
-          enum: [refund.approve, refund.decline, refund.release, dispute.resolve, journal.void, statement.release, reconciliation.resolve, reconciliation.waive, reconciliation.repair, plan_refund.recover, plan_usage.correct, nonplan_refund.recover]
+          enum: [refund.approve, refund.decline, refund.release, dispute.resolve, journal.void, statement.release, reconciliation.resolve, reconciliation.waive, reconciliation.repair, plan_refund.recover, plan_usage.correct, nonplan_refund.recover, nonplan_chargeback.recover]
           description: the audited financial action — the same vocabulary `finance_audit`'s check constraint bounds
         target: { type: string, description: the entity the action corrected — a refund, dispute, journal, statement or exception id }
         detail: { type: object, additionalProperties: true, description: the action's safe fields — reason, decision, repair patch; never a credential }
