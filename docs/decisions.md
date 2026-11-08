@@ -3467,6 +3467,7 @@ server and worker before starting the new version; the ordinary application
 migration lock is not a live-writer fence. An old binary does not honor this
 marker, and mixed-version rolling upgrade safety is not claimed. Old ledger
 schemas without the field upgrade through the same atomic path.
+
 ## 2026-11-09 — Durable bounded provider acceptance guard (#869)
 
 The launch exercise needs a run-wide external spending ceiling independent of
@@ -3510,3 +3511,49 @@ Upgrade the server and distributed/served verifier together. A schema-identical
 rollback is unsafe after such entries exist unless the retained reader supports
 the new bound; otherwise restore the pre-upgrade backup. No package publication
 or candidate acceptance follows from this implementation.
+
+## 2026-11-09 — Funded and free requests retain admission authority (#849)
+
+A subscription covering the whole bound formerly skipped `hold_for_key`, so
+manual/dunning/archive restrictions, current key constraints, mandate windows
+and concurrency could be skipped with it. Explicit zero pricing also conflicted
+with the positive-only watch schema. Preserve the money model and repair the
+admission boundary:
+
+- `Wallet::admit_gateway` commits quota, wallet share, current key/organization
+  authority, watch and leased operation together. Rejected admission rolls all
+  of these back. Both fresh upstream requests and cache hits use it.
+- `open_holds.wallet_minor = 0` is an explicit admitted nonmonetary reservation;
+  positive values name the monetary share, and `NULL` preserves legacy watches
+  whose presence alone cannot certify admission. The priced bound may be zero.
+  Concurrency counts ledger monetary holds plus explicit zero-wallet watches,
+  including promo-funded holds once. A turn never counts in both sets.
+- Money caps retain wallet, bonus and credit-line committed postings; quota is
+  already paid entitlement, not a second budget charge. Compare existing spend
+  plus wallet share to the current key/member/team/mandate cap. Exact cap plus
+  zero is permitted; a cap already exceeded refuses. Promotional budget policy
+  is unchanged. Plan-statement dunning remains overage-only; organization
+  restrictions apply regardless of the funding mix.
+- Atomic settlement/recovery records the existing typed balanced Adjustments
+  marker for a zero-wallet turn, releases quota, writes usage, closes the
+  operation and removes its watch together. It does not create wallet money or
+  usage revenue. A missing legacy hold keeps its old cleanup behavior. Recovery
+  retains known actor/mandate provenance but does not invent a lost mandate hash,
+  provider report, cache source or sale commitment.
+- Gateway operation identity includes the server request id. An independent
+  identical body owns a separate watch; the HTTP `Idempotency-Key` claim resolves
+  explicit replay before admission and continues to return its original answer.
+- Lock key advisory and organization admission before subscription lifecycle,
+  then ledger append before key/member/team rows. Settlement takes the same key
+  advisory before subscription/append and its usage forecast. Transactional
+  calendar, anchor, immutable hold and legacy closing receipt reads use the
+  borrowed connection; lazy gateway rollover reuses its initialized wallet.
+  This avoids holding one pool slot while waiting for another behind ledger locks.
+- Route/model authority is compared again before commit. A changed permission
+  snapshot refuses for retry; the admitted turn's alias, route and price remain
+  pinned rather than being re-priced during execution.
+
+Stop and drain old writers before upgrading; an old process does not participate
+in the explicit zero-wallet reservation protocol. This is development correctness
+work, not provider/browser/PSP or final candidate acceptance. The separate lazy
+cancellation defect is tracked in #854 and must close before the customer journey.

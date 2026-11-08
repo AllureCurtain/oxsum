@@ -541,11 +541,40 @@ impl Db {
             return Err(WalletError::InvalidInput("minor must be positive".into()));
         }
         let mut tx = self.pool().begin().await?;
+        let draw = self
+            .admit_subscription_draw_in(&mut tx, organization_id, hold_key, minor, None)
+            .await?;
+        tx.commit().await?;
+        Ok(draw)
+    }
+
+    /// Reserve quota in the admission transaction. A free turn draws nothing.
+    pub(crate) async fn admit_subscription_draw_in(
+        &self,
+        tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+        organization_id: Uuid,
+        hold_key: &str,
+        minor: i64,
+        wallet: Option<&crate::Wallet>,
+    ) -> Result<SubscriptionAdmission, WalletError> {
+        if minor < 0 {
+            return Err(WalletError::InvalidInput(
+                "minor must not be negative".into(),
+            ));
+        }
+        if minor == 0 {
+            return Ok(SubscriptionAdmission {
+                drawn_minor: 0,
+                draw_id: Uuid::nil(),
+                period_id: Uuid::nil(),
+                subscription_id: Uuid::nil(),
+            });
+        }
         sqlx::query(
             "SELECT pg_advisory_xact_lock(hashtextextended('oxsum.subscription' || $1::text, 0))",
         )
         .bind(organization_id.to_string())
-        .execute(&mut *tx)
+        .execute(&mut **tx)
         .await?;
         // A replayed hold answers its own draw — the unique index on hold_key
         // is the idempotency anchor, same as the ledger's.
@@ -554,11 +583,10 @@ impl Db {
              FROM oxsum.subscription_draws WHERE hold_key = $1",
         )
         .bind(hold_key)
-        .fetch_optional(&mut *tx)
+        .fetch_optional(&mut **tx)
         .await?
         {
             let drawn: i64 = existing.try_get("drawn_minor")?;
-            tx.rollback().await?;
             return Ok(SubscriptionAdmission {
                 drawn_minor: drawn,
                 draw_id: existing.try_get("draw_id")?,
@@ -574,13 +602,12 @@ impl Db {
              WHERE s.organization_id = $1 AND s.state = 'active' FOR UPDATE OF s",
         )
         .bind(organization_id)
-        .fetch_optional(&mut *tx)
+        .fetch_optional(&mut **tx)
         .await?;
         let Some(subscription) = subscription else {
             // No active subscription: the whole freeze is the wallet's, and no
             // draw row is needed — the settlement description simply carries no
             // subscription field.
-            tx.rollback().await?;
             return Ok(SubscriptionAdmission {
                 drawn_minor: 0,
                 draw_id: Uuid::nil(),
@@ -603,11 +630,11 @@ impl Db {
         // (past-due) rather than issuing unpaid entitlement.
         if let Some(end) = period_end
             && end <= OffsetDateTime::now_utc()
-            && crate::plans::plan_bound_subscription(&mut tx, subscription_id)
+            && crate::plans::plan_bound_subscription(tx, subscription_id)
                 .await?
                 .is_some()
         {
-            if self.plan_rollover_in(&mut tx, subscription_id).await? {
+            if self.plan_rollover_in(tx, subscription_id, wallet).await? {
                 // An authorized period was opened by a fulfilled order that
                 // already rolled the window: re-read the fresh counters and
                 // fall through to the draw below.
@@ -616,7 +643,7 @@ impl Db {
                      FROM oxsum.org_subscriptions WHERE subscription_id = $1",
                 )
                 .bind(subscription_id)
-                .fetch_one(&mut *tx)
+                .fetch_one(&mut **tx)
                 .await?;
                 consumed = fresh.try_get("consumed_minor")?;
             }
@@ -626,7 +653,7 @@ impl Db {
             // opted into.
             let remaining = quota.map(|q| (q - consumed).max(0));
             let drawn = remaining.map_or(minor, |r| r.min(minor));
-            let period_id = open_period_id(&mut tx, subscription_id).await?;
+            let period_id = open_period_id(tx, subscription_id).await?;
             let draw_id = Uuid::new_v4();
             sqlx::query(
                 "INSERT INTO oxsum.subscription_draws \
@@ -638,7 +665,7 @@ impl Db {
             .bind(period_id)
             .bind(hold_key)
             .bind(drawn)
-            .execute(&mut *tx)
+            .execute(&mut **tx)
             .await?;
             sqlx::query(
                 "UPDATE oxsum.org_subscriptions \
@@ -647,7 +674,7 @@ impl Db {
             )
             .bind(subscription_id)
             .bind(drawn)
-            .execute(&mut *tx)
+            .execute(&mut **tx)
             .await?;
             sqlx::query(
                 "UPDATE oxsum.subscription_periods \
@@ -656,11 +683,10 @@ impl Db {
             )
             .bind(period_id)
             .bind(drawn)
-            .execute(&mut *tx)
+            .execute(&mut **tx)
             .await?;
             let allow_overflow: bool = subscription.try_get("allow_wallet_overflow")?;
             if !allow_overflow && drawn < minor {
-                tx.rollback().await?;
                 return Err(WalletError::InsufficientFunds);
             }
             // The wallet-side overage — `minor - drawn` — is what the credit
@@ -668,10 +694,9 @@ impl Db {
             // current holds, plus this overflow, may not exceed the binding's
             // `credit_limit_minor`. A NULL cap is unlimited.
             if allow_overflow && drawn < minor {
-                self.check_plan_credit_in(&mut tx, organization_id, minor - drawn)
+                self.check_plan_credit_in(tx, organization_id, minor - drawn)
                     .await?;
             }
-            tx.commit().await?;
             return Ok(SubscriptionAdmission {
                 drawn_minor: drawn,
                 draw_id,
@@ -682,12 +707,12 @@ impl Db {
         if let Some(mut end) = period_end
             && end <= OffsetDateTime::now_utc()
         {
-            let reset = reset_period_of(&mut tx, plan_id).await?;
+            let reset = reset_period_of(tx, plan_id).await?;
             // Roll past every boundary the quiet gap spanned, so the draw
             // lands inside the window that is actually open now — one pass
             // would leave `end` still in the past after a multi-period gap.
             while end <= OffsetDateTime::now_utc() {
-                close_period(&mut tx, &subscription, "boundary").await?;
+                close_period(tx, &subscription, "boundary").await?;
                 sqlx::query(
                     "UPDATE oxsum.org_subscriptions \
                      SET current_period_start = $2, current_period_end = $3, \
@@ -697,7 +722,7 @@ impl Db {
                 .bind(subscription_id)
                 .bind(end)
                 .bind(period_window(reset, end))
-                .execute(&mut *tx)
+                .execute(&mut **tx)
                 .await?;
                 sqlx::query(
                     "INSERT INTO oxsum.subscription_periods \
@@ -712,7 +737,7 @@ impl Db {
                 .bind(end)
                 .bind(period_window(reset, end))
                 .bind(quota)
-                .execute(&mut *tx)
+                .execute(&mut **tx)
                 .await?;
                 consumed = 0;
                 // The window rolls forward one boundary at a time: a `daily`
@@ -727,7 +752,7 @@ impl Db {
         }
         let remaining = quota.map(|q| (q - consumed).max(0));
         let drawn = remaining.map_or(minor, |r| r.min(minor));
-        let period_id = open_period_id(&mut tx, subscription_id).await?;
+        let period_id = open_period_id(tx, subscription_id).await?;
         let draw_id = Uuid::new_v4();
         sqlx::query(
             "INSERT INTO oxsum.subscription_draws \
@@ -739,7 +764,7 @@ impl Db {
         .bind(period_id)
         .bind(hold_key)
         .bind(drawn)
-        .execute(&mut *tx)
+        .execute(&mut **tx)
         .await?;
         sqlx::query(
             "UPDATE oxsum.org_subscriptions \
@@ -748,7 +773,7 @@ impl Db {
         )
         .bind(subscription_id)
         .bind(drawn)
-        .execute(&mut *tx)
+        .execute(&mut **tx)
         .await?;
         sqlx::query(
             "UPDATE oxsum.subscription_periods \
@@ -757,22 +782,20 @@ impl Db {
         )
         .bind(period_id)
         .bind(drawn)
-        .execute(&mut *tx)
+        .execute(&mut **tx)
         .await?;
         let allow_overflow: bool = subscription.try_get("allow_wallet_overflow")?;
         if !allow_overflow && drawn < minor {
             // The plan refuses overflow and could not cover the freeze: the
             // hold must not reach the wallet at all.
-            tx.rollback().await?;
             return Err(WalletError::InsufficientFunds);
         }
         // The wallet-side overage is what the credit limit caps (issue #612,
         // T21) — subscription-drawn quota is already paid for and never counts.
         if allow_overflow && drawn < minor {
-            self.check_plan_credit_in(&mut tx, organization_id, minor - drawn)
+            self.check_plan_credit_in(tx, organization_id, minor - drawn)
                 .await?;
         }
-        tx.commit().await?;
         Ok(SubscriptionAdmission {
             drawn_minor: drawn,
             draw_id,
@@ -827,7 +850,7 @@ impl Db {
         // for, counted from the watch rows the same lock covers.
         let tenant: String = row.try_get("tenant_id")?;
         let holds: i64 = sqlx::query_scalar(
-            "SELECT COALESCE(SUM(freeze_minor),0)::bigint FROM oxsum.open_holds \
+            "SELECT COALESCE(SUM(COALESCE(wallet_minor,freeze_minor)),0)::bigint FROM oxsum.open_holds \
              WHERE tenant_id=$1",
         )
         .bind(&tenant)
@@ -894,6 +917,25 @@ impl Db {
         hold_key: &str,
         actual_minor: i64,
     ) -> Result<Option<i64>, WalletError> {
+        // Discover the immutable owner without taking the draw row first.
+        // Admission and rollover own the subscription lock before any draw;
+        // settlement must use that same order when it joins one transaction.
+        let organization: Option<Uuid> = sqlx::query_scalar(
+            "SELECT s.organization_id FROM oxsum.subscription_draws d \
+             JOIN oxsum.org_subscriptions s USING(subscription_id) WHERE d.hold_key=$1",
+        )
+        .bind(hold_key)
+        .fetch_optional(&mut **tx)
+        .await?;
+        let Some(organization) = organization else {
+            return Ok(None);
+        };
+        sqlx::query(
+            "SELECT pg_advisory_xact_lock(hashtextextended('oxsum.subscription' || $1::text, 0))",
+        )
+        .bind(organization.to_string())
+        .execute(&mut **tx)
+        .await?;
         let draw = sqlx::query(
             "SELECT d.draw_id, d.subscription_id, d.period_id, d.drawn_minor, d.settled_minor, \
                     s.organization_id \
@@ -908,7 +950,6 @@ impl Db {
             return Ok(None);
         };
         let drawn: i64 = draw.try_get("drawn_minor")?;
-        let organization_id: Uuid = draw.try_get("organization_id")?;
         let subscription_id: Uuid = draw.try_get("subscription_id")?;
         let period_id: Uuid = draw.try_get("period_id")?;
         if let Some(settled) = draw.try_get::<Option<i64>, _>("settled_minor")? {
@@ -919,12 +960,6 @@ impl Db {
                 "actual must be within 0..=drawn".into(),
             ));
         }
-        sqlx::query(
-            "SELECT pg_advisory_xact_lock(hashtextextended('oxsum.subscription' || $1::text, 0))",
-        )
-        .bind(organization_id.to_string())
-        .execute(&mut **tx)
-        .await?;
         sqlx::query(
             "UPDATE oxsum.subscription_draws \
              SET settled_minor = $2, settled_at = now() \
@@ -1031,7 +1066,10 @@ impl Db {
                 .await?
                 .is_some()
             {
-                if self.plan_rollover_in(&mut tx, subscription_id).await? {
+                if self
+                    .plan_rollover_in(&mut tx, subscription_id, None)
+                    .await?
+                {
                     report.rolled += 1;
                 } else {
                     report.expired += 1;

@@ -1054,6 +1054,7 @@ impl Db {
         &self,
         tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
         subscription_id: Uuid,
+        wallet: Option<&crate::Wallet>,
     ) -> Result<bool, WalletError> {
         let Some(plan_row) = sqlx::query(
             "SELECT customer_plan_id, organization_id, plan_version_id, state, \
@@ -1085,7 +1086,7 @@ impl Db {
             // plan goes `cancelled` — the wallet takes every later draw. The
             // closing period's journal lands in the same transaction.
             close_open_plan_period(tx, customer_plan_id, "closed").await?;
-            self.write_close_journal(tx, &plan_row).await?;
+            self.write_close_journal(tx, &plan_row, wallet).await?;
             sqlx::query(
                 "UPDATE oxsum.customer_plans \
                  SET state = 'cancelled', updated_at = now() WHERE customer_plan_id = $1",
@@ -1127,7 +1128,7 @@ impl Db {
             // remainder. The journal is written under the *closing* version,
             // so it must land before the swap overwrites `plan_version_id`.
             close_open_plan_period(tx, customer_plan_id, "closed").await?;
-            self.write_close_journal(tx, &plan_row).await?;
+            self.write_close_journal(tx, &plan_row, wallet).await?;
             sqlx::query(
                 "UPDATE oxsum.customer_plans \
                  SET plan_version_id = $2, scheduled_change = NULL, \
@@ -1143,7 +1144,7 @@ impl Db {
         close_open_plan_period(tx, customer_plan_id, "expired").await?;
         // Past-due: the closed period's journal lands `posted` — the open
         // receivable tracked separately from the next period's renewal fee.
-        self.write_close_journal(tx, &plan_row).await?;
+        self.write_close_journal(tx, &plan_row, wallet).await?;
         sqlx::query(
             "UPDATE oxsum.customer_plans \
              SET state = 'past_due', updated_at = now() WHERE customer_plan_id = $1",
@@ -1192,7 +1193,13 @@ impl Db {
         &self,
         tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
         plan_row: &sqlx::postgres::PgRow,
+        admitted_wallet: Option<&crate::Wallet>,
     ) -> Result<(), WalletError> {
+        if let Some(wallet) = admitted_wallet {
+            return self
+                .write_close_journal_with_wallet(tx, plan_row, wallet)
+                .await;
+        }
         let organization_id: Uuid = plan_row.try_get("organization_id")?;
         let wallet = self.journal_wallet(tx, organization_id).await?;
         self.write_close_journal_with_wallet(tx, plan_row, &wallet)
@@ -1210,7 +1217,16 @@ impl Db {
         let Some(period) = crate::journals::closing_period_in(tx, customer_plan_id).await? else {
             return Ok(());
         };
-        let Some(sold) = self.sold_plan(plan_version_id).await? else {
+        let sold = sqlx::query(
+            "SELECT plan_version_id, plan_id, business_id, version, name, price_minor, \
+                    currency, quota_minor, period_kind, overage_enabled, sort_order, \
+                    published_at, retired_at, created_at, accounting_policy_version \
+             FROM oxsum.sold_plans WHERE plan_version_id=$1",
+        )
+        .bind(plan_version_id)
+        .fetch_optional(&mut **tx)
+        .await?;
+        let Some(sold) = sold.as_ref().map(sold_plan_from_row).transpose()? else {
             return Err(invalid("the bound plan version is gone"));
         };
         self.journal_closing_period_in(

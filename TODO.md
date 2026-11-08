@@ -44,6 +44,8 @@ Updated: 2026-11-09
 
 - [ ] [#849](https://github.com/AllureCurtain/oxsum/issues/849) — In `.worktrees/funded-call-admission`: reproduce and correct fully funded/free-call admission before customer readiness; preserve current authority, mandate/concurrency limits, plan dunning's overage-only restriction and documented budget semantics.
 
+- [ ] [#854](https://github.com/AllureCurtain/oxsum/issues/854) — Follow #849 with the lazy cancellation boundary regression: a plan cancelled during admission must not draw the ended period's quota; preserve serving past-due remainder policy.
+
 - [x] [#835](https://github.com/AllureCurtain/oxsum/issues/835) — Integrated in PR #844 (`23b6547`): explicit audited checkout routes, safe customer choices and retained-version retry; 1,948 full workspace checks, strict Clippy and independent review passed. Browser/PSP acceptance remains.
 
 - [x] [#831](https://github.com/AllureCurtain/oxsum/issues/831) — Integrated in PR #834 (`0ea3ef3`): complete merchant configuration and redacted history; HTTP authority and required checks passed. Browser acceptance remains.

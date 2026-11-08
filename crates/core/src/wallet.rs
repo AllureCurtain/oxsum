@@ -1,7 +1,11 @@
 //! The wallet facade: holds, settlements, receipts and ledger reads.
 
+#[path = "wallet/admission.rs"]
+mod admission;
 #[path = "wallet/transaction_reads.rs"]
 mod transaction_reads;
+
+pub use admission::GatewayAdmission;
 
 use std::collections::{BTreeMap, HashMap};
 use std::sync::{Arc, Mutex};
@@ -2224,245 +2228,12 @@ impl Wallet {
         let mut last_err = None;
         for _ in 0..POOL_SPLIT_ATTEMPTS {
             let mut tx = self.store.pool().begin().await?;
-            // The check and the append serialize on this lock, per key. The engine's own
-            // append takes the per-tenant lock inside, so the order is always key lock first,
-            // tenant lock second, and the engine never takes the key lock: no deadlock, and no
-            // tenant-level contention beyond the append lock that already exists.
-            sqlx::query("SELECT pg_advisory_xact_lock($1)")
-                .bind(limit_lock_key(&self.tenant_id, &key.key_id))
-                .execute(&mut *tx)
+            self.lock_key_admission_in(&mut tx, key.key_id).await?;
+            self.lock_append_in(&mut tx).await?;
+            self.authorize_key_in(&mut tx, key, model, minor, on, mandate)
                 .await?;
-            // The org-admission lock, shared (issue #162): holds of one organization
-            // run in parallel, while `set_suspended`'s exclusive lock waits for every
-            // admitted hold and makes the next one observe the flag. It is taken
-            // before any row lock, so every transaction's order is advisory locks
-            // first, rows second — no cycle with the membership writers that take
-            // the organization and membership rows only.
-            sqlx::query(
-                "SELECT pg_advisory_xact_lock_shared(hashtextextended($2 || organization_id::text, 0)) \
-                 FROM oxsum.api_keys WHERE key_id = $1",
-            )
-            .bind(key.key_id)
-            .bind(ORG_ADMISSION_LOCK)
-            .execute(&mut *tx)
-            .await?;
-            // The constraints in force now, not the ones the request authenticated with:
-            // locked, so a PATCH landing between authentication and this hold cannot be missed.
-            // The join reads the organization's suspension and names the minting member
-            // (`created_by` names the member; a removed membership leaves the key
-            // unbudgeted); the membership row itself locks in a second read below,
-            // because FOR UPDATE cannot reach the nullable side of an outer join
-            // (issue #162).
-            let constraints = sqlx::query(
-                "SELECT k.spend_limit_minor, k.budget_duration, k.model_allowlist, \
-                        k.max_concurrent_holds, k.organization_id, \
-                        (o.suspended_at IS NOT NULL OR o.dunning_suspended_at IS NOT NULL OR EXISTS (SELECT 1 FROM oxsum.customer_profiles c WHERE c.organization_id=o.organization_id AND c.state='archived')) AS suspended, \
-                        m.user_id AS budget_member, m.team_id AS budget_team \
-                 FROM oxsum.api_keys k \
-                 JOIN oxsum.organizations o ON o.organization_id = k.organization_id \
-                 LEFT JOIN oxsum.memberships m \
-                        ON m.organization_id = k.organization_id \
-                       AND m.user_id = k.created_by \
-                 WHERE k.key_id = $1 FOR UPDATE OF k",
-            )
-            .bind(key.key_id)
-            .fetch_optional(&mut *tx)
-            .await?;
-            let Some(constraints) = constraints else {
-                // Keys are never deleted; a missing row means the credential died mid-request.
-                return Err(WalletError::Unauthenticated);
-            };
-            // The minting member's row, locked for update so the budget read and the
-            // holds that check against it serialize: two racing holds of one member's
-            // keys cannot both fit under the cap.
-            let member_budget = {
-                use sqlx::Row;
-                let member: Option<Uuid> = constraints.try_get("budget_member")?;
-                let organization: Uuid = constraints.try_get("organization_id")?;
-                let team: Option<Uuid> = constraints.try_get("budget_team")?;
-                let mut member_budget: Option<i64> = None;
-                let mut team_budget: Option<i64> = None;
-                if let Some(member) = member {
-                    member_budget = sqlx::query_scalar(
-                        "SELECT budget_limit_minor FROM oxsum.memberships \
-                         WHERE organization_id = $1 AND user_id = $2 FOR UPDATE",
-                    )
-                    .bind(organization)
-                    .bind(member)
-                    .fetch_one(&mut *tx)
-                    .await?;
-                }
-                if let Some(team) = team {
-                    // The team's row locks beside the membership's: the cap
-                    // read and the holds that check against it serialize, so
-                    // two racing holds of the team's members cannot both fit
-                    // (issue #440). LOCK the team row only when the member
-                    // sits in one — an unassigned member reads no cap here.
-                    team_budget = sqlx::query_scalar(
-                        "SELECT budget_limit_minor FROM oxsum.teams \
-                         WHERE organization_id = $1 AND team_id = $2 FOR UPDATE",
-                    )
-                    .bind(organization)
-                    .bind(team)
-                    .fetch_one(&mut *tx)
-                    .await?;
-                }
-                (member, organization, member_budget, team, team_budget)
-            };
-            {
-                use sqlx::Row;
-                // A suspended organization reserves nothing new; its in-flight
-                // holds still settle, and money-in still lands.
-                if constraints.try_get::<bool, _>("suspended")? {
-                    return Err(WalletError::Forbidden(
-                        "the organization is suspended".into(),
-                    ));
-                }
-                // A past-due plan statement past its grace suspends the
-                // wallet-side overage the same way (issue #612, T21): the
-                // binding's `dunning_suspended_at` is the gate the overdue
-                // sweep stamps and the payment reconcile lifts, read under
-                // this same key+admission lock. The table-presence check runs
-                // first so a pre-`sold_plans` schema parses no dangling
-                // reference.
-                let organization: Uuid = constraints.try_get("organization_id")?;
-                let has_plans: bool =
-                    sqlx::query_scalar("SELECT to_regclass('oxsum.customer_plans') IS NOT NULL")
-                        .fetch_one(&mut *tx)
-                        .await?;
-                if has_plans {
-                    let plan_suspended: bool =
-                        crate::plan_debt::admission_suspended_in(&mut tx, organization).await?;
-                    if plan_suspended {
-                        return Err(WalletError::Forbidden(
-                            "the organization is suspended".into(),
-                        ));
-                    }
-                }
-            }
             let split = self.pool_split(&mut tx, minor).await?;
             let draft = self.hold_entry(idem_key, &description, split, Some(actor.clone()), on)?;
-            {
-                use sqlx::Row;
-                // Like the limit, the allowlist guards new spend: a replayed hold answers
-                // with its own receipt even if the list has since dropped the model.
-                let allowlist: Option<Vec<String>> = constraints.try_get("model_allowlist")?;
-                if let (Some(model), Some(list)) = (model, &allowlist)
-                    && !list.iter().any(|allowed| allowed == model)
-                {
-                    return Err(WalletError::Forbidden(format!(
-                        "this key may not call model {model:?}"
-                    )));
-                }
-                let limit: Option<i64> = constraints.try_get("spend_limit_minor")?;
-                if let Some(limit) = limit {
-                    // A budget window makes the limit periodic: committed counts only the
-                    // current period's settled charges; outstanding holds count whatever
-                    // their age, because they still reserve money now.
-                    let since = constraints
-                        .try_get::<Option<String>, _>("budget_duration")?
-                        .as_deref()
-                        .map(BudgetDuration::parse)
-                        .transpose()?
-                        .map(|d| d.period_start(on));
-                    let committed = self.key_committed_in(&mut tx, &key.key_id, since).await?;
-                    if committed + minor > limit {
-                        return Err(WalletError::KeyLimitExceeded {
-                            limit_minor: limit,
-                            committed_minor: committed,
-                        });
-                    }
-                }
-                // The member budget caps what the key's creator may commit across
-                // every key they minted — the membership row is locked above, so
-                // the sum and the append agree (issue #162).
-                let (member, organization, member_budget, team, team_budget) = member_budget;
-                if let (Some(member), Some(limit)) = (member, member_budget) {
-                    let committed = self
-                        .member_committed_in(&mut tx, &organization, &member)
-                        .await?;
-                    if committed + minor > limit {
-                        return Err(WalletError::KeyLimitExceeded {
-                            limit_minor: limit,
-                            committed_minor: committed,
-                        });
-                    }
-                }
-                // The team budget caps what the subgroup's members may commit
-                // across every key they minted — the team row is locked beside
-                // the membership's, so the sum and the append agree (issue
-                // #440). The layer sits between member and organization: a
-                // member outside any team, or a team without a cap, reads no
-                // bound here.
-                if let (Some(team), Some(limit)) = (team, team_budget) {
-                    let committed = self
-                        .team_committed_in(&mut tx, &organization, &team)
-                        .await?;
-                    if committed + minor > limit {
-                        return Err(WalletError::KeyLimitExceeded {
-                            limit_minor: limit,
-                            committed_minor: committed,
-                        });
-                    }
-                }
-                // The concurrent-holds cap bounds hold-spam: how many reservations
-                // the key may have open at once, counted from the ledger's pending
-                // entries under the same lock so racing holds cannot both fit.
-                let hold_cap: Option<i32> = constraints.try_get("max_concurrent_holds")?;
-                if let Some(cap) = hold_cap {
-                    let open = self.key_open_holds_in(&mut tx, &key.key_id).await?;
-                    if open >= i64::from(cap) {
-                        return Err(WalletError::TooManyHolds {
-                            limit: i64::from(cap),
-                            open,
-                        });
-                    }
-                }
-                // The mandate's own bounds, on top of the key's (issue #262). Its
-                // signature was already verified against the key's public half;
-                // what runs here under the per-key lock is what needs the
-                // ledger-derived figure: the window, the model subset and the
-                // committed-under-mandate cap.
-                if let Some(mandate) = mandate {
-                    let now = OffsetDateTime::now_utc();
-                    // The mandate delegates this key only — a blob minted for one
-                    // key never spends under another, and the `orgId` binding
-                    // keeps a mandate out of a different organization's ledger.
-                    if mandate.verified.key_id != key.key_id {
-                        return Err(WalletError::InvalidMandate);
-                    }
-                    // The window bound is the mandate's own, refused as its own
-                    // code so a delegate learns the delegation expired rather
-                    // than the organization's budget biting.
-                    if now.unix_timestamp() < mandate.not_before_ts() {
-                        return Err(WalletError::MandateOutOfWindow { not_yet: true });
-                    }
-                    if now.unix_timestamp() > mandate.not_after_ts() {
-                        return Err(WalletError::MandateOutOfWindow { not_yet: false });
-                    }
-                    // The mandate's allowlist narrows the key's, never widens:
-                    // the request's model must sit inside it.
-                    if let (Some(model), Some(models)) = (model, &mandate.verified.models)
-                        && !models.iter().any(|allowed| allowed == model)
-                    {
-                        return Err(WalletError::Forbidden(format!(
-                            "the mandate does not delegate model {model:?}"
-                        )));
-                    }
-                    // committed-under-mandate + this freeze ≤ cap, read from the
-                    // ledger under the per-key lock so a racing hold cannot both
-                    // fit — the same shape `key_committed_in` takes per key.
-                    let committed = self
-                        .mandate_committed_in(&mut tx, &mandate.verified.mandate_id)
-                        .await?;
-                    if committed + minor > mandate.verified.cap_minor {
-                        return Err(WalletError::MandateExceeded {
-                            cap_minor: mandate.verified.cap_minor,
-                            committed_minor: committed,
-                        });
-                    }
-                }
-            }
             // The promo part of the split pins its lots here, inside the hold's
             // transaction, just before the entry appends into the same one:
             // `promo_draws` names which lots fund `split.promo`, so the
@@ -2772,6 +2543,7 @@ impl Wallet {
         );
         let open: i64 = sqlx::query_scalar(&sql)
             .bind(vec![
+                self.promo.index() as i32,
                 self.wallet.index() as i32,
                 self.bonus.index() as i32,
                 self.credit_line.index() as i32,
@@ -3001,7 +2773,8 @@ impl Wallet {
         // The outstanding-holds cap reads the same ledger count the hold path
         // enforces — `concurrentHolds` reports the figure either way, so a
         // surface can draw the occupancy without a second query.
-        let open = self.key_open_holds_in(&mut conn, key_id).await?;
+        let open = self.key_open_holds_in(&mut conn, key_id).await?
+            + self.zero_wallet_reservations_in(&mut conn, *key_id).await?;
         // The tag-scoped token buckets, resolved the way admission resolves
         // them: the scope's `scope_name` against the request's tags names the
         // bucket the turn would accrue into — a scope the request does not tag

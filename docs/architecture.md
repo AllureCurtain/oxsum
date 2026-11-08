@@ -12,6 +12,22 @@ the existing collection-terms validator. The frontend renders restricted/error
 states explicitly. Customer readiness remains separate because its key grants,
 funding and first-call proof have different authority and evidence.
 
+Gateway admission (#849) joins the quota draw, current authority/budget check,
+wallet reservation, watch and operation binding in one core transaction through
+`Wallet::admit_gateway`. A new `open_holds.wallet_minor` distinguishes a proven
+zero-wallet reservation from a legacy unproven watch (`NULL`). Concurrency counts
+monetary pending entries plus explicit zero-wallet watches, once per turn. Normal
+settlement and recovery release the watch together with quota, evidence, usage
+and terminal operation state. Missing legacy holds still create no receipt.
+
+The lock order is key advisory, organization admission, subscription lifecycle,
+ledger append, then key/member/team constraint rows. Gateway settlement takes
+the key advisory before subscription and append so its usage forecast cannot
+invert the admission order. Transactional calendar/anchor/hold reads borrow the
+same connection, and lazy plan rollover reuses the already-open gateway wallet.
+An authority snapshot that changed before reservation refuses before execution;
+an admitted turn retains its pinned model/route/price terms through settlement.
+
 ## Self-hosted release target
 
 The accepted [design](roadmap/self-hosted-v1/DESIGN.md) (#591) retains existing Organization IDs, tenant schemas and proofs as customer billing accounts and adds separate Business ownership/staff scope. There is no second commercial wallet or project wholesale charge. Durable single-customer operations coordinate financial and entitlement effects; sale prices remain independent of provider expense. These changes are planned until their [implementation issues](roadmap/self-hosted-v1/STATUS.md) integrate. [Baseline reconciliation](roadmap/self-hosted-v1/BASELINE.md) records the current source and compatibility boundaries.

@@ -517,11 +517,89 @@ fn replay(status: i32, body: Value, request_id: &str) -> Response {
     with_request_id(response, request_id)
 }
 
+/// Both fresh and cached answers reserve through the same current authority.
+#[allow(clippy::too_many_arguments)]
+async fn reserve_turn(
+    state: &AppState,
+    wallet: &oxsum_core::Wallet,
+    organization: &Organization,
+    key: &ActingKey,
+    request: &GatewayRequest,
+    request_id: &str,
+    primary: &Serving,
+    access: &oxsum_core::ServingAccess,
+    surface: Surface,
+    fingerprint: &str,
+    freeze: i64,
+    description: &str,
+    mandate: Option<&oxsum_core::PresentedMandate>,
+) -> Result<oxsum_core::GatewayAdmission, GatewayError> {
+    let watch = OpenHold {
+        hold_key: format!("req-{request_id}:hold"),
+        tenant_id: organization.tenant_id.clone(),
+        request_id: request_id.to_owned(),
+        model: request.model.clone(),
+        channel: primary.channel.clone(),
+        price_version: primary.version,
+        input_price: primary.price.input_price_per_million,
+        output_price: primary.price.output_price_per_million,
+        freeze_minor: freeze,
+        key_id: Some(key.key_id),
+        mandate_id: mandate.map(|m| m.verified.mandate_id),
+        end_user: request.attribution.end_user.clone(),
+        service_tier: request.attribution.service_tier.clone(),
+        tags: request.attribution.tags.clone(),
+        sweep_attempts: 0,
+        last_error: None,
+        dead_at: None,
+    };
+    let operation = oxsum_core::NewOperation {
+        operation_id: Uuid::parse_str(request_id).map_err(|_| {
+            oxsum_core::WalletError::InvalidInput("invalid server request id".into())
+        })?,
+        organization_id: organization.id,
+        key_id: Some(key.key_id),
+        surface: surface.operation_name().to_owned(),
+        // The HTTP claim owns explicit replay. Independent identical bodies
+        // must never share a durable operation or recover each other's watch.
+        fingerprint: format!("{fingerprint}/{request_id}"),
+        bound_minor: freeze,
+        model: request.model.clone(),
+        channel: Some(primary.channel.clone()),
+        customer_id: None,
+        terms_version: Some(primary.version),
+    };
+    match wallet
+        .admit_gateway(
+            &state.db,
+            key,
+            &watch,
+            &operation,
+            access,
+            description,
+            &state.instance_id,
+            crate::today(),
+            mandate,
+        )
+        .await
+    {
+        Ok(admission) => Ok(admission),
+        Err(oxsum_core::WalletError::InsufficientFunds) => {
+            state
+                .db
+                .notify_credit_limit_exceeded(organization.id, wallet)
+                .await;
+            Err(GatewayError::freeze_refused(freeze, request.max_tokens))
+        }
+        Err(error) => Err(error.into()),
+    }
+}
+
 /// The turn itself, from the freeze to the settlement.
 ///
 /// `bound_fingerprint` is the scoped idempotency digest the gateway computed
-/// before the claim — the same figure the operation row inserts under, so a
-/// replay names the operation its claim already scoped to (issue #601).
+/// before the claim. The operation also includes this request id so independent
+/// identical bodies own separate reservations; explicit claims resolve replay.
 #[allow(clippy::too_many_arguments)]
 async fn run(
     state: &AppState,
@@ -1176,6 +1254,7 @@ async fn run(
             experiment.clone(),
             &requested_model,
             bound_fingerprint,
+            &access,
         )
         .await;
     }
@@ -1183,155 +1262,26 @@ async fn run(
     let wallet = state.tenants.get(&organization.tenant_id).await?;
     let hold_key = format!("req-{request_id}:hold");
     let description = hold_description(request_id, &request.model, freeze)?;
-    // The operation row (issue #601): the turn's durable parent, created once
-    // the freeze is known but before the hold binds — `bound_minor` stays
-    // honest because the row is written where the freeze exists, not
-    // create-then-update. The scoped fingerprint is the replay lookup: a retry
-    // under the same claim names this row rather than writing a second. The
-    // write is best-effort like the usage record's — a turn whose operation
-    // write fails still holds, relays and settles, and the sweeper recovers it
-    // through the watch row as it always has.
-    let operation = match state
-        .db
-        .insert_operation(&oxsum_core::NewOperation {
-            operation_id: Uuid::parse_str(request_id).unwrap_or_else(|_| Uuid::new_v4()),
-            organization_id: organization.id,
-            key_id: Some(key.key_id),
-            surface: surface.operation_name().to_owned(),
-            fingerprint: bound_fingerprint.to_owned(),
-            bound_minor: freeze,
-            model: request.model.clone(),
-            channel: Some(primary.channel.clone()),
-            customer_id: None,
-            terms_version: Some(primary.version),
-        })
-        .await
-    {
-        Ok(pair) => Some(pair),
-        Err(error) => {
-            tracing::error!(%error, request = %request_id,
-                "writing the turn's operation row failed; the hold proceeds without it");
-            None
-        }
-    };
-    // The watch row goes in before the hold is taken: a row without a hold heals itself — the
-    // sweeper deletes it when the hold is not there — while a hold without a row would be
-    // invisible to the sweeper if this process died.
-    if let Err(error) = state
-        .db
-        .note_open_hold(&OpenHold {
-            hold_key: hold_key.clone(),
-            tenant_id: organization.tenant_id.clone(),
-            request_id: request_id.to_owned(),
-            model: request.model.clone(),
-            channel: primary.channel.clone(),
-            price_version: primary.version,
-            input_price: primary.price.input_price_per_million,
-            output_price: primary.price.output_price_per_million,
-            freeze_minor: freeze,
-            key_id: Some(key.key_id),
-            mandate_id: mandate.as_ref().map(|m| m.verified.mandate_id),
-            end_user: request.attribution.end_user.clone(),
-            service_tier: request.attribution.service_tier.clone(),
-            tags: request.attribution.tags.clone(),
-            sweep_attempts: 0,
-            last_error: None,
-            dead_at: None,
-        })
-        .await
-    {
-        tracing::error!(%error, "recording the open hold failed");
-        return Err(error.into());
-    }
-    // The operation binds its hold once the watch row exists: `bind_hold` is a
-    // `created`-only CAS, so a replayed admission — the same fingerprint, an
-    // existing row — never re-binds. `false` is logged, not refused: the turn
-    // still owns its hold, and a replay that found the row already bound is
-    // the same turn continuing, not a billing error.
-    if let Some((operation, fresh)) = &operation {
-        match state
-            .db
-            .bind_hold(operation.operation_id, &hold_key, &state.instance_id)
-            .await
-        {
-            Ok(true) => {}
-            Ok(false) if *fresh => {
-                tracing::warn!(request = %request_id, operation_id = %operation.operation_id,
-                    "a fresh operation would not bind its hold — another admission raced it");
-            }
-            Ok(false) => {
-                tracing::info!(request = %request_id, operation_id = %operation.operation_id,
-                    "the operation was already bound — a replayed admission continuing");
-            }
-            Err(error) => {
-                tracing::error!(%error, request = %request_id,
-                    "binding the operation's hold failed; the sweeper recovers through the watch row");
-            }
-        }
-    }
-    // The subscription's share of the freeze, drawn before the wallet's: a
-    // bound plan covers what its period still holds, and the wallet holds the
-    // overflow. A plan that disallows overflow and could not cover the whole
-    // freeze refuses the hold outright, before any money moves (issue #496).
-    let subscription = match state
-        .db
-        .admit_subscription_draw(organization.id, &hold_key, freeze)
-        .await
-    {
-        Ok(admission) => admission,
-        Err(error) => {
-            if let Err(clear) = state.db.clear_open_hold(&hold_key).await {
-                tracing::error!(%clear, "clearing a refused hold's watch row failed");
-            }
-            return Err(match error {
-                oxsum_core::WalletError::InsufficientFunds => {
-                    GatewayError::freeze_refused(freeze, request.max_tokens)
-                }
-                other => other.into(),
-            });
-        }
-    };
-    let wallet_minor = freeze - subscription.drawn_minor;
-    // A fully entitlement-funded turn takes no wallet hold (issues #602, #603):
-    // the durable operation row plus the subscription draw are the reservation's
-    // authority — a fabricated 1-minor hold would refuse a turn the plan already
-    // pays for when the wallet is empty, which A13 forbids. The settlement writes
-    // the typed zero-cost receipt instead of a release-and-charge entry, and the
-    // sweeper recovers it through the operation's lease like any other turn.
-    let wallet_held = wallet_minor > 0;
-    if wallet_held
-        && let Err(error) = wallet
-            .hold_for_key(
-                key,
-                Some(request.model.as_str()),
-                &hold_key,
-                &description,
-                wallet_minor,
-                crate::today(),
-                mandate.as_ref(),
-            )
-            .await
-    {
-        // The hold was refused, so there is nothing for the sweeper to watch.
-        if let Err(clear) = state.db.clear_open_hold(&hold_key).await {
-            tracing::error!(%clear, "clearing a refused hold's watch row failed");
-        }
-        if matches!(error, oxsum_core::WalletError::InsufficientFunds) {
-            // A credit-line organization's 402 announces itself
-            // (issue #200) — best-effort, since the refusal left no
-            // transaction to enqueue into.
-            state
-                .db
-                .notify_credit_limit_exceeded(organization.id, &wallet)
-                .await;
-        }
-        return Err(match error {
-            oxsum_core::WalletError::InsufficientFunds => {
-                GatewayError::freeze_refused(freeze, request.max_tokens)
-            }
-            other => other.into(),
-        });
-    }
+    // Authority, quota, wallet and recovery identity are one admission commit.
+    let admission = reserve_turn(
+        state,
+        &wallet,
+        organization,
+        key,
+        &request,
+        request_id,
+        primary,
+        &access,
+        surface,
+        bound_fingerprint,
+        freeze,
+        &description,
+        mandate.as_ref(),
+    )
+    .await?;
+    let wallet_held = admission.wallet_minor > 0;
+    let subscription = admission.subscription;
+    let operation = Some((admission.operation, true));
     // The hold's landing is the turn's first phase boundary on the OTLP span:
     // span-start → this event is admission+freeze, this → the settle event is
     // relay (issue #224). `in_scope` logs the event *on* the span without making
@@ -1979,9 +1929,9 @@ async fn serve_cache_hit(
     experiment: Option<oxsum_core::ExperimentBinding>,
     requested_model: &str,
     bound_fingerprint: &str,
+    access: &oxsum_core::ServingAccess,
 ) -> Result<Response, GatewayError> {
     let wallet = state.tenants.get(&organization.tenant_id).await?;
-    let hold_key = format!("req-{request_id}:hold");
     // The reservation is the stored usage priced under the terms the turn
     // runs on — the resolved sale snapshot's rates when a sale book priced
     // this admission (issue #603), the channel's live book otherwise — the
@@ -1993,124 +1943,26 @@ async fn serve_cache_hit(
         .itemize(&hit.usage, true)?
         .total_minor()?;
     let description = hold_description(request_id, &request.model, freeze)?;
-    // A cache hit is a billable turn like any other (issue #601): it writes
-    // its operation row under the same scoped fingerprint, so a replayed
-    // request names the hit's operation rather than starting a second one.
-    let operation = match state
-        .db
-        .insert_operation(&oxsum_core::NewOperation {
-            operation_id: Uuid::parse_str(request_id).unwrap_or_else(|_| Uuid::new_v4()),
-            organization_id: organization.id,
-            key_id: Some(key.key_id),
-            surface: surface.operation_name().to_owned(),
-            fingerprint: bound_fingerprint.to_owned(),
-            bound_minor: freeze,
-            model: request.model.clone(),
-            channel: Some(primary.channel.clone()),
-            customer_id: None,
-            terms_version: Some(primary.version),
-        })
-        .await
-    {
-        Ok(pair) => Some(pair),
-        Err(error) => {
-            tracing::error!(%error, request = %request_id,
-                "writing the cache hit's operation row failed");
-            None
-        }
-    };
-    if let Err(error) = state
-        .db
-        .note_open_hold(&OpenHold {
-            hold_key: hold_key.clone(),
-            tenant_id: organization.tenant_id.clone(),
-            request_id: request_id.to_owned(),
-            model: request.model.clone(),
-            channel: primary.channel.clone(),
-            price_version: primary.version,
-            input_price: primary.price.input_price_per_million,
-            output_price: primary.price.output_price_per_million,
-            freeze_minor: freeze,
-            key_id: Some(key.key_id),
-            mandate_id: mandate.as_ref().map(|m| m.verified.mandate_id),
-            end_user: request.attribution.end_user.clone(),
-            service_tier: request.attribution.service_tier.clone(),
-            tags: request.attribution.tags.clone(),
-            sweep_attempts: 0,
-            last_error: None,
-            dead_at: None,
-        })
-        .await
-    {
-        tracing::error!(%error, "recording a cache hit's open hold failed");
-        return Err(error.into());
-    }
-    if let Some((operation, fresh)) = &operation
-        && let Err(error) = state
-            .db
-            .bind_hold(operation.operation_id, &hold_key, &state.instance_id)
-            .await
-    {
-        let _ = fresh;
-        tracing::error!(%error, request = %request_id,
-            "binding the cache hit's operation hold failed");
-    }
-    // A hit draws on the subscription like any other turn: the entitlement
-    // pays the replay's price the same way it would a fresh one's, and a plan
-    // that cannot cover it refuses before money moves (issue #496).
-    let subscription = match state
-        .db
-        .admit_subscription_draw(organization.id, &hold_key, freeze)
-        .await
-    {
-        Ok(admission) => admission,
-        Err(error) => {
-            if let Err(clear) = state.db.clear_open_hold(&hold_key).await {
-                tracing::error!(%clear, "clearing a refused cache hold's watch row failed");
-            }
-            return Err(match error {
-                oxsum_core::WalletError::InsufficientFunds => {
-                    GatewayError::freeze_refused(freeze, request.max_tokens)
-                }
-                other => other.into(),
-            });
-        }
-    };
-    let wallet_minor = freeze - subscription.drawn_minor;
-    // Same rule as a fresh turn (issues #602, #603): a cache hit the
-    // subscription fully covers takes no wallet hold; the draw and the
-    // operation row are the reservation, and the settle writes the zero-cost
-    // usage receipt.
-    let wallet_held = wallet_minor > 0;
-    if wallet_held
-        && let Err(error) = wallet
-            .hold_for_key(
-                key,
-                Some(request.model.as_str()),
-                &hold_key,
-                &description,
-                wallet_minor,
-                crate::today(),
-                mandate.as_ref(),
-            )
-            .await
-    {
-        if let Err(clear) = state.db.clear_open_hold(&hold_key).await {
-            tracing::error!(%clear, "clearing a refused cache hold's watch row failed");
-        }
-        if matches!(error, oxsum_core::WalletError::InsufficientFunds) {
-            state
-                .db
-                .notify_credit_limit_exceeded(organization.id, &wallet)
-                .await;
-        }
-        return Err(match error {
-            oxsum_core::WalletError::InsufficientFunds => {
-                GatewayError::freeze_refused(freeze, request.max_tokens)
-            }
-            other => other.into(),
-        });
-    }
+    // Authority, quota, wallet and recovery identity are one admission commit.
+    let admission = reserve_turn(
+        state,
+        &wallet,
+        organization,
+        key,
+        request,
+        request_id,
+        primary,
+        access,
+        surface,
+        bound_fingerprint,
+        freeze,
+        &description,
+        mandate.as_ref(),
+    )
+    .await?;
+    let wallet_held = admission.wallet_minor > 0;
+    let subscription = admission.subscription;
+    let operation = Some((admission.operation, true));
     turn_span.in_scope(|| {
         tracing::info!(oxsum.hold.freeze_minor = freeze, "cache hit hold taken");
     });
