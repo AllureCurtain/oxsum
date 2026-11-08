@@ -1372,3 +1372,22 @@ and document allocation. A personal business-context `FundsWrite` session is
 required. The command does not load `.env`, migrate the database or call a PSP.
 The [recovery runbook](plan-refund-recovery.md) defines amount checks, replay,
 review suspense and unsupported legacy combinations.
+
+
+### Plan statement lifecycle locks (#811)
+
+With the normal explicit local PostgreSQL test URLs, run:
+
+```bash
+cargo nextest run -p oxsum-core --test plan_statement_locks --test plan_statements --test plan_refunds --test journals --test plan_refund_conservation
+cargo nextest run -p oxsum-server --test plan_statements
+```
+
+`plan_statement_locks` uses dedicated scratch databases and actual PostgreSQL
+transactions. It observes a blocked backend before checking `NOWAIT` ownership;
+no fixed sleep decides which operation holds the lock. The refund/review case
+pauses a verified refund at the real ledger append lock. The stale-candidate
+case holds the owning plan while committing payment or a future due date, then
+checks the next sweep leaves the plan unsuspended. The keyset progress test
+uses a one-row page with a locked oldest plan, ensuring the next page is still
+processed. These fixtures do not contact a payment provider.

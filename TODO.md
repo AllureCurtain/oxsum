@@ -60,6 +60,7 @@ Updated: 2026-11-08
 - [x] [#802](https://github.com/AllureCurtain/oxsum/issues/802) — Conserve confirmed plan-refund cash, synchronize documents and recover legacy allocations; 18 refund scenarios and 1,897 complete workspace tests passed; strict Clippy and independent review passed; integrated in PR #812 (`de3bbca`).
 - [x] [#805](https://github.com/AllureCurtain/oxsum/issues/805) — Repair the five complete-run migration/recovery regressions and prevent migration registry drift; 42 focused and 1,877 complete PostgreSQL/workspace tests plus strict Clippy passed; nine existing opt-ins/known defects remain skipped. Integrated in PR #807 (`4c9f20e`).
 - [ ] [#822](https://github.com/AllureCurtain/oxsum/issues/822) — Verify pinned mold/sccache official downloads before atomic unprivileged installation; ten controlled HTTPS/integrity checks, official-byte retrieval and actionlint passed; CI integration pending.
+- [ ] [#811](https://github.com/AllureCurtain/oxsum/issues/811) — Serialize plan statement lifecycle locks and recheck overdue eligibility under ownership locks; six controlled cases and 53 combined core/HTTP checks passed with zero skips, strict Clippy and independent review passed; integration pending.
 
 - [x] [#801](https://github.com/AllureCurtain/oxsum/issues/801) — N13.b: Original candidate config/layer promotion and immutable registry receipts implemented; 39 Python checks and isolated registry upload/pull/idempotency/conflict/gzip checks passed. Integrated in PR #806 (`0b06184`); no public publication or deployment.
 
