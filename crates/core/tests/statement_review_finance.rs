@@ -564,3 +564,89 @@ async fn malformed_legacy_reversal_and_foreign_wallet_refuse_before_effects() {
     assert_eq!(w.wallet.log_size().await.unwrap(), before);
     assert_eq!(net(&w, "Assets:Receivables").await, -DEBT);
 }
+
+#[tokio::test]
+async fn a_new_review_of_an_already_void_journal_clears_only_stale_debt_suspension() {
+    for journal_action in [false, true] {
+        let Some(w) = world(DEBT).await else { return };
+        let key = Uuid::new_v4().to_string();
+        review(&w, w.statement.statement_id, "void", &key)
+            .await
+            .unwrap();
+        let before = w.wallet.log_size().await.unwrap();
+        w.wallet
+            .top_up("stale-void-funding", 100, OffsetDateTime::now_utc().date())
+            .await
+            .unwrap();
+        sqlx::query(
+            "UPDATE oxsum.customer_plans SET dunning_suspended_at=now() WHERE customer_plan_id=$1",
+        )
+        .bind(w.plan)
+        .execute(&w.pool)
+        .await
+        .unwrap();
+        // An exact audited retry cannot become a new restoration action.
+        review(&w, w.statement.statement_id, "void", &key)
+            .await
+            .unwrap();
+        assert!(suspended(&w).await);
+        assert_hold(&w, false).await;
+        let next = Uuid::new_v4().to_string();
+        let cash = net(&w, "Assets:Cash").await;
+        if journal_action {
+            w.db.void_invoice_journal(
+                &w.owner,
+                &w.wallet,
+                w.statement.journal_id.unwrap(),
+                "explicit old void review",
+                &next,
+                OffsetDateTime::now_utc().date(),
+            )
+            .await
+            .unwrap();
+        } else {
+            review(&w, w.statement.statement_id, "void", &next)
+                .await
+                .unwrap();
+        }
+        assert!(!suspended(&w).await);
+        assert_eq!(w.wallet.log_size().await.unwrap(), before + 1); // The top-up only.
+        assert_eq!(net(&w, "Assets:Cash").await, cash);
+        let detail: serde_json::Value = sqlx::query_scalar(
+            "SELECT detail FROM oxsum.finance_audit WHERE idempotency_key=$1 AND action=$2",
+        )
+        .bind(&next)
+        .bind(if journal_action {
+            "journal.void"
+        } else {
+            "statement.release"
+        })
+        .fetch_one(&w.pool)
+        .await
+        .unwrap();
+        assert!(detail["reversalEntryId"].is_null());
+        assert_hold(&w, true).await;
+        sqlx::query(
+            "UPDATE oxsum.customer_plans SET dunning_suspended_at=now() WHERE customer_plan_id=$1",
+        )
+        .bind(w.plan)
+        .execute(&w.pool)
+        .await
+        .unwrap();
+        sqlx::query("UPDATE oxsum.organizations SET suspended_at=now() WHERE organization_id=$1")
+            .bind(w.org)
+            .execute(&w.pool)
+            .await
+            .unwrap();
+        review(
+            &w,
+            w.statement.statement_id,
+            "void",
+            &Uuid::new_v4().to_string(),
+        )
+        .await
+        .unwrap();
+        assert!(!suspended(&w).await);
+        assert_hold(&w, false).await;
+    }
+}
