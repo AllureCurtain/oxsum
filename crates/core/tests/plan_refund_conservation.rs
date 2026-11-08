@@ -210,6 +210,26 @@ async fn settle_usage(world: &World, charged_minor: i64, on_credit: bool) {
             .unwrap();
     }
     let hold = format!("settled-overflow-{}", Uuid::new_v4());
+    // Consume the real included quota first, then admit the overflow through
+    // the plan gate. Only the second draw reaches the wallet/credit settlement.
+    let included = format!("included-{}", Uuid::new_v4());
+    let quota = world
+        .db
+        .admit_subscription_draw(world.organization_id, &included, 10 * ONE)
+        .await
+        .unwrap();
+    assert_eq!(quota.drawn_minor, 10 * ONE);
+    world
+        .db
+        .settle_subscription_draw(&included, 10 * ONE)
+        .await
+        .unwrap();
+    let overflow = world
+        .db
+        .admit_subscription_draw(world.organization_id, &hold, charged_minor)
+        .await
+        .unwrap();
+    assert_eq!(overflow.drawn_minor, 0);
     world
         .wallet
         .hold(&hold, "overflow fixture", charged_minor, on)
@@ -220,6 +240,7 @@ async fn settle_usage(world: &World, charged_minor: i64, on_credit: bool) {
         .settle(&hold, "overflow fixture", charged_minor, on)
         .await
         .unwrap();
+    world.db.settle_subscription_draw(&hold, 0).await.unwrap();
     let request = Uuid::new_v4().to_string();
     world
         .db
