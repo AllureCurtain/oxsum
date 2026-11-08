@@ -15,11 +15,16 @@ credential lists and customer selection are paginated; issued metadata
 separates active, expired and revoked states. Revocation uses an explicit dialog
 and retains its submitted reason/key through errors and reopening.
 
-The typed frontend depends on the #846 application contract. Initial local
-request-building checks pass (3): fixed application authority and absolute
-expiry, legacy scope/customer separation, and malformed expiry/authority refusal.
-The production TypeScript/Vite build passed against the prepared #846 generated
-contract; the temporary schema copy was restored afterward. Final integrated
-checks remain pending until #846 merges. This is not browser
-acceptance: the original task browser space remains unavailable. Desktop/mobile,
-keyboard, locale and response-loss journeys must run on the actual candidate.
+The final frontend is based on #846 integrated as `42b80a24`. Three request-building
+checks passed: fixed application authority and absolute expiry, legacy
+scope/customer separation, and malformed expiry/authority refusal. Four OpenAPI
+security checks, generated types, TypeScript/Vite production build, repository
+formatting and diff checks passed. The generated schema remains unchanged.
+Independent source review passed for authority, frozen retry identity, duplicate
+click prevention, labels after selection changes and secret/revocation recovery.
+The page uses the shared Checkbox primitive, including explicit scope disabling.
+
+This frontend-only unit does not change Rust runtime behavior; the integrated
+#846 source already passed 2,003 full workspace tests. Browser acceptance remains
+pending: the original task browser space is unavailable. Desktop/mobile, keyboard,
+locale and response-loss journeys must run on the actual candidate.

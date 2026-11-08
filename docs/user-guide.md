@@ -1475,8 +1475,7 @@ Statement evidence includes the listed daily effects and original policy inputs 
 Owners configuring an embedded application can create an application through
 `/api/v1/business/applications`, choose its retained customer limit and issue a
 credential selecting that `applicationId`. Select only required scopes; leave
-`customerIds` empty for application credentials. The owner portal editor for this
-setup follows separately. Keep each application's credentials in its server,
+`customerIds` empty for application credentials. The owner portal exposes these choices in Business → Integrations. Keep each application's credentials in its server,
 never in a browser or its customers' devices.
 
 Provision through `/api/v1/integration/customers` with a stable operation key and
