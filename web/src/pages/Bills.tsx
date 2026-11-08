@@ -206,4 +206,3 @@ function WindowSummary({
     </div>
   );
 }
-
