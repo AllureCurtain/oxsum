@@ -47,7 +47,7 @@ def clean_environment():
 def run(command, *, env, cwd=None, log=None, timeout=120):
     with (log.open("ab") if log else tempfile.TemporaryFile()) as output:
         result = subprocess.run(command, env=env, cwd=cwd, stdout=output, stderr=output, timeout=timeout)
-    require(result.returncode == 0, "rehearsal subprocess failed; inspect private stage logs")
+    require(result.returncode == 0, "rehearsal subprocess failed; its stage is retained, transient credential-bearing logs are removed")
 
 
 def docker(*args, env=None):
