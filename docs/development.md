@@ -1444,3 +1444,9 @@ An older orphan marker with no matching captured inputs explicitly refuses
 publication rather than serving an export bound to a different digest. Existing
 stored bundles remain unchanged; independent ledger verification still requires
 the retained trust inputs and stays within the documented proof scope.
+
+
+Drain old server/workers before starting a binary that publishes policy 2. A
+versioned ledger history does not make concurrent old writers safe: an older
+refund worker does not know the daily earned/deferred allocation. Use the normal
+single-writer self-hosted upgrade procedure and preserve the original exports.

@@ -565,3 +565,9 @@ An older orphan marker with no matching captured inputs explicitly refuses
 publication rather than serving an export bound to a different digest. Existing
 stored bundles remain unchanged; independent ledger verification still requires
 the retained trust inputs and stays within the documented proof scope.
+
+
+Runtime independent ledger reconciliation remains [#848](https://github.com/AllureCurtain/oxsum/issues/848):
+the existing `actualTotals` snapshot still clones the projection. Daily accounting
+fixtures independently compare postings, but that development evidence does not
+turn the current runtime report into an independent ledger audit.

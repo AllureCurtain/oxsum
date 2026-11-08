@@ -202,3 +202,10 @@ These are historical checkpoints. Earlier open/review-pending statements remain 
 | 2026-11-08 | Statement financial review and historical correction combined | #820 runtime snapshot `a478413` on integrated #809 main `68b3441`: 1,937 workspace passes, six existing opt-ins skipped. Retained document-only void debt remains in customer/admission projections; both financial void routes preserve correction payable. [Evidence](evidence/statement-review-finance.md) | Final explicit already-void debt restoration passed in 66 focused core/HTTP checks; PR integration remains. Repayment #777, dispute atomicity #826 and N11 remain separate. |
 
 | 2026-11-09 | Daily policy implementation and review | #838 on `23b6547`: 17 new daily/arithmetic checks plus the two-direction mixed-policy debt scenario passed; 135 legacy/core upgrade, financial, lifecycle and authority checks passed with zero skips. Independent review identified and repaired evidence mint race/crash recovery through durable exact inputs. | Final evidence fault/concurrency, HTTP/verifier, strict Clippy, wasm and complete workspace checks remain; no candidate or external acceptance claim. |
+
+
+N11's remaining runtime reconciliation is tracked explicitly by [#848](https://github.com/AllureCurtain/oxsum/issues/848).
+The existing pass clones projection totals into `actualTotals`; #838's independent
+ledger assertions are development evidence, not proof that deployed reconciliation
+independently checks postings. #737 stays open until #848 and remaining acceptance
+complete.
