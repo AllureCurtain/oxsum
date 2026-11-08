@@ -5,13 +5,14 @@ import { credentialRequest, type GrantDraft } from "../src/lib/integration-grant
 const draft: GrantDraft = { mode: "application", applicationId: "app-a", customerIds: ["portal-customer"], scopes: ["customersRead", "meteringWrite"], name: "My app", days: "30", reason: "runtime grant" };
 
 test("application grants exclude unrelated customers and freeze exact expiry and identity", () => {
-  const request = credentialRequest(draft, "operation-a", Date.UTC(2026, 10, 9));
+  const mutable = structuredClone(draft);
+  const request = credentialRequest(mutable, "operation-a", Date.UTC(2026, 10, 9));
   assert.deepEqual(request.customerIds, []);
   assert.equal(request.applicationId, "app-a");
   assert.equal(request.expiresAt, "2026-12-09T00:00:00.000Z");
   const transmitted = JSON.stringify(request);
-  draft.customerIds.push("later-customer");
-  draft.scopes.push("billingRead");
+  mutable.customerIds.push("later-customer");
+  mutable.scopes.push("billingRead");
   assert.equal(JSON.stringify(request), transmitted);
   assert.equal(request.idempotencyKey, "operation-a");
 });
