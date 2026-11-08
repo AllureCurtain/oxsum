@@ -191,6 +191,14 @@ Credit comes from the verified payment and operator-authorized sources below. Cu
 - The x402 crypto rail (issues #264, #282): `POST /api/v1/topups/x402` accepts a signed payment authorization `{scheme, network, asset, amountMinor, payTo, nonce, payer, signature}` and credits it through the same deposit walk. The verifier is a trait (`RailVerifier`) with two legs — verify, then settle. The real rail delegates both to an x402-rs facilitator sidecar (`OXSUM_X402_FACILITATOR_URL` + `OXSUM_X402_NETWORK` + `OXSUM_X402_ASSET` + `OXSUM_X402_PAY_TO`, all four or none): the deployment states its own payment requirements, the EIP-3009 authorization `nonce` anchors `payment_ref`, and the settle is serialized behind the deposit row's `FOR UPDATE` so a nonce settles at most once — the facilitator's transaction hash is stored on `facilitator_tx_hash`. The `OXSUM_X402_VERIFYING_KEY` stand-in checks an Ed25519 test-scheme signature and settles trivially — development and the test suites run on it, no chain needed (docs/decisions.md).
 - Adjustments never modify history; they book a new entry. The original entry and its proof stay valid.
 
+Sold-plan cancellation is effective at the paid boundary even when the next
+request arrives before the rollover worker (#854). Lazy admission closes the
+plan and its quota-period history together, then rechecks the subscription
+state. A cancelled period supplies no new quota; ordinary wallet authority and
+funding decide that request. Earlier admitted draws remain settleable against
+the retained cancelled period. This differs from an uncancelled past-due plan,
+whose remaining paid quota retains the documented service policy.
+
 ## API keys (shipped)
 
 - Keys belong to organizations and hold no money themselves. The creator is recorded for permissions and audit; a key minted through a session records who minted it, a key minted through the API records no creator, because no person is acting there. Members see and revoke only the keys they created; owners and admins see and revoke all of them.

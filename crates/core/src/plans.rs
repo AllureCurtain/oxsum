@@ -1044,8 +1044,9 @@ impl Db {
     /// same transaction (issue #611, T20) — the close and the bill are atomic.
     ///
     /// Returns whether the subscription may draw in a fresh window: `true`
-    /// when a new authorized period opened, `false` when it stays bound to
-    /// the ended one (past-due draws still meter against its remainder).
+    /// when a new authorized period opened, `false` when no new window opened.
+    /// A still-active subscription may use its past-due remainder, but a
+    /// cancelled one cannot; callers must re-read that state before admitting.
     ///
     /// # Errors
     ///
@@ -1087,6 +1088,19 @@ impl Db {
             // closing period's journal lands in the same transaction.
             close_open_plan_period(tx, customer_plan_id, "closed").await?;
             self.write_close_journal(tx, &plan_row, wallet).await?;
+            // The quota history closes with the authorization. Earlier draws
+            // remain attached and settle against it; no later draw may reopen
+            // or spend this cancelled window's remainder.
+            sqlx::query(
+                "UPDATE oxsum.subscription_periods p \
+                 SET outcome = 'cancelled', consumed_minor = s.consumed_minor \
+                 FROM oxsum.org_subscriptions s \
+                 WHERE p.subscription_id = s.subscription_id \
+                   AND s.subscription_id = $1 AND p.outcome = 'open'",
+            )
+            .bind(subscription_id)
+            .execute(&mut **tx)
+            .await?;
             sqlx::query(
                 "UPDATE oxsum.customer_plans \
                  SET state = 'cancelled', updated_at = now() WHERE customer_plan_id = $1",

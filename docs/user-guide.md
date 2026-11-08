@@ -998,7 +998,10 @@ serves your requests, but no new quota issues until a renewal order
 fulfills — and that period chains off the previous end, so a late renewal
 does not skip the gap. `POST /api/v1/org/plan/cancel` marks
 `cancelAtPeriodEnd` — the paid period still serves to its end, then the plan
-closes without renewing. `POST /api/v1/org/plan/change` books a swap to
+closes without renewing. A request at or after that boundary cannot use the
+cancelled period's remaining quota, even before the rollover worker runs; it
+must pass the usual wallet admission checks. A request already admitted before
+the boundary still settles against its original period. `POST /api/v1/org/plan/change` books a swap to
 another version at the next boundary; there is no mid-period pro-rating.
 
 Each period leaves an invoice journal (v2 at paid activation, legacy v1 at close) — the bill for what that period

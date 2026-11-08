@@ -20,6 +20,7 @@ Updated: 2026-11-09
 - [x] [#869](https://github.com/AllureCurtain/oxsum/issues/869) — Durable bounded provider harness; 15 boundary tests and complete local whole/SSE/offline fixture passed; independent source review passed; integrated in PR #871 (`2c2a739d`). Actual provider calls remain 0/5, CNY 0; candidate acceptance remains.
 
 
+
 - [x] [#862](https://github.com/AllureCurtain/oxsum/issues/862) — Pool exhaustion deadline regression integrated in PR #864 (`e53e303a`); 17 PostgreSQL fault checks, strict Clippy and independent review passed.
 
 - [x] [#841](https://github.com/AllureCurtain/oxsum/issues/841) — Complete non-plan refund Cash, exact source allocation, historical preview/apply and awaited fulfillment source release integrated in PR #868 (`f3802d5e`). Focused core/HTTP/executable checks, strict Clippy and independent review passed. The #867 repair's combined run passed all 2,042 workspace checks, including the earlier identity inventory and gateway DDL failures.
@@ -48,7 +49,7 @@ Updated: 2026-11-09
 
 - [x] [#849](https://github.com/AllureCurtain/oxsum/issues/849) — Atomic funded/free admission and recovery: 23 targeted regressions, 248 related integration checks and 2,070 complete workspace checks passed; changed-crate strict Clippy, frontend contract/build and two independent source reviews passed. Integrated in PR #892 (`7e2c6216`), including #891; post-merge CI `42558914887` passed. #854/#859/#875 remain before customer readiness.
 
-- [ ] [#854](https://github.com/AllureCurtain/oxsum/issues/854) — Follow #849 with the lazy cancellation boundary regression: a plan cancelled during admission must not draw the ended period's quota; preserve serving past-due remainder policy.
+- [ ] [#854](https://github.com/AllureCurtain/oxsum/issues/854) — Close cancelled plan entitlement on the first boundary request before the rollover worker; preserve earlier draws and past-due remainder policy. Contract and controlled regression prepared; runtime validation follows #849.
 
 - [ ] [#859](https://github.com/AllureCurtain/oxsum/issues/859) — After #849/#854, align team deletion's parent/team/member locks with admission and validate controlled deletion/reassignment races before customer readiness.
 
