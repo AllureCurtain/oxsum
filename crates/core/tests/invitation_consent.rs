@@ -2,9 +2,9 @@
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 use oxsum_core::{
     BusinessRole, BusinessSetupRequest, BusinessSetupTokenRequest, BusinessStaffRequest,
-    CustomerInvitationRequest, Db, InvitationRevokeRequest, Kind, LoginOutcome, MembershipActor,
-    NewUser, Registration, Role, SecretKey, SessionContext, SessionContextRequest, SetupAuthority,
-    TeamInvitationRequest, User, WalletError,
+    CustomerInvitationRequest, Db, InvitationRevokeRequest, InvitationScope, Kind, LoginOutcome,
+    MembershipActor, NewUser, Registration, Role, SecretKey, SessionContext, SessionContextRequest,
+    SetupAuthority, TeamInvitationRequest, User, WalletError,
 };
 use serde_json::json;
 use sqlx::Executor;
@@ -180,8 +180,13 @@ async fn business_invites_preserve_existing_identity_and_bind_the_new_customer()
     assert_eq!(count(&db, "business_staff").await, 1);
     assert!(db.invitation_preview(secret).await.is_err());
     assert!(matches!(
-        db.revoke_invitation(&owner, invite.id, true, &revoke("too-late"))
-            .await,
+        db.revoke_invitation(
+            &owner,
+            invite.id,
+            InvitationScope::Customer,
+            &revoke("too-late")
+        )
+        .await,
         Err(WalletError::Conflict(_))
     ));
     assert!(matches!(
@@ -211,7 +216,7 @@ async fn team_consent_replay_does_not_restore_removed_access_and_authority_is_cu
     let secret = invite.token.unwrap();
     assert_eq!(db.members(owner.organization.id).await.unwrap().len(), 1);
     assert!(matches!(
-        db.revoke_invitation(&other, invite.id, false, &revoke("foreign"))
+        db.revoke_invitation(&other, invite.id, InvitationScope::Team, &revoke("foreign"))
             .await,
         Err(WalletError::NotFound(_))
     ));
@@ -261,8 +266,13 @@ async fn team_consent_replay_does_not_restore_removed_access_and_authority_is_cu
         Err(WalletError::Forbidden(_))
     ));
     assert!(matches!(
-        db.revoke_invitation(&session, admin_invite.id, false, &revoke("demoted"))
-            .await,
+        db.revoke_invitation(
+            &session,
+            admin_invite.id,
+            InvitationScope::Team,
+            &revoke("demoted")
+        )
+        .await,
         Err(WalletError::Forbidden(_))
     ));
     let stale = MembershipActor {
@@ -287,15 +297,25 @@ async fn team_consent_replay_does_not_restore_removed_access_and_authority_is_cu
     assert_eq!(db.members(owner.organization.id).await.unwrap().len(), 1);
     assert!(db.authenticate_session(&session).await.unwrap().is_none());
     let id = db
-        .revoke_invitation(&token, admin_invite.id, false, &revoke("revoke"))
+        .revoke_invitation(
+            &token,
+            admin_invite.id,
+            InvitationScope::Team,
+            &revoke("revoke"),
+        )
         .await
         .unwrap()
         .id;
     assert_eq!(
-        db.revoke_invitation(&token, admin_invite.id, false, &revoke("revoke"))
-            .await
-            .unwrap()
-            .id,
+        db.revoke_invitation(
+            &token,
+            admin_invite.id,
+            InvitationScope::Team,
+            &revoke("revoke")
+        )
+        .await
+        .unwrap()
+        .id,
         id
     );
     assert!(
@@ -410,7 +430,7 @@ async fn registration_revoke_races_and_audit_failures_leave_no_partial_customer(
         };
         let (accepted, revoked) = tokio::join!(
             db.redeem_invitation(&secret, new),
-            db.revoke_invitation(&owner, invite.id, true, &rev)
+            db.revoke_invitation(&owner, invite.id, InvitationScope::Customer, &rev)
         );
         assert_ne!(accepted.is_ok(), revoked.is_ok());
         let exists: bool = sqlx::query_scalar(
@@ -425,9 +445,14 @@ async fn registration_revoke_races_and_audit_failures_leave_no_partial_customer(
     // Revoke releases the external ID reservation. The old secret stays dead.
     let terms = customer("release", "release@example.com");
     let old = db.create_customer_invitation(&owner, &terms).await.unwrap();
-    db.revoke_invitation(&owner, old.id, true, &revoke("revoke-release"))
-        .await
-        .unwrap();
+    db.revoke_invitation(
+        &owner,
+        old.id,
+        InvitationScope::Customer,
+        &revoke("revoke-release"),
+    )
+    .await
+    .unwrap();
     let mut replacement = terms;
     replacement.idempotency_key = "replacement".into();
     assert!(
@@ -475,9 +500,14 @@ async fn registration_revoke_races_and_audit_failures_leave_no_partial_customer(
     );
     assert_eq!(count(&db, "invitations").await, before);
     assert!(
-        db.revoke_invitation(&owner, live.id, true, &revoke("failed-revoke"))
-            .await
-            .is_err()
+        db.revoke_invitation(
+            &owner,
+            live.id,
+            InvitationScope::Customer,
+            &revoke("failed-revoke")
+        )
+        .await
+        .is_err()
     );
     assert!(
         db.invitation_preview(live.token.as_deref().unwrap())
@@ -530,9 +560,14 @@ async fn role_matrix_and_same_external_id_creation_race_fail_closed() {
             .await;
         assert_eq!(invite.is_ok(), allowed, "{name}");
         if let Ok(invite) = invite {
-            db.revoke_invitation(&token, invite.id, true, &revoke("revoke"))
-                .await
-                .unwrap();
+            db.revoke_invitation(
+                &token,
+                invite.id,
+                InvitationScope::Customer,
+                &revoke("revoke"),
+            )
+            .await
+            .unwrap();
         }
     }
     let first = customer("collision", "a@example.com");

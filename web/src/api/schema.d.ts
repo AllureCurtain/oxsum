@@ -346,11 +346,14 @@ export interface paths {
          * Register through an invitation link
          * @description The token authorizes registration even with invite-only business policy.
          *     A team invitation joins the existing customer as member; a business invitation
-         *     creates its reserved customer and initial customer owner. A bound email must
-         *     match. Registration, membership, first key, consumption and audit are atomic.
-         *     No staff authority or promotional funding is granted. Unknown, spent, revoked,
-         *     expired and wrong-email tokens return 404. Existing accounts must log in and
-         *     explicitly accept instead. The spent token cannot retrieve the first key again.
+         *     creates its reserved customer and initial customer owner. A staff invitation
+         *     registers a staff-only account: it lands the invited seat and creates no
+         *     customer organization or API key. A bound email must match. Registration,
+         *     membership, first key, consumption and audit are atomic. No staff authority
+         *     beyond the invited role or promotional funding is granted. Unknown, spent,
+         *     revoked, expired and wrong-email tokens return 404. Existing accounts must
+         *     log in and explicitly accept instead. The spent token cannot retrieve the
+         *     first key again.
          */
         post: {
             parameters: {
@@ -365,14 +368,14 @@ export interface paths {
                 };
             };
             responses: {
-                /** @description The new user and organization, plus the one API key secret */
+                /** @description A staff-only account for a staff invitation, else the new user and organization plus the one API key secret */
                 200: {
                     headers: {
                         [name: string]: unknown;
                     };
                     content: {
                         "application/json": {
-                            data: components["schemas"]["Registration"];
+                            data: components["schemas"]["RedeemOutcome"];
                         };
                     };
                 };
@@ -10602,6 +10605,58 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/business/staff-invitations": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List business staff invitations
+         * @description StaffManage required (owner). Lists only this business's staff invitations, never token hashes or plaintext.
+         */
+        get: operations["listBusinessStaffInvitations"];
+        put?: never;
+        /**
+         * Invite a new staff member by email
+         * @description StaffManage required (owner only). Creates a seven-day, email-bound,
+         *     single-use invitation carrying an explicit staff role. Grantable roles
+         *     are admin/finance/support/viewer — owner is refused in the contract and
+         *     in core, and ownership still moves only through ownership transfer.
+         *     sendEmail requests one SMTP submission to the bound recipient; the
+         *     attempt is claimed before transmission so an idempotent replay never
+         *     resends. Returns the token once; identical retries return the same ID
+         *     with token null. Acceptance requires the recipient to act through their
+         *     own session on the bound email.
+         */
+        post: operations["createBusinessStaffInvitation"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/business/staff-invitations/{invitationId}/revoke": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Revoke a pending staff invitation
+         * @description StaffManage required (owner). Accepted invitations cannot be revoked; manage the staff seat instead.
+         */
+        post: operations["revokeBusinessStaffInvitation"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/business/staff/revoke": {
         parameters: {
             query?: never;
@@ -15188,6 +15243,63 @@ export interface components {
             userId: string;
             reason: string;
         };
+        /**
+         * @description SMTP submission state only. unknown includes interrupted, timed-out or rejected transport attempts and must never trigger an automatic resend.
+         * @enum {string}
+         */
+        InvitationDeliveryState: "notRequested" | "notAttempted" | "submitted" | "unavailable" | "unknown";
+        StaffInvitationRequest: {
+            idempotencyKey: string;
+            /**
+             * Format: email
+             * @description Bind and mail the staff invitation
+             */
+            email: string;
+            /**
+             * @description Staff role to grant on acceptance; owner is never offered
+             * @enum {string}
+             */
+            role: "admin" | "finance" | "support" | "viewer";
+            /**
+             * @description Request one SMTP submission to the bound email; replay never resends
+             * @default false
+             */
+            sendEmail: boolean;
+            reason: string;
+        };
+        StaffInvitationSummary: {
+            /** Format: uuid */
+            id: string;
+            /** Format: email */
+            email: string;
+            /** @enum {string} */
+            role: "admin" | "finance" | "support" | "viewer";
+            /** @enum {string} */
+            state: "pending" | "accepted" | "revoked" | "expired";
+            /** Format: date-time */
+            expiresAt: string;
+            /** Format: date-time */
+            createdAt: string;
+            /** Format: date-time */
+            acceptedAt: string | null;
+            /** Format: date-time */
+            revokedAt: string | null;
+            mailState: components["schemas"]["InvitationDeliveryState"];
+            /** Format: date-time */
+            mailAttemptedAt: string | null;
+            /** Format: date-time */
+            mailSubmittedAt: string | null;
+        };
+        StaffInvitationPage: {
+            invitations: components["schemas"]["StaffInvitationSummary"][];
+            /** Format: uuid */
+            nextCursor: string | null;
+            /** @description The server has an SMTP configuration; delivery remains unverified */
+            mailConfigured: boolean;
+        };
+        StaffInvitationResult: components["schemas"]["CreatedInvitation"] & {
+            mailState: components["schemas"]["InvitationDeliveryState"];
+        };
         BusinessOwnershipRequest: {
             idempotencyKey: string;
             /** Format: uuid */
@@ -15363,11 +15475,22 @@ export interface components {
             reason: string;
         };
         InvitationPreview: {
-            /** Format: uuid */
+            /**
+             * Format: uuid
+             * @description The customer organization, or the nil UUID for a business-scoped staff invitation
+             */
             organizationId: string;
             name: string;
-            /** @enum {string} */
+            /**
+             * @description The customer membership role; staff invitations carry the staff role instead
+             * @enum {string}
+             */
             role: "owner" | "member";
+            /**
+             * @description The business staff role a staff invitation grants
+             * @enum {string|null}
+             */
+            staffRole?: "admin" | "finance" | "support" | "viewer" | null;
             /** Format: date-time */
             expiresAt: string;
         };
@@ -15377,13 +15500,35 @@ export interface components {
              * @description Invitation ID, a stable acceptance receipt
              */
             id: string;
-            /** Format: uuid */
+            /**
+             * Format: uuid
+             * @description The joined customer organization, or the nil UUID for a staff seat
+             */
             organizationId: string;
             /**
              * @description Originally accepted customer role, not current authorization
              * @enum {string}
              */
             role: "owner" | "member";
+            /**
+             * @description The business staff role a staff invitation granted
+             * @enum {string|null}
+             */
+            staffRole?: "admin" | "finance" | "support" | "viewer" | null;
+        };
+        /** @description A staff redemption returns the user and no org/key; a customer or team redemption returns the registration fields. */
+        RedeemOutcome: {
+            /** @enum {string} */
+            kind: "staff";
+            user: components["schemas"]["User"];
+            verificationSent: boolean;
+        } | {
+            /** @enum {string} */
+            kind: "customer";
+            user: components["schemas"]["User"];
+            organization: components["schemas"]["Organization"];
+            apiKey: components["schemas"]["CreatedApiKey"];
+            verificationSent: boolean;
         };
         RedeemInvitationRequest: {
             /** @description the invitation link's token */
@@ -20973,6 +21118,99 @@ export interface operations {
         requestBody: {
             content: {
                 "application/json": components["schemas"]["BusinessStaffRequest"];
+            };
+        };
+        responses: {
+            /** @description Success */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: components["schemas"]["BusinessMutationResult"];
+                    };
+                };
+            };
+            400: components["responses"]["Error"];
+            401: components["responses"]["Error"];
+            403: components["responses"]["Error"];
+            404: components["responses"]["Error"];
+            409: components["responses"]["Error"];
+        };
+    };
+    listBusinessStaffInvitations: {
+        parameters: {
+            query?: {
+                after?: string;
+                limit?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Staff invitation history and whether the server holds an SMTP configuration */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: components["schemas"]["StaffInvitationPage"];
+                    };
+                };
+            };
+            400: components["responses"]["Error"];
+            401: components["responses"]["Error"];
+            403: components["responses"]["Error"];
+            404: components["responses"]["Error"];
+        };
+    };
+    createBusinessStaffInvitation: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["StaffInvitationRequest"];
+            };
+        };
+        responses: {
+            /** @description Success */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: components["schemas"]["StaffInvitationResult"];
+                    };
+                };
+            };
+            400: components["responses"]["Error"];
+            401: components["responses"]["Error"];
+            403: components["responses"]["Error"];
+            404: components["responses"]["Error"];
+            409: components["responses"]["Error"];
+        };
+    };
+    revokeBusinessStaffInvitation: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                invitationId: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["InvitationRevokeRequest"];
             };
         };
         responses: {

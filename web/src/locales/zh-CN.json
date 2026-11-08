@@ -1905,6 +1905,33 @@
       "reload": "重新加载",
       "notSet": "未配置",
       "helpLink": "联系与帮助"
+    "staffInv": {
+      "title": "按邮箱邀请员工",
+      "colEmail": "邮箱",
+      "colState": "状态",
+      "colMail": "邮件",
+      "emailHint": "受邀人通过自己的会话在该邮箱上接受；无需用户 ID。",
+      "sendEmail": "发送邀请邮件",
+      "invite": "发送邀请",
+      "mailed": "邀请已寄出。",
+      "copyLink": "邀请已创建——复制链接：",
+      "revoke": "撤销",
+      "revokeTitle": "撤销员工邀请？",
+      "revokeExplain": "发往 {{email}} 的待处理链接将失效；受邀人已完成的不受影响。",
+      "empty": "暂无员工邀请。",
+      "state": {
+        "pending": "待接受",
+        "accepted": "已接受",
+        "revoked": "已撤销",
+        "expired": "已过期"
+      },
+      "mail": {
+        "notRequested": "未请求",
+        "notAttempted": "未发送",
+        "submitted": "已提交",
+        "unavailable": "无邮件配置",
+        "unknown": "未知"
+      }
     }
   },
   "setup": {
