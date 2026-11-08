@@ -12,6 +12,12 @@ Read this file on every resume, then reconcile actual main, worktrees, issues/PR
   Integrated in PR #852 (`5dc49dc`); included in the 1,995-check #838 combined run.
   [Evidence](evidence/payment-worker-completion.md).
 
+- #846 implements the N21 stable application/account foundation in
+  `.worktrees/application-accounts` (`feat/application-accounts`), including exact
+  provisioning/archive and rotated-credential metering replay. Contract and
+  frontend checks passed; migration 0114 waits for #838 migration 0113 before
+  database validation and integration. Full embedded J18 remains pending.
+
 - Current integration checkpoint: `5dc49dc`, including #835 checkout routing,
   #843 actor-scoped business readiness, #840 non-plan chargeback cash and #850
   durable payment-worker test completion. Earlier `8a51109` includes required green checks and

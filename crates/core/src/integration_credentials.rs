@@ -23,6 +23,8 @@ pub enum IntegrationScope {
     CustomersProvision,
     /// Read a granted customer's balance and bill log. Read-only.
     BillingRead,
+    /// Archive accounts created inside the selected application.
+    CustomersLifecycleWrite,
 }
 impl IntegrationScope {
     pub(crate) fn as_str(self) -> &'static str {
@@ -31,6 +33,7 @@ impl IntegrationScope {
             Self::MeteringWrite => "meteringWrite",
             Self::CustomersProvision => "customersProvision",
             Self::BillingRead => "billingRead",
+            Self::CustomersLifecycleWrite => "customersLifecycleWrite",
         }
     }
 }
@@ -51,6 +54,9 @@ pub struct ProvisionCustomerRequest {
 #[derive(Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct IntegrationCredentialRequest {
+    /// Stable owner-selected namespace, or explicit legacy customer grants.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub application_id: Option<Uuid>,
     /// Caller-supplied key that makes repeated requests return the same credential.
     pub idempotency_key: String,
     /// Optional human-readable label, at most 80 characters.
@@ -78,6 +84,8 @@ pub struct IntegrationCredentialRevokeRequest {
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct IntegrationCredential {
+    /// Application namespace, absent for legacy explicitly granted credentials.
+    pub application_id: Option<Uuid>,
     /// Credential identifier, serialized as `credentialId`.
     #[serde(rename = "credentialId")]
     pub id: Uuid,
@@ -124,6 +132,7 @@ pub struct IntegrationCredentialPage {
 /// recheck current expiry, revocation, scope and customer ownership.
 #[derive(Debug, Clone)]
 pub struct ActingService {
+    pub(crate) application_id: Option<Uuid>,
     pub(crate) credential_id: Uuid,
     pub(crate) business_id: Uuid,
     pub(crate) name: Option<String>,
@@ -135,7 +144,7 @@ impl ActingService {
         self.credential_id
     }
 }
-const COLUMNS: &str = "c.credential_id,c.business_id,c.name,c.prefix,c.scopes,c.created_at,c.expires_at,c.revoked_at,ARRAY(SELECT a.organization_id FROM oxsum.integration_credential_customers a WHERE a.credential_id=c.credential_id ORDER BY a.organization_id) AS customer_ids";
+const COLUMNS: &str = "c.application_id,c.credential_id,c.business_id,c.name,c.prefix,c.scopes,c.created_at,c.expires_at,c.revoked_at,ARRAY(SELECT a.organization_id FROM oxsum.integration_credential_customers a WHERE a.credential_id=c.credential_id ORDER BY a.organization_id) AS customer_ids";
 fn from_row(row: &sqlx::postgres::PgRow) -> Result<IntegrationCredential, WalletError> {
     let scopes: Vec<String> = row.try_get("scopes")?;
     let scopes = scopes
@@ -145,10 +154,12 @@ fn from_row(row: &sqlx::postgres::PgRow) -> Result<IntegrationCredential, Wallet
             "meteringWrite" => Ok(IntegrationScope::MeteringWrite),
             "customersProvision" => Ok(IntegrationScope::CustomersProvision),
             "billingRead" => Ok(IntegrationScope::BillingRead),
+            "customersLifecycleWrite" => Ok(IntegrationScope::CustomersLifecycleWrite),
             _ => Err(WalletError::Forbidden("unknown integration scope".into())),
         })
         .collect::<Result<_, _>>()?;
     Ok(IntegrationCredential {
+        application_id: row.try_get("application_id")?,
         id: row.try_get("credential_id")?,
         business_id: row.try_get("business_id")?,
         name: row.try_get("name")?,
@@ -177,8 +188,11 @@ pub(crate) async fn require_integration(
     scope: IntegrationScope,
     customer: Option<Uuid>,
 ) -> Result<(), WalletError> {
-    let row = sqlx::query("SELECT scopes FROM oxsum.integration_credentials WHERE credential_id=$1 AND business_id=$2 AND revoked_at IS NULL AND expires_at>clock_timestamp() FOR SHARE")
+    let row = sqlx::query("SELECT scopes,application_id FROM oxsum.integration_credentials WHERE credential_id=$1 AND business_id=$2 AND revoked_at IS NULL AND expires_at>clock_timestamp() FOR SHARE")
         .bind(service.credential_id).bind(service.business_id).fetch_optional(&mut **tx).await?.ok_or(WalletError::InvalidCredentials)?;
+    if row.try_get::<Option<Uuid>, _>("application_id")? != service.application_id {
+        return Err(WalletError::InvalidCredentials);
+    }
     let scopes: Vec<String> = row.try_get("scopes")?;
     if !scopes.iter().any(|s| s == scope.as_str()) {
         return Err(WalletError::Forbidden(
@@ -186,8 +200,9 @@ pub(crate) async fn require_integration(
         ));
     }
     if let Some(customer) = customer {
-        let allowed: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM oxsum.integration_credential_customers a JOIN oxsum.customer_profiles c USING (business_id,organization_id) WHERE a.business_id=$1 AND a.credential_id=$2 AND a.organization_id=$3)")
-            .bind(service.business_id).bind(service.credential_id).bind(customer).fetch_one(&mut **tx).await?;
+        let application: Option<Uuid> = row.try_get("application_id")?;
+        let allowed: bool = sqlx::query_scalar("SELECT CASE WHEN $4::uuid IS NULL THEN EXISTS(SELECT 1 FROM oxsum.integration_credential_customers a JOIN oxsum.customer_profiles c USING (business_id,organization_id) WHERE a.business_id=$1 AND a.credential_id=$2 AND a.organization_id=$3) ELSE EXISTS(SELECT 1 FROM oxsum.application_customers a WHERE a.business_id=$1 AND a.application_id=$4 AND a.organization_id=$3) END")
+            .bind(service.business_id).bind(service.credential_id).bind(customer).bind(application).fetch_one(&mut **tx).await?;
         if !allowed {
             return Err(WalletError::NotFound("customer is not known".into()));
         }
@@ -254,11 +269,16 @@ impl Db {
             || scopes.len() != request.scopes.len()
             || customers.len() > 1000
             || customers.len() != request.customer_ids.len()
-            || (!provision_only && customers.is_empty())
+            || (request.application_id.is_none() && !provision_only && customers.is_empty())
+            || (request.application_id.is_some() && !customers.is_empty())
+            || (request.application_id.is_none() && scopes.contains(&"customersLifecycleWrite"))
         {
             return Err(WalletError::InvalidInput(
-                "scopes must be distinct and customerIds must be 1 to 1000 distinct ids, or empty for a customersProvision-only grant".into(),
+                "scopes must be distinct; application grants require empty customerIds, legacy grants require 1 to 1000 distinct ids or customersProvision alone".into(),
             ));
+        }
+        if let Some(application) = request.application_id {
+            crate::integration_applications::application_in(&mut tx, business, application).await?;
         }
         let now = OffsetDateTime::now_utc();
         if request.expires_at <= now || request.expires_at > now + Duration::days(365) {
@@ -286,8 +306,8 @@ impl Db {
             let _ = write!(secret, "{byte:02x}");
         }
         let prefix: String = secret.chars().take(16).collect();
-        sqlx::query("INSERT INTO oxsum.integration_credentials (credential_id,business_id,name,prefix,secret_hash,scopes,expires_at) VALUES ($1,$2,$3,$4,$5,$6,$7)")
-            .bind(receipt.id).bind(business).bind(name).bind(prefix).bind(Sha256::digest(secret.as_bytes()).to_vec()).bind(scopes).bind(request.expires_at).execute(&mut *tx).await?;
+        sqlx::query("INSERT INTO oxsum.integration_credentials (credential_id,business_id,name,prefix,secret_hash,scopes,expires_at,application_id) VALUES ($1,$2,$3,$4,$5,$6,$7,$8)")
+            .bind(receipt.id).bind(business).bind(name).bind(prefix).bind(Sha256::digest(secret.as_bytes()).to_vec()).bind(scopes).bind(request.expires_at).bind(request.application_id).execute(&mut *tx).await?;
         sqlx::query("INSERT INTO oxsum.integration_credential_customers (business_id,credential_id,organization_id) SELECT $1,$2,unnest($3::uuid[])")
             .bind(business).bind(receipt.id).bind(customers).execute(&mut *tx).await?;
         let credential = credential(&mut tx, business, receipt.id).await?;
@@ -386,8 +406,8 @@ impl Db {
     /// so the namespace is exactly the customers it created plus any the owner
     /// already allowlisted.
     ///
-    /// Idempotent on `(business, externalId)`: an exact replay answers the
-    /// standing customer, and a caller cannot name or claim a foreign account.
+    /// Exact operation keys retain normalized request terms and the original
+    /// receipt. Existing external identities cannot be adopted by another key.
     ///
     /// # Errors
     ///
@@ -398,105 +418,8 @@ impl Db {
         service: &ActingService,
         request: &ProvisionCustomerRequest,
     ) -> Result<crate::BusinessCustomer, WalletError> {
-        authority::validate(&request.idempotency_key, None)?;
-        let external = request.external_id.trim();
-        if external.is_empty() || external.chars().count() > 200 {
-            return Err(WalletError::InvalidInput(
-                "externalId must be 1 to 200 characters".into(),
-            ));
-        }
-        let name = request.name.trim();
-        if name.is_empty() || name.chars().count() > 80 {
-            return Err(WalletError::InvalidInput(
-                "name must be 1 to 80 characters".into(),
-            ));
-        }
-        let mut tx = self.pool().begin().await?;
-        require_integration(&mut tx, service, IntegrationScope::CustomersProvision, None).await?;
-        let business = authority::lock_business(&mut tx).await?;
-        let detail = json!(request);
-        let action = crate::audit::action::BUSINESS_INTEGRATION_PROVISION;
-        // Idempotency is the (business, externalId) uniqueness of the profile —
-        // `business_mutations.actor_id` is a user FK a service credential cannot
-        // fill, so the durable dedup is the namespace key itself. A replay on an
-        // externalId this credential already provisioned answers the standing
-        // customer; one it did not falls through to the insert and conflicts.
-        let existing: Option<Uuid> = sqlx::query_scalar(
-            "SELECT a.organization_id FROM oxsum.integration_credential_customers a \
-             JOIN oxsum.customer_profiles c USING (business_id,organization_id) \
-             WHERE a.business_id=$1 AND a.credential_id=$2 AND c.external_id=$3",
-        )
-        .bind(business)
-        .bind(service.credential_id)
-        .bind(external)
-        .fetch_optional(&mut *tx)
-        .await?;
-        if let Some(id) = existing {
-            let customer = crate::customers::customer(&mut tx, business, id).await?;
-            tx.commit().await?;
-            return Ok(customer);
-        }
-        // The organization row is what carries the ledger; its insert fires the
-        // business-ownership trigger that creates a placeholder customer_profiles
-        // row keyed on the organization id. Identity (organization_id, business_id,
-        // external_id) is immutable once set — UPDATE is refused by a trigger — so
-        // the placeholder is replaced by the caller's real external identity in one
-        // delete+insert inside this transaction. The UNIQUE(business_id,externalId)
-        // is the namespace guard: a foreign externalId fails the insert.
-        let organization_id = Uuid::new_v4();
-        crate::orgs::insert(&mut tx, organization_id, name, crate::Kind::Personal).await?;
-        sqlx::query("DELETE FROM oxsum.customer_profiles WHERE organization_id=$1")
-            .bind(organization_id)
-            .execute(&mut *tx)
-            .await?;
-        sqlx::query(
-            "INSERT INTO oxsum.customer_profiles \
-             (organization_id,business_id,external_id,contact_email) \
-             VALUES ($1,$2,$3,$4)",
-        )
-        .bind(organization_id)
-        .bind(business)
-        .bind(external)
-        .bind(request.contact_email.as_deref())
-        .execute(&mut *tx)
-        .await
-        .map_err(|e| {
-            crate::keys::conflict_or_storage(
-                e,
-                "customer_profiles_business_id_external_id_key",
-                "externalId is already assigned",
-            )
-        })?;
-        // The namespace grant: the new account is scoped to the credential that
-        // created it, so a later customersRead/meteringWrite call reaches it
-        // without the owner adding it to the allowlist by hand.
-        sqlx::query(
-            "INSERT INTO oxsum.integration_credential_customers \
-             (business_id,credential_id,organization_id) VALUES ($1,$2,$3) \
-             ON CONFLICT DO NOTHING",
-        )
-        .bind(business)
-        .bind(service.credential_id)
-        .bind(organization_id)
-        .execute(&mut *tx)
-        .await?;
-        // A service-scoped audit row: actor is the credential id, spelled as a
-        // service, not a user.
-        sqlx::query(
-            "INSERT INTO oxsum.admin_audit \
-             (action,actor,target,detail,idempotency_key) \
-             VALUES ($1,$2,$3,$4,$5)",
-        )
-        .bind(action)
-        .bind(format!("service:{}", service.credential_id))
-        .bind(organization_id.to_string())
-        .bind(&detail)
-        .bind(format!("provisioning:{}", request.idempotency_key))
-        .execute(&mut *tx)
-        .await?;
-        let customer = crate::customers::customer(&mut tx, business, organization_id).await?;
-        tx.commit().await?;
-        Ok(customer)
+        self.provision_legacy_integration_customer(service, request)
+            .await
     }
     /// Resolves a plaintext integration secret to its acting service. Returns
     /// `None` for unknown, revoked or expired credentials.
@@ -507,10 +430,11 @@ impl Db {
         if !secret.starts_with("oxs-int-") {
             return Ok(None);
         }
-        let row=sqlx::query("SELECT credential_id,business_id,name FROM oxsum.integration_credentials WHERE secret_hash=$1 AND revoked_at IS NULL AND expires_at>clock_timestamp()")
+        let row=sqlx::query("SELECT credential_id,business_id,name,application_id FROM oxsum.integration_credentials WHERE secret_hash=$1 AND revoked_at IS NULL AND expires_at>clock_timestamp()")
             .bind(Sha256::digest(secret.as_bytes()).to_vec()).fetch_optional(self.pool()).await?;
         row.map(|row| {
             Ok(ActingService {
+                application_id: row.try_get("application_id")?,
                 credential_id: row.try_get("credential_id")?,
                 business_id: row.try_get("business_id")?,
                 name: row.try_get("name")?,

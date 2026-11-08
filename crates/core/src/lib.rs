@@ -45,6 +45,7 @@ mod guardrail;
 mod heads;
 mod holds;
 mod idempotency;
+mod integration_applications;
 mod integration_credentials;
 mod invitation_management;
 mod invitations;
@@ -207,6 +208,10 @@ pub use holds::{
     SweepReport, sweep_stale_holds,
 };
 pub use idempotency::{Claim, credential_fingerprint, fingerprint};
+pub use integration_applications::{
+    ApplicationCustomer, ApplicationCustomerArchiveRequest, IntegrationApplication,
+    IntegrationApplicationPage, IntegrationApplicationRequest,
+};
 pub use integration_credentials::{
     ActingService, CreatedIntegrationCredential, IntegrationCredential, IntegrationCredentialPage,
     IntegrationCredentialRequest, IntegrationCredentialRevokeRequest, IntegrationScope,

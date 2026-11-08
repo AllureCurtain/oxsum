@@ -33,6 +33,7 @@ mod device;
 mod evidence;
 mod experiments;
 mod financial_facts;
+mod integration_applications;
 mod journals;
 mod keys;
 mod log;
@@ -271,6 +272,18 @@ pub fn router(state: AppState) -> Router {
         )
         .route("/business", get(business::business))
         .route("/business/readiness", get(business_readiness::get))
+        .route(
+            "/business/applications",
+            get(integration_applications::list).post(integration_applications::create),
+        )
+        .route(
+            "/integration/customers",
+            get(integration_applications::customer).post(integration_applications::provision),
+        )
+        .route(
+            "/integration/customers/{organization_id}/archive",
+            post(integration_applications::archive),
+        )
         .route(
             "/business/profile",
             get(business_profile::get).post(business_profile::save),

@@ -319,7 +319,7 @@ pub(crate) async fn revoke_customer_invitation(
         .await?)
 }
 
-async fn integration(
+pub(crate) async fn integration(
     state: &AppState,
     headers: &HeaderMap,
 ) -> Result<oxsum_core::ActingService, ApiError> {

@@ -548,3 +548,13 @@ New sold versions select policy 2 and show that policy on plan, period and invoi
 Ordinary v1 renewal retains period-close recognition. A new policy requires explicit version selection at the paid activation boundary. Refunds reduce the net fee and allocate the reduction between earned contra and original deferred fee using the same completed-day rule. They do not prorate entitlement. Disputes preserve service revenue and restore original collection debt; void removes earned/deferred into original debt/refund payable while leaving Cash unchanged.
 
 Financial facts expose `billedMinor`, `earnedMinor`, `deferredMinor`, `collectedMinor`, `refundMinor`, `discountMinor` and `receivableMinor` separately. Deferred and receivable v2 figures are signed movements within a filter, or the cumulative position without a filter. Cash refunds count once; noncash promotional credits stay separate. See [API clocks](api.md#daily-plan-accounting-and-financial-clocks-838).
+
+Application namespaces (#846) give an embedded developer a stable owner-issued
+identity independent of runtime credentials. Each namespace has a bounded set of
+service-managed accounts. Creating one does not create a person, a membership,
+a staff role or funds. Separate applications may use the same external customer
+ID without sharing keys, balances or records. Replacement scoped credentials can
+recover original provisioning and metering operations; they cannot claim portal
+customers by email or business identifier. Archival blocks new service admission
+and keeps existing financial history. Verified human linking and the remaining
+embedded key, checkout, evidence and notification surfaces remain under #747.

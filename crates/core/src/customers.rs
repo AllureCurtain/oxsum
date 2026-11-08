@@ -12,7 +12,7 @@ use crate::wallet::ORG_ADMISSION_LOCK;
 use crate::webhooks::ORG_SUSPENDED;
 
 /// A customer identity as seen by its owning business.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct BusinessCustomer {
     /// Organization that holds the customer's ledger and money.
@@ -154,7 +154,7 @@ impl Db {
             None,
         )
         .await?;
-        let rows=sqlx::query(&format!("SELECT {COLUMNS} FROM oxsum.customer_profiles c JOIN oxsum.organizations o USING (organization_id) JOIN oxsum.integration_credential_customers a ON a.business_id=c.business_id AND a.organization_id=c.organization_id WHERE c.business_id=$1 AND a.credential_id=$2 AND ($3::uuid IS NULL OR c.organization_id>$3) ORDER BY c.organization_id LIMIT $4"))
+        let rows=sqlx::query(&format!("SELECT {COLUMNS} FROM oxsum.customer_profiles c JOIN oxsum.organizations o USING (organization_id) JOIN oxsum.integration_credentials g ON g.business_id=c.business_id AND g.credential_id=$2 WHERE c.business_id=$1 AND ((g.application_id IS NULL AND EXISTS(SELECT 1 FROM oxsum.integration_credential_customers a WHERE a.credential_id=g.credential_id AND a.organization_id=c.organization_id)) OR (g.application_id IS NOT NULL AND EXISTS(SELECT 1 FROM oxsum.application_customers a WHERE a.application_id=g.application_id AND a.organization_id=c.organization_id))) AND ($3::uuid IS NULL OR c.organization_id>$3) ORDER BY c.organization_id LIMIT $4"))
             .bind(service.business_id).bind(service.credential_id).bind(after).bind(limit+1).fetch_all(&mut *tx).await?;
         let mut customers = rows.iter().map(from_row).collect::<Result<Vec<_>, _>>()?;
         let next_cursor = if customers.len() > limit as usize {

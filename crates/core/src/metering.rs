@@ -101,9 +101,13 @@ fn service_name(service: &ActingService) -> String {
 fn hold_key_for(service: &ActingService, customer: Uuid, key: &str) -> Result<String, WalletError> {
     crate::business_staff::validate(key, None)?;
     let digest = Sha256::digest(
-        json!((service.credential_id, customer, key))
-            .to_string()
-            .as_bytes(),
+        json!((
+            service.application_id.unwrap_or(service.credential_id),
+            customer,
+            key
+        ))
+        .to_string()
+        .as_bytes(),
     );
     let digest = digest
         .iter()
@@ -114,6 +118,10 @@ fn hold_key_for(service: &ActingService, customer: Uuid, key: &str) -> Result<St
 
 #[derive(Serialize, Deserialize)]
 struct Admission {
+    #[serde(default)]
+    source_credential: Option<Uuid>,
+    #[serde(default)]
+    source_name: Option<String>,
     hold_key: String,
     request_id: String,
     price: crate::Price,
@@ -190,6 +198,8 @@ async fn authorize_start(
         ));
     }
     let admission = Admission {
+        source_credential: Some(service.credential_id),
+        source_name: Some(service_name(service)),
         request_id: event.event_id.clone().unwrap_or_else(|| hold_key.clone()),
         hold_key,
         price: price.price,
@@ -219,8 +229,8 @@ async fn authorize_finish(
         Some(customer),
     )
     .await?;
-    let row=sqlx::query("SELECT request,admission,finalization FROM oxsum.metering_authorizations WHERE hold_key=$1 AND business_id=$2 AND credential_id=$3 AND organization_id=$4 FOR UPDATE")
-        .bind(hold_key).bind(service.business_id).bind(service.credential_id).bind(customer).fetch_optional(&mut *tx).await?.ok_or_else(||WalletError::NotFound("the hold is not known".into()))?;
+    let row=sqlx::query("SELECT request,admission,finalization FROM oxsum.metering_authorizations WHERE hold_key=$1 AND business_id=$2 AND organization_id=$4 AND (($5::uuid IS NULL AND credential_id=$3) OR ($5::uuid IS NOT NULL AND EXISTS(SELECT 1 FROM oxsum.integration_credentials c WHERE c.credential_id=metering_authorizations.credential_id AND c.business_id=$2 AND c.application_id=$5))) FOR UPDATE")
+        .bind(hold_key).bind(service.business_id).bind(service.credential_id).bind(customer).bind(service.application_id).fetch_optional(&mut *tx).await?.ok_or_else(||WalletError::NotFound("the hold is not known".into()))?;
     let original: Value = row.try_get("request")?;
     if original["operation"] == "settlements" && request["operation"] != "settlements" {
         return Err(WalletError::Conflict(
@@ -565,7 +575,13 @@ impl Db {
         .await?;
         let description = hold_description(&request_id, &event.billable_code, freeze)?;
         if let Err(error) = wallet
-            .hold_for_service(&service.credential_id, &hold_key, &description, freeze, on)
+            .hold_for_service(
+                &admission.source_credential.unwrap_or(service.credential_id),
+                &hold_key,
+                &description,
+                freeze,
+                on,
+            )
             .await
         {
             // The hold was refused, so there is nothing for the sweeper to
@@ -678,7 +694,10 @@ impl Db {
         let request_id = event_id.unwrap_or_else(|| admission.request_id.clone());
         let description = MeteredSettlement {
             request: &request_id,
-            service: &service_name(service),
+            service: &admission
+                .source_name
+                .clone()
+                .unwrap_or_else(|| service_name(service)),
             channel: &watch.channel,
             model: &watch.model,
             price_version: watch.price_version,
@@ -816,7 +835,10 @@ impl Db {
         ];
         let description = MeteredSettlement {
             request: &admission.request_id,
-            service: &service_name(service),
+            service: &admission
+                .source_name
+                .clone()
+                .unwrap_or_else(|| service_name(service)),
             channel: &watch.channel,
             model: &watch.model,
             price_version: watch.price_version,
@@ -948,7 +970,7 @@ impl Db {
         let hold_description = hold_description(&request_id, &event.billable_code, charged)?;
         if let Err(error) = wallet
             .hold_for_service(
-                &service.credential_id,
+                &admission.source_credential.unwrap_or(service.credential_id),
                 &hold_key,
                 &hold_description,
                 charged,
@@ -981,7 +1003,10 @@ impl Db {
         .await;
         let description = MeteredSettlement {
             request: &request_id,
-            service: &service_name(service),
+            service: &admission
+                .source_name
+                .clone()
+                .unwrap_or_else(|| service_name(service)),
             channel: &event.channel,
             model: &event.billable_code,
             price_version: admission.version,

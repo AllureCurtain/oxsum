@@ -1471,3 +1471,19 @@ The plan page states its revenue-recognition policy. Existing v1 versions remain
 Business Reports separates net billed, recognized income, deferred movement, collection, cash returned, noncash discounts and receivable. Select booking, service or payment-cohort dates to inspect the documented source clock. Without a date filter, deferred is the remaining net deferred fee; with a filter it is the signed change inside that interval. Refunds recompute the net fee's earned/deferred split and leave the authorized service period and quota unchanged. A financial void leaves returned money payable until an actual refund occurs.
 
 Statement evidence includes the listed daily effects and original policy inputs captured at export. Saved exports stay identical when later days or refunds occur. They establish integrity of captured facts and ledger entries, not proof that the service was delivered or that the export contains future events.
+
+Owners configuring an embedded application can create an application through
+`/api/v1/business/applications`, choose its retained customer limit and issue a
+credential selecting that `applicationId`. Select only required scopes; leave
+`customerIds` empty for application credentials. The owner portal editor for this
+setup follows separately. Keep each application's credentials in its server,
+never in a browser or its customers' devices.
+
+Provision through `/api/v1/integration/customers` with a stable operation key and
+external customer ID. Save the returned organization ID in the application's
+store. A replacement credential for the same application retrieves the same
+mapping and retries the original operation. Archive requires the separate
+`customersLifecycleWrite` scope and a reason; it preserves balances and records
+while blocking new calls. A provisioning retry returns its original receipt, so
+use the GET route for current archived/suspended state. Application metering
+retries preserve the original operation across credential replacement as well.

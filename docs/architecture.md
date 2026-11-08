@@ -571,3 +571,26 @@ Runtime independent ledger reconciliation remains [#848](https://github.com/Allu
 the existing `actualTotals` snapshot still clones the projection. Daily accounting
 fixtures independently compare postings, but that development evidence does not
 turn the current runtime report into an independent ledger audit.
+
+### Stable application-owned accounts (#846)
+
+Migration 0114 adds immutable `integration_applications`, `application_customers`
+and `integration_customer_operations`. The application-to-customer mapping owns
+no money: it names the existing organization and its ledger, retaining the business
+profile's independent immutable external ID. An application selects a lifetime
+customer bound, and archival never releases capacity or identity for reuse.
+
+An integration credential optionally points to exactly one application. Every
+scope check reloads revocation, expiry, scope and namespace before checking the
+customer mapping. Explicit legacy grants remain separate. Business mutations take
+the business lock before credential and admission locks; provision, mapping,
+receipt and service audit commit together. Original request/result snapshots are
+immutable and use an application keyspace across credential rotation. Old
+provisioning receipts can be adopted only after checking the original service
+actor, exact terms and customer identity; ambiguity refuses for source review.
+
+Application metering retains its existing authorization/hold/settlement machinery.
+Its stable operation fingerprint uses application plus customer plus request key;
+original credential provenance is pinned in admission metadata. Completion checks
+that the current credential belongs to the same application and holds the needed
+scope. Legacy credentials keep their previous fingerprints and authority.
