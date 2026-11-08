@@ -3061,3 +3061,23 @@ not another publish. Jobs serialize, and other writers need the same exclusion
 because npm tags have no compare-and-swap. A partial write without a verified
 receipt remains incomplete. The independent receipt binds original hashes and
 provenance; local real-npm tests do not imply a public SDK release or J14 closure.
+
+
+## 2026-11-08 — Verify official CI tool assets before installation (#822)
+
+GitHub browser-release downloads for mold and sccache repeatedly returned HTTP
+504 before the Rust gates ran. The official release asset API returned the
+same pinned archives. One Python installer now downloads those exact asset
+IDs over HTTPS with bounded curl retries, checks size and SHA-256, and stages
+safe archive members before atomically installing an unprivileged tool-cache
+directory. A conflicting existing cache is refused. Mold remains 2.40.0;
+sccache is pinned to the 0.19.0 that the failing action had selected.
+
+Preseed the Actions tool-cache directory and retain Mozilla's setup action:
+its pinned version input finds the verified cache, while its Node action still
+exports runtime cache credentials/service version and reports post-run stats.
+Replacing that action with a shell PATH export would lose hidden runner
+context. No compiler flag, test gate or candidate acceptance rule is relaxed.
+The old mold asset has no publisher-provided metadata digest; its checked-in
+pin is explicitly the digest of two matching official downloads, not a claim
+of signed publisher provenance.

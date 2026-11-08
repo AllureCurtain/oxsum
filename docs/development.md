@@ -904,6 +904,28 @@ table above names.
 
 ## Continuous integration
 
+CI and the candidate workflow install mold 2.40.0 and sccache 0.19.0 through
+`scripts/install-ci-tools.py` (#822). The helper requires Python 3.11+, curl
+with `--retry-all-errors`, and x86_64 Linux. It fetches exact official GitHub
+asset IDs over HTTPS, with four finite attempts and a 250-second process cap,
+and checks pinned size/SHA-256 before extraction. Installation uses a private
+staging directory and atomic rename into `RUNNER_TOOL_CACHE`; no privileged
+tar pipeline runs. An existing cache must match the verified tree or the job
+fails without replacing it. Mold's bin directory enters `GITHUB_PATH`.
+Sccache's verified cache uses the Actions tool-cache layout; the existing
+Mozilla action is pinned to `v0.19.0` and retains runtime-cache setup and
+post-run statistics without a latest-release or browser-asset download.
+
+`python3 scripts/test-ci-tools.py` uses only a temporary loopback HTTPS server
+and test certificate to check retry, permanent failure, partial/HTML/corrupt
+responses, unsafe archives and cache preservation. `fmt` runs this suite.
+[Source and hash evidence](roadmap/operator-launch/evidence/verified-ci-tools.md)
+records the official assets. Existing required checks and full candidate gates
+remain unchanged. New candidate runs require a source revision containing this
+installer, like the workflow's other source-owned gate helpers; an older
+historical SHA does not silently borrow a helper from a newer revision.
+
+
 `.github/workflows/ci.yml` runs on every push to `main`, every pull request that
 touches more than documentation (`paths-ignore` skips `docs/**` and `*.md`), and a
 nightly `schedule` at 03:17 UTC. Each push to `main` gets its own concurrency group
