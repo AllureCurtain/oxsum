@@ -169,10 +169,16 @@ async fn apply_documents(
     if report.after_total_minor == report.after_settled_minor {
         sqlx::query("UPDATE oxsum.plan_statements SET state='paid',paid_at=COALESCE(paid_at,now()),updated_at=now() WHERE statement_id=$1 AND state IN ('issued','past_due')")
             .bind(statement).execute(&mut **tx).await?;
-        // This plan row is already locked. A correction clears only debt-based
-        // suspension, preserving cancellation/renewal and manual restrictions.
-        sqlx::query("UPDATE oxsum.customer_plans SET dunning_suspended_at=NULL,updated_at=now() WHERE customer_plan_id=(SELECT customer_plan_id FROM oxsum.invoice_journals WHERE journal_id=$1) AND NOT EXISTS(SELECT 1 FROM oxsum.plan_statements s WHERE s.customer_plan_id=customer_plans.customer_plan_id AND s.state IN ('issued','past_due') AND s.total_minor>s.paid_minor)")
-            .bind(report.journal_id).execute(&mut **tx).await?;
+        // The caller already locked this plan before journal/ledger/statement.
+        // Retained document-only voids remain debt; renewal and manual flags
+        // are independent of this correction's debt-restoration decision.
+        let plan: Uuid = sqlx::query_scalar(
+            "SELECT customer_plan_id FROM oxsum.invoice_journals WHERE journal_id=$1",
+        )
+        .bind(report.journal_id)
+        .fetch_one(&mut **tx)
+        .await?;
+        crate::plan_debt::refresh_in(tx, plan).await?;
     }
     Ok(())
 }
