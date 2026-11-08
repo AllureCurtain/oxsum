@@ -21,6 +21,7 @@ function Applications({ selected, onSelect }: { selected: Application | null; on
   const [limit, setLimit] = useState("1000");
   const [reason, setReason] = useState("");
   const [submitted, setSubmitted] = useState<ApplicationRequest | null>(null);
+  const [invalid, setInvalid] = useState(false);
   const send = async (body: ApplicationRequest) => {
     if (busy.current) return;
     busy.current = true;
@@ -32,7 +33,8 @@ function Applications({ selected, onSelect }: { selected: Application | null; on
       event.preventDefault();
       if (busy.current || create.isSuccess) return;
       if (submitted) { void send(submitted); return; }
-      if (!/^[1-9][0-9]{0,4}$/.test(limit) || Number(limit) > 10000) return;
+      if (!/^[1-9][0-9]{0,4}$/.test(limit) || Number(limit) > 10000 || !name.trim() || !reason.trim()) { setInvalid(true); return; }
+      setInvalid(false);
       const body: ApplicationRequest = { idempotencyKey: crypto.randomUUID(), key, name: name.trim(), customerLimit: Number(limit), reason: reason.trim() };
       setSubmitted(body); void send(body);
     }}>
@@ -43,6 +45,7 @@ function Applications({ selected, onSelect }: { selected: Application | null; on
         <Field label={t("biz.reason")}><Textarea value={reason} onChange={(event) => setReason(event.target.value)} required maxLength={500} /></Field>
       </fieldset>
       {create.error ? <Banner tone="error">{create.error.message}</Banner> : null}
+      {invalid ? <Banner tone="error">{t("biz.applicationAccess.invalidApplication")}</Banner> : null}
       {create.isSuccess ? <p role="status">{t("biz.applicationAccess.created")}</p> : <Button type="submit" isLoading={create.isPending}>{t(submitted ? "biz.applicationAccess.retry" : "biz.applicationAccess.create")}</Button>}
       {submitted ? <><p className="text-sm text-ink-secondary">{t("biz.applicationAccess.frozen")}</p><Button type="button" tone="ghost" disabled={create.isPending} onClick={() => { setSubmitted(null); create.reset(); }}>{t("biz.applicationAccess.newIntent")}</Button></> : null}
     </form>

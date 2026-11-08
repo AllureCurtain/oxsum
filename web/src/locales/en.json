@@ -2110,7 +2110,8 @@
         "meteringWrite": "Reserve and charge declared external work",
         "billingRead": "Read scoped customer balances, logs and bills",
         "customersLifecycleWrite": "Archive application accounts; retain funds and history"
-      }
+      },
+      "invalidApplication": "Enter a stable key, a name, a reason and an account limit from 1 to 10,000."
     }
   },
   "setup": {
