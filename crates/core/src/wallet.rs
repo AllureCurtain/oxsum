@@ -1191,6 +1191,39 @@ impl Wallet {
         self.append_in(tx, draft).await
     }
 
+    /// Compensate old false Cash plus confirmed loss without reopening CreditLine.
+    /// Original retained Wallet funds only the independently bounded actual loss.
+    pub(crate) async fn nonplan_chargeback_correction_in(
+        &self,
+        tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+        dispute: Uuid,
+        cash_minor: i64,
+        wallet_minor: i64,
+        on: Date,
+    ) -> Result<Receipt, WalletError> {
+        let amount = positive(cash_minor)?;
+        if wallet_minor < 0 || wallet_minor >= cash_minor {
+            return Err(invalid(
+                "invalid historical chargeback correction allocation",
+            ));
+        }
+        let key = format!("nonplan-chargeback-correction/{dispute}");
+        let mut entry = Entry::<Draft, SCALE>::new(entry_id_for(&key), idem(&key)?, on).credit(
+            self.cash,
+            amount,
+            currency(),
+        );
+        if wallet_minor > 0 {
+            entry = entry.debit(self.wallet, Credits::from_minor(wallet_minor), currency());
+        }
+        entry = entry.debit(
+            self.adjustments,
+            Credits::from_minor(cash_minor - wallet_minor),
+            currency(),
+        );
+        self.append_in(tx, entry).await
+    }
+
     // ── plan-fee journal legs (issue #611, T20) ──────────────────────────────
 
     /// The accrual a closing period's journal books: charge lines

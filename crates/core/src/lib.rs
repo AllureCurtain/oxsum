@@ -60,6 +60,7 @@ mod merchant_events;
 mod merchant_routes;
 mod merchants;
 mod metering;
+mod nonplan_chargebacks;
 mod nonplan_refunds;
 mod nonplan_returns;
 mod oauth;
@@ -259,6 +260,9 @@ pub use merchants::{
     MerchantVersionInput, MerchantVersionPage, MerchantVersionRequest,
 };
 pub use metering::{MeteredEvent, MeteredHold, MeteredOutcome};
+pub use nonplan_chargebacks::{
+    NonplanChargebackCorrection, NonplanChargebackRecovery, NonplanChargebackRecoveryRequest,
+};
 pub use nonplan_refunds::{
     NonplanRefundEffect, NonplanRefundRecovery, NonplanRefundRecoveryRequest,
 };

@@ -151,6 +151,8 @@ pub struct OrderDispute {
     pub state: String,
     /// Ledger entry retaining the lost chargeback cash; `None` before.
     pub recharge_entry_id: Option<Uuid>,
+    /// Verified historical wrong-direction Cash compensation, separate from terminal state.
+    pub cash_correction: Option<crate::NonplanChargebackCorrection>,
     /// When the dispute record opened.
     #[serde(with = "time::serde::rfc3339")]
     pub created_at: OffsetDateTime,
@@ -1432,8 +1434,9 @@ impl Db {
             .await?;
         let rows = sqlx::query(
             "SELECT d.dispute_id,d.order_id,d.organization_id,d.provider_dispute_id,\
-                    d.amount_minor,d.currency,d.state,d.recharge_entry_id,d.created_at,d.updated_at \
+                    d.amount_minor,d.currency,d.state,d.recharge_entry_id,d.created_at,d.updated_at,c.effect AS cash_correction \
              FROM oxsum.disputes d JOIN oxsum.merchant_accounts m USING(merchant_id) \
+             LEFT JOIN oxsum.nonplan_chargeback_corrections c USING(dispute_id) \
              WHERE m.business_id=$1 AND ($2::uuid IS NULL OR d.dispute_id>$2) \
              ORDER BY d.dispute_id LIMIT $3",
         )
@@ -1587,6 +1590,11 @@ fn dispute_from_row(row: &PgRow) -> Result<OrderDispute, WalletError> {
         currency: row.try_get("currency")?,
         state: row.try_get("state")?,
         recharge_entry_id: row.try_get("recharge_entry_id")?,
+        cash_correction: row
+            .try_get::<Option<serde_json::Value>, _>("cash_correction")?
+            .map(serde_json::from_value)
+            .transpose()
+            .map_err(crate::error::invalid)?,
         created_at: row.try_get("created_at")?,
         updated_at: row.try_get("updated_at")?,
     })

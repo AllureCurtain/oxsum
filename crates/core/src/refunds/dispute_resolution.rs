@@ -11,10 +11,11 @@ use crate::{BusinessCapability, Db, Wallet, WalletError, business_staff as autho
 
 const SCOPED_DISPUTE: &str = "SELECT d.*,p.purpose,p.purpose_ref,\
     p.organization_id AS order_organization,p.merchant_id AS order_merchant,\
-    p.amount_minor AS order_amount,p.display_amount_minor,p.display_currency,o.tenant_id \
+    p.amount_minor AS order_amount,p.display_amount_minor,p.display_currency,o.tenant_id,c.effect AS cash_correction \
     FROM oxsum.disputes d JOIN oxsum.merchant_accounts m USING(merchant_id) \
     JOIN oxsum.payment_orders p ON p.order_id=d.order_id \
     JOIN oxsum.organizations o ON o.organization_id=d.organization_id \
+    LEFT JOIN oxsum.nonplan_chargeback_corrections c USING(dispute_id) \
     WHERE d.dispute_id=$1 AND m.business_id=$2";
 
 fn review() -> WalletError {
@@ -246,6 +247,29 @@ impl Db {
             .fetch_one(&mut *tx)
             .await?;
         let dispute = dispute_from_row(&row)?;
+        if !plan && dispute.cash_correction.is_some() {
+            wallet.lock_append_in(&mut tx).await?;
+            crate::nonplan_chargebacks::effect_in(&mut tx, wallet, dispute_id)
+                .await?
+                .ok_or_else(review)?;
+            if resolution != DisputeResolution::Lost {
+                return Err(WalletError::Conflict(
+                    "corrected historical dispute retains its lost outcome".into(),
+                ));
+            }
+            if let Some(audit)=sqlx::query("SELECT target,actor_user_id,detail FROM oxsum.finance_audit WHERE business_id=$1 AND action='dispute.resolve' AND idempotency_key=$2")
+                .bind(business).bind(idempotency_key).fetch_optional(&mut *tx).await? {
+                let detail:serde_json::Value=audit.try_get("detail")?;
+                if audit.try_get::<String,_>("target")?!=dispute_id.to_string()
+                    || audit.try_get::<Uuid,_>("actor_user_id")?!=actor.user_id
+                    || detail["resolution"]!=resolution.as_str()
+                    || detail.get("reason").and_then(serde_json::Value::as_str).map(str::trim)!=reason {
+                    return Err(WalletError::Conflict("dispute key names different request terms".into()));
+                }
+            }
+            tx.commit().await?;
+            return Ok(dispute);
+        }
         if !plan {
             let event_id: Option<Uuid> = row.try_get("inbox_receipt_id")?;
             let event_id = event_id.ok_or_else(review)?;
