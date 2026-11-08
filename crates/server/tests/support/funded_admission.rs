@@ -717,6 +717,144 @@ async fn crash_recovery_of_funded_and_free_calls_is_atomic_and_replay_safe_with_
 }
 
 #[tokio::test]
+async fn cancellation_and_recovery_choose_one_complete_funded_outcome() {
+    for (freeze, quota, top_up) in [(0, 100, 0), (40, 100, 0), (40, 20, 100)] {
+        for sweep_first in [false, true] {
+            let world = world_or_skip!(top_up);
+            cover_with(&world, quota).await;
+            if freeze == 0 {
+                let route = world.db.routes(&world.model).await.unwrap().remove(0);
+                let mut free = route.price;
+                free.cost_per_request = Some(0);
+                world
+                    .db
+                    .append_price(&route.channel, &world.model, free, 100)
+                    .await
+                    .unwrap();
+            }
+            world.script.answers(&world.model, Answer::Stall);
+            let response = chat(
+                &world.app,
+                &world.key,
+                &world.model,
+                json!({"stream": true}),
+            )
+            .await;
+            assert_eq!(response.status(), StatusCode::OK);
+            let id = request_id(&response);
+            let mut body = response.into_body();
+            assert!(body.frame().await.unwrap().is_ok());
+            let (_, key) = world.db.authenticate(&world.key).await.unwrap().unwrap();
+            let wallet = world.wallet().await;
+            let mut blocker = world.pool.begin().await.unwrap();
+            let pid: i32 = sqlx::query_scalar("SELECT pg_backend_pid()")
+                .fetch_one(&mut *blocker)
+                .await
+                .unwrap();
+            sqlx::query("SELECT pg_advisory_xact_lock($1)")
+                .bind(oxsum_core::limit_lock_key(&world.tenant_id, &key.key_id))
+                .execute(&mut *blocker)
+                .await
+                .unwrap();
+            let now = OffsetDateTime::now_utc();
+            let db = world.db.clone();
+            let tenants = world.tenants.clone();
+            let sweep = async move {
+                oxsum_core::sweep_stale_holds(
+                    &db,
+                    &tenants,
+                    now + time::Duration::minutes(1),
+                    now.date(),
+                )
+                .await
+            };
+            let job = if sweep_first {
+                let job = tokio::spawn(sweep);
+                wait_for_blocked(&world, pid, 1).await;
+                drop(body);
+                job
+            } else {
+                drop(body);
+                wait_for_blocked(&world, pid, 1).await;
+                tokio::spawn(sweep)
+            };
+            wait_for_blocked(&world, pid, 2).await;
+            blocker.commit().await.unwrap();
+            let report = tokio::time::timeout(Duration::from_secs(3), job)
+                .await
+                .unwrap()
+                .unwrap()
+                .unwrap();
+            assert_eq!(report.resolved, 1);
+            let record = world.settlement_within(&id).await;
+            let kind = if sweep_first {
+                "swept"
+            } else {
+                "client_cancelled"
+            };
+            assert_eq!(record["kind"], kind);
+            let charged = record["charged"].as_i64().unwrap();
+            let subscription_charge = record["subscription"]["chargedMinor"].as_i64().unwrap_or(0);
+            assert_eq!(remaining_draw(&world).await, subscription_charge);
+            assert_eq!(
+                wallet.available().await.unwrap(),
+                top_up - charged + subscription_charge
+            );
+            let operation = world
+                .db
+                .operation(
+                    world.organization_id.parse().unwrap(),
+                    Uuid::parse_str(&id).unwrap(),
+                )
+                .await
+                .unwrap()
+                .unwrap();
+            assert_eq!(
+                operation.state,
+                if sweep_first {
+                    oxsum_core::OperationState::TimedOut
+                } else {
+                    oxsum_core::OperationState::Cancelled
+                }
+            );
+            assert_eq!(operation.charged_minor, Some(charged));
+            assert_eq!(operation.outcome_kind.as_deref(), Some(kind));
+            let usage: Vec<(String, i64)> = sqlx::query_as(
+                "SELECT kind,charged_minor FROM oxsum.usage_records WHERE request_id=$1",
+            )
+            .bind(&id)
+            .fetch_all(&world.pool)
+            .await
+            .unwrap();
+            assert_eq!(usage, vec![(kind.to_owned(), charged)]);
+            let entry = oxsum_core::entry_id_for(&oxsum_core::settlement_key_for(&format!(
+                "req-{id}:hold"
+            )));
+            let proof = wallet.receipt_proof(entry, None).await.unwrap().unwrap();
+            assert!(
+                oxsum_core::verify_bundle(
+                    &serde_json::to_string(&proof).unwrap(),
+                    &proof.entry.content_hash()
+                )
+                .unwrap()
+            );
+            no_reservations(&world).await;
+        }
+    }
+}
+
+async fn wait_for_blocked(world: &World, pid: i32, count: i64) {
+    tokio::time::timeout(Duration::from_secs(3), async {
+        loop {
+            let blocked: i64 = sqlx::query_scalar("SELECT count(*) FROM pg_stat_activity WHERE datname=current_database() AND $1=ANY(pg_blocking_pids(pid))")
+                .bind(pid).fetch_one(&world.pool).await.unwrap();
+            if blocked >= count { break; }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    }).await.unwrap();
+}
+
+#[tokio::test]
 async fn one_connection_also_admits_and_recovers_a_real_wallet_reservation() {
     let Some(database_url) = url() else { return };
     let world = world(&database_url, 100).await;
