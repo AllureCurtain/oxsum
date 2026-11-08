@@ -1,5 +1,7 @@
 //! Controlled concurrent decisions and whole-transaction dispute rollback (#826).
 #![allow(clippy::unwrap_used, clippy::expect_used)]
+#[path = "support/legacy_plan.rs"]
+mod legacy_plan;
 #[path = "support/plan_payment.rs"]
 mod payment;
 #[path = "support/integration.rs"]
@@ -54,22 +56,22 @@ async fn world(plan: bool) -> Option<World> {
     );
     let context = payment::merchant_context(&db, &owner).await;
     let plan = if plan {
-        let sold = db
-            .publish_sold_plan(
-                db.default_business().await.unwrap(),
-                &NewSoldPlan {
-                    plan_id: None,
-                    name: format!("atomic-{}", Uuid::new_v4()),
-                    price_minor: FEE,
-                    currency: "USD".into(),
-                    quota_minor: Some(10_000_000),
-                    period_kind: PeriodKind::Anniversary,
-                    overage_enabled: true,
-                    sort_order: 0,
-                },
-            )
-            .await
-            .unwrap();
+        let sold = legacy_plan::publish(
+            &db,
+            db.default_business().await.unwrap(),
+            &NewSoldPlan {
+                plan_id: None,
+                name: format!("atomic-{}", Uuid::new_v4()),
+                price_minor: FEE,
+                currency: "USD".into(),
+                quota_minor: Some(10_000_000),
+                period_kind: PeriodKind::Anniversary,
+                overage_enabled: true,
+                sort_order: 0,
+            },
+        )
+        .await
+        .unwrap();
         Some(
             db.bind_customer_plan(
                 org,

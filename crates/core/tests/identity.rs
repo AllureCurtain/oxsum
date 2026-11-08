@@ -516,6 +516,7 @@ async fn migrating_twice_and_concurrently_is_safe() {
             "disputes".to_owned(),
             "email_tokens".to_owned(),
             "evidence_bundles".to_owned(),
+            "evidence_mint_inputs".to_owned(),
             "evidence_share_tokens".to_owned(),
             "experiments".to_owned(),
             "finance_audit".to_owned(),

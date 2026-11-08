@@ -801,13 +801,31 @@ impl Db {
 
     /// The open receivable: `issued`/`past_due` plan statements'
     /// `total − paid` plus `posted` journals' `total − settled` where no live
-    /// statement already surfaces the same receivable.
+    /// statement already surfaces the same receivable. Mixed-policy dispute
+    /// lines follow their original journal source, bounded by remaining source
+    /// debt and the receiving statement's actual outstanding amount.
     async fn receivable_minor(&self, filter: &FactFilter) -> Result<i64, WalletError> {
         let mut w = Where::new();
         let mut binds: Vec<Bind<'_>> = Vec::new();
         let mut sql = String::from(
-            "SELECT COALESCE(sum(s.total_minor - s.paid_minor),0)::bigint \
-             FROM oxsum.plan_statements s WHERE s.state IN ('issued','past_due') AND NOT EXISTS(SELECT 1 FROM oxsum.invoice_journals j WHERE j.journal_id=s.journal_id AND j.accounting_policy_version=2)",
+            "SELECT COALESCE(SUM(CASE WHEN COALESCE(owner.accounting_policy_version,1)=1 THEN \
+                GREATEST(s.total_minor-s.paid_minor,0)-LEAST(GREATEST(s.total_minor-s.paid_minor,0),COALESCE(daily.amount,0)) \
+              ELSE LEAST(GREATEST(s.total_minor-s.paid_minor,0),COALESCE(legacy.amount,0)) END),0)::bigint \
+             FROM oxsum.plan_statements s LEFT JOIN oxsum.invoice_journals owner ON owner.journal_id=s.journal_id \
+             LEFT JOIN LATERAL (SELECT SUM(amount)::bigint AS amount FROM ( \
+                SELECT LEAST(SUM(l.amount_minor),SUM(e.receivable_minor),MAX(GREATEST(j.total_minor-j.settled_minor,0))) AS amount \
+                FROM oxsum.plan_statement_lines l JOIN oxsum.plan_accounting_effects e ON e.source_ref=l.source_ref AND e.kind='dispute' \
+                JOIN oxsum.plan_accounting_periods a ON a.plan_period_id=e.plan_period_id \
+                JOIN oxsum.invoice_journals j ON j.journal_id=a.journal_id \
+                WHERE l.statement_id=s.statement_id AND l.kind='dispute_chargeback' AND j.state='posted' \
+                GROUP BY j.journal_id) sources) daily ON true \
+             LEFT JOIN LATERAL (SELECT SUM(amount)::bigint AS amount FROM ( \
+                SELECT LEAST(SUM(l.amount_minor),MAX(GREATEST(j.total_minor-j.settled_minor,0))) AS amount \
+                FROM oxsum.plan_statement_lines l JOIN oxsum.disputes d ON d.dispute_id=l.source_ref \
+                JOIN oxsum.plan_periods p ON p.authorization_kind='payment_order' AND p.authorization_ref=d.order_id \
+                JOIN oxsum.invoice_journals j ON j.plan_period_id=p.plan_period_id AND j.accounting_policy_version=1 AND j.state='posted' \
+                WHERE l.statement_id=s.statement_id AND l.kind='dispute_chargeback' GROUP BY j.journal_id) sources) legacy ON true \
+             WHERE s.state IN ('issued','past_due')",
         );
         if let Some(org) = filter.organization_id {
             sql.push_str(&w.clause(" AND s.organization_id = ?"));
@@ -850,7 +868,7 @@ impl Db {
         Ok(total)
     }
 
-    /// The eight-category figures for one filter — the read model both the
+    /// The financial figures for one filter — the read model both the
     /// staff `GET /api/v1/business/financial-facts` and the customer's
     /// `GET /api/v1/org/usage-report` project from. The customer's read is the
     /// same call with its own `organization_id` — a projection, never a
@@ -1246,7 +1264,7 @@ impl Db {
     /// idempotently: the run row is fetched, not duplicated, and its
     /// exceptions re-diff against still-open ones rather than re-minting.
     ///
-    /// The pass computes the eight categories per organization and diffs the
+    /// The pass computes the financial categories per organization and diffs the
     /// conservation invariants:
     ///
     /// - `usage − entitlement ≥ 0` — a charged turn drew either quota or
@@ -1344,7 +1362,7 @@ impl Db {
         period_end: Date,
     ) -> Result<i64, WalletError> {
         let mut exceptions = 0_i64;
-        // Snapshot the business-wide eight categories for the run's evidence
+        // Snapshot the business-wide financial figures for the run's evidence
         // columns — what the projections claim.
         let expected = self
             .financial_facts(&FactFilter {

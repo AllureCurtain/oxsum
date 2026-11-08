@@ -171,7 +171,6 @@ async fn refund(w: &World, amount: i64) -> crate::OrderRefund {
             RefundDecision::Approve,
             None,
             &Uuid::new_v4().to_string(),
-            &Uuid::new_v4().to_string(),
         )
         .await
         .unwrap()
@@ -515,7 +514,7 @@ async fn legacy_refund_cash_report_excludes_its_matching_journal_credit() {
     refund(&w, 1_000_000).await;
     // Reproduce the old report's source formula on this controlled history:
     // succeeded refund cash plus its negative journal credit counts twice.
-    let old:i64=sqlx::query_scalar("SELECT (SELECT COALESCE(SUM(amount_minor),0) FROM oxsum.refunds WHERE organization_id=$1 AND state='succeeded')-(SELECT COALESCE(SUM(l.amount_minor),0) FROM oxsum.invoice_journal_lines l JOIN oxsum.invoice_journals j USING(journal_id) WHERE j.organization_id=$1 AND l.kind IN ('discount','promo_credit'))")
+    let old:i64=sqlx::query_scalar("SELECT (SELECT COALESCE(SUM(amount_minor),0)::bigint FROM oxsum.refunds WHERE organization_id=$1 AND state='succeeded')-(SELECT COALESCE(SUM(l.amount_minor),0)::bigint FROM oxsum.invoice_journal_lines l JOIN oxsum.invoice_journals j USING(journal_id) WHERE j.organization_id=$1 AND l.kind IN ('discount','promo_credit'))")
         .bind(w.org).fetch_one(w.db.pool()).await.unwrap();
     assert_eq!(old, 2_000_000);
     let f = facts(&w).await;
@@ -618,8 +617,13 @@ async fn evidence_pins_daily_sources_and_keeps_previously_minted_bytes() {
     )
     .unwrap();
     let mut wire: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    let exact=wire["artifacts"]["planStatement"][statement.statement_id.to_string()]["accounting"]["effects"]
+        .as_array().unwrap().iter().find(|e|e["kind"]=="recognition" && e["entry_id"].is_string()).unwrap()["entry_id"].as_str().unwrap().to_owned();
     let mut missing = wire.clone();
-    missing["entries"].as_array_mut().unwrap().truncate(1);
+    missing["entries"]
+        .as_array_mut()
+        .unwrap()
+        .retain(|e| e["entry"]["id"] != exact);
     assert!(
         oxsum_verify::verify_evidence_bundle(
             &missing.to_string(),
@@ -631,12 +635,19 @@ async fn evidence_pins_daily_sources_and_keeps_previously_minted_bytes() {
     );
     let artifact = &wire["artifacts"]["planStatement"][statement.statement_id.to_string()];
     assert_eq!(artifact["accounting"]["policyVersion"], 2);
+    assert!(artifact["accounting"]["capturedAt"].is_string());
     assert_eq!(artifact["accounting"]["period"]["fee_minor"], FEE);
     let effects = artifact["accounting"]["effects"].as_array().unwrap();
     assert!(effects.len() > 1);
     for effect in effects {
         if let Some(id) = effect["entry_id"].as_str() {
-            assert!(text.contains(id));
+            assert!(
+                wire["entries"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .any(|row| row["entry"]["id"] == id)
+            );
         }
     }
     wire["artifacts"]["planStatement"][statement.statement_id.to_string()]["accounting"]["period"]
@@ -895,4 +906,394 @@ async fn recognition_effects_book_today_when_service_days_are_old() {
     assert_eq!(bad, 0);
     let wrong:i64=sqlx::query_scalar(&format!("SELECT count(*) FROM oxsum.plan_accounting_effects a JOIN ledger_{}.entries e ON e.entry_id=a.entry_id WHERE a.plan_period_id=$1 AND a.kind='recognition' AND e.booking_date<>$2",w.tenant)).bind(w.period.plan_period_id).bind(today).fetch_one(w.db.pool()).await.unwrap();
     assert_eq!(wrong, 0);
+}
+
+#[tokio::test]
+async fn a_locked_first_candidate_does_not_starve_an_independent_period() {
+    let _guard = TEST_LOCK.lock().await;
+    let Some(a) = world(10, false).await else {
+        return;
+    };
+    let Some(b) = world(10, false).await else {
+        return;
+    };
+    let (first, second) = if a.period.plan_period_id < b.period.plan_period_id {
+        (&a, &b)
+    } else {
+        (&b, &a)
+    };
+    let mut lock = first.db.pool().begin().await.unwrap();
+    sqlx::query(
+        "SELECT customer_plan_id FROM oxsum.customer_plans WHERE customer_plan_id=$1 FOR UPDATE",
+    )
+    .bind(first.plan)
+    .fetch_one(&mut *lock)
+    .await
+    .unwrap();
+    let count = tokio::time::timeout(
+        std::time::Duration::from_secs(4),
+        first.db.run_plan_recognition(1),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    assert!(count > 0);
+    assert_books(first, FEE, 0, FEE, 0).await;
+    assert_books(second, FEE, expected(second, FEE).await, FEE, 0).await;
+    lock.rollback().await.unwrap();
+    assert!(first.db.run_plan_recognition(1).await.unwrap() > 0);
+    assert_books(first, FEE, expected(first, FEE).await, FEE, 0).await;
+}
+
+async fn lost(w: &World, order: &crate::PaymentOrder) -> Uuid {
+    let reference = format!("dispute_{}", Uuid::new_v4());
+    let event = VerifiedMerchantEvent {
+        event_id: Uuid::new_v4().to_string(),
+        kind: MerchantEventKind::Dispute,
+        payment_id: Some(order.order_id),
+        provider_payment_id: Some(format!("pay_{}", order.order_id)),
+        organization_id: Some(w.org),
+        provider_account_id: Some(w.context.account_id.clone()),
+        mode: Some(MerchantMode::Test),
+        amount_minor: Some(order.display_amount_minor),
+        currency: Some(order.display_currency.clone()),
+        refund_id: Some(reference.clone()),
+    };
+    let receipt =
+        w.db.receive_merchant_event(&w.context, &event, &[84; 32])
+            .await
+            .unwrap();
+    assert_eq!(receipt.state, "accepted");
+    w.db.record_order_dispute(&event, &receipt).await.unwrap();
+    let id: Uuid = sqlx::query_scalar(
+        "SELECT dispute_id FROM oxsum.disputes WHERE order_id=$1 AND provider_dispute_id=$2",
+    )
+    .bind(order.order_id)
+    .bind(reference)
+    .fetch_one(w.db.pool())
+    .await
+    .unwrap();
+    w.db.resolve_order_dispute(
+        &w.wallet,
+        &w.owner,
+        id,
+        crate::DisputeResolution::Lost,
+        Some("cross-policy accounting fixture"),
+        &Uuid::new_v4().to_string(),
+        OffsetDateTime::now_utc().date(),
+    )
+    .await
+    .unwrap();
+    id
+}
+async fn transition_to_daily(w: &World) -> crate::PaymentOrder {
+    let current = w.db.customer_plan(w.org).await.unwrap().unwrap();
+    let old =
+        w.db.sold_plan(current.plan_version_id)
+            .await
+            .unwrap()
+            .unwrap();
+    let v2 =
+        w.db.publish_sold_plan(
+            old.business_id,
+            &NewSoldPlan {
+                plan_id: Some(old.plan_id),
+                name: old.name,
+                price_minor: FEE,
+                currency: "USD".into(),
+                quota_minor: Some(10_000_000),
+                period_kind: PeriodKind::Anniversary,
+                overage_enabled: true,
+                sort_order: 0,
+            },
+        )
+        .await
+        .unwrap();
+    w.db.schedule_customer_plan_change(w.org, v2.plan_version_id)
+        .await
+        .unwrap();
+    w.db.rollover_due_subscriptions().await.unwrap();
+    let order = payment::created_order(&w.db, &w.context, w.org, w.plan).await;
+    payment::mark_paid(&w.db, &w.context, &order).await;
+    w.db.activate_plan_period(order.order_id, w.plan)
+        .await
+        .unwrap();
+    order
+}
+
+#[tokio::test]
+async fn disputes_on_mixed_policy_statements_follow_the_original_remaining_debt() {
+    let _guard = TEST_LOCK.lock().await;
+    for daily_first in [false, true] {
+        let Some(w) = world(40, true).await else {
+            return;
+        };
+        // A prior partial refund reduces the old source to 1.5m. Its later
+        // full dispute has only 1.5m receivable; excess is cash-loss suspense.
+        refund(&w, 1_000_000).await;
+        let daily = transition_to_daily(&w).await;
+        let (first, second) = if daily_first {
+            (&daily, &w.order)
+        } else {
+            (&w.order, &daily)
+        };
+        lost(&w, first).await;
+        lost(&w, second).await;
+        let f = facts(&w).await;
+        assert_eq!(f.receivable_minor, 2 * FEE - 1_000_000);
+        assert_eq!(f.billed_minor - f.collected_minor, f.receivable_minor);
+        assert_eq!(net(&w, "Assets:Receivables").await, -f.receivable_minor);
+        let open =
+            w.db.plan_statements(w.org, None, 50)
+                .await
+                .unwrap()
+                .statements
+                .into_iter()
+                .find(|s| s.total_minor > s.paid_minor)
+                .unwrap();
+        let lines = w.db.plan_statement_lines(open.statement_id).await.unwrap();
+        assert_eq!(
+            lines
+                .iter()
+                .filter(|l| l.kind == crate::StatementLineKind::DisputeChargeback)
+                .count(),
+            2
+        );
+        // Mixed-source documents are deliberately refused by financial void;
+        // refusal must preserve both policies' debt and the original ledger.
+        assert!(
+            w.db.release_statement_review(
+                &w.owner,
+                open.statement_id,
+                "void",
+                "mixed source review",
+                &Uuid::new_v4().to_string()
+            )
+            .await
+            .is_err()
+        );
+        assert_eq!(facts(&w).await.receivable_minor, f.receivable_minor);
+    }
+}
+
+async fn mint(w: &World, statement: Uuid) -> Result<crate::EvidenceBundleRow, crate::WalletError> {
+    w.db.mint_statement_evidence(&w.wallet, w.org, &w.tenant, statement, false, None)
+        .await
+}
+async fn verify_export(w: &World, row: &crate::EvidenceBundleRow) -> serde_json::Value {
+    let bytes =
+        w.db.evidence_bundle_json(row.bundle_id)
+            .await
+            .unwrap()
+            .unwrap();
+    let text = String::from_utf8(bytes).unwrap();
+    oxsum_verify::verify_evidence_bundle(
+        &text,
+        &format!("tenant-{}", w.tenant),
+        &w.org.to_string(),
+        None,
+    )
+    .unwrap();
+    serde_json::from_str(&text).unwrap()
+}
+#[tokio::test]
+async fn concurrent_exports_during_refund_return_one_consistent_committed_snapshot() {
+    let _guard = TEST_LOCK.lock().await;
+    let Some(w) = world(10, false).await else {
+        return;
+    };
+    recognize(&w, OffsetDateTime::now_utc()).await;
+    let statement =
+        w.db.plan_statements(w.org, None, 50)
+            .await
+            .unwrap()
+            .statements
+            .remove(0)
+            .statement_id;
+    let (a, b, c) = tokio::join!(
+        mint(&w, statement),
+        mint(&w, statement),
+        refund(&w, 1_000_000)
+    );
+    assert!(c.refund_id != Uuid::nil());
+    let (a, b) = (a.unwrap(), b.unwrap());
+    assert_eq!(
+        (
+            a.bundle_id,
+            &a.manifest_digest,
+            a.anchor_log_index,
+            a.entry_count,
+            a.created_at
+        ),
+        (
+            b.bundle_id,
+            &b.manifest_digest,
+            b.anchor_log_index,
+            b.entry_count,
+            b.created_at
+        )
+    );
+    let value = verify_export(&w, &a).await;
+    let artifact = &value["artifacts"]["planStatement"][statement.to_string()];
+    let total = artifact["statement"]["totalMinor"].as_i64().unwrap();
+    assert!([FEE, FEE - 1_000_000].contains(&total));
+    assert_eq!(artifact["journal"]["totalMinor"], total);
+    assert_eq!(
+        artifact["journalLines"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|l| l["amountMinor"].as_i64().unwrap())
+            .sum::<i64>(),
+        total
+    );
+    assert_eq!(
+        artifact["accounting"]["effects"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|e| e["billed_minor"].as_i64().unwrap())
+            .sum::<i64>(),
+        total
+    );
+    let published =
+        w.db.evidence_bundle(w.org, a.bundle_id)
+            .await
+            .unwrap()
+            .unwrap();
+    assert_eq!(published.created_at, a.created_at);
+}
+
+#[tokio::test]
+async fn export_failure_after_marker_reuses_frozen_inputs_after_later_refund() {
+    use sqlx::Executor as _;
+    let _guard = TEST_LOCK.lock().await;
+    for legacy in [false, true] {
+        let Some(w) = world(if legacy { 40 } else { 10 }, legacy).await else {
+            return;
+        };
+        if legacy {
+            w.db.rollover_due_subscriptions().await.unwrap();
+        } else {
+            recognize(&w, OffsetDateTime::now_utc()).await;
+        }
+        let statement =
+            w.db.plan_statements(w.org, None, 50)
+                .await
+                .unwrap()
+                .statements
+                .remove(0)
+                .statement_id;
+        let before = w.wallet.log_size().await.unwrap();
+        // Inject exactly the crash window: the marker already committed but the
+        // following exported-byte INSERT fails. The durable input snapshot survives.
+        w.db.pool().execute("CREATE FUNCTION oxsum.test_fail_evidence_publish() RETURNS trigger LANGUAGE plpgsql AS $$BEGIN RAISE EXCEPTION 'controlled export publication fault'; END;$$; CREATE TRIGGER test_fail_evidence_publish BEFORE INSERT ON oxsum.evidence_bundles FOR EACH ROW EXECUTE FUNCTION oxsum.test_fail_evidence_publish()").await.unwrap();
+        assert!(mint(&w, statement).await.is_err());
+        w.db.pool().execute("DROP TRIGGER test_fail_evidence_publish ON oxsum.evidence_bundles; DROP FUNCTION oxsum.test_fail_evidence_publish()").await.unwrap();
+        assert_eq!(w.wallet.log_size().await.unwrap(), before + 1);
+        let snapshots: i64 = sqlx::query_scalar(
+            "SELECT count(*) FROM oxsum.evidence_mint_inputs WHERE organization_id=$1",
+        )
+        .bind(w.org)
+        .fetch_one(w.db.pool())
+        .await
+        .unwrap();
+        assert_eq!(snapshots, 1);
+        let exported: i64 = sqlx::query_scalar(
+            "SELECT count(*) FROM oxsum.evidence_bundles WHERE organization_id=$1",
+        )
+        .bind(w.org)
+        .fetch_one(w.db.pool())
+        .await
+        .unwrap();
+        assert_eq!(exported, 0);
+        refund(&w, 1_000_000).await;
+        let after_refund = w.wallet.log_size().await.unwrap();
+        let row = mint(&w, statement).await.unwrap();
+        let value = verify_export(&w, &row).await;
+        assert_eq!(
+            value["artifacts"]["planStatement"][statement.to_string()]["statement"]["totalMinor"],
+            FEE
+        );
+        assert_eq!(
+            w.wallet.log_size().await.unwrap(),
+            after_refund,
+            "retry reuses the standing exact marker"
+        );
+        assert_eq!(
+            facts(&w).await.billed_minor,
+            FEE - 1_000_000,
+            "later financial reality remains independent"
+        );
+    }
+}
+
+#[tokio::test]
+async fn legacy_orphan_marker_with_different_inputs_refuses_export_publication() {
+    let _guard = TEST_LOCK.lock().await;
+    let Some(w) = world(0, false).await else {
+        return;
+    };
+    let statement =
+        w.db.plan_statements(w.org, None, 50)
+            .await
+            .unwrap()
+            .statements
+            .remove(0)
+            .statement_id;
+    let scope = format!("statement/{}/{statement}", w.org);
+    let old = doubleentry::Hash::digest(b"old-captured-snapshot", b"historical");
+    w.wallet
+        .anchor_evidence_bundle(&scope, "historical orphan", old)
+        .await
+        .unwrap();
+    assert!(mint(&w, statement).await.is_err());
+    let count: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM oxsum.evidence_bundles WHERE organization_id=$1")
+            .bind(w.org)
+            .fetch_one(w.db.pool())
+            .await
+            .unwrap();
+    assert_eq!(count, 0);
+}
+
+#[tokio::test]
+async fn concurrent_exports_finish_with_one_pool_connection() {
+    let _guard = TEST_LOCK.lock().await;
+    let Some(w) = world(10, false).await else {
+        return;
+    };
+    recognize(&w, OffsetDateTime::now_utc()).await;
+    let statement =
+        w.db.plan_statements(w.org, None, 50)
+            .await
+            .unwrap()
+            .statements
+            .remove(0)
+            .statement_id;
+    let url = oxsum_testkit::suite_db_url("daily_recognition").unwrap();
+    let pool = sqlx::postgres::PgPoolOptions::new()
+        .max_connections(1)
+        .acquire_timeout(std::time::Duration::from_secs(2))
+        .connect(&url)
+        .await
+        .unwrap();
+    let db = Db::from_pool(pool);
+    let wallet = Wallet::open_existing(db.pool().clone(), &w.tenant)
+        .await
+        .unwrap();
+    let call = || db.mint_statement_evidence(&wallet, w.org, &w.tenant, statement, false, None);
+    let results = tokio::time::timeout(std::time::Duration::from_secs(8), async {
+        tokio::join!(call(), call(), call(), call())
+    })
+    .await
+    .unwrap();
+    let a = results.0.unwrap();
+    for b in [results.1.unwrap(), results.2.unwrap(), results.3.unwrap()] {
+        assert_eq!(
+            (b.bundle_id, b.manifest_digest, b.created_at),
+            (a.bundle_id, a.manifest_digest.clone(), a.created_at)
+        );
+    }
+    verify_export(&w, &a).await;
 }

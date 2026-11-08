@@ -1432,3 +1432,15 @@ retry semantics, not an unlimited-load guarantee.
 Migration 0113 retains old versions as policy 1 and pins new publications to policy 2. The durable hourly `plan-recognition` job catches up at most 200 eligible periods per pass through `Db::run_plan_recognition`; busy plan rows are skipped without starving later candidates. Current database time is authoritative. Exact period/day keys and the surrounding plan/journal/ledger transaction make retries safe; missed days post on the current UTC booking date with their original service dates retained. No new environment variable or recognition HTTP endpoint is required.
 
 Focused daily accounting acceptance: `cargo nextest run -p oxsum-core --lib -E 'test(plan_recognition)'` with the standard PostgreSQL variables. It uses original immutable service bounds established by a private test-only activation clock, verified merchant fixtures and the real ledger. Legacy financial regression suites explicitly seed historical v1 publications instead of changing current publisher behavior.
+
+
+Evidence minting freezes exact artifact inputs durably in `evidence_mint_inputs`
+before appending its deterministic scope marker. An atomic unique scope insert selects
+the winning snapshot; concurrent mints reload it and return the persisted descriptor.
+No database connection is retained across nested ledger calls.
+If a process fails after marker append but before exported bytes persist, retry
+uses those frozen inputs even when later refunds or daily recognition have landed.
+An older orphan marker with no matching captured inputs explicitly refuses
+publication rather than serving an export bound to a different digest. Existing
+stored bundles remain unchanged; independent ledger verification still requires
+the retained trust inputs and stays within the documented proof scope.
