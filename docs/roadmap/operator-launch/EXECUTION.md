@@ -6,6 +6,11 @@ Read this file on every resume, then reconcile actual main, worktrees, issues/PR
 
 ## Current state
 
+- Main CI `42498733548` on `23b6547` exposed an early cancellation in the real
+  payment-worker fixture. #850 waits for durable fulfillment before stopping the
+  worker; 19 payment checks, strict Clippy and independent review passed.
+  [Evidence](evidence/payment-worker-completion.md); PR integration pending.
+
 - Current integration checkpoint: `8a51109`, after required green checks and
   independent review for #821 historical usage compensation, #823 model/routing
   UI, #825 diagnostics, #832 safe backup/restore, #834 merchant settings, #836
