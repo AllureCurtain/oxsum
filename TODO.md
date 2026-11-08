@@ -10,7 +10,7 @@ Updated: 2026-11-08
 
 - [ ] [#818](https://github.com/AllureCurtain/oxsum/issues/818) — Business model versions, aliases, routing weights, fallback and cache editors implemented; exact inputs, HTTP authority, frontend build and strict Clippy passed. PR integration and actual browser acceptance remain.
 
-- [ ] [#820](https://github.com/AllureCurtain/oxsum/issues/820) — Reconcile statement review with backing journal debt, aggregate dunning and retained legacy document voids; implementation in progress.
+- [ ] [#820](https://github.com/AllureCurtain/oxsum/issues/820) — Atomic journal/statement review, aggregate dunning and retained-void debt implemented; 1,937 workspace passes and 66 final core/HTTP checks passed, existing opt-in skips only; independent review and integration pending.
 
 - [x] [#803](https://github.com/AllureCurtain/oxsum/issues/803) — Forward once-only wallet/credit usage fix validated: 69 focused and 1,899 workspace passes, all H1–H6 active; Integrated in PR #815 (`e35e557`). Historical compensation is #809.
 - [ ] [#809](https://github.com/AllureCurtain/oxsum/issues/809) — Exact-source historical usage correction and later cash fences implemented; 52 focused checks, 1,912 complete workspace tests and strict Clippy passed; independent source review passed, PR integration pending.
