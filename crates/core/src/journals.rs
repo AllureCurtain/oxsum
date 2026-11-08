@@ -1,18 +1,19 @@
 //! Plan fee journals and revenue allocation (issue #611, T20).
 //!
-//! T19 made a plan period exist only once its authorization does; this module
-//! records what each period *cost* once it closes. A journal is the per-period
-//! invoice: `draft → posted → paid | void`, written inside the same
-//! transaction that closes the `plan_periods` row — the boundary rollover in
-//! `crate::plans::Db::plan_rollover_in`, the renewal arm of
-//! `activate_plan_period`, and the boundary-cancel path all share the one
-//! writer, [`Db::journal_closing_period_in`].
+//! A journal is the per-period invoice: `draft → posted → paid | void`.
+//! Retained policy 1 issues it when the authorized period closes; policy 2
+//! issues it at paid activation and recognizes completed UTC service days
+//! separately. Boundary rollover, renewal and cancellation share
+//! [`Db::journal_closing_period_in`], which catches up policy 2 without
+//! issuing another invoice.
 //!
-//! The bill is *in arrears*: a `planPeriod` order prepays the period it
-//! authorizes (`debit Cash / credit Liabilities:UnearnedPlanFees`), the close
-//! recognizes revenue (`debit Receivables / credit Income:PlanFees`) and
-//! reclassifies the prepayment into the receivable. What the prepayment did
-//! not cover stays `posted` as an open receivable for explicit repayment.
+//! Both policies collect a `planPeriod` order as deferred fees (`debit Cash /
+//! credit Liabilities:UnearnedPlanFees`). Policy 1 recognizes the full fee at
+//! close (`debit Receivables / credit Income:PlanFees`) and reclassifies the
+//! prepayment into that receivable. Policy 2 releases completed service-day
+//! shares from UnearnedPlanFees into PlanFees; its prepaid invoice does not
+//! itself recognize income. Uncollected debt remains an open receivable for
+//! explicit repayment.
 //! Wallet-settled usage is already recognized by its settlement and is never
 //! added to a new plan journal. Legacy overage lines remain readable for
 //! explicit correction; renewal state and unpaid debt are separate facts.
@@ -842,20 +843,19 @@ impl Db {
         Ok(())
     }
 
-    /// Writes the journal a closing plan period bills — the one writer every
-    /// close path shares (`plan_rollover_in`'s cancel/change/past-due arms and
-    /// `activate_plan_period`'s renewal arm). The journal lands `draft` and
-    /// walks to `posted` — or straight to `paid` when the bill is already
-    /// covered — inside this transaction, beside the accrual entry the same
-    /// transaction commits.
+    /// Finalizes the accounting a closing plan period needs, shared by
+    /// rollover's cancel/change/past-due arms and activation's renewal arm.
+    /// Policy 2 catches up its original activation invoice and returns `None`.
+    /// For policy 1, the journal lands `draft` and walks to `posted` or `paid`
+    /// inside this transaction beside its accrual entry.
     ///
-    /// Lines: `base_fee` the sold version's price; `discount` the credit notes
+    /// Policy-1 lines: `base_fee` the sold version's price; `discount` the credit notes
     /// applied to the order that
     /// authorized the period; `promo_credit` promo covering the fee — a
     /// complimentary grant's full coverage, or a payment's bundle promo leg,
     /// clamped to what the promo pool settles. `total_minor` is their sum.
     ///
-    /// Settlement: a `payment_order`-authorized period's prepayment
+    /// Policy-1 settlement: a `payment_order`-authorized period's prepayment
     /// reclassifies `debit UnearnedPlanFees / credit Receivables` up to the
     /// journal's total — `paid` when the prepayment covers it, `posted` for
     /// the remainder, retained for explicit statement repayment or correction.
