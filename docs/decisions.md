@@ -3467,3 +3467,21 @@ server and worker before starting the new version; the ordinary application
 migration lock is not a live-writer fence. An old binary does not honor this
 marker, and mixed-version rolling upgrade safety is not claimed. Old ledger
 schemas without the field upgrade through the same atomic path.
+## 2026-11-09 — Durable bounded provider acceptance guard (#869)
+
+The launch exercise needs a run-wide external spending ceiling independent of
+customer funding and gateway retries. A standalone local test guard owns the
+real provider credential and reserves each fixed request in the original shared
+journal before transmission. The application uses its existing explicitly
+configured internal provider route and a separate synthetic token. No production
+transport or public-address policy is weakened.
+
+The guard supports only one current DeepSeek model, a fixed tiny prompt, whole/SSE
+responses, explicit non-thinking mode and 32 output tokens. Peak rates and a
+conservative serialized-input allowance are checked before each attempt. An
+exclusive process lock plus atomic replacement/file-and-directory fsync retains
+reservations across concurrency and interruption. Each scenario can attempt only
+once; neither successful usage nor ambiguous failure replenishes the allowance.
+The report labels this a controlled mediated path and identifies the actual
+binary/SDK bytes. Existing direct-production DNS/provider matrix and final
+candidate gates remain separate.
