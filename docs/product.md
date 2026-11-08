@@ -565,3 +565,11 @@ authority, distinct scopes, expiry and reason. It retains an unchanged submitted
 operation for retry, displays secrets once and explains metadata-only recovery.
 List state distinguishes expiry from revocation; no owner credential is delegated
 to an external application's runtime.
+
+
+The Bills portal retains customer-specific signed-head trust inputs and executes
+the existing WASM signature/consistency verifier before reporting continuity
+(issue #858). The initial operator key is a server observation, explicitly not an
+independently authenticated identity. The original key/origin/head is preserved;
+empty-head checks report signature-only evidence. Exports support separate offline
+checking and do not expand entry, arithmetic, completeness or metering proof scope.

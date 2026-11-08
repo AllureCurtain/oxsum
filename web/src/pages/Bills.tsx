@@ -1,20 +1,17 @@
 import { useMemo, useState } from "react";
 import { Trans, useTranslation } from "react-i18next";
 import { Receipt } from "lucide-react";
-import { useBills, useConsistency, useDisplay, useLogHead } from "../api/hooks";
+import { useBills, useDisplay } from "../api/hooks";
 import { entryKind } from "../lib/kinds";
 import {
   Badge,
   Banner,
   Button,
-  Card,
   EmptyRows,
-  Field,
   PageState,
   StatChip,
   TableShell,
   Td,
-  NumberInput,
   signedCredits,
   displayAmount,
   type DisplayCurrency,
@@ -22,23 +19,7 @@ import {
 import { ApiError, api } from "../api/client";
 import { CodeBlock } from "../components/ui";
 
-// The archived head rides the browser's localStorage, like the Leptos
-// dashboard's archive: `decide` says what a served head means against it.
-const ARCHIVE_KEY = "oxsum.head-archive";
-
-interface ArchivedHead {
-  size: number;
-  root: string;
-}
-
-function archived(): ArchivedHead | null {
-  try {
-    const raw = localStorage.getItem(ARCHIVE_KEY);
-    return raw ? (JSON.parse(raw) as ArchivedHead) : null;
-  } catch {
-    return null;
-  }
-}
+import { BillsTrust } from "./bills-trust";
 
 /** One bill row with an on-demand proof-bundle drawer (`GET /entries/{id}/proof`).
  *  The fiat figure is the row's `displayAmount` when the export already carried it,
@@ -122,28 +103,7 @@ export function Bills() {
   const { t } = useTranslation();
   const [before, setBefore] = useState<number | undefined>(undefined);
   const bills = useBills(before);
-  const head = useLogHead();
   const display = useDisplay();
-  const [archiveSize, setArchiveSize] = useState(() => archived()?.size ?? null);
-  const [checkFrom, setCheckFrom] = useState<number | null>(null);
-  const consistency = useConsistency(checkFrom);
-
-  function archiveCurrent() {
-    if (!head.data) {
-      return;
-    }
-    const stored = { size: head.data.size, root: head.data.root };
-    localStorage.setItem(ARCHIVE_KEY, JSON.stringify(stored));
-    setArchiveSize(stored.size);
-  }
-
-  function checkConsistency() {
-    const held = archived();
-    if (held && head.data && held.size < head.data.size) {
-      setCheckFrom(held.size);
-    }
-  }
-
   return (
     <div className="flex flex-col gap-6">
       <div className="flex items-center justify-between">
@@ -193,42 +153,7 @@ export function Bills() {
         </>
       )}
 
-      {head.data ? (
-        <Card title={t("bills.ledgerHead")}>
-          <p className="text-sm">
-            {t("bills.headLine", { size: head.data.size, root: head.data.root })}
-          </p>
-          <p className="mt-1 text-xs text-muted">
-            {t("bills.signedBy", { keyName: head.data.keyName })}
-          </p>
-          <div className="mt-3 flex flex-wrap items-end gap-3">
-            <Button tone="ghost" onClick={archiveCurrent}>
-              {t("bills.archiveThis")}
-            </Button>
-            <span className="text-sm text-muted">
-              {t("bills.archived", { size: archiveSize ?? t("bills.nothing") })}
-            </span>
-            <Button tone="ghost" onClick={checkConsistency} disabled={!archiveSize}>
-              {t("bills.checkConsistency")}
-            </Button>
-          </div>
-          {checkFrom !== null ? (
-            consistency.isLoading ? (
-              <p className="mt-2 text-sm text-muted">{t("bills.checking")}</p>
-            ) : consistency.error instanceof ApiError ? (
-              <Banner tone="error">{consistency.error.message}</Banner>
-            ) : consistency.data ? (
-              <Banner tone="success">
-                {t("bills.consistencyOk", {
-                  headSize: consistency.data.head.size,
-                  oldSize: consistency.data.oldHead.size,
-                  nodes: consistency.data.proof.path.length,
-                })}
-              </Banner>
-            ) : null
-          ) : null}
-        </Card>
-      ) : null}
+      <BillsTrust />
     </div>
   );
 }
@@ -282,25 +207,3 @@ function WindowSummary({
   );
 }
 
-export function ConsistencyForm() {
-  const { t } = useTranslation();
-  const [size, setSize] = useState("");
-  const [from, setFrom] = useState<number | null>(null);
-  useConsistency(from);
-  return (
-    <form
-      className="flex items-end gap-2"
-      onSubmit={(e) => {
-        e.preventDefault();
-        setFrom(Number(size));
-      }}
-    >
-      <Field label={t("bills.archivedSize")}>
-        <NumberInput value={size} min={1} onChange={(e) => setSize(e.target.value)} required />
-      </Field>
-      <Button tone="ghost" type="submit">
-        {t("bills.check")}
-      </Button>
-    </form>
-  );
-}

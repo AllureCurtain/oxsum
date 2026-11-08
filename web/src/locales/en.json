@@ -258,7 +258,21 @@
     "checkConsistency": "Check consistency",
     "check": "Check",
     "entries": "entries",
-    "consistencyOk": "The log at size {{headSize}} extends your archived head at size {{oldSize}} — proof carries {{nodes}} nodes."
+    "consistencyOk": "The log at size {{headSize}} extends your archived head at size {{oldSize}} — proof carries {{nodes}} nodes.",
+    "retainedTrust": "Retained ledger trust",
+    "trustIntro": "Retain the operator key, ledger origin and signed head for this customer. The first key comes from this server: compare it through an independent trusted channel.",
+    "trustScope": "Checks run locally in WebAssembly. They verify signatures and append-only continuity under the retained key, not honest token counts or bill completeness. The original archive is preserved. A downloaded verifier from this server is not an independently trusted distribution.",
+    "noRetainedTrust": "No identified trust record is saved for this customer. Old unscoped head archives are not imported.",
+    "retainVerified": "Verify and retain first head",
+    "downloadTrust": "Download retained inputs",
+    "offlineGuide": "Offline verification guide",
+    "verified_unchanged": "Signature verified: the head at size {{size}} matches your retained root.",
+    "verified_extended": "Verified locally: the signed head at size {{size}} extends your retained head at size {{oldSize}}.",
+    "verified_emptyAnchor": "Signature verified at size {{size}}. Your retained head is empty, so it cannot establish continuity of a previous history.",
+    "verificationFailed": "Verification or retention failed. No pass is claimed.",
+    "archiveChanged": "The retained record changed in another tab. Reload and inspect it before checking again.",
+    "storageUnavailable": "Safe browser storage is unavailable. Use a secure browser context or the offline verification guide.",
+    "trustLoadError": "The current customer identity could not be read."
   },
   "requests": {
     "title": "Requests",

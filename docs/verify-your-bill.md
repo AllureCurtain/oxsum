@@ -72,6 +72,26 @@ organization committed to**. It does not prove:
 - **The head.** The page prints the ledger head's size and root. If you archived an earlier head,
   ask the operator for a consistency proof that the current head extends it.
 
+## Retain inputs from the customer portal
+
+The **Bills → Retained ledger trust** card verifies and saves a signed head,
+operator key and expected origin for the current customer. Later checks execute
+WASM against that original root and key; they do not replace the archive. The
+first key still comes from the server, so compare it independently. Missing WASM,
+a changed key, rollback or a failed proof is never presented as a successful
+continuity check. An empty archived log is labeled as signature-only evidence.
+
+**Download retained inputs** produces `oxsum-trust-<organization>.json`. Its
+`retained` object has `origin`, `key`, `head` and `note`; `checked`, when present,
+contains the current signed head and a `consistency` response for a grown log.
+Save that file outside browser storage. With a separately retained SDK, pass
+`retained.note`, `JSON.stringify(retained.head)`, `retained.origin` and
+`JSON.stringify(retained.key)` to `verifySignedHead`; pass the downloaded
+`checked.consistency` with the same retained head/origin/key to
+`verifyConsistency`. Never replace those inputs with ones freshly served by the
+operator to resolve a failed check. The export does not include entry proofs or
+period bundles; save those separately for the checks below.
+
 ## Verify offline, without the server
 
 The bill page runs the installed verifier in your browser. If you want a check that outlives the link — or you want to hold the

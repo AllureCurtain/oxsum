@@ -4,7 +4,9 @@ Updated: 2026-11-09
 
 ## In progress
 
-- [ ] [#853](https://github.com/AllureCurtain/oxsum/issues/853) — Owner application and typed scoped-credential forms with exact retry identity and one-time secret recovery; three behavioral checks, four contract checks, frontend build and independent source review passed on integrated #846. PR integration and browser acceptance pending.
+- [ ] [#858](https://github.com/AllureCurtain/oxsum/issues/858) — Execute dashboard signed-head/consistency verification against customer-scoped retained trust; implementation and validation in progress.
+
+- [x] [#853](https://github.com/AllureCurtain/oxsum/issues/853) — Owner application and typed scoped-credential forms with exact retry identity and one-time secret recovery; three behavioral checks, four contract checks, frontend build and independent source review passed on integrated #846. Integrated in PR #857 (`8f92546d`); browser acceptance remains.
 
 - [x] [#846](https://github.com/AllureCurtain/oxsum/issues/846) — Stable application namespaces, bounded customer lifecycle and rotated metering replay; 2,003 full workspace passes plus 39 core and 13 HTTP checks, strict Clippy and final independent review passed. Integrated in PR #855 (`42b80a24`); owner portal follows in #853.
 

@@ -1450,3 +1450,13 @@ Drain old server/workers before starting a binary that publishes policy 2. A
 versioned ledger history does not make concurrent old writers safe: an older
 refund worker does not know the daily earned/deferred allocation. Use the normal
 single-writer self-hosted upgrade procedure and preserve the original exports.
+
+
+The Bills retained-trust behavior tests run with
+`node --experimental-strip-types --test web/tests/retained-head.test.ts`.
+After `scripts/build-verify-wasm.sh`, run the real cryptographic regression suite
+with `node --experimental-strip-types --test web/tests/retained-head-wasm.test.ts`.
+For an already built verifier, set `OXSUM_VERIFY_WASM_DIR` to its directory; missing
+or placeholder WASM fails this suite. The tests reuse engine-generated Merkle
+fixtures and generate a separate signing key to exercise actual signatures,
+consistency, altered roots/paths, origin changes and empty-head limitations.

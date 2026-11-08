@@ -324,6 +324,9 @@ jobs:
       - name: Test exact money inputs
         if: steps.filter.outputs.stages == 'true'
         run: node --experimental-strip-types --test web/tests/money.test.ts
+      - name: Test retained customer trust boundaries
+        if: steps.filter.outputs.stages == 'true'
+        run: node --experimental-strip-types --test web/tests/retained-head.test.ts
       - name: Test complete provider configuration inputs
         if: steps.filter.outputs.stages == 'true'
         run: node --experimental-strip-types --test web/tests/provider-draft.test.ts
