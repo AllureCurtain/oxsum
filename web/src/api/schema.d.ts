@@ -3350,6 +3350,7 @@ export interface paths {
                     };
                 };
                 401: components["responses"]["Error"];
+                403: components["responses"]["Error"];
                 500: components["responses"]["Error"];
             };
         };
@@ -3448,6 +3449,7 @@ export interface paths {
                     };
                 };
                 401: components["responses"]["Error"];
+                403: components["responses"]["Error"];
                 404: components["responses"]["Error"];
                 500: components["responses"]["Error"];
             };
@@ -3501,6 +3503,7 @@ export interface paths {
                 };
                 400: components["responses"]["Error"];
                 401: components["responses"]["Error"];
+                403: components["responses"]["Error"];
                 404: components["responses"]["Error"];
                 500: components["responses"]["Error"];
             };
@@ -3553,6 +3556,7 @@ export interface paths {
                 };
                 400: components["responses"]["Error"];
                 401: components["responses"]["Error"];
+                403: components["responses"]["Error"];
                 500: components["responses"]["Error"];
             };
         };
@@ -3601,6 +3605,7 @@ export interface paths {
                     };
                 };
                 401: components["responses"]["Error"];
+                403: components["responses"]["Error"];
                 404: components["responses"]["Error"];
                 500: components["responses"]["Error"];
             };
@@ -3845,7 +3850,8 @@ export interface paths {
         };
         /**
          * The caller's own eight-category projection
-         * @description The customer's financial-facts projection (issue #613, T22): the same
+         * @description Requires a current customer owner or admin personal session.
+         *     The customer's financial-facts projection (issue #613, T22): the same
          *     `financial_facts` read the staff surface runs, scoped to the caller's
          *     own organization — a projection, never a second total, so the
          *     customer's figures reconcile to the business sum for the same
@@ -3877,6 +3883,7 @@ export interface paths {
                 };
                 400: components["responses"]["Error"];
                 401: components["responses"]["Error"];
+                403: components["responses"]["Error"];
                 500: components["responses"]["Error"];
             };
         };
@@ -4385,6 +4392,7 @@ export interface paths {
                 };
                 400: components["responses"]["Error"];
                 401: components["responses"]["Error"];
+                403: components["responses"]["Error"];
                 500: components["responses"]["Error"];
             };
         };
@@ -4433,6 +4441,7 @@ export interface paths {
                     };
                 };
                 401: components["responses"]["Error"];
+                403: components["responses"]["Error"];
                 404: components["responses"]["Error"];
                 500: components["responses"]["Error"];
             };

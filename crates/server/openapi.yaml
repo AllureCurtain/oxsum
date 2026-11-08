@@ -2893,7 +2893,8 @@ paths:
         day) and the opt-in `overageEnabled`. A customer binding references
         one version; later catalogue edits mint new versions and never
         rewrite what was sold.
-      security: [{ sessionCookie: [], apiKey: [] }]
+      x-consumption-key-access: own-records-or-metadata
+      security: [{ sessionCookie: [] }, { bearer: [] }, { apiKeyHeader: [] }, { googApiKeyHeader: [] }]
       responses:
         "200":
           description: The catalogue versions on sale
@@ -2915,7 +2916,8 @@ paths:
         The exact terms a `planVersionId` names — the version a bind or a
         `planPeriod` order's `purposeRef` buys into. Unpublished or retired
         versions answer `404` on this surface.
-      security: [{ sessionCookie: [], apiKey: [] }]
+      x-consumption-key-access: own-records-or-metadata
+      security: [{ sessionCookie: [] }, { bearer: [] }, { apiKeyHeader: [] }, { googApiKeyHeader: [] }]
       parameters:
         - { name: planVersionId, in: path, required: true, schema: { type: string, format: uuid } }
       responses:
@@ -2941,8 +2943,10 @@ paths:
         authorization that opened it (`paymentOrder` for a paid period,
         `complimentary` for a free plan's grant). A timer alone never opens
         one. `plan` is `null` while the customer has no live binding.
-      security: [{ sessionCookie: [], apiKey: [] }]
+      x-consumption-key-access: denied
+      security: [{ sessionCookie: [] }]
       responses:
+        "403": { $ref: "#/components/responses/Error" }
         "200":
           description: The live plan and its authorized periods
           content:
@@ -2987,8 +2991,10 @@ paths:
         the draws it funded are honored — but the boundary does not renew
         (issue #610). No mid-period pro-rating; cancelling keeps serving
         through what was already paid for.
-      security: [{ sessionCookie: [], apiKey: [] }]
+      x-consumption-key-access: denied
+      security: [{ sessionCookie: [] }]
       responses:
+        "403": { $ref: "#/components/responses/Error" }
         "200":
           description: The plan as it now stands
           content:
@@ -3010,13 +3016,15 @@ paths:
         and the new version's first period authorizes at that boundary — a
         `planPeriod` order for a priced target, a complimentary grant for a
         free one. `404` without a live plan or for an unsellable target.
-      security: [{ sessionCookie: [], apiKey: [] }]
+      x-consumption-key-access: denied
+      security: [{ sessionCookie: [] }]
       requestBody:
         required: true
         content:
           application/json:
             schema: { $ref: "#/components/schemas/PlanChangeRequest" }
       responses:
+        "403": { $ref: "#/components/responses/Error" }
         "200":
           description: The plan as it now stands
           content:
@@ -3041,11 +3049,13 @@ paths:
         `disputeChargeback`, `paymentApplied`). `dueAt` is the payment terms
         the receivable answers against; `totalMinor − paidMinor` is what is
         still owed. `issued`/`pastDue` statements are the open receivable.
-      security: [{ sessionCookie: [], apiKey: [] }]
+      x-consumption-key-access: denied
+      security: [{ sessionCookie: [] }]
       parameters:
         - { name: after, in: query, required: false, schema: { type: string, format: uuid } }
         - { name: limit, in: query, required: false, schema: { type: integer, minimum: 1, maximum: 100, default: 50 } }
       responses:
+        "403": { $ref: "#/components/responses/Error" }
         "200":
           description: The organization's plan statements, newest first
           content:
@@ -3066,10 +3076,12 @@ paths:
         and credits in customer vocabulary, each naming the fact it came
         from (`sourceRef`: a journal line, a refund, an order, a dispute).
         A statement of another organization is `404`.
-      security: [{ sessionCookie: [], apiKey: [] }]
+      x-consumption-key-access: denied
+      security: [{ sessionCookie: [] }]
       parameters:
         - { name: statementId, in: path, required: true, schema: { type: string, format: uuid } }
       responses:
+        "403": { $ref: "#/components/responses/Error" }
         "200":
           description: The statement and its lines
           content:
@@ -3210,17 +3222,20 @@ paths:
     get:
       summary: The caller's own eight-category projection
       description: |
+        Requires a current customer owner or admin personal session.
         The customer's financial-facts projection (issue #613, T22): the same
         `financial_facts` read the staff surface runs, scoped to the caller's
         own organization — a projection, never a second total, so the
         customer's figures reconcile to the business sum for the same
         organization by construction.
-      security: [{ sessionCookie: [], apiKey: [] }]
+      x-consumption-key-access: denied
+      security: [{ sessionCookie: [] }]
       parameters:
         - { name: from, in: query, required: false, schema: { type: string, format: date } }
         - { name: to, in: query, required: false, schema: { type: string, format: date } }
         - { name: timeBasis, in: query, required: false, schema: { type: string, enum: [booking, service, payment], default: booking } }
       responses:
+        "403": { $ref: "#/components/responses/Error" }
         "200":
           description: The caller's eight-category figures
           content:
@@ -3497,11 +3512,13 @@ paths:
         the same fact the plan's `pastDue` state carries. `settledMinor` is how
         much of the total is already covered; `paidOrderId` names the
         `planPeriod` order whose payment completed the settlement.
-      security: [{ sessionCookie: [], apiKey: [] }]
+      x-consumption-key-access: denied
+      security: [{ sessionCookie: [] }]
       parameters:
         - { name: after, in: query, required: false, schema: { type: string, format: uuid } }
         - { name: limit, in: query, required: false, schema: { type: integer, minimum: 1, maximum: 100, default: 50 } }
       responses:
+        "403": { $ref: "#/components/responses/Error" }
         "200":
           description: The organization's journals, newest first
           content:
@@ -3522,10 +3539,12 @@ paths:
         credits, each naming the fact it came from (`sourceRef`: the
         `planPeriods` row, a `creditNotes` id, a promo lot or grant). A journal
         of another organization is `404`, the same scoping the order read uses.
-      security: [{ sessionCookie: [], apiKey: [] }]
+      x-consumption-key-access: denied
+      security: [{ sessionCookie: [] }]
       parameters:
         - { name: journalId, in: path, required: true, schema: { type: string, format: uuid } }
       responses:
+        "403": { $ref: "#/components/responses/Error" }
         "200":
           description: The journal and its lines
           content:
@@ -6498,7 +6517,8 @@ paths:
   /api/v1/bundles:
     get:
       summary: List published bundle offers available for new purchases
-      security: [{ sessionCookie: [] }, { apiKey: [] }]
+      x-consumption-key-access: own-records-or-metadata
+      security: [{ sessionCookie: [] }, { bearer: [] }, { apiKeyHeader: [] }, { googApiKeyHeader: [] }]
       responses:
         "200":
           description: Active published versions; selection never grants funds
@@ -6582,7 +6602,8 @@ paths:
     post:
       summary: Create a payment order
       description: The customer pins an immutable order in its quoted payment currency. A bundle requires a published version in purposeRef; its exact price, purchased credit, promotion and lifetime come from that version. A planPeriod order requires the customer-scoped quote fingerprint, pins its exact sold fee and rounds only the fiat quote upward to the smallest supported currency unit. Other purposes rate through the stored Business collection rate — `amountMinor`/`rate` are not request fields, so a client-supplied figure is a schema rejection, not a negotiated term. The expected payment and the order terms commit before the provider is called; the provider idempotency key is the order's durable local UUID, so a replayed `idempotencyKey` returns the standing order and its original checkout rather than a second charge. `purpose` fixes the one fulfillment arm the order may take — `walletTopup`, `bundle`, `planPeriod` or `invoiceRepayment`. The answer is a checkout to complete, never a paid order — `paid` is established only by the signed provider webhook.
-      security: [{ sessionCookie: [], apiKey: [] }]
+      x-consumption-key-access: denied
+      security: [{ sessionCookie: [] }]
       requestBody:
         required: true
         content:
@@ -6607,7 +6628,8 @@ paths:
     get:
       summary: List the caller's payment orders
       description: The customer organization's own orders, newest first, paged by cursor. An order of another organization is never listed. `purpose` and `status` narrow the page — the order history's own filters.
-      security: [{ sessionCookie: [], apiKey: [] }]
+      x-consumption-key-access: denied
+      security: [{ sessionCookie: [] }]
       parameters:
         - { name: after, in: query, schema: { type: string, format: uuid } }
         - { name: limit, in: query, schema: { type: integer, minimum: 1, maximum: 100, default: 50 } }
@@ -6631,7 +6653,8 @@ paths:
     get:
       summary: Read one payment order
       description: One order the caller's organization owns; another organization's order is a not-found. Status is the lifecycle state the signed webhook established — it can never be `paid` from this read surface.
-      security: [{ sessionCookie: [], apiKey: [] }]
+      x-consumption-key-access: denied
+      security: [{ sessionCookie: [] }]
       parameters:
         - { name: orderId, in: path, required: true, schema: { type: string, format: uuid } }
       responses:
@@ -6653,7 +6676,8 @@ paths:
     get:
       summary: Read an order's fulfillment status
       description: The order's lifecycle state plus its fulfillment record once it lands. `paid` but unfulfilled is the honest mid-state the recovery sweep drains; the record names exactly what the purpose's grant produced.
-      security: [{ sessionCookie: [], apiKey: [] }]
+      x-consumption-key-access: denied
+      security: [{ sessionCookie: [] }]
       parameters:
         - { name: orderId, in: path, required: true, schema: { type: string, format: uuid } }
       responses:
@@ -6675,7 +6699,8 @@ paths:
     get:
       summary: Read an order's live checkout session
       description: The recovery read a returned or refreshed browser polls (issue #607). The stored provider handles plus the order's lifecycle truth in one answer — `clientSecret`/`checkoutUrl` are whatever the provider last minted, `publishableKey`/`sdkUrl` come off the pinned merchant version, and a still-`created` order re-issues its provider call under the order's own durable UUID so the retry never charges twice. `failed`, `expired` and `fulfilled` answer their truth, and a `manual` order answers nulls for every handle — this surface can never mark an order paid.
-      security: [{ sessionCookie: [], apiKey: [] }]
+      x-consumption-key-access: denied
+      security: [{ sessionCookie: [] }]
       parameters:
         - { name: orderId, in: path, required: true, schema: { type: string, format: uuid } }
       responses:
@@ -6768,7 +6793,8 @@ paths:
       summary: Request a refund review on an order
       description: |
         The customer asks for review — it can never grant itself money. `amountMinor` names the credit amount asked back in ledger minor units; absent names the order's whole refundable remainder (`amountMinor` of the order minus what live refunds already reserve or returned — the promo leg of a bundle is never refundable cash). The amount is bounded by the refundable remainder, so no wallet is ever driven negative by refunding. The answer is a `requested` refund — the durable review record; a replayed `idempotencyKey` returns the standing request. Only `paid` or `fulfilled` orders may be asked on; bundles must finish fulfillment first. A confirmed partial or full bundle refund cancels its remaining promotion, including unused releases from in-flight holds, without cash reimbursement. Staff alone resolves it through `POST /api/v1/business/refunds/{refundId}/resolve`.
-      security: [{ sessionCookie: [], apiKey: [] }]
+      x-consumption-key-access: denied
+      security: [{ sessionCookie: [] }]
       parameters:
         - { name: orderId, in: path, required: true, schema: { type: string, format: uuid } }
       requestBody:
@@ -6796,7 +6822,8 @@ paths:
     get:
       summary: List refunds on one order
       description: The caller's refunds on one order it owns plus the refundable remainder it may still ask back. Another organization's order is a not-found.
-      security: [{ sessionCookie: [], apiKey: [] }]
+      x-consumption-key-access: denied
+      security: [{ sessionCookie: [] }]
       parameters:
         - { name: orderId, in: path, required: true, schema: { type: string, format: uuid } }
       responses:
@@ -8706,9 +8733,8 @@ paths:
         granted credit that spends before every other pool because it is the
         money that can lapse. `includeClosed=true` keeps expired and cancelled
         lots in the answer.
-      security:
-        - sessionCookie: []
-        - apiKey: []
+      x-consumption-key-access: own-records-or-metadata
+      security: [{ sessionCookie: [] }, { bearer: [] }, { apiKeyHeader: [] }, { googApiKeyHeader: [] }]
       parameters:
         - name: includeClosed
           in: query
