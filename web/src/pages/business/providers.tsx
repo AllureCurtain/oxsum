@@ -3,14 +3,15 @@ import { useTranslation } from "react-i18next";
 import { Network } from "lucide-react";
 import {
   useBusiness, useBusinessChannels, useCapability, useChannelConnectionCheck,
-  useDisplay, useProviderWrite, type Channel, type ProviderIntent,
+  useProviderWrite, type Channel, type ProviderIntent,
 } from "../../api/hooks";
 import {
   AlertDialog, AlertDialogContent, AlertDialogDescription, AlertDialogFooter,
-  AlertDialogHeader, AlertDialogTitle, Badge, Banner, Button, Card, Cr,
+  AlertDialogHeader, AlertDialogTitle, Badge, Banner, Button, Card,
   EmptyRows, Field, Select, Skeleton, TableShell, Td, TextInput, Textarea,
 } from "../../components/ui";
 import { DetailGrid, Field2 } from "./biz";
+import { ProviderModels } from "./provider-models";
 
 // A dialog is one in-memory intent. Failed unchanged submissions reuse its key;
 // editing any field starts a new intent. Closing discards unsent secret inputs.
@@ -180,11 +181,10 @@ function ProviderDialog({ action, onClose, onSaved }: {
   );
 }
 
-function ChannelDetail({ channel, canWrite, onBack, onAction }: {
-  channel: Channel; canWrite: boolean; onBack: () => void; onAction: (action: Action) => void;
+function ChannelDetail({ channel, canWrite, canCatalog, canRoute, onBack, onAction }: {
+  channel: Channel; canWrite: boolean; canCatalog: boolean; canRoute: boolean; onBack: () => void; onAction: (action: Action) => void;
 }) {
   const { t } = useTranslation();
-  const display = useDisplay();
   const policy = channel.settings.destinationPolicy;
   return (
     <div className="flex flex-col gap-6">
@@ -227,18 +227,7 @@ function ChannelDetail({ channel, canWrite, onBack, onAction }: {
           {channel.billKeyLast4 ? <Button tone="danger" onClick={() => onAction({ kind: "clearBilling", channel })}>{t("biz.provider.clearBilling")}</Button> : null}
         </div> : null}
       </Card>
-      <Card title={t("biz.channels.models")}>
-        <p className="mb-4 text-sm text-ink-secondary">{t("biz.provider.costHelp")}</p>
-        <TableShell head={[t("common.model"), t("biz.channels.colVersion"), { label: t("biz.channels.colIn"), align: "right" }, { label: t("biz.channels.colOut"), align: "right" }, t("biz.channels.colMode")]}>
-          {channel.models.map((model) => <tr key={model.model}>
-            <td className="font-medium">{model.model}</td><Td mono>v{model.version}</Td>
-            <Td mono align="right"><Cr minor={model.inputPricePerMillion} currency={display} /></Td>
-            <Td mono align="right">{model.outputPricePerMillion != null ? <Cr minor={model.outputPricePerMillion} currency={display} /> : "—"}</Td>
-            <td>{model.mode ?? "chat"}</td>
-          </tr>)}
-          {channel.models.length === 0 ? <EmptyRows colSpan={5}>{t("biz.channels.noModels")}</EmptyRows> : null}
-        </TableShell>
-      </Card>
+      <ProviderModels key={channel.id} channel={channel} canCatalog={canCatalog} canRoute={canRoute} />
     </div>
   );
 }
@@ -252,6 +241,8 @@ export function BusinessChannels() {
   const channels = useBusinessChannels(cursors[cursors.length - 1]);
   const business = useBusiness();
   const canWrite = useCapability(business.data, "providerSecretsWrite");
+  const canCatalog = useCapability(business.data, "catalogWrite");
+  const canRoute = useCapability(business.data, "routingWrite");
   const selected = channels.data?.channels.find((channel) => channel.id === picked);
   function open(next: Action) { setSaved(false); setAction(next); }
   return (
@@ -262,7 +253,7 @@ export function BusinessChannels() {
         {t("biz.loadError")}<Button tone="ghost" onClick={() => void channels.refetch()}>{t("biz.provider.reload")}</Button>
       </div></Banner> : null}
       {picked ? (
-        selected ? <ChannelDetail channel={selected} canWrite={canWrite && !channels.isError} onBack={() => setPicked(null)} onAction={open} />
+        selected ? <ChannelDetail channel={selected} canWrite={canWrite && !channels.isError} canCatalog={canCatalog && !channels.isError} canRoute={canRoute && !channels.isError} onBack={() => setPicked(null)} onAction={open} />
           : channels.isLoading ? <Skeleton className="h-32 w-full" />
           : <><Banner tone="warn">{t("biz.provider.unavailable")}</Banner><Button tone="ghost" onClick={() => setPicked(null)}>{t("biz.channels.back")}</Button></>
       ) : <>
