@@ -400,7 +400,9 @@ impl Db {
     /// statement that just cleared also lifts the plan's dunning suspension
     /// in the same transaction. Renewal and manual suspension remain separate.
     ///
-    /// Runs inside the caller's transaction beside the journal update.
+    /// Runs inside the caller's transaction beside the journal update. The
+    /// caller must already hold the customer plan before the journal/statement;
+    /// clearing dunning below must not introduce a statement-to-plan lock edge.
     ///
     /// # Errors
     ///
@@ -924,6 +926,27 @@ impl Db {
             crate::BusinessCapability::FundsWrite,
         )
         .await?;
+        // Identity is immutable: resolve the scoped plan without a row lock,
+        // lock that owner first, then re-read the statement under its own lock.
+        // Close/refund hold plan before journal/statement; repayment must too.
+        let coordinates = sqlx::query(
+            "SELECT customer_plan_id FROM oxsum.plan_statements \
+             WHERE statement_id=$1 AND business_id=$2 AND state<>'open'",
+        )
+        .bind(statement_id)
+        .bind(business)
+        .fetch_optional(&mut *tx)
+        .await?
+        .ok_or_else(|| WalletError::NotFound("unknown statement".into()))?;
+        if let Some(plan) = coordinates.try_get::<Option<Uuid>, _>("customer_plan_id")? {
+            sqlx::query(
+                "SELECT customer_plan_id FROM oxsum.customer_plans \
+                 WHERE customer_plan_id=$1 FOR UPDATE",
+            )
+            .bind(plan)
+            .fetch_one(&mut *tx)
+            .await?;
+        }
         let Some(statement) = statement_in(&mut tx, statement_id).await? else {
             return Err(WalletError::NotFound("unknown statement".into()));
         };
@@ -1192,73 +1215,128 @@ impl Db {
     ///
     /// # Errors
     ///
-    /// Storage failures surface as [`WalletError`].
+    /// [`WalletError::InvalidInput`] for a limit outside 1..=1000; storage
+    /// failures surface as [`WalletError`].
     pub async fn run_statement_past_due(&self, limit: i64) -> Result<PastDueReport, WalletError> {
+        if !(1..=1000).contains(&limit) {
+            return Err(invalid("statement pass limit must be 1..1000"));
+        }
         let mut report = PastDueReport::default();
-        // Statements crossing `due_at` now: flip each to `past_due` inside
-        // its own short transaction, bounded so one pass drains a backlog
-        // over ticks. The plan's own `past_due` (T19) is already the
-        // plan-side fact; the statement carries the customer-facing stamp.
-        // The pass scans both arms: `issued` rows past `due_at` flip to
-        // `past_due`, and `past_due` rows already standing are re-evaluated
-        // for the grace lapse — a statement that crossed `due_at + grace_days`
-        // suspends the plan whether this pass or an earlier one flipped it.
-        let due = sqlx::query(&format!(
-            "SELECT {STATEMENT_COLS} FROM oxsum.plan_statements \
-             WHERE state IN ('issued','past_due') AND due_at IS NOT NULL AND due_at <= now() \
-             ORDER BY due_at LIMIT $1 FOR UPDATE SKIP LOCKED"
-        ))
-        .bind(limit)
-        .fetch_all(self.pool())
-        .await?;
-        for row in &due {
-            let statement = statement_from_row(row)?;
-            let mut tx = self.pool().begin().await?;
-            let n = sqlx::query(
-                "UPDATE oxsum.plan_statements \
-                 SET state='past_due', past_due_at=now(), updated_at=now() \
-                 WHERE statement_id=$1 AND state='issued'",
+        // Candidate reads do not claim rows. The old autocommit FOR UPDATE
+        // released its locks before processing and used stale state afterward.
+        // Keyset pages pass every locked candidate without letting a fixed
+        // oldest prefix starve independent customers. Only actual transitions
+        // consume the work bound; skipped rows remain due for the next pass.
+        let mut cursor_due: Option<OffsetDateTime> = None;
+        let mut cursor_id: Option<Uuid> = None;
+        let mut processed = 0;
+        while processed < limit {
+            let due = sqlx::query(
+                "SELECT s.statement_id,s.customer_plan_id,s.due_at \
+                 FROM oxsum.plan_statements s \
+                 LEFT JOIN oxsum.customer_plans p ON p.customer_plan_id=s.customer_plan_id \
+                 WHERE s.state IN ('issued','past_due') AND s.total_minor>s.paid_minor \
+                   AND s.due_at<=now() \
+                   AND ($1::timestamptz IS NULL OR (s.due_at,s.statement_id)>($1,$2::uuid)) \
+                   AND (s.state='issued' OR (p.state='past_due' \
+                     AND p.dunning_suspended_at IS NULL \
+                     AND s.due_at+(p.grace_days*interval '1 day')<=now())) \
+                 ORDER BY s.due_at,s.statement_id LIMIT $3",
             )
-            .bind(statement.statement_id)
-            .execute(&mut *tx)
+            .bind(cursor_due)
+            .bind(cursor_id)
+            .bind(limit)
+            .fetch_all(self.pool())
             .await?;
-            if n.rows_affected() > 0 {
-                report.flipped += 1;
+            if due.is_empty() {
+                break;
             }
-            // Past grace — `due_at + grace_days` — stamp the plan's dunning
-            // suspension: `hold` refuses new wallet draws while the
-            // subscription's own quota keeps serving. Inside grace the
-            // `past_due` statement still serves per `overage_enabled`.
-            if let Some(plan_id) = statement.customer_plan_id {
-                let grace: i32 = sqlx::query_scalar(
-                    "SELECT grace_days FROM oxsum.customer_plans WHERE customer_plan_id=$1",
-                )
-                .bind(plan_id)
-                .fetch_optional(&mut *tx)
-                .await?
-                .unwrap_or(7);
-                let past_grace = sqlx::query_scalar::<_, bool>(
-                    "SELECT due_at + ($2 || ' days')::interval <= now() \
-                     FROM oxsum.plan_statements WHERE statement_id=$1",
-                )
-                .bind(statement.statement_id)
-                .bind(grace.to_string())
-                .fetch_one(&mut *tx)
-                .await?;
-                if past_grace {
-                    let suspended = sqlx::query(
-                        "UPDATE oxsum.customer_plans \
-                         SET dunning_suspended_at=COALESCE(dunning_suspended_at,now()), \
-                             updated_at=now() \
-                         WHERE customer_plan_id=$1 AND state='past_due'",
+            for candidate in due {
+                if processed >= limit {
+                    break;
+                }
+                let statement_id: Uuid = candidate.try_get("statement_id")?;
+                let plan_id: Option<Uuid> = candidate.try_get("customer_plan_id")?;
+                cursor_due = Some(candidate.try_get("due_at")?);
+                cursor_id = Some(statement_id);
+                let mut tx = self.pool().begin().await?;
+                let plan = if let Some(plan_id) = plan_id {
+                    let row = sqlx::query(
+                        "SELECT grace_days,state,dunning_suspended_at \
+                         FROM oxsum.customer_plans WHERE customer_plan_id=$1 \
+                         FOR UPDATE SKIP LOCKED",
                     )
                     .bind(plan_id)
+                    .fetch_optional(&mut *tx)
+                    .await?;
+                    let Some(row) = row else {
+                        tx.rollback().await?;
+                        continue;
+                    };
+                    Some(row)
+                } else {
+                    None
+                };
+                // Recheck mutable eligibility while both rows stay locked. A
+                // payment, void or extension committed since the scan cannot
+                // be suspended from its old state, even across a page boundary.
+                let current = sqlx::query(
+                    "SELECT state,due_at FROM oxsum.plan_statements \
+                     WHERE statement_id=$1 AND state IN ('issued','past_due') \
+                       AND total_minor>paid_minor AND due_at<=now() \
+                     FOR UPDATE SKIP LOCKED",
+                )
+                .bind(statement_id)
+                .fetch_optional(&mut *tx)
+                .await?;
+                let Some(current) = current else {
+                    tx.rollback().await?;
+                    continue;
+                };
+                let mut changed = false;
+                if current.try_get::<String, _>("state")? == "issued" {
+                    sqlx::query(
+                        "UPDATE oxsum.plan_statements \
+                         SET state='past_due',past_due_at=now(),updated_at=now() \
+                         WHERE statement_id=$1",
+                    )
+                    .bind(statement_id)
                     .execute(&mut *tx)
                     .await?;
-                    report.suspended += suspended.rows_affected() as i64;
+                    report.flipped += 1;
+                    changed = true;
+                }
+                if let Some(plan) = plan {
+                    let grace: i32 = plan.try_get("grace_days")?;
+                    let past_grace: bool =
+                        sqlx::query_scalar("SELECT $1::timestamptz+($2*interval '1 day')<=now()")
+                            .bind(current.try_get::<OffsetDateTime, _>("due_at")?)
+                            .bind(grace)
+                            .fetch_one(&mut *tx)
+                            .await?;
+                    if past_grace
+                        && plan.try_get::<String, _>("state")? == "past_due"
+                        && plan
+                            .try_get::<Option<OffsetDateTime>, _>("dunning_suspended_at")?
+                            .is_none()
+                    {
+                        sqlx::query(
+                            "UPDATE oxsum.customer_plans \
+                             SET dunning_suspended_at=now(),updated_at=now() \
+                             WHERE customer_plan_id=$1",
+                        )
+                        .bind(plan_id)
+                        .execute(&mut *tx)
+                        .await?;
+                        report.suspended += 1;
+                        changed = true;
+                    }
+                }
+                tx.commit().await?;
+                if changed {
+                    processed += 1;
                 }
             }
-            tx.commit().await?;
         }
         Ok(report)
     }
