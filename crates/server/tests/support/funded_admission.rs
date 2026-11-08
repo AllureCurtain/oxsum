@@ -1214,3 +1214,52 @@ async fn legacy_unproven_watch_cleanup_never_creates_a_free_receipt() {
     );
     no_reservations(&world).await;
 }
+
+#[tokio::test]
+async fn an_inflight_personal_key_edit_cannot_deadlock_operation_insertion() {
+    let world = world_or_skip!(0);
+    cover(&world).await;
+    let input = reservation(&world, 40).await;
+    let key = input.key.key_id;
+    let mut editor = world.pool.begin().await.unwrap();
+    let pid: i32 = sqlx::query_scalar("SELECT pg_backend_pid()")
+        .fetch_one(&mut *editor)
+        .await
+        .unwrap();
+    sqlx::query(
+        "SELECT organization_id FROM oxsum.organizations WHERE organization_id=$1 FOR UPDATE",
+    )
+    .bind(input.operation.organization_id)
+    .fetch_one(&mut *editor)
+    .await
+    .unwrap();
+    let db = world.db.clone();
+    let wallet = world.wallet().await;
+    let job = tokio::spawn(async move { admit(&db, &wallet, &input).await });
+    tokio::time::timeout(Duration::from_secs(3), async {
+        loop {
+            let blocked: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM pg_stat_activity WHERE datname=current_database() AND $1=ANY(pg_blocking_pids(pid)))")
+                .bind(pid).fetch_one(&world.pool).await.unwrap();
+            if blocked { break; }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    }).await.unwrap();
+    sqlx::query("SET LOCAL lock_timeout='200ms'")
+        .execute(&mut *editor)
+        .await
+        .unwrap();
+    sqlx::query("UPDATE oxsum.api_keys SET revoked_at=now() WHERE key_id=$1")
+        .bind(key)
+        .execute(&mut *editor)
+        .await
+        .unwrap();
+    editor.commit().await.unwrap();
+    let error = tokio::time::timeout(Duration::from_secs(3), job)
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap_err();
+    assert!(matches!(error, oxsum_core::WalletError::Unauthenticated));
+    assert_eq!(remaining_draw(&world).await, 0);
+    no_reservations(&world).await;
+}

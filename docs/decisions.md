@@ -3543,7 +3543,7 @@ admission boundary:
 - Gateway operation identity includes the server request id. An independent
   identical body owns a separate watch; the HTTP `Idempotency-Key` claim resolves
   explicit replay before admission and continues to return its original answer.
-- Lock key advisory and organization admission before subscription lifecycle,
+- Lock key advisory, organization admission and the operation's organization FK share before subscription lifecycle,
   then ledger append before key/member/team rows. Settlement takes the same key
   advisory before subscription/append and its usage forecast. Transactional
   calendar, anchor, immutable hold and legacy closing receipt reads use the

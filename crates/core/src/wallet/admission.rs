@@ -31,6 +31,11 @@ impl Wallet {
         self.lock_key_settlement_in(tx, key).await?;
         sqlx::query("SELECT pg_advisory_xact_lock_shared(hashtextextended($2 || organization_id::text,0)) FROM oxsum.api_keys WHERE key_id=$1")
             .bind(key).bind(ORG_ADMISSION_LOCK).execute(&mut **tx).await?;
+        // Operation insertion later needs this FK lock. Take it before the
+        // key row: personal key editors own the organization before the key,
+        // so deferring it until INSERT would invert their row-lock order.
+        sqlx::query("SELECT o.organization_id FROM oxsum.organizations o JOIN oxsum.api_keys k USING(organization_id) WHERE k.key_id=$1 FOR KEY SHARE OF o")
+            .bind(key).fetch_optional(&mut **tx).await?;
         Ok(())
     }
 
