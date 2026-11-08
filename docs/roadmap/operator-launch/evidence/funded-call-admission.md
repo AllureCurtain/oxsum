@@ -32,6 +32,13 @@ recovery with failure/retry, one-connection money/quota/free recovery, distinct-
 small-pool bursts, controlled lock order, both winners of streaming cancellation
 versus recovery, and plan-dunning overage-only behavior.
 
+The implementation is rebased onto shared borrowed ledger reads #856 / PR #860
+(`4fc5581a`). Its duplicate transaction-read helper was removed; canonical entry
+verification, hold decoding, calendars and receipt reads use that integrated
+implementation. Migration 0116 remains unregistered until the preceding payment
+migration 0115 integrates. This dependency reconciliation is source work and does
+not constitute executed #849 validation.
+
 Results, exact runtime SHA, final focused/combined regression gates and review
 will be recorded after execution. Customer readiness follows this repair and the
 separate cancellation boundary issue #854.
