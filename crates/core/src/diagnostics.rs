@@ -3,8 +3,8 @@
 use serde::Serialize;
 use sqlx::Row;
 
-use crate::Db;
 use crate::error::WalletError;
+use crate::{CLAIM_LEASE_SECS, Db, LEASE_SECS, METERING_SURFACE};
 
 /// Fixed operational counts from one database snapshot; no customer identifiers.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -34,7 +34,7 @@ pub struct DiagnosticCounts {
     pub jobs_dead: i64,
     /// Created, leased or running request operations.
     pub operations_open: i64,
-    /// Open operations with absent or expired leases; candidates for recovery.
+    /// Operations eligible for the gateway lease sweeper; metering is excluded.
     pub operation_leases_expired: i64,
     /// Open hold watch rows without scanning tenant ledgers.
     pub holds_open: i64,
@@ -112,10 +112,10 @@ impl Db {
              (SELECT count(*) FROM oxsum.jobs WHERE status='pending' AND run_at>now()) AS jobs_scheduled, \
              (SELECT count(*) FROM oxsum.jobs WHERE status='pending' AND run_at<=now()) AS jobs_due, \
              (SELECT count(*) FROM oxsum.jobs WHERE status='running') AS jobs_running, \
-             (SELECT count(*) FROM oxsum.jobs WHERE status='running' AND (claimed_at IS NULL OR claimed_at<=now()-interval '5 minutes')) AS job_claims_expired, \
+             (SELECT count(*) FROM oxsum.jobs WHERE status='running' AND (claimed_at IS NULL OR claimed_at<=now()-($1*interval '1 second'))) AS job_claims_expired, \
              (SELECT count(*) FROM oxsum.jobs WHERE status='dead') AS jobs_dead, \
              (SELECT count(*) FROM oxsum.request_operations WHERE state IN ('created','leased','running')) AS operations_open, \
-             (SELECT count(*) FROM oxsum.request_operations WHERE state IN ('created','leased','running') AND (leased_until IS NULL OR leased_until<now())) AS operation_leases_expired, \
+             (SELECT count(*) FROM oxsum.request_operations WHERE surface<>$3 AND ((state IN ('leased','running') AND leased_until<now()) OR (state='created' AND created_at<now()-($2*interval '1 second')))) AS operation_leases_expired, \
              (SELECT count(*) FROM oxsum.open_holds WHERE true) AS holds_open, \
              (SELECT count(*) FROM oxsum.open_holds WHERE dead_at IS NOT NULL) AS holds_dead, \
              (SELECT count(*) FROM oxsum.payment_orders WHERE status='paid') AS paid_orders_unfulfilled, \
@@ -127,6 +127,9 @@ impl Db {
              (SELECT count(*) FROM oxsum.deposit_refunds WHERE state IN ('unknown','pending') AND next_attempt_at<=now()) AS legacy_refunds_retry_due, \
              (SELECT count(*) FROM oxsum.deposit_refunds WHERE state IN ('unknown','pending') AND next_attempt_at IS NULL) AS legacy_refunds_need_review",
         )
+        .bind(CLAIM_LEASE_SECS)
+        .bind(LEASE_SECS)
+        .bind(METERING_SURFACE)
         .fetch_one(&mut *tx)
         .await?;
         let counts = DiagnosticCounts {

@@ -15526,7 +15526,7 @@ export interface components {
             operationsOpen: number;
             /**
              * Format: int64
-             * @description Open operations whose lease is null or before snapshot time; recoverable candidates, not proven failures.
+             * @description Gateway sweeper candidates: non-metering leased/running operations with expired leases, or created operations older than the gateway lease duration. Fresh admissions and metering are excluded.
              */
             operationLeasesExpired: number;
             /**
