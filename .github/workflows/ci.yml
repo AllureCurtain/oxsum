@@ -140,6 +140,8 @@ jobs:
           python3 scripts/test-candidate-promotion.py
           python3 scripts/test-candidate-deploy.py
           python3 scripts/test-candidate-sdk.py
+      - name: Test sanitized operator diagnostics
+        run: python3 scripts/test-operator-diagnostics.py
       - name: Test isolated example runner failure paths
         run: |
           python3 -m venv /tmp/oxsum-example-test-venv
