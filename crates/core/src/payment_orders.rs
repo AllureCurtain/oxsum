@@ -1043,7 +1043,7 @@ impl Db {
                EXISTS(SELECT 1 FROM oxsum.plan_periods p WHERE p.authorization_kind='payment_order' \
                  AND p.authorization_ref=payment_orders.order_id) OR (plan_payment IS NOT NULL \
                AND NOT EXISTS(SELECT 1 FROM oxsum.refunds r WHERE r.order_id=payment_orders.order_id \
-                 AND r.state IN ('requested','provider_pending','succeeded')))) \
+                 AND (r.state IN ('requested','provider_pending','succeeded') OR EXISTS(SELECT 1 FROM oxsum.plan_refund_effects e WHERE e.refund_id=r.refund_id))))) \
              ORDER BY created_at LIMIT $1"
         ))
         .bind(limit)

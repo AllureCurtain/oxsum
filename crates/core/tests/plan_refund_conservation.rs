@@ -345,7 +345,7 @@ async fn issued_note(
         "INSERT INTO oxsum.refunds\
          (refund_id,order_id,organization_id,business_id,amount_minor,\
           display_amount_minor,display_currency,reason,request_key,state)\
-         VALUES($1,$2,$3,$4,$5,$6,'USD',$7,$8,'requested')",
+         VALUES($1,$2,$3,$4,$5,$6,'USD',$7,$8,'succeeded')",
     )
     .bind(refund_id)
     .bind(order_id)
@@ -384,20 +384,10 @@ async fn note_state(pool: &PgPool, note_id: Uuid) -> String {
         .unwrap()
 }
 
-// ── H2: a mid-period plan-fee refund's note must be consumed by the close ────
-//
-// `settle_order_refund` books a plan-fee refund through the journal path. When
-// the journal is not yet written the note stays `issued`; the close's own
-// credit-note scan then looks for `state='applied'` — so a mid-period refund's
-// note is skipped, never lands a `discount` line and is never consumed. The
-// conserved figure: a confirmed refund discounts the period's bill exactly once.
-//
-// CONFIRMED, deferred to N11. Consuming the note as a receivable discount is
-// only half the correction — whether the refund also returns cash against the
-// paid order is the deferred/earned allocation the issue assigns to versioned
-// daily recognition. Run with `-- --ignored` to reproduce against current code.
+// H2/H3's full verified-event, pre/post-close, concurrency and historical
+// repair matrix lives in plan_refunds.rs. These short seams retain the original
+// source regressions with corrected confirmed-cash expectations.
 #[tokio::test]
-#[ignore = "N11 deferred/earned allocation pending; reproduces the confirmed defect"]
 async fn h2_a_mid_period_refund_discounts_the_closing_journal() {
     let Some(world) = world().await else { return };
     let pro = sold(
@@ -419,78 +409,48 @@ async fn h2_a_mid_period_refund_discounts_the_closing_journal() {
         )
         .await
         .unwrap();
-    let order_id = plan_order(&world, plan.customer_plan_id, 2500).await;
+    let order = plan_order(&world, plan.customer_plan_id, 2500).await;
     world
         .db
-        .activate_plan_period(order_id, plan.customer_plan_id)
+        .activate_plan_period(order, plan.customer_plan_id)
         .await
         .unwrap();
-
-    // The refund is confirmed mid-period — before the close writes the journal
-    // — and the journal path finds nothing to apply, so the note stays
-    // `issued`.
-    let (_refund_id, note_id) = issued_note(&world, order_id, 1000, "mid-period refund").await;
+    let (refund, note) = issued_note(&world, order, 1000, "confirmed mid-period refund").await;
     let applied = world
         .db
         .apply_refund_to_journal(
             &world.wallet,
-            order_id,
-            _refund_id,
-            note_id,
+            order,
+            refund,
+            note,
             1000,
-            "mid-period refund",
+            "refund",
             OffsetDateTime::now_utc().date(),
         )
         .await
         .unwrap();
-    assert!(applied.is_none(), "no journal exists yet to take the note");
-    assert_eq!(note_state(&world.pool, note_id).await, "issued");
-
+    assert_eq!(applied, None);
+    assert_eq!(note_state(&world.pool, note).await, "applied");
+    assert_eq!(
+        ledger_net(&world.pool, &world.tenant, "Assets:Cash").await,
+        -1500
+    );
+    assert_eq!(
+        ledger_net(&world.pool, &world.tenant, "Liabilities:UnearnedPlanFees").await,
+        1500
+    );
     end_period_ago(&world.pool, world.organization_id, 60).await;
     world.db.rollover_due_subscriptions().await.unwrap();
-    let journal = journals(&world.db, world.organization_id)
-        .await
-        .into_iter()
-        .find(|j| j.period_index == 0)
-        .unwrap();
-    let bill = detail(&world.db, world.organization_id, journal.journal_id).await;
-    eprintln!(
-        "H2: total={} note_state={} lines={:?}",
-        journal.total_minor,
-        note_state(&world.pool, note_id).await,
-        bill.lines
-            .iter()
-            .map(|l| (l.kind, l.amount_minor))
-            .collect::<Vec<_>>()
+    let journal = journals(&world.db, world.organization_id).await.remove(0);
+    assert_eq!((journal.total_minor, journal.settled_minor), (1500, 1500));
+    assert_eq!(
+        ledger_net(&world.pool, &world.tenant, "Assets:Receivables").await,
+        0
     );
-    // The refund must discount the bill exactly once and the note must be
-    // consumed — `applied`, never still `issued` nor applied twice.
-    let discounts: i64 = bill
-        .lines
-        .iter()
-        .filter(|l| l.kind == JournalLineKind::Discount)
-        .map(|l| -l.amount_minor)
-        .sum();
-    assert_eq!(discounts, 1000, "the mid-period refund discounts the bill");
-    assert_eq!(journal.total_minor, 1500);
-    assert_eq!(note_state(&world.pool, note_id).await, "applied");
 }
 
-// ── H3: a refund beyond the open receivable must return cash, not credit ─────
-//
-// `apply_refund_to_journal_in` caps the credit at `journal.total_minor` and, on
-// a `posted` (partially-paid) journal, books `debit Discounts / credit
-// Receivables` — shrinking what is still owed. When the refund exceeds the
-// open receivable the customer already paid `settled_minor` in cash; the
-// excess must come back as cash, not erase a receivable that was never owed.
-//
-// CONFIRMED, deferred to N11. The split between the receivable still open and
-// the cash already collected is the deferred/earned allocation the issue
-// assigns to versioned daily recognition. Run with `-- --ignored` to reproduce
-// against current code.
 #[tokio::test]
-#[ignore = "N11 deferred/earned allocation pending; reproduces the confirmed defect"]
-async fn h3_a_refund_past_the_open_receivable_returns_cash() {
+async fn h3_a_refund_on_a_partial_legacy_journal_returns_all_confirmed_cash() {
     let Some(world) = world().await else { return };
     let pro = sold(
         &world.db,
@@ -511,63 +471,49 @@ async fn h3_a_refund_past_the_open_receivable_returns_cash() {
         )
         .await
         .unwrap();
-    // Pay the exact fee, then retain the legacy overage charge to isolate a
-    // partially settled journal. H1 separately owns that overage defect.
-    let order_id = plan_order(&world, plan.customer_plan_id, 2500).await;
+    let order = plan_order(&world, plan.customer_plan_id, 2500).await;
     world
         .db
-        .activate_plan_period(order_id, plan.customer_plan_id)
+        .activate_plan_period(order, plan.customer_plan_id)
         .await
         .unwrap();
-    plan_payment::overage(
+    end_period_ago(&world.pool, world.organization_id, 60).await;
+    let journal_id = plan_payment::legacy_close(
         &world.db,
         world.organization_id,
         plan.customer_plan_id,
         1500,
     )
     .await;
-    end_period_ago(&world.pool, world.organization_id, 60).await;
     world.db.rollover_due_subscriptions().await.unwrap();
-    let journal = journals(&world.db, world.organization_id).await.remove(0);
-    assert_eq!(journal.state, JournalState::Posted);
-    assert_eq!(journal.total_minor - journal.settled_minor, 1500);
-    let receivable_before = ledger_net(&world.pool, &world.tenant, "Assets:Receivables").await;
-    let cash_before = ledger_net(&world.pool, &world.tenant, "Assets:Cash").await;
-
-    // Refund 2000 — more than the 1500 still owed. The 1500 discounts the
-    // receivable; the 500 over the open debt is money the customer already
-    // paid and must come back as cash.
-    let (refund_id, note_id) = issued_note(&world, order_id, 2000, "over-receivable refund").await;
+    let (refund, note) = issued_note(&world, order, 2000, "confirmed partial-journal refund").await;
     world
         .db
         .apply_refund_to_journal(
             &world.wallet,
-            order_id,
-            refund_id,
-            note_id,
+            order,
+            refund,
+            note,
             2000,
-            "over-receivable refund",
+            "refund",
             OffsetDateTime::now_utc().date(),
         )
         .await
         .unwrap();
-
-    let receivable = ledger_net(&world.pool, &world.tenant, "Assets:Receivables").await;
-    let cash = ledger_net(&world.pool, &world.tenant, "Assets:Cash").await;
-    let bill = detail(&world.db, world.organization_id, journal.journal_id).await;
-    eprintln!(
-        "H3: receivable {receivable_before}->{receivable} cash {cash_before}->{cash} \
-         total={} settled={} state={:?}",
-        bill.journal.total_minor, bill.journal.settled_minor, bill.journal.state
-    );
-    // The receivable nets to zero — never negative — and the overage returns
-    // as cash. A credit-past-owed books the customer a refund they can spend.
-    assert_eq!(receivable, 0, "the receivable cannot go below what is owed");
+    let journal = detail(&world.db, world.organization_id, journal_id)
+        .await
+        .journal;
+    assert_eq!((journal.total_minor, journal.settled_minor), (2000, 500));
     assert_eq!(
-        cash - cash_before,
-        500,
-        "the over-receivable part of the refund returns as cash"
+        ledger_net(&world.pool, &world.tenant, "Assets:Cash").await,
+        -500
     );
+    assert_eq!(
+        ledger_net(&world.pool, &world.tenant, "Assets:Receivables").await,
+        -1500
+    );
+    let statement = statements(&world.db, world.organization_id).await.remove(0);
+    assert_eq!((statement.total_minor, statement.paid_minor), (2000, 500));
 }
 
 // ── H4: the statement's charge total excludes payment lines ─────────────────

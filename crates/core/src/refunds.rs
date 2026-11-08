@@ -319,7 +319,7 @@ async fn committed_minor_in(
 ) -> Result<i64, WalletError> {
     let committed: i64 = sqlx::query_scalar(
         "SELECT COALESCE(SUM(amount_minor),0)::bigint FROM oxsum.refunds \
-         WHERE order_id=$1 AND state IN ('requested','provider_pending','succeeded')",
+         WHERE order_id=$1 AND (state IN ('requested','provider_pending','succeeded') OR EXISTS(SELECT 1 FROM oxsum.plan_refund_effects e WHERE e.refund_id=refunds.refund_id))",
     )
     .bind(order_id)
     .fetch_one(&mut **tx)
@@ -335,7 +335,7 @@ async fn committed_display_minor_in(
 ) -> Result<i64, WalletError> {
     let committed: i64 = sqlx::query_scalar(
         "SELECT COALESCE(SUM(display_amount_minor),0)::bigint FROM oxsum.refunds \
-         WHERE order_id=$1 AND state IN ('requested','provider_pending','succeeded')",
+         WHERE order_id=$1 AND (state IN ('requested','provider_pending','succeeded') OR EXISTS(SELECT 1 FROM oxsum.plan_refund_effects e WHERE e.refund_id=refunds.refund_id))",
     )
     .bind(order_id)
     .fetch_one(&mut **tx)
@@ -532,7 +532,7 @@ impl Db {
         let total: i64 = row.try_get("amount_minor")?;
         let committed: i64 = sqlx::query_scalar(
             "SELECT COALESCE(SUM(amount_minor),0)::bigint FROM oxsum.refunds \
-             WHERE order_id=$1 AND state IN ('requested','provider_pending','succeeded')",
+             WHERE order_id=$1 AND (state IN ('requested','provider_pending','succeeded') OR EXISTS(SELECT 1 FROM oxsum.plan_refund_effects e WHERE e.refund_id=refunds.refund_id))",
         )
         .bind(order_id)
         .fetch_one(self.pool())
@@ -887,7 +887,7 @@ impl Db {
         };
         drop(tx);
         let late = refund.state != "provider_pending";
-        if matches!(refund.state.as_str(), "succeeded" | "declined") {
+        if refund.state == "declined" {
             return Ok(());
         }
         // The order's purpose routes the correction: a `plan_period` refund
@@ -900,6 +900,9 @@ impl Db {
                 .fetch_optional(self.pool())
                 .await?;
         let plan_fee = purpose.as_deref() == Some("plan_period");
+        if refund.state == "succeeded" && !plan_fee {
+            return Ok(());
+        }
         if purpose.as_deref() == Some("bundle") {
             // Cancel before the terminal mark. A crash retries this idempotent
             // burn before recording success, and held releases burn later too.
@@ -965,44 +968,27 @@ impl Db {
             .execute(&mut *tx)
             .await?;
         }
-        // A plan-fee refund's correction lands on the journal the order
-        // settled: the note's `discount` line, the `Discounts → Cash|Receivables`
-        // entry and the note's `applied` mark in this same transaction (issue
-        // #611). A journal not written yet — a mid-period refund — is picked
-        // up by the close's own credit-note scan instead.
+        // Plan cash, source allocation, credit note and customer documents
+        // share this transaction. Recovery of a succeeded legacy refund follows
+        // the same source-bound path instead of returning before its missing leg.
         if plan_fee {
-            let note = sqlx::query_scalar::<_, Uuid>(
-                "SELECT credit_note_id FROM oxsum.credit_notes \
-                 WHERE refund_id=$1 AND state='issued'",
-            )
-            .bind(refund.refund_id)
-            .fetch_optional(&mut *tx)
-            .await?;
-            if let Some(note_id) = note {
-                let applied = self
-                    .apply_refund_to_journal_in(
-                        &mut tx,
-                        wallet,
-                        refund.order_id,
-                        refund.refund_id,
-                        note_id,
-                        refund.amount_minor,
-                        &refund.reason,
-                        on,
-                    )
-                    .await?;
-                if applied.is_some() {
-                    // The journal path applies the note itself — the generic
-                    // apply below is skipped so the entry id it records is the
-                    // journal correction's, not a phantom take-back.
-                    entry_id = None;
-                }
-            }
+            let allocation = self
+                .apply_plan_refund_in(
+                    &mut tx,
+                    wallet,
+                    refund.refund_id,
+                    Some(receipt.id),
+                    current.state == "succeeded",
+                    true,
+                    on,
+                )
+                .await?;
+            entry_id = allocation.entry_id;
         }
         // The note applies with its entry id when the take-back booked; when
         // the pool could not carry it, `issued` stays and the audit detail
         // records the compensation the ledger owes but cannot carry.
-        if let Some(entry_id) = entry_id {
+        if let Some(entry_id) = entry_id.filter(|_| !plan_fee) {
             sqlx::query(
                 "UPDATE oxsum.credit_notes SET state='applied',entry_id=$2,updated_at=now() \
                  WHERE refund_id=$1 AND state='issued'",

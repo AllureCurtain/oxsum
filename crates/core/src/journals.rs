@@ -798,17 +798,24 @@ impl Db {
             }
         }
 
-        // Discount lines are written from two places: the close's own scan of
-        // credit notes applied against the authorizing order (mid-period
-        // refunds on a journal that did not exist yet), and
-        // `apply_refund_to_journal_in` appending a note's line at settle time
-        // — the second path also posts the ledger correction.
+        // Pre-close cash returns already reduced deferred funding. Their
+        // immutable allocation, including a late success on a reversed note,
+        // is the source of the closing credit; note state alone is not cash.
         if period.authorization_kind == "payment_order" {
+            let unknown: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM oxsum.credit_notes n JOIN oxsum.refunds r ON r.refund_id=n.refund_id WHERE n.order_id=$1 AND (n.state='applied' OR r.state='succeeded') AND NOT EXISTS(SELECT 1 FROM oxsum.plan_refund_effects e WHERE e.refund_id=r.refund_id))")
+                .bind(period.authorization_ref).fetch_one(&mut **tx).await?;
+            if unknown {
+                return Err(WalletError::Conflict(
+                    "recover the original plan refund before closing its period".into(),
+                ));
+            }
             let notes = sqlx::query(
-                "SELECT credit_note_id, amount_minor, reason FROM oxsum.credit_notes \
-                 WHERE order_id=$1 AND state='applied'",
+                "SELECT n.credit_note_id, e.deferred_minor AS amount_minor, n.reason \
+                 FROM oxsum.plan_refund_effects e JOIN oxsum.credit_notes n USING(credit_note_id) \
+                 WHERE e.order_id=$1 AND e.plan_period_id=$2 AND e.journal_id IS NULL AND e.deferred_minor>0",
             )
             .bind(period.authorization_ref)
+            .bind(period.plan_period_id)
             .fetch_all(&mut **tx)
             .await?;
             for note in &notes {
@@ -961,8 +968,21 @@ impl Db {
                 let status: String = order.try_get("status")?;
                 // Only money that arrived may settle: paid or fulfilled orders.
                 if matches!(status.as_str(), "paid" | "fulfilled") {
-                    let prepaid = wallet.unearned_plan_fees_in(&mut *tx.as_mut()).await?;
-                    let apply = total.min(prepaid.max(0)).min(amount);
+                    let prepaid = wallet
+                        .plan_source_credit_in(
+                            tx,
+                            &format!("payment-order/{}/prepay", period.authorization_ref),
+                            crate::wallet::UNEARNED_PLAN_FEES,
+                        )
+                        .await?;
+                    if prepaid != amount {
+                        return Err(WalletError::Conflict(
+                            "original period prepayment requires finance review".into(),
+                        ));
+                    }
+                    let refunded:i64=sqlx::query_scalar("SELECT COALESCE(SUM(cash_minor),0)::bigint FROM oxsum.plan_refund_effects WHERE order_id=$1")
+                        .bind(period.authorization_ref).fetch_one(&mut **tx).await?;
+                    let apply = total.min(amount.saturating_sub(refunded).max(0));
                     if apply > 0 {
                         wallet
                             .plan_prepay_settle_in(tx, &journal_id, apply, on)
@@ -1027,102 +1047,48 @@ impl Db {
         Ok(Some(journal_id))
     }
 
-    /// The journal half of `settle_order_refund` for a `planPeriod` order: the
-    /// wallet never carried the plan-fee cash, so instead of `refund_debit`
-    /// the correction books `debit Discounts / credit Cash` (paid journal —
-    /// the PSP returned the money) or `debit Discounts / credit Receivables`
-    /// (posted — less still owed), and appends the refund's credit note as a
-    /// `discount` line on the journal it paid or prepaid. Returns the journal
-    /// the note landed on — `None` when the order's journal is not written
-    /// yet (a mid-period refund; the close picks the applied note up).
-    ///
-    /// Runs inside the caller's transaction beside the note's `applied` mark.
-    ///
-    /// # Errors
-    ///
-    /// Storage failures surface as [`WalletError`].
+    /// Append a source-linked refund correction and synchronize the original
+    /// statement. Payment counters describe net original cash, never debt relief.
     #[allow(clippy::too_many_arguments)]
-    pub(crate) async fn apply_refund_to_journal_in(
+    pub(crate) async fn correct_refunded_journal_in(
         &self,
         tx: &mut Transaction<'_, Postgres>,
-        wallet: &crate::Wallet,
-        order_id: Uuid,
-        refund_id: Uuid,
+        journal_id: Uuid,
         credit_note_id: Uuid,
-        amount_minor: i64,
+        credit: i64,
+        old_credit: i64,
+        settled: i64,
         reason: &str,
-        on: time::Date,
-    ) -> Result<Option<Uuid>, WalletError> {
-        // The journal this order settled — `paid_order_id` — or the journal
-        // its prepayment authorized, when the bill is still open.
-        let journal = sqlx::query(&format!(
-            "SELECT {JOURNAL_COLS} FROM oxsum.invoice_journals j \
-             WHERE (j.paid_order_id=$1 \
-                 OR EXISTS (SELECT 1 FROM oxsum.plan_periods p \
-                     WHERE p.plan_period_id=j.plan_period_id \
-                       AND p.authorization_kind='payment_order' \
-                       AND p.authorization_ref=$1)) \
-               AND j.state IN ('posted','paid') \
-             ORDER BY j.period_index DESC LIMIT 1 FOR UPDATE OF j"
-        ))
-        .bind(order_id)
-        .fetch_optional(&mut **tx)
-        .await?;
-        let Some(journal) = journal.map(|r| journal_from_row(&r)).transpose()? else {
-            return Ok(None);
-        };
-        let credit = amount_minor.min(journal.total_minor);
-        if credit <= 0 {
-            return Ok(Some(journal.journal_id));
-        }
-        insert_line_in(
-            tx,
-            journal.journal_id,
-            JournalLineKind::Discount,
-            -credit,
-            &format!("credit note {credit_note_id}: {reason}"),
-            Some(credit_note_id),
-        )
-        .await?;
-        let receipt = wallet
-            .plan_journal_refund_in(
+    ) -> Result<(), WalletError> {
+        let journal = journal_in(tx, journal_id)
+            .await?
+            .ok_or_else(|| invalid("refund journal disappeared"))?;
+        let adjustment = credit - old_credit;
+        if adjustment != 0 {
+            insert_line_in(
                 tx,
-                &journal.journal_id,
-                &refund_id,
-                credit,
-                journal.state == JournalState::Paid,
-                on,
+                journal_id,
+                JournalLineKind::Discount,
+                -adjustment,
+                &format!("cash refund allocation for note {credit_note_id}: {reason}"),
+                Some(credit_note_id),
             )
             .await?;
-        // `settled_minor` follows the total down on a paid journal — the
-        // correction leaves the bill fully covered, not partly repaid.
-        let settled = if journal.state == JournalState::Paid {
-            journal.total_minor - credit
-        } else {
-            journal.settled_minor.min(journal.total_minor - credit)
-        };
-        sqlx::query(
-            "UPDATE oxsum.invoice_journals \
-             SET total_minor=total_minor-$2, settled_minor=$3, updated_at=now() \
-             WHERE journal_id=$1",
-        )
-        .bind(journal.journal_id)
-        .bind(credit)
-        .bind(settled)
-        .execute(&mut **tx)
-        .await?;
-        // The note's applied mark carries the correction entry's id — the same
-        // place a wallet-funded refund records its take-back.
-        sqlx::query(
-            "UPDATE oxsum.credit_notes SET state='applied',entry_id=$2,updated_at=now() \
-             WHERE credit_note_id=$3 AND state='issued'",
-        )
-        .bind(refund_id)
-        .bind(receipt.entry_id.as_uuid())
-        .bind(credit_note_id)
-        .execute(&mut **tx)
-        .await?;
-        Ok(Some(journal.journal_id))
+        }
+        let total = journal
+            .total_minor
+            .checked_sub(adjustment)
+            .ok_or_else(|| invalid("refund total overflows"))?;
+        if total < 0 || settled < 0 || settled > total {
+            return Err(WalletError::Conflict(
+                "refund needs explicit journal allocation review".into(),
+            ));
+        }
+        sqlx::query("UPDATE oxsum.invoice_journals SET total_minor=$2,settled_minor=$3,updated_at=now() WHERE journal_id=$1")
+            .bind(journal_id).bind(total).bind(settled).execute(&mut **tx).await?;
+        self.refund_statement_for_journal_in(tx, &journal, credit_note_id, credit, reason)
+            .await?;
+        Ok(())
     }
 
     /// The journal half of `record_order_dispute`: an opened dispute on a
@@ -1209,14 +1175,12 @@ impl Db {
         Ok(Some(journal.journal_id))
     }
 
-    /// A committed `apply_refund_to_journal_in` — the refund path's own
-    /// transaction-free entry, for callers that hold no transaction (the
-    /// integration tests drive the seam this way; `settle_order_refund`
-    /// stays on the `_in` variant inside its bigger write).
+    /// Applies one confirmed plan-refund source. Kept as a compatibility seam;
+    /// caller-supplied identities and amount must equal the persisted refund.
+    /// Before close the allocation is recorded without inventing a journal.
     ///
     /// # Errors
-    ///
-    /// Storage failures surface as [`WalletError`].
+    /// Unconfirmed or mismatched sources refuse; storage failures propagate.
     #[allow(clippy::too_many_arguments)]
     pub async fn apply_refund_to_journal(
         &self,
@@ -1225,24 +1189,20 @@ impl Db {
         refund_id: Uuid,
         credit_note_id: Uuid,
         amount_minor: i64,
-        reason: &str,
+        _reason: &str,
         on: time::Date,
     ) -> Result<Option<Uuid>, WalletError> {
         let mut tx = self.pool().begin().await?;
+        let matches:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM oxsum.refunds r JOIN oxsum.credit_notes n ON n.refund_id=r.refund_id WHERE r.refund_id=$1 AND r.order_id=$2 AND n.credit_note_id=$3 AND r.amount_minor=$4)")
+            .bind(refund_id).bind(order_id).bind(credit_note_id).bind(amount_minor).fetch_one(&mut *tx).await?;
+        if !matches {
+            return Err(invalid("refund source terms differ"));
+        }
         let applied = self
-            .apply_refund_to_journal_in(
-                &mut tx,
-                wallet,
-                order_id,
-                refund_id,
-                credit_note_id,
-                amount_minor,
-                reason,
-                on,
-            )
+            .apply_plan_refund_in(&mut tx, wallet, refund_id, None, false, true, on)
             .await?;
         tx.commit().await?;
-        Ok(applied)
+        Ok(applied.journal_id)
     }
 
     /// A committed `recharge_journal_dispute_in` — the same single-purpose

@@ -478,7 +478,7 @@ async fn a_refund_credits_the_journal() {
         "INSERT INTO oxsum.refunds\
          (refund_id,order_id,organization_id,business_id,amount_minor,\
           display_amount_minor,display_currency,reason,request_key,state)\
-         VALUES($1,$2,$3,$4,$5,$6,'USD',$7,$8,'requested')",
+         VALUES($1,$2,$3,$4,$5,$6,'USD',$7,$8,'succeeded')",
     )
     .bind(refund_id)
     .bind(order_id)

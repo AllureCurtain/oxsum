@@ -385,6 +385,10 @@ impl Db {
         .bind(net_terms.to_string())
         .execute(&mut **tx)
         .await?;
+        if total <= 0 {
+            sqlx::query("UPDATE oxsum.plan_statements SET state='paid',paid_at=now(),updated_at=now() WHERE statement_id=$1")
+                .bind(statement_id).execute(&mut **tx).await?;
+        }
         Ok(Some(statement_id))
     }
 
@@ -475,6 +479,70 @@ impl Db {
             .execute(&mut **tx)
             .await?;
         }
+        Ok(())
+    }
+
+    /// Restate a cash refund on the original period statement. Gross charges
+    /// and applied payments fall together; unrelated outstanding debt remains.
+    pub(crate) async fn refund_statement_for_journal_in(
+        &self,
+        tx: &mut Transaction<'_, Postgres>,
+        journal: &InvoiceJournal,
+        note_id: Uuid,
+        credit: i64,
+        reason: &str,
+    ) -> Result<(), WalletError> {
+        let row=sqlx::query(&format!("SELECT {STATEMENT_COLS} FROM oxsum.plan_statements WHERE journal_id=$1 AND period_index=$2 AND state<>'void' ORDER BY created_at LIMIT 1 FOR UPDATE"))
+            .bind(journal.journal_id).bind(journal.period_index).fetch_optional(&mut **tx).await?;
+        let Some(row) = row else {
+            return Err(WalletError::Conflict(
+                "refund original statement is missing; finance review required".into(),
+            ));
+        };
+        let statement = statement_from_row(&row)?;
+        let old_credit:i64=sqlx::query_scalar("SELECT -COALESCE(SUM(amount_minor),0)::bigint FROM oxsum.plan_statement_lines WHERE statement_id=$1 AND source_ref=$2 AND kind IN ('discount','refund_credit')")
+            .bind(statement.statement_id).bind(note_id).fetch_one(&mut **tx).await?;
+        let old_reversal:i64=sqlx::query_scalar("SELECT COALESCE(SUM(amount_minor),0)::bigint FROM oxsum.plan_statement_lines WHERE statement_id=$1 AND source_ref=$2 AND kind='payment_applied'")
+            .bind(statement.statement_id).bind(note_id).fetch_one(&mut **tx).await?;
+        let reduction = credit - old_credit;
+        let reversal = credit - old_reversal;
+        let total = statement
+            .total_minor
+            .checked_sub(reduction)
+            .ok_or_else(|| invalid("statement refund total overflows"))?;
+        let paid = statement
+            .paid_minor
+            .checked_sub(reversal)
+            .ok_or_else(|| invalid("statement refund payment overflows"))?;
+        if total < 0 || paid < 0 || paid > total {
+            return Err(WalletError::Conflict(
+                "refund original statement allocations need finance review".into(),
+            ));
+        }
+        if reduction != 0 {
+            insert_line_in(
+                tx,
+                statement.statement_id,
+                StatementLineKind::RefundCredit,
+                -reduction,
+                &format!("confirmed cash refund: {reason}"),
+                Some(note_id),
+            )
+            .await?;
+        }
+        if reversal != 0 {
+            insert_line_in(
+                tx,
+                statement.statement_id,
+                StatementLineKind::PaymentApplied,
+                reversal,
+                "original payment returned in cash",
+                Some(note_id),
+            )
+            .await?;
+        }
+        sqlx::query("UPDATE oxsum.plan_statements SET total_minor=$2,paid_minor=$3,updated_at=now() WHERE statement_id=$1")
+            .bind(statement.statement_id).bind(total).bind(paid).execute(&mut **tx).await?;
         Ok(())
     }
 

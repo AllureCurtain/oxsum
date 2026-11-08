@@ -515,6 +515,42 @@ impl Wallet {
         Ok(wallet)
     }
 
+    /// Opens an already initialized ledger without migrations or bootstrap
+    /// writes. Operational previews must not run lazy reclassification merely
+    /// by reading historical source entries.
+    ///
+    /// # Errors
+    /// Missing schemas/accounts and storage failures require normal operator
+    /// initialization; this reader never creates a replacement ledger.
+    pub async fn open_existing(pool: PgPool, tenant_id: &str) -> Result<Self, WalletError> {
+        validate_tenant_id(tenant_id)?;
+        let ledger = LedgerId::new(format!("tenant-{tenant_id}")).map_err(invalid)?;
+        let store =
+            PostgresStore::<SCALE>::new(pool, ledger).in_schema(&format!("ledger_{tenant_id}"));
+        let registry = AccountRegistry::from_records(store.accounts().await?).map_err(invalid)?;
+        Ok(Self {
+            wallet: find_account(&registry, WALLET)?,
+            bonus: find_account(&registry, BONUS)?,
+            promo: find_account(&registry, PROMO)?,
+            promo_expiry: find_account(&registry, PROMO_EXPIRY)?,
+            credit_line: find_account(&registry, CREDIT_LINE)?,
+            facility: find_account(&registry, FACILITY)?,
+            cash: find_account(&registry, CASH)?,
+            revenue: find_account(&registry, REVENUE)?,
+            adjustments: find_account(&registry, ADJUSTMENTS)?,
+            receivables: find_account(&registry, RECEIVABLES)?,
+            plan_fees: find_account(&registry, PLAN_FEES)?,
+            discounts: find_account(&registry, DISCOUNTS)?,
+            unearned_plan_fees: find_account(&registry, UNEARNED_PLAN_FEES)?,
+            refund_payable: find_account(&registry, REFUND_PAYABLE)?,
+            store,
+            registry,
+            policy: LedgerPolicy::default(),
+            tenant_id: tenant_id.to_owned(),
+            key_queue: Arc::default(),
+        })
+    }
+
     /// The restartable body of [`open`](Self::open): schema, account registry
     /// and the lazy migrations, for the deadlock retry to re-run. Returns the
     /// converged registry; the caller's `store` is the same one throughout.
@@ -1275,48 +1311,165 @@ impl Wallet {
         }
     }
 
-    /// The correction a refund on a paid plan-fee journal books: `debit
-    /// Discounts / credit Cash` — revenue contra against money the PSP
-    /// returned. The wallet pools never carried the plan-fee cash, so unlike
-    /// `refund_debit` nothing draws them. For a `posted` (unpaid) journal the
-    /// correction is `debit Discounts / credit Receivables` — less owed. Keyed
-    /// `order-refund-plan/<refund>` so a retried settle replays the standing
-    /// entry; `journal_id` goes in the description so the entry names what it
-    /// corrected.
-    pub(crate) async fn plan_journal_refund_in(
+    /// Reads the actual legacy refund legs, never inferring cash from a mutable
+    /// journal state. Only the old Discounts/Cash-or-Receivables shape qualifies.
+    pub(crate) async fn legacy_plan_refund_in(
         &self,
         tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
-        journal_id: &uuid::Uuid,
-        refund_id: &uuid::Uuid,
-        minor: i64,
-        journal_paid: bool,
+        entry_id: Option<Uuid>,
+    ) -> Result<Option<crate::plan_refunds::LegacyPlanRefund>, WalletError> {
+        let Some(entry_id) = entry_id else {
+            return Ok(None);
+        };
+        let sql = format!(
+            "SELECT a.path,p.direction,p.amount_minor FROM ledger_{}.postings p JOIN ledger_{}.accounts a ON a.account_index=p.account_index JOIN ledger_{}.entries e ON e.entry_id=p.entry_id WHERE p.entry_id=$1 AND p.layer='settled' AND e.log_index IS NOT NULL",
+            self.tenant_id, self.tenant_id, self.tenant_id
+        );
+        let rows = sqlx::query(&sql)
+            .bind(entry_id)
+            .fetch_all(&mut **tx)
+            .await?;
+        if rows.is_empty() {
+            return Ok(None);
+        }
+        use sqlx::Row;
+        let mut old = crate::plan_refunds::LegacyPlanRefund {
+            entry_id,
+            cash: 0,
+            receivable: 0,
+            discount: 0,
+        };
+        for row in rows {
+            let path: String = row.try_get("path")?;
+            let direction: String = row.try_get("direction")?;
+            let amount: i64 = row.try_get("amount_minor")?;
+            let target = match (path.as_str(), direction.as_str()) {
+                (CASH, "C") => &mut old.cash,
+                (RECEIVABLES, "C") => &mut old.receivable,
+                (DISCOUNTS, "D") => &mut old.discount,
+                _ => {
+                    return Err(WalletError::Conflict(
+                        "legacy plan-refund entry has unsupported legs".into(),
+                    ));
+                }
+            };
+            *target = target
+                .checked_add(amount)
+                .ok_or_else(|| invalid("refund postings overflow"))?;
+        }
+        if old.cash.checked_add(old.receivable) != Some(old.discount) {
+            return Err(WalletError::Conflict(
+                "legacy plan-refund entry is not balanced".into(),
+            ));
+        }
+        Ok(Some(old))
+    }
+
+    /// Original source entries, read through this transaction's snapshot.
+    pub(crate) async fn plan_source_credit_in(
+        &self,
+        tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+        key: &str,
+        path: &str,
+    ) -> Result<i64, WalletError> {
+        let sql = format!(
+            "SELECT COALESCE(SUM(p.amount_minor),0)::bigint FROM ledger_{}.postings p JOIN ledger_{}.accounts a ON a.account_index=p.account_index JOIN ledger_{}.entries e ON e.entry_id=p.entry_id WHERE p.entry_id=$1 AND a.path=$2 AND p.layer='settled' AND p.direction='C' AND e.log_index IS NOT NULL",
+            self.tenant_id, self.tenant_id, self.tenant_id
+        );
+        Ok(sqlx::query_scalar(&sql)
+            .bind(entry_id_for(key).as_uuid())
+            .bind(path)
+            .fetch_one(&mut **tx)
+            .await?)
+    }
+
+    /// The original prepayment allocation, retained even after a buggy refund
+    /// lowered a journal's mutable settled counter.
+    pub(crate) async fn plan_journal_prepaid_in(
+        &self,
+        tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+        journal_id: Uuid,
+    ) -> Result<i64, WalletError> {
+        self.plan_source_credit_in(
+            tx,
+            &format!("plan-journal/{journal_id}/prepay-settle"),
+            RECEIVABLES,
+        )
+        .await
+    }
+
+    /// Actual chargeback cash entries tied to this order, including a crash
+    /// after posting and before its dispute row became terminal.
+    pub(crate) async fn plan_order_chargebacks_in(
+        &self,
+        tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+        order_id: Uuid,
+    ) -> Result<i64, WalletError> {
+        let ids: Vec<Uuid> =
+            sqlx::query_scalar("SELECT dispute_id FROM oxsum.disputes WHERE order_id=$1")
+                .bind(order_id)
+                .fetch_all(&mut **tx)
+                .await?;
+        let mut total = 0i64;
+        for id in ids {
+            let amount = self
+                .plan_source_credit_in(tx, &format!("dispute-recharge/{id}"), CASH)
+                .await?;
+            total = total
+                .checked_add(amount)
+                .ok_or_else(|| invalid("chargeback amount overflows"))?;
+        }
+        Ok(total)
+    }
+
+    /// Post the desired cash allocation minus its retained legacy legs. The
+    /// exception debit is explicit reconciliation suspense, never customer debt.
+    pub(crate) async fn plan_refund_cash_in(
+        &self,
+        tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+        allocation: &crate::PlanRefundRecovery,
+        old: Option<&crate::plan_refunds::LegacyPlanRefund>,
         on: Date,
     ) -> Result<Receipt, WalletError> {
-        let amt = positive(minor)?;
-        let key = format!("order-refund-plan/{refund_id}");
+        let key = format!("plan-refund-cash/{}", allocation.refund_id);
         let entry_id = entry_id_for(&key);
         if let Some(stored) = self.store.get(entry_id).await? {
             return Ok(stored_receipt(&stored));
         }
-        let mut draft = Entry::<Draft, SCALE>::new(entry_id, idem(&key)?, on)
-            .with_description(description_of(&format!(
-                "plan fee journal {journal_id}: refund correction"
-            ))?)
-            .debit(self.discounts, amt, currency());
-        draft = if journal_paid {
-            draft.credit(self.cash, amt, currency())
-        } else {
-            draft.credit(self.receivables, amt, currency())
-        };
-        match self.append_in(tx, draft).await {
-            Err(WalletError::Conflict(_)) => match self.store.get(entry_id).await? {
-                Some(stored) => Ok(stored_receipt(&stored)),
-                None => Err(WalletError::Conflict(format!(
-                    "idempotency key {key:?} is already taken"
-                ))),
-            },
-            other => other,
+        let old_cash = old.map_or(0, |v| v.cash);
+        let old_ar = old.map_or(0, |v| v.receivable);
+        let old_discount = old.map_or(0, |v| v.discount);
+        let legs = [
+            (self.unearned_plan_fees, allocation.deferred_minor),
+            (self.discounts, allocation.earned_minor - old_discount),
+            (self.refund_payable, allocation.payable_minor),
+            (self.adjustments, allocation.unallocated_minor),
+            (self.receivables, old_ar),
+            (self.cash, old_cash - allocation.cash_minor),
+        ];
+        if legs.iter().all(|(_, amount)| *amount == 0) {
+            let previous = old.ok_or_else(|| invalid("refund allocation has no source legs"))?;
+            let stored = self
+                .store
+                .get(EntryId::from_uuid(previous.entry_id))
+                .await?
+                .ok_or_else(|| invalid("legacy refund entry disappeared"))?;
+            return Ok(stored_receipt(&stored));
         }
+        let mut draft = Entry::<Draft, SCALE>::new(entry_id, idem(&key)?, on).with_description(
+            description_of(&format!(
+                "confirmed plan refund {}: original order {}; unallocated {}",
+                allocation.refund_id, allocation.order_id, allocation.unallocated_minor
+            ))?,
+        );
+        for (account, signed) in legs {
+            if signed > 0 {
+                draft = draft.debit(account, Credits::from_minor(signed), currency());
+            } else if signed < 0 {
+                draft = draft.credit(account, Credits::from_minor(-signed), currency());
+            }
+        }
+        self.append_in(tx, draft).await
     }
 
     /// Restores a plan-fee receivable a lost dispute clawed back: `debit
@@ -1468,16 +1621,6 @@ impl Wallet {
             },
             other => other.map(Some),
         }
-    }
-
-    /// The prepayment balance a customer plan still holds: `UnearnedPlanFees`'s
-    /// settled credits minus debits — what a period close may reclassify into
-    /// a receivable before any further order payment is needed.
-    pub(crate) async fn unearned_plan_fees_in(
-        &self,
-        conn: &mut sqlx::PgConnection,
-    ) -> Result<i64, WalletError> {
-        self.settled_net_in(conn, self.unearned_plan_fees).await
     }
 
     /// The promo pool's settled balance — the bound a `promo_credit` journal
