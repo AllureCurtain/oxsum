@@ -52,6 +52,8 @@ Updated: 2026-11-08
 - [ ] [#793](https://github.com/AllureCurtain/oxsum/issues/793) — Restore published-bundle replay and historical payment upgrade preservation; 14 PostgreSQL checks and strict workspace Clippy passed, integration pending.
 - [x] [#794](https://github.com/AllureCurtain/oxsum/issues/794) — Reconcile integrated progress and remaining acceptance; integrated in PR #796.
 - [ ] [#795](https://github.com/AllureCurtain/oxsum/issues/795) — Apply closing plan prepayments to statements once and retain payment-source evidence; 55 focused PostgreSQL checks, baseline failure reproduction and strict Clippy passed. Review/integration pending; H1/H2/H3 remain N11 defects.
+- [ ] [#799](https://github.com/AllureCurtain/oxsum/issues/799) — Reconcile current checkout authority descriptions; source, generated-contract and link checks passed, integration pending.
+- [ ] [#800](https://github.com/AllureCurtain/oxsum/issues/800) — Replace undefined OpenAPI security requirements with the credential classes each route actually accepts.
 
 - [x] [#723](https://github.com/AllureCurtain/oxsum/issues/723) — Serialized promo writers on the ledger append advisory lock before their promo row locks, fixing the post-merge hold/expiry deadlock; integrated in PR #724.
 
