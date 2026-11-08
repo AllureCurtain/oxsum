@@ -739,7 +739,7 @@ async fn a_lost_dispute_recharges_the_drawn_receivable() {
             &owner,
             dispute.dispute_id,
             DisputeResolution::Lost,
-            None,
+            Some("chargeback upheld"),
             "lost-1",
             on,
         )

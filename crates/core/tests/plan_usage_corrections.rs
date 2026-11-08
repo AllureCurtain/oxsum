@@ -884,6 +884,98 @@ async fn later_chargebacks_retain_cash_and_review_without_double_consuming_corre
 }
 
 #[tokio::test]
+async fn corrected_source_chargeback_rolls_back_when_resolution_audit_fails() {
+    let Some(w) = world(FEE + USAGE).await else {
+        return;
+    };
+    run(&w, true).await;
+    let external = Uuid::new_v4().to_string();
+    let receipt = source_event(
+        &w,
+        w.order,
+        oxsum_core::MerchantEventKind::Dispute,
+        &external,
+        250,
+    )
+    .await;
+    w.db.apply_refund_event(&w.wallet, &receipt, OffsetDateTime::now_utc().date())
+        .await
+        .unwrap();
+    let dispute: Uuid =
+        sqlx::query_scalar("SELECT dispute_id FROM oxsum.disputes WHERE provider_dispute_id=$1")
+            .bind(external)
+            .fetch_one(w.db.pool())
+            .await
+            .unwrap();
+    let cash = net(&w, "Assets:Cash").await;
+    let payable = net(&w, "Liabilities:RefundPayable").await;
+    let suspense = net(&w, "Equity:Adjustments").await;
+    let log = w.wallet.log_size().await.unwrap();
+    let function = format!("fail_corrected_dispute_{}", Uuid::new_v4().simple());
+    sqlx::query(&format!("CREATE FUNCTION oxsum.{function}() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN IF NEW.action='dispute.resolve' AND NEW.target='{dispute}' THEN RAISE EXCEPTION 'injected corrected-source audit failure'; END IF; RETURN NEW; END $$"))
+        .execute(w.db.pool()).await.unwrap();
+    sqlx::query(&format!("CREATE TRIGGER {function} BEFORE INSERT ON oxsum.finance_audit FOR EACH ROW EXECUTE FUNCTION oxsum.{function}()"))
+        .execute(w.db.pool()).await.unwrap();
+    let key = format!("corrected-dispute-{dispute}");
+    assert!(
+        w.db.resolve_order_dispute(
+            &w.wallet,
+            &w.owner,
+            dispute,
+            oxsum_core::DisputeResolution::Lost,
+            Some("external loss"),
+            &key,
+            OffsetDateTime::now_utc().date()
+        )
+        .await
+        .is_err()
+    );
+    assert_eq!(net(&w, "Assets:Cash").await, cash);
+    assert_eq!(net(&w, "Liabilities:RefundPayable").await, payable);
+    assert_eq!(net(&w, "Equity:Adjustments").await, suspense);
+    assert_eq!(w.wallet.log_size().await.unwrap(), log);
+    let state: String = sqlx::query_scalar("SELECT state FROM oxsum.disputes WHERE dispute_id=$1")
+        .bind(dispute)
+        .fetch_one(w.db.pool())
+        .await
+        .unwrap();
+    assert_eq!(state, "opened");
+    sqlx::query(&format!("DROP TRIGGER {function} ON oxsum.finance_audit"))
+        .execute(w.db.pool())
+        .await
+        .unwrap();
+    sqlx::query(&format!("DROP FUNCTION oxsum.{function}()"))
+        .execute(w.db.pool())
+        .await
+        .unwrap();
+    for _ in 0..2 {
+        w.db.resolve_order_dispute(
+            &w.wallet,
+            &w.owner,
+            dispute,
+            oxsum_core::DisputeResolution::Lost,
+            Some("external loss"),
+            &key,
+            OffsetDateTime::now_utc().date(),
+        )
+        .await
+        .unwrap();
+    }
+    assert_eq!(net(&w, "Assets:Cash").await, cash + FEE);
+    assert_eq!(net(&w, "Liabilities:RefundPayable").await, payable);
+    assert_eq!(net(&w, "Equity:Adjustments").await, suspense - FEE);
+    assert_eq!(w.wallet.log_size().await.unwrap(), log + 1);
+    let audits: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM oxsum.finance_audit WHERE action='dispute.resolve' AND target=$1",
+    )
+    .bind(dispute.to_string())
+    .fetch_one(w.db.pool())
+    .await
+    .unwrap();
+    assert_eq!(audits, 1);
+}
+
+#[tokio::test]
 async fn a_later_void_preserves_correction_payable_and_adds_only_retained_collection() {
     for statement_review in [false, true] {
         let Some(w) = world(FEE + USAGE).await else {
