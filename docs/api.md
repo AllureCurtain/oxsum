@@ -572,6 +572,24 @@ Mutation, current authority, audit and stable result commit atomically; exact re
 
 ### Business merchant configuration (`/api/v1/business/merchants`)
 
+`GET /api/v1/business/checkout-routes` reads the three rail selections under
+ReportsRead. `POST` requires owner MerchantSecretsWrite, `idempotencyKey`,
+`reason`, `rail`, `expectedRevision` and nullable `merchantId`. A selected merchant
+must be enabled and owned by the business on that rail. Null explicitly disables
+it. Revision zero uses retained environment bootstrap until an owner selection
+exists; disabled explicit selections never fall back. Replay receipts retain the
+exact original route snapshot across later edits.
+
+Personal sessions read `GET /api/v1/checkout-options`: available rail/name/mode
+and route/merchant/version identities, without API URLs, account IDs or secrets.
+Consumption and machine credentials are refused. `POST /api/v1/orders` accepts
+optional `expectedCheckout: {revision, merchantId, versionId}`. Selection and
+version are rechecked under the same business lock that pins the new order;
+changed choices conflict before provider I/O. Existing exact-key orders recover
+the original merchant/version and SDK metadata through rotation, disablement and
+route changes. A different rail under the same key conflicts. Legacy callback
+coordinates stay unchanged. Availability is not external PSP certification.
+
 Use a personal session in business context. `GET /api/v1/business/merchants` returns the current version for each owned merchant, paged by `after` UUID and `limit` (1–100). Owner/admin/finance/viewer have redacted read access. `POST` requires current owner capability and `idempotencyKey`, `reason`, stable `name`, `rail`, `mode`, `accountId` and complete `config`. Creation starts disabled. Hyperswitch requires API/signing secrets plus public `publishableKey`/`sdkUrl`; Airwallex requires API/signing secrets plus `clientId`/`checkoutUrl`; direct Stripe requires API/signing secrets. Each API endpoint has an explicit destination policy; browser URLs require public HTTPS. Recognized test/live key prefixes cannot contradict the declared mode. Saving performs no network call.
 
 `GET /api/v1/business/merchants/{merchantId}/versions` returns immutable redacted history in ascending revision order (`after` revision and `limit`). `POST` on that path requires `idempotencyKey`, `reason` and the full replacement `config`; it appends and selects a version without changing identity or enablement. `POST .../{merchantId}/status` requires the key, reason and `enabled` boolean. Disabling prevents future checkout selection while pinned historical callbacks retain their original context. Mutations return `{id, merchantId, versionId, revision, enabled}`; an exact retry returns its original response after later edits, and a reused key with different content conflicts. Configured credentials, sealed envelopes and client IDs are never read back. These settings alone do not enable the T15/T16 payment-order/customer-checkout workflow.

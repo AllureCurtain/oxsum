@@ -523,3 +523,14 @@ allocation: the full cash outflow is retained as review suspense, naming the
 corrected journals, without consuming another period's deferred balance or
 automatically clearing the correction payable. The standing cash entry provides
 chargeback replay; refund effects retain their own idempotent allocation.
+
+### Explicit checkout routing (#835)
+
+`merchant_checkout_routes` stores the business/rail selection separately from
+merchant identity and legacy callback bootstrap. Owner selection, rotation,
+enablement and order pinning serialize on the business lock. New order creation
+rechecks the chosen route/version before inserting expected-payment terms.
+Existing-key recovery precedes new-route admission, and the winning order's
+immutable version provides the SDK/signing context. Immutable route mutation
+results preserve original replay receipts. Customer option reads expose no
+provider endpoints or credentials.
