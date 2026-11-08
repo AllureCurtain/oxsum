@@ -135,6 +135,7 @@ jobs:
         run: |
           python3 scripts/test-candidate-ci.py
           python3 scripts/test-candidate-bundle.py
+          python3 scripts/test-candidate-promotion.py
       - name: Test isolated example runner failure paths
         run: |
           python3 -m venv /tmp/oxsum-example-test-venv

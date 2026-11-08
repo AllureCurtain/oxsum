@@ -51,6 +51,7 @@ jobs:
     with:
       image_tag: ''
     permissions:
+      actions: read
       contents: read
       packages: write
 

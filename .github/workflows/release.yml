@@ -1,83 +1,101 @@
-# Publish-only release path (issue #619): build the release image and push it
-# to GHCR, with no deployment side effects — no SSH, no server touched. This
-# is the half of deploy.yml an operator (or a gate, or a release rehearsal)
-# can run by itself: `gh workflow run release.yml` publishes the tags and
-# stops there.
-#
-# `deploy.yml` calls this through `workflow_call` and adds its deploy job on
-# top, so the "publish" half exists exactly once. Manual only — neither
-# trigger fires on a push, and a test can never reach this workflow.
-
+# Publication only: transfer a successful candidate's original config/layer
+# bytes to GHCR and retain a digest receipt. No build, SDK publication or deploy.
 name: Release
 
 on:
   workflow_dispatch:
     inputs:
+      source_sha:
+        description: 'Full 40-character source SHA from the successful candidate'
+        required: true
+      candidate_run:
+        description: 'Successful release-candidate workflow run ID'
+        required: true
+      candidate_attempt:
+        description: 'Successful candidate run attempt'
+        required: true
       image_tag:
-        description: 'Extra tag to publish beside latest and sha-<sha> (e.g. v0.2.0)'
-        required: false
+        description: 'Explicit version to publish (vX.Y.Z or vX.Y.Z-suffix)'
+        required: true
   workflow_call:
     inputs:
+      # Optional in the callable schema only for the legacy deploy.yml caller.
+      # Missing selectors fail before download/publication; N13.c replaces it.
+      source_sha:
+        required: false
+        type: string
+      candidate_run:
+        required: false
+        type: string
+      candidate_attempt:
+        required: false
+        type: string
       image_tag:
-        description: 'Extra tag to publish beside latest and sha-<sha>'
         required: false
         type: string
 
+# Registry tags have no atomic compare-and-swap. Serialize all writes through
+# this workflow; other registry writers must honor the same operator lock.
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
+  group: oxsum-image-promotion
   cancel-in-progress: false
 
 jobs:
-  build-and-push:
-    name: build and push the release image
+  promote:
+    name: promote the verified candidate image
     runs-on: ubuntu-latest
-    timeout-minutes: 90
+    timeout-minutes: 45
     permissions:
+      actions: read
       contents: read
       packages: write
-    outputs:
-      image_tag: ${{ steps.tags.outputs.image_tag }}
     steps:
       - uses: actions/checkout@v7
-      # Same disk pressure as the other compile jobs: the release build is big.
-      - name: Free disk space
+      - name: Validate explicit selectors
+        env:
+          SOURCE_SHA: ${{ inputs.source_sha }}
+          CANDIDATE_RUN: ${{ inputs.candidate_run }}
+          CANDIDATE_ATTEMPT: ${{ inputs.candidate_attempt }}
+          IMAGE_TAG: ${{ inputs.image_tag }}
         run: |
-          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
-          sudo docker image prune --all --force
-          df -h
-      - uses: docker/setup-buildx-action@v4
-      - uses: docker/login-action@v4
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-      # The tag list for this run: `latest`, `sha-<sha>` (the concrete tag a
-      # deploy pulls and a rollback names) and the operator's extra tag when
-      # one was passed — build-push-action reads `tags` as a newline list.
-      - name: Resolve the tags
-        id: tags
+          python3 - <<'PY'
+          import os
+          import re
+          for name, pattern in {
+              "SOURCE_SHA": r"[0-9a-f]{40}",
+              "CANDIDATE_RUN": r"[1-9][0-9]*",
+              "CANDIDATE_ATTEMPT": r"[1-9][0-9]*",
+              "IMAGE_TAG": r"v[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z][0-9A-Za-z.-]*)?",
+          }.items():
+              if not re.fullmatch(pattern, os.environ[name]):
+                  raise SystemExit("Missing or invalid " + name + "; explicit candidate selectors are required")
+          PY
+      - name: Download the selected candidate bundle
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          CANDIDATE_RUN: ${{ inputs.candidate_run }}
         run: |
-          {
-            echo "ghcr.io/allurecurtain/oxsum:latest"
-            echo "ghcr.io/allurecurtain/oxsum:sha-${{ github.sha }}"
-            if [ -n "${{ inputs.image_tag }}" ]; then
-              echo "ghcr.io/allurecurtain/oxsum:${{ inputs.image_tag }}"
-            fi
-          } > tags.txt
-          cat tags.txt
-          echo "image_tag=sha-${{ github.sha }}" >> "$GITHUB_OUTPUT"
-          echo "tag_list=$(paste -sd, tags.txt)" >> "$GITHUB_OUTPUT"
-      - name: Build and push
-        uses: docker/build-push-action@v7
+          gh run download "$CANDIDATE_RUN" --repo "$GITHUB_REPOSITORY" \
+            --name candidate-bundle --dir candidate-bundle
+      - name: Validate provenance and promote original image bytes
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          OXSUM_REGISTRY_USERNAME: ${{ github.actor }}
+          OXSUM_REGISTRY_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          SOURCE_SHA: ${{ inputs.source_sha }}
+          CANDIDATE_RUN: ${{ inputs.candidate_run }}
+          CANDIDATE_ATTEMPT: ${{ inputs.candidate_attempt }}
+          IMAGE_TAG: ${{ inputs.image_tag }}
+        run: |
+          python3 scripts/promote-candidate.py candidate-bundle \
+            --sha "$SOURCE_SHA" --repository "$GITHUB_REPOSITORY" \
+            --run "$CANDIDATE_RUN" --attempt "$CANDIDATE_ATTEMPT" \
+            --destination "ghcr.io/allurecurtain/oxsum:$IMAGE_TAG" \
+            --receipt promotion-receipt.json
+      - name: Retain immutable promotion receipt
+        uses: actions/upload-artifact@v6
         with:
-          context: .
-          file: ./Dockerfile
-          push: true
-          # The build names its commit for GET /api/v1/version — .git is in
-          # the action's checkout but not the Docker context, so it travels
-          # as a build arg (crates/server/build.rs forwards it).
-          build-args: |
-            GIT_SHA=${{ github.sha }}
-          tags: ${{ steps.tags.outputs.tag_list }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          name: image-promotion-receipt
+          path: promotion-receipt.json
+          if-no-files-found: error
+          retention-days: 90
