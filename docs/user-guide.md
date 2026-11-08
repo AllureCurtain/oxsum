@@ -110,9 +110,51 @@ in memory, cleared on success/close and never stored by the app.
 It generates no model tokens and does not certify inference, upstream billing
 or customer sale prices. A pending result may mean the check was interrupted;
 replaying it does not send again. A deliberate new check is a new attempt.
-Channel model prices describe provider cost; customers use separate sale terms.
+Channel base prices are the legacy billing rates when customer sale terms are absent; the separate `upstream` fields record supplier cost. Customers with published sale terms retain that separate pricing authority.
 Admin staff can read the redacted channel list; finance/support/viewer cannot
 open it, and only owners can change connections/credentials or run HEAD checks.
+## Business models, aliases and routing
+
+Owner/admin staff open **Business → Channels → a channel** to manage model
+versions, aliases and routing through their current business session. Use **Add
+model** for a new route, or **Append version** to start from an existing model's
+complete price set and weight. The route weight (1–1000) selects relative
+preference among channels serving that model. Saving appends a new immutable
+version and never sends inference. Previously admitted calls retain their
+pinned version. **Version history** reads complete retained versions.
+
+Base channel rates and supplier cost are distinct. Customer sale books take
+precedence over legacy channel billing rates. Every base and conditional set
+can contain cache-read/write, reasoning and per-request prices plus a separate
+supplier-cost block. Blank optional billing dimensions use their documented
+base-rate fallback; missing supplier cost is untracked, while explicit zero
+means known zero. Credit input accepts up to six fractional digits. Values
+outside the browser's safe integer range refuse editing rather than round.
+Conditional service-tier names retain their exact text, including whitespace.
+Each conditional rule replaces the complete set, including supplier costs;
+the server refuses equally specific overlapping matches. Switching a mode
+requires reviewing its output price and maximum for every set.
+
+**Add alias** binds a unique public name to a non-event model already served
+on that channel. Changing the mapping requires explicit removal and addition;
+the removal confirmation names the affected alias. **Fallback order** loads
+its existing chain before editing. Enter up to sixteen distinct model or alias
+names, one per line in order, or leave empty to clear. Saving requires business
+ownership; actual serving also checks protocol, mode and customer permissions.
+
+**Edit cache policy** explicitly chooses unconfigured (disabled), disabled or
+enabled. A bounded lifetime must be positive; no expiry is a separate deliberate
+choice. Reuse remains limited to eligible whole primary responses with reported
+usage and an exact admitted request/permission/route/sale context. System text
+always participates. A cache hit has no new supplier inference and uses the
+applicable cache rate. Configuration saves do not test a provider.
+
+All writes require a reason. Keep an uncertain submission open and retry
+unchanged to reuse its operation identity. Editing starts a new intent; closing
+discards the draft. Catalog and routing capabilities enable these controls;
+provider secrets and destination changes remain owner-only. Finance/support
+cannot acquire provider administration through these controls.
+
 ## Business identity and customer help
 
 As the business owner, open **Business → Business profile**. Review the public
