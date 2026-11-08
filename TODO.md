@@ -6,6 +6,8 @@ Updated: 2026-11-08
 
 - [ ] [#828](https://github.com/AllureCurtain/oxsum/issues/828) — Reuse reverified CI tool archives and bounded official URL fallback through transient upstream failures; preserve all required gates.
 
+- [ ] [#818](https://github.com/AllureCurtain/oxsum/issues/818) — Business model versions, aliases, routing weights, fallback and cache editors implemented; exact inputs, HTTP authority, frontend build and strict Clippy passed. PR integration and actual browser acceptance remain.
+
 - [x] [#803](https://github.com/AllureCurtain/oxsum/issues/803) — Forward once-only wallet/credit usage fix validated: 69 focused and 1,899 workspace passes, all H1–H6 active; Integrated in PR #815 (`e35e557`). Historical compensation is #809.
 - [ ] [#809](https://github.com/AllureCurtain/oxsum/issues/809) — Exact-source historical usage correction and later cash fences implemented; 52 focused checks, 1,912 complete workspace tests and strict Clippy passed; independent source review passed, PR integration pending.
 
@@ -18,7 +20,7 @@ Updated: 2026-11-08
 - [x] [#727](https://github.com/AllureCurtain/oxsum/issues/727) — N01: Current product/authority/proof documentation integrated in PR #767.
 - [x] [#728](https://github.com/AllureCurtain/oxsum/issues/728) — N02: Isolated current-authority demo integrated in PR #751; example isolation in PR #772. Development evidence passed; final candidate rerun remains.
 - [ ] [#729](https://github.com/AllureCurtain/oxsum/issues/729) — N03: Owner browser setup, business profile and collection authority integrated (#750, #758, #771); profile/settings browser and fresh-business acceptance remain.
-- [ ] [#730](https://github.com/AllureCurtain/oxsum/issues/730) — N04: Provider connection and secret editor integrated (#755); model/alias/routing/cache/fallback editing and browser acceptance remain.
+- [ ] [#730](https://github.com/AllureCurtain/oxsum/issues/730) — N04: Connection/secret editor integrated (#755); #818 model/alias/routing/cache/fallback editors validated for PR; browser acceptance remains.
 - [ ] [#731](https://github.com/AllureCurtain/oxsum/issues/731) — N05: Sale-book editing, publication, scheduling and customer terms integrated (#775); exact local settlement evidence passed, browser and candidate acceptance remain.
 - [ ] [#732](https://github.com/AllureCurtain/oxsum/issues/732) — N06: Pinned Hyperswitch sandbox integrated (#762); merchant configuration UI, checkout selection and HTTPS/automatic callback acceptance remain.
 - [x] [#733](https://github.com/AllureCurtain/oxsum/issues/733) — N07: Customer invitation history, explicit local SMTP delivery and registration controls integrated (#781); browser journey acceptance remains.

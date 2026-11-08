@@ -1415,3 +1415,15 @@ supplied `DATABASE_URL`. The default previews without writes; `--apply` commits
 one verified correction or an audited refusal. Owner/finance personal business
 authority is required. The [runbook](plan-usage-correction.md) defines supported
 sources, payable handling, exit status, exact-source review and inert replay.
+
+### Business model editor checks (#818)
+
+`node --experimental-strip-types --test web/tests/provider-draft.test.ts` covers
+complete optional/conditional/supplier-cost round trips, exact amount bounds,
+mode changes, fallback order and explicit cache expiry. The frontend CI gate
+runs it alongside the existing money and sale editor checks. `npm run codegen`
+and `npm run build` in `web/` validate the unchanged business contracts and UI.
+The current `business_providers` HTTP fixture remains the runtime authority,
+replay and no-forbidden-effects check. Browser desktop/mobile, both locales,
+keyboard and retry acceptance must be separately observed; a build is not that
+evidence.

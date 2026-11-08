@@ -3181,3 +3181,26 @@ compensation under #779. Daily recognition does not postpone that correction.
 
 Validation and limits are recorded in
 [the correction evidence](roadmap/operator-launch/evidence/legacy-plan-usage.md).
+
+## 2026-11-08 — Expose complete business model and route configuration (#818)
+
+Use the existing catalog and routing operations under business sessions for
+model versions, aliases, weights, fallback order and response-cache settings.
+The connection/secret editor keeps its stronger owner capability. No API field,
+authority boundary, routing algorithm or price policy changes in this UI unit.
+
+The model form edits the complete base/conditional sets and upstream cost fields.
+Channel base billing rates remain legacy customer fallback; supplier costs are
+separate and missing cost is not zero. Decimal text becomes checked BigInt minor
+units before conversion to a safe JSON integer. Optional absent versus zero,
+empty supplier objects, all rule fields and exact service-tier text survive a
+weight-only edit. Unsafe stored values refuse the editor. Appending a version
+uses the existing append semantics; it does not pretend to provide optimistic
+revision protection that this endpoint lacks. The displayed starting version
+and immutable history make that behavior explicit.
+
+Fallback editing loads existing state before enabling submission. Cache expiry
+requires a positive duration or an explicit no-expiry choice. Every mutation
+retains one key for unchanged retry, creates a new key after an edit, and keeps
+drafts in memory through failures. UI labels are available in both locales.
+Actual browser acceptance remains distinct from source/build/input tests.
