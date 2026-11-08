@@ -619,3 +619,24 @@ Historical recovery requires current owner/finance authority, exact original
 provider receipt and verified ledger source. It previews first and only applies
 an unchanged reviewed source revision. A wrong-source old Wallet debit can be
 restored without repeating already-recorded Cash; unsupported source is refused.
+
+### Independent financial reconciliation (#848)
+
+The Business reports page retains each comparison attempt and shows both source
+assertions and independently verified ledger amounts. Operators can select an
+older attempt, inspect its exact differences and see coverage and exclusions.
+A source that is missing, corrupt, unsequenced, attached to the wrong original
+order/period or otherwise unsupported cannot produce a clean comparison. Each
+difference names the customer, source and particular fact; resolving or waiving
+an operational exception does not change prior evidence or conceal a new drift.
+
+The comparison covers plan billed, earned, deferred, collected and receivable
+amounts plus confirmed refund Cash. Legacy v1 uses original-posting journal
+cohorts; v2 uses signed movements under booking, service or payment clocks.
+Statement lines and outstanding debt are checked against their original journal
+and dispute sources, including mixed-policy statements. Refund payable and
+cash-loss suspense are retained separately and do not become income or debt.
+Usage, entitlement, funding, costs and actual service delivery remain outside
+this comparison and are explicitly listed as such. The result is a bounded
+financial-source check, not complete business accounting or a claim about every
+filtered number in the reports dashboard.

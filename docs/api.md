@@ -766,3 +766,43 @@ attribution, price and terms remain pinned. Changed usage or an unrelated
 application cannot take over the operation. These APIs do not yet supply scoped
 key management, checkout, human consent linking or the full external application
 journey tracked by #747.
+
+### Independent financial comparison (#848)
+
+`POST /api/v1/business/reconciliation-runs` accepts `periodStart`, `periodEnd`,
+`idempotencyKey` and optional `timeBasis` (`booking`, `service`, `payment`; default
+`booking`). It requires a current personal `FundsWrite` session. One successful
+request binds its original dates, clock and immutable snapshot; an identical
+retry returns that original result, even after another run. A reused key with
+different terms returns `409`. An already active identical run returns
+`429 POOL_BUSY` for a later retry. The interval may contain at most 366 days.
+
+Run responses expose `coverage`, `timeBasis` and `latestSnapshotId`. Only the six
+fields listed in `coverage.comparedFields` have independent actual totals:
+`billedMinor`, `earnedMinor`, `deferredMinor`, `collectedMinor`, `receivableMinor`
+and `refundMinor`. Usage, rating, entitlement, funding, noncash discounts,
+provider costs and complete business accounting remain outside this comparison.
+A missing or unsupported source makes coverage incomplete; amount disagreements
+produce source/fact exceptions even when the document's conservation identity
+still balances. Neither a matched result nor complete source coverage proves
+actual service delivery or independently authenticated provider truth.
+
+Legacy v1 totals are captured net journal positions selected by original posting
+date, including later source corrections. This coherent journal cohort is not
+the financial-facts dashboard's legacy receivable filter by statement issue
+date. V2 totals are signed effect movements under the selected clock, with
+booking derived from verified official entries and service/payment attribution
+bound to original sources. Refund cash follows the retained original cash
+cohort; corrections without Cash do not count twice. Payable and suspense stay
+in the detailed source evidence rather than income or receivables.
+
+`GET /api/v1/business/reconciliation-runs/{runId}/snapshots` lists immutable
+attempts newest first by `(capturedAt, snapshotId)`; `after` names the last
+snapshot and `limit` defaults to 50, capped at 200. List entries omit `evidence`.
+`GET /api/v1/business/reconciliation-runs/{runId}/snapshots/{snapshotId}` returns
+the exact captured sources, verified postings and differences under current
+personal `ReportsRead` authority. An ID from another run returns `404`.
+Pre-upgrade projection-only runs have retained `legacy` snapshots with coverage
+version 0 and never become independent evidence retroactively. Current exception
+resolution/waiver status is a separate work list; it cannot rewrite a captured
+attempt. Bounds or storage failures leave the previous run/snapshot intact.
