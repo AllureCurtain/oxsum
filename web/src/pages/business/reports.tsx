@@ -9,6 +9,8 @@ import {
   useFinancialFacts,
   useReconciliationExceptions,
   useReconciliationRuns,
+  useReconciliationSnapshots,
+  useReconciliationSnapshot,
   useRepairException,
   useRequestRun,
   useResolveException,
@@ -169,6 +171,11 @@ function RunRow({ run, onPick }: { run: ReconciliationRun; onPick: () => void })
 function RunDetail({ run, onBack }: { run: ReconciliationRun; onBack: () => void }) {
   const { t } = useTranslation();
   const exceptions = useRunExceptions(run.runId);
+  const snapshots = useReconciliationSnapshots(run.runId);
+  const [pickedSnapshot, setPickedSnapshot] = useState<string | undefined>(run.latestSnapshotId ?? undefined);
+  const captured = useReconciliationSnapshot(run.runId, pickedSnapshot);
+  const comparison = captured.data ?? run;
+  const coverage = comparison.coverage;
   return (
     <div className="flex flex-col gap-4">
       <div>
@@ -178,13 +185,36 @@ function RunDetail({ run, onBack }: { run: ReconciliationRun; onBack: () => void
       <Card title={t("biz.reports.runDiff")}>
         <DetailGrid>
           <Field2 label={t("biz.reports.period")}>{run.periodStart} → {run.periodEnd}</Field2>
-          <Field2 label={t("common.status")}>{stateBadge(run.state)}</Field2>
-          <Field2 label={t("biz.reports.exceptions")}>{run.exceptionCount}</Field2>
+          <Field2 label={t("common.status")}>{stateBadge(comparison.state)}</Field2>
+          <Field2 label={t("biz.reports.exceptions")}>{comparison.exceptionCount}</Field2>
           <Field2 label={t("biz.reports.finished")}>{run.finishedAt?.slice(0, 10) ?? "—"}</Field2>
         </DetailGrid>
         {run.lastError ? <Banner tone="error" className="mt-3">{run.lastError}</Banner> : null}
       </Card>
-      <Card title={t("biz.reports.runExceptions")}>
+      <Card title="Captured comparison">
+        <Field label="Retained attempt">
+          <NativeSelect value={pickedSnapshot ?? ""} onChange={(e) => setPickedSnapshot(e.target.value || undefined)}>
+            {snapshots.isLoading ? <option value={pickedSnapshot ?? ""}>Loading retained attempts…</option> : null}
+            {!run.latestSnapshotId ? <option value="">Legacy projection-only run</option> : null}
+            {(snapshots.data ?? []).map((snapshot) => <option key={snapshot.snapshotId} value={snapshot.snapshotId}>{snapshot.capturedAt} · {snapshot.state}</option>)}
+          </NativeSelect>
+        </Field>
+        {snapshots.isError || captured.isError ? <Banner tone="error">Unable to load the retained comparison.</Banner> : null}
+        {captured.isFetching ? <Skeleton className="h-20 w-full" /> : captured.isError ? null : <>
+          <Banner tone={coverage.complete && coverage.version > 0 ? "success" : "warn"}>
+            {coverage.version === 0 ? "Legacy report: independent ledger comparison was not performed." : coverage.complete ? "All required sources in this comparison have supported ledger evidence." : "Comparison is incomplete. Missing, unsupported or corrupt sources require review."}
+          </Banner>
+          <p className="my-3 text-sm">Sources checked: {coverage.verifiedSources} / {coverage.sources}. Entries verified: {coverage.verifiedEntries} / {coverage.entries}. Customers: {coverage.organizations}.</p>
+          <p className="mb-3 text-sm">{coverage.basis}</p>
+          <p className="mb-3 text-sm">Outside this comparison: {coverage.notCompared.join(", ") || "None listed"}.</p>
+          <TableShell density="compact" sticky={false} head={["Compared field", {label:"Source assertion",align:"right"}, {label:"Verified ledger",align:"right"}]}>
+            {coverage.comparedFields.map((field) => <tr key={field}><td>{field}</td><Td mono align="right">{comparison.expectedTotals[field] ?? "—"}</Td><Td mono align="right">{comparison.actualTotals[field] ?? "—"}</Td></tr>)}
+          </TableShell>
+          {captured.data?.evidence ? <details className="mt-4"><summary>Captured source evidence and exact differences</summary><pre className="mt-2 max-h-96 overflow-auto whitespace-pre-wrap font-mono text-xs">{JSON.stringify(captured.data.evidence, null, 2)}</pre></details> : null}
+        </>}
+      </Card>
+      <Card title="Current exception work list">
+        <p className="mb-3 text-sm">This list tracks current resolution work. The selected attempt retains its original differences in captured evidence.</p>
         {exceptions.isLoading ? (
           <Skeleton className="h-20 w-full" />
         ) : exceptions.isError ? (
@@ -197,7 +227,7 @@ function RunDetail({ run, onBack }: { run: ReconciliationRun; onBack: () => void
           >
             {(exceptions.data ?? []).map((e) => (
               <tr key={e.exceptionId}>
-                <td>{e.kind}</td>
+                <td>{e.kind} · {e.fact}</td>
                 <Td mono align="right">{e.expectedMinor ?? "—"}</Td>
                 <Td mono align="right">{e.actualMinor ?? "—"}</Td>
                 <td>{stateBadge(e.state)}</td>
@@ -222,6 +252,8 @@ function Runs() {
   const [picked, setPicked] = useState<ReconciliationRun | null>(null);
   const [from, setFrom] = useState("");
   const [to, setTo] = useState("");
+  const [basis, setBasis] = useState<"booking" | "service" | "payment">("booking");
+  const [attempt, setAttempt] = useState<{idempotencyKey: string; periodStart: string; periodEnd: string; timeBasis: "booking" | "service" | "payment"} | null>(null);
 
   if (picked) {
     return <RunDetail run={picked} onBack={() => setPicked(null)} />;
@@ -233,18 +265,22 @@ function Runs() {
           className="mb-4 grid grid-cols-2 gap-2 sm:grid-cols-4"
           onSubmit={(e) => {
             e.preventDefault();
-            request.mutate({ idempotencyKey: crypto.randomUUID(), periodStart: from, periodEnd: to });
+            const body = attempt ?? {idempotencyKey: crypto.randomUUID(), periodStart: from, periodEnd: to, timeBasis: basis};
+            setAttempt(body);
+            request.mutate(body, {onSuccess: () => setAttempt(null)});
           }}
         >
           <Field label={t("biz.reports.colFrom")}>
-            <TextInput type="date" value={from} onChange={(e) => setFrom(e.target.value)} required />
+            <TextInput disabled={attempt !== null} type="date" value={from} onChange={(e) => setFrom(e.target.value)} required />
           </Field>
           <Field label={t("biz.reports.colTo")}>
-            <TextInput type="date" value={to} onChange={(e) => setTo(e.target.value)} required />
+            <TextInput disabled={attempt !== null} type="date" value={to} onChange={(e) => setTo(e.target.value)} required />
           </Field>
-          <div className="col-span-2 flex items-end">
-            <Button type="submit" isLoading={request.isPending}>{t("biz.reports.requestRun")}</Button>
-          </div>
+          <Field label={t("biz.reports.timeBasis")}>
+            <NativeSelect disabled={attempt !== null} value={basis} onChange={(e) => setBasis(e.target.value as typeof basis)}><option value="booking">Booking</option><option value="service">Service</option><option value="payment">Payment</option></NativeSelect>
+          </Field>
+          <div className="flex items-end"><Button type="submit" isLoading={request.isPending}>{attempt ? "Retry captured request" : t("biz.reports.requestRun")}</Button></div>
+          {request.isError ? <Banner tone="error">The request failed. Retry preserves its original dates, clock and identity.</Banner> : null}
         </form>
       ) : null}
       {runs.isError ? (
@@ -305,7 +341,7 @@ function ExceptionRow({ e }: { e: ReconciliationException }) {
   return (
     <tr>
       <Td mono truncate>{e.exceptionId.slice(0, 8)}</Td>
-      <td>{e.kind}</td>
+      <td>{e.kind} · {e.fact}</td>
       <Td mono truncate>{e.organizationId?.slice(0, 8) ?? "—"}</Td>
       <Td mono align="right">{e.expectedMinor ?? "—"}</Td>
       <Td mono align="right">{e.actualMinor ?? "—"}</Td>

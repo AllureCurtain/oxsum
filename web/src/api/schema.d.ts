@@ -4013,11 +4013,15 @@ export interface paths {
         /**
          * Request a manual reconciliation run
          * @description A staff-requested run over `[periodStart, periodEnd]` (issue #613,
-         *     T22): recomputes the eight categories per organization, diffs the
-         *     conservation invariants and writes the run plus its exceptions.
+         *     T22): independently compares scoped plan and refund sources with official
+         *     ledger postings, captures coverage and excluded fields, and retains an
+         *     immutable snapshot for every completed attempt. The interval is at most
+         *     366 days. Concurrent work for the same scope returns POOL_BUSY.
          *     `FundsWrite` capability — a financial action, audited in
-         *     `finance_audit`. A replayed `idempotencyKey` re-runs under the run's
-         *     own `(kind, period)` identity rather than minting a second run.
+         *     `finance_audit`. A replayed `idempotencyKey` returns its original completed
+         *     snapshot after rechecking current authority; different terms return 409.
+         *     A new key captures another attempt under `(kind, period, timeBasis)`.
+         *     Each attempt retains its evidence; no financial repair occurs.
          */
         post: {
             parameters: {
@@ -4046,6 +4050,8 @@ export interface paths {
                 400: components["responses"]["Error"];
                 401: components["responses"]["Error"];
                 403: components["responses"]["Error"];
+                409: components["responses"]["Error"];
+                429: components["responses"]["Error"];
                 500: components["responses"]["Error"];
             };
         };
@@ -4085,6 +4091,104 @@ export interface paths {
                     content: {
                         "application/json": {
                             data: components["schemas"]["ReconciliationRun"];
+                        };
+                    };
+                };
+                401: components["responses"]["Error"];
+                403: components["responses"]["Error"];
+                404: components["responses"]["Error"];
+                500: components["responses"]["Error"];
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/business/reconciliation-runs/{runId}/snapshots": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Retained reconciliation attempts
+         * @description Immutable snapshots with independently compared totals, coverage and source evidence. ReportsRead; maximum 100 summaries per page.
+         */
+        get: {
+            parameters: {
+                query?: {
+                    after?: string;
+                    limit?: number;
+                };
+                header?: never;
+                path: {
+                    runId: string;
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Latest immutable attempt summaries, with evidence available by snapshot ID */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            data: components["schemas"]["ReconciliationSnapshot"][];
+                        };
+                    };
+                };
+                400: components["responses"]["Error"];
+                401: components["responses"]["Error"];
+                403: components["responses"]["Error"];
+                500: components["responses"]["Error"];
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/business/reconciliation-runs/{runId}/snapshots/{snapshotId}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * One retained reconciliation attempt
+         * @description Exact compared sources, entry hashes and postings, differences and coverage at capture. ReportsRead; the snapshot is immutable and never re-derived from current financial rows.
+         */
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    runId: string;
+                    snapshotId: string;
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description The retained attempt and its source evidence */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            data: components["schemas"]["ReconciliationSnapshot"];
                         };
                     };
                 };
@@ -20670,10 +20774,22 @@ export interface components {
             periodEnd: string;
             /** @enum {string} */
             state: "running" | "matched" | "exceptions" | "failed";
-            /** @description the eight-category figures the projections claimed */
-            expectedTotals: Record<string, never>;
-            /** @description the same categories recomputed — the exceptions are the disagreements the figures cannot hide */
-            actualTotals: Record<string, never>;
+            /** @enum {string} */
+            timeBasis: "booking" | "service" | "payment";
+            /**
+             * Format: uuid
+             * @description Latest retained comparison; upgraded projection-only runs point to a legacy snapshot with coverage version 0
+             */
+            latestSnapshotId: string | null;
+            coverage: components["schemas"]["ReconciliationCoverage"];
+            /** @description Only the fields named in coverage.comparedFields; legacy snapshots retain their original shape */
+            expectedTotals: {
+                [key: string]: number;
+            };
+            /** @description Independently derived official ledger amounts for compared fields; excluded fields are absent */
+            actualTotals: {
+                [key: string]: number;
+            };
             /** Format: int64 */
             exceptionCount: number;
             /**
@@ -20686,6 +20802,57 @@ export interface components {
             /** Format: date-time */
             finishedAt: string | null;
             lastError: string | null;
+        };
+        ReconciliationCoverage: {
+            /** @description 0 means retained legacy projection-only evidence; 1 means independent plan/refund comparison */
+            version: number;
+            /** @description false when any required source is missing */
+            complete: boolean;
+            comparedFields: string[];
+            /** @description Explicit exclusions; matched never attests these fields */
+            notCompared: string[];
+            /** Format: int64 */
+            organizations: number;
+            /**
+             * Format: int64
+             * @description Required source comparisons
+             */
+            sources: number;
+            /**
+             * Format: int64
+             * @description Source comparisons with supported and complete ledger evidence
+             */
+            verifiedSources: number;
+            /** Format: int64 */
+            entries: number;
+            /** Format: int64 */
+            verifiedEntries: number;
+            /** @description Describes v1 net journal cohort and v2 effect movements */
+            basis: string;
+            limits: {
+                [key: string]: number;
+            };
+        };
+        ReconciliationSnapshot: {
+            /** Format: uuid */
+            snapshotId: string;
+            /** Format: uuid */
+            runId: string;
+            /** @enum {string} */
+            state: "matched" | "exceptions" | "legacy";
+            expectedTotals: {
+                [key: string]: number;
+            };
+            actualTotals: {
+                [key: string]: number;
+            };
+            coverage: components["schemas"]["ReconciliationCoverage"];
+            /** Format: int64 */
+            exceptionCount: number;
+            /** Format: date-time */
+            capturedAt: string;
+            /** @description null in list summaries; detail captures source IDs */
+            evidence: Record<string, never> | null;
         };
         ReconciliationException: {
             /** Format: uuid */
@@ -20704,6 +20871,8 @@ export interface components {
             sourceTable: string | null;
             /** @description the blamed row's identifier — a request id */
             sourceRef: string | null;
+            /** @description Stable compared field or source failure; distinct facts on one source remain distinct exceptions */
+            fact: string;
             /** @description the check's own diff summary */
             detail: string | null;
             /** @enum {string} */
@@ -20745,6 +20914,11 @@ export interface components {
             periodStart: string;
             /** Format: date */
             periodEnd: string;
+            /**
+             * @default booking
+             * @enum {string}
+             */
+            timeBasis: "booking" | "service" | "payment";
         };
         ReconciliationCloseRequest: {
             idempotencyKey: string;

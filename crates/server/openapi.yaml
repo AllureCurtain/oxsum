@@ -3332,8 +3332,9 @@ paths:
         immutable snapshot for every completed attempt. The interval is at most
         366 days. Concurrent work for the same scope returns POOL_BUSY.
         `FundsWrite` capability — a financial action, audited in
-        `finance_audit`. A replayed `idempotencyKey` re-runs under the run's
-        own `(kind, period, timeBasis)` identity rather than minting a second run.
+        `finance_audit`. A replayed `idempotencyKey` returns its original completed
+        snapshot after rechecking current authority; different terms return 409.
+        A new key captures another attempt under `(kind, period, timeBasis)`.
         Each attempt retains its evidence; no financial repair occurs.
       security: [{ sessionCookie: [] }]
       requestBody:
@@ -3354,6 +3355,8 @@ paths:
         "400": { $ref: "#/components/responses/Error" }
         "401": { $ref: "#/components/responses/Error" }
         "403": { $ref: "#/components/responses/Error" }
+        "409": { $ref: "#/components/responses/Error" }
+        "429": { $ref: "#/components/responses/Error" }
         "500": { $ref: "#/components/responses/Error" }
   /api/v1/business/reconciliation-runs/{runId}:
     get:
@@ -15642,7 +15645,7 @@ components:
         periodEnd: { type: string, format: date }
         state: { type: string, enum: [running, matched, exceptions, failed] }
         timeBasis: { type: string, enum: [booking, service, payment] }
-        latestSnapshotId: { type: [string, "null"], format: uuid, description: null on retained legacy runs that did not perform independent ledger comparison }
+        latestSnapshotId: { type: [string, "null"], format: uuid, description: Latest retained comparison; upgraded projection-only runs point to a legacy snapshot with coverage version 0 }
         coverage: { $ref: "#/components/schemas/ReconciliationCoverage" }
         expectedTotals: { type: object, additionalProperties: { type: integer, format: int64 }, description: Only the fields named in coverage.comparedFields; legacy snapshots retain their original shape }
         actualTotals: { type: object, additionalProperties: { type: integer, format: int64 }, description: Independently derived official ledger amounts for compared fields; excluded fields are absent, never copied }

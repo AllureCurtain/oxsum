@@ -250,6 +250,47 @@ async fn a_manual_run_records_and_lists() {
     assert_eq!(body["data"]["kind"].as_str().unwrap(), "manual");
     assert!(body["data"]["state"].is_string(), "{body}");
 
+    let snapshot_id = body["data"]["latestSnapshotId"].as_str().unwrap();
+    assert_eq!(body["data"]["coverage"]["version"], 1);
+    let history = format!("/api/v1/business/reconciliation-runs/{run_id}/snapshots");
+    let (status, snapshots) =
+        call(&world.app, "GET", &history, Value::Null, Some(&world.owner)).await;
+    assert_eq!(status, StatusCode::OK, "{snapshots}");
+    assert_eq!(snapshots["data"][0]["snapshotId"], snapshot_id);
+    assert!(snapshots["data"][0]["evidence"].is_null());
+    let detail = format!("{history}/{snapshot_id}");
+    let (status, captured) =
+        call(&world.app, "GET", &detail, Value::Null, Some(&world.owner)).await;
+    assert_eq!(status, StatusCode::OK, "{captured}");
+    assert!(captured["data"]["evidence"].is_object());
+    for route in [&history, &detail] {
+        assert_eq!(
+            call(&world.app, "GET", route, Value::Null, None).await.0,
+            StatusCode::UNAUTHORIZED
+        );
+        assert_eq!(
+            call(&world.app, "GET", route, Value::Null, Some(&world.customer))
+                .await
+                .0,
+            StatusCode::FORBIDDEN
+        );
+    }
+    assert_eq!(
+        call(
+            &world.app,
+            "GET",
+            &format!(
+                "/api/v1/business/reconciliation-runs/{}/snapshots/{snapshot_id}",
+                Uuid::new_v4()
+            ),
+            Value::Null,
+            Some(&world.owner)
+        )
+        .await
+        .0,
+        StatusCode::NOT_FOUND
+    );
+
     // The run lists and its detail reads.
     let (status, list) = call(
         &world.app,

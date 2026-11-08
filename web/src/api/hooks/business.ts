@@ -40,6 +40,7 @@ export type OrderDispute = components["schemas"]["OrderDispute"];
 export type OrderDisputePage = components["schemas"]["OrderDisputePage"];
 export type FinancialFacts = components["schemas"]["FinancialFacts"];
 export type CostCoverage = components["schemas"]["CostCoverage"];
+export type ReconciliationSnapshot = components["schemas"]["ReconciliationSnapshot"];
 export type ReconciliationRun = components["schemas"]["ReconciliationRun"];
 export type ReconciliationException = components["schemas"]["ReconciliationException"];
 export type ReconciliationRepair = components["schemas"]["ReconciliationRepair"];
@@ -508,6 +509,14 @@ export function useReconciliationRun(runId: string | undefined) {
   });
 }
 
+export function useReconciliationSnapshots(runId: string) {
+  return useQuery({queryKey: ["biz-recon-snapshots", runId], queryFn: () => api<ReconciliationSnapshot[]>(`/business/reconciliation-runs/${runId}/snapshots`)});
+}
+
+export function useReconciliationSnapshot(runId: string, snapshotId: string | undefined) {
+  return useQuery({queryKey: ["biz-recon-snapshot", runId, snapshotId], enabled: Boolean(snapshotId), queryFn: () => api<ReconciliationSnapshot>(`/business/reconciliation-runs/${runId}/snapshots/${snapshotId}`)});
+}
+
 export function useRunExceptions(runId: string | undefined) {
   return useQuery({
     queryKey: ["biz-recon-run-exceptions", runId],
@@ -528,7 +537,7 @@ export function useReconciliationExceptions(filter: { open?: boolean; after?: st
 export function useRequestRun() {
   const client = useQueryClient();
   return useMutation({
-    mutationFn: (body: { idempotencyKey: string; periodStart: string; periodEnd: string }) =>
+    mutationFn: (body: components["schemas"]["ReconciliationRunRequest"]) =>
       api<ReconciliationRun>("/business/reconciliation-runs", { method: "POST", body }),
     onSuccess: () => client.invalidateQueries({ queryKey: ["biz-recon-runs"] }),
   });

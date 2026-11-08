@@ -479,6 +479,14 @@ pub fn router(state: AppState) -> Router {
             get(financial_facts::business_run),
         )
         .route(
+            "/business/reconciliation-runs/{run_id}/snapshots",
+            get(financial_facts::snapshots),
+        )
+        .route(
+            "/business/reconciliation-runs/{run_id}/snapshots/{snapshot_id}",
+            get(financial_facts::snapshot),
+        )
+        .route(
             "/business/reconciliation-runs/{run_id}/exceptions",
             get(financial_facts::business_run_exceptions),
         )
