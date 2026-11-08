@@ -2,8 +2,8 @@
 
 Field definitions for each endpoint are authoritative in `crates/server/openapi.yaml`; this file only records general conventions.
 
-Non-plan refund effects (#841, implementation in progress): `OrderRefund` and
-`OrderCreditNote` gain nullable `cashEffect`. Its immutable verified Cash return
+Non-plan refund effects (#841): `OrderRefund` and
+`OrderCreditNote` expose nullable `cashEffect`. Its immutable verified Cash return
 is separate from approval and note state, so late terminal and unapproved cash
 remain visible without fabricating approval or changing historical records.
 Complete Cash equals proven original Wallet take-back plus review suspense;

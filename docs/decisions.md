@@ -3419,3 +3419,20 @@ immediately before the old return's sequence position. Unproven source cannot
 justify restitution: conservative zero allocation is not proof of a wrong debit.
 Preview writes nothing; apply commits compensation, effect, document projection
 and audit together, retaining refused outcomes and binding exact request terms.
+
+Verified source inspection checks the canonical bytes of every sequenced entry
+before its boundary through the caller's borrowed connection. Inspection is
+bounded to 20,000 entries; exceeding this bound retains fresh Cash in review
+suspense and refuses historical Wallet restitution. This budget does not prove
+that original funding has been spent. Effect parent rows are acquired before
+source/refund/append locks so immediate foreign-key checks cannot invert a staff
+business lock. This boundary includes single-connection callback and recovery
+support, not a claim that every financial operation uses a single connection.
+
+Successful non-plan fulfillment must await source-guard rollback before returning,
+including a fulfilled replay. SQLx queues dropped transaction rollback, which let
+an immediate refund fail with `PoolBusy` in CI 42525666821 and 42526621594. A
+controlled regression pauses that cleanup and observes the PostgreSQL advisory
+lock from another pool; it fails before this fix and passes with awaited release.
+Worker refund claims treat source contention as no acquired lease, preserving
+their bounded retry contract without consuming a provider attempt.

@@ -1426,6 +1426,12 @@ receive `PoolBusy`; fulfillment retries off-pool within five seconds. Separate
 processes coordinate through the same PostgreSQL try-lock. These are bounded
 retry semantics, not an unlimited-load guarantee.
 
+Successful initial and replayed non-plan fulfillment explicitly awaits release
+of the source transaction before returning. SQLx's dropped-transaction rollback
+is asynchronous and cannot establish that a caller may immediately request a
+refund. Refund worker claim contention returns no lease (`None`), so a later
+sweep can retry without consuming a provider attempt.
+
 
 ### Daily plan recognition
 
@@ -1475,8 +1481,8 @@ shared by wallet, accounting and server paths, use the complete workspace suite
 before integration, plus strict workspace Clippy and formatting.
 
 Read through `ledger_source::entries_in` when a caller already owns a database
-connection; never call pooled `LedgerStore::get` or `Wallet::verified_source_hash`
-while retaining a transaction. `Wallet::verified_source_hash_in` refuses missing
+connection; never call pooled `LedgerStore::get` while retaining a transaction.
+`Wallet::verified_source_hash_in` refuses missing
 or malformed/hash-mismatched sources without swallowing database errors. A batch
 reader reports corrupt entries individually; it does not mark an unsequenced
 entry as official evidence. Source ownership, raw-key equality, account meaning
@@ -1500,3 +1506,16 @@ wallet or calls a provider. Apply additionally requires `--apply
 --expected-revision SHA256` from the reviewed preview. Refusal/error exits 2;
 proposed/applied output exits 0. See the complete
 [workflow and evidence requirements](nonplan-refund-recovery.md).
+
+The `nonplan_refunds` integration suite covers exact source allocation,
+historical restitution, pure previews, source revision conflicts, authority,
+cash/report dates, late terminal effects, receipt identity, provider/grant
+fences, atomic rollback, parent lock ordering and single-connection callbacks
+and recovery. Its controlled fulfillment regression pauses SQLx's queued Drop
+cleanup and verifies source ownership is already released on success. Run it
+with core `refunds`, `plan_refunds`, `plan_refund_conservation`, `payment_orders`
+and the server `refunds` suite, then the complete workspace for migration and
+shared accounting changes. CLI argument checks use `cargo test -p oxsum-core
+--example recover_nonplan_refund`. Tests use isolated PostgreSQL fixtures and
+never call a PSP; [development evidence](roadmap/operator-launch/evidence/nonplan-refunds.md)
+does not certify a production correction or release candidate.
