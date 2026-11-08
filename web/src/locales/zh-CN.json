@@ -71,7 +71,8 @@
     "plans": "套餐",
     "billing": "账单",
     "billingStatement": "账单详情",
-    "business": "业务"
+    "business": "业务",
+    "evidence": "证据"
   },
   "gettingStarted": {
     "title": "开始使用",
@@ -2212,5 +2213,39 @@
         "action": "客户与邀请"
       }
     }
+  },
+  "evidence": {
+    "title": "证据",
+    "intro": "保留冻结的期间或结算单证据、清单和信任材料，在本地或离线验证已承诺的记录。",
+    "loadError": "无法加载证据。",
+    "roleRequired": "客户账户所有者和管理员可以生成及下载组织证据。请向账户所有者索取导出文件。",
+    "retainTrust": "保留并检查账本信任记录",
+    "selectionChanged": "返回的证据与选定客户、期间或清单不一致。",
+    "statementTitle": "结算单证据",
+    "statementNotice": "首次操作会冻结已出具结算单的证据，后续请求返回相同证据包。尚未出具的结算单不能导出。",
+    "statementLoad": "冻结或获取结算单证据",
+    "statementLink": "下载并验证结算单证据",
+    "periodTitle": "冻结已结束期间",
+    "mintNotice": "选择包含起止日的 UTC 日期，最多 366 个完整结束日。这会追加账本承诺记录，相同期间始终返回首次冻结的证据包。",
+    "from": "UTC 起始日",
+    "to": "UTC 结束日",
+    "mint": "冻结期间证据",
+    "retrySpan": "获取或重试此期间",
+    "newSpan": "选择其他期间",
+    "saved": "已冻结证据",
+    "period": "期间或结算单",
+    "digest": "清单摘要",
+    "entries": "账本记录",
+    "open": "打开证据",
+    "empty": "尚未生成证据包。",
+    "selected": "所选证据与预期验证材料",
+    "scopeNote": "上面的范围属于承诺内容。验证检查已承诺材料和账本包含关系，不重新计算所有结算费用，也不证明上游用量诚实、供应商账簿完整或见证方独立。选定清单最初来自本服务器，请单独保存验证材料并通过独立渠道核对公钥。",
+    "download": "下载证据包 JSON",
+    "downloadInputs": "下载预期验证材料",
+    "verify": "本地验证",
+    "notVerified": "尚未本地验证。即使验证失败，也可下载并保留证据。",
+    "verified_retainedKey": "已验证承诺材料及包含关系，签名根符合保留公钥和当前客户账本来源。初始公钥信任和校验器分发仍需独立渠道核对。",
+    "verified_suppliedKey": "使用证据包自带公钥验证了承诺材料、包含关系和签名，这不能独立证明该公钥身份。",
+    "verified_unsigned": "已验证承诺材料及包含关系。此证据包没有签名根，未建立运营方签名或历史连续性。"
   }
 }

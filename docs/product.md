@@ -573,3 +573,11 @@ the existing WASM signature/consistency verifier before reporting continuity
 independently authenticated identity. The original key/origin/head is preserved;
 empty-head checks report signature-only evidence. Exports support separate offline
 checking and do not expand entry, arithmetic, completeness or metering proof scope.
+
+
+The customer Evidence portal (issue #863) exposes existing owner/admin-scoped
+period and issued-plan-statement exports. Creation explicitly freezes the chosen
+scope; retries preserve the immutable period identity. Raw bundle downloads and
+separate expected inputs survive link expiration. Local checks distinguish
+retained-key, bundle-supplied-key and unsigned evidence, bind the signed head to
+the authenticated customer's ledger origin and preserve the existing proof scope.

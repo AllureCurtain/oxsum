@@ -1525,3 +1525,35 @@ head/proof for the [offline guide](verify-your-bill.md). No browser-stored key o
 newly served verifier proves an independently trusted distribution or honest
 upstream metering. Clearing browser data loses this local record; keep the export
 outside the browser. Storage errors leave verification/retention visibly failed.
+
+
+### Download period and plan-statement evidence
+
+Open **Evidence** from the customer navigation or Bills. Customer owners/admins
+can browse frozen bundles, select inclusive UTC dates over at most 366 ended
+days, and explicitly freeze a period. This appends a marker to the ledger; the
+same organization/date span always replays its original bundle. After an
+ambiguous network response, **Retrieve or retry this span** keeps the original
+dates. **Choose another span** starts a distinct request. The page never creates
+share links or sends mail implicitly.
+
+An actual plan statement links to **Download and verify statement evidence**.
+The explicit action freezes or retrieves that issued document's bundle; it does
+not run automatically on navigation, and an open statement cannot be exported.
+
+Select **Download bundle JSON** to keep the frozen evidence, and **Download
+expected inputs** to retain its organization, expected origin, bundle id,
+manifest digest and available trust record separately. Bundle bytes are retained
+without rewriting integer values through JavaScript. **Verify locally** executes
+the existing WASM evidence checks plus the customer's expected signed-head origin:
+
+- A retained key verifies the signature under the original customer trust record.
+- Without retained trust, a bundle-supplied key is explicitly labeled as supplied
+  by that bundle; it does not authenticate itself independently.
+- An unsigned bundle can establish committed digests/inclusion only, even if a
+  key was previously retained. Missing or invalid WASM never becomes a pass.
+
+The page shows the committed scope and exclusions. It does not establish every
+settlement's price arithmetic, honest upstream usage, unprovided supplier books,
+historical continuity or witness independence. Keep the bundle and expected
+inputs outside the browser and follow [the offline guide](verify-your-bill.md).

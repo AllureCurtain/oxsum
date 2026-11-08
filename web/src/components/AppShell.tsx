@@ -74,6 +74,7 @@ const NAV_GROUPS = [
       { to: "/billing", labelKey: "nav.billing", Icon: CreditCard },
       { to: "/statements", labelKey: "nav.statements", Icon: FileText },
       { to: "/reports", labelKey: "nav.reports", Icon: Newspaper },
+      { to: "/evidence", labelKey: "nav.evidence", Icon: ShieldCheck },
       { to: "/log", labelKey: "nav.log", Icon: ScrollText },
       { to: "/chat", labelKey: "nav.chat", Icon: MessageSquare },
       { to: "/settings", labelKey: "nav.settings", Icon: Settings },
