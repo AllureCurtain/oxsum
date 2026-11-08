@@ -1634,6 +1634,8 @@ impl Db {
         // contested past the receivable restores the draw, not the full order.
         let mut recharged = None;
         let mut recharge_entry = None;
+        let mut unallocated_chargeback = 0i64;
+        let mut payable_chargeback = 0i64;
         let recharge = if resolution == DisputeResolution::Lost && !plan_fee {
             let drawn = wallet.credit_used().await?;
             if drawn <= 0 {
@@ -1665,13 +1667,21 @@ impl Db {
                     on,
                 )
                 .await?;
+            let key = format!("dispute-recharge/{dispute_id}");
+            let allocated = wallet
+                .plan_source_debit_in(&mut jtx, &key, crate::wallet::RECEIVABLES)
+                .await?;
+            payable_chargeback = wallet
+                .plan_source_debit_in(&mut jtx, &key, crate::wallet::REFUND_PAYABLE)
+                .await?;
+            unallocated_chargeback = dispute.amount_minor - allocated - payable_chargeback;
+            recharged = Some(allocated);
             jtx.commit().await?;
             if restored.is_none() {
                 return Err(invalid(
                     "a lost dispute has no journal receivable to restore",
                 ));
             }
-            recharged = Some(dispute.amount_minor);
             recharge_entry =
                 Some(*crate::entry_id_for(&format!("dispute-recharge/{dispute_id}")).as_uuid());
         }
@@ -1703,6 +1713,9 @@ impl Db {
             "resolution": state,
             "contestedMinor": amount_minor,
             "rechargedMinor": recharged,
+            "payableMinor": payable_chargeback,
+            "unallocatedMinor": unallocated_chargeback,
+            "requiresReview": unallocated_chargeback>0,
             "currency": dispute.currency,
             "rechargeEntryId": recharge_entry,
             "reason": reason,

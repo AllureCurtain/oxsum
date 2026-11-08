@@ -61,7 +61,7 @@ Initial focused run on base `c97e5f7` plus this implementation:
 - 71 PostgreSQL tests passed across `plan_refunds`, `plan_refund_conservation`,
   `journals`, `plan_statements`, `plans`, `plan_payments`, `payment_orders`, and
   `refunds`; one independent H1 reproduction was still ignored on that base.
-- Fourteen new refund tests cover verified success/failure/late events,
+- Eighteen new refund tests cover verified success/failure/late events,
   pre-close full/partial, paid/void/unactivated, concurrent refunds/duplicates,
   close race, interrupted document write with complete transaction rollback,
   wrong wallet/authorization, immutable allocation, and three legacy repairs.
@@ -69,7 +69,22 @@ Initial focused run on base `c97e5f7` plus this implementation:
   metadata from another worktree; touching this crate's root forced the correct
   build. One collapsible-if lint was corrected. No tests were hidden or ignored.
 
-Final rebased source checks and integration results are recorded below before
-review. N11 reports/daily policy, H1 historical duplicate usage repair and N10's
+Rebased commit `6feb3ec` on integrated main `4c9f20e` passed the full workspace:
+1,893 tests passed, seven existing opt-ins/independent H1 reproductions skipped,
+284.592 seconds. The subsequent inverse refund/chargeback-order extension then
+passed 73 focused checks plus all 18 refund cases; its final full run is retained
+separately below. N11 reports/daily policy, H1 historical duplicate usage repair and N10's
 statement repayment remain separately tracked; this evidence does not close
 their acceptance criteria.
+
+
+## Refund and chargeback ordering
+
+Both orderings retain every observed outflow. A full 2,500,000 chargeback after a
+1,000,000 refund restores at most the remaining 1,500,000 original payment as
+receivable and records 1,000,000 review suspense. After a full refund it restores
+no customer debt. Chargeback and refund take the same subscription/plan lock;
+the ledger cash entry makes a retry idempotent regardless of journal state.
+A voided bill draws only its original net refund payable; it cannot borrow
+another journal's payable. The dispute resolution audit reports actual
+`rechargedMinor`, `payableMinor`, `unallocatedMinor` and `requiresReview`.

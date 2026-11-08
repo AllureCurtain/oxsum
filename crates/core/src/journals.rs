@@ -1115,18 +1115,9 @@ impl Db {
         Ok(())
     }
 
-    /// The journal half of a `lost` dispute on a `planPeriod` order: the cash
-    /// the chargeback clawed out re-charges the receivable — `debit
-    /// Receivables / credit Cash` under the dispute's own key — and the
-    /// journal walks `paid → posted` with `settled_minor` backing out what is
-    /// owed again: the contested receivable restored as past-due, never
-    /// silently erased. `won`/`closed` disputes leave the figure as the
-    /// record. Returns the journal it restored, `None` when the order settled
-    /// no journal (a wallet-funded order's dispute keeps T17's path).
-    ///
-    /// # Errors
-    ///
-    /// Storage failures surface as [`WalletError`].
+    /// Record a lost dispute's complete cash fact against its original period.
+    /// Previously refunded cash cannot create another customer receivable.
+    /// Excess is retained reconciliation suspense; replay reads its actual entry.
     pub(crate) async fn recharge_journal_dispute_in(
         &self,
         tx: &mut Transaction<'_, Postgres>,
@@ -1136,42 +1127,117 @@ impl Db {
         amount_minor: i64,
         on: time::Date,
     ) -> Result<Option<Uuid>, WalletError> {
-        let journal = sqlx::query(&format!(
-            "SELECT {JOURNAL_COLS} FROM oxsum.invoice_journals \
-             WHERE paid_order_id=$1 AND state='paid' \
-             ORDER BY period_index DESC LIMIT 1 FOR UPDATE"
-        ))
-        .bind(order_id)
-        .fetch_optional(&mut **tx)
-        .await?;
-        let Some(journal) = journal.map(|r| journal_from_row(&r)).transpose()? else {
+        if amount_minor <= 0 {
+            return Err(invalid("chargeback cash must be positive"));
+        }
+        let organization:Option<Uuid>=sqlx::query_scalar("SELECT organization_id FROM oxsum.payment_orders WHERE order_id=$1 AND purpose='plan_period' AND status IN ('paid','fulfilled')")
+            .bind(order_id).fetch_optional(&mut **tx).await?;
+        let Some(organization) = organization else {
             return Ok(None);
         };
-        let recharge = amount_minor.min(journal.settled_minor);
-        if recharge <= 0 {
-            return Ok(Some(journal.journal_id));
-        }
-        wallet
-            .plan_journal_dispute_recharge_in(tx, &journal.journal_id, &dispute_id, recharge, on)
-            .await?;
-        // `paid → posted` with the disputed figure rising — the row guard's
-        // one backward step, taking the receivable back out as past-due.
-        sqlx::query(
-            "UPDATE oxsum.invoice_journals \
-             SET state='posted', settled_minor=settled_minor-$2, paid_at=NULL, \
-                 disputed_minor=disputed_minor+$2, updated_at=now() \
-             WHERE journal_id=$1",
+        let tenant: String = sqlx::query_scalar(
+            "SELECT tenant_id FROM oxsum.organizations WHERE organization_id=$1",
         )
-        .bind(journal.journal_id)
-        .bind(recharge)
+        .bind(organization)
+        .fetch_one(&mut **tx)
+        .await?;
+        if tenant != wallet.tenant_id() {
+            return Err(invalid("chargeback wallet does not own the order"));
+        }
+        sqlx::query(
+            "SELECT pg_advisory_xact_lock(hashtextextended('oxsum.subscription' || $1::text,0))",
+        )
+        .bind(organization.to_string())
         .execute(&mut **tx)
         .await?;
-        // The restored receivable surfaces in customer terms (issue #612,
-        // T21): a `disputeChargeback` line lands on the next open statement —
-        // the same fact the journal's `posted` receivable carries, spelled for
-        // the customer who owes it.
-        self.chargeback_statement_in(tx, &journal, dispute_id, recharge)
+        sqlx::query("SELECT subscription_id FROM oxsum.org_subscriptions WHERE organization_id=$1 AND state='active' FOR UPDATE")
+            .bind(organization).fetch_optional(&mut **tx).await?;
+        sqlx::query("SELECT customer_plan_id FROM oxsum.customer_plans WHERE customer_plan_id=(SELECT purpose_ref FROM oxsum.payment_orders WHERE order_id=$1) FOR UPDATE")
+            .bind(order_id).fetch_optional(&mut **tx).await?;
+        let row=sqlx::query(&format!("SELECT {JOURNAL_COLS} FROM oxsum.invoice_journals j WHERE EXISTS(SELECT 1 FROM oxsum.plan_periods p WHERE p.plan_period_id=j.plan_period_id AND p.authorization_kind='payment_order' AND p.authorization_ref=$1) AND j.state IN ('posted','paid','void') ORDER BY j.created_at DESC LIMIT 1 FOR UPDATE OF j"))
+            .bind(order_id).fetch_optional(&mut **tx).await?;
+        let Some(journal) = row.as_ref().map(journal_from_row).transpose()? else {
+            return Ok(None);
+        };
+        let key = format!("dispute-recharge/{dispute_id}");
+        let cash = wallet
+            .plan_source_credit_in(tx, &key, "Assets:Cash")
             .await?;
+        if cash > 0 {
+            if cash != amount_minor {
+                return Err(WalletError::Conflict(
+                    "chargeback amount changed on replay".into(),
+                ));
+            }
+            return Ok(Some(journal.journal_id));
+        }
+        let mut receivable = 0;
+        let mut payable = 0;
+        if journal.state == JournalState::Void {
+            let original = wallet
+                .plan_source_credit_in(
+                    tx,
+                    &format!("plan-journal/{}/void", journal.journal_id),
+                    crate::wallet::REFUND_PAYABLE,
+                )
+                .await?;
+            let refunded:i64=sqlx::query_scalar("SELECT COALESCE(SUM(payable_minor),0)::bigint FROM oxsum.plan_refund_effects WHERE journal_id=$1")
+                .bind(journal.journal_id).fetch_one(&mut **tx).await?;
+            let ids: Vec<Uuid> =
+                sqlx::query_scalar("SELECT dispute_id FROM oxsum.disputes WHERE order_id=$1")
+                    .bind(order_id)
+                    .fetch_all(&mut **tx)
+                    .await?;
+            let mut debited = 0i64;
+            for id in ids {
+                debited = debited
+                    .checked_add(
+                        wallet
+                            .plan_source_debit_in(
+                                tx,
+                                &format!("dispute-recharge/{id}"),
+                                crate::wallet::REFUND_PAYABLE,
+                            )
+                            .await?,
+                    )
+                    .ok_or_else(|| invalid("chargeback total overflows"))?;
+            }
+            // The void entry may contain payable credit and debit legs. Its
+            // net source, not the tenant's aggregate payable, is the limit.
+            let void_debit = wallet
+                .plan_source_debit_in(
+                    tx,
+                    &format!("plan-journal/{}/void", journal.journal_id),
+                    crate::wallet::REFUND_PAYABLE,
+                )
+                .await?;
+            payable = amount_minor.min(
+                original
+                    .saturating_sub(void_debit)
+                    .saturating_sub(refunded)
+                    .saturating_sub(debited)
+                    .max(0),
+            );
+        } else {
+            receivable = amount_minor.min(journal.settled_minor);
+        }
+        wallet
+            .plan_journal_dispute_recharge_in(
+                tx,
+                &journal.journal_id,
+                &dispute_id,
+                amount_minor,
+                receivable,
+                payable,
+                on,
+            )
+            .await?;
+        if receivable > 0 {
+            sqlx::query("UPDATE oxsum.invoice_journals SET state='posted',settled_minor=settled_minor-$2,paid_at=NULL,disputed_minor=disputed_minor+$2,updated_at=now() WHERE journal_id=$1")
+                .bind(journal.journal_id).bind(receivable).execute(&mut **tx).await?;
+            self.chargeback_statement_in(tx, &journal, dispute_id, receivable)
+                .await?;
+        }
         Ok(Some(journal.journal_id))
     }
 
