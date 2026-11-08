@@ -20,7 +20,7 @@ async fn historical_authorization_replays_but_pending_legacy_intents_cannot_gran
     files.sort();
     for file in files {
         let version = file.file_stem().unwrap().to_str().unwrap();
-        if version >= "0103" {
+        if version >= "0109_plan_payment_authority" {
             continue;
         }
         let mut tx = db.pool().begin().await.unwrap();
@@ -95,13 +95,17 @@ async fn historical_authorization_replays_but_pending_legacy_intents_cannot_gran
             .unwrap();
     db.migrate().await.unwrap();
     db.migrate().await.unwrap();
-    let after: serde_json::Value = sqlx::query_scalar(
-        "SELECT to_jsonb(o)-'plan_payment' FROM oxsum.payment_orders o WHERE order_id=$1",
-    )
-    .bind(fulfilled)
-    .fetch_one(db.pool())
-    .await
-    .unwrap();
+    let mut after: serde_json::Value =
+        sqlx::query_scalar("SELECT to_jsonb(o) FROM oxsum.payment_orders o WHERE order_id=$1")
+            .bind(fulfilled)
+            .fetch_one(db.pool())
+            .await
+            .unwrap();
+    assert_eq!(
+        after.as_object_mut().unwrap().remove("plan_payment"),
+        Some(serde_json::Value::Null),
+        "historical orders must not receive invented period authority"
+    );
     assert_eq!(before, after);
     assert_eq!(
         db.activate_plan_period(fulfilled, plan.customer_plan_id)

@@ -19,7 +19,7 @@ async fn historical_reversals_keep_original_rows_and_only_known_pinned_handles_a
     files.sort();
     for file in files {
         let version = file.file_stem().unwrap().to_str().unwrap();
-        if version >= "0100" {
+        if version >= "0107_deposit_refund_recovery" {
             continue;
         }
         let mut tx = db.pool().begin().await.unwrap();

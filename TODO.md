@@ -8,7 +8,7 @@ Updated: 2026-11-08
 
 [Contract and execution evidence](docs/roadmap/operator-launch/EXECUTION.md) track the accepted N00–N21 scope. Checkboxes reflect issue closure, not release acceptance; each integrated unit retains its unperformed browser, journey and candidate gates. The [integration checkpoint](docs/roadmap/operator-launch/evidence/integration-reconciliation.md) records the 26 merged PRs and failed CI on `c79a588`.
 
-- [ ] [#725](https://github.com/AllureCurtain/oxsum/issues/725) — Complete operator/customer and embedded adoption software and available acceptance; current integrated baseline has failing CI.
+- [ ] [#725](https://github.com/AllureCurtain/oxsum/issues/725) — Complete operator/customer and embedded adoption software and available acceptance; integrated repairs are under complete regression validation; release acceptance remains pending.
 - [x] [#726](https://github.com/AllureCurtain/oxsum/issues/726) — N00: Execution contract and task ownership integrated in PR #749.
 - [x] [#727](https://github.com/AllureCurtain/oxsum/issues/727) — N01: Current product/authority/proof documentation integrated in PR #767.
 - [x] [#728](https://github.com/AllureCurtain/oxsum/issues/728) — N02: Isolated current-authority demo integrated in PR #751; example isolation in PR #772. Development evidence passed; final candidate rerun remains.
@@ -49,11 +49,12 @@ Updated: 2026-11-08
 - [ ] [#779](https://github.com/AllureCurtain/oxsum/issues/779) — Statement prepayment and journal-void synchronization changes integrated (#784); the combined prepayment regression is tracked by #795. Settled-usage re-billing, mid-period refund notes and excess-refund cash allocation remain confirmed defects with three ignored reproductions.
 - [x] [#785](https://github.com/AllureCurtain/oxsum/issues/785) — N21.a scoped service-managed customer provisioning integrated (#786); no blanket customer grant.
 - [x] [#788](https://github.com/AllureCurtain/oxsum/issues/788) — N21.b scoped customer balance and bill reads integrated (#791); four core and two HTTP development checks passed.
-- [ ] [#793](https://github.com/AllureCurtain/oxsum/issues/793) — Restore published-bundle replay and historical payment upgrade preservation; 14 PostgreSQL checks and strict workspace Clippy passed, integration pending.
+- [x] [#793](https://github.com/AllureCurtain/oxsum/issues/793) — Published-bundle replay and historical payment preservation repaired in PR #797 (`04e4bec`); combined regression checks passed for those paths.
 - [x] [#794](https://github.com/AllureCurtain/oxsum/issues/794) — Reconcile integrated progress and remaining acceptance; integrated in PR #796.
-- [ ] [#795](https://github.com/AllureCurtain/oxsum/issues/795) — Apply closing plan prepayments to statements once and retain payment-source evidence; 55 focused PostgreSQL checks, baseline failure reproduction and strict Clippy passed. Review/integration pending; H1/H2/H3 remain N11 defects.
-- [ ] [#799](https://github.com/AllureCurtain/oxsum/issues/799) — Reconcile current checkout authority descriptions; source, generated-contract and link checks passed, integration pending.
+- [x] [#795](https://github.com/AllureCurtain/oxsum/issues/795) — Closing plan prepayments reach statements once with payment-source evidence; integrated in PR #798 (`c97e5f7`). H1/H2/H3 remain separate defects.
+- [x] [#799](https://github.com/AllureCurtain/oxsum/issues/799) — Checkout authority descriptions and generated type drift reconciled in PR #804 (`465061d`).
 - [ ] [#800](https://github.com/AllureCurtain/oxsum/issues/800) — Replace undefined OpenAPI security requirements with the credential classes each route actually accepts.
+- [ ] [#805](https://github.com/AllureCurtain/oxsum/issues/805) — Repair the five complete-run migration/recovery regressions and prevent migration registry drift; 42 focused and 1,877 complete PostgreSQL/workspace tests plus strict Clippy passed; nine existing opt-ins/known defects remain skipped. Integration pending.
 
 - [x] [#723](https://github.com/AllureCurtain/oxsum/issues/723) — Serialized promo writers on the ledger append advisory lock before their promo row locks, fixing the post-merge hold/expiry deadlock; integrated in PR #724.
 

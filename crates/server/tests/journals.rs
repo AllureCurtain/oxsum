@@ -236,9 +236,17 @@ async fn the_customer_lists_and_reads_its_journals() {
     .await;
     assert_eq!(status, StatusCode::OK, "{body}");
     let lines = body["data"]["lines"].as_array().unwrap();
-    assert_eq!(lines.len(), 2);
-    assert_eq!(lines[0]["kind"].as_str().unwrap(), "baseFee");
-    assert_eq!(lines[0]["amountMinor"].as_i64().unwrap(), 2500);
+    let mut amounts = lines
+        .iter()
+        .map(|line| {
+            (
+                line["kind"].as_str().unwrap(),
+                line["amountMinor"].as_i64().unwrap(),
+            )
+        })
+        .collect::<Vec<_>>();
+    amounts.sort_unstable();
+    assert_eq!(amounts, vec![("baseFee", 2500), ("usageOverage", 1000)]);
 }
 
 #[tokio::test]
