@@ -46,7 +46,7 @@ Updated: 2026-11-08
 - [x] [#774](https://github.com/AllureCurtain/oxsum/issues/774) — Immutable published bundle grants integrated (#778); merged replay regression is tracked by #793.
 - [x] [#776](https://github.com/AllureCurtain/oxsum/issues/776) — Paid plan activation bound to customer/period quotes integrated (#780); full combined/browser acceptance remains.
 - [ ] [#777](https://github.com/AllureCurtain/oxsum/issues/777) — Implement explicit scoped partial/full plan-statement repayment and recovery; renewal is not debt repayment.
-- [ ] [#779](https://github.com/AllureCurtain/oxsum/issues/779) — Statement prepayment and journal-void synchronization fixed (#784). Settled-usage re-billing, mid-period refund notes and excess-refund cash allocation remain confirmed defects with three ignored reproductions.
+- [ ] [#779](https://github.com/AllureCurtain/oxsum/issues/779) — Statement prepayment and journal-void synchronization changes integrated (#784); the combined prepayment regression is tracked by #795. Settled-usage re-billing, mid-period refund notes and excess-refund cash allocation remain confirmed defects with three ignored reproductions.
 - [x] [#785](https://github.com/AllureCurtain/oxsum/issues/785) — N21.a scoped service-managed customer provisioning integrated (#786); no blanket customer grant.
 - [x] [#788](https://github.com/AllureCurtain/oxsum/issues/788) — N21.b scoped customer balance and bill reads integrated (#791); four core and two HTTP development checks passed.
 - [ ] [#793](https://github.com/AllureCurtain/oxsum/issues/793) — Repair merged bundle replay and historical payment upgrade regressions; implementation and integrated validation in progress.
