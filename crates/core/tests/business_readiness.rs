@@ -8,9 +8,9 @@ use std::collections::BTreeMap;
 use oxsum_core::{
     BusinessReadiness, BusinessRole, BusinessStaffRequest, BusinessStaffRevokeRequest,
     CheckoutRouteRequest, CollectionCurrency, Db, MerchantCreateRequest, MerchantMode,
-    MerchantRail, MerchantStatusRequest, NewUser, ProviderChange, ProviderConnection,
-    ProviderPriceInput, ProviderStatusInput, SaleChange, SaleChangeRequest, SecretKey,
-    SessionContext, SessionContextRequest, WalletError,
+    MerchantRail, MerchantStatusRequest, NewUser, ProviderAliasInput, ProviderChange,
+    ProviderConnection, ProviderPriceInput, ProviderStatusInput, SaleChange, SaleChangeRequest,
+    SecretKey, SessionContext, SessionContextRequest, WalletError,
 };
 use serde_json::json;
 use time::{Duration, OffsetDateTime};
@@ -311,12 +311,80 @@ async fn solo_payg_uses_matching_current_configuration_without_staff_or_plans() 
     .await
     .unwrap();
 
+    provider(
+        &db,
+        &owner,
+        &secret,
+        ProviderChange::Connection {
+            config: ProviderConnection {
+                name: "alternate-chat".into(),
+                base_url: "https://alternate.example.com".into(),
+                protocol: "openai".into(),
+                api_keys: Some(vec!["alternate-fixture-secret".into()]),
+                destination_policy: None,
+            },
+        },
+    )
+    .await;
+    provider(&db, &owner, &secret, ProviderChange::Price { channel: "alternate-chat".into(), config: Box::new(ProviderPriceInput {
+        model: "first-model".into(), price: serde_json::from_value(json!({"inputPricePerMillion":100,"outputPricePerMillion":200,"maxOutputTokens":32})).unwrap(), weight: 1,
+    })}).await;
+    let alternate = db
+        .business_channels(&owner, None, 10)
+        .await
+        .unwrap()
+        .channels
+        .into_iter()
+        .find(|channel| channel.name == "alternate-chat")
+        .unwrap();
+    let wrong_seal = wrong_key.seal("alternate-fixture-secret").unwrap();
+    sqlx::query("UPDATE oxsum.channel_credentials SET api_key_sealed=$2 WHERE credential_id=$1")
+        .bind(alternate.credentials[0].credential_id)
+        .bind(wrong_seal)
+        .execute(db.pool())
+        .await
+        .unwrap();
+    assert_eq!(
+        state(
+            &db.business_readiness(&owner, Some(&secret), true)
+                .await
+                .unwrap(),
+            "supply"
+        ),
+        "todo",
+        "an unreadable candidate poisons admission before route selection"
+    );
+    provider(
+        &db,
+        &owner,
+        &secret,
+        ProviderChange::CredentialStatus {
+            channel: "alternate-chat".into(),
+            credential: alternate.credentials[0].credential_id,
+            config: ProviderStatusInput {
+                status: "disabled".into(),
+            },
+        },
+    )
+    .await;
+    assert_eq!(
+        state(
+            &db.business_readiness(&owner, Some(&secret), true)
+                .await
+                .unwrap(),
+            "supply"
+        ),
+        "ready"
+    );
+
     let channel = db
         .business_channels(&owner, None, 10)
         .await
         .unwrap()
         .channels
-        .remove(0);
+        .into_iter()
+        .find(|channel| channel.name == "first-chat")
+        .unwrap();
     let credential = channel.credentials[0].credential_id;
     provider(
         &db,
@@ -365,6 +433,61 @@ async fn solo_payg_uses_matching_current_configuration_without_staff_or_plans() 
         .execute(db.pool())
         .await
         .unwrap();
+    // An alias can be the sold name without carrying a separate provider price.
+    provider(
+        &db,
+        &owner,
+        &secret,
+        ProviderChange::Alias {
+            channel: "first-chat".into(),
+            config: ProviderAliasInput {
+                alias: "sold-alias".into(),
+                upstream_model: "first-model".into(),
+            },
+        },
+    )
+    .await;
+    let alias_book = book(&db, &owner, "sold-alias").await;
+    let active = sale(
+        &db,
+        &owner,
+        SaleChange::ScheduleDefault {
+            book_id: alias_book,
+            version: 1,
+            effective_from: None,
+            effective_until: None,
+            replaces: Some(active),
+        },
+    )
+    .await;
+    assert_eq!(
+        state(
+            &db.business_readiness(&owner, Some(&secret), true)
+                .await
+                .unwrap(),
+            "saleTerms"
+        ),
+        "ready"
+    );
+    provider(
+        &db,
+        &owner,
+        &secret,
+        ProviderChange::RemoveAlias {
+            channel: "first-chat".into(),
+            alias: "sold-alias".into(),
+        },
+    )
+    .await;
+    assert_eq!(
+        state(
+            &db.business_readiness(&owner, Some(&secret), true)
+                .await
+                .unwrap(),
+            "saleTerms"
+        ),
+        "todo"
+    );
     // A future replacement cannot conceal the fact that no default is active now.
     sale(
         &db,
