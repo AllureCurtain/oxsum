@@ -44,6 +44,7 @@ mod plans;
 mod refunds;
 mod report_links;
 pub(crate) mod requests;
+mod staff_invitations;
 mod statements;
 pub(crate) mod usage;
 mod usage_reports;
@@ -532,6 +533,14 @@ pub fn router(state: AppState) -> Router {
         .route(
             "/business/customer-invitations/{invitationId}/revoke",
             post(business::revoke_customer_invitation),
+        )
+        .route(
+            "/business/staff-invitations",
+            get(staff_invitations::list).post(staff_invitations::create),
+        )
+        .route(
+            "/business/staff-invitations/{invitationId}/revoke",
+            post(staff_invitations::revoke),
         )
         // The device grant's tool leg: the device code is the credential, so
         // both endpoints stay open in every signup mode (issue #156).

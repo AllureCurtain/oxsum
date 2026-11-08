@@ -37,7 +37,7 @@ impl BusinessRole {
             _ => Err(WalletError::Forbidden("unknown business role".into())),
         }
     }
-    fn as_str(self) -> &'static str {
+    pub(crate) fn as_str(self) -> &'static str {
         match self {
             Self::Owner => "owner",
             Self::Admin => "admin",
