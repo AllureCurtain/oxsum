@@ -1209,10 +1209,10 @@ pub struct AdminDeposit {
     pub reversal_entry_id: Option<Uuid>,
     /// When the reversal committed.
     pub reversed_at: Option<OffsetDateTime>,
-    /// The payment-provider refund's standing, when the rail issued one
-    /// (issue #360): `pending`, `succeeded` or `failed`, read off the deposit's
-    /// `meta`. `None` means the rail issued no refund — either it was never
-    /// reversed, or the rail carries no refund path.
+    /// The external refund's standing: `unknown`, `pending`, `succeeded` or
+    /// `failed`. Reversed Hyperswitch deposits read the durable operation and
+    /// never trust an old HTTP status as terminal evidence. `None` means this
+    /// deposit has no refund operation on a supported rail.
     pub refund_status: Option<String>,
     /// When a dispute opened on the payment, read off `meta.disputedAt`
     /// (issue #360). `None` means the rail never reported one.
@@ -1239,7 +1239,7 @@ impl Db {
             "SELECT d.deposit_id, d.organization_id, o.name AS organization, d.rail, \
                     d.payment_ref, d.amount_minor, d.received_minor, d.status, \
                     d.entry_id, d.reversal_entry_id, d.reversed_at, d.created_at, \
-                    d.meta->>'refundStatus' AS refund_status, \
+                    CASE WHEN d.rail='hyperswitch' AND d.status='reversed' THEN COALESCE((SELECT f.state FROM oxsum.deposit_refunds f WHERE f.deposit_id=d.deposit_id), 'unknown') ELSE d.meta->>'refundStatus' END AS refund_status, \
                     (d.meta->>'disputedAt')::timestamptz AS disputed_at \
              FROM oxsum.deposits d \
              JOIN oxsum.organizations o ON o.organization_id = d.organization_id \
@@ -1339,6 +1339,8 @@ impl Db {
         // else is a conflict: a deposit that never credited moved no money.
         match status.as_str() {
             "reversed" => {
+                self.queue_deposit_refund_in(&mut tx, deposit_id, reason, false)
+                    .await?;
                 tx.commit().await?;
                 return self
                     .admin_deposit(deposit_id)
@@ -1369,6 +1371,8 @@ impl Db {
         .await?
         .rows_affected();
         if flipped > 0 {
+            self.queue_deposit_refund_in(&mut tx, deposit_id, reason, true)
+                .await?;
             Self::enqueue_event(
                 &mut tx,
                 organization_id,
@@ -1401,7 +1405,7 @@ impl Db {
             "SELECT d.deposit_id, d.organization_id, o.name AS organization, d.rail, \
                     d.payment_ref, d.amount_minor, d.received_minor, d.status, \
                     d.entry_id, d.reversal_entry_id, d.reversed_at, d.created_at, \
-                    d.meta->>'refundStatus' AS refund_status, \
+                    CASE WHEN d.rail='hyperswitch' AND d.status='reversed' THEN COALESCE((SELECT f.state FROM oxsum.deposit_refunds f WHERE f.deposit_id=d.deposit_id), 'unknown') ELSE d.meta->>'refundStatus' END AS refund_status, \
                     (d.meta->>'disputedAt')::timestamptz AS disputed_at \
              FROM oxsum.deposits d \
              JOIN oxsum.organizations o ON o.organization_id = d.organization_id \
@@ -1429,81 +1433,6 @@ impl Db {
             })
         })
         .transpose()
-    }
-
-    /// The handle a Hyperswitch reversal needs: the payment id the refund is
-    /// issued against, the amount to refund (`received_minor`, falling back to
-    /// `amount_minor`), and the current refund state — the `Option<String>` is
-    /// `meta.refundStatus` so the caller knows whether it is issuing the first
-    /// refund or re-issuing one the switch refused. `None` when the deposit is
-    /// not a hyperswitch row or never got a payment id.
-    ///
-    /// # Errors
-    ///
-    /// Storage failures surface as [`WalletError`].
-    pub async fn hyperswitch_refund_target(
-        &self,
-        deposit_id: Uuid,
-    ) -> Result<Option<HyperswitchRefundTarget>, WalletError> {
-        let row = sqlx::query(
-            "SELECT meta->>'hyperswitchPaymentId' AS payment_id, \
-                    received_minor, amount_minor, meta->>'refundStatus' AS refund_status \
-             FROM oxsum.deposits \
-             WHERE deposit_id = $1 AND rail = $2",
-        )
-        .bind(deposit_id)
-        .bind(RAIL_HYPERSWITCH)
-        .fetch_optional(self.pool())
-        .await?;
-        let Some(row) = row else {
-            return Ok(None);
-        };
-        use sqlx::Row;
-        let payment_id: Option<String> = row.try_get("payment_id")?;
-        Ok(payment_id.map(|payment_id| HyperswitchRefundTarget {
-            payment_id,
-            amount_minor: row
-                .try_get::<Option<i64>, _>("received_minor")
-                .ok()
-                .flatten()
-                .unwrap_or_else(|| row.try_get("amount_minor").unwrap_or(0)),
-            refund_status: row.try_get("refund_status").ok().flatten(),
-        }))
-    }
-
-    /// Records the refund the switch issued — or refused — on the deposit's
-    /// `meta` (issue #360): `hyperswitchRefundId` names it so the `refund_*`
-    /// webhooks can find the row, and `refundStatus` is what the switch
-    /// answered (`pending`/`succeeded`) or `failed` when the call was refused.
-    /// `Ok(false)` means no hyperswitch deposit carries the id — a defensive
-    /// miss, never an error worth failing the reversal over.
-    ///
-    /// # Errors
-    ///
-    /// Storage failures surface as [`WalletError`].
-    pub async fn record_hyperswitch_refund(
-        &self,
-        deposit_id: Uuid,
-        refund_id: Option<&str>,
-        refund_status: &str,
-    ) -> Result<bool, WalletError> {
-        let flipped = sqlx::query(
-            "UPDATE oxsum.deposits \
-             SET meta = meta || jsonb_build_object(\
-                     'refundStatus', $2::text\
-                 ) || CASE WHEN $3::text IS NULL THEN '{}'::jsonb \
-                      ELSE jsonb_build_object('hyperswitchRefundId', $3::text) END, \
-                 updated_at = now() \
-             WHERE deposit_id = $1 AND rail = $4",
-        )
-        .bind(deposit_id)
-        .bind(refund_status)
-        .bind(refund_id)
-        .bind(RAIL_HYPERSWITCH)
-        .execute(self.pool())
-        .await?
-        .rows_affected();
-        Ok(flipped > 0)
     }
 
     /// Finds the deposit a `refund_*` or `dispute_*` webhook names. It looks
@@ -1545,39 +1474,6 @@ impl Db {
             }
             None => Ok(None),
         }
-    }
-
-    /// Writes the refund's terminal status from its webhook — `refund_succeeded`
-    /// settles the refund the deposit's `meta` tracks, `refund_failed` marks it
-    /// failed so the next reversal retry re-issues the call. Only a hyperswitch
-    /// row moves; `Ok(false)` means the deposit was not found.
-    ///
-    /// # Errors
-    ///
-    /// Storage failures surface as [`WalletError`].
-    pub async fn settle_hyperswitch_refund(
-        &self,
-        deposit_id: Uuid,
-        refund_id: &str,
-        refund_status: &str,
-    ) -> Result<bool, WalletError> {
-        let flipped = sqlx::query(
-            "UPDATE oxsum.deposits \
-             SET meta = meta || jsonb_build_object(\
-                     'refundStatus', $2::text, \
-                     'hyperswitchRefundId', $3::text\
-                 ), \
-                 updated_at = now() \
-             WHERE deposit_id = $1 AND rail = $4",
-        )
-        .bind(deposit_id)
-        .bind(refund_status)
-        .bind(refund_id)
-        .bind(RAIL_HYPERSWITCH)
-        .execute(self.pool())
-        .await?
-        .rows_affected();
-        Ok(flipped > 0)
     }
 
     /// Records a dispute opening on the deposit's `meta` (`disputedAt`) and
@@ -1625,18 +1521,4 @@ impl Db {
         tx.commit().await?;
         Ok(flipped > 0)
     }
-}
-
-/// What [`Db::hyperswitch_refund_target`] returns — everything the reversal
-/// handler needs to issue (or re-issue) the switch's refund.
-#[derive(Debug, Clone)]
-pub struct HyperswitchRefundTarget {
-    /// The switch's payment id — `POST /refunds`' `payment_id`.
-    pub payment_id: String,
-    /// The amount to refund: `received_minor` when the rail reported one,
-    /// `amount_minor` otherwise.
-    pub amount_minor: i64,
-    /// The standing `meta.refundStatus` — `Some("failed")` means the last
-    /// refund call was refused and this attempt is a re-issue.
-    pub refund_status: Option<String>,
 }

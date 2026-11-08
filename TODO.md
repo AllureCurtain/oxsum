@@ -50,6 +50,7 @@ Updated: 2026-11-08
 - [ ] [#760](https://github.com/AllureCurtain/oxsum/issues/760) — Bind Hyperswitch payment/refund retries to durable body identities, reconcile lost responses and retain ambiguous reservations after bounded recovery; implemented and locally validated, review pending.
 - [ ] [#769](https://github.com/AllureCurtain/oxsum/issues/769) — Isolate the complete developer-example runner and retain exact artifact evidence; implemented with eight isolation checks and complete artifact walkthrough, integration/review pending.
 - [ ] [#756](https://github.com/AllureCurtain/oxsum/issues/756) — Persistent owner-managed profile implemented; frontend build, strict Clippy and full workspace 1,810 tests passed. Review/integration and browser acceptance remain; see [evidence](docs/roadmap/operator-launch/evidence/business-profile.md).
+- [ ] [#763](https://github.com/AllureCurtain/oxsum/issues/763) — Recover legacy Hyperswitch deposit reversals with pinned durable identity, historical fencing and exact signed outcomes; implemented and locally validated, review pending.
 
 - [x] [#723](https://github.com/AllureCurtain/oxsum/issues/723) — Serialized promo writers on the ledger append advisory lock before their promo row locks, fixing the post-merge hold/expiry deadlock; integrated in PR #724.
 

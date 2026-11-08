@@ -28,7 +28,7 @@ type AdminDeposit = {
   entryId: string | null;
   reversalEntryId: string | null;
   reversedAt: string | null;
-  refundStatus: "pending" | "succeeded" | "failed" | null;
+  refundStatus: "unknown" | "pending" | "succeeded" | "failed" | null;
   disputedAt: string | null;
   createdAt: string;
 };
@@ -37,7 +37,8 @@ type AdminDeposit = {
 /// organization. A `credited` row carries a **Reverse** action — a refund
 /// (issues #356, #360): it posts one entry taking the purchased credit back,
 /// flips the row to `reversed`, and for a rail that moves money back it also
-/// issues the rail's refund, whose standing the row carries as `refundStatus`.
+/// queues bounded refund recovery. Only exact signed evidence confirms return;
+/// `refundStatus` distinguishes unknown/pending from authenticated outcomes.
 export function Deposits({ token }: { token: string }) {
   const { t } = useTranslation();
   const [organization, setOrganization] = useState("");

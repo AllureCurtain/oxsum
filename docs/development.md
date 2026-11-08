@@ -1253,6 +1253,25 @@ preserve identity/amount. The runner changes only in-memory routing, leaves
 the persistent stack configuration intact, and shuts down its proxy/listener
 and own database. No real PSP or model is called; provider-delivered callbacks
 and browser checkout remain distinct acceptance.
+
+### Legacy deposit refund recovery smoke
+
+After preparing #757's pinned local dummy stack, run:
+
+```bash
+python3 scripts/deposit-refund-smoke.py \
+  --sandbox /absolute/path/to/infra/hyperswitch \
+  --binary /absolute/path/to/oxsum
+```
+
+The runner reuses the sandbox's isolated database/listener harness and creates
+one legacy deposit. It drops the successful refund POST response, checks exact
+retrieval recovery and repeated local reversal, then applies duplicated locally
+signed callbacks. It requires the dummy-only fixture marker and stops its own
+proxy/listener and drops only its scratch database. The legacy deposit's wallet
+units are reported separately from provider minor units; no order conversion is
+implied. No real PSP, model, automatic callback or browser claim is made.
+
 ### Sale editor verification (#731)
 
 Run `node --experimental-strip-types --test web/tests/sale-draft.test.ts` on

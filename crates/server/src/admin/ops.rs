@@ -166,7 +166,8 @@ pub(crate) struct ReverseDepositReq {
 /// posting twice. The wallet's own no-overdraft rule refuses what the
 /// purchased pool cannot carry — `402 INSUFFICIENT_FUNDS` — and a deposit
 /// that is not `credited` is `409`, an unknown one `404`. No payment provider
-/// is called: returning the money through the rail is a separate issue.
+/// is called inside the ledger transaction. Hyperswitch recovery follows the
+/// durable queued refund; only a signed matching event confirms money returned.
 pub(crate) async fn reverse_deposit(
     State(state): State<AppState>,
     Path(deposit_id): Path<Uuid>,
@@ -187,55 +188,19 @@ pub(crate) async fn reverse_deposit(
         .db
         .reverse_deposit(&wallet, deposit_id, &request.reason, today())
         .await?;
-    // The payment-provider half (issue #360): a hyperswitch deposit also
-    // returns the customer's money through the switch. The reversal already
-    // committed — the books are right regardless — so a switch refusal is
-    // recorded on the row as `refundStatus: failed`, never propagated into the
-    // answer. A retry on a `failed` refund re-issues the call; anything else
-    // (pending, succeeded, or a rail with no refund path) is left alone.
+    // The local reversal already queued its immutable external operation.
+    // Recovery spends a durable lease before I/O; HTTP failures retain unknown.
     let mut deposit = reversed;
     if deposit.rail == oxsum_core::RAIL_HYPERSWITCH
-        && let Some(switch) = state.config.hyperswitch()
-        && let Ok(Some(target)) = state.db.hyperswitch_refund_target(deposit_id).await
+        && let Some(secret) = state.config.secret()
     {
-        let issue =
-            target.refund_status.is_none() || target.refund_status.as_deref() == Some("failed");
-        if issue {
-            match switch
-                .create_refund(
-                    &state.http,
-                    &target.payment_id,
-                    deposit_id,
-                    target.amount_minor,
-                    &request.reason,
-                )
-                .await
-            {
-                Ok(refund) => {
-                    let _ = state
-                        .db
-                        .record_hyperswitch_refund(
-                            deposit_id,
-                            Some(&refund.refund_id),
-                            &refund.status,
-                        )
-                        .await;
-                }
-                Err(error) => {
-                    tracing::error!(%deposit_id, error = %error.0,
-                        "the switch refused the refund");
-                    let _ = state
-                        .db
-                        .record_hyperswitch_refund(deposit_id, None, "failed")
-                        .await;
-                }
-            }
-            // Re-read the row so the answer carries the refund standing the
-            // call just wrote.
-            if let Ok(Some(fresh)) = state.db.admin_deposit(deposit_id).await {
-                deposit = fresh;
-            }
-        }
+        crate::deposit_refunds::recover_one(&state.db, secret, &state.provider_http, deposit_id)
+            .await?;
+        deposit = state
+            .db
+            .admin_deposit(deposit_id)
+            .await?
+            .ok_or_else(ApiError::not_found)?;
     }
     record(
         &state,

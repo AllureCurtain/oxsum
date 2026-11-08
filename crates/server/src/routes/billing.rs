@@ -1010,39 +1010,11 @@ pub(crate) async fn hyperswitch_legacy_webhook(
         // is found by the refund id the reversal recorded, or by the payment
         // id as a fallback for an event that outran the record.
         "refund_succeeded" | "refund_failed" => {
-            let object = &event.content.object;
-            let refund_id = object["refund_id"].as_str().unwrap_or_default();
-            let refund_status = object["status"].as_str().unwrap_or_default();
-            let status = if event.event_type == "refund_succeeded" {
-                "succeeded"
-            } else {
-                "failed"
-            };
-            // The webhook's own status wins when it names one; the event type
-            // is the fallback for a payload that leaves it ambiguous.
-            let status = if refund_status.is_empty() {
-                status
-            } else {
-                refund_status
-            };
-            if let Some(payment_id) = payment_id
-                && let Some((deposit_id, _, _)) = state
-                    .db
-                    .find_hyperswitch_by_refund_or_payment(
-                        if refund_id.is_empty() {
-                            None
-                        } else {
-                            Some(refund_id)
-                        },
-                        payment_id,
-                    )
-                    .await?
-            {
-                state
-                    .db
-                    .settle_hyperswitch_refund(deposit_id, refund_id, status)
-                    .await?;
-            }
+            // The unversioned historical callback has no pinned original
+            // merchant/amount/currency authority. Its raw event is retained
+            // above, but cannot replace durable refund evidence. Versioned
+            // bound deposits use merchant_events::environment instead.
+            tracing::warn!(event_id=%event.event_id,"unbound historical refund requires reconciliation");
         }
         "dispute_opened" => {
             if let Some(payment_id) = payment_id
