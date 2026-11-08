@@ -75,9 +75,10 @@ async fn aggregates_distinguish_live_due_and_historical_rows_without_mutations()
         SELECT 'private-job-'||n,now()+make_interval(secs=>delay),s,CASE WHEN age IS NULL THEN NULL ELSE now()-make_interval(secs=>age) END,'private-job-error','{\"privatePayload\":true}' \
         FROM (VALUES (1,3600,'pending',NULL::int),(2,-3600,'pending',NULL),(3,-3600,'running',60),(4,-3600,'running',3600),(5,-3600,'running',NULL),(6,-3600,'dead',3600),(7,-3600,'done',3600)) AS fixture(n,delay,s,age)")
         .execute(&mut *tx).await.unwrap();
-    sqlx::query("INSERT INTO oxsum.request_operations(organization_id,surface,fingerprint,bound_minor,model,state,leased_until) \
-        SELECT $1,'chat','private-fingerprint-'||n,1,'private-model',s,CASE WHEN lease IS NULL THEN NULL ELSE now()+make_interval(secs=>lease) END \
-        FROM (VALUES (1,'created',NULL::int),(2,'leased',3600),(3,'running',-3600),(4,'succeeded',-3600)) AS fixture(n,s,lease)")
+    sqlx::query("INSERT INTO oxsum.request_operations(organization_id,surface,fingerprint,bound_minor,model,state,leased_until,created_at) \
+        SELECT $1,CASE WHEN n=6 THEN 'metering' ELSE 'chat' END,'private-fingerprint-'||n,1,'private-model',s,CASE WHEN lease IS NULL THEN NULL ELSE now()+make_interval(secs=>lease) END, \
+        CASE WHEN n=5 THEN now() ELSE now()-interval '1 hour' END \
+        FROM (VALUES (1,'created',NULL::int),(2,'leased',3600),(3,'running',-3600),(4,'succeeded',-3600),(5,'created',NULL),(6,'running',-3600),(7,'leased',NULL)) AS fixture(n,s,lease)")
         .bind(org).execute(&mut *tx).await.unwrap();
     sqlx::query("INSERT INTO oxsum.open_holds(hold_key,tenant_id,request_id,model,channel,price_version,input_price,output_price,freeze_minor,dead_at,last_error) \
         SELECT 'private-hold-'||n,'private-tenant','private-request','private-model','private-channel',1,1,1,1,CASE WHEN n=2 THEN now() END,'private-hold-error' FROM generate_series(1,2) n")
@@ -146,11 +147,12 @@ async fn aggregates_distinguish_live_due_and_historical_rows_without_mutations()
         serde_json::json!({
             "providerChannels":1,"providerCredentialsActive":2,"providerCredentialsCooling":1,"providerCredentialsDisabled":1,
             "merchantsEnabled":1,"merchantsDisabled":1,"jobsScheduled":1,"jobsDue":1,"jobsRunning":3,"jobClaimsExpired":2,"jobsDead":1,
-            "operationsOpen":3,"operationLeasesExpired":2,"holdsOpen":2,"holdsDead":1,"paidOrdersUnfulfilled":1,"paymentOrdersNeedAttention":1,
+        "operationsOpen":6,"operationLeasesExpired":2,"holdsOpen":2,"holdsDead":1,"paidOrdersUnfulfilled":1,"paymentOrdersNeedAttention":1,
             "merchantEventsPending":1,"merchantEventsAccepted":1,"refundsRetryDue":1,"refundsNeedReview":1,"legacyRefundsRetryDue":1,"legacyRefundsNeedReview":1
         })
     );
     assert!(!actual.to_string().contains("private"));
+    assert_eq!(db.operations_past_lease(100).await.unwrap().len(), 2);
     let after: serde_json::Value =
         sqlx::query_scalar("SELECT jsonb_agg(to_jsonb(j) ORDER BY job_id) FROM oxsum.jobs j")
             .fetch_one(db.pool())

@@ -11032,7 +11032,7 @@ components:
         jobClaimsExpired: { type: integer, format: int64, minimum: 0, description: "Running jobs with null claim time or at least the five-minute claim lease elapsed." }
         jobsDead: { type: integer, format: int64, minimum: 0, description: "Retained dead job rows; history count, not necessarily current outage." }
         operationsOpen: { type: integer, format: int64, minimum: 0, description: "Request operations in created, leased or running state." }
-        operationLeasesExpired: { type: integer, format: int64, minimum: 0, description: "Open operations whose lease is null or before snapshot time; recoverable candidates, not proven failures." }
+        operationLeasesExpired: { type: integer, format: int64, minimum: 0, description: "Gateway sweeper candidates: non-metering leased/running operations with expired leases, or created operations older than the gateway lease duration. Fresh admissions and metering are excluded." }
         holdsOpen: { type: integer, format: int64, minimum: 0, description: "Open hold watch rows; no ledger scan is performed." }
         holdsDead: { type: integer, format: int64, minimum: 0, description: "Open hold watch rows marked dead for hourly retry/operator review." }
         paidOrdersUnfulfilled: { type: integer, format: int64, minimum: 0, description: "Orders in paid status awaiting fulfillment." }

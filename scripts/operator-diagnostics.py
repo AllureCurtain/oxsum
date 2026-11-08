@@ -2,6 +2,7 @@
 """Collect an allowlisted support report without logs, secrets or provider probes."""
 import argparse
 from datetime import datetime, timezone
+import http.client
 import ipaddress
 import json
 import os
@@ -121,10 +122,10 @@ def environment_presence(path):
     result = {}
     for group, fields in ENV_GROUPS.items():
         active = sum(bool(values.get(name)) for name in fields)
-        # A shared PUBLIC_URL does not imply that every payment/mail group is
-        # partially configured when its own primary fields are all absent.
+        # A shared PUBLIC_URL does not enable payment adapters by itself. The
+        # startup mail parser does require the SMTP trio when PUBLIC_URL exists.
         own = [name for name in fields if name != "OXSUM_PUBLIC_URL"]
-        if own and not any(values.get(name) for name in own):
+        if group in {"stripe", "airwallex", "hyperswitch"} and not any(values.get(name) for name in own):
             active = 0
         result[group] = "present" if active == len(fields) else "partial" if active else "absent"
     return result
@@ -144,7 +145,7 @@ def fetch(origin, path, token=None):
         status = error.code
         error.close()
         return {"status": "refused", "httpStatus": status}, None
-    except (urllib.error.URLError, TimeoutError, ConnectionError, OSError):
+    except (urllib.error.URLError, TimeoutError, ConnectionError, OSError, http.client.HTTPException):
         return {"status": "unavailable"}, None
     except ValueError:
         return {"status": "invalidResponse"}, None
@@ -157,7 +158,7 @@ def probe(origin, path, validator, token=None):
     try:
         result = validator(raw)
         return {"status": "ok", "data": result}
-    except (ValueError, KeyError, TypeError, UnicodeError):
+    except (ValueError, KeyError, TypeError, UnicodeError, RecursionError):
         return {"status": "invalidResponse"}
 
 

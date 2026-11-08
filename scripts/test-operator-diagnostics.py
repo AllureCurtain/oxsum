@@ -148,7 +148,7 @@ class DiagnosticsTest(unittest.TestCase):
         presence = diagnostic.environment_presence(env)
         self.assertEqual(presence["database"], "present")
         self.assertEqual(presence["headSigning"], "absent")
-        self.assertEqual(presence["smtp"], "absent")
+        self.assertEqual(presence["smtp"], "partial")
         self.assertEqual(presence["x402Facilitator"], "partial")
         self.assertEqual(set(presence), set(diagnostic.ENV_GROUPS))
         env.write_text("OXSUM_ADMIN_TOKEN=one\nOXSUM_ADMIN_TOKEN=two\n")
@@ -186,6 +186,13 @@ class DiagnosticsTest(unittest.TestCase):
             report = self.collect(url)
         self.assertEqual(report["version"], {"status": "invalidResponse"})
         self.assertEqual(report["operator"], {"status": "invalidResponse"})
+
+    def test_deeply_nested_json_is_invalid_instead_of_aborting_collection(self):
+        body = b"[" * 4000 + b"0" + b"]" * 4000
+        with server({"/api/v1/version": (200, {}, body)}) as (url, _):
+            report = self.collect(url)
+        self.assertEqual(report["version"], {"status": "invalidResponse"})
+        self.assertEqual(report["operator"]["status"], "ok")
 
 
 if __name__ == "__main__":

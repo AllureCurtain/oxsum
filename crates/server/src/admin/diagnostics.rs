@@ -72,7 +72,7 @@ pub(crate) async fn read(State(state): State<AppState>) -> ApiResult<Diagnostics
     };
     ok(Diagnostics {
         version: env!("CARGO_PKG_VERSION"),
-        git_sha: env!("OXSUM_GIT_SHA"),
+        git_sha: sanitized_sha(env!("OXSUM_GIT_SHA")),
         schema_version: Db::latest_schema_version(),
         database_state,
         applied_schema_version,
@@ -88,4 +88,35 @@ pub(crate) async fn read(State(state): State<AppState>) -> ApiResult<Diagnostics
         },
         counts,
     })
+}
+
+/// Build overrides are input too: retain a full lowercase SHA or a fixed fallback.
+fn sanitized_sha(value: &str) -> &str {
+    if value.len() == 40
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+    {
+        value
+    } else {
+        "unknown"
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn arbitrary_build_overrides_cannot_enter_the_report() {
+        let valid = "0123456789abcdef0123456789abcdef01234567";
+        assert_eq!(super::sanitized_sha(valid), valid);
+        for invalid in [
+            "unknown",
+            "private-build-secret",
+            "HTTPS://private.test",
+            "ABCD",
+            "",
+        ] {
+            assert_eq!(super::sanitized_sha(invalid), "unknown");
+        }
+    }
 }
