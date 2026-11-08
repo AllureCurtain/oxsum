@@ -95,7 +95,7 @@ pub struct FinancialFacts {
     /// What was collected: Σ `invoice_journals.settled_minor` over the same
     /// journals — the part of `billed` already paid.
     pub collected_minor: i64,
-    /// Cash returned once, from exact plan allocations or proven refund entries.
+    /// Cash returned once, from exact allocations or proven historical entries.
     /// A matching journal discount is not a second cash return.
     pub refund_minor: i64,
     /// Still owed: Σ `(total_minor − paid_minor)` over `issued`/`past_due`
@@ -679,25 +679,26 @@ impl Db {
         Ok((row.try_get("earned")?, row.try_get("collected")?))
     }
 
-    /// Exact cash returns: plan allocations include late external facts even
-    /// when their old terminal state remains failed. Other rails need a real
-    /// sequenced Cash credit; succeeded status alone cannot invent money-out.
+    /// Exact cash returns include late external facts even when their old
+    /// terminal state remains failed. Historical recovery retains the original
+    /// Cash date; its noncash correction cannot create another cash return.
+    /// Other historical rows need a real sequenced Cash credit.
     async fn refund_minor(&self, filter: &FactFilter) -> Result<i64, WalletError> {
         let mut w = Where::new();
         let mut binds = Vec::new();
         let mut sql = String::from(
-            "SELECT COALESCE(sum(e.cash_minor),0)::bigint FROM oxsum.plan_refund_effects e WHERE true",
+            "SELECT COALESCE(sum(e.cash_minor),0)::bigint FROM (SELECT organization_id,cash_minor,booked_at::date AS cash_on FROM oxsum.plan_refund_effects UNION ALL SELECT organization_id,cash_minor,cash_booking_date AS cash_on FROM oxsum.nonplan_refund_effects) e WHERE true",
         );
         if let Some(org) = filter.organization_id {
             sql.push_str(&w.clause(" AND e.organization_id=?"));
             binds.push(Bind::Uuid(org));
         }
         if let Some(from) = filter.from {
-            sql.push_str(&w.clause(" AND e.booked_at::date>=?"));
+            sql.push_str(&w.clause(" AND e.cash_on>=?"));
             binds.push(Bind::Date(from));
         }
         if let Some(to) = filter.to {
-            sql.push_str(&w.clause(" AND e.booked_at::date<=?"));
+            sql.push_str(&w.clause(" AND e.cash_on<=?"));
             binds.push(Bind::Date(to));
         }
         let mut total: i64 = bind_scalar(sqlx::query_scalar(&sql), &binds)
@@ -715,7 +716,7 @@ impl Db {
             let mut w = Where::new();
             let mut binds = Vec::new();
             let mut sql = format!(
-                "SELECT COALESCE(SUM(CASE WHEN p.direction='C' THEN p.amount_minor ELSE -p.amount_minor END),0)::bigint FROM \"{schema}\".entries e JOIN \"{schema}\".postings p USING(entry_id) JOIN \"{schema}\".accounts a USING(account_index) WHERE e.log_index IS NOT NULL AND a.path='Assets:Cash' AND p.layer='settled' AND e.entry_id IN (SELECT n.entry_id FROM oxsum.credit_notes n JOIN oxsum.refunds r USING(refund_id) JOIN oxsum.organizations o ON o.organization_id=r.organization_id WHERE o.tenant_id=$1 AND n.entry_id IS NOT NULL AND NOT EXISTS(SELECT 1 FROM oxsum.plan_refund_effects f WHERE f.refund_id=r.refund_id))"
+                "SELECT COALESCE(SUM(CASE WHEN p.direction='C' THEN p.amount_minor ELSE -p.amount_minor END),0)::bigint FROM \"{schema}\".entries e JOIN \"{schema}\".postings p USING(entry_id) JOIN \"{schema}\".accounts a USING(account_index) WHERE e.log_index IS NOT NULL AND a.path='Assets:Cash' AND p.layer='settled' AND e.entry_id IN (SELECT n.entry_id FROM oxsum.credit_notes n JOIN oxsum.refunds r USING(refund_id) JOIN oxsum.organizations o ON o.organization_id=r.organization_id WHERE o.tenant_id=$1 AND n.entry_id IS NOT NULL AND NOT EXISTS(SELECT 1 FROM oxsum.plan_refund_effects f WHERE f.refund_id=r.refund_id) AND NOT EXISTS(SELECT 1 FROM oxsum.nonplan_refund_effects f WHERE f.refund_id=r.refund_id))"
             );
             binds.push(Bind::Text(&tenant));
             w.next = 2;

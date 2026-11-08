@@ -8,13 +8,14 @@ mod setup;
 use std::sync::Arc;
 
 use oxsum_core::{
-    BundlePublishRequest, BundleTerms, Db, DisputeResolution, MerchantEventKind,
-    MerchantEventReceipt, MerchantSigningContext, NewPaymentOrder, NewRefundRequest, NewUser,
-    NonplanRefundRecoveryRequest, OrderRefund, PaymentOrder, PaymentOrderPurpose, RefundDecision,
+    BundlePublishRequest, BundleTerms, BusinessRole, BusinessStaffRequest, Db, DisputeResolution,
+    FactFilter, MerchantEventKind, MerchantEventReceipt, MerchantSigningContext, NewPaymentOrder,
+    NewRefundRequest, NewUser, NonplanRefundRecoveryRequest, OrderRefund, PaymentOrder,
+    PaymentOrderPurpose, RefundDecision, SessionContext, SessionContextRequest,
     VerifiedMerchantEvent, Wallet, WalletError,
 };
 use serde_json::json;
-use time::{Date, OffsetDateTime};
+use time::{Date, Duration, OffsetDateTime};
 use uuid::Uuid;
 
 const TOTAL: i64 = 2_500_000;
@@ -187,6 +188,17 @@ async fn current(w: &World, id: Uuid) -> OrderRefund {
 async fn net(w: &World, path: &str) -> i64 {
     sqlx::query_scalar(&format!("SELECT COALESCE(SUM(CASE WHEN p.direction='C' THEN p.amount_minor ELSE -p.amount_minor END),0)::bigint FROM ledger_{}.postings p JOIN ledger_{}.accounts a USING(account_index) WHERE a.path=$1 AND p.layer='settled'",w.wallet.tenant_id(),w.wallet.tenant_id())).bind(path).fetch_one(w.db.pool()).await.unwrap()
 }
+async fn reported_cash(w: &World, on: Option<Date>) -> i64 {
+    w.db.financial_facts(&FactFilter {
+        organization_id: Some(w.org),
+        from: on,
+        to: on,
+        ..FactFilter::default()
+    })
+    .await
+    .unwrap()
+    .refund_minor
+}
 fn recovery(refund: Uuid, event: Uuid) -> NonplanRefundRecoveryRequest {
     NonplanRefundRecoveryRequest {
         refund_id: refund,
@@ -236,6 +248,7 @@ async fn partial_and_full_returns_conserve_cash_once_and_show_customer_effect() 
         );
     }
     assert_eq!(net(&w, "Assets:Cash").await, 0);
+    assert_eq!(reported_cash(&w, None).await, TOTAL);
     assert_eq!(w.wallet.available().await.unwrap(), 0);
     assert_eq!(
         w.db.order_refundable_minor(w.org, order.order_id)
@@ -361,6 +374,7 @@ async fn unapproved_and_declined_cash_stays_suspense_and_cannot_authorize_anothe
             Some(0)
         );
         assert_eq!(w.wallet.available().await.unwrap(), TOTAL);
+        assert_eq!(reported_cash(&w, None).await, TOTAL);
         let after: i64 =
             sqlx::query_scalar("SELECT count(*) FROM oxsum.finance_audit WHERE target=$1")
                 .bind(refund.refund_id.to_string())
@@ -444,6 +458,10 @@ async fn return_before_fulfillment_fences_grant_and_remains_reconcilable() {
 }
 
 async fn old_cash(w: &World, refund: Uuid, amount: i64) -> String {
+    old_cash_on(w, refund, amount, today()).await
+}
+
+async fn old_cash_on(w: &World, refund: Uuid, amount: i64, on: Date) -> String {
     use doubleentry::storage::postgres::PostgresStore;
     use doubleentry::{
         AccountRegistry, Amount, Currency, Draft, Entry, EntryBatch, IdempotencyKey, LedgerId,
@@ -467,7 +485,7 @@ async fn old_cash(w: &World, refund: Uuid, amount: i64) -> String {
     let entry = Entry::<Draft, 6>::new(
         oxsum_core::entry_id_for(&key),
         IdempotencyKey::new(key.as_bytes().to_vec()).unwrap(),
-        today(),
+        on,
     )
     .debit(
         find("Liabilities:Wallet"),
@@ -502,7 +520,8 @@ async fn historical_wrong_source_restores_wallet_without_repeating_cash() {
         .unwrap();
     let refund = reserve(&w, &order, None, true).await;
     let receipt = signed_receipt(&w, &order, &refund).await;
-    let hash = old_cash(&w, refund.refund_id, TOTAL).await;
+    let original_cash_day = today() - Duration::days(1);
+    let hash = old_cash_on(&w, refund.refund_id, TOTAL, original_cash_day).await;
     let id = *oxsum_core::entry_id_for(&format!("order-refund/{}", refund.refund_id)).as_uuid();
     sqlx::query("UPDATE oxsum.refunds SET state='succeeded' WHERE refund_id=$1")
         .bind(refund.refund_id)
@@ -516,6 +535,8 @@ async fn historical_wrong_source_restores_wallet_without_repeating_cash() {
         .await
         .unwrap();
     let cash = net(&w, "Assets:Cash").await;
+    assert_eq!(reported_cash(&w, Some(original_cash_day)).await, TOTAL);
+    assert_eq!(reported_cash(&w, Some(today())).await, 0);
     let count = w.wallet.log_size().await.unwrap();
     let mut request = recovery(refund.refund_id, receipt.id);
     let preview =
@@ -538,6 +559,9 @@ async fn historical_wrong_source_restores_wallet_without_repeating_cash() {
         assert_eq!(result.effect.unwrap().cash_entry_hash, hash);
     }
     assert_eq!(net(&w, "Assets:Cash").await, cash);
+    assert_eq!(reported_cash(&w, None).await, TOTAL);
+    assert_eq!(reported_cash(&w, Some(original_cash_day)).await, TOTAL);
+    assert_eq!(reported_cash(&w, Some(today())).await, 0);
     assert_eq!(w.wallet.available().await.unwrap(), 4_000_000);
     assert_eq!(w.wallet.log_size().await.unwrap(), count + 1);
     let note: Uuid =
@@ -986,4 +1010,215 @@ async fn reversed_original_and_reversed_retained_return_cannot_justify_recovery(
             assert_eq!(w.wallet.available().await.unwrap(), 4_000_000);
         }
     }
+}
+
+#[tokio::test]
+async fn historical_holds_and_later_refunds_use_the_exclusive_cash_boundary() {
+    let Some(w) = world().await else { return };
+    let order = paid(&w, PaymentOrderPurpose::WalletTopup, true).await;
+    let refund = reserve(&w, &order, Some(1_000_000), true).await;
+    let receipt = signed_receipt(&w, &order, &refund).await;
+    w.wallet
+        .hold("historical-held", "", 2_000_000, today())
+        .await
+        .unwrap();
+    // The old policy debited pooled replacements while original credit remained
+    // reserved. Releasing the hold later cannot change that historical boundary.
+    w.wallet
+        .top_up("held-replacement", 1_000_000, today())
+        .await
+        .unwrap();
+    old_cash(&w, refund.refund_id, 1_000_000).await;
+    sqlx::query("UPDATE oxsum.refunds SET state='succeeded' WHERE refund_id=$1")
+        .bind(refund.refund_id)
+        .execute(w.db.pool())
+        .await
+        .unwrap();
+    w.wallet
+        .settle("historical-held", "", 0, today())
+        .await
+        .unwrap();
+    let later = reserve(&w, &order, Some(500_000), true).await;
+    let later_receipt = signed_receipt(&w, &order, &later).await;
+    apply(&w, &later_receipt).await;
+    let mut request = recovery(refund.refund_id, receipt.id);
+    let preview =
+        w.db.recover_nonplan_refund(&w.owner, &w.wallet, &request, false, today())
+            .await
+            .unwrap();
+    assert_eq!(preview.status, "proposed");
+    assert_eq!(
+        (preview.wallet_minor, preview.wallet_to_restore_minor),
+        (500_000, 500_000)
+    );
+    assert_eq!(preview.source["original"]["pendingWalletMinor"], 2_000_000);
+    request.expected_revision = Some(preview.source_revision);
+    let before = net(&w, "Assets:Cash").await;
+    w.db.recover_nonplan_refund(&w.owner, &w.wallet, &request, true, today())
+        .await
+        .unwrap();
+    assert_eq!(net(&w, "Assets:Cash").await, before);
+    assert_eq!(reported_cash(&w, None).await, 1_500_000);
+}
+
+#[tokio::test]
+async fn recovery_rechecks_finance_context_role_and_exact_actor_request() {
+    let Some(w) = world().await else { return };
+    let order = paid(&w, PaymentOrderPurpose::WalletTopup, true).await;
+    let refund = reserve(&w, &order, None, true).await;
+    let receipt = signed_receipt(&w, &order, &refund).await;
+    sqlx::query("UPDATE oxsum.refunds SET state='succeeded' WHERE refund_id=$1")
+        .bind(refund.refund_id)
+        .execute(w.db.pool())
+        .await
+        .unwrap();
+    let user =
+        w.db.register(NewUser {
+            email: format!("{}@example.test", Uuid::new_v4()),
+            password: "finance recovery password".into(),
+            organization_name: None,
+        })
+        .await
+        .unwrap();
+    let token =
+        w.db.login(&user.user.email, "finance recovery password")
+            .await
+            .unwrap()
+            .into_session()
+            .token;
+    w.db.set_business_staff(
+        &w.owner,
+        &BusinessStaffRequest {
+            user_id: user.user.id,
+            role: BusinessRole::Finance,
+            reason: "recover exact refunds".into(),
+            idempotency_key: Uuid::new_v4().to_string(),
+        },
+    )
+    .await
+    .unwrap();
+    let mut request = recovery(refund.refund_id, receipt.id);
+    assert!(
+        w.db.recover_nonplan_refund(&token, &w.wallet, &request, false, today())
+            .await
+            .is_err()
+    );
+    w.db.switch_session_context(
+        &token,
+        &SessionContextRequest {
+            idempotency_key: Uuid::new_v4().to_string(),
+            context: SessionContext::Business,
+            organization_id: None,
+        },
+    )
+    .await
+    .unwrap();
+    let report =
+        w.db.recover_nonplan_refund(&token, &w.wallet, &request, false, today())
+            .await
+            .unwrap();
+    request.expected_revision = Some(report.source_revision);
+    let report =
+        w.db.recover_nonplan_refund(&token, &w.wallet, &request, true, today())
+            .await
+            .unwrap();
+    assert_eq!(report.status, "applied");
+    assert!(
+        w.db.recover_nonplan_refund(&w.owner, &w.wallet, &request, true, today())
+            .await
+            .is_err(),
+        "same key cannot change actor"
+    );
+    request.reason.push_str(" changed");
+    assert!(
+        w.db.recover_nonplan_refund(&token, &w.wallet, &request, true, today())
+            .await
+            .is_err(),
+        "same key cannot change reason"
+    );
+    request.reason = "reviewed exact historical evidence".into();
+    assert!(
+        w.db.recover_nonplan_refund(&token, &w.wallet, &request, true, today())
+            .await
+            .unwrap()
+            .already_applied
+    );
+    w.db.set_business_staff(
+        &w.owner,
+        &BusinessStaffRequest {
+            user_id: user.user.id,
+            role: BusinessRole::Viewer,
+            reason: "remove finance authority".into(),
+            idempotency_key: Uuid::new_v4().to_string(),
+        },
+    )
+    .await
+    .unwrap();
+    assert!(
+        w.db.recover_nonplan_refund(&token, &w.wallet, &request, true, today())
+            .await
+            .is_err(),
+        "committed replay still requires current funds authority"
+    );
+}
+
+#[tokio::test]
+async fn historical_restitution_rolls_back_when_recovery_audit_fails() {
+    let Some(w) = world().await else { return };
+    let order = paid(&w, PaymentOrderPurpose::WalletTopup, true).await;
+    w.wallet
+        .hold("original-spent", "", TOTAL, today())
+        .await
+        .unwrap();
+    w.wallet
+        .settle("original-spent", "", TOTAL, today())
+        .await
+        .unwrap();
+    w.wallet
+        .top_up("other-payment", TOTAL, today())
+        .await
+        .unwrap();
+    let refund = reserve(&w, &order, None, true).await;
+    let receipt = signed_receipt(&w, &order, &refund).await;
+    let hash = old_cash(&w, refund.refund_id, TOTAL).await;
+    sqlx::query("UPDATE oxsum.refunds SET state='succeeded' WHERE refund_id=$1")
+        .bind(refund.refund_id)
+        .execute(w.db.pool())
+        .await
+        .unwrap();
+    let mut request = recovery(refund.refund_id, receipt.id);
+    let report =
+        w.db.recover_nonplan_refund(&w.owner, &w.wallet, &request, false, today())
+            .await
+            .unwrap();
+    request.expected_revision = Some(report.source_revision);
+    let log = w.wallet.log_size().await.unwrap();
+    let cash = net(&w, "Assets:Cash").await;
+    let function = format!("fail_refund_recovery_{}", Uuid::new_v4().simple());
+    sqlx::query(&format!("CREATE FUNCTION oxsum.{function}() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN IF NEW.action='nonplan_refund.recover' AND NEW.target='{}' THEN RAISE EXCEPTION 'controlled recovery audit failure'; END IF; RETURN NEW; END $$",refund.refund_id)).execute(w.db.pool()).await.unwrap();
+    sqlx::query(&format!("CREATE TRIGGER {function} BEFORE INSERT ON oxsum.finance_audit FOR EACH ROW EXECUTE FUNCTION oxsum.{function}()" )).execute(w.db.pool()).await.unwrap();
+    assert!(
+        w.db.recover_nonplan_refund(&w.owner, &w.wallet, &request, true, today())
+            .await
+            .is_err()
+    );
+    assert_eq!(w.wallet.log_size().await.unwrap(), log);
+    assert_eq!(w.wallet.available().await.unwrap(), 0);
+    assert_eq!(net(&w, "Assets:Cash").await, cash);
+    assert!(current(&w, refund.refund_id).await.cash_effect.is_none());
+    sqlx::query(&format!("DROP TRIGGER {function} ON oxsum.finance_audit"))
+        .execute(w.db.pool())
+        .await
+        .unwrap();
+    sqlx::query(&format!("DROP FUNCTION oxsum.{function}()"))
+        .execute(w.db.pool())
+        .await
+        .unwrap();
+    let report =
+        w.db.recover_nonplan_refund(&w.owner, &w.wallet, &request, true, today())
+            .await
+            .unwrap();
+    assert_eq!(report.effect.unwrap().cash_entry_hash, hash);
+    assert_eq!(w.wallet.available().await.unwrap(), TOTAL);
+    assert_eq!(w.wallet.log_size().await.unwrap(), log + 1);
 }

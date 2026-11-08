@@ -57,6 +57,7 @@ impl Db {
             let mut report:NonplanRefundRecovery=serde_json::from_value(detail["report"].clone()).map_err(error::invalid)?;
             if report.status=="applied" {
                 nonplan_returns::lock_source_in(&mut tx,scope.try_get("order_id")?).await?;
+                sqlx::query("SELECT refund_id FROM oxsum.refunds WHERE refund_id=$1 FOR UPDATE").bind(request.refund_id).fetch_one(&mut *tx).await?;
                 wallet.lock_append_in(&mut tx).await?;
                 let effect=apply::effect_in(&mut tx,wallet,request.refund_id).await?
                     .ok_or_else(||evidence::review("committed recovery effect is missing"))?;
@@ -67,6 +68,10 @@ impl Db {
             return Ok(report);
         }
         nonplan_returns::lock_source_in(&mut tx, scope.try_get("order_id")?).await?;
+        sqlx::query("SELECT refund_id FROM oxsum.refunds WHERE refund_id=$1 FOR UPDATE")
+            .bind(request.refund_id)
+            .fetch_one(&mut *tx)
+            .await?;
         wallet.lock_append_in(&mut tx).await?;
         if let Some(effect) = apply::effect_in(&mut tx, wallet, request.refund_id).await? {
             let source = evidence::source_in(&mut tx, wallet, request.refund_id).await?;

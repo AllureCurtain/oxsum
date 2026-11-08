@@ -1414,7 +1414,7 @@ prior refunds, excessive cumulative case cash, unsupported legacy effects,
 missing fulfillment, source locking and atomic promo rollback. Concurrency tests
 observe real blocked PostgreSQL backends. No PSP or paid service is called.
 The [source-review runbook](dispute-resolution-review.md) describes review
-suspense and the remaining #841/#842 historical correction boundaries.
+suspense and the explicit #841 refund/#842 chargeback historical correction boundaries.
 
 Non-plan fulfillment uses a shared `Db` pre-checkout queue of
 `max(1, (max_connections - 1) / 3)` slots; reuse/clone the process handle rather
