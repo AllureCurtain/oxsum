@@ -60,7 +60,7 @@ real customer data are loaded.
   non-plan scenarios, existing refunds, plan refunds/conservation and payment
   orders (`bbc67e1f-bf2c-4ebf-a661-0d70f894ee42`, 18.974 seconds).
 - All 40 HTTP refund/payment/merchant-event/financial-facts checks passed, zero
-  skipped. They include complete spent-source Cash, customer/note projections,
+  skipped (`b80611b7-dd45-4f36-bdf1-8d121e6207ab`, 17.242 seconds). They include complete spent-source Cash, customer/note projections,
   signed identity and timeout recovery.
 - The delivered CLI's two argument checks passed. An isolated executable fixture
   invoked the actual built CLI for eight passing scenarios: pure default preview,
@@ -73,4 +73,36 @@ real customer data are loaded.
   parent lock hierarchy, report clock, CLI, lease contention and awaited source
   release changes.
 
-Complete workspace and strict validation evidence is recorded below once run.
+## Complete validation and remaining baseline failure
+
+On source `1809f4ad`, based on integrated `cbabfafd`, complete run
+`18eac9bf-ec05-47a7-8191-c5729ea0a245` executed 2,037 tests across 195 binaries:
+**2,035 passed, two failed, six existing opt-ins skipped**. Compilation took
+2m33s and execution 285.049 seconds. The six skips are real-provider checks,
+sustained capacity/gateway load and fixture/vector regeneration; no new skip was
+added. The new 25-test refund suite, prior refund/chargeback/conservation suites,
+HTTP checks and complete engine conformance passed.
+
+The first failure was this migration's omitted `nonplan_refund_effects` name in
+the exact table inventory fixture. The expected list is now updated. All 11
+identity/migration tests passed afterward in
+`92c34219-397e-48ff-9dcf-7d514b5f5aa0` (2.275 seconds), including eight concurrent
+migration calls. Production source did not change after the complete run.
+
+The second failure was the existing gateway test
+`a_price_change_lands_on_later_requests_and_not_on_the_one_in_flight`, whose
+settlement never completed. Contemporaneous PostgreSQL logs at 22:48:35 and
+22:48:38 UTC show ledger schema DDL and entry append deadlocking with SQLSTATE
+40P01, the same class as the separately tracked baseline failure #867. The
+scratch database had already been dropped, so these logs alone cannot map its
+OID back to that exact test. The failure is retained, not counted as a pass.
+#867 provides the controlled fix and subsequent combined validation.
+
+Final strict workspace Clippy (`--all-targets -- -D warnings`) passed in 3m12s.
+Pinned formatting, `git diff --check`, 66 relative documentation links, API
+code generation/four contract tests and frontend production build passed after
+rebasing on the evidence portal. The rebase changed documentation/locale append
+context only; the reviewed Rust patches were preserved. The final static table
+expectation is covered by the 11-check rerun. Normal required CI and protected
+PR integration remain. This evidence is not an executed green exact-SHA release
+candidate and does not close the remaining browser/PSP/candidate gates.
