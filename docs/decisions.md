@@ -3149,3 +3149,35 @@ A cold install tries the pinned asset API and, only on bounded network/HTTP
 failure, the corresponding official release URL. Both sources must match the
 same pins. Integrity and local installation failures are not fallback signals.
 There is no third-party mirror, tool downgrade or release acceptance exception.
+
+## 2026-11-08 — Correct proven duplicate usage without claiming cash refunds (#809)
+
+The old plan close recognized settled usage again as PlanFees and an invoice
+receivable. #803 prevents new duplicates; existing posted facts require explicit
+compensation under #779. Daily recognition does not postpone that correction.
+
+- Scope is one exact original journal with a base-fee/usage pair. Verify actual
+  settled Income:Usage postings, the original accrual and source-specific payment
+  entries, including old `payment-order/<order>/journal/<journal>` Cash/AR legs.
+  Mutable payment counters alone cannot authorize a correction.
+- Debit PlanFees by the duplicate, credit only its still-open receivable and put
+  collected excess in RefundPayable. Cash and customer pools never move. Negative
+  usage and payment-to-payable lines preserve all original document evidence and
+  the paid/void writer guards. The report's evidence SHA-256 binds source entries,
+  content hashes, period bounds and lines into the correction entry description.
+- Keep migration 0111's correction immutable and unique by journal. Ledger,
+  document counters, effect and audit commit together. Subscription/plan/journal
+  and ledger locks precede the original statement. Replays are inert.
+- Default the local CLI to read-only preview using an already initialized wallet.
+  Explicit apply audits actor, reason and key, including precise refused outcomes.
+  Void/refund/dispute, unsupported prior corrections or inconsistent source
+  evidence require manual review rather than guessed allocation. No provider is
+  called, no broad account scan mutates records and no new HTTP surface is added.
+- Fence every corrected funding order before new refund/provider authorization.
+  Keep later confirmed cash facts in explicit suspense with source-journal audit;
+  do not silently ignore cash, borrow another period's prepayment or consume a
+  correction payable twice. Existing related refund/dispute history refuses the
+  correction itself, including a concurrently created request.
+
+Validation and limits are recorded in
+[the correction evidence](roadmap/operator-launch/evidence/legacy-plan-usage.md).
