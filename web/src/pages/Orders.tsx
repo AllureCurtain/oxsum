@@ -1,3 +1,4 @@
+import { CheckoutChoice, useCheckoutChoice } from "../components/checkout-choice";
 import { decimalMinor } from "../lib/money";
 import { useBundles } from "../api/hooks/bundles";
 import { useEffect, useRef, useState, type FormEvent } from "react";
@@ -251,6 +252,7 @@ function fiatToMinor(raw: string): number | null { return decimalMinor(raw, 2); 
 
 
 export function OrderNew() {
+  const checkout = useCheckoutChoice();
   const { t } = useTranslation();
   const terms = useCollectionTerms();
   const intent = useRef<{ payload: string; key: string } | null>(null);
@@ -265,22 +267,27 @@ export function OrderNew() {
 
   const submit = (e: FormEvent) => {
     e.preventDefault();
+    if (intent.current) {
+      create.mutate({ ...JSON.parse(intent.current.payload), idempotencyKey: intent.current.key }, {
+        onSuccess: (checkout) => navigate(`/orders/${checkout.order.orderId}`, { replace: true }),
+      });
+      return;
+    }
     const minor = purpose === "bundle" ? offer?.terms.displayAmountMinor ?? null : fiatToMinor(amount);
-    if (minor === null || (purpose === "bundle" && !offer) || !terms.data?.ready) return;
+    if (minor === null || (purpose === "bundle" && !offer) || !terms.data?.ready || !checkout.choice) return;
     const body = {
-      rail: "hyperswitch" as const,
+      ...checkout.choice,
       purpose,
       displayAmountMinor: minor,
       displayCurrency: purpose === "bundle" ? offer!.terms.displayCurrency : currency,
       ...(purpose === "bundle" ? { purposeRef: bundleId } : {}),
     };
-    const serialized = JSON.stringify(body);
-    if (intent.current?.payload !== serialized) intent.current = { payload: serialized, key: crypto.randomUUID() };
+    const serialized = JSON.stringify({ ...body, expectedCollectionRevision: terms.data.revision });
+    if (!intent.current) intent.current = { payload: serialized, key: crypto.randomUUID() };
     create.mutate(
       {
-        expectedCollectionRevision: terms.data.revision,
+        ...JSON.parse(intent.current.payload),
         idempotencyKey: intent.current.key,
-        ...body,
       },
       {
         onSuccess: (checkout) => {
@@ -294,9 +301,11 @@ export function OrderNew() {
     <div className="mx-auto flex max-w-lg flex-col gap-4">
       <h1 className="text-2xl font-bold">{t("orders.newTitle")}</h1>
       <Card title={t("orders.newCard")}>
-        <form className="flex flex-col gap-3" onSubmit={submit}>
+        <form className="flex flex-col gap-3" onSubmit={submit} onChange={() => { if (!create.isPending) { intent.current = null; create.reset(); } }}>
+          <fieldset disabled={create.isPending} className="flex min-w-0 flex-col gap-3">
           {terms.isLoading ? <p>Loading collection terms…</p> : terms.isError ? <Banner tone="error">Collection terms could not be loaded.</Banner> : terms.data?.ready ? <p className="font-mono text-sm">1 credit = {terms.data.currency?.ratePerCredit} {currency}. Existing orders keep their agreed rate.</p> : <Banner tone="warn">The operator has not configured compatible collection terms.</Banner>}
           <Button type="button" tone="ghost" onClick={() => terms.refetch()} disabled={create.isPending}>Refresh collection terms</Button>
+          <CheckoutChoice state={checkout} disabled={create.isPending} />
           <Field label={t("orders.filterPurpose")}>
             <NativeSelect
               value={purpose}
@@ -315,13 +324,15 @@ export function OrderNew() {
             {offers.isError ? <Banner tone="error">Bundle offers could not be loaded.</Banner> : !offers.isLoading && !offers.data?.length ? <Banner tone="info">No bundle offers are currently on sale.</Banner> : null}
             {offer ? <p>Pay {fiat(offer.terms.displayAmountMinor, offer.terms.displayCurrency)} for <Cr minor={offer.terms.purchasedMinor} /> purchased credit plus <Cr minor={offer.terms.promoMinor} /> promotional credit. Promotion {offer.terms.promoLifetimeDays == null ? "has no expiry" : `expires ${offer.terms.promoLifetimeDays} days after confirmed payment`}. A confirmed partial or full refund cancels remaining promotional credit without cash reimbursement.</p> : null}
           </>}
+          {intent.current ? <Banner tone="info">{t("checkoutChoices.retryHelp")}<p className="font-mono text-xs">{JSON.parse(intent.current.payload).displayAmountMinor} {JSON.parse(intent.current.payload).displayCurrency} · {JSON.parse(intent.current.payload).rail} · {JSON.parse(intent.current.payload).purpose}</p></Banner> : null}
           <p className="text-xs text-muted">{t("orders.createConsequence")}</p>
-          <Button type="submit" disabled={!terms.data?.ready || (purpose === "bundle" ? !offer : fiatToMinor(amount) === null)} isLoading={create.isPending} loadingText={t("orders.creating")}>
+          <Button type="submit" disabled={!intent.current && (!checkout.choice || !terms.data?.ready || (purpose === "bundle" ? !offer : fiatToMinor(amount) === null))} isLoading={create.isPending} loadingText={t("orders.creating")}>
             {t("orders.createSubmit")}
           </Button>
           {create.error instanceof ApiError ? (
             <Banner tone="error">{create.error.message}</Banner>
           ) : null}
+          </fieldset>
         </form>
       </Card>
     </div>

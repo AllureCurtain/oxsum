@@ -364,6 +364,17 @@ impl Db {
         organization: Uuid,
         new: &NewPaymentOrder,
     ) -> Result<PaymentOrder, WalletError> {
+        self.create_payment_order_checked(context, organization, new, None)
+            .await
+    }
+
+    pub(crate) async fn create_payment_order_checked(
+        &self,
+        context: &crate::MerchantSigningContext,
+        organization: Uuid,
+        new: &NewPaymentOrder,
+        route: Option<&crate::CheckoutChoice>,
+    ) -> Result<PaymentOrder, WalletError> {
         authority::validate(&new.idempotency_key, None)?;
         if new.display_amount_minor <= 0
             || new.display_currency.len() != 3
@@ -420,6 +431,16 @@ impl Db {
         .await?;
         if let Some(existing) = existing {
             let standing = order(&existing)?;
+            let original_rail: Option<String> =
+                sqlx::query_scalar("SELECT rail FROM oxsum.merchant_accounts WHERE merchant_id=$1")
+                    .bind(standing.merchant_id)
+                    .fetch_optional(&mut *tx)
+                    .await?;
+            if original_rail.as_deref() != Some(context.rail.as_str()) {
+                return Err(WalletError::Conflict(
+                    "payment rail changed for the same idempotency key".into(),
+                ));
+            }
             if standing.purpose != new.purpose
                 || standing.display_amount_minor != new.display_amount_minor
                 || standing.display_currency != new.display_currency
@@ -446,6 +467,9 @@ impl Db {
             }
             tx.commit().await?;
             return Ok(standing);
+        }
+        if let Some(route) = route {
+            crate::merchant_routes::guard_in(&mut tx, business, context.rail, route).await?;
         }
         // Gate on the merchant being enabled for this customer, mirroring
         // `pin_merchant_payment`'s check — the binding and the order agree on it.

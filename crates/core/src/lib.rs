@@ -50,6 +50,7 @@ mod keys;
 mod mandates;
 mod manual_receipts;
 mod merchant_events;
+mod merchant_routes;
 mod merchants;
 mod metering;
 mod oauth;
@@ -229,6 +230,9 @@ pub use manual_receipts::{FundingAuthority, ManualReceiptRequest};
 pub use merchant_events::{
     LegacyMerchantCheckout, MerchantEventKind, MerchantEventPage, MerchantEventReceipt,
     MerchantPaymentBinding, MerchantPaymentPurpose, VerifiedMerchantEvent,
+};
+pub use merchant_routes::{
+    CheckoutChoice, CheckoutRoute, CheckoutRouteMutation, CheckoutRouteRequest,
 };
 pub use merchants::{
     Merchant, MerchantBootstrap, MerchantCreateRequest, MerchantMode, MerchantMutationResult,
