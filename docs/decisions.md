@@ -3226,3 +3226,18 @@ this path and no longer drops a default target. Old manifests/dumps are retained
 but require a separately reviewed legacy recovery procedure instead of fabricated
 checksums or silently weaker validation. Migrations, traffic switches, old-proof
 checks and candidate acceptance remain explicit separate operations.
+
+## 2026-11-08 — Expose merchant settings under their existing capabilities (#831)
+
+The Integrations navigation accepts ReportsRead so the existing redacted merchant
+contract is reachable by admin, finance and viewer roles. The integration-key
+subtree remains gated by IntegrationsManage; merchant mutation dialogs require
+MerchantSecretsWrite and are destroyed if that capability is lost. Mutation
+credentials have no persistent storage or retained query cache. Complete
+rail-specific versions prevent hidden fields from a different rail entering a
+request, and changing the rail clears its draft.
+
+This UI uses the current API without adding a default-merchant selector. Current
+order creation resolves the environment bootstrap record. Configuration status,
+checkout selection and external PSP certification remain distinct evidence;
+enabling a merchant cannot be presented as selecting or certifying that route.
