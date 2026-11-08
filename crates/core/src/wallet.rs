@@ -476,13 +476,11 @@ impl Wallet {
                         && e.constraint() == Some("pg_namespace_nspname_index")) => {}
             r => r.map(|_| ())?,
         }
-        // An open that raced another opener through `migrate` can deadlock with
-        // the loser's schema DDL: the winner's `persist_accounts` or lazy-
-        // migration appends write into tables the loser's `IF NOT EXISTS`
-        // re-walk still touches with DDL-grade locks, and a deadlock picks one
-        // to kill. `40P01` is that race, not corruption — every stage is
-        // idempotent (the migrate lock, the upserts, the marker-keyed lazy
-        // migrations), so the whole open simply restarts.
+        // Every bootstrap stage remains idempotent, so an opener aborted with
+        // `40P01` may restart. Current engine revisions skip DDL entirely: an
+        // opener-only retry cannot rescue an active settlement chosen as the
+        // other deadlock victim. A real revision upgrade still requires drained
+        // writers; the account upserts and marker-keyed lazy migrations remain.
         let mut open_attempts = OPEN_RACE_ATTEMPTS;
         let registry = loop {
             match Self::bootstrap(&store, tenant_id).await {

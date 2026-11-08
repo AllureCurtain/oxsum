@@ -547,6 +547,282 @@ async fn migration_is_idempotent() {
     assert_eq!(h.store.len().await.expect("reads"), 1);
 }
 
+/// oxsum change (not upstream): a restart records and compares the complete
+/// canonical revision; missing old metadata and a stale revision still upgrade.
+#[tokio::test]
+async fn migration_revision_skips_current_ddl_and_upgrades_missing_or_stale_metadata() {
+    let h = Harness::start().await;
+    let revision: String =
+        sqlx::query_scalar("SELECT schema_revision FROM ledger_meta WHERE only_row = 1")
+            .fetch_one(h.store.pool())
+            .await
+            .expect("a successful first migration records its revision");
+    assert_eq!(revision.len(), 64);
+    let trigger_before: i64 = sqlx::query_scalar(
+        "SELECT oid::bigint FROM pg_trigger WHERE tgrelid = 'postings'::regclass \
+         AND tgname = 'postings_balanced'",
+    )
+    .fetch_one(h.store.pool())
+    .await
+    .expect("the balance trigger exists");
+    h.store.migrate().await.expect("current reopens");
+    let trigger_after: i64 = sqlx::query_scalar(
+        "SELECT oid::bigint FROM pg_trigger WHERE tgrelid = 'postings'::regclass \
+         AND tgname = 'postings_balanced'",
+    )
+    .fetch_one(h.store.pool())
+    .await
+    .expect("the same trigger remains");
+    assert_eq!(
+        trigger_before, trigger_after,
+        "a current reopen must not replace DDL"
+    );
+
+    sqlx::query("ALTER TABLE ledger_meta DROP COLUMN schema_revision")
+        .execute(h.store.pool())
+        .await
+        .expect("simulates an older ledger");
+    h.store
+        .migrate()
+        .await
+        .expect("pre-revision metadata upgrades");
+    let upgraded: String =
+        sqlx::query_scalar("SELECT schema_revision FROM ledger_meta WHERE only_row = 1")
+            .fetch_one(h.store.pool())
+            .await
+            .expect("upgraded revision reads");
+    assert_eq!(upgraded, revision);
+
+    sqlx::query("UPDATE ledger_meta SET schema_revision = 'older-canonical-schema'")
+        .execute(h.store.pool())
+        .await
+        .expect("simulates a previous revision");
+    sqlx::query("DROP TRIGGER postings_balanced ON postings")
+        .execute(h.store.pool())
+        .await
+        .expect("simulates its older DDL");
+    h.store
+        .migrate()
+        .await
+        .expect("the changed revision reapplies DDL");
+    let upgraded: String =
+        sqlx::query_scalar("SELECT schema_revision FROM ledger_meta WHERE only_row = 1")
+            .fetch_one(h.store.pool())
+            .await
+            .expect("changed revision reads");
+    assert_eq!(upgraded, revision);
+    let restored: bool = sqlx::query_scalar(
+        "SELECT EXISTS(SELECT 1 FROM pg_trigger WHERE tgrelid = 'postings'::regclass \
+         AND tgname = 'postings_balanced')",
+    )
+    .fetch_one(h.store.pool())
+    .await
+    .expect("trigger reads");
+    assert!(restored);
+    h.store
+        .append(&EntryBatch::single(h.entry(b"after-revision-upgrade", 100)))
+        .await
+        .expect("the upgraded ledger appends");
+    assert_eq!(h.store.len().await.expect("reads"), 1);
+}
+
+/// oxsum change (not upstream): even failure at the final stamp cannot commit
+/// replacement triggers or mark an incomplete migration as current.
+#[tokio::test]
+async fn failed_migration_rolls_back_ddl_and_revision_together() {
+    let h = Harness::start().await;
+    sqlx::query("UPDATE ledger_meta SET schema_revision = 'previous-revision'")
+        .execute(h.store.pool())
+        .await
+        .expect("sets the old revision");
+    sqlx::query("DROP TRIGGER postings_balanced ON postings")
+        .execute(h.store.pool())
+        .await
+        .expect("simulates older DDL");
+    sqlx::Executor::execute(
+        h.store.pool(),
+        "CREATE FUNCTION refuse_revision_stamp() RETURNS trigger AS $$ \
+         BEGIN RAISE EXCEPTION 'injected revision stamp failure'; END; $$ LANGUAGE plpgsql; \
+         CREATE TRIGGER refuse_revision_stamp BEFORE INSERT OR UPDATE ON ledger_meta \
+         FOR EACH ROW EXECUTE FUNCTION refuse_revision_stamp();",
+    )
+    .await
+    .expect("installs the final-write fault");
+    let error = h.store.migrate().await.expect_err("the final stamp fails");
+    assert!(
+        error
+            .to_string()
+            .contains("injected revision stamp failure"),
+        "{error}"
+    );
+    let revision: String =
+        sqlx::query_scalar("SELECT schema_revision FROM ledger_meta WHERE only_row = 1")
+            .fetch_one(h.store.pool())
+            .await
+            .expect("old revision reads");
+    assert_eq!(revision, "previous-revision");
+    let replaced: bool = sqlx::query_scalar(
+        "SELECT EXISTS(SELECT 1 FROM pg_trigger WHERE tgrelid = 'postings'::regclass \
+         AND tgname = 'postings_balanced')",
+    )
+    .fetch_one(h.store.pool())
+    .await
+    .expect("rolled-back DDL reads");
+    assert!(
+        !replaced,
+        "the replacement trigger must roll back with the stamp"
+    );
+    sqlx::query("DROP TRIGGER refuse_revision_stamp ON ledger_meta")
+        .execute(h.store.pool())
+        .await
+        .expect("removes the fault");
+    h.store
+        .migrate()
+        .await
+        .expect("a failed revision remains retryable");
+    h.store
+        .append(&EntryBatch::single(h.entry(b"after-migration-retry", 100)))
+        .await
+        .expect("the retry leaves a working ledger");
+}
+
+/// oxsum change (not upstream): a matching revision never bypasses ownership,
+/// and a stale foreign ledger is refused before its DDL can be changed.
+#[tokio::test]
+async fn migration_revision_never_bypasses_ledger_ownership() {
+    let h = Harness::start().await;
+    let other = PostgresStore::<2>::new(h.store.pool().clone(), LedgerId::new("other").unwrap());
+    for stale in [false, true] {
+        if stale {
+            sqlx::query("UPDATE ledger_meta SET schema_revision = 'foreign-previous-revision'")
+                .execute(h.store.pool())
+                .await
+                .expect("simulates an older foreign ledger");
+        }
+        let before: String =
+            sqlx::query_scalar("SELECT schema_revision FROM ledger_meta WHERE only_row = 1")
+                .fetch_one(h.store.pool())
+                .await
+                .expect("revision reads");
+        assert!(matches!(
+            other.migrate().await,
+            Err(PostgresError::WrongLedger { .. })
+        ));
+        let after: String =
+            sqlx::query_scalar("SELECT schema_revision FROM ledger_meta WHERE only_row = 1")
+                .fetch_one(h.store.pool())
+                .await
+                .expect("revision still reads");
+        assert_eq!(after, before);
+    }
+}
+
+/// oxsum change (not upstream): cancelling a blocked upgrade must not retain
+/// the old session-scoped migration lock or publish an incomplete revision.
+#[tokio::test]
+async fn cancelled_migration_releases_ownership_and_retries_the_old_revision() {
+    let h = Harness::start().await;
+    sqlx::query("UPDATE ledger_meta SET schema_revision = 'cancelled-previous-revision'")
+        .execute(h.store.pool())
+        .await
+        .expect("sets the previous revision");
+    let mut reader = h.store.pool().begin().await.expect("begins a held reader");
+    sqlx::query("SELECT entry_id FROM postings LIMIT 0")
+        .execute(&mut *reader)
+        .await
+        .expect("holds the postings relation");
+    let reader_pid: i32 = sqlx::query_scalar("SELECT pg_backend_pid()")
+        .fetch_one(&mut *reader)
+        .await
+        .expect("identifies the blocker");
+    let migration_pool = PgPoolOptions::new()
+        .max_connections(1)
+        .connect_with(
+            h.url
+                .parse::<sqlx::postgres::PgConnectOptions>()
+                .expect("a valid URL")
+                .application_name("cancelled-ledger-migration"),
+        )
+        .await
+        .expect("opens the independent migration pool");
+    let store = PostgresStore::<2>::new(migration_pool.clone(), h.store.ledger().clone());
+    let migration = tokio::spawn(async move { store.migrate().await });
+    tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        loop {
+            let blocked: bool = sqlx::query_scalar(
+                "SELECT EXISTS(SELECT 1 FROM pg_stat_activity WHERE datname = current_database() \
+                 AND application_name = 'cancelled-ledger-migration' \
+                 AND $1 = ANY(pg_blocking_pids(pid)))",
+            )
+            .bind(reader_pid)
+            .fetch_one(h.store.pool())
+            .await
+            .expect("observes the lock wait");
+            if blocked {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("the stale revision reaches actual DDL and waits for the reader");
+    migration.abort();
+    assert!(
+        migration
+            .await
+            .expect_err("the upgrade task is cancelled")
+            .is_cancelled()
+    );
+    reader
+        .rollback()
+        .await
+        .expect("releases the relation blocker");
+    // Reuse the live pool after ordinary SQLx cleanup. Closing the pool here
+    // would also release a leaked session lock and conceal the old failure.
+    let mut reused =
+        tokio::time::timeout(std::time::Duration::from_secs(5), migration_pool.acquire())
+            .await
+            .expect("the cancelled connection returns to its pool")
+            .expect("the pool remains usable");
+    sqlx::query("SELECT 1")
+        .execute(&mut *reused)
+        .await
+        .expect("queued rollback has flushed");
+    drop(reused);
+    let mut observer = h
+        .store
+        .pool()
+        .begin()
+        .await
+        .expect("opens an independent observer");
+    let released: bool = sqlx::query_scalar("SELECT pg_try_advisory_xact_lock($1)")
+        .bind(0x6f78_7375_6d6d_6967i64)
+        .fetch_one(&mut *observer)
+        .await
+        .expect("observes migration ownership");
+    assert!(
+        released,
+        "the live pool must not retain migration ownership"
+    );
+    observer.rollback().await.expect("releases the probe");
+    let revision: String = sqlx::query_scalar("SELECT schema_revision FROM ledger_meta")
+        .fetch_one(h.store.pool())
+        .await
+        .expect("the interrupted revision reads");
+    assert_eq!(revision, "cancelled-previous-revision");
+    tokio::time::timeout(std::time::Duration::from_secs(5), h.store.migrate())
+        .await
+        .expect("the migration lock is no longer retained")
+        .expect("the previous revision retries");
+    h.store
+        .append(&EntryBatch::single(
+            h.entry(b"after-cancelled-migration", 100),
+        ))
+        .await
+        .expect("the retried ledger works");
+    migration_pool.close().await;
+}
+
 #[tokio::test]
 async fn entries_round_trip_through_the_database() {
     let h = Harness::start().await;
