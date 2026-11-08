@@ -341,12 +341,18 @@ impl Db {
         .await?;
         let lines = crate::journals::lines_for_statement_in(tx, journal.journal_id).await?;
         let total: i64 = lines.iter().map(|l| l.amount_minor).sum();
+        // Seed the settled figure from the journal: a prepaid order reclassifies
+        // into the receivable inside the same close, so the statement's
+        // `paid_minor` must carry the share the prepay already covered — a
+        // partial prepay issues the statement partly paid, never as though the
+        // whole bill were still owed (issue #779).
+        let paid = journal.settled_minor.clamp(0, total);
         let statement_id = Uuid::new_v4();
         sqlx::query(
             "INSERT INTO oxsum.plan_statements \
                  (statement_id,customer_plan_id,organization_id,business_id,period_index,\
-                  period_start,period_end,journal_id,state,total_minor,currency) \
-             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'open',$9,$10)",
+                  period_start,period_end,journal_id,state,total_minor,paid_minor,currency) \
+             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'open',$9,$10,$11)",
         )
         .bind(statement_id)
         .bind(journal.customer_plan_id)
@@ -357,6 +363,7 @@ impl Db {
         .bind(period_end)
         .bind(journal.journal_id)
         .bind(total)
+        .bind(paid)
         .bind(&journal.currency)
         .execute(&mut **tx)
         .await?;
@@ -467,6 +474,64 @@ impl Db {
         Ok(())
     }
 
+    /// The statement half of `void_invoice_journal`: a journal the staff voids
+    /// is no longer a bill the customer owes or paid — the document that wraps
+    /// it follows in the same transaction so the customer-facing statement can
+    /// never outlive its receivable as still-owed or paid-in-full. Reversing
+    /// lines append so the statement nets to zero and the row walks to `void`,
+    /// mirroring the release-review's own `void` arm. A statement already void,
+    /// or none wrapped at all, is a no-op.
+    ///
+    /// Runs inside the caller's transaction beside the journal reversal.
+    ///
+    /// # Errors
+    ///
+    /// Storage failures surface as [`WalletError`].
+    pub(crate) async fn void_statement_for_journal_in(
+        &self,
+        tx: &mut Transaction<'_, Postgres>,
+        journal_id: Uuid,
+        reason: &str,
+    ) -> Result<(), WalletError> {
+        let statement = sqlx::query(&format!(
+            "SELECT {STATEMENT_COLS} FROM oxsum.plan_statements \
+             WHERE journal_id=$1 AND state <> 'void' LIMIT 1 FOR UPDATE"
+        ))
+        .bind(journal_id)
+        .fetch_optional(&mut **tx)
+        .await?
+        .map(|r| statement_from_row(&r))
+        .transpose()?;
+        let Some(statement) = statement else {
+            return Ok(());
+        };
+        // Reversing lines append so the statement nets to zero — the void's
+        // record is the second set of lines, history rewritten nowhere.
+        let lines = lines_in(&mut *tx, statement.statement_id).await?;
+        for line in &lines {
+            insert_line_in(
+                tx,
+                statement.statement_id,
+                line.kind,
+                -line.amount_minor,
+                &format!("void reversal of {}", line.description),
+                Some(line.line_id),
+            )
+            .await?;
+        }
+        sqlx::query(
+            "UPDATE oxsum.plan_statements \
+             SET state='void', total_minor=0, paid_minor=0, voided_at=now(), \
+                 void_reason=$2, updated_at=now() \
+             WHERE statement_id=$1",
+        )
+        .bind(statement.statement_id)
+        .bind(reason)
+        .execute(&mut **tx)
+        .await?;
+        Ok(())
+    }
+
     /// A lost dispute on a `planPeriod` order restores the receivable on the
     /// journal — `paid → posted`, `disputed_minor` rising (T20's
     /// `recharge_journal_dispute_in`). The statement side surfaces the same
@@ -492,7 +557,10 @@ impl Db {
         }
         // The next open statement this customer plan still owes against —
         // earliest due first, so the restored debt lands on the document the
-        // customer reads first.
+        // customer reads first. The contested journal's own statement is
+        // already `paid` whenever the dispute can recharge it — a lost dispute
+        // only re-opens a settled bill — so the earliest open document is the
+        // correct surface.
         let open = sqlx::query(&format!(
             "SELECT {STATEMENT_COLS} FROM oxsum.plan_statements \
              WHERE customer_plan_id=$1 AND state IN ('issued','past_due','open') \
