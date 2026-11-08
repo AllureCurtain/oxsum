@@ -147,6 +147,23 @@ publication step is separate.
 
 ## Verifying a whole billing period
 
+Customer owners/admins can open **Evidence** in the portal, or follow a plan
+statement's evidence link. Freeze an ended period or explicitly retrieve the
+issued statement; download both the bundle JSON and expected-input JSON. The
+portal preserves raw integer values and exposes the manifest digest before local
+verification. Retain both files outside the browser; a later server response must
+not redefine your expected organization or digest.
+
+For a portal export, compare `bundleId`, `organizationId` and `manifestDigest`
+with the separately retained `expected` object before calling the SDK. Supply the
+retained operator key when available; otherwise a bundle-supplied key is only
+self-consistent. If the bundle has a note, also call `verifySignedHead` with
+`expected.origin`: the current evidence WASM wrapper infers the note's own origin,
+so a separate expected-origin check is necessary. A missing note remains unsigned
+even when a key is supplied. The portal performs these checks and labels all three
+signature states. Preserve the separately installed verifier and checksum for
+independent offline execution; browser results do not establish its distribution.
+
 An organization can also hand you a **version-2 evidence bundle** — one file
 covering an entire closed period (usage records, statements, invoices, payment
 orders, refunds, disputes, credit notes and the day's seal digests), rather than

@@ -4,15 +4,17 @@ Updated: 2026-11-09
 
 ## In progress
 
-- [ ] [#862](https://github.com/AllureCurtain/oxsum/issues/862) — Repair the pool saturation fixture deadline race observed in main CI 42518492586; require PoolBusy and exact balance recovery. 17 PostgreSQL fault checks, strict Clippy and independent review passed; normal PR integration pending.
+- [x] [#862](https://github.com/AllureCurtain/oxsum/issues/862) — Pool exhaustion deadline regression integrated in PR #864 (`e53e303a`); 17 PostgreSQL fault checks, strict Clippy and independent review passed.
 
-- [ ] [#858](https://github.com/AllureCurtain/oxsum/issues/858) — Execute dashboard signed-head/consistency verification against customer-scoped retained trust; implementation and validation in progress.
+- [ ] [#863](https://github.com/AllureCurtain/oxsum/issues/863) — Customer period/statement evidence portal, exports and scoped local verification; four behavioral checks, three real-WASM groups and frontend build passed; independent review/PR integration pending.
+
+- [x] [#858](https://github.com/AllureCurtain/oxsum/issues/858) — Integrated dashboard signed-head/consistency verification and customer-scoped retained trust in PR #861 (`b67a2d3b`); five behavioral and four real-WASM groups passed. Browser/candidate acceptance remains.
 
 - [x] [#853](https://github.com/AllureCurtain/oxsum/issues/853) — Owner application and typed scoped-credential forms with exact retry identity and one-time secret recovery; three behavioral checks, four contract checks, frontend build and independent source review passed on integrated #846. Integrated in PR #857 (`8f92546d`); browser acceptance remains.
 
 - [x] [#846](https://github.com/AllureCurtain/oxsum/issues/846) — Stable application namespaces, bounded customer lifecycle and rotated metering replay; 2,003 full workspace passes plus 39 core and 13 HTTP checks, strict Clippy and final independent review passed. Integrated in PR #855 (`42b80a24`); owner portal follows in #853.
 
-- [ ] [#856](https://github.com/AllureCurtain/oxsum/issues/856) — Shared borrowed ledger verification and transaction reads in PR #860: nine focused PostgreSQL checks, 2,012 complete workspace passes, strict Clippy, formatting and three independent reviews passed. Normal integration pending; parent refund/reconciliation/admission work remains.
+- [x] [#856](https://github.com/AllureCurtain/oxsum/issues/856) — Shared borrowed ledger verification and transaction reads in PR #860: nine focused PostgreSQL checks, 2,012 complete workspace passes, strict Clippy, formatting and three independent reviews passed. Integrated in PR #860 (`4fc5581a`); parent refund/reconciliation/admission work remains.
 
 
 - [ ] [#848](https://github.com/AllureCurtain/oxsum/issues/848) — Compare runtime financial projections with independent official ledger/source totals after #838; current reconciliation actual totals still clone the projection. N11 remains open.

@@ -71,7 +71,8 @@
     "plans": "Plans",
     "billing": "Billing",
     "billingStatement": "Statement",
-    "business": "Business"
+    "business": "Business",
+    "evidence": "Evidence"
   },
   "gettingStarted": {
     "title": "Get started",
@@ -2212,5 +2213,39 @@
         "action": "Customers and invitations"
       }
     }
+  },
+  "evidence": {
+    "title": "Evidence",
+    "intro": "Retain frozen period or statement evidence, its manifest and trust inputs, then verify the committed records locally or offline.",
+    "loadError": "Evidence could not be loaded.",
+    "roleRequired": "Customer owners and admins can mint and download organization evidence. Ask your account owner for an export.",
+    "retainTrust": "Retain and inspect your ledger trust",
+    "selectionChanged": "The returned evidence does not match the selected customer, period or manifest.",
+    "statementTitle": "Statement evidence",
+    "statementNotice": "This action freezes an issued statement’s evidence once. Later requests return the same committed bundle; open statements cannot be exported.",
+    "statementLoad": "Freeze or retrieve statement evidence",
+    "statementLink": "Download and verify statement evidence",
+    "periodTitle": "Freeze a closed period",
+    "mintNotice": "Choose inclusive UTC dates, up to 366 fully ended days. This appends a ledger commitment. The same span always returns its original frozen bundle.",
+    "from": "First UTC day",
+    "to": "Last UTC day",
+    "mint": "Freeze period evidence",
+    "retrySpan": "Retrieve or retry this span",
+    "newSpan": "Choose another span",
+    "saved": "Frozen evidence",
+    "period": "Period or statement",
+    "digest": "Manifest digest",
+    "entries": "Ledger entries",
+    "open": "Open evidence",
+    "empty": "No evidence bundles have been minted.",
+    "selected": "Selected evidence and expected inputs",
+    "scopeNote": "The scope above is part of the commitment. Verification checks committed artifacts and ledger inclusion; it does not recompute every settlement charge or prove honest upstream usage, complete supplier books or an independent witness. The selected manifest initially comes from this server. Save the inputs separately and compare the operator key independently.",
+    "download": "Download bundle JSON",
+    "downloadInputs": "Download expected inputs",
+    "verify": "Verify locally",
+    "notVerified": "Not yet verified locally. Downloads preserve evidence even when verification fails.",
+    "verified_retainedKey": "Committed artifacts and inclusion verified; the signed head matches the retained operator key and your customer ledger origin. Original key trust and verifier distribution still require an independent channel.",
+    "verified_suppliedKey": "Committed artifacts, inclusion and signature verified using the bundle-supplied key. This does not independently authenticate that key.",
+    "verified_unsigned": "Committed artifacts and inclusion verified. This bundle has no signed head; no operator signature or historical continuity is established."
   }
 }

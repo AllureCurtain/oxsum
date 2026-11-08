@@ -281,6 +281,7 @@ export function BillingStatement() {
             <Kpi label={t("billing.due")} icon={<Receipt />} value={s.dueAt?.slice(0, 10) ?? "—"} />
           </div>
           {s.state === "pastDue" ? <Banner tone="warn">{t("billing.pastDueNote")}</Banner> : null}
+          <Link to={`/evidence?statement=${s.statementId}`} className="text-sm text-primary">{t("evidence.statementLink")}</Link>
           <Card title={t("billing.lines")}>
             <TableShell
               head={[

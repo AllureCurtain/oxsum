@@ -13,6 +13,7 @@ import {
   VerifyEmail,
 } from "./pages/auth";
 import { Billing, BillingStatement } from "./pages/Billing";
+import { Evidence } from "./pages/Evidence";
 import { Bills } from "./pages/Bills";
 import { Chat } from "./pages/Chat";
 import { GettingStarted } from "./pages/GettingStarted";
@@ -51,6 +52,7 @@ export function App() {
         <Route path="billing/:id" element={<BillingStatement />} />
         <Route path="settings" element={<Settings />} />
         <Route path="bills" element={<Bills />} />
+        <Route path="evidence" element={<Evidence />} />
         <Route path="requests" element={<Requests />} />
         <Route path="usage" element={<Usage />} />
         <Route path="keys" element={<Keys />} />

@@ -1,3 +1,4 @@
+import { Link } from "react-router-dom";
 import { useMemo, useState } from "react";
 import { Trans, useTranslation } from "react-i18next";
 import { Receipt } from "lucide-react";
@@ -108,7 +109,8 @@ export function Bills() {
     <div className="flex flex-col gap-6">
       <div className="flex items-center justify-between">
         <h1 className="text-2xl font-bold">{t("bills.title")}</h1>
-        <span className="flex gap-3 text-sm">
+        <span className="flex flex-wrap gap-3 text-sm">
+          <Link to="/evidence" className="text-primary">{t("evidence.title")}</Link>
           <a href="/dashboard/bills/export.csv" className="text-primary">
             CSV
           </a>

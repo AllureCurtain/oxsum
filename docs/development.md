@@ -1481,3 +1481,11 @@ or malformed/hash-mismatched sources without swallowing database errors. A batch
 reader reports corrupt entries individually; it does not mark an unsequenced
 entry as official evidence. Source ownership, raw-key equality, account meaning
 and the snapshot isolation level remain the consumer's responsibility.
+
+Customer evidence portal checks use
+`node --experimental-strip-types --test web/tests/evidence.test.ts` and, after
+building the verifier, `node --experimental-strip-types --test web/tests/evidence-wasm.test.ts`.
+The latter also accepts `OXSUM_VERIFY_WASM_DIR`. It fails on missing/placeholder
+artifacts and tests real digest/inclusion/signature behavior, including a genuinely
+signed foreign origin that the UI must independently reject. Raw evidence JSON
+is passed unchanged to WASM and downloaded without JavaScript integer rounding.
