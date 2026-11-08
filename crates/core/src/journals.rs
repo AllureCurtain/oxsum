@@ -595,6 +595,11 @@ impl Db {
         .bind(reason)
         .execute(&mut *tx)
         .await?;
+        // The customer-facing statement wraps this journal — it follows the
+        // void in the same transaction so the document never outlives its
+        // receivable as still-owed or paid-in-full (issue #779).
+        self.void_statement_for_journal_in(&mut tx, journal_id, reason)
+            .await?;
         let voided = journal_in(&mut tx, journal_id)
             .await?
             .ok_or_else(|| invalid("the journal did not land"))?;
