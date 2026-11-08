@@ -380,7 +380,10 @@ pub fn router(state: AppState) -> Router {
             "/business/integration-credentials/{credential_id}/revoke",
             post(business::revoke_integration_credential),
         )
-        .route("/business/customers", get(business::customers))
+        .route(
+            "/business/customers",
+            get(business::customers).post(business::provision_customer),
+        )
         .route(
             "/business/customers/{organization_id}",
             get(business::customer).patch(business::update_customer),

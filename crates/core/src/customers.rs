@@ -115,7 +115,7 @@ fn from_row(row: &sqlx::postgres::PgRow) -> Result<BusinessCustomer, WalletError
         created_at: row.try_get("created_at")?,
     })
 }
-async fn customer(
+pub(crate) async fn customer(
     tx: &mut Transaction<'_, Postgres>,
     business: Uuid,
     id: Uuid,
