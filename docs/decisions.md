@@ -2824,7 +2824,6 @@ minor digits; this change does not imply general ISO currency exponent support.
 Touched payment inputs parse decimal strings through BigInt, reject excess
 precision/unsafe integers and retain one idempotency key for unchanged retries.
 The separate N10 commercial offer authority audit is #768.
->>>>>>> e8cb541 (fix: move payment collection conversion to business authority)
 
 ## 2026-11-08 — Separate legacy reversal from authenticated external outcome (#763)
 

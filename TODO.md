@@ -49,8 +49,8 @@ Updated: 2026-11-08
 - [ ] [#779](https://github.com/AllureCurtain/oxsum/issues/779) — Statement prepayment and journal-void synchronization changes integrated (#784); the combined prepayment regression is tracked by #795. Settled-usage re-billing, mid-period refund notes and excess-refund cash allocation remain confirmed defects with three ignored reproductions.
 - [x] [#785](https://github.com/AllureCurtain/oxsum/issues/785) — N21.a scoped service-managed customer provisioning integrated (#786); no blanket customer grant.
 - [x] [#788](https://github.com/AllureCurtain/oxsum/issues/788) — N21.b scoped customer balance and bill reads integrated (#791); four core and two HTTP development checks passed.
-- [ ] [#793](https://github.com/AllureCurtain/oxsum/issues/793) — Repair merged bundle replay and historical payment upgrade regressions; implementation and integrated validation in progress.
-- [ ] [#794](https://github.com/AllureCurtain/oxsum/issues/794) — Reconcile integrated progress, remaining software and acceptance evidence; documentation prepared for review.
+- [ ] [#793](https://github.com/AllureCurtain/oxsum/issues/793) — Restore published-bundle replay and historical payment upgrade preservation; 14 PostgreSQL checks and strict workspace Clippy passed, integration pending.
+- [x] [#794](https://github.com/AllureCurtain/oxsum/issues/794) — Reconcile integrated progress and remaining acceptance; integrated in PR #796.
 
 - [x] [#723](https://github.com/AllureCurtain/oxsum/issues/723) — Serialized promo writers on the ledger append advisory lock before their promo row locks, fixing the post-merge hold/expiry deadlock; integrated in PR #724.
 
