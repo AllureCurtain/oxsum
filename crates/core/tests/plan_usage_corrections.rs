@@ -1110,3 +1110,108 @@ async fn correction_preserves_other_retained_void_debt_and_its_admission_restric
             .is_ok()
     );
 }
+
+/// Runtime reconciliation independently observes the corrected journal, including
+/// the payable branch that the old conservation-only clone could not audit.
+#[tokio::test]
+async fn independent_reconciliation_retains_corrected_original_usage_sources() {
+    for collected in [0, FEE, FEE + USAGE] {
+        let Some(w) = world(collected).await else {
+            return;
+        };
+        let applied = run(&w, true).await;
+        assert_eq!(applied.status, "applied");
+        let day = OffsetDateTime::now_utc().date();
+        let run =
+            w.db.run_reconciliation("manual", day, day, None)
+                .await
+                .unwrap();
+        let run =
+            w.db.reconciliation_run(&w.owner, run.run_id)
+                .await
+                .unwrap()
+                .unwrap();
+        let snapshot =
+            w.db.reconciliation_snapshot(&w.owner, run.run_id, run.latest_snapshot_id.unwrap())
+                .await
+                .unwrap()
+                .unwrap();
+        let evidence = snapshot.evidence.unwrap();
+        let differences: Vec<_> = evidence["differences"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|d| d["organizationId"] == serde_json::json!(w.org))
+            .collect();
+        assert!(differences.is_empty(), "{differences:#?}");
+        let journal = evidence["sources"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|s| {
+                s["sourceTable"] == "invoice_journals"
+                    && s["sourceId"] == serde_json::json!(w.journal)
+                    && s.get("actual").is_some()
+            })
+            .unwrap();
+        assert_eq!(journal["expected"], journal["actual"]);
+        assert_eq!(journal["actual"]["billedMinor"], FEE);
+        assert_eq!(journal["actual"]["collectedMinor"], collected.min(FEE));
+        assert_eq!(journal["context"]["payableMinor"], (collected - FEE).max(0));
+    }
+}
+
+#[tokio::test]
+async fn independent_reconciliation_refuses_changed_retained_correction_evidence() {
+    let Some(w) = world(FEE).await else {
+        return;
+    };
+    assert_eq!(run(&w, true).await.status, "applied");
+    // Simulate privileged projection corruption without changing the official
+    // correction, whose description binds the originally accepted source digest.
+    let mut tx = w.db.pool().begin().await.unwrap();
+    sqlx::query(
+        "ALTER TABLE oxsum.plan_usage_corrections DISABLE TRIGGER plan_usage_corrections_protected",
+    )
+    .execute(&mut *tx)
+    .await
+    .unwrap();
+    sqlx::query("UPDATE oxsum.plan_usage_corrections SET report=jsonb_set(report,'{evidence,usage,0,entry,content_hash}',to_jsonb(repeat('0',64))) WHERE journal_id=$1")
+        .bind(w.journal).execute(&mut *tx).await.unwrap();
+    sqlx::query(
+        "ALTER TABLE oxsum.plan_usage_corrections ENABLE TRIGGER plan_usage_corrections_protected",
+    )
+    .execute(&mut *tx)
+    .await
+    .unwrap();
+    tx.commit().await.unwrap();
+    let day = OffsetDateTime::now_utc().date();
+    let result =
+        w.db.run_reconciliation("manual", day, day, None)
+            .await
+            .unwrap();
+    let run =
+        w.db.reconciliation_run(&w.owner, result.run_id)
+            .await
+            .unwrap()
+            .unwrap();
+    let snapshot =
+        w.db.reconciliation_snapshot(&w.owner, run.run_id, run.latest_snapshot_id.unwrap())
+            .await
+            .unwrap()
+            .unwrap();
+    let evidence = snapshot.evidence.unwrap();
+    assert!(
+        evidence["differences"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|difference| {
+                difference["organizationId"] == serde_json::json!(w.org)
+                    && difference["sourceTable"] == "plan_usage_corrections"
+                    && difference["fact"] == "retainedEvidence"
+            }),
+        "{evidence:#?}"
+    );
+    assert!(!snapshot.coverage.complete);
+}

@@ -184,6 +184,12 @@ pub(super) async fn capture(
                 "event_receipt_id",
                 "receipt_id",
                 "payment_id",
+                "event_id",
+                "provider_payment_id",
+                "provider_refund_id",
+                "payload_digest",
+                "source_revision",
+                "hyperswitch_body_id",
                 "merchant_id",
                 "merchant_version_id",
                 "plan_payment",
@@ -246,12 +252,57 @@ pub(super) async fn capture(
                 "replaces_statement_id",
                 "replaces_journal_id",
             ];
-            let evidence = serde_json::Value::Object(
+            let mut evidence = serde_json::Value::Object(
                 allowed
                     .into_iter()
                     .filter_map(|name| raw.get(name).map(|value| (name.to_owned(), value.clone())))
                     .collect(),
             );
+            if table == "merchant_event_inbox" {
+                // Normalized receipt identities and amounts are comparison inputs;
+                // original signed bodies and merchant credentials are never included.
+                if let Some(normalized) = raw.get("normalized") {
+                    evidence["normalized"] = serde_json::Value::Object(
+                        [
+                            "eventId",
+                            "kind",
+                            "paymentId",
+                            "providerPaymentId",
+                            "organizationId",
+                            "providerAccountId",
+                            "mode",
+                            "amountMinor",
+                            "currency",
+                            "refundId",
+                        ]
+                        .into_iter()
+                        .filter_map(|key| {
+                            normalized
+                                .get(key)
+                                .map(|value| (key.to_owned(), value.clone()))
+                        })
+                        .collect(),
+                    );
+                }
+            }
+            if table == "nonplan_refund_effects" {
+                evidence["effect"] = raw
+                    .get("effect")
+                    .cloned()
+                    .unwrap_or(serde_json::Value::Null);
+                // Exact revision binds the retained source. The safe structural
+                // fields below permit inspecting original source/cash ownership.
+                evidence["source"] = raw
+                    .get("source")
+                    .cloned()
+                    .unwrap_or(serde_json::Value::Null);
+            }
+            if table == "plan_usage_corrections" {
+                evidence["report"] = raw
+                    .get("report")
+                    .cloned()
+                    .unwrap_or(serde_json::Value::Null);
+            }
             selected.insert(
                 row.try_get(identity)?,
                 Source {

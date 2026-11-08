@@ -1,5 +1,6 @@
 //! Source-to-ledger comparisons, preserving explicit partial coverage and evidence.
 
+mod corrections;
 mod daily;
 mod documents;
 mod legacy;

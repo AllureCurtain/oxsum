@@ -1607,3 +1607,86 @@ async fn successful_fulfillment_releases_source_before_return_even_when_drop_cle
     assert_eq!(refund.state, "provider_pending");
     assert_eq!(w.wallet.available().await.unwrap(), TOTAL);
 }
+
+/// A retained historical correction must compare against its original Cash day
+/// and its separate restitution entry, without inventing a second refund.
+#[tokio::test]
+async fn independent_reconciliation_observes_historical_cash_and_wallet_restitution() {
+    let Some(w) = world().await else { return };
+    let order = paid(&w, PaymentOrderPurpose::WalletTopup, true).await;
+    w.wallet
+        .hold("reconcile-spent", "", TOTAL, today())
+        .await
+        .unwrap();
+    w.wallet
+        .settle("reconcile-spent", "", TOTAL, today())
+        .await
+        .unwrap();
+    w.wallet
+        .top_up("reconcile-replacement", 4_000_000, today())
+        .await
+        .unwrap();
+    let refund = reserve(&w, &order, None, true).await;
+    let receipt = signed_receipt(&w, &order, &refund).await;
+    let old_day = today() - Duration::days(1);
+    old_cash_on(&w, refund.refund_id, TOTAL, old_day).await;
+    let entry = *oxsum_core::entry_id_for(&format!("order-refund/{}", refund.refund_id)).as_uuid();
+    sqlx::query("UPDATE oxsum.refunds SET state='succeeded' WHERE refund_id=$1")
+        .bind(refund.refund_id)
+        .execute(w.db.pool())
+        .await
+        .unwrap();
+    sqlx::query("UPDATE oxsum.credit_notes SET state='applied',entry_id=$2 WHERE refund_id=$1")
+        .bind(refund.refund_id)
+        .bind(entry)
+        .execute(w.db.pool())
+        .await
+        .unwrap();
+    let mut request = recovery(refund.refund_id, receipt.id);
+    let preview =
+        w.db.recover_nonplan_refund(&w.owner, &w.wallet, &request, false, today())
+            .await
+            .unwrap();
+    request.expected_revision = Some(preview.source_revision);
+    assert_eq!(
+        w.db.recover_nonplan_refund(&w.owner, &w.wallet, &request, true, today())
+            .await
+            .unwrap()
+            .status,
+        "applied"
+    );
+    let run =
+        w.db.run_reconciliation("manual", old_day, old_day, None)
+            .await
+            .unwrap();
+    let run =
+        w.db.reconciliation_run(&w.owner, run.run_id)
+            .await
+            .unwrap()
+            .unwrap();
+    let snapshot =
+        w.db.reconciliation_snapshot(&w.owner, run.run_id, run.latest_snapshot_id.unwrap())
+            .await
+            .unwrap()
+            .unwrap();
+    let evidence = snapshot.evidence.unwrap();
+    let differences: Vec<_> = evidence["differences"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|d| d["organizationId"] == serde_json::json!(w.org))
+        .collect();
+    assert!(differences.is_empty(), "{differences:#?}");
+    let source = evidence["sources"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|s| {
+            s["sourceTable"] == "nonplan_refund_effects"
+                && s["sourceId"] == serde_json::json!(refund.refund_id)
+        })
+        .unwrap();
+    assert_eq!(source["expected"], source["actual"]);
+    assert_eq!(source["actual"]["refundMinor"], TOTAL);
+    assert_eq!(source["context"]["restoredWalletMinor"], TOTAL);
+}
