@@ -109,11 +109,12 @@ async fn record_in(
     use sha2::{Digest, Sha256};
     let digest =
         Sha256::digest(serde_json::to_vec(&(namespace, key, action)).map_err(invalid_receipt)?);
+    let digest: String = digest.iter().map(|byte| format!("{byte:02x}")).collect();
     sqlx::query("INSERT INTO oxsum.admin_audit(action,actor,target,detail,idempotency_key) VALUES($1,$2,$3,$4,$5)")
         .bind(format!("business.application.customer.{action}"))
         .bind(format!("service:{}",service.credential_id)).bind(organization.to_string())
         .bind(serde_json::json!({"namespaceId":namespace,"request":request,"result":result}))
-        .bind(format!("app:{digest:x}")).execute(&mut **tx).await?;
+        .bind(format!("app:{digest}")).execute(&mut **tx).await?;
     Ok(())
 }
 
