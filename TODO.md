@@ -4,7 +4,7 @@ Updated: 2026-11-09
 
 ## In progress
 
-- [ ] [#840](https://github.com/AllureCurtain/oxsum/issues/840) — Complete non-plan chargeback cash, exact original Wallet allocation, source/queue concurrency and actual callback identity implemented; 59 core, 27 final queue/source and ten HTTP checks passed with no skips. Independent source review passed; full regression and PR integration remain. Historical refunds and wrong-direction chargebacks remain #841/#842 before #829 closure.
+- [ ] [#840](https://github.com/AllureCurtain/oxsum/issues/840) — Complete non-plan chargeback cash, exact original Wallet allocation, source/queue concurrency and actual callback identity implemented in PR #847; 1,970 complete workspace tests passed with six existing opt-ins skipped, plus focused checks, strict Clippy and independent source review. Normal integration remains. Historical refunds and wrong-direction chargebacks remain #841/#842 before #829 closure.
 
 - [x] [#843](https://github.com/AllureCurtain/oxsum/issues/843) — N09.a: Actor-scoped business setup integrated in PR #845 (`df4ad4f`); 1,950 full workspace tests, 25 focused checks, strict Clippy, frontend/contract checks and independent review passed. Customer readiness and first-call proof remain.
 

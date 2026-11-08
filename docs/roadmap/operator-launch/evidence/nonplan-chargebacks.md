@@ -61,5 +61,17 @@ no upstream or PSP configuration is inherited from the main workspace.
 
 After rebasing onto checkout-route main `23b6547`, strict workspace Clippy
 (`--all-targets -- -D warnings`), API generation and frontend build passed.
-The complete workspace run remains pending before merge. These checks are not browser, real PSP or candidate
-acceptance; #725/N10 and the final release gates remain open.
+
+The final rebase onto business-readiness main `df4ad4f` retained every production
+and test patch unchanged. On source head `89be0f3`, the complete workspace run
+`9124f9e0-2993-4ffb-acb7-4296140cb681` passed all 1,970 tests across 192 binaries,
+with six existing opt-ins skipped. Compilation took 2m17s; execution took
+276.532s. Both PostgreSQL URLs were explicit, including the ledger engine's
+conformance database. The skips are the two real-provider tests, sustained
+capacity, gateway load, and two fixture/vector regeneration commands. The known
+payment-worker cancellation fixture race (#850) did not reproduce in this run.
+
+Required CI [42507858066](https://github.com/AllureCurtain/oxsum/actions/runs/42507858066)
+also passed on `89be0f3`: fmt, Clippy, library/doc tests, Wasm and frontend.
+Normal PR integration remains. These checks are not browser, real PSP or
+candidate acceptance; #725/N10 and the final release gates remain open.
