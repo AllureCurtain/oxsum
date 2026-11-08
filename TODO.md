@@ -4,7 +4,7 @@ Updated: 2026-11-08
 
 ## In progress
 
-- [ ] [#803](https://github.com/AllureCurtain/oxsum/issues/803) — Forward once-only wallet/credit usage fix validated: 69 focused and 1,899 workspace passes, all H1–H6 active; PR integration pending. Historical compensation is #809.
+- [x] [#803](https://github.com/AllureCurtain/oxsum/issues/803) — Forward once-only wallet/credit usage fix validated: 69 focused and 1,899 workspace passes, all H1–H6 active; Integrated in PR #815 (`e35e557`). Historical compensation is #809.
 - [ ] [#809](https://github.com/AllureCurtain/oxsum/issues/809) — Compensate retained historical duplicated usage with source-linked, audited corrections.
 
 ### Operator launch (#725)
@@ -63,6 +63,8 @@ Updated: 2026-11-08
 - [x] [#801](https://github.com/AllureCurtain/oxsum/issues/801) — N13.b: Original candidate config/layer promotion and immutable registry receipts implemented; 39 Python checks and isolated registry upload/pull/idempotency/conflict/gzip checks passed. Integrated in PR #806 (`0b06184`); no public publication or deployment.
 
 - [x] [#810](https://github.com/AllureCurtain/oxsum/issues/810) — N13.c: Explicit digest deployment, shared Compose image, observed runtime/schema evidence and compatible retained rollback implemented; 55 candidate Python checks and loopback HTTP/mocked Docker state rehearsal passed. Integrated in PR #813 (`941434a`); actual candidate runtime rehearsal remains.
+
+- [ ] [#814](https://github.com/AllureCurtain/oxsum/issues/814) — N13.d: Original SDK tar publication, bounded npm relay, immutable-version/tag checks and receipt implemented; local real-npm fixture rehearsal passed. Review/integration pending; public publication and final candidate remain unperformed.
 
 - [x] [#723](https://github.com/AllureCurtain/oxsum/issues/723) — Serialized promo writers on the ledger append advisory lock before their promo row locks, fixing the post-merge hold/expiry deadlock; integrated in PR #724.
 
