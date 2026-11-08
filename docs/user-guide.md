@@ -509,8 +509,10 @@ The order form (issue #606) pins what the payment buys before any provider call:
 the `purpose` — `walletTopup`, `bundle`, `planPeriod` or `invoiceRepayment` — and
 the `idempotencyKey` that anchors it, and answers the provider checkout to
 complete (`{order, providerPaymentId, clientSecret, checkoutUrl, publishableKey,
-sdkUrl}`). The ledger amount is the server's own rated conversion at the
-organization's display rate, so it is never a field you send. Repeating the call
+sdkUrl}`). The server determines the ledger amount from the published bundle
+offer, the sold plan-period quote, or the Business collection policy for other
+purposes. Your personal display preferences cannot change the purchased amount.
+Repeating the call
 with the same key answers the standing order and the same checkout rather than
 charging again; paying on the provider's page and returning does not itself mark
 the order paid — only the provider's signed webhook does, and the fulfillment
