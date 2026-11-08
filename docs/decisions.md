@@ -3134,3 +3134,18 @@ environment presence; values are never evaluated or retained. Output is a new
 0600 file. Public probes are separate reads and can straddle a restart. This
 feature supports diagnosis, not provider/PSP certification or upgrade/restore
 acceptance; N17/J16 retain those separate required rehearsals.
+
+## 2026-11-08 — Reverify compressed CI caches before using official fallback (#828)
+
+The verified official asset API remained intermittently unavailable after
+#822, blocking required checks before compilation. Cache the small compressed
+archives independently of Cargo output and verify their fixed size and SHA-256
+on every use. Copy restored bytes into private staging before validation and
+extraction. A local composite action restores exact keys, installs and saves
+each tool before any downstream tests. It preserves Mozilla's sccache runtime
+credential setup and all existing required checks.
+
+A cold install tries the pinned asset API and, only on bounded network/HTTP
+failure, the corresponding official release URL. Both sources must match the
+same pins. Integrity and local installation failures are not fallback signals.
+There is no third-party mirror, tool downgrade or release acceptance exception.

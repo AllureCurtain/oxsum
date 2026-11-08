@@ -908,14 +908,28 @@ table above names.
 CI and the candidate workflow install mold 2.40.0 and sccache 0.19.0 through
 `scripts/install-ci-tools.py` (#822). The helper requires Python 3.11+, curl
 with `--retry-all-errors`, and x86_64 Linux. It fetches exact official GitHub
-asset IDs over HTTPS, with four finite attempts and a 250-second process cap,
-and checks pinned size/SHA-256 before extraction. Installation uses a private
+asset IDs over HTTPS, with four finite attempts and a 250-second process cap
+per URL. On transport failure only, the corresponding pinned official browser
+release URL is tried with the same bound. Integrity, oversized-response, local
+I/O and TLS trust failures fail closed. Both routes require the same pinned
+size/SHA-256 before extraction. Installation uses a private
 staging directory and atomic rename into `RUNNER_TOOL_CACHE`; no privileged
 tar pipeline runs. An existing cache must match the verified tree or the job
 fails without replacing it. Mold's bin directory enters `GITHUB_PATH`.
 Sccache's verified cache uses the Actions tool-cache layout; the existing
 Mozilla action is pinned to `v0.19.0` and retains runtime-cache setup and
-post-run statistics without a latest-release or browser-asset download.
+post-run statistics without a latest-release lookup.
+
+The local `install-ci-tool` composite action (#828) restores and saves each
+tool's compressed archive independently, keyed by installer content, tool,
+runner OS and architecture. There are no partial restore keys. Every restored
+archive is copied into private staging and checked again against the pins;
+cache provenance never substitutes for byte verification. Valid restored bytes
+permit installation without network access. Corrupt caches fail without
+extraction and require removal of the affected Actions cache before retry.
+Archives are saved immediately after installation so downstream test failures
+do not force another cold download. `.github/actions/**` changes select the
+Rust gate tier just like workflow changes.
 
 `python3 scripts/test-ci-tools.py` uses only a temporary loopback HTTPS server
 and test certificate to check retry, permanent failure, partial/HTML/corrupt
