@@ -1383,7 +1383,10 @@
     "howItWorks": "How plans work",
     "note1": "A plan period activates only when its payment authorizes it — a timer alone never opens one.",
     "note2": "A scheduled change takes effect at the next boundary, never mid-period.",
-    "note3": "Cancelling keeps serving what was already paid for and stops renewal."
+    "note3": "Cancelling keeps serving what was already paid for and stops renewal.",
+    "recognitionPolicy": "Revenue recognition",
+    "policyV1": "Period close (v1)",
+    "policyV2": "Completed UTC service days (v2)"
   },
   "billing": {
     "title": "Billing",
@@ -1726,10 +1729,13 @@
         "ratedMinor": "Rated",
         "entitlementMinor": "Entitlement",
         "fundingMinor": "Funding",
-        "earnedMinor": "Earned",
+        "earnedMinor": "Recognized income",
         "collectedMinor": "Collected",
         "refundMinor": "Refunded",
-        "receivableMinor": "Receivable"
+        "receivableMinor": "Receivable",
+        "billedMinor": "Net billed",
+        "deferredMinor": "Deferred movement",
+        "discountMinor": "Noncash discounts"
       },
       "basis": {
         "realAttempt": "Real attempt",
@@ -1754,7 +1760,10 @@
       "period": "Period",
       "exceptions": "Exceptions",
       "finished": "Finished",
-      "noRuns": "No reconciliation runs."
+      "noRuns": "No reconciliation runs.",
+      "basisBooking": "Booking date",
+      "basisService": "Service date",
+      "basisPayment": "Payment cohort"
     },
     "exceptions": {
       "title": "Exceptions",

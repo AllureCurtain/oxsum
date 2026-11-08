@@ -1,5 +1,7 @@
 //! Historical duplicate usage corrections use real, retained ledger sources (#809).
 #![allow(clippy::unwrap_used, clippy::expect_used)]
+#[path = "support/legacy_plan.rs"]
+mod legacy_plan;
 
 #[path = "support/plan_payment.rs"]
 mod payment;
@@ -53,22 +55,22 @@ async fn world(collected: i64) -> Option<World> {
     let tenant = user.organization.tenant_id;
     let wallet = Wallet::open(db.pool().clone(), &tenant).await.unwrap();
     let business = db.default_business().await.unwrap();
-    let sold = db
-        .publish_sold_plan(
-            business,
-            &NewSoldPlan {
-                plan_id: None,
-                name: format!("legacy-{}", Uuid::new_v4()),
-                price_minor: FEE,
-                currency: "USD".into(),
-                quota_minor: Some(10_000_000),
-                period_kind: PeriodKind::Anniversary,
-                overage_enabled: true,
-                sort_order: 0,
-            },
-        )
-        .await
-        .unwrap();
+    let sold = legacy_plan::publish(
+        &db,
+        business,
+        &NewSoldPlan {
+            plan_id: None,
+            name: format!("legacy-{}", Uuid::new_v4()),
+            price_minor: FEE,
+            currency: "USD".into(),
+            quota_minor: Some(10_000_000),
+            period_kind: PeriodKind::Anniversary,
+            overage_enabled: true,
+            sort_order: 0,
+        },
+    )
+    .await
+    .unwrap();
     let plan = db
         .bind_customer_plan(
             org,

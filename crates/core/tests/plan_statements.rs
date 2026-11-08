@@ -5,6 +5,8 @@
 //! audits, the credit limit refuses at admission, and an issued statement is
 //! immutable. Needs DATABASE_URL; skips without it.
 #![allow(clippy::unwrap_used, clippy::expect_used)]
+#[path = "support/legacy_plan.rs"]
+mod legacy_plan;
 
 #[path = "support/plan_payment.rs"]
 mod plan_payment;
@@ -85,7 +87,8 @@ async fn sold(
     kind: PeriodKind,
     overage: bool,
 ) -> SoldPlan {
-    db.publish_sold_plan(
+    legacy_plan::publish(
+        &db,
         business_id,
         &NewSoldPlan {
             plan_id: None,

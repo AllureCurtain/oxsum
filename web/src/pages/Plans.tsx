@@ -155,6 +155,7 @@ function CurrentPlan() {
     <Card title={t("plans.current")}>
       <div className="flex flex-col gap-4">
         <PlanPayment enabled={sold ? sold.priceMinor > 0 : true} />
+        {sold ? <p className="text-sm text-muted">{t("plans.recognitionPolicy")}: {t(sold.accountingPolicyVersion === 2 ? "plans.policyV2" : "plans.policyV1")}</p> : null}
         <div className="flex flex-wrap items-center gap-2">
           <p className="text-lg font-semibold text-ink">{sold?.name ?? t("plans.unnamed")}</p>
           {planStateBadge(plan.state)}

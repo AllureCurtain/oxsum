@@ -6,6 +6,8 @@
 //! Needs DATABASE_URL; skips without it.
 
 #![allow(clippy::unwrap_used, clippy::expect_used)]
+#[path = "../../core/tests/support/legacy_plan.rs"]
+mod legacy_plan;
 
 #[path = "../../core/tests/support/plan_payment.rs"]
 mod plan_payment;
@@ -118,23 +120,23 @@ async fn world() -> Option<World> {
 
 /// Publishes a sold plan through the staff route and answers its version id.
 async fn publish(world: &World, name: &str, price: i64) -> Uuid {
-    let (status, body) = call(
-        &world.app,
-        "POST",
-        "/api/v1/business/plans",
-        json!({
-            "name": name,
-            "priceMinor": price,
-            "currency": "USD",
-            "quotaMinor": 10_000_000,
-            "periodKind": "calendarMonth",
-            "overageEnabled": true,
-        }),
-        Some(&world.owner),
+    legacy_plan::publish(
+        &world.db,
+        world.db.default_business().await.unwrap(),
+        &oxsum_core::NewSoldPlan {
+            plan_id: None,
+            name: name.into(),
+            price_minor: price,
+            currency: "USD".into(),
+            quota_minor: Some(10_000_000),
+            period_kind: oxsum_core::PeriodKind::CalendarMonth,
+            overage_enabled: true,
+            sort_order: 0,
+        },
     )
-    .await;
-    assert_eq!(status, StatusCode::OK, "{body}");
-    Uuid::parse_str(body["data"]["planVersionId"].as_str().unwrap()).unwrap()
+    .await
+    .unwrap()
+    .plan_version_id
 }
 
 /// Bind and activate using a real quoted paid fixture. The close helper seeds

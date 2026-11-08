@@ -328,25 +328,8 @@ async fn a_support_cannot_void_a_journal() {
         )
         .await
         .unwrap();
-    sqlx::query(
-        "UPDATE oxsum.org_subscriptions \
-         SET current_period_end = now() - interval '60 seconds' \
-         WHERE organization_id = $1 AND state = 'active'",
-    )
-    .bind(world.customer_org)
-    .execute(&world.pool)
-    .await
-    .unwrap();
-    sqlx::query(
-        "UPDATE oxsum.plan_periods SET period_end = now() - interval '60 seconds' \
-         WHERE state = 'active' AND customer_plan_id IN ( \
-             SELECT customer_plan_id FROM oxsum.customer_plans WHERE organization_id = $1)",
-    )
-    .bind(world.customer_org)
-    .execute(&world.pool)
-    .await
-    .unwrap();
-    world.db.rollover_due_subscriptions().await.unwrap();
+    // V2 issues the paid invoice at activation; authority does not require
+    // changing an immutable service interval to force a historical close.
     let journal_id: Uuid = sqlx::query_scalar(
         "SELECT journal_id FROM oxsum.invoice_journals WHERE organization_id=$1",
     )

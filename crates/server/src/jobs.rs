@@ -73,6 +73,7 @@ pub fn spawn_worker(db: Db, ctx: JobContext) -> tokio::task::JoinHandle<()> {
             kinds::RETENTION,
             kinds::USAGE_ANCHORS,
             kinds::SUBSCRIPTION_ROLLOVERS,
+            kinds::PLAN_RECOGNITION,
             kinds::EXPIRE_LOTS,
             kinds::STATEMENT_PAST_DUE,
             kinds::RECONCILE_FINANCIAL,
@@ -408,6 +409,12 @@ async fn run_one(
                 deferred = report.deferred,
                 "the usage-anchor pass closed the previous day"
             );
+        }
+        kinds::PLAN_RECOGNITION => {
+            let days = db.run_plan_recognition(200).await?;
+            if days > 0 {
+                info!(days, "plan recognition completed service days");
+            }
         }
         kinds::SUBSCRIPTION_ROLLOVERS => {
             let report = db.rollover_due_subscriptions().await?;

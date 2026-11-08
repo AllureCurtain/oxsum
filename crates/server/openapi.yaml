@@ -14338,8 +14338,12 @@ components:
           description: must name an enabled plan with a `stripePriceId`
     SoldPlan:
       type: object
-      required: [planVersionId, planId, businessId, version, name, priceMinor, currency, quotaMinor, periodKind, overageEnabled, sortOrder, publishedAt, retiredAt, createdAt]
+      required: [planVersionId, planId, businessId, version, name, priceMinor, currency, quotaMinor, periodKind, overageEnabled, sortOrder, publishedAt, retiredAt, createdAt, accountingPolicyVersion]
       properties:
+        accountingPolicyVersion:
+          type: integer
+          enum: [1, 2]
+          description: "1 retains historical period-close recognition; 2 invoices at paid activation and recognizes completed UTC service days. A version change applies only to a newly authorized period."
         planVersionId:
           type: string
           format: uuid
@@ -14422,8 +14426,12 @@ components:
         updatedAt: { type: string, format: date-time }
     PlanPeriod:
       type: object
-      required: [planPeriodId, customerPlanId, periodIndex, periodStart, periodEnd, quotaMinor, consumedMinor, authorizationKind, authorizationRef, state, createdAt]
+      required: [planPeriodId, customerPlanId, periodIndex, periodStart, periodEnd, quotaMinor, consumedMinor, authorizationKind, authorizationRef, state, createdAt, accountingPolicyVersion]
       properties:
+        accountingPolicyVersion:
+          type: integer
+          enum: [1, 2]
+          description: "1 retains historical period-close recognition; 2 invoices at paid activation and recognizes completed UTC service days. A version change applies only to a newly authorized period."
         planPeriodId: { type: string, format: uuid }
         customerPlanId: { type: string, format: uuid }
         periodIndex:
@@ -14489,8 +14497,12 @@ components:
           description: earliest effective debt due date, including the retained due date of a document-only void
     InvoiceJournal:
       type: object
-      required: [journalId, customerPlanId, organizationId, planPeriodId, periodIndex, state, totalMinor, settledMinor, currency, paidOrderId, disputedMinor, replacesJournalId, voidReason, postedAt, paidAt, voidedAt, createdAt]
+      required: [journalId, customerPlanId, organizationId, planPeriodId, periodIndex, state, totalMinor, settledMinor, currency, paidOrderId, disputedMinor, replacesJournalId, voidReason, postedAt, paidAt, voidedAt, createdAt, accountingPolicyVersion]
       properties:
+        accountingPolicyVersion:
+          type: integer
+          enum: [1, 2]
+          description: "1 retains historical period-close recognition; 2 invoices at paid activation and recognizes completed UTC service days. A version change applies only to a newly authorized period."
         journalId: { type: string, format: uuid }
         customerPlanId: { type: string, format: uuid }
         organizationId: { type: string, format: uuid }
@@ -15377,16 +15389,19 @@ components:
         paidUnfulfilled: { type: array, items: { type: string, format: uuid }, description: the paid orders the recovery sweep still owes a fulfillment }
     FinancialFacts:
       type: object
-      required: [usageMinor, ratedMinor, entitlementMinor, fundingMinor, earnedMinor, collectedMinor, refundMinor, receivableMinor]
-      description: The eight-category figures a period's books answer, all integer minor units — the customer's `/api/v1/org/usage-report` and the staff's `/api/v1/business/financial-facts` derive from the same source rows, so the filtered view is a projection, never a second total.
+      required: [usageMinor, ratedMinor, entitlementMinor, fundingMinor, earnedMinor, collectedMinor, refundMinor, receivableMinor, billedMinor, deferredMinor, discountMinor]
+      description: The source-derived financial figures a period's books answer, all integer minor units — the customer's `/api/v1/org/usage-report` and the staff's `/api/v1/business/financial-facts` derive from the same source rows, so the filtered view is a projection, never a second total.
       properties:
         usageMinor: { type: integer, format: int64, description: "Σ settled `charged_minor` — what the turns cost the customer" }
         ratedMinor: { type: integer, format: int64, description: the same turns at catalog rate before discount — `rated − usage` is the granted discount }
         entitlementMinor: { type: integer, format: int64, description: subscription draws plus plan-period quota consumed — what the plan covered }
         fundingMinor: { type: integer, format: int64, description: paid orders plus credited deposits — cash in }
-        earnedMinor: { type: integer, format: int64, description: posted/paid invoice-journal totals — what the business billed }
+        billedMinor: { type: integer, format: int64, description: current journal charge totals for the selected bill cohort; distinct from earned income }
+        deferredMinor: { type: integer, format: int64, description: net deferred-fee change from immutable v2 accounting effects under the selected clock }
+        discountMinor: { type: integer, format: int64, description: noncash journal discounts and promotion credits; cash-refund credits excluded }
+        earnedMinor: { type: integer, format: int64, description: net plan-fee income from source-linked recognition and correction effects; v1 retains its historical closing policy }
         collectedMinor: { type: integer, format: int64, description: the settled share of those journals — what was collected }
-        refundMinor: { type: integer, format: int64, description: succeeded refunds plus journal credit lines — money back }
+        refundMinor: { type: integer, format: int64, description: confirmed cash returns counted once; journal credit lines do not create a second refund }
         receivableMinor: { type: integer, format: int64, description: "issued/past-due statements' outstanding plus unsurfaced posted journals — still owed" }
     CostBasisCount:
       type: object

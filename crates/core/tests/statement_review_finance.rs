@@ -1,5 +1,7 @@
 //! Statement financial review, multi-debt restoration and retained voids (#820).
 #![allow(clippy::unwrap_used, clippy::expect_used)]
+#[path = "support/legacy_plan.rs"]
+mod legacy_plan;
 #[path = "support/plan_payment.rs"]
 mod payment;
 #[path = "support/integration.rs"]
@@ -46,22 +48,22 @@ async fn priced_world(overage: i64, fee: i64) -> Option<World> {
     let wallet = Wallet::open(pool.clone(), &user.organization.tenant_id)
         .await
         .unwrap();
-    let sold = db
-        .publish_sold_plan(
-            db.default_business().await.unwrap(),
-            &NewSoldPlan {
-                plan_id: None,
-                name: format!("locks-{}", Uuid::new_v4()),
-                price_minor: fee,
-                currency: "USD".into(),
-                quota_minor: Some(10_000_000),
-                period_kind: PeriodKind::Anniversary,
-                overage_enabled: true,
-                sort_order: 0,
-            },
-        )
-        .await
-        .unwrap();
+    let sold = legacy_plan::publish(
+        &db,
+        db.default_business().await.unwrap(),
+        &NewSoldPlan {
+            plan_id: None,
+            name: format!("locks-{}", Uuid::new_v4()),
+            price_minor: fee,
+            currency: "USD".into(),
+            quota_minor: Some(10_000_000),
+            period_kind: PeriodKind::Anniversary,
+            overage_enabled: true,
+            sort_order: 0,
+        },
+    )
+    .await
+    .unwrap();
     let plan = db
         .bind_customer_plan(
             org,

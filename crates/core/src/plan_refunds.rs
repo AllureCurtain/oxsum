@@ -170,7 +170,7 @@ impl Db {
         let corrected_source = !corrected_journals.is_empty();
         let period: Option<Uuid> = sqlx::query_scalar("SELECT plan_period_id FROM oxsum.plan_periods WHERE authorization_kind='payment_order' AND authorization_ref=$1")
             .bind(source.order_id).fetch_optional(&mut **tx).await?;
-        let journal = sqlx::query("SELECT journal_id,state,total_minor,settled_minor FROM oxsum.invoice_journals WHERE plan_period_id=$1 ORDER BY created_at DESC LIMIT 1 FOR UPDATE")
+        let journal = sqlx::query("SELECT journal_id,state,total_minor,settled_minor,accounting_policy_version FROM oxsum.invoice_journals WHERE plan_period_id=$1 ORDER BY created_at DESC LIMIT 1 FOR UPDATE")
             .bind(period).fetch_optional(&mut **tx).await?;
         let journal_id = journal
             .as_ref()
@@ -285,12 +285,27 @@ impl Db {
                 } else {
                     settled
                 };
-                result.earned_minor = source
+                let allocated = source
                     .amount
                     .min(remaining)
                     .min(before_settled)
                     .min(before_total.max(0));
-                target_settled = Some(before_settled.saturating_sub(result.earned_minor));
+                if journal.try_get::<i16, _>("accounting_policy_version")? == 2 {
+                    if old.is_some() {
+                        return Err(WalletError::Conflict(
+                            "daily policy cannot use a legacy refund correction".into(),
+                        ));
+                    }
+                    let (deferred, earned) = self
+                        .daily_refund_allocation_in(tx, wallet, id, allocated, on)
+                        .await?
+                        .ok_or_else(|| error::invalid("daily refund accounting inputs missing"))?;
+                    result.deferred_minor = deferred;
+                    result.earned_minor = earned;
+                } else {
+                    result.earned_minor = allocated;
+                }
+                target_settled = Some(before_settled.saturating_sub(allocated));
             }
         } else {
             result.deferred_minor = source.amount.min(remaining);
@@ -316,13 +331,14 @@ impl Db {
                 tx,
                 id,
                 source.note_id,
-                result.earned_minor,
+                result.earned_minor + result.deferred_minor,
                 old_discount,
                 settled,
                 &source.reason,
             )
             .await?;
         }
+        self.record_daily_refund_in(tx, &result, on).await?;
         if source.note_state == "issued" {
             sqlx::query("UPDATE oxsum.credit_notes SET state='applied',entry_id=$2,updated_at=now() WHERE credit_note_id=$1 AND state='issued'")
                 .bind(source.note_id).bind(result.entry_id).execute(&mut **tx).await?;

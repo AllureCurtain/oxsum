@@ -1,13 +1,13 @@
 //! Financial facts, cost coverage and reconciliation (issue #613, task T22).
 //!
-//! oxsum's money questions have eight honest answers, not one. A customer asks
+//! Financial facts separate service, recognition, billing and cash. A customer asks
 //! "what did my turns cost" (`usage`); finance asks "what would those turns
 //! have cost at catalog rate" (`rated`, so a discount's size is visible); the
 //! plan asks "what did the subscription cover" (`entitlement`); the rail asks
 //! "what cash arrived" (`funding`); the ledger asks "what did the business
 //! earn" (`earned`); the receivable asks "what was collected" (`collected`)
 //! and "what is still owed" (`receivable`); the refund log asks "what went
-//! back" (`refund`). This module is the read model that answers all eight from
+//! back" (`refund`). This module is the read model that answers them from
 //! the same source rows, so the customer's filtered view
 //! (`GET /api/v1/org/usage-report`) and the staff's
 //! (`GET /api/v1/business/financial-facts`) are one projection, never two
@@ -20,7 +20,7 @@
 //!
 //! - `usage − entitlement = wallet spend`: every charged turn either drew on
 //!   the plan's quota or drew wallet cash — nothing is both, nothing is free.
-//! - `earned − collected = receivable`: what the business billed minus what
+//! - `billed − collected = receivable`: what the business billed minus what
 //!   settled is the outstanding receivable.
 //!
 //! `reconciliation_runs` is the pass that asks whether the books agree:
@@ -49,14 +49,14 @@ use uuid::Uuid;
 use crate::business_staff as authority;
 use crate::business_staff::BusinessCapability;
 use crate::db::Db;
-use crate::error::WalletError;
+use crate::error::{self, WalletError};
 use crate::usage::UsageRecord;
 
 // ---------------------------------------------------------------------------
-// The eight categories
+// Financial categories
 // ---------------------------------------------------------------------------
 
-/// The eight figures a period's books answer, all integer minor units. The
+/// The figures a period's books answer, all integer minor units. The
 /// serde names are the contract's camelCase (`usageMinor`, `ratedMinor`, …).
 ///
 /// Every figure is a *sum over a filtered set of source rows*, never a
@@ -83,14 +83,20 @@ pub struct FinancialFacts {
     /// orders, plus credited `deposits.amount_minor` — every rail that funds
     /// a wallet or a receivable.
     pub funding_minor: i64,
-    /// What the business earned: Σ `invoice_journals.total_minor` over
-    /// `posted`/`paid` journals — plan-fee revenue the period billed.
+    /// Net recognized plan fees: legacy closing totals plus immutable v2
+    /// recognition/correction effects, never the prepaid invoice total.
     pub earned_minor: i64,
+    /// Net billed plan fees, separate from recognition timing.
+    pub billed_minor: i64,
+    /// Net v2 deferred fee movement under the selected source clock.
+    pub deferred_minor: i64,
+    /// Noncash discounts/promotions; confirmed cash refunds are separate.
+    pub discount_minor: i64,
     /// What was collected: Σ `invoice_journals.settled_minor` over the same
-    /// journals — the part of `earned` already paid.
+    /// journals — the part of `billed` already paid.
     pub collected_minor: i64,
-    /// Money back: Σ `refunds.amount_minor` over `succeeded` refunds, plus the
-    /// `discount`/`promo_credit` lines journals granted.
+    /// Cash returned once, from exact plan allocations or proven refund entries.
+    /// A matching journal discount is not a second cash return.
     pub refund_minor: i64,
     /// Still owed: Σ `(total_minor − paid_minor)` over `issued`/`past_due`
     /// plan statements plus `(total_minor − settled_minor)` over `posted`
@@ -445,7 +451,14 @@ impl Db {
         let mut usage_minor = 0_i64;
         let mut all_rated: Vec<RatedRow> = Vec::new();
         for tenant in tenants {
-            let schema = tenant.replace('"', "\"\"");
+            let schema = format!("ledger_{}", tenant.replace('"', "\"\""));
+            let exists: bool = sqlx::query_scalar("SELECT to_regclass($1) IS NOT NULL")
+                .bind(format!("\"{schema}\".entries"))
+                .fetch_one(self.pool())
+                .await?;
+            if !exists {
+                continue;
+            }
             let mut w = Where::new();
             let mut binds: Vec<Bind<'_>> = Vec::new();
             // tenant_id is always bound first on this per-tenant read.
@@ -639,7 +652,7 @@ impl Db {
         Ok(total)
     }
 
-    /// `earned` and `collected`: the invoice-journal billed figure and the
+    /// Legacy v1 billed/earned and collected: the journal figure and the
     /// part of it already settled, over the period the journal posted in.
     async fn journal_figures(&self, filter: &FactFilter) -> Result<(i64, i64), WalletError> {
         let mut w = Where::new();
@@ -647,7 +660,7 @@ impl Db {
         let mut sql = String::from(
             "SELECT COALESCE(sum(j.total_minor),0)::bigint AS earned, \
                     COALESCE(sum(j.settled_minor),0)::bigint AS collected \
-             FROM oxsum.invoice_journals j WHERE j.state IN ('posted','paid')",
+             FROM oxsum.invoice_journals j WHERE j.state IN ('posted','paid') AND j.accounting_policy_version=1",
         );
         if let Some(org) = filter.organization_id {
             sql.push_str(&w.clause(" AND j.organization_id = ?"));
@@ -666,53 +679,124 @@ impl Db {
         Ok((row.try_get("earned")?, row.try_get("collected")?))
     }
 
-    /// Money back: succeeded refunds plus the credit lines journals granted
-    /// in the period.
+    /// Exact cash returns: plan allocations include late external facts even
+    /// when their old terminal state remains failed. Other rails need a real
+    /// sequenced Cash credit; succeeded status alone cannot invent money-out.
     async fn refund_minor(&self, filter: &FactFilter) -> Result<i64, WalletError> {
         let mut w = Where::new();
-        let mut binds: Vec<Bind<'_>> = Vec::new();
+        let mut binds = Vec::new();
         let mut sql = String::from(
-            "SELECT COALESCE(sum(r.amount_minor),0)::bigint \
-             FROM oxsum.refunds r WHERE r.state = 'succeeded'",
+            "SELECT COALESCE(sum(e.cash_minor),0)::bigint FROM oxsum.plan_refund_effects e WHERE true",
         );
         if let Some(org) = filter.organization_id {
-            sql.push_str(&w.clause(" AND r.organization_id = ?"));
+            sql.push_str(&w.clause(" AND e.organization_id=?"));
             binds.push(Bind::Uuid(org));
         }
         if let Some(from) = filter.from {
-            sql.push_str(&w.clause(" AND r.updated_at::date >= ?"));
+            sql.push_str(&w.clause(" AND e.booked_at::date>=?"));
             binds.push(Bind::Date(from));
         }
         if let Some(to) = filter.to {
-            sql.push_str(&w.clause(" AND r.updated_at::date <= ?"));
+            sql.push_str(&w.clause(" AND e.booked_at::date<=?"));
             binds.push(Bind::Date(to));
         }
-        let query = bind_scalar(sqlx::query_scalar::<_, i64>(&sql), &binds);
-        let mut total = query.fetch_one(self.pool()).await?;
+        let mut total: i64 = bind_scalar(sqlx::query_scalar(&sql), &binds)
+            .fetch_one(self.pool())
+            .await?;
+        for tenant in self.fact_tenants(filter.organization_id).await? {
+            let schema = format!("ledger_{}", tenant.replace('"', "\"\""));
+            let exists: bool = sqlx::query_scalar("SELECT to_regclass($1) IS NOT NULL")
+                .bind(format!("\"{schema}\".entries"))
+                .fetch_one(self.pool())
+                .await?;
+            if !exists {
+                continue;
+            }
+            let mut w = Where::new();
+            let mut binds = Vec::new();
+            let mut sql = format!(
+                "SELECT COALESCE(SUM(CASE WHEN p.direction='C' THEN p.amount_minor ELSE -p.amount_minor END),0)::bigint FROM \"{schema}\".entries e JOIN \"{schema}\".postings p USING(entry_id) JOIN \"{schema}\".accounts a USING(account_index) WHERE e.log_index IS NOT NULL AND a.path='Assets:Cash' AND p.layer='settled' AND e.entry_id IN (SELECT n.entry_id FROM oxsum.credit_notes n JOIN oxsum.refunds r USING(refund_id) JOIN oxsum.organizations o ON o.organization_id=r.organization_id WHERE o.tenant_id=$1 AND n.entry_id IS NOT NULL AND NOT EXISTS(SELECT 1 FROM oxsum.plan_refund_effects f WHERE f.refund_id=r.refund_id))"
+            );
+            binds.push(Bind::Text(&tenant));
+            w.next = 2;
+            if let Some(from) = filter.from {
+                sql.push_str(&w.clause(" AND e.booking_date>=?"));
+                binds.push(Bind::Date(from));
+            }
+            if let Some(to) = filter.to {
+                sql.push_str(&w.clause(" AND e.booking_date<=?"));
+                binds.push(Bind::Date(to));
+            }
+            let cash: i64 = bind_scalar(sqlx::query_scalar(&sql), &binds)
+                .fetch_one(self.pool())
+                .await?;
+            total = total
+                .checked_add(cash)
+                .ok_or_else(|| error::invalid("refund total overflows"))?;
+        }
+        Ok(total)
+    }
 
-        let mut w2 = Where::new();
-        let mut binds2: Vec<Bind<'_>> = Vec::new();
-        let mut sql2 = String::from(
-            "SELECT COALESCE(sum(-l.amount_minor),0)::bigint \
-             FROM oxsum.invoice_journal_lines l \
-             JOIN oxsum.invoice_journals j ON j.journal_id = l.journal_id \
-             WHERE l.kind IN ('discount','promo_credit') AND j.state <> 'void'",
+    async fn discount_minor(&self, filter: &FactFilter) -> Result<i64, WalletError> {
+        let mut w = Where::new();
+        let mut binds = Vec::new();
+        let mut sql = String::from(
+            "SELECT -COALESCE(SUM(l.amount_minor),0)::bigint FROM oxsum.invoice_journal_lines l JOIN oxsum.invoice_journals j USING(journal_id) WHERE j.state<>'void' AND l.kind IN ('discount','promo_credit') AND NOT EXISTS(SELECT 1 FROM oxsum.credit_notes n WHERE n.credit_note_id=l.source_ref AND n.refund_id IS NOT NULL)",
         );
         if let Some(org) = filter.organization_id {
-            sql2.push_str(&w2.clause(" AND j.organization_id = ?"));
-            binds2.push(Bind::Uuid(org));
+            sql.push_str(&w.clause(" AND j.organization_id=?"));
+            binds.push(Bind::Uuid(org));
         }
         if let Some(from) = filter.from {
-            sql2.push_str(&w2.clause(" AND l.created_at::date >= ?"));
-            binds2.push(Bind::Date(from));
+            sql.push_str(&w.clause(" AND l.created_at::date>=?"));
+            binds.push(Bind::Date(from));
         }
         if let Some(to) = filter.to {
-            sql2.push_str(&w2.clause(" AND l.created_at::date <= ?"));
-            binds2.push(Bind::Date(to));
+            sql.push_str(&w.clause(" AND l.created_at::date<=?"));
+            binds.push(Bind::Date(to));
         }
-        let query2 = bind_scalar(sqlx::query_scalar::<_, i64>(&sql2), &binds2);
-        total += query2.fetch_one(self.pool()).await?;
-        Ok(total)
+        Ok(bind_scalar(sqlx::query_scalar(&sql), &binds)
+            .fetch_one(self.pool())
+            .await?)
+    }
+
+    async fn daily_plan_figures(
+        &self,
+        filter: &FactFilter,
+    ) -> Result<crate::plan_recognition::Effect, WalletError> {
+        let clock = match filter.time_basis {
+            TimeBasis::Booking => "e.booked_on",
+            TimeBasis::Service => "e.service_day",
+            TimeBasis::Payment => "e.payment_on",
+        };
+        let mut w = Where::new();
+        let mut binds = Vec::new();
+        let mut sql = String::from(
+            "SELECT COALESCE(SUM(e.billed_minor),0)::bigint AS billed,COALESCE(SUM(e.earned_minor),0)::bigint AS earned,COALESCE(SUM(e.deferred_minor),0)::bigint AS deferred,COALESCE(SUM(e.collected_minor),0)::bigint AS collected,COALESCE(SUM(e.receivable_minor),0)::bigint AS receivable FROM oxsum.plan_accounting_effects e JOIN oxsum.plan_accounting_periods a USING(plan_period_id) WHERE true",
+        );
+        if let Some(org) = filter.organization_id {
+            sql.push_str(&w.clause(" AND a.organization_id=?"));
+            binds.push(Bind::Uuid(org));
+        }
+        if let Some(from) = filter.from {
+            sql.push_str(&w.clause(&format!(" AND {clock}>=?")));
+            binds.push(Bind::Date(from));
+        }
+        if let Some(to) = filter.to {
+            sql.push_str(&w.clause(&format!(" AND {clock}<=?")));
+            binds.push(Bind::Date(to));
+        }
+        let row = bind_all(sqlx::query(&sql), &binds)
+            .fetch_one(self.pool())
+            .await?;
+        Ok(crate::plan_recognition::Effect {
+            billed: row.try_get("billed")?,
+            earned: row.try_get("earned")?,
+            deferred: row.try_get("deferred")?,
+            collected: row.try_get("collected")?,
+            receivable: row.try_get("receivable")?,
+            ..crate::plan_recognition::Effect::default()
+        })
     }
 
     /// The open receivable: `issued`/`past_due` plan statements'
@@ -723,7 +807,7 @@ impl Db {
         let mut binds: Vec<Bind<'_>> = Vec::new();
         let mut sql = String::from(
             "SELECT COALESCE(sum(s.total_minor - s.paid_minor),0)::bigint \
-             FROM oxsum.plan_statements s WHERE s.state IN ('issued','past_due')",
+             FROM oxsum.plan_statements s WHERE s.state IN ('issued','past_due') AND NOT EXISTS(SELECT 1 FROM oxsum.invoice_journals j WHERE j.journal_id=s.journal_id AND j.accounting_policy_version=2)",
         );
         if let Some(org) = filter.organization_id {
             sql.push_str(&w.clause(" AND s.organization_id = ?"));
@@ -745,7 +829,7 @@ impl Db {
         let mut sql2 = String::from(
             "SELECT COALESCE(sum(j.total_minor - j.settled_minor),0)::bigint \
              FROM oxsum.invoice_journals j \
-             WHERE j.state = 'posted' \
+             WHERE j.state = 'posted' AND j.accounting_policy_version=1 \
                AND NOT EXISTS (SELECT 1 FROM oxsum.plan_statements s \
                                WHERE s.journal_id = j.journal_id AND s.state <> 'void')",
         );
@@ -781,19 +865,37 @@ impl Db {
     ) -> Result<FinancialFacts, WalletError> {
         let tenants = self.fact_tenants(filter.organization_id).await?;
         let (usage_minor, rated_minor) = self.usage_figures(filter, &tenants).await?;
-        let (earned_minor, collected_minor) = self.journal_figures(filter).await?;
+        let (legacy_billed, legacy_collected) = self.journal_figures(filter).await?;
+        let daily = self.daily_plan_figures(filter).await?;
+        let earned_minor = legacy_billed
+            .checked_add(daily.earned)
+            .ok_or_else(|| error::invalid("earned total overflows"))?;
+        let billed_minor = legacy_billed
+            .checked_add(daily.billed)
+            .ok_or_else(|| error::invalid("billed total overflows"))?;
+        let collected_minor = legacy_collected
+            .checked_add(daily.collected)
+            .ok_or_else(|| error::invalid("collected total overflows"))?;
+        let deferred_minor = daily.deferred;
+        let discount_minor = self.discount_minor(filter).await?;
         let (entitlement_minor, funding_minor, refund_minor, receivable_minor) = tokio::try_join!(
             self.entitlement_minor(filter),
             self.funding_minor(filter),
             self.refund_minor(filter),
             self.receivable_minor(filter)
         )?;
+        let receivable_minor = receivable_minor
+            .checked_add(daily.receivable)
+            .ok_or_else(|| error::invalid("receivable total overflows"))?;
         Ok(FinancialFacts {
             usage_minor,
             rated_minor,
             entitlement_minor,
             funding_minor,
             earned_minor,
+            billed_minor,
+            deferred_minor,
+            discount_minor,
             collected_minor,
             refund_minor,
             receivable_minor,
@@ -1150,7 +1252,7 @@ impl Db {
     /// - `usage − entitlement ≥ 0` — a charged turn drew either quota or
     ///   wallet; a negative is quota covering more than was billed, which is
     ///   `double_entry` drift.
-    /// - `earned − collected = receivable` — billed minus settled is the open
+    /// - `billed − collected = receivable` — billed minus settled is the open
     ///   receivable; the figure the statements carry must agree.
     /// - settled usage rows with untracked cost inside the period are
     ///   `missing_cost` — usage that can never reconcile to a provider bill.
@@ -1298,12 +1400,12 @@ impl Db {
             }
             // earned − collected = receivable: the statements' outstanding
             // must equal the journals' billed-minus-settled.
-            if facts.earned_minor - facts.collected_minor != facts.receivable_minor {
+            if facts.billed_minor - facts.collected_minor != facts.receivable_minor {
                 let detail = format!(
-                    "earned {} − collected {} = {} but receivable reads {}",
-                    facts.earned_minor,
+                    "billed {} − collected {} = {} but receivable reads {}",
+                    facts.billed_minor,
                     facts.collected_minor,
-                    facts.earned_minor - facts.collected_minor,
+                    facts.billed_minor - facts.collected_minor,
                     facts.receivable_minor
                 );
                 exceptions += i64::from(
@@ -1311,7 +1413,7 @@ impl Db {
                         run_id,
                         organization_id: Some(*organization_id),
                         kind: "double_entry",
-                        expected: Some(facts.earned_minor - facts.collected_minor),
+                        expected: Some(facts.billed_minor - facts.collected_minor),
                         actual: Some(facts.receivable_minor),
                         source_table: Some("invoice_journals"),
                         source_ref: Some(tenant_id),

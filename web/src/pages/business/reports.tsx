@@ -35,7 +35,7 @@ import { AuditAction, DetailGrid, Field2, stateBadge } from "./biz";
 
 // ---------------------------------------------------------------------------
 // /app/business#business/reports + #business/exceptions — the operational
-// resolution surfaces (T22): the eight-category financial-facts dashboard,
+// resolution surfaces (T22): the financial-facts dashboard,
 // cost-coverage breakdown, reconciliation runs and the exception work list
 // with resolve/waive/repair — every repair names its audited action.
 // ---------------------------------------------------------------------------
@@ -45,7 +45,10 @@ const FACT_KEYS = [
   "ratedMinor",
   "entitlementMinor",
   "fundingMinor",
+  "billedMinor",
   "earnedMinor",
+  "deferredMinor",
+  "discountMinor",
   "collectedMinor",
   "refundMinor",
   "receivableMinor",
@@ -80,8 +83,9 @@ function FactsDashboard() {
         </Field>
         <Field label={t("biz.reports.timeBasis")}>
           <NativeSelect value={basis} onChange={(e) => setBasis(e.target.value)}>
-            <option value="">{t("biz.reports.basisSettled")}</option>
-            <option value="requested">{t("biz.reports.basisRequested")}</option>
+            <option value="">{t("biz.reports.basisBooking")}</option>
+            <option value="service">{t("biz.reports.basisService")}</option>
+            <option value="payment">{t("biz.reports.basisPayment")}</option>
           </NativeSelect>
         </Field>
       </div>

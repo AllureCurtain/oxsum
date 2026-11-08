@@ -4,6 +4,8 @@
 //! the value it is scoped to, once, under replay and recovery.
 //! Needs DATABASE_URL; skips without it.
 #![allow(clippy::unwrap_used, clippy::expect_used)]
+#[path = "support/legacy_plan.rs"]
+mod legacy_plan;
 #[path = "support/integration.rs"]
 mod setup;
 use oxsum_core::{
@@ -294,22 +296,22 @@ async fn a_plan_period_order_grants_quota_never_wallet_cash() {
     // The sold version the customer binds, then the pending plan the order
     // funds — `purpose_ref` names the `customer_plan_id` the order buys.
     let business = db.default_business().await.unwrap();
-    let sold = db
-        .publish_sold_plan(
-            business,
-            &NewSoldPlan {
-                plan_id: None,
-                name: format!("pro-{}", Uuid::new_v4().simple()),
-                price_minor: 210,
-                currency: "USD".into(),
-                quota_minor: Some(9_000_000),
-                period_kind: PeriodKind::CalendarMonth,
-                overage_enabled: false,
-                sort_order: 0,
-            },
-        )
-        .await
-        .unwrap();
+    let sold = legacy_plan::publish(
+        &db,
+        business,
+        &NewSoldPlan {
+            plan_id: None,
+            name: format!("pro-{}", Uuid::new_v4().simple()),
+            price_minor: 210,
+            currency: "USD".into(),
+            quota_minor: Some(9_000_000),
+            period_kind: PeriodKind::CalendarMonth,
+            overage_enabled: false,
+            sort_order: 0,
+        },
+    )
+    .await
+    .unwrap();
     let customer_plan = db
         .bind_customer_plan(
             org,

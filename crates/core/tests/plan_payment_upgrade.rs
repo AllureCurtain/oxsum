@@ -1,8 +1,10 @@
 //! Upgrade preserves authorized plan history while fencing pending unquoted orders.
 #![allow(clippy::unwrap_used, clippy::expect_used)]
+#[path = "support/legacy_plan.rs"]
+mod legacy_plan;
 #[path = "support/integration.rs"]
 mod setup;
-use oxsum_core::{Db, NewSoldPlan, NewUser, PeriodAuthorization, PeriodKind, WalletError};
+use oxsum_core::{Db, NewSoldPlan, NewUser, PeriodKind, WalletError};
 use sqlx::Executor;
 use uuid::Uuid;
 
@@ -45,30 +47,27 @@ async fn historical_authorization_replays_but_pending_legacy_intents_cannot_gran
         .await
         .unwrap();
     let org = customer.organization.id;
-    let sold = db
-        .publish_sold_plan(
-            db.default_business().await.unwrap(),
-            &NewSoldPlan {
-                plan_id: None,
-                name: "Historical plan".into(),
-                price_minor: 1_000_000,
-                currency: "USD".into(),
-                quota_minor: Some(3_000_000),
-                period_kind: PeriodKind::CalendarMonth,
-                overage_enabled: false,
-                sort_order: 0,
-            },
-        )
-        .await
-        .unwrap();
-    let plan = db
-        .bind_customer_plan(
-            org,
-            sold.plan_version_id,
-            PeriodAuthorization::PaymentOrder(Uuid::nil()),
-        )
-        .await
-        .unwrap();
+    let sold = legacy_plan::publish(
+        &db,
+        db.default_business().await.unwrap(),
+        &NewSoldPlan {
+            plan_id: None,
+            name: "Historical plan".into(),
+            price_minor: 1_000_000,
+            currency: "USD".into(),
+            quota_minor: Some(3_000_000),
+            period_kind: PeriodKind::CalendarMonth,
+            overage_enabled: false,
+            sort_order: 0,
+        },
+    )
+    .await
+    .unwrap();
+    // Seed the binding with the historical schema. Today's reader requires the
+    // policy column added by 0113 and must not be used before that migration.
+    let plan = Uuid::new_v4();
+    sqlx::query("INSERT INTO oxsum.customer_plans(customer_plan_id,organization_id,plan_version_id,state) VALUES($1,$2,$3,'pending_payment')")
+        .bind(plan).bind(org).bind(sold.plan_version_id).execute(db.pool()).await.unwrap();
     let fulfilled = Uuid::new_v4();
     let pending = Uuid::new_v4();
     let insert = "INSERT INTO oxsum.payment_orders(order_id,business_id,organization_id,purpose,amount_minor,currency,display_currency,display_amount_minor,rate_mantissa,rate_scale,purpose_ref,promo_minor,idempotency_key,status,paid_at,source,evidence) VALUES($1,oxsum.default_business_id(),$2,'plan_period',1000000,'USD','USD',100,1,0,$3,0,$1::text,$4,now(),'manual',jsonb_build_object('reference',$1::text))";
@@ -76,7 +75,7 @@ async fn historical_authorization_replays_but_pending_legacy_intents_cannot_gran
         sqlx::query(insert)
             .bind(id)
             .bind(org)
-            .bind(plan.customer_plan_id)
+            .bind(plan)
             .bind(status)
             .execute(db.pool())
             .await
@@ -84,9 +83,9 @@ async fn historical_authorization_replays_but_pending_legacy_intents_cannot_gran
     }
     // This is historical database state from before the new writer fence;
     // current application APIs must never manufacture missing authority.
-    sqlx::query("UPDATE oxsum.customer_plans SET state='active',activated_at=now() WHERE customer_plan_id=$1").bind(plan.customer_plan_id).execute(db.pool()).await.unwrap();
+    sqlx::query("UPDATE oxsum.customer_plans SET state='active',activated_at=now() WHERE customer_plan_id=$1").bind(plan).execute(db.pool()).await.unwrap();
     sqlx::query("INSERT INTO oxsum.plan_periods(plan_period_id,customer_plan_id,period_index,period_start,period_end,quota_minor,authorization_kind,authorization_ref,state) VALUES($1,$2,0,now(),now()+interval '1 month',3000000,'payment_order',$3,'active')")
-        .bind(Uuid::new_v4()).bind(plan.customer_plan_id).bind(fulfilled).execute(db.pool()).await.unwrap();
+        .bind(Uuid::new_v4()).bind(plan).bind(fulfilled).execute(db.pool()).await.unwrap();
     let before: serde_json::Value =
         sqlx::query_scalar("SELECT to_jsonb(o) FROM oxsum.payment_orders o WHERE order_id=$1")
             .bind(fulfilled)
@@ -108,32 +107,24 @@ async fn historical_authorization_replays_but_pending_legacy_intents_cannot_gran
     );
     assert_eq!(before, after);
     assert_eq!(
-        db.activate_plan_period(fulfilled, plan.customer_plan_id)
+        db.activate_plan_period(fulfilled, plan)
             .await
             .unwrap()
             .customer_plan_id,
-        plan.customer_plan_id
+        plan
     );
     assert!(matches!(
-        db.activate_plan_period(pending, plan.customer_plan_id)
-            .await,
+        db.activate_plan_period(pending, plan).await,
         Err(WalletError::Conflict(_))
     ));
-    assert!(
-        db.activate_plan_period(Uuid::new_v4(), plan.customer_plan_id)
-            .await
-            .is_err()
-    );
-    assert_eq!(
-        db.plan_periods(plan.customer_plan_id).await.unwrap().len(),
-        1
-    );
+    assert!(db.activate_plan_period(Uuid::new_v4(), plan).await.is_err());
+    assert_eq!(db.plan_periods(plan).await.unwrap().len(), 1);
     assert!(db.unfulfilled_payment_orders(100).await.unwrap().is_empty());
     assert!(
         sqlx::query(insert)
             .bind(Uuid::new_v4())
             .bind(org)
-            .bind(plan.customer_plan_id)
+            .bind(plan)
             .bind("created")
             .execute(db.pool())
             .await

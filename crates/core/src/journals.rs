@@ -128,6 +128,8 @@ impl JournalLineKind {
 #[derive(Debug, Clone, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct InvoiceJournal {
+    /// Policy 1 recognizes at close; policy 2 invoices prepaid service at activation.
+    pub accounting_policy_version: i16,
     /// Local journal identifier.
     pub journal_id: Uuid,
     /// Customer plan the journal bills.
@@ -215,7 +217,7 @@ pub struct InvoiceJournalPage {
     pub next_cursor: Option<Uuid>,
 }
 
-const JOURNAL_COLS: &str = "journal_id,customer_plan_id,organization_id,business_id,\
+const JOURNAL_COLS: &str = "accounting_policy_version,journal_id,customer_plan_id,organization_id,business_id,\
      plan_period_id,period_index,state,total_minor,settled_minor,currency,\
      paid_order_id,disputed_minor,replaces_journal_id,void_reason,\
      posted_at,paid_at,voided_at,created_at,updated_at";
@@ -224,6 +226,7 @@ const LINE_COLS: &str = "line_id,journal_id,kind,amount_minor,description,source
 
 fn journal_from_row(row: &PgRow) -> Result<InvoiceJournal, WalletError> {
     Ok(InvoiceJournal {
+        accounting_policy_version: row.try_get("accounting_policy_version")?,
         journal_id: row.try_get("journal_id")?,
         customer_plan_id: row.try_get("customer_plan_id")?,
         organization_id: row.try_get("organization_id")?,
@@ -636,25 +639,30 @@ impl Db {
             )
             .await?;
         }
-        let receipt = wallet
-            .plan_journal_void_in(
-                tx,
-                &journal_id,
-                charges,
-                discount,
-                promo,
-                journal.settled_minor,
-                journal.state == JournalState::Paid,
-                on,
-            )
-            .await?;
+        let entry = if journal.accounting_policy_version == 2 {
+            self.void_daily_plan_in(tx, wallet, journal, on).await?
+        } else {
+            wallet
+                .plan_journal_void_in(
+                    tx,
+                    &journal_id,
+                    charges,
+                    discount,
+                    promo,
+                    journal.settled_minor,
+                    journal.state == JournalState::Paid,
+                    on,
+                )
+                .await?
+                .map(|r| *r.entry_id.as_uuid())
+        };
 
         sqlx::query("UPDATE oxsum.invoice_journals SET state='void',voided_at=now(),void_reason=$2,updated_at=now() WHERE journal_id=$1")
             .bind(journal_id).bind(reason).execute(&mut **tx).await?;
         self.void_statement_for_journal_in(tx, journal_id, reason)
             .await?;
         crate::plan_debt::refresh_in(tx, journal.customer_plan_id).await?;
-        Ok(receipt.map(|r| *r.entry_id.as_uuid()))
+        Ok(entry)
     }
 }
 
@@ -742,6 +750,83 @@ impl Db {
         row.as_ref().map(journal_from_row).transpose()
     }
 
+    /// Issue the v2 prepaid fee invoice without recognizing service revenue.
+    /// Activation already owns the plan and posted the original prepayment.
+    pub(crate) async fn invoice_daily_plan_in(
+        &self,
+        tx: &mut Transaction<'_, Postgres>,
+        wallet: &crate::Wallet,
+        plan: Uuid,
+        sold: &SoldPlan,
+        now: OffsetDateTime,
+    ) -> Result<(), WalletError> {
+        let row=sqlx::query("SELECT p.*,c.organization_id FROM oxsum.plan_periods p JOIN oxsum.customer_plans c USING(customer_plan_id) WHERE p.customer_plan_id=$1 AND p.state='active' ORDER BY p.period_index DESC LIMIT 1")
+            .bind(plan).fetch_one(&mut **tx).await?;
+        let period: Uuid = row.try_get("plan_period_id")?;
+        let kind: String = row.try_get("authorization_kind")?;
+        let order: Uuid = row.try_get("authorization_ref")?;
+        let existing: Option<Uuid> = sqlx::query_scalar(
+            "SELECT journal_id FROM oxsum.invoice_journals WHERE plan_period_id=$1",
+        )
+        .bind(period)
+        .fetch_optional(&mut **tx)
+        .await?;
+        if existing.is_some() {
+            return Err(WalletError::Conflict(
+                "new daily activation already has a historical invoice".into(),
+            ));
+        }
+        if kind == "payment_order" {
+            let prepaid = wallet
+                .plan_source_credit_in(
+                    tx,
+                    &format!("payment-order/{order}/prepay"),
+                    crate::wallet::UNEARNED_PLAN_FEES,
+                )
+                .await?;
+            if prepaid != sold.price_minor {
+                return Err(WalletError::Conflict(
+                    "daily activation requires its exact original prepayment".into(),
+                ));
+            }
+        } else if sold.price_minor != 0 {
+            return Err(invalid("a complimentary daily period must be free"));
+        }
+        let journal = Uuid::new_v4();
+        sqlx::query("INSERT INTO oxsum.invoice_journals(journal_id,customer_plan_id,organization_id,business_id,plan_period_id,period_index,state,total_minor,settled_minor,currency,accounting_policy_version) VALUES($1,$2,$3,$4,$5,$6,'draft',$7,0,$8,2)")
+            .bind(journal).bind(plan).bind(row.try_get::<Uuid,_>("organization_id")?).bind(sold.business_id).bind(period).bind(row.try_get::<i32,_>("period_index")?).bind(sold.price_minor).bind(&sold.currency).execute(&mut **tx).await?;
+        insert_line_in(
+            tx,
+            journal,
+            JournalLineKind::BaseFee,
+            sold.price_minor,
+            "Prepaid service fee; income follows completed UTC service days",
+            Some(period),
+        )
+        .await?;
+        sqlx::query("UPDATE oxsum.invoice_journals SET state='posted',settled_minor=$2,posted_at=now() WHERE journal_id=$1").bind(journal).bind(sold.price_minor).execute(&mut **tx).await?;
+        sqlx::query("UPDATE oxsum.invoice_journals SET state='paid',paid_order_id=$2,paid_at=now() WHERE journal_id=$1").bind(journal).bind((kind=="payment_order").then_some(order)).execute(&mut **tx).await?;
+        let journal = journal_in(tx, journal)
+            .await?
+            .ok_or_else(|| invalid("daily journal did not land"))?;
+        self.initialize_plan_accounting_in(tx, &journal, sold.plan_version_id, now.date())
+            .await?;
+        self.issue_statement_for_journal_in(
+            tx,
+            &journal,
+            Some(row.try_get("period_start")?),
+            Some(row.try_get("period_end")?),
+        )
+        .await?;
+        if sold.price_minor > 0 {
+            self.reconcile_statement_for_journal_in(tx, &journal, order, sold.price_minor)
+                .await?;
+        }
+        self.recognize_plan_period_in(tx, wallet, journal.journal_id, now, now.date())
+            .await?;
+        Ok(())
+    }
+
     /// Writes the journal a closing plan period bills — the one writer every
     /// close path shares (`plan_rollover_in`'s cancel/change/past-due arms and
     /// `activate_plan_period`'s renewal arm). The journal lands `draft` and
@@ -781,8 +866,22 @@ impl Db {
     ) -> Result<Option<Uuid>, WalletError> {
         let customer_plan_id: Uuid = plan_row.try_get("customer_plan_id")?;
         let organization_id: Uuid = plan_row.try_get("organization_id")?;
-        // Already billed? The partial unique makes the close idempotent — a
-        // replayed rollover or a second writer finds the standing journal.
+        // An immutable v2 accounting period owns its original invoice even
+        // after a financial void. Closing must never create a replacement fee.
+        let accounted: Option<Uuid> = sqlx::query_scalar(
+            "SELECT journal_id FROM oxsum.plan_accounting_periods WHERE plan_period_id=$1",
+        )
+        .bind(period.plan_period_id)
+        .fetch_optional(&mut **tx)
+        .await?;
+        if let Some(journal) = accounted {
+            let now: OffsetDateTime = sqlx::query_scalar("SELECT clock_timestamp()")
+                .fetch_one(&mut **tx)
+                .await?;
+            self.recognize_plan_period_in(tx, wallet, journal, now, on)
+                .await?;
+            return Ok(None);
+        }
         let existing: Option<Uuid> = sqlx::query_scalar(
             "SELECT journal_id FROM oxsum.invoice_journals \
              WHERE customer_plan_id=$1 AND period_index=$2 AND state <> 'void'",
@@ -793,6 +892,11 @@ impl Db {
         .await?;
         if existing.is_some() {
             return Ok(None);
+        }
+        if sold.accounting_policy_version == 2 {
+            return Err(WalletError::Conflict(
+                "daily period lacks its original activation invoice".into(),
+            ));
         }
 
         let mut lines: Vec<PendingLine> = Vec::new();
@@ -1278,6 +1382,26 @@ impl Db {
                 on,
             )
             .await?;
+        if let Some(period) = crate::plan_recognition::period_in(tx, journal.journal_id).await? {
+            let entry = *crate::entry_id_for(&format!("dispute-recharge/{dispute_id}")).as_uuid();
+            crate::plan_recognition::effect_in(
+                tx,
+                &period,
+                "dispute",
+                dispute_id,
+                on,
+                on,
+                Some(entry),
+                &crate::plan_recognition::Effect {
+                    collected: -receivable,
+                    receivable,
+                    payable: -payable,
+                    cash: -amount_minor,
+                    ..crate::plan_recognition::Effect::default()
+                },
+            )
+            .await?;
+        }
         if receivable > 0 {
             sqlx::query("UPDATE oxsum.invoice_journals SET state='posted',settled_minor=settled_minor-$2,paid_at=NULL,disputed_minor=disputed_minor+$2,updated_at=now() WHERE journal_id=$1")
                 .bind(journal.journal_id).bind(receivable).execute(&mut **tx).await?;

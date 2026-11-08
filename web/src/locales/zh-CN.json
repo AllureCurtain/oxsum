@@ -1383,7 +1383,10 @@
     "howItWorks": "套餐说明",
     "note1": "套餐周期仅在支付授权后激活——计时器本身不会开启周期。",
     "note2": "已排期的变更在下个边界生效,不会在周期中途变更。",
-    "note3": "取消后已支付的内容继续有效,只是停止续订。"
+    "note3": "取消后已支付的内容继续有效,只是停止续订。",
+    "recognitionPolicy": "收入确认政策",
+    "policyV1": "期末确认（v1）",
+    "policyV2": "按已完成 UTC 服务日确认（v2）"
   },
   "billing": {
     "title": "账单",
@@ -1726,10 +1729,13 @@
         "ratedMinor": "费率价",
         "entitlementMinor": "权益",
         "fundingMinor": "入金",
-        "earnedMinor": "应收",
+        "earnedMinor": "已确认收入",
         "collectedMinor": "已收",
         "refundMinor": "已退",
-        "receivableMinor": "应收款"
+        "receivableMinor": "应收款",
+        "billedMinor": "净开票金额",
+        "deferredMinor": "递延收入变动",
+        "discountMinor": "非现金折让"
       },
       "basis": {
         "realAttempt": "真实尝试",
@@ -1754,7 +1760,10 @@
       "period": "周期",
       "exceptions": "异常",
       "finished": "完成",
-      "noRuns": "暂无对账运行。"
+      "noRuns": "暂无对账运行。",
+      "basisBooking": "记账日期",
+      "basisService": "服务日期",
+      "basisPayment": "收款归属日期"
     },
     "exceptions": {
       "title": "异常",
