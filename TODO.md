@@ -4,20 +4,20 @@ Updated: 2026-11-09
 
 ## In progress
 
-- [ ] [#894](https://github.com/AllureCurtain/oxsum/issues/894) — Record focused validation defaults, changed-crate strict Clippy and reuse of unchanged results after rebase; documentation review pending.
+- [x] [#894](https://github.com/AllureCurtain/oxsum/issues/894) — Record focused validation defaults, changed-crate strict Clippy and reuse of unchanged results after rebase; integrated in PR #895 (`397d07b0`).
 
 - [x] [#891](https://github.com/AllureCurtain/oxsum/issues/891) — Fix concurrent statement/period evidence descriptor publication after main CI exposed a non-arbiter unique-index race; five focused core checks, core-only strict Clippy and independent source review passed; integrated in PR #893 (`dcd226c6`).
 
 - [x] [#876](https://github.com/AllureCurtain/oxsum/issues/876) — Offline consumer retained scope, separate price/sale verdicts and original JSON preservation; eight real-SDK/transport groups and v13/v14/v2 export rejection matrices passed. Independent review passed; integrated in PR #889 (`5d70ef34`).
 
-- [ ] [#872](https://github.com/AllureCurtain/oxsum/issues/872) — Prepared portal and embedded pilot kits, shared exact-candidate intake and independent participant result template; independent review and 28 local-link checks passed; PR integration pending. No participants or external contact.
+- [x] [#872](https://github.com/AllureCurtain/oxsum/issues/872) — Prepared portal and embedded pilot kits, shared exact-candidate intake and independent participant result template; independent review and 28 local-link checks passed; integrated in PR #874 (`e36d4303`). Actual independent pilots remain; no participants or external contact.
 
 - [x] [#873](https://github.com/AllureCurtain/oxsum/issues/873) — Complete quota/cache evidence under a bounded 16,384-character description: baseline reproduced, 2,047 full workspace, 521 engine, 29 engine doc, 94 native verifier and ten actual-WASM groups passed; strict Clippy, frontend and independent review passed. Integrated in PR #890 (`134a4aae`); admission validation follows in #849.
 
 - [ ] [#875](https://github.com/AllureCurtain/oxsum/issues/875) — Bound configured and response-time gateway evidence before execution so arbitrary guardrail results cannot exceed the receipt budget; required before customer readiness/acceptance. #873 covers known valid composed evidence only.
 
 - [x] [#867](https://github.com/AllureCurtain/oxsum/issues/867) — Prevent a current wallet reopen from reapplying ledger DDL over an active settlement; baseline lock failure reproduced, 37 focused, 519 engine, 29 engine doc and 2,042 complete workspace checks passed. Strict Clippy, formatting and independent source review passed; integrated in PR #870 (`f89fcb65`).
-- [ ] [#869](https://github.com/AllureCurtain/oxsum/issues/869) — Durable bounded provider harness; 15 boundary tests and complete local whole/SSE/offline fixture passed; independent source review passed; PR integration and actual priced provider calls remain.
+- [x] [#869](https://github.com/AllureCurtain/oxsum/issues/869) — Durable bounded provider harness; 15 boundary tests and complete local whole/SSE/offline fixture passed; independent source review passed; integrated in PR #871 (`2c2a739d`). Actual provider calls remain 0/5, CNY 0; candidate acceptance remains.
 
 
 - [x] [#862](https://github.com/AllureCurtain/oxsum/issues/862) — Pool exhaustion deadline regression integrated in PR #864 (`e53e303a`); 17 PostgreSQL fault checks, strict Clippy and independent review passed.
@@ -35,7 +35,7 @@ Updated: 2026-11-09
 - [x] [#856](https://github.com/AllureCurtain/oxsum/issues/856) — Shared borrowed ledger verification and transaction reads in PR #860: nine focused PostgreSQL checks, 2,012 complete workspace passes, strict Clippy, formatting and three independent reviews passed. Integrated in PR #860 (`4fc5581a`); parent refund/reconciliation/admission work remains.
 
 
-- [ ] [#848](https://github.com/AllureCurtain/oxsum/issues/848) — Independent source/ledger comparisons, immutable attempts and explicit coverage in progress on integrated shared reader #856; migration 0117 follows #841/#849. N11 remains open.
+- [ ] [#848](https://github.com/AllureCurtain/oxsum/issues/848) — Independent source/ledger comparisons, immutable attempts and explicit coverage: 22 new source/fault cases, 49 related core/upgrade checks, seven HTTP checks and 2,098 complete workspace checks passed; changed-crate strict Clippy, frontend and independent review passed. Protected PR integration pending; browser/candidate N11 acceptance remains. [Evidence](docs/roadmap/operator-launch/evidence/independent-reconciliation.md).
 
 - [x] [#838](https://github.com/AllureCurtain/oxsum/issues/838) — Versioned daily recognition, paid-activation invoices and durable captured evidence integrated in PR #851 (`b3eb063a`): 1,995 complete workspace checks, 25 new accounting/fault checks, 49 HTTP, 12 upgrade, 93 verifier and strict Clippy/wasm passed. Independent runtime reconciliation remains #848.
 
@@ -46,7 +46,7 @@ Updated: 2026-11-09
 
 - [x] [#843](https://github.com/AllureCurtain/oxsum/issues/843) — N09.a: Actor-scoped business setup integrated in PR #845 (`df4ad4f`); 1,950 full workspace tests, 25 focused checks, strict Clippy, frontend/contract checks and independent review passed. Customer readiness and first-call proof remain.
 
-- [ ] [#849](https://github.com/AllureCurtain/oxsum/issues/849) — Atomic funded/free admission and recovery: 23 targeted regressions, 248 related integration checks and 2,070 complete workspace checks passed; changed-crate strict Clippy, frontend contract/build and two independent source reviews passed. PR #892 rebased onto integrated #891 with unchanged admission source; protected integration pending. #854/#859/#875 remain before customer readiness.
+- [x] [#849](https://github.com/AllureCurtain/oxsum/issues/849) — Atomic funded/free admission and recovery: 23 targeted regressions, 248 related integration checks and 2,070 complete workspace checks passed; changed-crate strict Clippy, frontend contract/build and two independent source reviews passed. Integrated in PR #892 (`7e2c6216`), including #891; post-merge CI `42558914887` passed. #854/#859/#875 remain before customer readiness.
 
 - [ ] [#854](https://github.com/AllureCurtain/oxsum/issues/854) — Follow #849 with the lazy cancellation boundary regression: a plan cancelled during admission must not draw the ended period's quota; preserve serving past-due remainder policy.
 
@@ -81,9 +81,9 @@ Updated: 2026-11-09
 - [ ] [#732](https://github.com/AllureCurtain/oxsum/issues/732) — N06: Pinned Hyperswitch sandbox integrated (#762); merchant configuration UI, checkout selection and HTTPS/automatic callback acceptance remain.
 - [x] [#733](https://github.com/AllureCurtain/oxsum/issues/733) — N07: Customer invitation history, explicit local SMTP delivery and registration controls integrated (#781); browser journey acceptance remains.
 - [x] [#734](https://github.com/AllureCurtain/oxsum/issues/734) — N08: Email-bound staff invitations and role lifecycle integrated (#782); focused authority/mail tests passed, browser journey acceptance remains.
-- [ ] [#735](https://github.com/AllureCurtain/oxsum/issues/735) — N09: Business readiness #843 integrated in PR #845 (`df4ad4f`); customer readiness still uses legacy admin-token/positive-wallet/report-link conditions. Fix admission #849, then add permitted model/key/funding and immediate first-call proof.
+- [ ] [#735](https://github.com/AllureCurtain/oxsum/issues/735) — N09: Business readiness #843 integrated in PR #845 (`df4ad4f`); customer readiness still uses legacy admin-token/positive-wallet/report-link conditions. Admission #849 is integrated; finish #854/#859/#875, then add permitted model/key/funding and immediate first-call proof.
 - [ ] [#736](https://github.com/AllureCurtain/oxsum/issues/736) — N10: Payment/refund authority and recovery repairs integrated; explicit statement repayment, remaining conservation fixes and complete commercial journeys remain.
-- [ ] [#737](https://github.com/AllureCurtain/oxsum/issues/737) — N11: Daily policy, source-linked corrections, financial reports and captured evidence validated in PR #851 with 1,995 complete workspace checks. Normal integration, independent runtime ledger reconciliation #848 and browser/candidate acceptance remain.
+- [ ] [#737](https://github.com/AllureCurtain/oxsum/issues/737) — N11: Daily policy and captured evidence are integrated in PR #851. Independent runtime comparison #848 passed 2,098 complete workspace checks and source review; protected integration and browser/candidate acceptance remain.
 - [ ] [#738](https://github.com/AllureCurtain/oxsum/issues/738) — N12: Complete evidence delivery, retained trust inputs and candidate offline-verifier acceptance using the existing verifier foundations.
 - [ ] [#739](https://github.com/AllureCurtain/oxsum/issues/739) — N13: Candidate byte/provenance gate integrated (#753); original-byte image promotion integrated (#806); digest deployment tooling integrated (#813); original SDK publication integrated (#816); actual candidate deployment/rollback rehearsal remains.
 - [ ] [#740](https://github.com/AllureCurtain/oxsum/issues/740) — N14: Real-provider certification remains; DeepSeek shared budget records 0/5 attempts and CNY 0.
