@@ -252,11 +252,6 @@ impl Db {
             crate::nonplan_chargebacks::effect_in(&mut tx, wallet, dispute_id)
                 .await?
                 .ok_or_else(review)?;
-            if resolution != DisputeResolution::Lost {
-                return Err(WalletError::Conflict(
-                    "corrected historical dispute retains its lost outcome".into(),
-                ));
-            }
             if let Some(audit)=sqlx::query("SELECT target,actor_user_id,detail FROM oxsum.finance_audit WHERE business_id=$1 AND action='dispute.resolve' AND idempotency_key=$2")
                 .bind(business).bind(idempotency_key).fetch_optional(&mut *tx).await? {
                 let detail:serde_json::Value=audit.try_get("detail")?;
@@ -266,6 +261,15 @@ impl Db {
                     || detail.get("reason").and_then(serde_json::Value::as_str).map(str::trim)!=reason {
                     return Err(WalletError::Conflict("dispute key names different request terms".into()));
                 }
+                // An earlier exact request still replays the current standing;
+                // it does not move the corrected terminal outcome backwards.
+                tx.commit().await?;
+                return Ok(dispute);
+            }
+            if resolution != DisputeResolution::Lost {
+                return Err(WalletError::Conflict(
+                    "corrected historical dispute retains its lost outcome".into(),
+                ));
             }
             tx.commit().await?;
             return Ok(dispute);

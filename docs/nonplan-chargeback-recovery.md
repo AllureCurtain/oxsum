@@ -59,4 +59,7 @@ terminal outcome, original audit and debt history remain intact.
 Reports continue to distinguish gross receipts and refunds from chargebacks.
 The dispute's `cashCorrection` names the original wrong entry, correction, both
 Cash components, retained credit benefit, original Wallet allocation and review
-suspense. Null means no verified correction, not that the old entry was correct.
+suspense. Null means no retained correction, not that the old entry was correct.
+The read projection does not independently reverify ledger or provider evidence.
+An exact earlier resolution request still replays the current corrected `lost`
+standing; it does not transition the dispute back to the earlier outcome.
