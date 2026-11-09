@@ -12196,7 +12196,7 @@ components:
         maxConcurrentHolds: { type: [integer, "null"], minimum: 1, description: "the key's outstanding-holds cap; null is uncapped" }
         tokensPerMinute: { type: [integer, "null"], minimum: 1, description: "the key's rolling-minute settled-token allowance; null is uncapped" }
         tokensPerMinuteScopes: { $ref: "#/components/schemas/TokensPerMinuteScopes" }
-        requiredPolicies: { type: [array, "null"], maxItems: 8, uniqueItems: true, items: { type: string }, description: "the guardrail policies the key's turns must run; null requires none" }
+        requiredPolicies: { type: [array, "null"], items: { type: string }, description: "the retained guardrail policies the key's turns must run; null requires none. New writes and effective turn unions are limited to eight distinct names; historical oversized lists remain readable." }
         groupId: { type: [string, "null"], format: uuid, description: "the request group the key belongs to (issue #508); a grouped key reaches only its group's channels, null reaches every channel" }
     RequestGroupChannel:
       type: object
@@ -12231,7 +12231,7 @@ components:
       description: v15 settlement commitment to a complete reason omitted from inline JSON. Hashes exact UTF-8 bytes; a proof without full text does not establish reason matching or policy correctness.
       properties:
         sha256: { type: string, pattern: '^[0-9a-f]{64}$' }
-        utf8Bytes: { type: integer, format: int64, minimum: 1 }
+        utf8Bytes: { type: integer, format: int64, minimum: 1, maximum: 9223372036854775807 }
     GuardrailPolicy:
       type: object
       required: [name, kind, config, createdAt]
@@ -12246,7 +12246,7 @@ components:
       required: [kind, config]
       properties:
         kind: { type: string, enum: [keyword, pii, moderation] }
-        config: { type: object, description: "the kind's own shape — `keyword`: `{patterns: [{re, action}]}`; `pii`: `{}`; `moderation`: `{endpoint, timeoutMs?}`" }
+        config: { type: object, description: "the kind's own shape — keyword has 1–64 patterns, each regex at most 4096 UTF-8 bytes and action flag or block; pii is the empty object; moderation is {endpoint, timeoutMs?}, with a 65536-byte response-body limit and a maximum ten-second deadline. An existing bound keyword configuration exceeding these limits refuses admission." }
         apiKey: { type: string, description: "the `moderation` kind's bearer, sealed on write and never echoed; absent keeps a stored bearer, required on the first write of a moderation policy that screens" }
     GuardrailBinding:
       type: object
@@ -12322,7 +12322,7 @@ components:
         keyId: { type: string, format: uuid, description: "the key this delegates" }
         capMinor: { type: integer, format: int64, minimum: 1, description: "total committed spend this mandate may carry, in minor units" }
         models: { type: [array, "null"], items: { type: string }, description: "the model allowlist — a subset of the key's own; null means all the key serves" }
-        requiredPolicies: { type: [array, "null"], maxItems: 8, uniqueItems: true, items: { type: string }, description: "the guardrail policies this mandate requires — a subset of the key's own; null means all the key requires (issue #502)" }
+        requiredPolicies: { type: [array, "null"], items: { type: string }, description: "the retained guardrail policies this mandate requires — a subset of the key's own; null means all the key requires (issue #502). Historical oversized lists remain readable; effective turn unions are limited to eight distinct names." }
         notBefore: { type: string, format: date-time }
         notAfter: { type: string, format: date-time, description: "when the mandate expires — there is no revocation, so mandates are short-lived" }
         nonce: { type: string, description: "uniqueness; hex of 16 random bytes" }
@@ -13840,8 +13840,14 @@ components:
           type: string
           description: >
             why the turn refused or errored, when the settlement recorded a
-            reason — the caller-facing words the answer already carried; absent
-            on a clean settle
+            complete inline reason — the caller-facing words the answer already
+            carried. Absent on a clean settle or when v15 carries a commitment.
+        failureReasonCommitment:
+          $ref: "#/components/schemas/ReasonCommitment"
+          description: >
+            v15 identity of the complete failure reason retained separately;
+            exclusive with failureReason. This projection reads the immutable
+            entry and does not claim the full text was independently compared.
         kind:
           type: string
           enum: [usage, estimated, client_cancelled, upstream_error, upstream_unreachable, capped, swept, unpriced, released, refused]

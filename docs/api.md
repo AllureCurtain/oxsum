@@ -824,3 +824,8 @@ lists and bindings permit at most eight distinct names; their effective union
 is also checked before execution. A complete reason larger than 256 encoded
 UTF-8 JSON bytes is represented exclusively by `reasonCommitment` with SHA-256
 and UTF-8 length. Prior settlement versions remain readable.
+The ledger-backed `BillingRecord` carries `failureReason` for complete inline
+text or `failureReasonCommitment` for a long reason. These fields are exclusive;
+the read projection does not claim separately retained full text was verified.
+Keyword configuration permits 1–64 patterns, each regex at most 4,096 UTF-8 bytes.
+Moderation bodies are limited to 65,536 bytes within the existing deadline.
