@@ -11,6 +11,18 @@ use crate::financial_reconciliation::{ledger, types};
 use crate::{WalletError, error};
 
 pub(super) fn compare(customer: &mut Customer<'_>) -> Result<(), WalletError> {
+    let excluded = match super::super::source_voids::excluded(&customer.sources, &customer.ledger) {
+        Ok(excluded) => excluded,
+        Err(_) => {
+            customer.unsupported(
+                "statement_source_voids",
+                customer.organization,
+                "sourceVoidProof",
+                "Statement source reversal differs from canonical void or original line ownership",
+            );
+            return Ok(());
+        }
+    };
     let statements: Vec<_> = customer
         .sources
         .table("plan_statements")
@@ -36,6 +48,10 @@ pub(super) fn compare(customer: &mut Customer<'_>) -> Result<(), WalletError> {
             .values()
             .filter(|line| line.id("statement_id").ok() == Some(statement))
             .cloned()
+            .collect();
+        let lines: Vec<_> = lines
+            .into_iter()
+            .filter(|line| !excluded.contains(&line.id("line_id").unwrap_or_default()))
             .collect();
         let mut reversed = BTreeSet::new();
         let mut reversal_lines = BTreeSet::new();
@@ -202,8 +218,9 @@ pub(super) fn compare(customer: &mut Customer<'_>) -> Result<(), WalletError> {
                 .row
                 .try_get::<Option<i32>, _>("period_index")?
                 .is_some();
-            if state != "void" && original_document {
-                let mut expected_payments = payment_sources_for(customer, &journal)?;
+            if state != "void" && original_document && journal.text("state")? != "void" {
+                let mut expected_payments =
+                    payment_sources_for(&customer.sources, &customer.ledger, &journal)?;
                 expected_payments.retain(|_, amount| *amount != 0);
                 payment_sources.retain(|_, amount| *amount != 0);
                 if payment_sources != expected_payments {
@@ -284,6 +301,7 @@ pub(super) fn compare(customer: &mut Customer<'_>) -> Result<(), WalletError> {
         .table("statement_payment_effects")
         .values()
         .any(|e| e.amount("receivable_minor").is_ok_and(|v| v > 0))
+        || !customer.sources.table("statement_source_voids").is_empty()
     {
         if let Some(mapping) =
             super::super::debt_sources::map_documents(&customer.sources, &customer.ledger)?
@@ -350,14 +368,15 @@ fn category(kind: &str) -> &str {
     }
 }
 
-fn payment_sources_for(
-    customer: &Customer<'_>,
+pub(in crate::financial_reconciliation) fn payment_sources_for(
+    sources: &crate::financial_reconciliation::sources::Sources,
+    ledger: &crate::financial_reconciliation::ledger::Ledger,
     journal: &Source,
 ) -> Result<BTreeMap<Option<Uuid>, i64>, WalletError> {
     let id = journal.id("journal_id")?;
     let period = journal
         .optional_id("plan_period_id")?
-        .and_then(|id| customer.sources.get("plan_periods", id));
+        .and_then(|id| sources.get("plan_periods", id));
     let mut expected = BTreeMap::new();
     if let Some(period) = period
         && period.text("authorization_kind")? == "payment_order"
@@ -372,13 +391,10 @@ fn payment_sources_for(
             )
         };
         let source = BTreeSet::from([*crate::entry_id_for(&key).as_uuid()]);
-        expected.insert(
-            Some(order),
-            types::sub(0, customer.ledger.net(&source, path)?)?,
-        );
+        expected.insert(Some(order), types::sub(0, ledger.net(&source, path)?)?);
     }
     let suffix = format!("/journal/{id}");
-    for (entry_id, entry) in &customer.ledger.entries {
+    for (entry_id, entry) in &ledger.entries {
         let Some(order) = entry
             .key()
             .and_then(|key| std::str::from_utf8(key).ok())
@@ -388,13 +404,11 @@ fn payment_sources_for(
         else {
             continue;
         };
-        let paid = customer
-            .ledger
-            .net(&BTreeSet::from([*entry_id]), ledger::RECEIVABLE)?;
+        let paid = ledger.net(&BTreeSet::from([*entry_id]), ledger::RECEIVABLE)?;
         let previous = expected.get(&Some(order)).copied().unwrap_or(0);
         expected.insert(Some(order), types::sub(previous, paid)?);
     }
-    for effect in customer.sources.table("plan_refund_effects").values() {
+    for effect in sources.table("plan_refund_effects").values() {
         if effect.optional_id("journal_id")? == Some(id) {
             let amount = types::add(
                 effect.amount("earned_minor")?,
@@ -405,7 +419,7 @@ fn payment_sources_for(
             expected.insert(note, types::add(previous, amount)?);
         }
     }
-    if let Some(correction) = customer.sources.get("plan_usage_corrections", id) {
+    if let Some(correction) = sources.get("plan_usage_corrections", id) {
         expected.insert(
             Some(correction.id("correction_id")?),
             correction.amount("payable_minor")?,

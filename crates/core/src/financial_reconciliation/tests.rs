@@ -2325,3 +2325,366 @@ async fn statement_repayment_status_without_authenticated_cash_never_settles_deb
     payment::fulfill(&w.db, &order).await;
     clean(&capture(&w, TimeBasis::Booking).await);
 }
+
+async fn mixed_void_world(daily_first: bool) -> Option<(World, Uuid, Uuid)> {
+    let w = world(40, true).await?;
+    let current = w.db.customer_plan(w.org).await.unwrap().unwrap();
+    let old =
+        w.db.sold_plan(current.plan_version_id)
+            .await
+            .unwrap()
+            .unwrap();
+    let version =
+        w.db.publish_sold_plan(
+            old.business_id,
+            &NewSoldPlan {
+                plan_id: Some(old.plan_id),
+                name: old.name,
+                price_minor: FEE,
+                currency: "USD".into(),
+                quota_minor: Some(10_000_000),
+                period_kind: PeriodKind::Anniversary,
+                overage_enabled: true,
+                sort_order: 0,
+            },
+        )
+        .await
+        .unwrap();
+    w.db.schedule_customer_plan_change(w.org, version.plan_version_id)
+        .await
+        .unwrap();
+    w.db.rollover_due_subscriptions().await.unwrap();
+    let daily = payment::created_order(&w.db, &w.context, w.org, w.plan).await;
+    payment::mark_paid(&w.db, &w.context, &daily).await;
+    w.db.activate_plan_period(daily.order_id, w.plan)
+        .await
+        .unwrap();
+    let journal =
+        w.db.plan_journals(w.org, None, 50)
+            .await
+            .unwrap()
+            .journals
+            .into_iter()
+            .find(|j| j.accounting_policy_version == 2)
+            .unwrap()
+            .journal_id;
+    let (first, second) = if daily_first {
+        (&daily, &w.order)
+    } else {
+        (&w.order, &daily)
+    };
+    lost(&w, first).await;
+    lost(&w, second).await;
+    clean(&capture(&w, TimeBasis::Booking).await);
+    let statement = unpaid_statement(&w).await;
+    Some((w, journal, statement))
+}
+
+#[tokio::test]
+async fn mixed_source_void_preserves_other_debt_and_exact_return_ownership() {
+    let _guard = TEST_LOCK.lock().await;
+    for daily_first in [false, true] {
+        for paid in [0, 1_000_000, 2 * FEE] {
+            let Some((w, daily, statement)) = mixed_void_world(daily_first).await else {
+                return;
+            };
+            let target = if daily_first { daily } else { w.journal };
+            let other = if daily_first { w.journal } else { daily };
+            let order = if paid > 0 {
+                let order = statement_order(&w, statement, Some(paid)).await;
+                payment::mark_paid(&w.db, &w.context, &order).await;
+                payment::fulfill(&w.db, &order).await;
+                Some(order)
+            } else {
+                None
+            };
+            let before = capture(&w, TimeBasis::Booking).await;
+            clean(&before);
+            let cash_before = source_void_cash(&w).await;
+            sqlx::query("UPDATE oxsum.plan_statements SET due_at=now()-interval '100 days',state=CASE WHEN state='issued' THEN 'past_due' ELSE state END WHERE statement_id=$1").bind(statement).execute(w.db.pool()).await.unwrap();
+            let other_before =
+                w.db.business_journal(&w.owner, other)
+                    .await
+                    .unwrap()
+                    .unwrap()
+                    .journal;
+            let key = Uuid::new_v4().to_string();
+            w.db.void_invoice_journal(
+                &w.owner,
+                &w.wallet,
+                target,
+                "source-specific correction",
+                &key,
+                OffsetDateTime::now_utc().date(),
+            )
+            .await
+            .unwrap();
+            let size = w.wallet.log_size().await.unwrap();
+            w.db.void_invoice_journal(
+                &w.owner,
+                &w.wallet,
+                target,
+                "source-specific correction",
+                &key,
+                OffsetDateTime::now_utc().date(),
+            )
+            .await
+            .unwrap();
+            assert_eq!(w.wallet.log_size().await.unwrap(), size);
+            let after = capture(&w, TimeBasis::Booking).await;
+            clean(&after);
+            let other_after =
+                w.db.business_journal(&w.owner, other)
+                    .await
+                    .unwrap()
+                    .unwrap()
+                    .journal;
+            assert_eq!(other_after.total_minor, other_before.total_minor);
+            assert_eq!(other_after.settled_minor, other_before.settled_minor);
+            assert_eq!(other_after.state, other_before.state);
+            let remaining = FEE - other_before.settled_minor;
+            let document =
+                w.db.plan_statement(w.org, statement)
+                    .await
+                    .unwrap()
+                    .unwrap()
+                    .statement;
+            assert_ne!(document.state, crate::PlanStatementState::Void);
+            assert_eq!(document.total_minor - document.paid_minor, remaining);
+            assert_eq!(after.actual.receivable_minor, remaining);
+            assert_eq!(source_void_cash(&w).await, cash_before);
+            let suspended:bool=sqlx::query_scalar("SELECT dunning_suspended_at IS NOT NULL FROM oxsum.customer_plans WHERE customer_plan_id=$1").bind(w.plan).fetch_one(w.db.pool()).await.unwrap();
+            assert_eq!(suspended, remaining > 0);
+            if remaining > 0 {
+                let quote =
+                    w.db.statement_payment_quote(&debt_principal(&w).await, statement, None)
+                        .await
+                        .unwrap();
+                assert_eq!(
+                    quote
+                        .terms
+                        .unwrap()
+                        .allocations
+                        .iter()
+                        .map(|a| a.journal_id)
+                        .collect::<Vec<_>>(),
+                    vec![other]
+                );
+            }
+            if let Some(order) = order {
+                refund_order_on(&w, &order, paid, OffsetDateTime::now_utc().date()).await;
+                clean(&capture(&w, TimeBasis::Booking).await);
+                let effects=sqlx::query_as::<_,(Uuid,i64,i64,i64)>("SELECT journal_id,receivable_minor,payable_minor,suspense_minor FROM oxsum.statement_payment_effects WHERE order_id=$1 AND kind='refund'").bind(order.order_id).fetch_all(w.db.pool()).await.unwrap();
+                for (journal, ar, payable, suspense) in effects {
+                    assert_eq!(suspense, 0);
+                    if journal == target {
+                        assert_eq!(ar, 0);
+                        assert!(payable > 0)
+                    } else {
+                        assert_eq!(payable, 0);
+                        assert!(ar > 0)
+                    }
+                }
+                lost(&w, &order).await;
+                clean(&capture(&w, TimeBasis::Booking).await);
+            }
+            w.db.void_invoice_journal(
+                &w.owner,
+                &w.wallet,
+                other,
+                "second source correction",
+                &Uuid::new_v4().to_string(),
+                OffsetDateTime::now_utc().date(),
+            )
+            .await
+            .unwrap();
+            clean(&capture(&w, TimeBasis::Booking).await);
+            assert_eq!(
+                w.db.plan_statement(w.org, statement)
+                    .await
+                    .unwrap()
+                    .unwrap()
+                    .statement
+                    .state,
+                crate::PlanStatementState::Void
+            );
+        }
+    }
+}
+
+#[tokio::test]
+async fn mixed_source_void_fences_other_source_intents_and_rolls_back_all_evidence() {
+    let _guard = TEST_LOCK.lock().await;
+    let Some((w, daily, statement)) = mixed_void_world(false).await else {
+        return;
+    };
+    let quoted = statement_order(&w, statement, Some(1)).await;
+    let reserved = quoted.statement_payment.as_ref().unwrap().allocations[0].journal_id;
+    let unreserved = if reserved == daily { w.journal } else { daily };
+    let size = w.wallet.log_size().await.unwrap();
+    assert!(
+        matches!(w.db.void_invoice_journal(&w.owner,&w.wallet,unreserved,"other slice still reserved",&Uuid::new_v4().to_string(),OffsetDateTime::now_utc().date()).await,Err(WalletError::Conflict(message)) if message.contains("affected statement"))
+    );
+    assert_eq!(w.wallet.log_size().await.unwrap(), size);
+    payment::mark_paid(&w.db, &w.context, &quoted).await;
+    payment::fulfill(&w.db, &quoted).await;
+    let size = w.wallet.log_size().await.unwrap();
+    let original =
+        w.db.plan_statement(w.org, statement)
+            .await
+            .unwrap()
+            .unwrap()
+            .statement;
+    let constraint = format!("fixture_void_{}", Uuid::new_v4().simple());
+    sqlx::query(&format!("ALTER TABLE oxsum.statement_source_voids ADD CONSTRAINT {constraint} CHECK(journal_id<>'{unreserved}'::uuid) NOT VALID")).execute(w.db.pool()).await.unwrap();
+    let failed =
+        w.db.void_invoice_journal(
+            &w.owner,
+            &w.wallet,
+            unreserved,
+            "fault rollback",
+            &Uuid::new_v4().to_string(),
+            OffsetDateTime::now_utc().date(),
+        )
+        .await;
+    sqlx::query(&format!(
+        "ALTER TABLE oxsum.statement_source_voids DROP CONSTRAINT {constraint}"
+    ))
+    .execute(w.db.pool())
+    .await
+    .unwrap();
+    assert!(failed.is_err());
+    assert_eq!(w.wallet.log_size().await.unwrap(), size);
+    let after =
+        w.db.plan_statement(w.org, statement)
+            .await
+            .unwrap()
+            .unwrap()
+            .statement;
+    assert_eq!(
+        (after.total_minor, after.paid_minor),
+        (original.total_minor, original.paid_minor)
+    );
+    clean(&capture(&w, TimeBasis::Booking).await);
+    let bundle =
+        w.db.mint_statement_evidence(&w.wallet, w.org, &w.tenant, statement, false, None)
+            .await
+            .unwrap();
+    let retained =
+        w.db.evidence_bundle_json(bundle.bundle_id)
+            .await
+            .unwrap()
+            .unwrap();
+    w.db.void_invoice_journal(
+        &w.owner,
+        &w.wallet,
+        unreserved,
+        "confirmed source correction",
+        &Uuid::new_v4().to_string(),
+        OffsetDateTime::now_utc().date(),
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        w.db.evidence_bundle_json(bundle.bundle_id)
+            .await
+            .unwrap()
+            .unwrap(),
+        retained
+    );
+    let yesterday = OffsetDateTime::now_utc().date() - Duration::days(1);
+    let export =
+        w.db.mint_period_evidence(
+            &w.wallet, w.org, &w.tenant, yesterday, yesterday, false, None,
+        )
+        .await
+        .unwrap();
+    let bytes =
+        w.db.evidence_bundle_json(export.bundle_id)
+            .await
+            .unwrap()
+            .unwrap();
+    let text = std::str::from_utf8(&bytes).unwrap();
+    oxsum_verify::verify_evidence_bundle(
+        text,
+        &format!("tenant-{}", w.tenant),
+        &w.org.to_string(),
+        None,
+    )
+    .unwrap();
+    let value: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    assert!(
+        value["artifacts"]["planStatement"][statement.to_string()]["sourceVoids"]
+            .as_array()
+            .is_some_and(|v| !v.is_empty())
+    );
+    let (original,reversal,amount):(Uuid,Uuid,i64)=sqlx::query_as("SELECT v.original_line_id,v.reversal_line_id,l.amount_minor FROM oxsum.statement_source_voids v JOIN oxsum.plan_statement_lines l ON l.line_id=v.original_line_id WHERE v.journal_id=$1 AND l.kind='plan_fee' LIMIT 1").bind(unreserved).fetch_one(w.db.pool()).await.unwrap();
+    corrupt(&w,&format!("UPDATE oxsum.plan_statement_lines SET amount_minor=amount_minor+1 WHERE line_id='{original}'; UPDATE oxsum.plan_statement_lines SET amount_minor=amount_minor-1 WHERE line_id='{reversal}'")).await;
+    let report = capture(&w, TimeBasis::Booking).await;
+    assert!(
+        !report.coverage.complete,
+        "equal-and-opposite tampering must still match original journal"
+    );
+    corrupt(&w,&format!("UPDATE oxsum.plan_statement_lines SET amount_minor={amount} WHERE line_id='{original}'; UPDATE oxsum.plan_statement_lines SET amount_minor={} WHERE line_id='{reversal}'",-amount)).await;
+    clean(&capture(&w, TimeBasis::Booking).await);
+    let change =
+        sqlx::query("UPDATE oxsum.statement_source_voids SET entry_hash='bad' WHERE journal_id=$1")
+            .bind(unreserved)
+            .execute(w.db.pool())
+            .await;
+    assert!(change.is_err());
+    corrupt(&w,&format!("UPDATE oxsum.statement_source_voids SET entry_hash='bad' WHERE journal_id='{unreserved}'")).await;
+    let report = capture(&w, TimeBasis::Booking).await;
+    assert!(!report.coverage.complete);
+    assert!(
+        report
+            .differences
+            .iter()
+            .any(|d| d.fact == "sourceVoidProof")
+    );
+    let quote =
+        w.db.statement_payment_quote(&debt_principal(&w).await, statement, None)
+            .await
+            .unwrap();
+    assert!(quote.terms.is_none());
+}
+
+async fn source_void_cash(w: &World) -> i64 {
+    sqlx::query_scalar(&format!("SELECT COALESCE(SUM(CASE WHEN p.direction='D' THEN p.amount_minor ELSE -p.amount_minor END),0)::bigint FROM ledger_{}.postings p JOIN ledger_{}.accounts a USING(account_index) JOIN ledger_{}.entries e USING(entry_id) WHERE a.path='Assets:Cash' AND p.layer='settled' AND e.log_index IS NOT NULL",w.tenant,w.tenant,w.tenant)).fetch_one(w.db.pool()).await.unwrap()
+}
+
+#[tokio::test]
+async fn mixed_source_void_racing_a_different_slice_reservation_has_one_winner() {
+    let _guard = TEST_LOCK.lock().await;
+    let Some((w, daily, statement)) = mixed_void_world(false).await else {
+        return;
+    };
+    let quote =
+        w.db.statement_payment_quote(&debt_principal(&w).await, statement, Some(1))
+            .await
+            .unwrap();
+    let source = quote.terms.as_ref().unwrap().allocations[0].journal_id;
+    let other = if source == daily { w.journal } else { daily };
+    let request = statement_request(quote.terms.unwrap(), quote.fingerprint);
+    let key = Uuid::new_v4().to_string();
+    let create = w.db.create_payment_order(&w.context, w.org, &request);
+    let cancel = w.db.void_invoice_journal(
+        &w.owner,
+        &w.wallet,
+        other,
+        "racing source correction",
+        &key,
+        OffsetDateTime::now_utc().date(),
+    );
+    let (paid, voided) = tokio::time::timeout(std::time::Duration::from_secs(10), async {
+        tokio::join!(create, cancel)
+    })
+    .await
+    .unwrap();
+    assert_eq!(
+        usize::from(paid.is_ok()) + usize::from(voided.is_ok()),
+        1,
+        "{paid:?} {voided:?}"
+    );
+    clean(&capture(&w, TimeBasis::Booking).await);
+}

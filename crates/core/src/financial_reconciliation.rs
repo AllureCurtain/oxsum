@@ -4,6 +4,7 @@ mod compare;
 pub(crate) mod debt_sources;
 mod ledger;
 mod persistence;
+mod source_voids;
 mod sources;
 #[cfg(test)]
 mod tests;

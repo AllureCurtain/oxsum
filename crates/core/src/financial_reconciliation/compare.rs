@@ -2,7 +2,7 @@
 
 mod corrections;
 mod daily;
-mod documents;
+pub(super) mod documents;
 mod legacy;
 mod refunds;
 mod repayments;

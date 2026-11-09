@@ -1058,11 +1058,18 @@ impl Db {
         }
         // Resolve immutable identity, then take owner, journal, ledger and
         // statement in that order. Extend-grace needs only owner/statement.
-        let coordinates=sqlx::query("SELECT s.customer_plan_id,s.journal_id,o.tenant_id FROM oxsum.plan_statements s JOIN oxsum.organizations o USING(organization_id) WHERE s.statement_id=$1 AND s.business_id=$2 AND s.state<>'open'")
+        let coordinates=sqlx::query("SELECT s.customer_plan_id,s.organization_id,s.journal_id,o.tenant_id FROM oxsum.plan_statements s JOIN oxsum.organizations o USING(organization_id) WHERE s.statement_id=$1 AND s.business_id=$2 AND s.state<>'open'")
             .bind(statement_id).bind(business).fetch_optional(&mut *tx).await?
             .ok_or_else(||WalletError::NotFound("unknown statement".into()))?;
         let plan: Option<Uuid> = coordinates.try_get("customer_plan_id")?;
-        if let Some(plan) = plan {
+        if action == "void" {
+            crate::statement_payments::lock_owner_in(
+                &mut tx,
+                coordinates.try_get("organization_id")?,
+                self.pool(),
+            )
+            .await?;
+        } else if let Some(plan) = plan {
             sqlx::query("SELECT customer_plan_id FROM oxsum.customer_plans WHERE customer_plan_id=$1 FOR UPDATE")
                 .bind(plan).fetch_one(&mut *tx).await?;
         }
@@ -1137,6 +1144,17 @@ impl Db {
                 {
                     return Err(WalletError::Conflict("void journal has a live statement; explicit financial reconciliation required".into()));
                 }
+                crate::financial_reconciliation::debt_sources::require_exclusive_document_in(
+                    &mut tx,
+                    statement.organization_id,
+                    wallet
+                        .as_ref()
+                        .ok_or_else(|| invalid("validated wallet missing"))?
+                        .tenant_id(),
+                    statement_id,
+                    source.journal_id,
+                )
+                .await?;
                 reversal_entry = self
                     .void_journal_financial_in(
                         &mut tx,

@@ -1737,7 +1737,7 @@
       "colDisputed": "Disputed",
       "void": "Void",
       "voidTitle": "Void this journal?",
-      "voidExplain": "Cancels a posted receivable with a reversing entry — audited in finance_audit.",
+      "voidExplain": "Cancels only this journal’s charges and payments, including its lines on mixed statements. Other sources remain. Cash stays unchanged; collected funds become refund payable. Resolve pending checkouts first.",
       "empty": "No journals."
     },
     "receivables": {

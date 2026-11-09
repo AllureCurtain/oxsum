@@ -111,3 +111,11 @@ The retained key is not an independent trust root: consumers must still use
 previously held origin/key/digest and the existing verifier. Downloads refuse
 cost-inclusive, malformed, duplicate-key or oversized files instead of rewriting
 the committed content. Descriptor listing alone proves nothing about file validity.
+
+Source-specific mixed-statement voids (#927) retain exact opposite lines and
+immutable `sourceVoids` associations in newly minted statement artifacts, together
+with the referenced canonical void entries. Existing exports are never replaced.
+The generic evidence verifier checks committed bytes and included ledger proofs;
+it does not independently re-run the mixed-source allocation policy. The runtime
+financial comparison additionally checks original line ownership and exact
+reversal-to-void identity before accepting the remaining customer debt.

@@ -3698,3 +3698,17 @@ replay validates rather than repairs history. Full observed cash loss beyond
 the original retained source goes to named reconciliation suspense. Customer
 proofs continue proving recorded entries within their documented trust scope;
 source linkage does not certify the external provider or service quality.
+
+## 2026-11-10 Preserve mixed statement sources during financial void (#927)
+
+- A journal void appends exact opposite statement lines only for that journal's
+  verified original sources. It retains mixed documents and unrelated balances.
+- Migration 0125 keeps immutable line/reversal/journal/void associations, allowing
+  independent comparison and fresh evidence to explain the correction without
+  rewriting payment effects or already-frozen exports.
+- Writer ownership now includes subscription and all customer plans, shared with
+  repayment reservation. Any live intent on an affected document refuses before
+  money or document mutations, even if it reserves a different journal slice.
+- Repayment-funded refund payable stays reserved to original effects. New
+  service invoicing/reissue is not implied by a source cancellation. Ambiguous
+  retained history remains review-required rather than guessed.

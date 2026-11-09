@@ -68,3 +68,8 @@ Mixed-source repayment and returns are implemented. Mixed-source *financial
 void/reissue* remains an explicit safe refusal and needs a source-specific
 operator resolution before #777 can claim complete unrestricted recovery.
 The issue stays open; the PR must not silently narrow that acceptance.
+
+Follow-up #927 implements source-specific journal voids for verified mixed
+documents; see [statement-source-void.md](statement-source-void.md). The original
+PR's validation above is retained as historical evidence. Whole-statement void
+still refuses mixed sources; replacement invoicing remains separate.

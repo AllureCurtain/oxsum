@@ -515,7 +515,7 @@ impl Db {
         )
         .await?;
         let coordinates = sqlx::query(
-            "SELECT j.customer_plan_id,o.tenant_id FROM oxsum.invoice_journals j \
+            "SELECT j.customer_plan_id,j.organization_id,o.tenant_id FROM oxsum.invoice_journals j \
              JOIN oxsum.organizations o USING(organization_id) \
              WHERE j.journal_id=$1 AND j.business_id=$2 AND j.state<>'draft'",
         )
@@ -529,9 +529,12 @@ impl Db {
                 "journal wallet does not own the customer".into(),
             ));
         }
-        let plan: Uuid = coordinates.try_get("customer_plan_id")?;
-        sqlx::query("SELECT customer_plan_id FROM oxsum.customer_plans WHERE customer_plan_id=$1 FOR UPDATE")
-            .bind(plan).fetch_one(&mut *tx).await?;
+        crate::statement_payments::lock_owner_in(
+            &mut tx,
+            coordinates.try_get("organization_id")?,
+            self.pool(),
+        )
+        .await?;
         let journal = journal_in(&mut tx, journal_id)
             .await?
             .ok_or_else(|| WalletError::NotFound("unknown journal".into()))?;
@@ -667,9 +670,10 @@ impl Db {
             .bind(journal_id).bind(reason).execute(&mut **tx).await?;
         crate::statement_payments::voiding::allocate_in(tx, wallet, journal, entry).await?;
         if let Some(documents) = documents {
-            for id in documents {
-                self.void_plan_document_in(tx, id, reason).await?;
-            }
+            crate::statement_payments::voiding::correct_in(
+                tx, wallet, journal, &documents, entry, reason,
+            )
+            .await?;
         } else {
             self.void_statement_for_journal_in(tx, journal_id, reason)
                 .await?;

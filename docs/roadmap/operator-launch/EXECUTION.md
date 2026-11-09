@@ -380,3 +380,12 @@ Based on PR #922, explicit `evidenceRead` lists retained descriptors and downloa
 original customer-safe version-2 bytes with bounded size and live namespace
 authority. [Evidence and pending gates](evidence/application-evidence-reads.md).
 No evidence minting, share tokens, external calls or payment/model spend.
+### Mixed-source void follow-up (#927)
+
+The #919 repayment stack now has a focused follow-up for journal-specific
+correction of mixed customer documents. Local source/ledger, return-ownership,
+reservation, fault rollback and export-retention checks passed. Full/focused
+evidence covers 2,174 ordinary cases; 67 final financial and 34 final core/HTTP
+cases, strict core Clippy and contract/build/format checks passed. See
+[evidence/statement-source-void.md](evidence/statement-source-void.md). This does
+not close #777's separate replacement-invoice/browser/integration acceptance.

@@ -653,6 +653,14 @@ impl Db {
                 serde_json::json!({"policyVersion":2,"period":period,"effects":effects,"capturedAt":captured_at,"scope":"Only these committed accounting effects and referenced ledger entries are included. Future recognition and later adjustments are excluded. Actual service delivery and accounting policy compliance remain operator claims."}),
             );
         }
+        let source_voids: Vec<serde_json::Value> = sqlx::query_scalar("SELECT to_jsonb(v) FROM oxsum.statement_source_voids v WHERE statement_id=$1 ORDER BY original_line_id")
+            .bind(detail.statement.statement_id).fetch_all(&mut *tx).await?;
+        for source in &source_voids {
+            let id = source["entry_id"]
+                .as_str()
+                .ok_or_else(|| invalid("source void entry missing"))?;
+            entry_ids.push(Uuid::parse_str(id).map_err(|e| invalid(&e.to_string()))?);
+        }
         tx.commit().await?;
         let mut artifact = serde_json::json!({
             "v": 1,
@@ -673,6 +681,9 @@ impl Db {
         });
         if let Some(accounting) = accounting {
             artifact["accounting"] = accounting;
+        }
+        if !source_voids.is_empty() {
+            artifact["sourceVoids"] = serde_json::json!(source_voids);
         }
         collector.add(
             "planStatement",
