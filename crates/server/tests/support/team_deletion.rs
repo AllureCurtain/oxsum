@@ -59,7 +59,15 @@ async fn monetary_history(world: &World) {
     let wallet = world.wallet().await;
     let now = OffsetDateTime::now_utc().date();
     wallet
-        .hold_for_key(&key, Some(&world.model), "old-team-charge", "", 40, now, None)
+        .hold_for_key(
+            &key,
+            Some(&world.model),
+            "old-team-charge",
+            "",
+            40,
+            now,
+            None,
+        )
         .await
         .unwrap();
     wallet.settle("old-team-charge", "", 40, now).await.unwrap();
@@ -190,10 +198,13 @@ impl WriteGate {
 
     async fn release(self, world: &World) {
         self.blocker.commit().await.unwrap();
-        sqlx::query(&format!("DROP TRIGGER {} ON oxsum.{}", self.function, self.table))
-            .execute(&world.pool)
-            .await
-            .unwrap();
+        sqlx::query(&format!(
+            "DROP TRIGGER {} ON oxsum.{}",
+            self.function, self.table
+        ))
+        .execute(&world.pool)
+        .await
+        .unwrap();
         sqlx::query(&format!("DROP FUNCTION oxsum.{}()", self.function))
             .execute(&world.pool)
             .await
@@ -217,13 +228,8 @@ async fn deletion_first_detaches_before_any_admission_reads_the_roster() {
             take(&world.db, &wallet, &input, funding).await,
             Err(WalletError::KeyLimitExceeded { .. })
         ));
-        let gate = WriteGate::create(
-            &world,
-            "teams",
-            "DELETE",
-            &format!("OLD.team_id='{team}'"),
-        )
-        .await;
+        let gate =
+            WriteGate::create(&world, "teams", "DELETE", &format!("OLD.team_id='{team}'")).await;
         let db = world.db.clone();
         let organization = world.organization_id.parse().unwrap();
         let actor = owner(&world);
@@ -243,7 +249,10 @@ async fn deletion_first_detaches_before_any_admission_reads_the_roster() {
         let members = world.db.members(organization).await.unwrap();
         assert_eq!(members.len(), 1);
         assert_eq!(members[0].team_id, None);
-        assert_eq!(world.wallet().await.reserved().await.unwrap(), funding.wallet_minor());
+        assert_eq!(
+            world.wallet().await.reserved().await.unwrap(),
+            funding.wallet_minor()
+        );
         release(&world, funding, &[hold]).await;
         assert_eq!(world.wallet().await.available().await.unwrap(), 160);
     }
@@ -281,7 +290,10 @@ async fn admission_first_keeps_its_reservation_through_team_deletion() {
         assert_eq!(deleted.unwrap().unwrap().team_id, team);
         let next = super::reservation(&world, 40).await;
         let wallet = world.wallet().await;
-        assert_eq!(take(&world.db, &wallet, &next, funding).await.unwrap(), funding.wallet_minor());
+        assert_eq!(
+            take(&world.db, &wallet, &next, funding).await.unwrap(),
+            funding.wallet_minor()
+        );
         assert_eq!(wallet.reserved().await.unwrap(), 2 * funding.wallet_minor());
         let members = world.db.members(organization).await.unwrap();
         assert_eq!(members.len(), 1);
@@ -317,7 +329,8 @@ async fn reassignment_uses_the_committed_roster_in_both_admission_orders() {
             let member = world.user_id.parse().unwrap();
             let team = target.team_id;
             let write = async move {
-                db.update_member(organization, actor, member, None, None, Some(Some(team))).await
+                db.update_member(organization, actor, member, None, None, Some(Some(team)))
+                    .await
             };
             let (writer, admission) = if writer_first {
                 let gate = WriteGate::create(
@@ -350,14 +363,19 @@ async fn reassignment_uses_the_committed_roster_in_both_admission_orders() {
             assert_eq!(written.unwrap().unwrap().team_id, Some(team));
             let admitted = admitted.unwrap();
             if writer_first {
-                assert!(matches!(admitted, Err(WalletError::KeyLimitExceeded { .. })));
+                assert!(matches!(
+                    admitted,
+                    Err(WalletError::KeyLimitExceeded { .. })
+                ));
                 super::no_reservations(&world).await;
             } else {
                 assert_eq!(admitted.unwrap(), funding.wallet_minor());
                 let next = super::reservation(&world, 40).await;
                 let wallet = world.wallet().await;
-                assert!(matches!(take(&world.db, &wallet, &next, funding).await,
-                    Err(WalletError::KeyLimitExceeded { .. })));
+                assert!(matches!(
+                    take(&world.db, &wallet, &next, funding).await,
+                    Err(WalletError::KeyLimitExceeded { .. })
+                ));
                 assert_eq!(wallet.reserved().await.unwrap(), funding.wallet_minor());
                 release(&world, funding, &[hold]).await;
             }
