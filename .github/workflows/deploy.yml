@@ -141,7 +141,7 @@ jobs:
           scp -i "$HOME/.ssh/deploy_key" -o BatchMode=yes -o StrictHostKeyChecking=yes \
             "$DEPLOY_USER@$DEPLOY_HOST:$remote_dir/deployment-receipt.json" deployment-receipt.json
       - name: Retain the deployment receipt
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@v7
         with:
           name: deployment-receipt
           path: deployment-receipt.json
