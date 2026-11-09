@@ -206,15 +206,35 @@ impl Wallet {
         on: Date,
         mandate: Option<&PresentedMandate>,
     ) -> Result<(), WalletError> {
-        self.lock_key_admission_in(tx, key.key_id).await?;
-        let row = sqlx::query(
+        self.authorize_key_snapshot_in(tx, key, model, minor, on, mandate, true)
+            .await
+    }
+
+    /// Reuse admission's exact constraints in a read-only snapshot when `lock` is false.
+    #[allow(clippy::too_many_arguments)]
+    pub(super) async fn authorize_key_snapshot_in(
+        &self,
+        tx: &mut Transaction<'_, Postgres>,
+        key: &ActingKey,
+        model: Option<&str>,
+        minor: i64,
+        on: Date,
+        mandate: Option<&PresentedMandate>,
+        lock: bool,
+    ) -> Result<(), WalletError> {
+        if lock {
+            self.lock_key_admission_in(tx, key.key_id).await?;
+        }
+        let key_lock = if lock { " FOR UPDATE OF k" } else { "" };
+        let row_lock = if lock { " FOR UPDATE" } else { "" };
+        let row = sqlx::query(&format!(
             "SELECT k.spend_limit_minor,k.budget_duration,k.model_allowlist,k.max_concurrent_holds,k.organization_id, \
              k.revoked_at IS NOT NULL OR (k.expires_at IS NOT NULL AND k.expires_at<=clock_timestamp()) AS inactive, \
              (o.suspended_at IS NOT NULL OR o.dunning_suspended_at IS NOT NULL OR EXISTS(SELECT 1 FROM oxsum.customer_profiles c WHERE c.organization_id=o.organization_id AND c.state='archived')) AS suspended, \
              m.user_id AS member FROM oxsum.api_keys k JOIN oxsum.organizations o USING(organization_id) \
              LEFT JOIN oxsum.memberships m ON m.organization_id=k.organization_id AND m.user_id=k.created_by \
-             WHERE k.key_id=$1 AND o.tenant_id=$2 FOR UPDATE OF k",
-        ).bind(key.key_id).bind(&self.tenant_id).fetch_optional(&mut **tx).await?
+             WHERE k.key_id=$1 AND o.tenant_id=$2{key_lock}",
+        )).bind(key.key_id).bind(&self.tenant_id).fetch_optional(&mut **tx).await?
             .ok_or(WalletError::Unauthenticated)?;
         if row.try_get::<bool, _>("inactive")? {
             return Err(WalletError::Unauthenticated);
@@ -257,7 +277,7 @@ impl Wallet {
         }
         let mut team = None;
         if let Some(member) = row.try_get::<Option<Uuid>, _>("member")?
-            && let Some(current) = sqlx::query("SELECT budget_limit_minor,team_id FROM oxsum.memberships WHERE organization_id=$1 AND user_id=$2 FOR UPDATE")
+            && let Some(current) = sqlx::query(&format!("SELECT budget_limit_minor,team_id FROM oxsum.memberships WHERE organization_id=$1 AND user_id=$2{row_lock}"))
                 .bind(organization).bind(member).fetch_optional(&mut **tx).await?
         {
             team = current.try_get::<Option<Uuid>, _>("team_id")?;
@@ -270,7 +290,7 @@ impl Wallet {
             }
         }
         if let Some(team) = team {
-            let cap: Option<i64> = sqlx::query_scalar("SELECT budget_limit_minor FROM oxsum.teams WHERE organization_id=$1 AND team_id=$2 FOR UPDATE")
+            let cap: Option<i64> = sqlx::query_scalar(&format!("SELECT budget_limit_minor FROM oxsum.teams WHERE organization_id=$1 AND team_id=$2{row_lock}"))
                 .bind(organization).bind(team).fetch_one(&mut **tx).await?;
             if let Some(cap) = cap {
                 check_budget(

@@ -2,10 +2,13 @@
 
 #[path = "wallet/admission.rs"]
 mod admission;
+#[path = "wallet/funding_preview.rs"]
+mod funding_preview;
 #[path = "wallet/transaction_reads.rs"]
 mod transaction_reads;
 
 pub use admission::GatewayAdmission;
+pub use funding_preview::GatewayFundingPreview;
 
 use std::collections::{BTreeMap, HashMap};
 use std::sync::{Arc, Mutex};
