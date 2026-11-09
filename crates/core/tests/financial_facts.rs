@@ -1,9 +1,10 @@
 //! Financial facts, cost coverage and reconciliation (issue #613, T22): the
-//! eight-category read model derives from the same source rows the customer's
+//! category read model derives from the same source rows the customer's
 //! `/api/v1/org/usage-report` and the staff's
 //! `/api/v1/business/financial-facts` project — a projection, never a second
-//! total — and the reconciliation pass diffs the conservation invariants and
-//! writes runs, exceptions and repairs. Needs DATABASE_URL; skips without it.
+//! total. Reconciliation independently compares retained financial sources and
+//! verified ledger entries, with missing costs kept as operational exceptions.
+//! Needs DATABASE_URL; skips without it.
 
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 

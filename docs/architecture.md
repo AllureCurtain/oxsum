@@ -595,7 +595,11 @@ those retained source relationships remain part of the comparison's trust scope.
 Source comparison covers v1 net journal cohorts, v2 signed accounting effects,
 original authorization/fee/service intervals, independently replayed daily
 recognition, cash refunds, disputes, voids, usage corrections and customer
-statement lines. Historical usage corrections recheck their retained source
+statement lines. Nonzero daily movements follow their individual official log
+positions. A zero recognition day is placed before the next sequenced service
+day or correction whose completed service boundary includes it; transaction-start
+timestamps do not establish commit order. Historical usage corrections recheck
+their retained source
 digest against the official correction description and each original usage,
 accrual and payment entry against complete verified bytes and an earlier official
 sequence position. These source checks do not certify usage measurement or
@@ -612,7 +616,10 @@ nonblocking transaction advisory lock owns each kind/period/clock; one transacti
 captures and publishes all evidence. No nested pool checkout or money repair
 occurs. Bounds fail the attempt before publishing: at most 1,000 organizations,
 10,000 captured source rows, 20,000 entries and 16 MiB retained evidence. Source
-and ledger input byte bounds prevent unbounded row materialization. A failure
+and ledger input byte bounds prevent unbounded row materialization. Capture also
+fails for an invalid or oversized account registry (20,000 bindings per
+customer, included in the input byte bound). Account handles come from the
+captured registered chart, not a newly invented fixed path/index ordering. A failure
 leaves the previous snapshot intact; operational failure is reported to the
 caller/job. Personal `ReportsRead` guards retained attempts and `FundsWrite`
 guards manual runs and existing audited exception actions.

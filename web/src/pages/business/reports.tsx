@@ -174,8 +174,8 @@ function RunDetail({ run, onBack }: { run: ReconciliationRun; onBack: () => void
   const snapshots = useReconciliationSnapshots(run.runId);
   const [pickedSnapshot, setPickedSnapshot] = useState<string | undefined>(run.latestSnapshotId ?? undefined);
   const captured = useReconciliationSnapshot(run.runId, pickedSnapshot);
-  const comparison = captured.data ?? run;
-  const coverage = comparison.coverage;
+  const comparison = pickedSnapshot ? captured.data : run;
+  const coverage = comparison?.coverage;
   return (
     <div className="flex flex-col gap-4">
       <div>
@@ -185,9 +185,10 @@ function RunDetail({ run, onBack }: { run: ReconciliationRun; onBack: () => void
       <Card title={t("biz.reports.runDiff")}>
         <DetailGrid>
           <Field2 label={t("biz.reports.period")}>{run.periodStart} → {run.periodEnd}</Field2>
-          <Field2 label={t("common.status")}>{stateBadge(comparison.state)}</Field2>
-          <Field2 label={t("biz.reports.exceptions")}>{comparison.exceptionCount}</Field2>
-          <Field2 label={t("biz.reports.finished")}>{run.finishedAt?.slice(0, 10) ?? "—"}</Field2>
+          <Field2 label={t("biz.reports.timeBasis")}>{run.timeBasis}</Field2>
+          <Field2 label={t("common.status")}>{comparison ? stateBadge(comparison.state) : "—"}</Field2>
+          <Field2 label={t("biz.reports.exceptions")}>{comparison?.exceptionCount ?? "—"}</Field2>
+          <Field2 label="Captured at">{captured.data?.capturedAt ?? (pickedSnapshot ? "—" : run.finishedAt ?? "—")}</Field2>
         </DetailGrid>
         {run.lastError ? <Banner tone="error" className="mt-3">{run.lastError}</Banner> : null}
       </Card>
@@ -200,7 +201,7 @@ function RunDetail({ run, onBack }: { run: ReconciliationRun; onBack: () => void
           </NativeSelect>
         </Field>
         {snapshots.isError || captured.isError ? <Banner tone="error">Unable to load the retained comparison.</Banner> : null}
-        {captured.isFetching ? <Skeleton className="h-20 w-full" /> : captured.isError ? null : <>
+        {captured.isFetching ? <Skeleton className="h-20 w-full" /> : captured.isError || !comparison || !coverage ? null : <>
           <Banner tone={coverage.complete && coverage.version > 0 ? "success" : "warn"}>
             {coverage.version === 0 ? "Legacy report: independent ledger comparison was not performed." : coverage.complete ? "All required sources in this comparison have supported ledger evidence." : "Comparison is incomplete. Missing, unsupported or corrupt sources require review."}
           </Banner>
@@ -279,7 +280,7 @@ function Runs() {
           <Field label={t("biz.reports.timeBasis")}>
             <NativeSelect disabled={attempt !== null} value={basis} onChange={(e) => setBasis(e.target.value as typeof basis)}><option value="booking">Booking</option><option value="service">Service</option><option value="payment">Payment</option></NativeSelect>
           </Field>
-          <div className="flex items-end"><Button type="submit" isLoading={request.isPending}>{attempt ? "Retry captured request" : t("biz.reports.requestRun")}</Button></div>
+          <div className="flex items-end gap-2"><Button type="submit" isLoading={request.isPending}>{attempt ? "Retry captured request" : t("biz.reports.requestRun")}</Button>{attempt && !request.isPending ? <Button type="button" tone="ghost" onClick={() => { setAttempt(null); request.reset(); }}>Edit request</Button> : null}</div>
           {request.isError ? <Banner tone="error">The request failed. Retry preserves its original dates, clock and identity.</Banner> : null}
         </form>
       ) : null}

@@ -2,7 +2,9 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use doubleentry::{AccountId, Direction, Layer, StoredEntry};
+use doubleentry::{
+    Account, AccountId, AccountPath, AccountRecord, AccountRegistry, Direction, Layer, StoredEntry,
+};
 use sqlx::{PgConnection, Row};
 use time::Date;
 use uuid::Uuid;
@@ -191,15 +193,46 @@ pub(super) async fn capture(
     if !exists {
         return Ok(ledger);
     }
-    for row in sqlx::query(&format!("SELECT account_index,path FROM {schema}.accounts"))
-        .fetch_all(&mut *connection)
-        .await?
-    {
-        let index: i32 = row.try_get("account_index")?;
-        ledger.accounts.insert(
-            row.try_get("path")?,
-            AccountId::from_index(u32::try_from(index).map_err(error::invalid)?),
-        );
+    let account_bytes: i64 = sqlx::query_scalar(&format!("SELECT COALESCE(SUM(pg_column_size(a)),0)::bigint FROM (SELECT * FROM {schema}.accounts ORDER BY account_index LIMIT $1) a"))
+        .bind((ENTRY_LIMIT+1) as i64).fetch_one(&mut *connection).await?;
+    if account_bytes > types::BYTE_LIMIT as i64 {
+        return Err(error::invalid(
+            "reconciliation account registry byte limit exceeded",
+        ));
+    }
+    let rows = sqlx::query(&format!(
+        "SELECT account_index,path,opened_on FROM {schema}.accounts ORDER BY account_index LIMIT $1"
+    ))
+    .bind((ENTRY_LIMIT + 1) as i64)
+    .fetch_all(&mut *connection)
+    .await?;
+    if rows.len() > ENTRY_LIMIT {
+        return Err(error::invalid(
+            "reconciliation account registry limit exceeded",
+        ));
+    }
+    let records = rows
+        .into_iter()
+        .map(|row| {
+            let index: i32 = row.try_get("account_index")?;
+            let path: String = row.try_get("path")?;
+            Ok(AccountRecord {
+                id: AccountId::from_index(u32::try_from(index).map_err(error::invalid)?),
+                account: Account::new(
+                    AccountPath::parse(&path).map_err(error::invalid)?,
+                    row.try_get("opened_on")?,
+                ),
+            })
+        })
+        .collect::<Result<Vec<_>, WalletError>>()?;
+    // Dense handles and valid unique paths are structural checks, not an
+    // external trust anchor for account meaning. Historical charts may have
+    // legitimately registered these paths in a different index order.
+    let registry = AccountRegistry::from_records(records).map_err(error::invalid)?;
+    for record in registry.records() {
+        ledger
+            .accounts
+            .insert(record.account.path.to_string(), record.id);
     }
     // Verify every bounded entry: selecting by mutable posting or key bytes alone
     // could hide corruption which changed the field used by the selector. Expected
@@ -213,7 +246,7 @@ pub(super) async fn capture(
     if ids.len() > ENTRY_LIMIT {
         return Err(error::invalid("reconciliation ledger entry limit exceeded"));
     }
-    let mut captured_bytes = 0i64;
+    let mut captured_bytes = account_bytes;
     for table in ["entries", "postings", "posting_dimensions"] {
         let bytes:i64=sqlx::query_scalar(&format!("SELECT COALESCE(SUM(pg_column_size(t)),0)::bigint FROM {schema}.{table} t WHERE entry_id=ANY($1)"))
             .bind(&ids).fetch_one(&mut *connection).await?;
