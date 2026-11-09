@@ -63,6 +63,9 @@ pub(super) struct Sources {
 }
 
 impl Sources {
+    // A missing table means the fixed capture inventory and its consumers
+    // disagree, never that a customer's rows may be treated as an empty source.
+    #[allow(clippy::expect_used)]
     pub fn table(&self, table: &str) -> &BTreeMap<Uuid, Source> {
         self.tables
             .get(table)
