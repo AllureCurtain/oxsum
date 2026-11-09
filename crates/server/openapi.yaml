@@ -6287,6 +6287,57 @@ paths:
         "404": { $ref: "#/components/responses/Error" }
         "409": { $ref: "#/components/responses/Error" }
         "503": { $ref: "#/components/responses/Error" }
+  /api/v1/integration/customers/{organizationId}/statements:
+    get:
+      operationId: getApplicationCustomerStatements
+      x-integration-scope: billingRead
+      summary: List this application customer’s issued statements
+      description: Application-only billingRead with current namespace/customer authority; archived customers retain historical reads. Newest-first non-open statement page. Foreign, missing or open cursors return 404. The complete page is limited to 4 MiB; oversized pages return 409. No wallet, reservation, payment or evidence writes.
+      security: [{ integrationCredential: [] }]
+      parameters:
+        - { name: organizationId, in: path, required: true, schema: { type: string, format: uuid } }
+        - { name: after, in: query, schema: { type: string, format: uuid }, description: Existing non-open statement belonging to this same customer. }
+        - { name: limit, in: query, schema: { type: integer, minimum: 1, maximum: 50, default: 20 } }
+      responses:
+        "200":
+          description: Current customer-visible statement data
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data: { $ref: "#/components/schemas/PlanStatementPage" }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "409": { $ref: "#/components/responses/Error" }
+  /api/v1/integration/customers/{organizationId}/statements/{statementId}:
+    get:
+      operationId: getApplicationCustomerStatement
+      x-integration-scope: billingRead
+      summary: Read one complete application customer statement
+      description: Application-only billingRead with current namespace/customer authority in one repeatable snapshot. Returns an existing non-open statement and all its ordered lines, including source-linked payment and reversal history. Unknown, foreign or open statement returns 404. At most 1000 lines and 4 MiB including the header; oversized documents return 409 for operator recovery, never a truncated success. Integer amounts remain credit minor units (one credit equals 1000000), not payment fiat. No reservation, wallet or evidence writes.
+      security: [{ integrationCredential: [] }]
+      parameters:
+        - { name: organizationId, in: path, required: true, schema: { type: string, format: uuid } }
+        - { name: statementId, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        "200":
+          description: Current customer-visible statement data
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data: { $ref: "#/components/schemas/PlanStatementDetail" }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "409": { $ref: "#/components/responses/Error" }
   /api/v1/integration/customers/{organizationId}/evidence-bundles:
     get:
       summary: List retained evidence for this application's customer

@@ -418,3 +418,19 @@ may make the statement unavailable, but this interface never discloses a portal
 or other application's order ID. A changed quote requires explicit fresh review;
 do not silently increase or redistribute what the customer authorized. Signed
 lifecycle notifications and the complete separate-store application remain N21.
+
+### Discover statements before named repayment
+
+Use application `billingRead` at
+`GET /api/v1/integration/customers/{organizationId}/statements?limit=20`, then
+read `/{statementId}` for all current lines. Follow `nextCursor` as `after` with
+the same customer. Reconcile statement lifecycle signals by reading this exact
+resource; message order never determines its state. The endpoint checks current
+application/customer authority and bounds the complete document before transfer.
+
+Display exact credit-minor statement amounts; do not treat the currency label as
+a fiat checkout amount. With separately granted checkoutWrite, pass the retained
+statementId into the named-statement quote, review its current available amount,
+then persist the exact quote and operation before creating an order. Pending
+orders remain unpaid; verified merchant events alone complete collection.
+For offline verification use separately authorized original evidence downloads.

@@ -1795,3 +1795,13 @@ fund your wallet. A partial payment leaves the remainder payable. If checkout
 times out, recover the same order instead of starting another. A refund or lost
 payment restores only its original source debt, with the existing finance review
 and source evidence available to authorized staff.
+
+### Statements in an embedded application
+
+An operator may grant an application billingRead to display its customers' retained
+statements and source-linked payment/reversal lines. The application can discover
+the bill itself; a customer does not need to find or type its UUID. Archived accounts
+retain authorized history. Statement reads do not renew a plan or initiate payment;
+those actions require a separate checkout grant and review of the current quote.
+A document over the export bounds returns an explicit recovery error rather than
+showing a partial statement as complete.

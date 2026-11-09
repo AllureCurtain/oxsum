@@ -1024,3 +1024,24 @@ Unknown outcomes retain their reservations and original provider identity; only
 verified callbacks release or fulfill them. Portal/foreign application pending
 order IDs are never exposed by this quote. Unavailable/review-required debt is a
 409, foreign statements are 404, and unauthorized scope is 403.
+
+### Application statement history (#939)
+
+Application-only `billingRead` now reads `/integration/customers/{organizationId}/statements`
+and `/{statementId}`. Both require current exact namespace/customer authority;
+ordinary customer-list credentials without an application do not gain this surface.
+Archived customers retain authorized history. No additional scope or implicit
+checkout/evidence authority is introduced.
+
+The list is newest-first with `limit` 1–50 (default 20) and an `after` identifier
+that must itself be a non-open statement belonging to this customer. Missing,
+open and foreign cursors/details return 404. Detail returns the existing complete
+customer-visible header and all ordered lines, including original source references.
+Statement money is integer credit minor units, not the checkout's rounded fiat amount.
+
+Authorization and data use one repeatable snapshot, retaining the existing
+credential revocation lock. PostgreSQL measures variable source data before
+transfer: a list/detail is bounded to 4 MiB and detail to 1,000 lines. Oversize
+returns 409 for operator recovery; it never truncates a successful document.
+These live reads do not publish evidence or certify its proofs, reserve payment,
+open wallets or alter any financial fact. Export independent evidence separately.

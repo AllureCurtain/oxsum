@@ -8453,6 +8453,46 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/integration/customers/{organizationId}/statements": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List this application customer’s issued statements
+         * @description Application-only billingRead with current namespace/customer authority; archived customers retain historical reads. Newest-first non-open statement page. Foreign, missing or open cursors return 404. The complete page is limited to 4 MiB; oversized pages return 409. No wallet, reservation, payment or evidence writes.
+         */
+        get: operations["getApplicationCustomerStatements"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/integration/customers/{organizationId}/statements/{statementId}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Read one complete application customer statement
+         * @description Application-only billingRead with current namespace/customer authority in one repeatable snapshot. Returns an existing non-open statement and all its ordered lines, including source-linked payment and reversal history. Unknown, foreign or open statement returns 404. At most 1000 lines and 4 MiB including the header; oversized documents return 409 for operator recovery, never a truncated success. Integer amounts remain credit minor units (one credit equals 1000000), not payment fiat. No reservation, wallet or evidence writes.
+         */
+        get: operations["getApplicationCustomerStatement"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/integration/customers/{organizationId}/evidence-bundles": {
         parameters: {
             query?: never;
@@ -23595,6 +23635,69 @@ export interface operations {
             404: components["responses"]["Error"];
             409: components["responses"]["Error"];
             503: components["responses"]["Error"];
+        };
+    };
+    getApplicationCustomerStatements: {
+        parameters: {
+            query?: {
+                /** @description Existing non-open statement belonging to this same customer. */
+                after?: string;
+                limit?: number;
+            };
+            header?: never;
+            path: {
+                organizationId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Current customer-visible statement data */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: components["schemas"]["PlanStatementPage"];
+                    };
+                };
+            };
+            400: components["responses"]["Error"];
+            401: components["responses"]["Error"];
+            403: components["responses"]["Error"];
+            404: components["responses"]["Error"];
+            409: components["responses"]["Error"];
+        };
+    };
+    getApplicationCustomerStatement: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                organizationId: string;
+                statementId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Current customer-visible statement data */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: components["schemas"]["PlanStatementDetail"];
+                    };
+                };
+            };
+            400: components["responses"]["Error"];
+            401: components["responses"]["Error"];
+            403: components["responses"]["Error"];
+            404: components["responses"]["Error"];
+            409: components["responses"]["Error"];
         };
     };
     getApplicationCustomerEntitlement: {

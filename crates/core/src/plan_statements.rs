@@ -29,6 +29,9 @@
 //! refuses, counting live statement debt, posted journals without live documents
 //! and current holds.
 
+mod application_reads;
+pub(crate) use application_reads::{application_detail_in, application_page_in};
+
 use sqlx::postgres::PgRow;
 use sqlx::{Postgres, Row, Transaction};
 use time::OffsetDateTime;
