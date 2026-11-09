@@ -730,3 +730,9 @@ audit foreign keys. Lists use current credential authorization and paginate only
 the application's bridge rows. No fabricated `Principal` or human actor reaches
 the personal key-management entry points. Existing gateway keys keep the usual
 consumption enforcement and explicit independent expiry/revocation lifecycle.
+Gateway evidence capacity (#875) is checked before execution using the settlement
+encoder across resolved routes. Version-15 full reasons are retained in usage
+evidence within the settlement transaction; the immutable ledger carries either
+the complete bounded reason or its explicit SHA-256/UTF-8-byte-length commitment.
+The effective policy union is bounded separately. See
+[the exact evidence contract](gateway-evidence-budget.md).

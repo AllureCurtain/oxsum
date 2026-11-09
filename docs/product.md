@@ -670,3 +670,10 @@ Management-credential revocation prevents future management, while issued keys
 keep their separately recorded expiry and revocation. The bridge retains original
 application/customer/issuer/key ownership, and operation/audit receipts contain no
 secret. Applications cannot adopt or manage unrelated portal-issued keys.
+### Gateway evidence capacity (#875)
+
+The effective guardrail set is limited to eight distinct policies. A complete
+settlement must fit its documented encoded-byte envelope before a call reserves
+funds or executes. Long reasons remain auditable through an explicit digest and
+byte length with separately retained full text; no shortened reason claims to
+be the full provider/policy output. See [the evidence contract](gateway-evidence-budget.md).

@@ -12164,7 +12164,7 @@ components:
         maxConcurrentHolds: { type: [integer, "null"], minimum: 1, description: "holds the key may have outstanding at once; null (the default) is uncapped" }
         tokensPerMinute: { type: [integer, "null"], minimum: 1, description: "settled input+output tokens the key may burn inside a trailing minute, checked at admission on the gateway; null (the default) is uncapped" }
         tokensPerMinuteScopes: { $ref: "#/components/schemas/TokensPerMinuteScopes" }
-        requiredPolicies: { type: [array, "null"], items: { type: string, pattern: '^[a-z0-9][a-z0-9._-]{0,63}$' }, description: "the guardrail policies this key's turns must run (issue #502); every name must already exist as a configured policy, and null (the default) requires none — a turn still runs whatever its channel binds" }
+        requiredPolicies: { type: [array, "null"], maxItems: 8, uniqueItems: true, items: { type: string, pattern: '^[a-z0-9][a-z0-9._-]{0,63}$' }, description: "the guardrail policies this key's turns must run (issue #502); every name must already exist as a configured policy, and null (the default) requires none — a turn still runs whatever its channel binds" }
         groupId: { type: [string, "null"], format: uuid, description: "the request group the key joins at mint (issue #508); the group must be the organization's own — a grouped key reaches only its group's channels, null or absent (the default) leaves it ungrouped and reaching every channel" }
     UpdateKeyConstraintsRequest:
       type: object
@@ -12176,7 +12176,7 @@ components:
         maxConcurrentHolds: { type: [integer, "null"], minimum: 1, description: "the new outstanding-holds cap, or null to uncap" }
         tokensPerMinute: { type: [integer, "null"], minimum: 1, description: "the new per-minute settled-token allowance, or null to uncap" }
         tokensPerMinuteScopes: { $ref: "#/components/schemas/TokensPerMinuteScopes" }
-        requiredPolicies: { type: [array, "null"], items: { type: string, pattern: '^[a-z0-9][a-z0-9._-]{0,63}$' }, description: "the guardrail policies the key's turns must run; null or absent clears it back to none" }
+        requiredPolicies: { type: [array, "null"], maxItems: 8, uniqueItems: true, items: { type: string, pattern: '^[a-z0-9][a-z0-9._-]{0,63}$' }, description: "the guardrail policies the key's turns must run; null or absent clears it back to none" }
         groupId: { type: [string, "null"], format: uuid, description: "the request group the key joins (issue #508) — a triple-state field: absent keeps the current group, null ungroups the key (it reaches every channel again), a group id reassigns it to that group, which must be the organization's own; assignment and constraints commit atomically; only an owner/admin session or ungrouped bearer may change groupId, and a grouped bearer cannot mutate keys" }
     ApiKey:
       type: object
@@ -12196,7 +12196,7 @@ components:
         maxConcurrentHolds: { type: [integer, "null"], minimum: 1, description: "the key's outstanding-holds cap; null is uncapped" }
         tokensPerMinute: { type: [integer, "null"], minimum: 1, description: "the key's rolling-minute settled-token allowance; null is uncapped" }
         tokensPerMinuteScopes: { $ref: "#/components/schemas/TokensPerMinuteScopes" }
-        requiredPolicies: { type: [array, "null"], items: { type: string }, description: "the guardrail policies the key's turns must run; null requires none" }
+        requiredPolicies: { type: [array, "null"], maxItems: 8, uniqueItems: true, items: { type: string }, description: "the guardrail policies the key's turns must run; null requires none" }
         groupId: { type: [string, "null"], format: uuid, description: "the request group the key belongs to (issue #508); a grouped key reaches only its group's channels, null reaches every channel" }
     RequestGroupChannel:
       type: object
@@ -12224,6 +12224,14 @@ components:
       type: ["object", "null"]
       additionalProperties: { $ref: "#/components/schemas/TokenScope" }
       description: "Tag-scoped slices of the key's settled-token allowance (issue #209). Maps a request `metadata` tag key to one scope; each scoped bucket is an additional cap alongside `tokensPerMinute`, not a replacement. null (the default) scopes nothing."
+    ReasonCommitment:
+      type: object
+      additionalProperties: false
+      required: [sha256, utf8Bytes]
+      description: v15 settlement commitment to a complete reason omitted from inline JSON. Hashes exact UTF-8 bytes; a proof without full text does not establish reason matching or policy correctness.
+      properties:
+        sha256: { type: string, pattern: '^[0-9a-f]{64}$' }
+        utf8Bytes: { type: integer, format: int64, minimum: 1 }
     GuardrailPolicy:
       type: object
       required: [name, kind, config, createdAt]
@@ -12246,12 +12254,12 @@ components:
       properties:
         scope: { type: string, enum: [channel, key] }
         target: { type: string, description: "the channel's name, or the key's id" }
-        policies: { type: array, items: { type: string }, description: "the ordered policy names the scope runs" }
+        policies: { type: array, items: { type: string }, description: "the retained ordered policy names; new writes and effective turn unions are limited to eight distinct names" }
     GuardrailBindingRequest:
       type: object
       required: [policies]
       properties:
-        policies: { type: array, items: { type: string, pattern: '^[a-z0-9][a-z0-9._-]{0,63}$' }, description: "every name must already exist as a configured policy" }
+        policies: { type: array, maxItems: 8, uniqueItems: true, items: { type: string, pattern: '^[a-z0-9][a-z0-9._-]{0,63}$' }, description: "Every name must already exist. The complete channel/key/mandate union may contain at most eight policies; an oversized effective union refuses before execution." }
     TokenScope:
       type: object
       description: "One tag scope (issue #209): exactly one of `each`, `concrete`, or `total` is set. A settled turn accrues into the bucket its `metadata` tag selects — `each` fans out per value (`tag=value`), `concrete` only the pinned value, `total` the whole tag — and the bucket's cap is checked `window-actual + estimate ≤ cap` at admission, 429 when full while other buckets stay open."
@@ -12314,7 +12322,7 @@ components:
         keyId: { type: string, format: uuid, description: "the key this delegates" }
         capMinor: { type: integer, format: int64, minimum: 1, description: "total committed spend this mandate may carry, in minor units" }
         models: { type: [array, "null"], items: { type: string }, description: "the model allowlist — a subset of the key's own; null means all the key serves" }
-        requiredPolicies: { type: [array, "null"], items: { type: string }, description: "the guardrail policies this mandate requires — a subset of the key's own; null means all the key requires (issue #502)" }
+        requiredPolicies: { type: [array, "null"], maxItems: 8, uniqueItems: true, items: { type: string }, description: "the guardrail policies this mandate requires — a subset of the key's own; null means all the key requires (issue #502)" }
         notBefore: { type: string, format: date-time }
         notAfter: { type: string, format: date-time, description: "when the mandate expires — there is no revocation, so mandates are short-lived" }
         nonce: { type: string, description: "uniqueness; hex of 16 random bytes" }
@@ -12332,7 +12340,7 @@ components:
       properties:
         capMinor: { type: integer, format: int64, minimum: 1, description: "total committed spend the mandate may carry — must sit inside the key's own `spendLimitMinor` when the key has one" }
         models: { type: [array, "null"], items: { type: string }, description: "the model allowlist — must be a subset of the key's own `modelAllowlist` when the key has one; omitted or null means all the key serves" }
-        requiredPolicies: { type: [array, "null"], items: { type: string, pattern: '^[a-z0-9][a-z0-9._-]{0,63}$' }, description: "the guardrail policies the mandate's turns must run (issue #502) — a subset of the key's own `requiredPolicies`, never an addition the key does not already name; omitted or null means all the key requires" }
+        requiredPolicies: { type: [array, "null"], maxItems: 8, uniqueItems: true, items: { type: string, pattern: '^[a-z0-9][a-z0-9._-]{0,63}$' }, description: "the guardrail policies the mandate's turns must run (issue #502) — a subset of the key's own `requiredPolicies`, never an addition the key does not already name; omitted or null means all the key requires" }
         notBefore: { type: string, format: date-time, description: "when the mandate starts being honored; absent means now" }
         notAfter: { type: string, format: date-time, description: "when the mandate expires — required, because no revocation exists" }
     Member:
