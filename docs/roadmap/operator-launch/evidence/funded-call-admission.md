@@ -47,13 +47,19 @@ recovery receipt omitted the zero-use input/output lines required by the existin
 settlement parser; restoring the original recorded rates fixed that case in a
 narrow rerun. The remaining quota-plus-cache case returned a cache hit, then its
 settlement transaction rolled back with `description exceeds 512 characters`.
-Issue #873 owns that independent bounded evidence-capacity repair before this
-branch's final validation. Logs: `/tmp/oxsum-849-focused.log` and
+Issue #873 owns that independent bounded evidence-capacity repair, integrated
+in PR #890 (`134a4aae`) before this branch's final validation. Logs: `/tmp/oxsum-849-focused.log` and
 `/tmp/oxsum-849-two-boundaries.log`. These intermediate results are not a passing
 gate or release acceptance.
 
-Results, exact runtime SHA, final focused/combined regression gates and review
-will be recorded after execution. Customer readiness follows this repair and the
+After that repair, all 23 funded-admission cases passed at `c5f69cf2` (seven
+unrelated cases filtered), then the combined core/server admission, wallet-key,
+mandate, team, organization, subscription, plan, cache, gateway, request and
+sweep selection passed 248 tests (one existing opt-in skipped). Logs:
+`/tmp/oxsum-849-final-focused.log`, `/tmp/oxsum-849-combined.log`. The branch was
+then rebased onto integrated main `134a4aae`; runtime source under core/server,
+the engine and verifier was confirmed identical. The final full workspace,
+strict Clippy and independent source-review gates remain to be recorded. Customer readiness follows this repair and the
 separate cancellation boundary issue #854.
 
 Source review also identified an existing team-deletion lock inversion: admission
