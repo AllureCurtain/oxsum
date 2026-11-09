@@ -1,5 +1,6 @@
 //! Controlled financial source, drift, snapshot and concurrency acceptance.
-#![allow(clippy::unwrap_used, clippy::expect_used)]
+// Each acceptance module owns its independent setup OnceCell and test database.
+#![allow(clippy::duplicate_mod, clippy::unwrap_used, clippy::expect_used)]
 
 #[path = "../../tests/support/legacy_plan.rs"]
 mod legacy_plan;

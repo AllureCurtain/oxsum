@@ -59,15 +59,10 @@ pub(super) fn compare(customer: &mut Customer<'_>) -> Result<(), WalletError> {
     let selected: Vec<_> = customer
         .sources
         .table("plan_refund_effects")
-        .keys()
-        .copied()
+        .iter()
+        .map(|(id, source)| (*id, source.clone()))
         .collect();
-    for refund in selected {
-        let effect = customer
-            .sources
-            .get("plan_refund_effects", refund)
-            .expect("captured source")
-            .clone();
+    for (refund, effect) in selected {
         let expected_cash = effect.amount("cash_minor")?;
         let order = effect.id("order_id")?;
         let mut valid = source_owner(customer, refund, order)?;
@@ -120,15 +115,10 @@ pub(super) fn compare(customer: &mut Customer<'_>) -> Result<(), WalletError> {
     let selected: Vec<_> = customer
         .sources
         .table("nonplan_refund_effects")
-        .keys()
-        .copied()
+        .iter()
+        .map(|(id, source)| (*id, source.clone()))
         .collect();
-    for refund in selected {
-        let effect = customer
-            .sources
-            .get("nonplan_refund_effects", refund)
-            .expect("captured source")
-            .clone();
+    for (refund, effect) in selected {
         let metadata_valid = nonplan_metadata(customer, refund, &effect)?;
         let cash_id = effect.id("cash_entry_id")?;
         let mut ids = BTreeSet::from([cash_id]);

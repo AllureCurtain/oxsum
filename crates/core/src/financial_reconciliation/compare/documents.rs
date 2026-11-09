@@ -6,9 +6,9 @@ use sqlx::Row;
 use uuid::Uuid;
 
 use super::Customer;
-use crate::WalletError;
 use crate::financial_reconciliation::sources::Source;
 use crate::financial_reconciliation::{ledger, types};
+use crate::{WalletError, error};
 
 pub(super) fn compare(customer: &mut Customer<'_>) -> Result<(), WalletError> {
     let statements: Vec<_> = customer
@@ -231,7 +231,7 @@ pub(super) fn compare(customer: &mut Customer<'_>) -> Result<(), WalletError> {
                 let source = customer
                     .sources
                     .get("invoice_journals", journal)
-                    .expect("captured source");
+                    .ok_or_else(|| error::invalid("captured dispute journal is missing"))?;
                 let debt = types::sub(
                     source.amount("total_minor")?,
                     source.amount("settled_minor")?,
@@ -314,23 +314,23 @@ fn payment_sources_for(
         .optional_id("plan_period_id")?
         .and_then(|id| customer.sources.get("plan_periods", id));
     let mut expected = BTreeMap::new();
-    if let Some(period) = period {
-        if period.text("authorization_kind")? == "payment_order" {
-            let order = period.id("authorization_ref")?;
-            let (key, path) = if journal.policy()? == 2 {
-                (format!("payment-order/{order}/prepay"), ledger::DEFERRED)
-            } else {
-                (
-                    format!("plan-journal/{id}/prepay-settle"),
-                    ledger::RECEIVABLE,
-                )
-            };
-            let source = BTreeSet::from([*crate::entry_id_for(&key).as_uuid()]);
-            expected.insert(
-                Some(order),
-                types::sub(0, customer.ledger.net(&source, path)?)?,
-            );
-        }
+    if let Some(period) = period
+        && period.text("authorization_kind")? == "payment_order"
+    {
+        let order = period.id("authorization_ref")?;
+        let (key, path) = if journal.policy()? == 2 {
+            (format!("payment-order/{order}/prepay"), ledger::DEFERRED)
+        } else {
+            (
+                format!("plan-journal/{id}/prepay-settle"),
+                ledger::RECEIVABLE,
+            )
+        };
+        let source = BTreeSet::from([*crate::entry_id_for(&key).as_uuid()]);
+        expected.insert(
+            Some(order),
+            types::sub(0, customer.ledger.net(&source, path)?)?,
+        );
     }
     let suffix = format!("/journal/{id}");
     for (entry_id, entry) in &customer.ledger.entries {

@@ -148,16 +148,16 @@ pub(super) fn compare(customer: &mut Customer<'_>) -> Result<(), WalletError> {
             .optional_id("entry_id")?
             .and_then(|entry| customer.ledger.entries.get(&entry))
             .and_then(|entry| entry.booked_on());
-        if let Some(day) = observed_day {
-            if day != effect.date("booked_on")? {
-                customer.unsupported(
-                    "plan_accounting_effects",
-                    id,
-                    "bookingDate",
-                    "Effect booking date differs from its official ledger entry",
-                );
-                valid = false;
-            }
+        if let Some(day) = observed_day
+            && day != effect.date("booked_on")?
+        {
+            customer.unsupported(
+                "plan_accounting_effects",
+                id,
+                "bookingDate",
+                "Effect booking date differs from its official ledger entry",
+            );
+            valid = false;
         }
         let expected_day = match customer.scope.basis {
             TimeBasis::Booking => effect.date("booked_on")?,
