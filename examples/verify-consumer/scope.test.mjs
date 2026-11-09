@@ -3,7 +3,7 @@ import { createHash, generateKeyPairSync, sign } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import test from 'node:test';
 import * as api from 'verify-oxsum-bill';
-import { inspect, scopedBill, scopedConsistency, scopedEvidence } from './scope.mjs';
+import { inspect, scopedBill, scopedConsistency, scopedEvidence, scopedWitnesses } from './scope.mjs';
 
 const read = (name) => readFileSync(new URL('./fixtures/'+name+'.json', import.meta.url), 'utf8');
 const evidence = read('evidence-bundle'), manifest = read('evidence-manifest'), key = read('evidence-operator-key');
@@ -78,4 +78,30 @@ test('packed WASM consistency must end at the bill head under review', async () 
   const origin = inspect(read('manifest')).get(['origin']);
   assert.equal((await scopedConsistency(raw, held, head, origin, operator, api)).ok, true);
   await assert.rejects(scopedConsistency(raw, held, inspect(head).replace(['root'], JSON.stringify('00'.repeat(32))), origin, operator, api), /Retained head differs/);
+});
+
+
+test('packed WASM accepts real cosignature arrays and rejects unknown or altered witnesses', async () => {
+  const { privateKey, publicKey } = generateKeyPairSync('ed25519');
+  const bytes = publicKey.export({ format: 'der', type: 'spki' }).subarray(-32);
+  const keyName = 'test/witness', witnessUrl = 'https://witness.example';
+  const selector = createHash('sha256').update(Buffer.concat([Buffer.from(keyName+'\n'), Buffer.from([4]), bytes])).digest().subarray(0, 4);
+  const head = inspect(read('signed-head'));
+  const origin = head.get(['origin']);
+  const body = `${origin}\n${head.token(['size'])}\n${Buffer.from(head.get(['root']), 'hex').toString('base64')}\n`;
+  const at = 1794182400n, time = Buffer.alloc(8); time.writeBigUInt64BE(at);
+  const signature = sign(null, Buffer.from(`cosignature/v1\ntime ${at}\n${body}`), privateKey);
+  const note = `${body}\n— ${keyName} ${Buffer.concat([selector, time, signature]).toString('base64')}\n`;
+  const notes = [{ witnessUrl, note }];
+  const pins = [{ witnessUrl, keyName, publicKey: bytes.toString('hex'), keyHash: selector.toString('hex') }];
+  const headRaw = inspect(read('settlement-bundle')).token(['head']);
+  assert.equal((await scopedWitnesses(notes, pins, origin, headRaw, api)).ok, true);
+  await assert.rejects(scopedWitnesses(notes, [], origin, headRaw, api));
+  await assert.rejects(scopedWitnesses(notes, pins, origin+'/other', headRaw, api));
+  signature[0] ^= 1;
+  const changed = `${body}\n— ${keyName} ${Buffer.concat([selector, time, signature]).toString('base64')}\n`;
+  await assert.rejects(scopedWitnesses([{ witnessUrl, note: changed }], pins, origin, headRaw, api));
+  await assert.rejects(scopedWitnesses(notes, pins, origin, headRaw, { verifyWitnesses: async () => [] }), /incomplete/);
+  await assert.rejects(scopedWitnesses([...notes,...notes], pins, origin, headRaw, api), /Duplicate/);
+  await assert.rejects(scopedWitnesses(notes, [...pins,...pins], origin, headRaw, api), /Duplicate/);
 });

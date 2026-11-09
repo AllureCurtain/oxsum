@@ -73,9 +73,13 @@ fixture but do not belong to any live deployment. Do not treat the key in
   check that answers "the log only grew; it did not rewrite what I saw". The
   response must end at the same head as the bill under review.
 - **Witnesses** — `verifyWitnesses(notes, pins, origin, head)` checks each
-  cosignature against a pinset the customer chose. This fixture has no
-  cosignatures, so the example says so and skips the check rather than claim a
-  witness vouched.
+  cosignature against a pinset. Supply a separately retained `witness-pins.json`
+  array to use your own pins. Otherwise the consumer explicitly labels the
+  checkpoint-supplied pins as the operator's assertion, not independent trust.
+  This checks each supplied note, not quorum/availability of every pinned
+  witness. Duplicate URLs and incomplete verifier results fail. The original
+  fixture has no cosignatures and explicitly skips that check; the regression
+  suite generates a genuine test cosignature and verifies it with packed WASM.
 
 Original JSON strings go directly to the SDK. Field selection and test mutations
 preserve numeric tokens above JavaScript's safe-integer range; duplicate fields

@@ -25,6 +25,12 @@ negative mutation changes the selected bytes; empty artifact scopes explicitly
 skip unavailable coverage. JavaScript programming errors fail the program
 instead of being counted as expected cryptographic rejections.
 
+The independent review also found the witness API returns an array, while the
+consumer treated it as a single verdict. Valid cosigned exports now succeed;
+unknown/changed/duplicate witnesses and incomplete results fail. Separately
+retained witness pins are supported; supplied pins are labeled operator trust,
+and the check makes no quorum or availability claim.
+
 ## Executed checks
 
 The clean external project `/tmp/oxsum-876-consumer` installed the retained
@@ -32,10 +38,11 @@ The clean external project `/tmp/oxsum-876-consumer` installed the retained
 `ecc6e8d33cfecb1fad60d591376777ed939e583ff36d452a35f9135f481baaf9`).
 It imports only the installed package and local example modules/fixtures.
 
-- Seven scope regression groups passed, including actual packed WASM for the
+- Eight scope regression groups passed, including actual packed WASM for the
   v13 wholesale and v14 sale bills, valid foreign-origin signature refusal,
   wrong key/customer/identity, missing or altered catalog proof, and consistency
-  ending at a different head. The underlying SDK's permissive verdict is
+  ending at a different head. A generated real test cosignature passes; an
+  unknown pin, altered signature/origin and duplicate URL fail. The underlying SDK's permissive verdict is
   asserted before the stricter consumer refusal, reproducing the old gap.
 - The v13 bill plus v2 evidence consumer passed: altered amount/rate, actual
   committed artifact, missing manifest/artifact, wrong hash/key/origin/customer
@@ -48,7 +55,7 @@ It imports only the installed package and local example modules/fixtures.
   not assert a genuine cryptographic proof over a synthetic large-value entry.
 - Formatting, shell syntax, Python caller syntax and diff checks passed. Caller
   scripts now copy the required helper alongside `verify.mjs`; the candidate
-  clean-pack script also runs the seven scope groups against its installed SDK.
+  clean-pack script also runs the eight scope groups against its installed SDK.
 
 Logs: `/tmp/oxsum-876-{scope,consumer,whole,sse}.log`. Missing witnesses remain an
 explicit skip. The consumer's fetch guard is not an OS-level network sandbox.
