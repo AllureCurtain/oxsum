@@ -66,6 +66,15 @@ pub async fn deliver_due(
     while let Some(completed) = in_flight.join_next().await {
         record_outcome(db, metrics, completed).await;
     }
+    if organization.is_none() {
+        crate::application_notifications::deliver_due(
+            db,
+            &oxsum_integrations::provider_http::ProviderHttp::default(),
+            secret,
+            None,
+        )
+        .await;
+    }
 }
 
 /// Records one finished delivery: the metrics label, then the row update.

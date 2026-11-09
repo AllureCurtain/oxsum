@@ -388,5 +388,11 @@ pub use collection_terms::{
     CollectionCurrency, CollectionTerms, CollectionTermsMutation, CollectionTermsRequest,
 };
 
+pub use integration_applications::{
+    ApplicationNotificationDeliveries, ApplicationNotificationDelivery,
+    ApplicationNotificationEndpoint, ApplicationNotificationEndpointRequest,
+    ApplicationNotificationEndpoints, ApplicationNotificationMutation,
+    CreatedApplicationNotificationEndpoint, DueApplicationNotification,
+};
 pub use statement_payments::evidence::Effect as StatementCashEffect;
 pub use statement_payments::{StatementPaymentQuote, StatementPaymentSlice, StatementPaymentTerms};

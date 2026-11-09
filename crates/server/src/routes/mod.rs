@@ -21,6 +21,7 @@ use crate::AppState;
 use crate::error::ApiError;
 
 mod application_checkout;
+mod application_notifications;
 mod auth;
 pub(crate) mod billing;
 mod bundles;
@@ -280,6 +281,12 @@ pub fn router(state: AppState) -> Router {
         )
         .route("/business", get(business::business))
         .route("/business/readiness", get(business_readiness::get))
+        .route("/business/applications/{applicationId}/notification-endpoints",get(application_notifications::list).post(application_notifications::create))
+        .route("/business/applications/{applicationId}/notification-endpoints/{endpointId}/disable",post(application_notifications::disable))
+        .route("/business/applications/{applicationId}/notification-endpoints/{endpointId}/deliveries",get(application_notifications::deliveries))
+        .route("/business/applications/{applicationId}/notification-endpoints/{endpointId}/deliveries/{deliveryId}/retry",post(application_notifications::retry))
+        .route("/integration/notification-endpoints",get(application_notifications::service_list))
+        .route("/integration/notification-endpoints/{endpointId}/deliveries",get(application_notifications::service_deliveries))
         .route(
             "/business/applications",
             get(integration_applications::list).post(integration_applications::create),

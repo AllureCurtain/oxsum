@@ -956,3 +956,31 @@ token, aggregate available balance or raw key count. All sample amounts remain
 integer credit-minor; the conservative reservation intentionally retains the
 gateway's pre-discount behavior. Provider/rate/policy checks remain outside the
 funding snapshot.
+
+### Transactional application lifecycle signal queue (#937)
+
+Immutable application endpoints and their separate delivery queue preserve namespace
+ownership; customer webhook endpoints are never inherited. Owner mutations reuse
+business ownership, current capabilities and immutable mutation/audit receipts.
+Runtime metadata uses explicit notificationsRead and current credential checks.
+Source-table AFTER triggers enqueue only bounded resource identities, in the
+source transaction, for application-owned customers. This covers staff, callback
+and background writers without best-effort after-commit gaps. Unchanged updates
+do not enqueue; rollback removes both changes and signals. The ledger schema is
+untouched. Usage signals are opt-in on usage creation/status changes; they are not
+complete ledger change-data capture. Existing endpoint creation is not backfilled.
+
+Each original UTF-8 body is capped at 4 KiB and immutable. At most two active
+endpoints bound each source fan-out. The existing webhook job first services its
+customer batch, then claims at most 32 application signals with eight concurrent
+sends, 120-second lease fencing and the existing ten-attempt backoff. Only enabled
+targets are claimable. ProviderHttp resolves and checks every address set, disables
+proxies/redirects, and pins approved destinations before signatures are attached.
+Fixed error categories exclude destination and receiver data. Retry preserves
+original ID/body; owner retry resets only the bounded attempt cycle.
+
+The separate Python/SQLite receiver persists exact signed inbox bytes and performs
+serialized current reads. Acknowledgment means durable intake, not successful
+state reconciliation. Its snapshots cannot reactivate state from a stale signal
+because the signal itself has no state fields. Natural expiration/boundaries
+still need on-use reads. Source coverage and proof guarantees remain explicit.

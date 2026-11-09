@@ -37,6 +37,8 @@ pub enum IntegrationScope {
     CheckoutWrite,
     /// Publish bounded customer-safe evidence for this application.
     EvidenceWrite,
+    /// Read this application notification endpoint and delivery status.
+    NotificationsRead,
 }
 impl IntegrationScope {
     pub(crate) fn as_str(self) -> &'static str {
@@ -52,6 +54,7 @@ impl IntegrationScope {
             Self::EvidenceRead => "evidenceRead",
             Self::CheckoutWrite => "checkoutWrite",
             Self::EvidenceWrite => "evidenceWrite",
+            Self::NotificationsRead => "notificationsRead",
         }
     }
 }
@@ -179,6 +182,7 @@ fn from_row(row: &sqlx::postgres::PgRow) -> Result<IntegrationCredential, Wallet
             "evidenceRead" => Ok(IntegrationScope::EvidenceRead),
             "checkoutWrite" => Ok(IntegrationScope::CheckoutWrite),
             "evidenceWrite" => Ok(IntegrationScope::EvidenceWrite),
+            "notificationsRead" => Ok(IntegrationScope::NotificationsRead),
             _ => Err(WalletError::Forbidden("unknown integration scope".into())),
         })
         .collect::<Result<_, _>>()?;
@@ -302,7 +306,8 @@ impl Db {
                     || scopes.contains(&"customerLinkWrite")
                     || scopes.contains(&"evidenceRead")
                     || scopes.contains(&"checkoutWrite")
-                    || scopes.contains(&"evidenceWrite")))
+                    || scopes.contains(&"evidenceWrite")
+                    || scopes.contains(&"notificationsRead")))
         {
             return Err(WalletError::InvalidInput(
                 "scopes must be distinct; application grants require empty customerIds, legacy grants require 1 to 1000 distinct ids or customersProvision alone".into(),

@@ -1088,3 +1088,32 @@ transaction. Registry identities are opened beforehand without writes, so a
 one-connection database pool works. No key secret, provider destination or
 provider cost is returned. This is not a reservation or an execution guarantee:
 rate windows, policies and provider availability remain actual-call checks.
+### Application lifecycle notifications (#937)
+
+Owner-only `IntegrationsManage` configures immutable destinations at
+`/business/applications/{applicationId}/notification-endpoints`: GET lists at
+most twenty retained endpoints; POST takes exact operation key, reason, URL,
+destination policy and distinct event names. At most two can be enabled. The
+first create response returns the signing secret once; exact replay returns null.
+A POST to `/{endpointId}/disable` stops new enqueue and unclaimed delivery.
+A claimed attempt can still finish. Address/key rotation creates a replacement.
+
+GET `/{endpointId}/deliveries?after=...&limit=...` returns at most fifty statuses.
+POST `/{endpointId}/deliveries/{deliveryId}/retry` starts a new ten-attempt cycle
+only for a failed delivery to an enabled endpoint; original ID and bytes remain.
+Both writes use an audited reason and stable operation key; changed reuse conflicts.
+The application-only `notificationsRead` scope reads its own endpoint metadata at
+`/integration/notification-endpoints` and delivery pages at
+`/integration/notification-endpoints/{endpointId}/deliveries`. It grants no
+destination changes, signing secret recovery, foreign endpoints or implied reads.
+
+Signals are `customer.changed`, `key.changed`, `entitlement.changed`,
+`order.changed`, `statement.changed`, `evidence.published`, `balance.changed`.
+The exact signed envelope contains version 1, delivery `id`, `type`, applicationId,
+organizationId, entityId, entityKind, action `readCurrentState` and createdAt.
+It contains no financial state or credentials. Headers use the existing
+`x-oxsum-event`, `x-oxsum-delivery` and `x-oxsum-signature: t=...,v1=...` format:
+HMAC-SHA256 of ASCII timestamp, dot, original UTF-8 body. Verify within a bounded
+time window before parsing; persist delivery IDs and reject changed byte replay.
+The timestamp is not a state version. Reconcile using separately granted current
+reads, and independently verify any downloaded evidence.

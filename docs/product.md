@@ -854,3 +854,20 @@ manual/account/plan restrictions still apply. Sample selection, limits and
 uncertainty are visible. Missing sale terms, a missing ledger or a period/expiry
 transition never masquerade as readiness. First-call evidence remains a separate
 actual successful receipt; no readiness read sends a provider request.
+### Signed lifecycle signals for external applications (#937)
+
+The owner configures and rotates an application's receiving endpoints in Business
+application access. Runtime needs only separately granted machine reads; an
+application cannot choose an internal destination or recover a signing secret.
+Public HTTPS is the default. An owner may explicitly approve exact internal IPs
+for one fixed endpoint, including isolated development receivers.
+
+Committed customer/key/plan/payment/statement/evidence changes enqueue a durable
+identity signal in the same transaction. Foreign portal order identities are not
+disclosed: shared-balance changes name the customer instead. Notifications do not
+assert ordered state or financial completion; duplicate/out-of-order receivers
+read current authoritative facts. Disabling an endpoint stops new and unclaimed
+work; already-claimed sends may finish. Secret rotation uses a replacement.
+Credential rotation/revocation is separate from owner-authorized endpoint delivery.
+A new endpoint has no historical replay guarantee; initial reads and time-based
+state rechecks remain necessary. Local fixtures do not certify public delivery.
