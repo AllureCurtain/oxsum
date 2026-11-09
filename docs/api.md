@@ -836,6 +836,8 @@ The local owner/finance preview/apply has no HTTP mutation endpoint. Original
 wrong receipt B plus actual loss L produces appended Cash credit B + L, with
 separate fields for both components, original Wallet debit, review suspense,
 preserved credit benefit, exact entry/receipt identities, hashes and source
-revision. Null means no verified correction, not historical correctness. Original
+revision. Null means no retained correction, not historical correctness; the
+read projection does not independently reverify the evidence. Original
 terminal/audit/debt history remains unchanged. A valid corrected `lost` replay
-retains its standing result without another money leg; another outcome conflicts.
+retains its standing result without another money leg. An exact earlier resolution
+request also returns current standing; a new request for another outcome conflicts.

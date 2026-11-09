@@ -65,8 +65,11 @@ Cash loss. They debit only proven retained original Wallet funding and place the
 rest in `Equity:Adjustments` suspense. Source proof includes the fulfilled order,
 exact original entry/id/key/hash and positive settled USD legs, plus all later
 settled Wallet debits, current pending reservations and prior actual case cash.
-Later top-ups never replenish the source. Any prior refund history excludes a
-Wallet take-back until that separate writer's recovery is implemented.
+Later top-ups never replenish the source. Prior actual refunds consume the
+original source once. Under the shared order-source lock, a version-1 atomic
+refund with no succeeded state and no verified Cash entry proves no return yet;
+an approval alone does not consume Cash. Legacy, malformed or orphan refund
+history still excludes an automatic Wallet take-back until exact recovery.
 
 The immutable `dispute.resolve` audit names `walletTakenMinor`,
 `unallocatedMinor`, `requiresReview`, `source` and `cancelledPromoLotId`. The source

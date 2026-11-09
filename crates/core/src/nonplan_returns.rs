@@ -369,8 +369,7 @@ async fn inspect_source_in(
             Err(error) => return Err(error),
         };
         let Some(effect) = effect else {
-            if refund.is_some()
-                && previous.try_get::<i16, _>("cash_policy_version")? == 1
+            if previous.try_get::<i16, _>("cash_policy_version")? == 1
                 && previous.try_get::<String, _>("state")? != "succeeded"
             {
                 match crate::nonplan_refunds::return_entry_in(

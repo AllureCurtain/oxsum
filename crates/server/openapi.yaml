@@ -16023,7 +16023,7 @@ components:
           oneOf:
             - $ref: "#/components/schemas/NonplanChargebackCorrection"
             - type: "null"
-          description: Verified append-only compensation of a historical wrong-direction non-plan chargeback. The old entry and terminal outcome are preserved; null does not certify historical correctness.
+          description: Retained append-only compensation of a historical wrong-direction non-plan chargeback. The old entry and terminal outcome are preserved; null means no retained correction. This read projection does not independently reverify the evidence or certify historical correctness.
         createdAt: { type: string, format: date-time }
         updatedAt: { type: string, format: date-time }
     NonplanChargebackCorrection:

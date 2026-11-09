@@ -757,3 +757,5 @@ only one transaction writes correction/effect/audit. No old state/audit or debt
 document changes. `OrderDispute.cashCorrection` exposes the separate compensation
 and review status; a corrected terminal `lost` replay cannot append another loss.
 
+Historical bundle promo is retained and explicitly named in review reasons;
+the correction does not invoke the forward loss's promo cancellation writer.

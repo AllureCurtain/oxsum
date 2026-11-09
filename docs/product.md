@@ -684,6 +684,8 @@ an appended entry. It cancels the old false cash receipt and records the full
 confirmed loss, which can exceed the old clamped credit repayment. Only proven
 retained original Wallet funds the actual loss; other amounts remain finance
 review suspense. The old credit benefit and debt/statement history stay intact.
+Historical bundle promo remains unchanged with explicit `bundlePromoRetained`
+review status; this correction does not cancel or reopen past entitlement.
 The original lost outcome, audit and entry are retained beside `cashCorrection`.
 Operators preview an exact dispute and authenticated receipt, review the source
 revision and explicitly apply it under current owner/finance authority. Unsupported

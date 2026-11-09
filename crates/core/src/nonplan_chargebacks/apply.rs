@@ -172,6 +172,9 @@ pub(super) async fn inspect_in(
         .map(|reason| (*reason).to_owned())
         .collect();
     reasons.push("historicalCreditBenefitRetained".into());
+    if source.purpose == "bundle" {
+        reasons.push("bundlePromoRetained".into());
+    }
     let cash = source
         .original
         .cash
