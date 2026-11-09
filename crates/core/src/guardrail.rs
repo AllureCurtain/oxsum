@@ -335,8 +335,8 @@ pub enum Verdict {
     Flag {
         /// The policy that flagged.
         policy: String,
-        /// The rule's own reason, bounded by the caller before it lands in a
-        /// ledger description.
+        /// The rule's complete reason, retained beside a bounded inline value
+        /// or an exact-text commitment in the ledger description.
         reason: String,
     },
     /// The content is refused. On `pre_call` the turn never takes a hold — a
@@ -346,7 +346,8 @@ pub enum Verdict {
     Block {
         /// The policy that refused.
         policy: String,
-        /// The rule's own reason, bounded by the caller.
+        /// The rule's complete reason, retained with its exact-text commitment
+        /// when it exceeds the ledger's inline reason budget.
         reason: String,
     },
 }

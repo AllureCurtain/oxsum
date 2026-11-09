@@ -904,7 +904,7 @@ async fn a_fully_covered_turn_settles_the_zero_cost_receipt_on_an_empty_wallet()
     let _ = response.into_body().collect().await.unwrap().to_bytes();
 
     let record = world.settlement_within(&id).await;
-    assert_eq!(record["v"], 14, "{record}");
+    assert_eq!(record["v"], 15, "{record}");
     assert_eq!(record["kind"], "usage", "{record}");
     assert_eq!(
         record["charged"], 40,
@@ -1084,7 +1084,7 @@ async fn a_sale_priced_turn_commits_the_snapshot_digest() {
     let _ = response.into_body().collect().await.unwrap().to_bytes();
 
     let record = world.settlement_within(&id).await;
-    assert_eq!(record["v"], 14, "{record}");
+    assert_eq!(record["v"], 15, "{record}");
     // 12 tokens × 2 minor, halved by the book's discount = 12 — the figure
     // the wholesale catalog could never have produced (its rate is 0).
     assert_eq!(record["charged"], 12, "{record}");

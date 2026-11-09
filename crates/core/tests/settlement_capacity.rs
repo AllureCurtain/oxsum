@@ -30,7 +30,7 @@ async fn wallet() -> Option<Wallet> {
 }
 
 #[tokio::test]
-async fn complete_v14_provenance_survives_storage_and_offline_verification() {
+async fn complete_v14_and_v15_provenance_survives_storage_and_offline_verification() {
     let Some(wallet) = wallet().await else { return };
     let model = "m".repeat(200);
     let requested = "q".repeat(200);
@@ -103,6 +103,7 @@ async fn complete_v14_provenance_survives_storage_and_offline_verification() {
             policy: &policy,
             verdict: "flagged",
             reason: &reason,
+            phase: "post_call",
             streamed: false,
         }],
         reason: Some(&reason),
@@ -116,35 +117,75 @@ async fn complete_v14_provenance_survives_storage_and_offline_verification() {
     .unwrap();
     assert!(description.chars().count() > 512);
     assert!(description.chars().count() < MAX_DESCRIPTION_LEN);
-    let receipt = wallet
-        .usage_receipt("composed", &description, None, None, DAY)
-        .await
-        .unwrap();
-    let proof = wallet
-        .receipt_proof(receipt.entry_id, None)
-        .await
-        .unwrap()
-        .unwrap();
-    assert_eq!(proof.entry.description().as_str(), description);
-    let record = SettlementRecord::parse(proof.entry.description().as_str()).unwrap();
-    assert_eq!(record.requested_model, requested);
-    assert_eq!(record.upstream_model.as_deref(), Some(upstream.as_str()));
-    assert_eq!(record.subscription.unwrap().charged_minor, 3);
-    assert_eq!(record.cache.unwrap().source_entry_id, source);
-    assert_eq!(record.mandate.unwrap().hash, hash);
-    assert_eq!(record.guardrail[0].reason, reason);
-    assert_eq!(record.experiment.unwrap().variant, model);
-    assert_eq!(record.sale.unwrap().digest, hash);
-    let json = serde_json::to_string(&proof).unwrap();
-    assert!(oxsum_core::verify_bundle(&json, &receipt.content_hash).unwrap());
-    assert_eq!(
-        oxsum_verify::verify_charge(&description),
-        oxsum_verify::ChargeCheck::Recomputed
-    );
-    let mut changed: serde_json::Value = serde_json::from_str(&json).unwrap();
-    changed["entry"]["description"] =
-        serde_json::Value::String(description.replace("flagged", "blocked"));
-    assert!(!oxsum_core::verify_bundle(&changed.to_string(), &receipt.content_hash).unwrap());
+    for version in [14, 15] {
+        let description = if version == 14 {
+            // Retain the preceding writer's full-text wire shape as well as
+            // testing the current writer's commitment and explicit phase.
+            let mut legacy: serde_json::Value = serde_json::from_str(&description).unwrap();
+            legacy["v"] = 14.into();
+            legacy["reason"] = reason.clone().into();
+            legacy.as_object_mut().unwrap().remove("reasonCommitment");
+            let note = legacy["guardrail"][0].as_object_mut().unwrap();
+            note.remove("phase");
+            note.remove("reasonCommitment");
+            note.insert("reason".into(), reason.clone().into());
+            legacy.to_string()
+        } else {
+            description.clone()
+        };
+        let receipt = wallet
+            .usage_receipt(
+                &format!("composed/{version}"),
+                &description,
+                None,
+                None,
+                DAY,
+            )
+            .await
+            .unwrap();
+        let proof = wallet
+            .receipt_proof(receipt.entry_id, None)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(proof.entry.description().as_str(), description);
+        let record = SettlementRecord::parse(proof.entry.description().as_str()).unwrap();
+        assert_eq!(record.requested_model, requested);
+        assert_eq!(record.upstream_model.as_deref(), Some(upstream.as_str()));
+        assert_eq!(record.subscription.unwrap().charged_minor, 3);
+        assert_eq!(record.cache.unwrap().source_entry_id, source);
+        assert_eq!(record.mandate.unwrap().hash, hash);
+        if version == 14 {
+            assert_eq!(record.guardrail[0].reason.as_deref(), Some(reason.as_str()));
+            assert!(record.guardrail[0].reason_commitment.is_none());
+            assert!(record.guardrail[0].phase.is_none());
+            assert_eq!(record.reason.as_deref(), Some(reason.as_str()));
+        } else {
+            assert!(record.guardrail[0].reason.is_none());
+            assert_eq!(record.guardrail[0].phase.as_deref(), Some("post_call"));
+            assert!(oxsum_verify::verify_reason_commitment(
+                record.guardrail[0].reason_commitment.as_ref().unwrap(),
+                &reason,
+            ));
+            assert!(record.reason.is_none());
+            assert!(oxsum_verify::verify_reason_commitment(
+                record.reason_commitment.as_ref().unwrap(),
+                &reason,
+            ));
+        }
+        assert_eq!(record.experiment.unwrap().variant, model);
+        assert_eq!(record.sale.unwrap().digest, hash);
+        let json = serde_json::to_string(&proof).unwrap();
+        assert!(oxsum_core::verify_bundle(&json, &receipt.content_hash).unwrap());
+        assert_eq!(
+            oxsum_verify::verify_charge(&description),
+            oxsum_verify::ChargeCheck::Recomputed
+        );
+        let mut changed: serde_json::Value = serde_json::from_str(&json).unwrap();
+        changed["entry"]["description"] =
+            serde_json::Value::String(description.replace("flagged", "blocked"));
+        assert!(!oxsum_core::verify_bundle(&changed.to_string(), &receipt.content_hash).unwrap());
+    }
     assert_eq!(wallet.available().await.unwrap(), 0);
     assert_eq!(wallet.reserved().await.unwrap(), 0);
 }
