@@ -8425,6 +8425,46 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/integration/customers/{organization_id}/entitlement": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Read this application's recorded customer entitlement standing
+         * @description Application-only entitlementsRead, explicitly granted by the owner. Returns one coherent current snapshot of customer restrictions, the live or latest sold-plan binding, recorded quota window and shared statement/journal debt. Quota consumption includes pending draws. Ended or cancelled windows are historical recorded amounts, never a promise of spendable quota. This read performs no rollover, admission, reservation, dunning refresh, payment, digest publication or other domain mutation. It does not guarantee that a subsequent call can execute.
+         */
+        get: operations["getApplicationCustomerEntitlement"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/integration/customers/{organization_id}/models": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Read permitted configured public models and effective customer sale terms
+         * @description Application-only entitlementsRead. Filters configured routes by this customer's current model and channel authority before pagination. Optional keyId must be a live consumption key issued inside this exact application/customer and can only narrow the result. Alias and target must both be permitted. Returns published customer sale terms under override, assigned-book, then default-book precedence; saleTerms null explicitly means no active published customer sale for that model. Channel wholesale prices, provider identities, credentials, endpoints and upstream model names are never returned. No provider reachability or admission guarantee, reservation, sale digest write or other domain mutation. Each page is a fresh snapshot.
+         */
+        get: operations["listApplicationCustomerModels"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/integration/customers/{organization_id}/keys": {
         parameters: {
             query?: never;
@@ -21723,8 +21763,112 @@ export interface components {
             /** Format: uuid */
             nextCursor: string | null;
         };
+        ApplicationCustomerEntitlement: {
+            /** Format: uuid */
+            applicationId: string;
+            /** Format: uuid */
+            organizationId: string;
+            /** Format: date-time */
+            asOf: string;
+            /** @enum {string} */
+            customerState: "active" | "archived";
+            manuallySuspended: boolean;
+            organizationDunningSuspended: boolean;
+            /** @description Shared plan admission debt/dunning projection; separate from organization-wide restrictions. */
+            planOverageSuspended: boolean;
+            /**
+             * Format: int64
+             * @description All retained statement/journal debt across this customer's plans; excludes pending holds.
+             */
+            outstandingPlanDebtMinor: number;
+            plan: components["schemas"]["ApplicationPlanStanding"] | null;
+            quota: components["schemas"]["ApplicationQuotaStanding"] | null;
+        };
+        /** @description Live sold-plan binding, or the latest terminal binding when none is live. No lifecycle transition is performed. */
+        ApplicationPlanStanding: {
+            /** Format: uuid */
+            customerPlanId: string;
+            /** Format: uuid */
+            planVersionId: string;
+            /** @enum {string} */
+            state: "pendingPayment" | "active" | "renewalPending" | "pastDue" | "expired" | "cancelled";
+            cancelAtPeriodEnd: boolean;
+            /** Format: uuid */
+            scheduledChange: string | null;
+            credit: components["schemas"]["PlanCreditStanding"];
+        };
+        /** @description Active subscription, or the retained subscription of the selected sold-plan binding. Amounts belong only to the recorded window and are not an available-to-call balance. */
+        ApplicationQuotaStanding: {
+            /** Format: uuid */
+            subscriptionId: string;
+            /**
+             * Format: uuid
+             * @description Authorized sold-plan period matching this exact quota window
+             */
+            planPeriodId: string | null;
+            /** @enum {string} */
+            state: "active" | "cancelled" | "expired";
+            /**
+             * @description Clock position only; current does not override state
+             * @enum {string}
+             */
+            windowState: "notStarted" | "current" | "ended";
+            /** Format: date-time */
+            periodStart: string;
+            /** Format: date-time */
+            periodEnd: string | null;
+            /**
+             * Format: int64
+             * @description Null means unmetered in the recorded subscription.
+             */
+            quotaMinor: number | null;
+            /**
+             * Format: int64
+             * @description Recorded subscription consumption
+             */
+            consumedMinor: number;
+            /**
+             * Format: int64
+             * @description Max of recorded quota minus consumption and zero; null for unmetered. Never promised spendable after a boundary or restriction.
+             */
+            remainingRecordedMinor: number | null;
+            /** @description Recorded overflow policy; actual debt */
+            allowWalletOverflow: boolean;
+        };
+        ApplicationCustomerSaleTerms: {
+            /** @enum {string} */
+            source: "override" | "assigned" | "default";
+            /** Format: uuid */
+            scheduleId: string;
+            /** Format: uuid */
+            bookId: string | null;
+            /** Format: int64 */
+            version: number | null;
+            /** Format: date-time */
+            effectiveFrom: string;
+            /** Format: date-time */
+            effectiveUntil: string | null;
+            terms: components["schemas"]["SaleTerms"];
+        };
+        ApplicationCustomerModel: {
+            model: string;
+            /** @description Null explicitly means no active published customer sale terms; no wholesale-price fallback. */
+            saleTerms: components["schemas"]["ApplicationCustomerSaleTerms"] | null;
+        };
+        ApplicationCustomerModelPage: {
+            /** Format: uuid */
+            applicationId: string;
+            /** Format: uuid */
+            organizationId: string;
+            /** Format: uuid */
+            keyId: string | null;
+            /** Format: date-time */
+            asOf: string;
+            models: components["schemas"]["ApplicationCustomerModel"][];
+            nextCursor: string | null;
+        };
         /** @enum {string} */
-        IntegrationScope: "customersRead" | "meteringWrite" | "customersProvision" | "billingRead" | "customersLifecycleWrite" | "customerKeysWrite";
+        IntegrationScope: "customersRead" | "meteringWrite" | "customersProvision" | "billingRead" | "customersLifecycleWrite" | "customerKeysWrite" | "entitlementsRead";
         ProvisionCustomerRequest: {
             idempotencyKey: string;
             /** @description Caller-chosen identifier within the application (integration route) or legacy business namespace (business route). */
@@ -22717,6 +22861,67 @@ export interface operations {
             403: components["responses"]["Error"];
             404: components["responses"]["Error"];
             409: components["responses"]["Error"];
+        };
+    };
+    getApplicationCustomerEntitlement: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                organization_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Recorded entitlement standing; nullable plan/quota means none recorded */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: components["schemas"]["ApplicationCustomerEntitlement"];
+                    };
+                };
+            };
+            401: components["responses"]["Error"];
+            403: components["responses"]["Error"];
+            404: components["responses"]["Error"];
+            500: components["responses"]["Error"];
+        };
+    };
+    listApplicationCustomerModels: {
+        parameters: {
+            query?: {
+                keyId?: string;
+                after?: string;
+                limit?: number;
+            };
+            header?: never;
+            path: {
+                organization_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Permitted public model page, ordered by UTF-8 model name */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: components["schemas"]["ApplicationCustomerModelPage"];
+                    };
+                };
+            };
+            400: components["responses"]["Error"];
+            401: components["responses"]["Error"];
+            403: components["responses"]["Error"];
+            404: components["responses"]["Error"];
+            500: components["responses"]["Error"];
         };
     };
     listApplicationCustomerKeys: {

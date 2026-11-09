@@ -847,3 +847,16 @@ void pins that effect's remaining receivable-funded portion to the canonical
 void entry and hash. Plan-order refunds and disputes exclude those shares.
 All confirmed external cash losses remain recorded, with unallocated excess in
 Adjustments suspense; neither wallet nor CreditLine is used for these returns.
+### Scoped application entitlement projections (#898)
+
+`integration_applications::{reads,read_types}` authorizes an explicit
+`entitlementsRead` application/customer grant under the existing credential lock,
+then reads one repeatable-read snapshot. `ServingAccess::public_models_in` applies
+customer/key/group and alias-target authority before bounded public-name
+pagination. The shared `sale_books::read_effective_in` resolver returns the same
+published terms as gateway resolution but omits digest publication. Gateway
+resolution retains its existing digest write. `plan_debt` supplies the existing
+statement/journal debt projection without refreshing dunning. No domain DML,
+provider access or financial admission is performed by either reader.
+Migration 0120 extends only explicitly selected scope values; old grants remain
+unchanged. Customer key lifecycle from 0118 remains available independently.

@@ -27,6 +27,8 @@ pub enum IntegrationScope {
     CustomersLifecycleWrite,
     /// Issue and revoke bounded gateway keys for this application's own accounts.
     CustomerKeysWrite,
+    /// Read application customer entitlement and published sale terms without mutations.
+    EntitlementsRead,
 }
 impl IntegrationScope {
     pub(crate) fn as_str(self) -> &'static str {
@@ -37,6 +39,7 @@ impl IntegrationScope {
             Self::BillingRead => "billingRead",
             Self::CustomersLifecycleWrite => "customersLifecycleWrite",
             Self::CustomerKeysWrite => "customerKeysWrite",
+            Self::EntitlementsRead => "entitlementsRead",
         }
     }
 }
@@ -159,6 +162,7 @@ fn from_row(row: &sqlx::postgres::PgRow) -> Result<IntegrationCredential, Wallet
             "billingRead" => Ok(IntegrationScope::BillingRead),
             "customersLifecycleWrite" => Ok(IntegrationScope::CustomersLifecycleWrite),
             "customerKeysWrite" => Ok(IntegrationScope::CustomerKeysWrite),
+            "entitlementsRead" => Ok(IntegrationScope::EntitlementsRead),
             _ => Err(WalletError::Forbidden("unknown integration scope".into())),
         })
         .collect::<Result<_, _>>()?;
@@ -277,7 +281,8 @@ impl Db {
             || (request.application_id.is_some() && !customers.is_empty())
             || (request.application_id.is_none()
                 && (scopes.contains(&"customersLifecycleWrite")
-                    || scopes.contains(&"customerKeysWrite")))
+                    || scopes.contains(&"customerKeysWrite")
+                    || scopes.contains(&"entitlementsRead")))
         {
             return Err(WalletError::InvalidInput(
                 "scopes must be distinct; application grants require empty customerIds, legacy grants require 1 to 1000 distinct ids or customersProvision alone".into(),

@@ -4,6 +4,7 @@
 //! Gateway/proof adoption is separate; these APIs never change existing channel prices.
 mod store;
 mod types;
+pub(crate) use store::read_effective_in;
 pub use types::*;
 
 use crate::{

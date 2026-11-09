@@ -2128,7 +2128,8 @@
         "meteringWrite": "预留并扣取声明的外部服务费用",
         "billingRead": "读取授权客户余额、日志和账单",
         "customersLifecycleWrite": "归档应用账户，保留资金和历史记录",
-        "customerKeysWrite": "创建和撤销有限额的客户网关密钥"
+        "customerKeysWrite": "创建和撤销有限额的客户网关密钥",
+        "entitlementsRead": "Read application entitlement, permitted models and customer sale terms"
       },
       "invalidApplication": "请填写固定标识、名称、原因，以及 1 至 10,000 的账户上限。"
     }

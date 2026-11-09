@@ -287,6 +287,14 @@ pub fn router(state: AppState) -> Router {
             get(integration_applications::customer).post(integration_applications::provision),
         )
         .route(
+            "/integration/customers/{organization_id}/entitlement",
+            get(integration_applications::entitlement),
+        )
+        .route(
+            "/integration/customers/{organization_id}/models",
+            get(integration_applications::models),
+        )
+        .route(
             "/integration/customers/{organization_id}/keys",
             get(integration_applications::customer_keys)
                 .post(integration_applications::create_customer_key),

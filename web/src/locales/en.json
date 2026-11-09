@@ -2128,7 +2128,8 @@
         "meteringWrite": "Reserve and charge declared external work",
         "billingRead": "Read scoped customer balances, logs and bills",
         "customersLifecycleWrite": "Archive application accounts; retain funds and history",
-        "customerKeysWrite": "Issue and revoke bounded customer gateway keys"
+        "customerKeysWrite": "Issue and revoke bounded customer gateway keys",
+        "entitlementsRead": "Read application entitlement, permitted models and customer sale terms"
       },
       "invalidApplication": "Enter a stable key, a name, a reason and an account limit from 1 to 10,000."
     }
