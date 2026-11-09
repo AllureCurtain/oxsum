@@ -3620,7 +3620,9 @@ unions refuse without silently skipping policies.
 
 Version 15 reasons are either complete inline text (at most 256 encoded JSON
 bytes) or an explicit SHA-256/UTF-8-length commitment, with complete text retained
-in the same usage/settlement transaction. This replaces silent moderation/error
+in the same normal usage/settlement transaction. Pre-call refusal keeps the
+existing separate best-effort marker and usage writes, and cannot authorize
+execution when either fails. This replaces silent moderation/error
 truncation. Verifiers retain old-version behavior and distinguish digest binding
 from comparison with separately supplied text and from policy semantics. The
 [contract](gateway-evidence-budget.md) defines the scope and runtime gates.

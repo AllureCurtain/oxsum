@@ -16997,7 +16997,7 @@ export interface components {
             /** @description the key's rolling-minute settled-token allowance; null is uncapped */
             tokensPerMinute: number | null;
             tokensPerMinuteScopes: components["schemas"]["TokensPerMinuteScopes"];
-            /** @description the guardrail policies the key's turns must run; null requires none */
+            /** @description the retained guardrail policies the key's turns must run; null requires none. New writes and effective turn unions are limited to eight distinct names; historical oversized lists remain readable. */
             requiredPolicies: string[] | null;
             /**
              * Format: uuid
@@ -17029,6 +17029,12 @@ export interface components {
         TokensPerMinuteScopes: {
             [key: string]: components["schemas"]["TokenScope"];
         } | null;
+        /** @description v15 settlement commitment to a complete reason omitted from inline JSON. Hashes exact UTF-8 bytes; a proof without full text does not establish reason matching or policy correctness. */
+        ReasonCommitment: {
+            sha256: string;
+            /** Format: int64 */
+            utf8Bytes: number;
+        };
         /** @description A configured guardrail policy (issue #502). `config` is the kind's own shape: `keyword` holds `{patterns: [{re, action}]}` with `action` `flag` or `block`, `pii` holds `{}`, `moderation` holds `{endpoint, timeoutMs?}`. A `moderation` policy's bearer is stored sealed and never serialized. */
         GuardrailPolicy: {
             name: string;
@@ -17041,7 +17047,7 @@ export interface components {
         GuardrailPolicyRequest: {
             /** @enum {string} */
             kind: "keyword" | "pii" | "moderation";
-            /** @description the kind's own shape — `keyword`: `{patterns: [{re, action}]}`; `pii`: `{}`; `moderation`: `{endpoint, timeoutMs?}` */
+            /** @description the kind's own shape — keyword has 1–64 patterns, each regex at most 4096 UTF-8 bytes and action flag or block; pii is the empty object; moderation is {endpoint, timeoutMs?}, with a 65536-byte response-body limit and a maximum ten-second deadline. An existing bound keyword configuration exceeding these limits refuses admission. */
             config: Record<string, never>;
             /** @description the `moderation` kind's bearer, sealed on write and never echoed; absent keeps a stored bearer, required on the first write of a moderation policy that screens */
             apiKey?: string;
@@ -17051,11 +17057,11 @@ export interface components {
             scope: "channel" | "key";
             /** @description the channel's name, or the key's id */
             target: string;
-            /** @description the ordered policy names the scope runs */
+            /** @description the retained ordered policy names; new writes and effective turn unions are limited to eight distinct names */
             policies: string[];
         };
         GuardrailBindingRequest: {
-            /** @description every name must already exist as a configured policy */
+            /** @description Every name must already exist. The complete channel/key/mandate union may contain at most eight policies; an oversized effective union refuses before execution. */
             policies: string[];
         };
         /** @description One tag scope (issue #209): exactly one of `each`, `concrete`, or `total` is set. A settled turn accrues into the bucket its `metadata` tag selects — `each` fans out per value (`tag=value`), `concrete` only the pinned value, `total` the whole tag — and the bucket's cap is checked `window-actual + estimate ≤ cap` at admission, 429 when full while other buckets stay open. */
@@ -17139,7 +17145,7 @@ export interface components {
             capMinor: number;
             /** @description the model allowlist — a subset of the key's own; null means all the key serves */
             models: string[] | null;
-            /** @description the guardrail policies this mandate requires — a subset of the key's own; null means all the key requires (issue #502) */
+            /** @description the retained guardrail policies this mandate requires — a subset of the key's own; null means all the key requires (issue #502). Historical oversized lists remain readable; effective turn unions are limited to eight distinct names. */
             requiredPolicies: string[] | null;
             /** Format: date-time */
             notBefore: string;
@@ -18725,8 +18731,10 @@ export interface components {
              * @enum {string}
              */
             status?: "settled" | "errored" | "refused";
-            /** @description why the turn refused or errored, when the settlement recorded a reason — the caller-facing words the answer already carried; absent on a clean settle */
+            /** @description why the turn refused or errored, when the settlement recorded a complete inline reason — the caller-facing words the answer already carried. Absent on a clean settle or when v15 carries a commitment. */
             failureReason?: string;
+            /** @description v15 identity of the complete failure reason retained separately; exclusive with failureReason. This projection reads the immutable entry and does not claim the full text was independently compared. */
+            failureReasonCommitment?: components["schemas"]["ReasonCommitment"];
             /**
              * @description how the turn was priced
              * @enum {string}

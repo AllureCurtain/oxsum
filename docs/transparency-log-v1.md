@@ -167,7 +167,7 @@ Verdict: `true` or `false`. The check answers "this entry is in this ledger and 
 
 `verify_bill` runs `verify_bundle` first; on `false` the verdict is `"fail"` and both sentences are empty. When the entry includes, it adds:
 
-- `verify_charge` — recomputes the recorded charge from the settlement description's `usage` and `lines` (schema `v` 2 through 8; `charged`/`freeze` are checked against the line fold). A description the verifier does not parse as a settlement reports `NotASettlement`; a `v` below the known floor reports `OlderSchema`; one above reports `NewerSchema{version}` — each with the reason named in the sentence rather than a bare pass/fail.
+- `verify_charge` — recomputes the recorded charge from the settlement description's `usage` and `lines` (schema `v` 2 through 15; `charged`/`freeze` are checked against the line fold). A description the verifier does not parse as a settlement reports `NotASettlement`; a `v` below the known floor reports `OlderSchema`; one above reports `NewerSchema{version}` — each with the reason named in the sentence rather than a bare pass/fail.
 - `verify_price_head` — checks the PriceLink (see §5.6).
 
 Verdict: `"pass"`, `"chargeMismatch"`, or `"fail"`. `charge` and `price` are whole sentences (each carries its leading space so a renderer concatenates after the inclusion clause); a `v7+` record's `mandate` line is folded into the charge sentence.
@@ -307,3 +307,27 @@ Two consumers run this check over a report bundle — the server-rendered bill p
 ## 7. Versioning
 
 v1 is the wire shape the deployment serves today — SCALE `6`, the hash domains in §3, and the description schema versions the writers already emit: settlement `v` 2–8 recompute under `verify_charge` (v8 added `upstreamModel`, v7 `mandate`), and the commitment/anchor/rollup/usage-report documents are all `v == 1`. A change to any of these revs this document; readers implementing from it should name the version they verify against.
+
+## Version 15 complete reason commitments (#875)
+
+Gateway v15 preserves the v14 charge arithmetic and provenance fields. A
+`guardrail` entry additionally names `phase: "pre_call" | "post_call"`; each
+(policy, phase) pair is unique, with at most eight distinct policy names and
+sixteen entries. `streamed`, when present, is `true` and belongs to `post_call`.
+
+Both a guardrail entry and the settlement's optional failure reason contain
+exactly one of complete `reason` text or `reasonCommitment`. Inline text is at
+most 256 bytes as its serialized JSON string, including quotes and escaping.
+A commitment is exactly `{sha256, utf8Bytes}`: 64 lowercase hexadecimal SHA-256
+characters over the complete original UTF-8 reason bytes, plus their positive
+signed-64-bit length. It is not a hash of JSON or normalized text. No shortened
+inline text accompanies a commitment. Versions 3–14 keep their previous rules.
+
+The entry's canonical hash and inclusion proof bind the commitment bytes.
+`verify_reason_commitment` / WASM `verifyReasonCommitment` compare separately
+retained full text after the containing entry has been verified. A bundle that
+omits the full text still establishes commitment inclusion, but establishes no
+text match. Neither operation certifies policy judgment or provider truthfulness.
+Full-text usage details are not automatically copied into a public proof bundle.
+See [gateway-evidence-budget.md](gateway-evidence-budget.md) for the admission,
+retention and pre-call refusal boundary.
