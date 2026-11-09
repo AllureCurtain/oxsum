@@ -2151,7 +2151,8 @@
         "customersLifecycleWrite": "Archive application accounts; retain funds and history",
         "customerKeysWrite": "Issue and revoke bounded customer gateway keys",
         "entitlementsRead": "Read application entitlement, permitted models and customer sale terms",
-        "customerLinkWrite": "Invite verified personal ownership of application accounts"
+        "customerLinkWrite": "Invite verified personal ownership of application accounts",
+        "evidenceRead": "Read original frozen customer evidence"
       },
       "invalidApplication": "Enter a stable key, a name, a reason and an account limit from 1 to 10,000."
     }

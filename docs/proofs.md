@@ -102,3 +102,12 @@ voids retain per-payment payable ownership. These records prove recorded source
 relationships within the existing operator/ledger trust scope. They do not
 independently prove external provider settlement, fair collection, delivery of
 service, or events after a captured artifact was minted.
+### Application downloads of retained evidence (#924)
+
+Application `evidenceRead` serves the same retained version-2 bytes after explicit
+namespace/customer authorization and internal consistency checks. It does not
+create an anchor or establish completeness beyond the original manifest scope.
+The retained key is not an independent trust root: consumers must still use
+previously held origin/key/digest and the existing verifier. Downloads refuse
+cost-inclusive, malformed, duplicate-key or oversized files instead of rewriting
+the committed content. Descriptor listing alone proves nothing about file validity.

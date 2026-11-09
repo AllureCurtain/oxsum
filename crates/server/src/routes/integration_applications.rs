@@ -217,3 +217,51 @@ pub(crate) async fn accept_link(
         .accept_application_link(&business::personal_token(&headers)?, &request.token)
         .await?)
 }
+
+pub(crate) async fn evidence_bundles(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(org): Path<Uuid>,
+    ApiQuery(query): ApiQuery<PageQuery>,
+) -> ApiResult<oxsum_core::ApplicationEvidencePage> {
+    let service = business::integration(&state, &headers).await?;
+    ok(state
+        .db
+        .application_evidence_bundles(&service, org, query.after, query.limit.unwrap_or(20))
+        .await?)
+}
+
+pub(crate) async fn evidence_download(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path((org, bundle)): Path<(Uuid, Uuid)>,
+) -> Result<axum::response::Response, crate::error::ApiError> {
+    use axum::response::IntoResponse;
+    let service = business::integration(&state, &headers).await?;
+    let bytes = state
+        .db
+        .application_evidence_json(&service, org, bundle)
+        .await?;
+    Ok((
+        [
+            (
+                axum::http::header::CONTENT_TYPE,
+                "application/json".to_owned(),
+            ),
+            (
+                axum::http::header::CONTENT_DISPOSITION,
+                format!("attachment; filename=\"evidence-{bundle}.json\""),
+            ),
+            (
+                axum::http::header::CACHE_CONTROL,
+                "private, no-store".to_owned(),
+            ),
+            (
+                axum::http::header::X_CONTENT_TYPE_OPTIONS,
+                "nosniff".to_owned(),
+            ),
+        ],
+        bytes,
+    )
+        .into_response())
+}

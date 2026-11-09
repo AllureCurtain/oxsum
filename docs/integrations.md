@@ -336,3 +336,18 @@ your flow as the oxsum page does. It grants no access to the person's other
 accounts and does not transfer any ledger or cash. Later member removal is not
 repaired by replaying consent. Scoped checkout/evidence, signed notifications and
 the complete separate-store application remain later N21 units.
+
+### Downloading existing evidence (#924)
+
+Use a dedicated application grant containing `evidenceRead`, paginate
+`/api/v1/integration/customers/{organizationId}/evidence-bundles`, and download a
+selected ID from that same path. The download is raw JSON rather than the API
+`data` envelope. Persist its original bytes, manifest digest and account identity;
+run the existing v2 verifier with your independently retained origin/key and
+expected customer. Do not reserialize or remove parts of an export before checking.
+The scope never permits evidence minting, public share creation or supplier costs.
+An empty list means no evidence has been published for that account; it is not a
+zero-usage assertion. A 409 requires operator recovery or a smaller customer-safe
+export. Archived accounts remain readable while the credential is live. This
+reader is one part of N21; checkout, automated evidence publication, notifications
+and the complete separate-store application remain distinct tasks.

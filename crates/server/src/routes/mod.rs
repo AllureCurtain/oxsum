@@ -304,6 +304,14 @@ pub fn router(state: AppState) -> Router {
             post(integration_applications::revoke_customer_key),
         )
         .route(
+            "/integration/customers/{organization_id}/evidence-bundles",
+            get(integration_applications::evidence_bundles),
+        )
+        .route(
+            "/integration/customers/{organization_id}/evidence-bundles/{bundle_id}",
+            get(integration_applications::evidence_download),
+        )
+        .route(
             "/integration/customers/{organization_id}/link-invitations",
             post(integration_applications::create_link),
         )

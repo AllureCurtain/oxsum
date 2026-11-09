@@ -486,6 +486,10 @@ const MIGRATIONS: &[(&str, &str)] = &[
         "0123_application_account_consent",
         include_str!("../migrations/0123_application_account_consent.sql"),
     ),
+    (
+        "0124_application_evidence_reads",
+        include_str!("../migrations/0124_application_evidence_reads.sql"),
+    ),
 ];
 
 /// Advisory-lock key serialising the migration runner across processes.
