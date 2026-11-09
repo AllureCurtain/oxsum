@@ -3007,6 +3007,8 @@ paths:
         satisfy ordinary wallet admission. Earlier admitted draws still settle
         against their original period. Past-due plans without a cancellation
         retain the documented remainder-quota service policy.
+        Lifecycle closure and request reservation share one transaction; a
+        refused request rolls both back without allowing ended quota to serve.
       x-consumption-key-access: denied
       security: [{ sessionCookie: [] }]
       responses:

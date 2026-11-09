@@ -1410,6 +1410,245 @@ async fn lazy_plan_boundary_reuses_the_admissions_only_connection() {
     );
 }
 
+async fn cancel_at_due_boundary(world: &World, plan: &oxsum_core::CustomerPlan) {
+    world
+        .db
+        .cancel_customer_plan(world.organization_id.parse().unwrap())
+        .await
+        .unwrap();
+    // The fixture uses an original v1 period whose dates are mutable. Current
+    // v2 periods retain their immutable service dates and are never rewritten.
+    sqlx::query("UPDATE oxsum.org_subscriptions SET current_period_end=now()-interval '1 second' WHERE subscription_id=$1")
+        .bind(plan.subscription_id).execute(&world.pool).await.unwrap();
+    sqlx::query("UPDATE oxsum.plan_periods SET period_end=now()-interval '1 second' WHERE customer_plan_id=$1 AND state='active'")
+        .bind(plan.customer_plan_id).execute(&world.pool).await.unwrap();
+}
+
+async fn closed_cancelled_period(
+    world: &World,
+    plan: &oxsum_core::CustomerPlan,
+    consumed: i64,
+) {
+    let organization = world.organization_id.parse().unwrap();
+    assert!(world.db.customer_plan(organization).await.unwrap().is_none());
+    assert!(
+        world
+            .db
+            .active_subscription(organization)
+            .await
+            .unwrap()
+            .is_none()
+    );
+    let periods = world
+        .db
+        .subscription_periods(plan.subscription_id)
+        .await
+        .unwrap();
+    assert_eq!(periods.len(), 1);
+    assert_eq!(periods[0].outcome, "cancelled");
+    assert_eq!(periods[0].consumed_minor, consumed);
+    let periods = world.db.plan_periods(plan.customer_plan_id).await.unwrap();
+    assert_eq!(periods.len(), 1);
+    assert_eq!(periods[0].state, oxsum_core::PlanPeriodState::Closed);
+    let journals: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM oxsum.invoice_journals WHERE customer_plan_id=$1",
+    )
+    .bind(plan.customer_plan_id)
+    .fetch_one(&world.pool)
+    .await
+    .unwrap();
+    assert_eq!(journals, 1, "cancellation closes and bills exactly once");
+}
+
+#[tokio::test]
+async fn a_cancelled_boundary_refusal_rolls_back_every_admission_effect() {
+    let world = world_or_skip!(0);
+    let plan = sold_quota(&world, 60, true).await;
+    cancel_at_due_boundary(&world, &plan).await;
+    world.script.answers(
+        &world.model,
+        Answer::Completion {
+            input: 2,
+            output: 1,
+        },
+    );
+    for _ in 0..2 {
+        let response = chat(&world.app, &world.key, &world.model, json!({})).await;
+        assert_eq!(response.status(), StatusCode::PAYMENT_REQUIRED);
+        let _ = response.into_body().collect().await.unwrap();
+        assert!(world.script.seen().is_empty(), "ended quota never reaches upstream");
+        assert_eq!(remaining_draw(&world).await, 0);
+        no_reservations(&world).await;
+        let periods = world
+            .db
+            .subscription_periods(plan.subscription_id)
+            .await
+            .unwrap();
+        assert_eq!(periods[0].outcome, "open", "the refused transaction rolls back");
+        let effects: (i64, i64) = sqlx::query_as(
+            "SELECT (SELECT count(*) FROM oxsum.subscription_draws WHERE subscription_id=$1), \
+                    (SELECT count(*) FROM oxsum.invoice_journals WHERE customer_plan_id=$2)",
+        )
+        .bind(plan.subscription_id)
+        .bind(plan.customer_plan_id)
+        .fetch_one(&world.pool)
+        .await
+        .unwrap();
+        assert_eq!(effects, (0, 0));
+        assert_eq!(world.wallet().await.available().await.unwrap(), 0);
+    }
+    world
+        .wallet()
+        .await
+        .top_up("cancelled-boundary-funding", 100, OffsetDateTime::now_utc().date())
+        .await
+        .unwrap();
+    let record = complete(&world).await;
+    assert_eq!(record["charged"], 40);
+    assert!(record.get("subscription").is_none());
+    assert_eq!(world.wallet().await.available().await.unwrap(), 60);
+    assert_eq!(world.script.seen().len(), 1);
+    no_reservations(&world).await;
+    closed_cancelled_period(&world, &plan, 0).await;
+    world.db.rollover_due_subscriptions().await.unwrap();
+    closed_cancelled_period(&world, &plan, 0).await;
+}
+
+#[tokio::test]
+async fn both_cancelled_boundary_winners_preserve_old_draws_and_charge_new_calls() {
+    for worker_first in [false, true] {
+        let world = world_or_skip!(100);
+        let organization = world.organization_id.parse().unwrap();
+        let plan = sold_quota(&world, 60, true).await;
+        let old_key = format!("old-boundary-draw-{}", Uuid::new_v4());
+        let old = world
+            .db
+            .admit_subscription_draw(organization, &old_key, 40)
+            .await
+            .unwrap();
+        assert_eq!(old.drawn_minor, 40);
+        cancel_at_due_boundary(&world, &plan).await;
+        world.script.answers(
+            &world.model,
+            Answer::Completion {
+                input: 2,
+                output: 1,
+            },
+        );
+
+        // Stop the first boundary owner after it owns the subscription lock.
+        // pg_blocking_pids proves the other boundary path and old settlement
+        // actually wait behind it; scheduler timing does not select a winner.
+        let gate = Uuid::new_v4().as_u128() as i64;
+        let function = format!("fixture_{}", Uuid::new_v4().simple());
+        sqlx::query(&format!(
+            "CREATE FUNCTION oxsum.{function}() RETURNS trigger LANGUAGE plpgsql AS $$ \
+             BEGIN IF NEW.customer_plan_id='{}' AND NEW.state='cancelled' THEN \
+             PERFORM pg_advisory_xact_lock({gate}); END IF; RETURN NEW; END $$",
+            plan.customer_plan_id,
+        ))
+        .execute(&world.pool)
+        .await
+        .unwrap();
+        sqlx::query(&format!(
+            "CREATE TRIGGER {function} BEFORE UPDATE ON oxsum.customer_plans \
+             FOR EACH ROW EXECUTE FUNCTION oxsum.{function}()"
+        ))
+        .execute(&world.pool)
+        .await
+        .unwrap();
+        let mut blocker = world.pool.begin().await.unwrap();
+        let blocker_pid: i32 = sqlx::query_scalar("SELECT pg_backend_pid()")
+            .fetch_one(&mut *blocker)
+            .await
+            .unwrap();
+        sqlx::query("SELECT pg_advisory_xact_lock($1)")
+            .bind(gate)
+            .execute(&mut *blocker)
+            .await
+            .unwrap();
+        let launch_worker = || {
+            let db = world.db.clone();
+            tokio::spawn(async move { db.rollover_due_subscriptions().await })
+        };
+        let launch_request = || {
+            let app = world.app.clone();
+            let key = world.key.clone();
+            let model = world.model.clone();
+            tokio::spawn(async move {
+                let response = chat(&app, &key, &model, json!({})).await;
+                let status = response.status();
+                let id = request_id(&response);
+                let _ = response.into_body().collect().await.unwrap();
+                (status, id)
+            })
+        };
+        let mut worker = worker_first.then(launch_worker);
+        let mut request = (!worker_first).then(launch_request);
+        wait_for_blocked(&world, blocker_pid, 1).await;
+        let winner_pid: i32 = sqlx::query_scalar(
+            "SELECT pid FROM pg_stat_activity WHERE datname=current_database() \
+             AND $1=ANY(pg_blocking_pids(pid))",
+        )
+        .bind(blocker_pid)
+        .fetch_one(&world.pool)
+        .await
+        .unwrap();
+        if worker_first {
+            request = Some(launch_request());
+        } else {
+            worker = Some(launch_worker());
+        }
+        let db = world.db.clone();
+        let settle_key = old_key.clone();
+        let settlement = tokio::spawn(async move {
+            db.settle_subscription_draw(&settle_key, 20).await
+        });
+        wait_for_blocked(&world, winner_pid, 2).await;
+        blocker.commit().await.unwrap();
+        let (worker, request, settled) = tokio::time::timeout(Duration::from_secs(5), async {
+            tokio::join!(worker.unwrap(), request.unwrap(), settlement)
+        })
+        .await
+        .unwrap();
+        let report = worker.unwrap().unwrap();
+        assert_eq!(report.expired, usize::from(worker_first));
+        assert_eq!(report.rolled, 0);
+        assert_eq!(settled.unwrap().unwrap(), Some(20));
+        let (status, id) = request.unwrap();
+        assert_eq!(status, StatusCode::OK);
+        let record = world.settlement_within(&id).await;
+        assert_eq!(record["charged"], 40);
+        assert!(record.get("subscription").is_none());
+        assert_eq!(world.wallet().await.available().await.unwrap(), 60);
+        assert_eq!(world.script.seen().len(), 1);
+        assert_eq!(
+            world.db.settle_subscription_draw(&old_key, 20).await.unwrap(),
+            Some(20)
+        );
+        no_reservations(&world).await;
+        closed_cancelled_period(&world, &plan, 20).await;
+        let new_draws: i64 = sqlx::query_scalar(
+            "SELECT count(*) FROM oxsum.subscription_draws WHERE subscription_id=$1",
+        )
+        .bind(plan.subscription_id)
+        .fetch_one(&world.pool)
+        .await
+        .unwrap();
+        assert_eq!(new_draws, 1, "only the pre-boundary draw remains");
+        world.db.rollover_due_subscriptions().await.unwrap();
+        closed_cancelled_period(&world, &plan, 20).await;
+        sqlx::query(&format!("DROP TRIGGER {function} ON oxsum.customer_plans"))
+            .execute(&world.pool)
+            .await
+            .unwrap();
+        sqlx::query(&format!("DROP FUNCTION oxsum.{function}()"))
+            .execute(&world.pool)
+            .await
+            .unwrap();
+    }
+}
+
 #[tokio::test]
 async fn legacy_unproven_watch_cleanup_never_creates_a_free_receipt() {
     let world = world_or_skip!(0);
