@@ -277,6 +277,7 @@
   },
   "requests": {
     "title": "Requests",
+    "committedReason": "Full failure reason retained separately ({{bytes}} UTF-8 bytes). The proof contains its digest.",
     "reconnect": "Reconnect the billing socket",
     "connectionLost": "connection lost — retry",
     "live": "live",
@@ -1252,7 +1253,7 @@
       "streamed": "Streamed turns",
       "streamedBody": "A verdict that lands after streaming starts can only be recorded. The output already sent cannot be retracted.",
       "recorded": "What the bill records",
-      "recordedBody": "Every flag and block lands on the settlement's guardrail list with its policy, verdict, reason and a streamed marker when the turn could not act on it.",
+      "recordedBody": "Recorded verdicts include policy, evaluation phase and verdict, plus the complete short reason or a digest of the separately retained full text. Streamed verdicts mark that the answer had already been delivered.",
       "failOpen": "Deleting a bound policy is allowed: turns skip the dangling name (fail-open) until the binding is updated.",
       "policiesTitle": "Policies",
       "policiesCount_one": "{{count}} policy",

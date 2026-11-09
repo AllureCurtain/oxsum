@@ -55,6 +55,7 @@ export interface PublishedKey {
 }
 
 interface VerifyWasmModule {
+  verifyReasonCommitment(commitmentJson: string, reason: string): Promise<string>;
   verifyBundle(bundleJson: string, expectedHashHex: string): Promise<string>;
   verifySignedHead(
     note: string,
@@ -207,6 +208,17 @@ export async function verifyBill(
 ): Promise<BillVerdict> {
   const m = await load();
   return parse(await m.verifyBundle(bundleJson, expectedHashHex));
+}
+
+/** Compare exact retained UTF-8 text with the reason commitment from an already
+ * verified entry. Passing this does not establish policy semantics or provenance.
+ * Keep commitmentJson raw so integer fields are not reserialized through Number. */
+export async function verifyReasonCommitment(
+  commitmentJson: string,
+  reason: string,
+): Promise<CheckVerdict> {
+  const m = await load();
+  return parse(await m.verifyReasonCommitment(commitmentJson, reason));
 }
 
 /**

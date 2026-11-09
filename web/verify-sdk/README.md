@@ -26,8 +26,17 @@ const verdict = await verifyBill(JSON.stringify(bundle), hash);
 | `verifyStatementAnchor(json, checkJson)` | A statement's completeness anchor |
 | `verifyUsageReport(json, expectedEndUser, keyJson?)` | A usage-report rollup's day/anchor leaves |
 | `verifyPriceHead(json)` | A price-row checkpoint's signed binding |
+| `verifyReasonCommitment(commitmentJson, fullReason)` | Exact SHA-256 and UTF-8 byte length of separately supplied full reason text |
 
 Every answer is `{ ok, detail, … }` — `detail` is the human-readable sentence the server's own `/verify` page prints, so a page only has to render it. `verifyWitnesses` answers an array, one `{ witnessUrl, ok, detail }` per cosignature, and reports a failed witness in-band rather than throwing.
+
+Version 15 settlements retain complete short reasons inline and bind longer
+reasons with `reasonCommitment: {sha256, utf8Bytes}`. First verify the bill and its
+expected entry hash, then pass the commitment's raw JSON and complete separately
+retained text to `verifyReasonCommitment`. This comparison checks exact text,
+including whitespace, escapes and multibyte characters. A verified proof without
+the text binds the commitment only; neither check establishes whether the policy's
+judgment was correct. Versions 3–14 keep their earlier interpretation.
 
 The trust inputs are the caller's, not the server's: the content hash the customer recorded, the operator key obtained through a channel the operator does not control, the head the customer archived, and the witness pins the customer chose. Passing the server's own echo of one of those checks only that the answer agrees with itself. The objects these functions speak — the proof bundle, signed-note head, `PriceLink`, the consistency and witness proofs — are written down field-by-field in [docs/transparency-log-v1.md](https://github.com/AllureCurtain/oxsum/blob/main/docs/transparency-log-v1.md), the protocol's normative reference.
 

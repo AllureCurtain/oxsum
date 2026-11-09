@@ -378,6 +378,8 @@ export function Requests() {
                   </span>
                   {row.failureReason ? (
                     <p className="text-xs text-danger">{row.failureReason}</p>
+                  ) : row.failureReasonCommitment ? (
+                    <p className="text-xs text-danger">{t("requests.committedReason", { bytes: row.failureReasonCommitment.utf8Bytes })}</p>
                   ) : null}
                 </td>
                 <Td mono align="right">{row.inputTokens}</Td>

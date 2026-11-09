@@ -277,6 +277,7 @@
   },
   "requests": {
     "title": "请求",
+    "committedReason": "Full failure reason retained separately ({{bytes}} UTF-8 bytes). The proof contains its digest.",
     "reconnect": "重新连接计费 socket",
     "connectionLost": "连接已断开 —— 重试",
     "live": "实时",
@@ -1252,7 +1253,7 @@
       "streamed": "流式轮次",
       "streamedBody": "流式输出开始后才落地的判定只能被记录，已经发送的内容无法撤回。",
       "recorded": "账单记录什么",
-      "recordedBody": "每次 flag 或 block 都会写入结算的 guardrail 列表，包含策略、判定和原因；无法执行判定的流式轮次会标记 streamed。",
+      "recordedBody": "Recorded verdicts include policy, evaluation phase and verdict, plus the complete short reason or a digest of the separately retained full text. Streamed verdicts mark that the answer had already been delivered.",
       "failOpen": "允许删除仍被绑定的策略：在绑定更新前，轮次会跳过悬空的名称（fail-open）。",
       "policiesTitle": "策略",
       "policiesCount_one": "{{count}} 条策略",
