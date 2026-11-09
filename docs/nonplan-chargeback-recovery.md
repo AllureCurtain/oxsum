@@ -34,6 +34,13 @@ prior returns or source boundaries, and orphan entries beside `opened`,
 `evidence_due`, `won` or `closed` refuse. This workflow does not guess a historical
 loss, change an outcome, or turn an unproven source bound into customer debt.
 
+A new atomic-writer refund that has not succeeded and has no verified Cash
+entry does not consume source yet. The shared source lock serializes its later
+confirmed callback with correction; whichever commits later sees the retained
+actual return. An old unknown refund, an orphan Cash entry or a malformed effect
+still requires source review. A prior corrected chargeback consumes only actual
+loss L; its false-receipt cancellation B is not another provider return.
+
 ## Preview and apply
 
 The planned exact command is:

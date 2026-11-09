@@ -1483,8 +1483,9 @@ original Wallet top-up are taken back. Previously spent money, credit repayment
 and uncertain source history require review in the finance audit; the application
 does not guess a replacement debt. A lost order cannot receive new refund approval
 or an unperformed fulfillment grant. Bundle promotion is cancelled without cash
-reimbursement. Historical wrong-direction entries still need the explicit #842
-recovery. Non-plan refund corrections use the [exact recovery workflow](nonplan-refund-recovery.md); retrying a dispute resolution does not perform either correction.
+reimbursement. Historical wrong-direction entries use the [exact local chargeback
+correction](nonplan-chargeback-recovery.md), which previews and compensates a proven
+source while preserving the original debt and history. Non-plan refund corrections use the [exact recovery workflow](nonplan-refund-recovery.md); retrying a dispute resolution does not perform either correction.
 
 The dispute list displays credit amounts in `cr` and shows the original collection
 currency separately in the expanded detail. The current Close action ends the
