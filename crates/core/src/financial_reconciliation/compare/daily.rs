@@ -264,6 +264,7 @@ pub(super) fn compare(customer: &mut Customer<'_>) -> Result<(), WalletError> {
             );
         }
         if let Some(header) = customer.sources.get("invoice_journals", journal).cloned() {
+            let voided = header.text("state")? == "void";
             let line_total = customer
                 .sources
                 .table("invoice_journal_lines")
@@ -274,7 +275,11 @@ pub(super) fn compare(customer: &mut Customer<'_>) -> Result<(), WalletError> {
                 "invoice_journals",
                 journal,
                 "lineTotalMinor",
-                header.amount("total_minor")?,
+                if voided {
+                    0
+                } else {
+                    header.amount("total_minor")?
+                },
                 line_total,
             );
             if header.policy()? != 2
@@ -285,7 +290,6 @@ pub(super) fn compare(customer: &mut Customer<'_>) -> Result<(), WalletError> {
                 customer.unsupported("invoice_journals",journal,"dailyOwnership","Daily journal policy or original period ownership differs from the captured accounting period");
             }
             let (expected, actual) = totals.remove(&journal).unwrap_or_default();
-            let voided = header.text("state")? == "void";
             customer.compare_amount(
                 "invoice_journals",
                 journal,
