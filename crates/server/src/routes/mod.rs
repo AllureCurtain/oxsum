@@ -304,6 +304,14 @@ pub fn router(state: AppState) -> Router {
             post(integration_applications::revoke_customer_key),
         )
         .route(
+            "/integration/customers/{organization_id}/link-invitations",
+            post(integration_applications::create_link),
+        )
+        .route(
+            "/integration/customers/{organization_id}/link-invitations/{invitation_id}/revoke",
+            post(integration_applications::revoke_link),
+        )
+        .route(
             "/integration/customers/{organization_id}/archive",
             post(integration_applications::archive),
         )
@@ -587,8 +595,16 @@ pub fn router(state: AppState) -> Router {
         .route("/auth/verify", post(auth::verify_email))
         .route("/auth/password/forgot", post(auth::forgot_password))
         .route("/auth/password/reset", post(auth::reset_password))
-        // Registration through an invitation link: the token is the credential, so it
-        // stays open in invite mode too — that mode exists for this.
+        // Application consent requires an existing verified personal session.
+        .route(
+            "/application-links/preview",
+            post(integration_applications::preview_link),
+        )
+        .route(
+            "/application-links/accept",
+            post(integration_applications::accept_link),
+        )
+        // Registration through an invitation link remains available in invite mode.
         .route("/invitations/redeem", post(org::redeem_invitation))
         .route("/invitations/accept", post(org::accept_invitation))
         .route("/invitations/preview", post(org::preview_invitation))

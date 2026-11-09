@@ -366,3 +366,10 @@ focused money/authority/source tests and frontend checks follow each final edit.
 [Detailed evidence](evidence/statement-repayment.md) records implemented limits.
 Mixed-source financial void recovery, browser, independent review and protected
 integration remain; #777 is not closed. Real-provider budget remains 0/5 and CNY0.
+### Verified application account consent (#920)
+
+Implementation is based on PR #910 and uses migration 0123 after reserved
+0120/0121/0122. Scoped creation/revocation, verified personal preview/acceptance,
+immutable terminal consent and English/Chinese UI are implemented. Development
+validation and remaining gates are recorded in [the consent evidence](evidence/application-consent.md).
+This does not complete N21 checkout/evidence, notifications or the external app.

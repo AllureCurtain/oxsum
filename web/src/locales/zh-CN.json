@@ -865,7 +865,28 @@
     "invitationLoading": "正在检查登录状态…",
     "invitationAs": "以 {{email}} 接受",
     "invitationAccept": "接受邀请",
-    "invitationSignIn": "已有账户？登录后接受邀请"
+    "invitationSignIn": "已有账户？登录后接受邀请",
+    "applicationLink": {
+      "title": "关联应用计费账户",
+      "missing": "请重新打开应用提供的邀请链接。",
+      "signIn": "登录并查看邀请",
+      "verify": "请在账户设置中验证邮箱，然后返回此页刷新。",
+      "refresh": "刷新身份和邀请",
+      "as": "当前登录邮箱：{{email}}",
+      "offer": "{{application}} 邀请你成为 {{customer}} 的所有者。",
+      "account": "计费账户 ID",
+      "email": "需要验证的收件邮箱",
+      "expires": "邀请到期时间",
+      "disclosure": "应用将保留明确授予它的此账户权限，包括它创建的密钥，以及授权范围内的计费或账户操作。接受邀请后，你将成为这个现有计费账户的所有者。应用无法因此访问你的其他账户、余额或账单记录。不会转移资金，也不会自动切换当前账户。",
+      "confirm": "我已核对账户信息并理解应用保留的访问权限。",
+      "accept": "接受账户所有权",
+      "accepted": "授权已记录。请通过账户菜单选择关联账户。重新打开此回执不会恢复后来被移除的成员权限。",
+      "continue": "前往控制台",
+      "forget": "从当前标签页清除邀请",
+      "settings": "打开账户设置",
+      "signOut": "退出登录，更换账户或完成二次验证",
+      "networkError": "未能确认请求结果。请在此处使用同一邀请重试。"
+    }
   },
   "admin": {
     "console": "管理控制台",
@@ -2129,7 +2150,8 @@
         "billingRead": "读取授权客户余额、日志和账单",
         "customersLifecycleWrite": "归档应用账户，保留资金和历史记录",
         "customerKeysWrite": "创建和撤销有限额的客户网关密钥",
-        "entitlementsRead": "Read application entitlement, permitted models and customer sale terms"
+        "entitlementsRead": "Read application entitlement, permitted models and customer sale terms",
+        "customerLinkWrite": "邀请已验证用户成为应用账户的所有者"
       },
       "invalidApplication": "请填写固定标识、名称、原因，以及 1 至 10,000 的账户上限。"
     }

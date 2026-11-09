@@ -865,7 +865,28 @@
     "invitationLoading": "Checking your session…",
     "invitationAs": "Accept as {{email}}",
     "invitationAccept": "Accept invitation",
-    "invitationSignIn": "Already have an account? Sign in to accept"
+    "invitationSignIn": "Already have an account? Sign in to accept",
+    "applicationLink": {
+      "title": "Link application billing account",
+      "missing": "Open the invitation link from your application again.",
+      "signIn": "Sign in to review this invitation",
+      "verify": "Verify your email in account settings, then return here and refresh.",
+      "refresh": "Refresh identity and invitation",
+      "as": "Signed in as {{email}}",
+      "offer": "{{application}} invites you to own {{customer}}.",
+      "account": "Billing account ID",
+      "email": "Intended verified email",
+      "expires": "Invitation expires",
+      "disclosure": "The application keeps the permissions explicitly granted to it for this account, including its own keys and any billing or account operations in its grant. Linking gives you ownership of this existing billing account. Your other accounts, balances and billing history are not shared with the application. No money is moved and your selected account stays unchanged.",
+      "confirm": "I have reviewed the account and retained application access.",
+      "accept": "Accept account ownership",
+      "accepted": "Consent was recorded. Select the linked account from the account menu to use it. Reopening this receipt does not restore a membership that has since been removed.",
+      "continue": "Continue to dashboard",
+      "forget": "Discard invitation from this tab",
+      "settings": "Open account settings",
+      "signOut": "Sign out to use another account or verify your second factor",
+      "networkError": "The response could not be confirmed. Retry here with this same invitation."
+    }
   },
   "admin": {
     "console": "Admin console",
@@ -2129,7 +2150,8 @@
         "billingRead": "Read scoped customer balances, logs and bills",
         "customersLifecycleWrite": "Archive application accounts; retain funds and history",
         "customerKeysWrite": "Issue and revoke bounded customer gateway keys",
-        "entitlementsRead": "Read application entitlement, permitted models and customer sale terms"
+        "entitlementsRead": "Read application entitlement, permitted models and customer sale terms",
+        "customerLinkWrite": "Invite verified personal ownership of application accounts"
       },
       "invalidApplication": "Enter a stable key, a name, a reason and an account limit from 1 to 10,000."
     }

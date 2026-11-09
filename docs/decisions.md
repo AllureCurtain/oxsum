@@ -1,5 +1,19 @@
 # Technical decisions
 
+## 2026-11-10 — Verified first ownership preserves application access (#920)
+
+Application account linking uses a separate explicit application scope and personal
+consent. An immutable seven-day offer and append-only terminal result retain the
+original application, customer, issuer and normalized recipient. The existing
+invitation subsystem does not require independently verified email, so it is not
+reused for this authority. The first owner is added atomically with consent/audit;
+no account is merged, no funds move, and the selected session remains unchanged.
+The application keeps only its explicit account and own-key grants, disclosed
+before acceptance. Terminal retry returns history without restoring membership.
+Plaintext appears once, reaches the browser through a fragment, and may survive
+sign-in only in bounded tab-local storage; it is never a URL query or query-cache
+key. Independent browser acceptance remains required.
+
 ## 2026-11-09 — Stable application ownership and exact operation replay (#846)
 
 Application identity is owner-created and separate from replaceable credentials.

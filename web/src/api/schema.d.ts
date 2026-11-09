@@ -8346,6 +8346,212 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/integration/customers/{organizationId}/link-invitations": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Offer verified personal ownership of this application's account
+         * @description Application-only customerLinkWrite. Only an own-namespace account with no memberships can receive a seven-day invitation. A first committed creation returns the secret once; exact replay returns metadata only. An invitation never grants membership until the intended verified recipient explicitly accepts. The app retains its scoped access after linking.
+         */
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    organizationId: string;
+                };
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": components["schemas"]["ApplicationLinkRequest"];
+                };
+            };
+            responses: {
+                /** @description Original invitation metadata and one-time secret only at creation */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            data: components["schemas"]["ApplicationLinkInvitation"];
+                        };
+                    };
+                };
+                400: components["responses"]["Error"];
+                401: components["responses"]["Error"];
+                403: components["responses"]["Error"];
+                404: components["responses"]["Error"];
+                409: components["responses"]["Error"];
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/integration/customers/{organizationId}/link-invitations/{invitationId}/revoke": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Revoke an unaccepted application link invitation */
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    organizationId: string;
+                    invitationId: string;
+                };
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": components["schemas"]["ApplicationCustomerArchiveRequest"];
+                };
+            };
+            responses: {
+                /** @description Retained revoked invitation metadata */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            data: components["schemas"]["ApplicationLinkInvitation"];
+                        };
+                    };
+                };
+                400: components["responses"]["Error"];
+                401: components["responses"]["Error"];
+                403: components["responses"]["Error"];
+                404: components["responses"]["Error"];
+                409: components["responses"]["Error"];
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/application-links/preview": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Review an application account invitation as its verified recipient
+         * @description Personal authenticated session in either context with current second factor and matching verified email. Original issuer must still have live customerLinkWrite authority. Acceptance adds the first customer owner exactly once, never business staff or a new ledger. Terminal replay returns history without regranting authority. No email is sent.
+         */
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": {
+                        token: string;
+                    };
+                };
+            };
+            responses: {
+                /** @description Exact application account and consent state */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            data: components["schemas"]["ApplicationLinkInvitation"];
+                        };
+                    };
+                };
+                400: components["responses"]["Error"];
+                401: components["responses"]["Error"];
+                403: components["responses"]["Error"];
+                404: components["responses"]["Error"];
+                409: components["responses"]["Error"];
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/application-links/accept": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Accept an application account invitation as its verified recipient
+         * @description Personal authenticated session in either context with current second factor and matching verified email. Original issuer must still have live customerLinkWrite authority. Acceptance adds the first customer owner exactly once, never business staff or a new ledger. Terminal replay returns history without regranting authority. No email is sent.
+         */
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": {
+                        token: string;
+                    };
+                };
+            };
+            responses: {
+                /** @description Exact application account and consent state */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            data: components["schemas"]["ApplicationLinkInvitation"];
+                        };
+                    };
+                };
+                400: components["responses"]["Error"];
+                401: components["responses"]["Error"];
+                403: components["responses"]["Error"];
+                404: components["responses"]["Error"];
+                409: components["responses"]["Error"];
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/integration/customers": {
         parameters: {
             query?: never;
@@ -21727,6 +21933,32 @@ export interface components {
             /** Format: uuid */
             nextCursor: string | null;
         };
+        ApplicationLinkRequest: {
+            idempotencyKey: string;
+            /** Format: email */
+            intendedEmail: string;
+            reason: string;
+        };
+        ApplicationLinkInvitation: {
+            /** Format: uuid */
+            invitationId: string;
+            /** Format: uuid */
+            applicationId: string;
+            /** Format: uuid */
+            organizationId: string;
+            applicationName: string;
+            customerName: string;
+            /** Format: email */
+            intendedEmail: string;
+            /** Format: date-time */
+            expiresAt: string;
+            /** Format: date-time */
+            acceptedAt: string | null;
+            /** Format: date-time */
+            revokedAt: string | null;
+            /** @description First creation only; deliver in the application consent page fragment and never a query string */
+            token: string | null;
+        };
         ApplicationCustomer: {
             /** Format: uuid */
             applicationId: string;
@@ -21868,7 +22100,7 @@ export interface components {
             nextCursor: string | null;
         };
         /** @enum {string} */
-        IntegrationScope: "customersRead" | "meteringWrite" | "customersProvision" | "billingRead" | "customersLifecycleWrite" | "customerKeysWrite" | "entitlementsRead";
+        IntegrationScope: "customersRead" | "meteringWrite" | "customersProvision" | "billingRead" | "customersLifecycleWrite" | "customerKeysWrite" | "entitlementsRead" | "customerLinkWrite";
         ProvisionCustomerRequest: {
             idempotencyKey: string;
             /** @description Caller-chosen identifier within the application (integration route) or legacy business namespace (business route). */
