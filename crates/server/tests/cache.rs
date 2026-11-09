@@ -699,6 +699,109 @@ async fn a_repeat_ask_is_served_from_the_cache_and_billed_as_a_hit() {
     );
 }
 
+/// Quota provenance and cache provenance must coexist in the same immutable
+/// receipt, even though together they exceed the engine's former 512-char cap.
+#[tokio::test]
+async fn a_quota_funded_cache_hit_commits_complete_evidence() {
+    let world = world!();
+    world.semantic_cache(json!({"enabled": true})).await;
+    let db = Db::from_pool(world.pool.clone());
+    let organization = world.organization_id.parse().unwrap();
+    let plan = db
+        .set_subscription_plan(
+            &format!("cache-quota-{}", uuid::Uuid::new_v4()),
+            Some(1_000_000),
+            oxsum_core::ResetPeriod::Monthly,
+            false,
+            None,
+            None,
+            true,
+            0,
+        )
+        .await
+        .unwrap();
+    let subscription = db
+        .bind_subscription(organization, plan.plan_id, "admin", None)
+        .await
+        .unwrap();
+    let wallet = world.wallet().await;
+    let before = wallet.available().await.unwrap();
+    let request = ask(&world.model, "the quota-funded answer");
+    let (status, headers, _) = chat(&world.app, &world.key, request.clone()).await;
+    assert_eq!(status, StatusCode::OK);
+    let source_request = headers["x-oxsum-request-id"].to_str().unwrap();
+    world.settlement_within(source_request).await;
+    cached_source_within(&world, source_request).await;
+    let source = oxsum_core::entry_id_for(&oxsum_core::settlement_key_for(&format!(
+        "req-{source_request}:hold"
+    )));
+    let (status, headers, _) = chat(&world.app, &world.key, request).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(headers["x-oxsum-cache"], "hit");
+    let request_id = headers["x-oxsum-request-id"].to_str().unwrap();
+    let record = world.settlement_within(request_id).await;
+    assert_eq!(record["charged"], 3);
+    assert_eq!(record["subscription"]["chargedMinor"], 3);
+    assert_eq!(
+        record["subscription"]["subscriptionId"],
+        subscription.subscription_id.to_string()
+    );
+    assert_eq!(
+        record["cache"]["sourceEntryId"],
+        source.as_uuid().to_string()
+    );
+    assert_eq!(record["upstreamAttempts"], 0);
+    let hold_key = format!("req-{request_id}:hold");
+    let proof = wallet
+        .receipt_proof(
+            oxsum_core::entry_id_for(&oxsum_core::settlement_key_for(&hold_key)),
+            None,
+        )
+        .await
+        .unwrap()
+        .unwrap();
+    let description = proof.entry.description().as_str();
+    assert!(description.chars().count() > 512);
+    assert!(oxsum_core::SettlementRecord::parse(description).is_some());
+    assert!(
+        oxsum_core::verify_bundle(
+            &serde_json::to_string(&proof).unwrap(),
+            &proof.entry.content_hash()
+        )
+        .unwrap()
+    );
+    assert_eq!(
+        oxsum_verify::verify_charge(description),
+        oxsum_verify::ChargeCheck::Recomputed
+    );
+    assert_eq!(world.script.seen().len(), 1);
+    assert_eq!(wallet.available().await.unwrap(), before);
+    assert_eq!(wallet.reserved().await.unwrap(), 0);
+    assert_eq!(
+        db.active_subscription(organization)
+            .await
+            .unwrap()
+            .unwrap()
+            .consumed_minor,
+        15
+    );
+    let usage: (i64, String) = sqlx::query_as(
+        "SELECT charged_minor,cost_basis FROM oxsum.usage_records WHERE request_id=$1",
+    )
+    .bind(request_id)
+    .fetch_one(&world.pool)
+    .await
+    .unwrap();
+    assert_eq!(usage, (3, "cache_reuse".into()));
+    let watches: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM oxsum.open_holds WHERE tenant_id=$1")
+            .bind(&world.tenant_id)
+            .fetch_one(&world.pool)
+            .await
+            .unwrap();
+    assert_eq!(watches, 0);
+}
+
 /// The v2 digest binds the complete request body: case, whitespace, tools and
 /// generation parameters are all part of the question.
 #[tokio::test]
