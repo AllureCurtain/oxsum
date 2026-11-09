@@ -255,6 +255,7 @@ def main():
         consumer = Path(private)
         atomic_json(consumer/'package.json', {'name': 'oxsum-provider-check', 'private': True, 'type': 'module'})
         shutil.copyfile(REPO/'examples/verify-consumer/verify.mjs', consumer/'verify.mjs')
+        shutil.copyfile(REPO/'examples/verify-consumer/scope.mjs', consumer/'scope.mjs')
         recovery.run(['npm', 'install', '--ignore-scripts', '--no-audit', '--no-fund', str(output/'verify-oxsum-bill.tgz')],
                      env=environment, cwd=consumer, log=output/'package.log')
         for scenario in ('whole', 'sse'):

@@ -6,6 +6,12 @@ Read this file on every resume, then reconcile actual main, worktrees, issues/PR
 
 ## Current state
 
+- #876 repairs clean offline consumer scope and raw JSON, requires separate
+  price/sale verdicts and connects consistency to the retained bill head. Seven
+  packed-SDK/transport groups and v13/v14/v2 export rejection matrices passed;
+  independent review and PR integration pending. Candidate acceptance remains.
+  [Evidence](evidence/offline-evidence-scope.md).
+
 - Main CI `42498733548` on `23b6547` exposed an early cancellation in the real
   payment-worker fixture. #850 waits for durable fulfillment before stopping the
   worker; 19 payment checks, strict Clippy and independent review passed.

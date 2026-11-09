@@ -12,14 +12,16 @@ scripts/check-verify-consumer.sh
 
 The script builds the wasm module, runs `npm pack` in `web/verify-sdk`, checks
 the tarball's contents, installs the tarball into a fresh temporary project,
-copies this directory's fixtures in, and runs `node verify.mjs`. No registry
+copies this directory's fixtures in, and runs `node verify.mjs` and the real-WASM
+scope regression tests. No registry
 publication is involved.
 
 To run the example against an already-installed package, from this directory:
 
 ```bash
 npm install /path/to/verify-oxsum-bill-0.1.0.tgz
-node verify.mjs
+node verify.mjs --dir /path/to/retained-export
+node --test scope.test.mjs
 ```
 
 `node verify.mjs --hash <64-hex>` checks the same evidence against a different
@@ -52,24 +54,44 @@ fixture but do not belong to any live deployment. Do not treat the key in
 - **Bill** — `verifyBill(bundle, expectedHash)` recomputes the settlement
   entry's content hash from its canonical bytes, links that hash to the tree
   head with the inclusion proof, recomputes the charge from the usage and rates
-  inside the entry, and verifies the signed price checkpoint binding the
-  `(channel, model, priceVersion)` to the catalog row.
+  inside the entry. Its `ok` alone does not require successful price/sale
+  checks. This consumer separately calls `verifyPriceHead` / `verifySaleHead`
+  and requires every supplied catalog binding to use the retained operator key.
+  Wholesale-priced bills require the price binding; sale-priced bills require
+  the sale binding and may omit the wholesale binding. Retained price or sale
+  versions, entry identity and head size/root are also compared. This example
+  targets usage settlements, not arbitrary non-settlement ledger entries.
 - **Head** — `verifySignedHead(note, head, origin, key)` verifies the
   operator's Ed25519 signature over the C2SP note, that the note names the
   expected ledger origin, and that it attests the head being checked. The key
-  must come from a channel the operator does not control; the copy in this
-  fixture is only a captured sample.
+  must be retained through a channel you independently trust; fetching it
+  together with fresh evidence does not establish historical continuity. The
+  copy in this fixture is only a captured sample.
 - **Consistency** — `verifyConsistency(response, heldHead, origin, key)` checks
   that the response's old head equals the head the customer archived, that the
   proof links it to the new head, and that the new head is signed. This is the
-  check that answers "the log only grew; it did not rewrite what I saw".
+  check that answers "the log only grew; it did not rewrite what I saw". The
+  response must end at the same head as the bill under review.
 - **Witnesses** — `verifyWitnesses(notes, pins, origin, head)` checks each
   cosignature against a pinset the customer chose. This fixture has no
   cosignatures, so the example says so and skips the check rather than claim a
   witness vouched.
 
-The rejection checks show that altered content, a different customer-held hash,
-a different operator key, and a different archived head each fail. The
+Original JSON strings go directly to the SDK. Field selection and test mutations
+preserve numeric tokens above JavaScript's safe-integer range; duplicate fields
+are refused. Parsed objects are used only for display and nonnumeric identity
+selection, never to reconstruct positive proof input. Version-2 evidence must
+match the retained bundle/customer identity and explicit ledger origin, even if
+its own note carries a valid signature for another origin. A retained manifest
+digest is also checked when supplied. This signed-key exercise refuses unsigned
+evidence; it does not claim that unsigned digest/inclusion checks are impossible.
+
+The rejection checks show that altered amounts/rates/catalog rows, missing
+required catalog bindings or committed artifacts, a different customer-held
+hash, a different operator key/origin/customer, and a different archived head
+each fail. An empty artifact scope is reported as unavailable tamper coverage.
+The program disables `fetch`; the verifier only reads local package/WASM bytes.
+This is not an operating-system network sandbox. The
 verifier does not fall back to trusting the bundle's own `contentHash` or the
 server's current answer.
 
@@ -104,3 +126,20 @@ tree once the JSON was captured. The same flow is covered by
 `crates/server/tests/heads.rs` (signed heads, consistency, price checkpoints)
 and `crates/server/tests/bills.rs` (proof bundles). The example is the
 consumer-side check, not a second fixture generator.
+
+
+## Sale fixture and scope regression provenance
+
+`fixtures/sale/` contains the bill, retained manifest/head and public operator key
+from the isolated whole-response fixture of #869 (development binary
+`8d18170f85c9648301d63659b1ae28763eaf617c`, schema 0111). The local upstream returned
+23 input / 11 output tokens; the v14 sale-priced bill charged 34 minor units.
+No real provider was called, and no key is a private or production credential.
+The four files exercise separate required-sale versus optional-wholesale checks
+through the packed WASM. They are not final candidate or public SDK evidence.
+
+`scope.test.mjs` also signs a foreign-origin note with a generated test key and
+shows that the underlying evidence wrapper accepts its self-declared origin,
+while this consumer rejects it against the separately retained expected origin.
+The large-integer transport test uses a recording adapter; it proves unchanged
+bytes, not a valid signature over an invented high-value ledger entry.

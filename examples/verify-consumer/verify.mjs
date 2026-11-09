@@ -28,6 +28,7 @@
  * The rejection checks mutate the inputs in memory; nothing is written.
  */
 
+import { inspect, scopedBill, scopedConsistency, scopedEvidence } from "./scope.mjs";
 import { existsSync, readFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -37,6 +38,8 @@ import {
   verifyBill,
   verifyConsistency,
   verifyEvidenceBundle,
+  verifyPriceHead,
+  verifySaleHead,
   verifySignedHead,
   verifyWitnesses,
 } from "verify-oxsum-bill";
@@ -67,6 +70,7 @@ async function attempt(run) {
   try {
     return await run();
   } catch (error) {
+    if (error instanceof ReferenceError || error instanceof TypeError) throw error;
     return { ok: false, detail: error instanceof Error ? error.message : String(error) };
   }
 }
@@ -101,12 +105,13 @@ async function main() {
 
   const args = parseArgs(process.argv.slice(2));
   const dir = args.dir;
-  const manifest = readJson(join(dir, "manifest.json"));
-  const bundle = readJson(join(dir, "settlement-bundle.json"));
-  const head = readJson(join(dir, "signed-head.json"));
+  const manifestRaw = readFileSync(join(dir, "manifest.json"), "utf8");
+  const bundleRaw = readFileSync(join(dir, "settlement-bundle.json"), "utf8");
+  const manifest = JSON.parse(manifestRaw);
+  const headRaw = readFileSync(join(dir, "signed-head.json"), "utf8");
+  const head = JSON.parse(headRaw);
   const key = readJson(join(dir, "operator-key.json"));
   const held = readJson(join(dir, "held-head.json"));
-  const consistency = readJson(join(dir, "consistency.json"));
   const checkpoint = readJson(join(dir, "checkpoint.json"));
   const expectedHash = args.hash ?? manifest.contentHash;
 
@@ -115,7 +120,8 @@ async function main() {
   // naming the organization and ledger origin the check binds. Optional — a
   // fixtures dir without it simply skips the v2 block.
   const evidencePath = join(dir, "evidence-bundle.json");
-  const evidence = existsSync(evidencePath) ? readJson(evidencePath) : null;
+  const evidenceRaw = existsSync(evidencePath) ? readFileSync(evidencePath, "utf8") : null;
+  const evidence = evidenceRaw ? JSON.parse(evidenceRaw) : null;
   const evidenceManifest = evidence
     ? readJson(join(dir, "evidence-manifest.json"))
     : null;
@@ -123,7 +129,7 @@ async function main() {
     ? readJson(join(dir, "evidence-operator-key.json"))
     : null;
 
-  const servedHead = JSON.stringify({ size: head.size, root: head.root });
+  const servedHead = inspect(bundleRaw).token(["head"]);
   const keyJson = JSON.stringify(key);
   let failures = 0;
 
@@ -133,7 +139,8 @@ async function main() {
   console.log(`ledger ${manifest.origin}`);
   console.log();
 
-  const bill = await attempt(() => verifyBill(JSON.stringify(bundle), expectedHash));
+  const api = { verifyBill, verifyConsistency, verifyEvidenceBundle, verifyPriceHead, verifySaleHead, verifySignedHead };
+  const bill = await attempt(() => scopedBill(bundleRaw, args.hash ? inspect(manifestRaw).replace(["contentHash"], JSON.stringify(args.hash)) : manifestRaw, headRaw, keyJson, api));
   if (!report("bill: hash, inclusion, charge, price, sale", bill.ok, bill.ok ? `${bill.charge}${bill.price}${bill.sale ?? ""}` : bill.detail ?? bill.verdict)) {
     failures += 1;
   }
@@ -146,7 +153,7 @@ async function main() {
   }
 
   const chained = await attempt(() =>
-    verifyConsistency(JSON.stringify(consistency), JSON.stringify(held), manifest.origin, keyJson),
+    scopedConsistency(readFileSync(join(dir, "consistency.json"), "utf8"), readFileSync(join(dir, "held-head.json"), "utf8"), headRaw, manifest.origin, keyJson, api),
   );
   if (!report("consistency: the new head extends the archived head", chained.ok, chained.detail)) {
     failures += 1;
@@ -185,7 +192,7 @@ async function main() {
 
     // What the bundle attests before any check runs: the committed
     // (kind, id) manifest — pure inspection, no verification.
-    const manifestRows = listBundleManifests(JSON.stringify(evidence));
+    const manifestRows = listBundleManifests(evidenceRaw);
     console.log(`manifest: ${manifestRows.length} committed artifact(s)`);
     for (const row of manifestRows) {
       console.log(`       ${row.kind}/${row.id}  ${row.digest.slice(0, 16)}…`);
@@ -193,9 +200,10 @@ async function main() {
     console.log();
 
     const evidenceKeyJson = JSON.stringify(evidenceKey);
-    const bundleJson = JSON.stringify(evidence);
+    const bundleJson = evidenceRaw;
+    const evidenceManifestRaw = readFileSync(join(dir, "evidence-manifest.json"), "utf8");
     const checked = await attempt(() =>
-      verifyEvidenceBundle(bundleJson, evidenceManifest.organizationId, evidenceKeyJson),
+      scopedEvidence(bundleJson, evidenceManifestRaw, evidenceKeyJson, api),
     );
     if (
       !report(
@@ -207,41 +215,37 @@ async function main() {
       failures += 1;
     }
 
-    // A tampered artifact: the usage figure no longer digests to what the
-    // manifest committed.
-    const tamperedArtifact = structuredClone(evidence);
-    for (const bucket of Object.values(tamperedArtifact.artifacts ?? {})) {
-      for (const artifact of Object.values(bucket ?? {})) {
-        if (artifact && typeof artifact === "object" && "chargedMinor" in artifact) {
-          artifact.chargedMinor += 1;
-        }
-      }
-    }
-    const tamperedVerdict = await attempt(() =>
-      verifyEvidenceBundle(
-        JSON.stringify(tamperedArtifact),
-        evidenceManifest.organizationId,
-        evidenceKeyJson,
-      ),
-    );
-    if (!expectRejected("a tampered committed artifact", tamperedVerdict)) {
-      failures += 1;
+    // Mutate an actually committed artifact while preserving all other raw
+    // numeric tokens; an empty scope records the unavailable row explicitly.
+    const firstRow = evidence.manifest?.[0];
+    if (firstRow && inspect(bundleJson).has(["artifacts", firstRow.kind, firstRow.id])) {
+      const view = inspect(bundleJson);
+      const path = ["artifacts", firstRow.kind, firstRow.id];
+      const replacement = view.token(path) === "null" ? "{}" : "null";
+      const changed = view.replace(path, replacement);
+      const altered = await attempt(() => verifyEvidenceBundle(changed, evidenceManifest.organizationId, evidenceKeyJson));
+      if (!expectRejected("a changed committed artifact", altered)) failures += 1;
+    } else {
+      console.log("[SKIP] artifact tamper: the exported scope has no committed artifact");
     }
 
     // A dropped manifest row: the bundle no longer serves every artifact the
     // ledger committed.
-    const dropped = structuredClone(evidence);
-    dropped.manifest = (dropped.manifest ?? []).slice(1);
-    const droppedVerdict = await attempt(() =>
-      verifyEvidenceBundle(
-        JSON.stringify(dropped),
-        evidenceManifest.organizationId,
-        evidenceKeyJson,
-      ),
-    );
-    if (!expectRejected("a missing committed row", droppedVerdict)) {
-      failures += 1;
+    if ((evidence.manifest ?? []).length) {
+      const droppedJson = inspect(bundleJson).replace(["manifest"], "[]");
+      const droppedVerdict = await attempt(() => verifyEvidenceBundle(droppedJson, evidenceManifest.organizationId, evidenceKeyJson));
+      if (!expectRejected("a missing committed row", droppedVerdict)) failures += 1;
+      const row = evidence.manifest[0];
+      const missingJson = inspect(bundleJson).replace(["artifacts", row.kind], "{}");
+      const missingVerdict = await attempt(() => verifyEvidenceBundle(missingJson, evidenceManifest.organizationId, evidenceKeyJson));
+      if (!expectRejected("a missing committed artifact", missingVerdict)) failures += 1;
+    } else {
+      console.log("[SKIP] missing committed row: the exported scope is empty");
     }
+    const wrongOrigin = inspect(evidenceManifestRaw).replace(["origin"], JSON.stringify(evidenceManifest.origin+"/other"));
+    if (!expectRejected("evidence from a different retained origin", await attempt(() => scopedEvidence(bundleJson, wrongOrigin, evidenceKeyJson, api)))) failures += 1;
+    const wrongEvidenceKey = { ...evidenceKey, publicKey: "00".repeat(32) };
+    if (!expectRejected("evidence with a different retained key", await attempt(() => scopedEvidence(bundleJson, evidenceManifestRaw, JSON.stringify(wrongEvidenceKey), api)))) failures += 1;
 
     // A bundle for a different customer fails closed — the manifest's
     // organizationId is part of what the marker committed.
@@ -259,17 +263,43 @@ async function main() {
   console.log();
   console.log("== Rejection checks (altered inputs) ==");
 
-  const tampered = structuredClone(bundle);
-  tampered.entry.postings[0].amount = "0.003001";
+  const billView = inspect(bundleRaw);
+  const originalAmount = billView.get(["entry", "postings", 0, "amount"]);
+  const changedAmount = originalAmount === "0.003001" ? "0.003002" : "0.003001";
+  const tampered = billView.replace(["entry", "postings", 0, "amount"], JSON.stringify(changedAmount));
   const tamperedVerdict = await attempt(() =>
-    verifyBill(JSON.stringify(tampered), expectedHash),
+    verifyBill(tampered, expectedHash),
   );
   if (!expectRejected("tampered bundle content", tamperedVerdict)) {
     failures += 1;
   }
 
+  for (const binding of ["price", "sale"]) {
+    if (!billView.has([binding]) || billView.get([binding]) === null) {
+      console.log(`[SKIP] ${binding} mutation: no such binding in this legacy bill`);
+      continue;
+    }
+    const bindingRow = billView.get([binding, "row"]);
+    const changed = billView.replace([binding, "row"], JSON.stringify(bindingRow+" "));
+    if (!expectRejected(`a changed ${binding} catalog row`, await attempt(() => scopedBill(changed, manifestRaw, headRaw, keyJson, api)))) failures += 1;
+    const missing = billView.replace([binding], "null");
+    const missingVerdict = await attempt(() => scopedBill(missing, manifestRaw, headRaw, keyJson, api));
+    const salePriced = inspect(billView.get(["entry", "description"])).has(["sale", "digest"]);
+    if (binding === "price" && salePriced) {
+      if (!report("sale-priced bill remains verifiable without optional wholesale binding", missingVerdict.ok, missingVerdict.detail)) failures += 1;
+    } else if (!expectRejected(`a missing required ${binding} binding`, missingVerdict)) failures += 1;
+  }
+
+  const description = inspect(billView.get(["entry", "description"]));
+  if (description.has(["lines", 0, 2])) {
+    const rate = description.token(["lines", 0, 2]);
+    const changedDescription = description.replace(["lines", 0, 2], (BigInt(rate) + 1n).toString());
+    const changedRate = billView.replace(["entry", "description"], JSON.stringify(changedDescription));
+    if (!expectRejected("a changed recorded rate", await attempt(() => scopedBill(changedRate, manifestRaw, headRaw, keyJson, api)))) failures += 1;
+  } else console.log("[SKIP] recorded rate mutation: this record has no rated lines");
+
   const wrongHash = (expectedHash[0] === "0" ? "1" : "0") + expectedHash.slice(1);
-  const wrongHashVerdict = await attempt(() => verifyBill(JSON.stringify(bundle), wrongHash));
+  const wrongHashVerdict = await attempt(() => verifyBill(bundleRaw, wrongHash));
   if (!expectRejected("a different customer-held hash", wrongHashVerdict)) {
     failures += 1;
   }
@@ -284,7 +314,7 @@ async function main() {
 
   const wrongHeld = { size: held.size, root: "00".repeat(32) };
   const wrongHeldVerdict = await attempt(() =>
-    verifyConsistency(JSON.stringify(consistency), JSON.stringify(wrongHeld), manifest.origin, keyJson),
+    verifyConsistency(readFileSync(join(dir, "consistency.json"), "utf8"), JSON.stringify(wrongHeld), manifest.origin, keyJson),
   );
   if (!expectRejected("a different archived head", wrongHeldVerdict)) {
     failures += 1;

@@ -365,6 +365,7 @@ def main():
             consumer=private/"consumer";consumer.mkdir()
             backup.private_json(consumer/"package.json",{"name":"oxsum-recovery-consumer","private":True,"type":"module"})
             shutil.copyfile(REPO/"examples/verify-consumer/verify.mjs",consumer/"verify.mjs")
+            shutil.copyfile(REPO/"examples/verify-consumer/scope.mjs",consumer/"scope.mjs")
             user_config=private/"user.npmrc";user_config.write_text("")
             global_config=private/"global.npmrc";global_config.write_text("")
             run(["npm","install","--ignore-scripts","--no-audit","--no-fund","--userconfig",str(user_config),"--globalconfig",str(global_config),"--cache",str(private/"npm-cache"),str(sdk)],env=env,cwd=consumer,log=private/"npm.log")

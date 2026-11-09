@@ -8,6 +8,9 @@
   their successful GitHub candidate and full-CI runs. `--online` needs `gh`;
   omitting it checks local consistency only. `VERIFY_CONSUMER_OUTPUT=<new-dir>
   scripts/check-verify-consumer.sh` retains the exact installed SDK tarball.
+  The clean consumer also runs `node --test scope.test.mjs` against that same
+  installed package: retained origin/head/key, required price/sale bindings and
+  lossless raw JSON checks. See `examples/verify-consumer/README.md`.
 
 - Image promotion: `python3 scripts/test-candidate-promotion.py` tests refusal,
   immutable identity and credential boundaries without registry access.
