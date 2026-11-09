@@ -4,6 +4,8 @@ Updated: 2026-11-09
 
 ## In progress
 
+- [ ] [#891](https://github.com/AllureCurtain/oxsum/issues/891) — Fix concurrent statement/period evidence descriptor publication after main CI exposed a non-arbiter unique-index race; focused core verification and independent review in progress.
+
 - [ ] [#876](https://github.com/AllureCurtain/oxsum/issues/876) — Offline consumer retained scope, separate price/sale verdicts and original JSON preservation; eight real-SDK/transport groups and v13/v14/v2 export rejection matrices passed. Independent review and PR integration pending.
 
 - [ ] [#872](https://github.com/AllureCurtain/oxsum/issues/872) — Prepared portal and embedded pilot kits, shared exact-candidate intake and independent participant result template; independent review and 28 local-link checks passed; PR integration pending. No participants or external contact.

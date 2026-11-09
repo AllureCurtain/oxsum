@@ -6,6 +6,12 @@ Read this file on every resume, then reconcile actual main, worktrees, issues/PR
 
 ## Current state
 
+- Main CI `42550669522` on `134a4aae` exposed concurrent evidence descriptor
+  publication failing the statement-scope unique index. #891 repairs both scope
+  indexes while retaining deterministic identity and immutable bytes; focused
+  core regression and source review precede further feature integration.
+  [Evidence](evidence/evidence-publication-race.md).
+
 - #876 repairs clean offline consumer scope and raw JSON, requires separate
   price/sale verdicts and connects consistency to the retained bill head. Eight
   packed-SDK/transport groups and v13/v14/v2 export rejection matrices passed;
