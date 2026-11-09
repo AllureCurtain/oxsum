@@ -44,8 +44,9 @@ cargo clippy -p oxsum-core -p oxsum-server --all-targets -- -D warnings
 The selection covers both core and HTTP plan/subscription suites and coordinated
 gateway checks. Changed-crate strict Clippy passed in 3m03s. Pinned formatting,
 diff checks and independent source review passed. Four OpenAPI contract groups
-and code generation passed with no generated-schema drift; no frontend runtime
-code changed. Logs: `/tmp/oxsum-854-focused.log`, `/tmp/oxsum-854-clippy.log`,
+and code generation passed; the generated schema changes only the matching
+description comment, with no type or frontend runtime changes. Logs:
+`/tmp/oxsum-854-focused.log`, `/tmp/oxsum-854-clippy.log`,
 `/tmp/oxsum-854-contract.log`. Both runs used explicit local PostgreSQL fixtures;
 the suite created and dropped its own scratch database. Initial test compilation
 exposed two optional fixture-ID unwraps, fixed before any repair runtime result.

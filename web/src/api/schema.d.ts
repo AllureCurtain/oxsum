@@ -3436,7 +3436,14 @@ export interface paths {
          * @description Marks `cancelAtPeriodEnd`: the paid period still serves to its end —
          *     the draws it funded are honored — but the boundary does not renew
          *     (issue #610). No mid-period pro-rating; cancelling keeps serving
-         *     through what was already paid for.
+         *     through what was already paid for. The first request at or after the
+         *     boundary closes the cancelled entitlement even if the rollover worker
+         *     has not run: it cannot draw the ended period's remaining quota and must
+         *     satisfy ordinary wallet admission. Earlier admitted draws still settle
+         *     against their original period. Past-due plans without a cancellation
+         *     retain the documented remainder-quota service policy.
+         *     Lifecycle closure and request reservation share one transaction; a
+         *     refused request rolls both back without allowing ended quota to serve.
          */
         post: {
             parameters: {
