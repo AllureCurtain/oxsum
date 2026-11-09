@@ -137,3 +137,17 @@ export async function scopedConsistency(raw, heldRaw, headRaw, origin, keyRaw, a
   require(checked.ok, checked.detail ?? 'Consistency verification failed');
   return checked;
 }
+
+export async function scopedWitnesses(notes, pins, origin, headRaw, api) {
+  require(notes.length > 0, 'No cosignatures to verify');
+  require(new Set(notes.map((note) => note.witnessUrl)).size === notes.length,
+    'Duplicate witness notes');
+  require(new Set(pins.map((pin) => pin.witnessUrl)).size === pins.length,
+    'Duplicate witness pins');
+  const checked = await api.verifyWitnesses(JSON.stringify(notes), JSON.stringify(pins), origin, headRaw);
+  require(Array.isArray(checked) && checked.length === notes.length,
+    'Witness verifier returned incomplete results');
+  require(checked.every((row, i) => row.witnessUrl === notes[i].witnessUrl && row.ok === true),
+    checked.map((row) => row.witnessUrl+': '+row.detail).join('; '));
+  return { ok: true, detail: checked.map((row) => row.witnessUrl+': '+row.detail).join('; ') };
+}

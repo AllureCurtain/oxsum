@@ -28,7 +28,7 @@
  * The rejection checks mutate the inputs in memory; nothing is written.
  */
 
-import { inspect, scopedBill, scopedConsistency, scopedEvidence } from "./scope.mjs";
+import { inspect, scopedBill, scopedConsistency, scopedEvidence, scopedWitnesses } from "./scope.mjs";
 import { existsSync, readFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -139,7 +139,7 @@ async function main() {
   console.log(`ledger ${manifest.origin}`);
   console.log();
 
-  const api = { verifyBill, verifyConsistency, verifyEvidenceBundle, verifyPriceHead, verifySaleHead, verifySignedHead };
+  const api = { verifyBill, verifyConsistency, verifyEvidenceBundle, verifyPriceHead, verifySaleHead, verifySignedHead, verifyWitnesses };
   const bill = await attempt(() => scopedBill(bundleRaw, args.hash ? inspect(manifestRaw).replace(["contentHash"], JSON.stringify(args.hash)) : manifestRaw, headRaw, keyJson, api));
   if (!report("bill: hash, inclusion, charge, price, sale", bill.ok, bill.ok ? `${bill.charge}${bill.price}${bill.sale ?? ""}` : bill.detail ?? bill.verdict)) {
     failures += 1;
@@ -167,17 +167,15 @@ async function main() {
     console.log("[SKIP] witnesses: no cosigned checkpoint — this deployment pins no witnesses");
     console.log("       The bill and head checks above do not depend on this line.");
   } else {
-    const pins = checkpoint.data.witnessKeys ?? [];
+    const pinsPath = join(dir, "witness-pins.json");
+    const pins = existsSync(pinsPath) ? readJson(pinsPath) : checkpoint.data.witnessKeys ?? [];
+    console.log(existsSync(pinsPath)
+      ? "       Using separately retained witness-pins.json; verifies supplied notes, not a quorum."
+      : "       Using checkpoint-supplied pins; this does not establish independent witness trust.");
     const witnesses = await attempt(() =>
-      verifyWitnesses(
-        JSON.stringify(notes),
-        JSON.stringify(pins),
-        manifest.origin,
-        servedHead,
-      ),
+      scopedWitnesses(notes, pins, manifest.origin, servedHead, api),
     );
-    const allOk = witnesses.ok && witnesses.every((witness) => witness.ok);
-    if (!report("witnesses: cosignatures against the pinset", allOk, witnesses.ok ? witnesses.map((w) => `${w.witnessUrl}: ${w.detail}`).join("; ") : witnesses.detail)) {
+    if (!report("witnesses: cosignatures against the pinset", witnesses.ok, witnesses.detail)) {
       failures += 1;
     }
   }
