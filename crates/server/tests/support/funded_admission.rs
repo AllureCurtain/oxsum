@@ -1444,7 +1444,7 @@ async fn closed_cancelled_period(world: &World, plan: &oxsum_core::CustomerPlan,
     );
     let periods = world
         .db
-        .subscription_periods(plan.subscription_id)
+        .subscription_periods(plan.subscription_id.unwrap())
         .await
         .unwrap();
     assert_eq!(periods.len(), 1);
@@ -1486,7 +1486,7 @@ async fn a_cancelled_boundary_refusal_rolls_back_every_admission_effect() {
         no_reservations(&world).await;
         let periods = world
             .db
-            .subscription_periods(plan.subscription_id)
+            .subscription_periods(plan.subscription_id.unwrap())
             .await
             .unwrap();
         assert_eq!(
