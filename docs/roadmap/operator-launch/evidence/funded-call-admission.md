@@ -69,8 +69,15 @@ Logs: `/tmp/oxsum-849-workspace.log`, `/tmp/oxsum-849-clippy.log`,
 justified by the core/server transactional boundary and migration; documentation
 or equivalent-source rebases do not trigger another full run. Customer readiness follows this repair and the
 separate cancellation boundary #854, team deletion #859 and evidence budgeting
-#875 issues. The independent source-publication race #891 is being repaired
-before this PR merges; no result here claims that concurrent path is fixed.
+#875 issues.
+
+PR #893 integrated the independent source-publication race #891 at `dcd226c6`.
+The final rebase compared with the validated PR head `624b8495`: all admission,
+settlement, recovery, migration and gateway test source is identical; the only
+runtime changes are the separately validated #891 evidence publisher and its
+controlled regression tests. Only TODO documentation required conflict
+resolution. Existing #849 checks are retained without rerunning tests or Clippy;
+the #891 evidence remains in its own [record](evidence-publication-race.md).
 
 Source review also identified an existing team-deletion lock inversion: admission
 locks membership before team; deletion owns the team before its foreign-key

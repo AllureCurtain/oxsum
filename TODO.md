@@ -43,7 +43,7 @@ Updated: 2026-11-09
 
 - [x] [#843](https://github.com/AllureCurtain/oxsum/issues/843) — N09.a: Actor-scoped business setup integrated in PR #845 (`df4ad4f`); 1,950 full workspace tests, 25 focused checks, strict Clippy, frontend/contract checks and independent review passed. Customer readiness and first-call proof remain.
 
-- [ ] [#849](https://github.com/AllureCurtain/oxsum/issues/849) — Atomic funded/free admission and recovery: 23 targeted regressions, 248 related integration checks and 2,070 complete workspace checks passed; changed-crate strict Clippy, frontend contract/build and two independent source reviews passed. Focused PR pending; #854/#859/#875 remain before customer readiness.
+- [ ] [#849](https://github.com/AllureCurtain/oxsum/issues/849) — Atomic funded/free admission and recovery: 23 targeted regressions, 248 related integration checks and 2,070 complete workspace checks passed; changed-crate strict Clippy, frontend contract/build and two independent source reviews passed. PR #892 rebased onto integrated #891 with unchanged admission source; protected integration pending. #854/#859/#875 remain before customer readiness.
 
 - [ ] [#854](https://github.com/AllureCurtain/oxsum/issues/854) — Follow #849 with the lazy cancellation boundary regression: a plan cancelled during admission must not draw the ended period's quota; preserve serving past-due remainder policy.
 
