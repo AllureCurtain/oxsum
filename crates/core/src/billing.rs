@@ -9,7 +9,8 @@
 mod evidence;
 
 pub use evidence::{
-    GATEWAY_SETTLEMENT_JSON_BYTES, retain_reason_evidence, validate_gateway_description,
+    GATEWAY_SETTLEMENT_JSON_BYTES, INLINE_REASON_JSON_BYTES, retain_reason_evidence,
+    validate_gateway_description,
 };
 
 use std::collections::BTreeMap;
