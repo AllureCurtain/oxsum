@@ -53,7 +53,7 @@ Updated: 2026-11-09
 
 - [ ] [#854](https://github.com/AllureCurtain/oxsum/issues/854) — Close cancelled plan entitlement on the first boundary request before the rollover worker; preserve earlier draws and past-due remainder policy. Baseline reproduced; 74 focused checks, changed-crate strict Clippy, contract/codegen, formatting and independent source review passed. Protected PR integration pending.
 
-- [ ] [#859](https://github.com/AllureCurtain/oxsum/issues/859) — After #849/#854, align team deletion's parent/team/member locks with admission and validate controlled deletion/reassignment races before customer readiness.
+- [ ] [#859](https://github.com/AllureCurtain/oxsum/issues/859) — In `.worktrees/team-deletion-admission`: serialize team deletion through the organization lock before its membership foreign-key action; prepare controlled deletion/reassignment races for monetary and quota-funded admission. Runtime validation pending; follows #854 before customer readiness.
 
 - [x] [#835](https://github.com/AllureCurtain/oxsum/issues/835) — Integrated in PR #844 (`23b6547`): explicit audited checkout routes, safe customer choices and retained-version retry; 1,948 full workspace checks, strict Clippy and independent review passed. Browser/PSP acceptance remains.
 

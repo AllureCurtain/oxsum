@@ -28,6 +28,14 @@ same connection, and lazy plan rollover reuses the already-open gateway wallet.
 An authority snapshot that changed before reservation refuses before execution;
 an admitted turn retains its pinned model/route/price terms through settlement.
 
+Team deletion and member reassignment take the organization row `FOR UPDATE`
+before changing team/member rows (#859). Admission's earlier `FOR KEY SHARE`
+serializes its roster and budget read against both writers. A deletion therefore
+cannot own a team row while waiting for a member already held by admission; its
+foreign-key `SET NULL` action retains memberships and existing reservations.
+Roster changes affect later admissions, with settled and reserved spend still
+attributed through the current member roster.
+
 ## Self-hosted release target
 
 The accepted [design](roadmap/self-hosted-v1/DESIGN.md) (#591) retains existing Organization IDs, tenant schemas and proofs as customer billing accounts and adds separate Business ownership/staff scope. There is no second commercial wallet or project wholesale charge. Durable single-customer operations coordinate financial and entitlement effects; sale prices remain independent of provider expense. These changes are planned until their [implementation issues](roadmap/self-hosted-v1/STATUS.md) integrate. [Baseline reconciliation](roadmap/self-hosted-v1/BASELINE.md) records the current source and compatibility boundaries.

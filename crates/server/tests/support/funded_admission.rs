@@ -1,5 +1,8 @@
 //! Fully funded admission regressions, sharing the coordinated gateway fixture.
 
+#[path = "team_deletion.rs"]
+mod team_deletion;
+
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use http_body_util::BodyExt;
