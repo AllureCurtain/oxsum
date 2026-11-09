@@ -17,6 +17,7 @@ Updated: 2026-11-09
 - [x] [#867](https://github.com/AllureCurtain/oxsum/issues/867) — Prevent a current wallet reopen from reapplying ledger DDL over an active settlement; baseline lock failure reproduced, 37 focused, 519 engine, 29 engine doc and 2,042 complete workspace checks passed. Strict Clippy, formatting and independent source review passed; integrated in PR #870 (`f89fcb65`).
 - [ ] [#869](https://github.com/AllureCurtain/oxsum/issues/869) — Durable bounded provider harness; 15 boundary tests and complete local whole/SSE/offline fixture passed; independent source review passed; PR integration and actual priced provider calls remain.
 
+
 - [x] [#862](https://github.com/AllureCurtain/oxsum/issues/862) — Pool exhaustion deadline regression integrated in PR #864 (`e53e303a`); 17 PostgreSQL fault checks, strict Clippy and independent review passed.
 
 - [x] [#841](https://github.com/AllureCurtain/oxsum/issues/841) — Complete non-plan refund Cash, exact source allocation, historical preview/apply and awaited fulfillment source release integrated in PR #868 (`f3802d5e`). Focused core/HTTP/executable checks, strict Clippy and independent review passed. The #867 repair's combined run passed all 2,042 workspace checks, including the earlier identity inventory and gateway DDL failures.

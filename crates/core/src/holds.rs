@@ -715,6 +715,20 @@ async fn sweep_admitted_hold(
         tags: hold.tags.clone(),
         ..UsageRecord::default()
     };
+    // Recovery still publishes the original priced dimensions at zero usage,
+    // so the receipt remains readable by the same settlement parser as a call.
+    let lines = [
+        BillLine {
+            item: "input".into(),
+            units: 0,
+            price_per_m: hold.input_price,
+        },
+        BillLine {
+            item: "output".into(),
+            units: 0,
+            price_per_m: hold.output_price,
+        },
+    ];
     let description = Settlement {
         request: &hold.request_id,
         channel: &hold.channel,
@@ -725,7 +739,7 @@ async fn sweep_admitted_hold(
         price_version: hold.price_version,
         kind: SettlementKind::Swept,
         usage: &usage,
-        lines: &[],
+        lines: &lines,
         matched_rule: None,
         discount_percent: None,
         charged: 0,
