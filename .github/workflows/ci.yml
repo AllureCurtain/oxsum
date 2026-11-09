@@ -312,7 +312,7 @@ jobs:
       - name: No frontend stage change
         if: steps.filter.outputs.stages != 'true' && github.event_name != 'schedule' && github.event_name != 'workflow_dispatch'
         run: echo "no frontend change; skipping the stage build"
-      - uses: actions/setup-node@v6
+      - uses: actions/setup-node@v7
         if: steps.filter.outputs.stages == 'true'
         with:
           node-version: 22
