@@ -16,6 +16,13 @@ release acceptance are distinct statuses.
 
 This document records product behavior: who can do what, and how every situation is billed. Technical implementation lives in architecture.md, technology rationale in decisions.md, progress in TODO.md.
 
+Composed settlement evidence (#873) retains subscription, cache and other
+provenance together under the ledger's 16,384-Unicode-scalar description bound.
+The current native and browser verifiers read that same bound; older
+512-character readers require an upgrade for longer new entries. This repairs
+the quota-funded cache settlement failure without dropping evidence. Arbitrary
+configured guardrail output still requires the admission budget tracked by #875.
+
 Every page and flow below carries a status: **shipped** means this repository does it today, **planned** means the text describes the vision and names the issue that will build it. A planned page or flow is not a smaller feature that happens to be missing; it is documented behavior that no code implements. The shipped dashboard is the React app under `web/` (issue #234), served at `/app`: every member page, the admin console and chat live there as `web/src/pages/*.tsx`, and the REST and gateway behavior they call is in `crates/server`. The server-rendered Topcoat pages retired to it (issue #256) — every legacy `/dashboard/*`, auth and `/admin` path answers `301` to its `/app` twin, so the page names below read `/app/<name>` even where the text still says `/dashboard/<name>` for continuity with older notes. Issue #61 is the audit that added these statuses; the resolutions are recorded in docs/decisions.md. Only `/verify` stays server-rendered on purpose (`crates/web`): its skeleton is a plain form — the page is the one surface where an in-browser check can run the *served* verifier (the wasm build of `oxsum_verify`, issue #284), and the form's server-side POST keeps it working where the bundle is not shipped.
 
 ## Operator launch target (accepted 2026-11-08)

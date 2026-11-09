@@ -288,6 +288,10 @@ The dashboard is the React app under `web/` (issue #234): overview, top-up, orde
 - **Verify a row**: every row's **verify** link opens `/verify` with the entry named;
   the page fetches that entry's proof bundle itself — inside your session and its
   scope — and runs the check on load.
+  Keep your offline verifier current with the server: complete quota/cache bills
+  can carry longer evidence than older verifiers accept. An older reader's size
+  error is not evidence of a changed bill; use the compatible verifier and your
+  originally retained content hash.
 - **Verify an end-user report**: if your organization bills its own downstream
   customers out of this ledger, a customer cannot read the ledger to check a bill —
   every customer's usage mixes inside it. `POST /api/v1/org/usage-reports` with

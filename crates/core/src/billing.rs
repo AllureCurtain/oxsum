@@ -1042,8 +1042,8 @@ pub struct Settlement<'a> {
     pub model: &'a str,
     /// The capability the caller asked for (v12, issue #500): `request.model`
     /// as sent, before any fallback served it. Equals `served_model` when no
-    /// fallback ran — the description emits it only when the two differ, so a
-    /// clean serve's record stays inside the ledger's 512-char cap.
+    /// fallback ran — the description emits it only when the two differ, avoiding a
+    /// redundant name in the bounded settlement evidence.
     pub requested_model: &'a str,
     /// The model that actually answered (v12, issue #500): the fallback that
     /// served the turn, or the requested model when none ran. This is the
@@ -1223,7 +1223,7 @@ pub struct SettlementGuardrail<'a> {
 }
 
 /// Whether a metered count is zero: zero fields are not written, so the common
-/// text-only description stays small inside the ledger's 512-character limit.
+/// text-only description stays compact within the ledger's bounded evidence field.
 fn is_zero(count: &i64) -> bool {
     *count == 0
 }
@@ -1236,7 +1236,7 @@ fn is_zero(count: &i64) -> bool {
 /// under the hash.
 ///
 /// Zero fields are not written, so a text-only turn stays compact inside the
-/// ledger's 512-character description limit; they read back as zero.
+/// bounded ledger description; they read back as zero.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default, rename_all = "camelCase")]
 pub struct MeteredUsage {
@@ -1312,8 +1312,9 @@ impl From<&UsageRecord> for MeteredUsage {
 /// the rule `oxsum_verify::verify_charge` recomputes (v3's `lines`).
 ///
 /// On the wire a line is a three-element array, `[item, units, pricePerMillion]`
-/// — the ledger's 512-character description limit cannot afford an object's
-/// repeated keys, and the item name keeps the tuple self-describing.
+/// — compact since the original 512-character limit, with an item name that
+/// keeps the tuple self-describing. The encoding stays unchanged under the
+/// 16,384-character bound (issue #873).
 #[derive(Debug, Clone, PartialEq)]
 pub struct BillLine {
     /// The dimension this line prices (`"input"`, `"output"`, `"cache_read"`,
@@ -1355,8 +1356,7 @@ struct SettlementV9<'a> {
     /// `request.model` as sent. Written only when it differs from
     /// `servedModel` — a clean serve carries just the served name, so the
     /// two names cost their bytes only on the cross-model failover that made
-    /// them differ, which keeps a rule-priced turn inside the description's
-    /// 512-character cap.
+    /// them differ. This compact v12 encoding is retained unchanged.
     #[serde(skip_serializing_if = "Option::is_none")]
     requested_model: Option<&'a str>,
     /// The model that actually answered, v12's addition: the fallback that

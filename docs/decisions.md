@@ -3485,3 +3485,28 @@ once; neither successful usage nor ambiguous failure replenishes the allowance.
 The report labels this a controlled mediated path and identifies the actual
 binary/SDK bytes. Existing direct-production DNS/provider matrix and final
 candidate gates remain separate.
+
+
+## 2026-11-09 — Bounded composed ledger evidence (#873)
+
+A quota-funded semantic-cache hit returned 200 but failed settlement because the
+v14 description's subscription and source-entry provenance exceeded the vendored
+512-character limit. A standalone test on main reproduced the missing receipt;
+removing provenance or shortening accepted model names would conceal the defect.
+
+The vendored `Description` limit is now 16,384 Unicode scalar values, at most
+65,536 UTF-8 bytes before JSON escaping. Construction and serde decoding share
+that finite bound, so storage rehydration and native/WASM verification agree.
+Control-character validation is unchanged. PostgreSQL and SQLite already use
+TEXT without a length CHECK, so no schema mutation or migration is needed.
+Settlement v14 fields and canonical encoding stay byte-for-byte unchanged; old
+hashes and golden vectors remain valid. The larger bound accommodates known
+composed metadata, including 200-byte model/alias names and delegated quota/cache
+receipts; it does not promise that arbitrary policy output fits. The unbounded
+policy count and returned reasons are the separate admission-budget issue #875.
+
+Old 512-character binaries cannot decode longer newly written descriptions.
+Upgrade the server and distributed/served verifier together. A schema-identical
+rollback is unsafe after such entries exist unless the retained reader supports
+the new bound; otherwise restore the pre-upgrade backup. No package publication
+or candidate acceptance follows from this implementation.

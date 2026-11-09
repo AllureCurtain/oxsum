@@ -4,6 +4,14 @@ One row per proof surface: what it establishes, and the sentence it must not be 
 product's discipline is the right-hand column — oxsum never claims "trustless", and this page is
 where that discipline is auditable.
 
+The entry description preserves complete composed evidence up to 16,384 Unicode
+scalar values (at most 65,536 UTF-8 bytes before transport escaping, #873).
+The v14 settlement and canonical hash formats do not change, so old proof bytes
+and hashes continue to verify. A verifier built with the former 512-character
+limit cannot decode a longer new entry; distribute the matching native/browser
+verifier with the server. This storage limit does not certify arbitrary policy
+output sizes: guardrail evidence admission budgeting remains #875.
+
 | Surface | What it proves | What it does not prove |
 | --- | --- | --- |
 | Bills retained-head check | local WASM authenticates the original/current signatures under the retained key and verifies the consistency proof against the retained root; equal heads match exactly | the first server-supplied key or newly served verifier is independently trusted; an empty head establishes prior history; token counts or all bill arithmetic/completeness were checked |
