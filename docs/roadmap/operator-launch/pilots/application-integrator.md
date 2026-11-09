@@ -19,7 +19,7 @@ Do not borrow an unrestricted owner/deployment token to fill a missing surface.
 | --- | --- | --- |
 | Application namespaces and bounded service-managed customer provision/read/archive | Integrated #855; owner grant UI #857 | Stable business/application/external-customer identity; exact replay across credential rotation; no fabricated human login |
 | Explicit customer billing reads and external metering | Integrated #791 / existing metering contract | Current grant and customer checks; immutable operation IDs and bill/source evidence |
-| Bounded application customer key lifecycle | #866 implementation prepared, not yet integrated at this kit checkpoint | Finite model/budget/rate/concurrency/expiry, one-time secret recovery, revoke and foreign-customer refusal |
+| Bounded application customer key lifecycle | #866 implementation prepared, not yet integrated at this kit checkpoint | Finite model/budget/rate/concurrency/expiry, metadata-only retry, revoke/new-key recovery and foreign-customer refusal |
 | Application entitlement/model reads, scoped checkout/evidence | N21 remaining | Narrow actual contract endpoints; no wildcard customer access or self-credit |
 | Verified human consent/linking | N21 remaining | Explicit verified consent before linking an app-managed account to a person; contact email alone never links |
 | Signed lifecycle notifications and complete external sample | N21 remaining | Signature/dedup/order/retry recovery, separate durable application store and a complete J18 run |
