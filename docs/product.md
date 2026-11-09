@@ -195,7 +195,8 @@ Sold-plan cancellation is effective at the paid boundary even when the next
 request arrives before the rollover worker (#854). Lazy admission closes the
 plan and its quota-period history together, then rechecks the subscription
 state. A cancelled period supplies no new quota; ordinary wallet authority and
-funding decide that request. Earlier admitted draws remain settleable against
+funding decide that request. A refusal rolls back the lifecycle and reservation
+together; every retry still rejects the ended quota. Earlier admitted draws remain settleable against
 the retained cancelled period. This differs from an uncancelled past-due plan,
 whose remaining paid quota retains the documented service policy.
 
