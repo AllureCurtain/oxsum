@@ -105,6 +105,8 @@ async fn world() -> Option<World> {
 }
 fn selection() -> ApplicationCheckoutSelection {
     ApplicationCheckoutSelection {
+        statement_id: None,
+        statement_amount_minor: None,
         purpose: PaymentOrderPurpose::WalletTopup,
         rail: MerchantRail::Hyperswitch,
         display_amount_minor: Some(250),
@@ -358,6 +360,8 @@ async fn scope_namespace_quote_currency_bundle_and_return_destinations_are_exact
         .unwrap()
         .offer;
     let selection = ApplicationCheckoutSelection {
+        statement_id: None,
+        statement_amount_minor: None,
         purpose: PaymentOrderPurpose::Bundle,
         rail: MerchantRail::Hyperswitch,
         display_amount_minor: None,
@@ -611,6 +615,8 @@ async fn assigned_plan(w: &World, price: i64) -> Uuid {
 }
 fn plan_selection(plan: Uuid) -> ApplicationCheckoutSelection {
     ApplicationCheckoutSelection {
+        statement_id: None,
+        statement_amount_minor: None,
         purpose: PaymentOrderPurpose::PlanPeriod,
         rail: MerchantRail::Hyperswitch,
         display_amount_minor: None,
@@ -814,6 +820,13 @@ async fn retained_wallet_json_without_plan_fields_replays_after_plan_extension()
     let req = request(&w).await;
     let wire = serde_json::to_value(&req).unwrap();
     assert!(wire["quote"].get("planPayment").is_none());
+    assert!(wire["quote"].get("statementPayment").is_none());
+    assert!(wire["quote"]["selection"].get("statementId").is_none());
+    assert!(
+        wire["quote"]["selection"]
+            .get("statementAmountMinor")
+            .is_none()
+    );
     assert!(wire["quote"]["selection"].get("customerPlanId").is_none());
     let old: ApplicationCheckoutRequest = serde_json::from_value(wire.clone()).unwrap();
     let order =
@@ -921,4 +934,504 @@ async fn application_legacy_plan_renewal_obeys_boundary_and_stale_cancellation()
             .order_id,
         renewed.order_id
     );
+}
+
+async fn statement_debt(w: &World, fee: i64) -> (Uuid, Uuid, oxsum_core::Wallet) {
+    let plan = assigned_plan(w, fee).await;
+    let original = payment::created_order(&w.db, &w.context, w.org, plan).await;
+    payment::mark_paid(&w.db, &w.context, &original).await;
+    payment::fulfill(&w.db, &original).await;
+    let tenant: String =
+        sqlx::query_scalar("SELECT tenant_id FROM oxsum.organizations WHERE organization_id=$1")
+            .bind(w.org)
+            .fetch_one(w.db.pool())
+            .await
+            .unwrap();
+    let wallet = oxsum_core::Wallet::open_existing(w.db.pool().clone(), &tenant)
+        .await
+        .unwrap();
+    lose_order(w, &wallet, &original).await;
+    let statement =
+        w.db.plan_statements(w.org, None, 50)
+            .await
+            .unwrap()
+            .statements
+            .into_iter()
+            .find(|s| {
+                s.total_minor > s.paid_minor
+                    && matches!(
+                        s.state,
+                        oxsum_core::PlanStatementState::Issued
+                            | oxsum_core::PlanStatementState::PastDue
+                    )
+            })
+            .unwrap()
+            .statement_id;
+    (statement, plan, wallet)
+}
+async fn lose_order(w: &World, wallet: &oxsum_core::Wallet, original: &oxsum_core::PaymentOrder) {
+    let reference = Uuid::new_v4().to_string();
+    let event = oxsum_core::VerifiedMerchantEvent {
+        event_id: Uuid::new_v4().to_string(),
+        kind: oxsum_core::MerchantEventKind::Dispute,
+        payment_id: Some(original.order_id),
+        provider_payment_id: Some(format!("pay_{}", original.order_id)),
+        organization_id: Some(w.org),
+        provider_account_id: Some(w.context.account_id.clone()),
+        mode: Some(oxsum_core::MerchantMode::Test),
+        amount_minor: Some(original.display_amount_minor),
+        currency: Some(original.display_currency.clone()),
+        refund_id: Some(reference.clone()),
+    };
+    let receipt =
+        w.db.receive_merchant_event(&w.context, &event, &[84; 32])
+            .await
+            .unwrap();
+    w.db.record_order_dispute(&event, &receipt).await.unwrap();
+    let dispute: Uuid = sqlx::query_scalar(
+        "SELECT dispute_id FROM oxsum.disputes WHERE order_id=$1 AND provider_dispute_id=$2",
+    )
+    .bind(original.order_id)
+    .bind(reference)
+    .fetch_one(w.db.pool())
+    .await
+    .unwrap();
+    w.db.resolve_order_dispute(
+        wallet,
+        &w.owner,
+        dispute,
+        oxsum_core::DisputeResolution::Lost,
+        Some("application debt fixture"),
+        &Uuid::new_v4().to_string(),
+        time::OffsetDateTime::now_utc().date(),
+    )
+    .await
+    .unwrap();
+}
+fn debt_selection(statement: Uuid, amount: Option<i64>) -> ApplicationCheckoutSelection {
+    ApplicationCheckoutSelection {
+        purpose: PaymentOrderPurpose::StatementRepayment,
+        rail: MerchantRail::Hyperswitch,
+        display_amount_minor: None,
+        bundle_version_id: None,
+        customer_plan_id: None,
+        statement_id: Some(statement),
+        statement_amount_minor: amount,
+    }
+}
+async fn debt_request(
+    w: &World,
+    statement: Uuid,
+    amount: Option<i64>,
+) -> ApplicationCheckoutRequest {
+    ApplicationCheckoutRequest {
+        idempotency_key: Uuid::new_v4().to_string(),
+        quote: w
+            .db
+            .application_checkout_quote(&w.service, w.org, &debt_selection(statement, amount))
+            .await
+            .unwrap(),
+        return_url: "https://app.example/debt".into(),
+        cancel_url: "https://app.example/debt-cancel".into(),
+    }
+}
+#[tokio::test]
+async fn application_statement_partial_full_replay_preserves_wallet_and_entitlement() {
+    let Some(w) = world().await else { return };
+    let (statement, plan, wallet) = statement_debt(&w, 2_500_001).await;
+    let periods = serde_json::to_value(w.db.plan_periods(plan).await.unwrap()).unwrap();
+    let funds = wallet.available().await.unwrap();
+    let req = debt_request(&w, statement, Some(1_000_001)).await;
+    assert_eq!(req.quote.display_amount_minor, 101);
+    assert_eq!(req.quote.purchased_minor, 0);
+    assert_eq!(
+        req.quote.statement_payment.as_ref().unwrap().amount_minor,
+        1_000_001
+    );
+    let secret = SecretKey::from_bytes([71; 32]);
+    let (a, b) = tokio::join!(
+        w.db.create_application_checkout(&w.service, w.org, &req, &secret),
+        w.db.create_application_checkout(&w.service, w.org, &req, &secret)
+    );
+    let first = a.unwrap().0;
+    assert_eq!(first.order_id, b.unwrap().0.order_id);
+    assert_eq!(first.amount_minor, 1_000_001);
+    assert_eq!(first.statement_payment, req.quote.statement_payment);
+    payment::mark_paid(&w.db, &w.context, &first).await;
+    payment::fulfill(&w.db, &first).await;
+    let log = wallet.log_size().await.unwrap();
+    payment::fulfill(&w.db, &first).await;
+    assert_eq!(wallet.log_size().await.unwrap(), log);
+    let remaining = debt_request(&w, statement, None).await;
+    assert_eq!(
+        remaining
+            .quote
+            .statement_payment
+            .as_ref()
+            .unwrap()
+            .amount_minor,
+        1_500_000
+    );
+    let second =
+        w.db.create_application_checkout(&w.service, w.org, &remaining, &secret)
+            .await
+            .unwrap()
+            .0;
+    payment::mark_paid(&w.db, &w.context, &second).await;
+    payment::fulfill(&w.db, &second).await;
+    let detail =
+        w.db.plan_statement(w.org, statement)
+            .await
+            .unwrap()
+            .unwrap();
+    assert_eq!(detail.statement.total_minor, detail.statement.paid_minor);
+    assert_eq!(wallet.available().await.unwrap(), funds);
+    assert_eq!(
+        serde_json::to_value(w.db.plan_periods(plan).await.unwrap()).unwrap(),
+        periods
+    );
+    assert_eq!(
+        w.db.create_application_checkout(&w.service, w.org, &req, &secret)
+            .await
+            .unwrap()
+            .0
+            .order_id,
+        first.order_id
+    );
+    assert!(matches!(
+        w.db.application_checkout_quote(&w.service, w.org, &debt_selection(statement, None))
+            .await,
+        Err(WalletError::Conflict(_))
+    ));
+}
+#[tokio::test]
+async fn application_statement_concurrent_reservation_foreign_scope_and_changed_quote() {
+    let Some(w) = world().await else { return };
+    let (statement, _, _) = statement_debt(&w, 2_500_000).await;
+    let req = debt_request(&w, statement, None).await;
+    let mut racing = req.clone();
+    racing.idempotency_key = Uuid::new_v4().to_string();
+    let secret = SecretKey::from_bytes([71; 32]);
+    let (a, b) = tokio::join!(
+        w.db.create_application_checkout(&w.service, w.org, &req, &secret),
+        w.db.create_application_checkout(&w.service, w.org, &racing, &secret)
+    );
+    assert_eq!(usize::from(a.is_ok()) + usize::from(b.is_ok()), 1);
+    let (order, accepted) = if let Ok((order, _)) = a {
+        (order, req)
+    } else {
+        (b.unwrap().0, racing)
+    };
+    let reserved:i64=sqlx::query_scalar("SELECT sum(amount_minor)::bigint FROM oxsum.statement_payment_reservations WHERE statement_id=$1 AND state='reserved'").bind(statement).fetch_one(w.db.pool()).await.unwrap();
+    assert_eq!(reserved, 2_500_000);
+    let mut changed = accepted.clone();
+    changed
+        .quote
+        .statement_payment
+        .as_mut()
+        .unwrap()
+        .amount_minor -= 1;
+    assert!(matches!(
+        w.db.create_application_checkout(&w.service, w.org, &changed, &secret)
+            .await,
+        Err(WalletError::Conflict(_))
+    ));
+    let readonly = grant(&w.db, w.app, vec![IntegrationScope::BillingRead]).await;
+    assert!(matches!(
+        w.db.application_checkout_quote(&readonly, w.org, &debt_selection(statement, None))
+            .await,
+        Err(WalletError::Forbidden(_))
+    ));
+    assert!(matches!(
+        w.db.application_checkout_quote(&w.service, w.org, &debt_selection(Uuid::new_v4(), None))
+            .await,
+        Err(WalletError::NotFound(_))
+    ));
+    let mut wrong = selection();
+    wrong.statement_id = Some(statement);
+    assert!(matches!(
+        w.db.application_checkout_quote(&w.service, w.org, &wrong)
+            .await,
+        Err(WalletError::InvalidInput(_))
+    ));
+    let returned =
+        w.db.application_checkout_orders(&w.service, w.org, None, 50)
+            .await
+            .unwrap();
+    assert_eq!(returned.orders.len(), 1);
+    assert_eq!(returned.orders[0].order_id, order.order_id);
+}
+
+#[tokio::test]
+async fn application_mixed_statement_refund_and_loss_keep_original_allocations() {
+    let Some(w) = world().await else { return };
+    let sold = legacy_plan::publish(
+        &w.db,
+        w.db.default_business().await.unwrap(),
+        &oxsum_core::NewSoldPlan {
+            plan_id: None,
+            name: "Legacy mixed source".into(),
+            price_minor: 2_000_000,
+            currency: "USD".into(),
+            quota_minor: Some(7_000_000),
+            period_kind: oxsum_core::PeriodKind::CalendarMonth,
+            overage_enabled: false,
+            sort_order: 0,
+        },
+    )
+    .await
+    .unwrap();
+    let plan =
+        w.db.bind_customer_plan(
+            w.org,
+            sold.plan_version_id,
+            oxsum_core::PeriodAuthorization::PaymentOrder(Uuid::nil()),
+        )
+        .await
+        .unwrap()
+        .customer_plan_id;
+    let old = payment::created_order(&w.db, &w.context, w.org, plan).await;
+    payment::mark_paid(&w.db, &w.context, &old).await;
+    payment::fulfill(&w.db, &old).await;
+    let next =
+        w.db.publish_sold_plan(
+            w.db.default_business().await.unwrap(),
+            &oxsum_core::NewSoldPlan {
+                plan_id: Some(sold.plan_id),
+                name: "Daily mixed source".into(),
+                price_minor: 3_000_000,
+                currency: "USD".into(),
+                quota_minor: Some(7_000_000),
+                period_kind: oxsum_core::PeriodKind::CalendarMonth,
+                overage_enabled: false,
+                sort_order: 0,
+            },
+        )
+        .await
+        .unwrap();
+    w.db.schedule_customer_plan_change(w.org, next.plan_version_id)
+        .await
+        .unwrap();
+    let mut tx = w.db.pool().begin().await.unwrap();
+    sqlx::query("UPDATE oxsum.plan_periods SET period_start=now()-interval '32 days',period_end=now()-interval '1 second' WHERE customer_plan_id=$1 AND state='active'").bind(plan).execute(&mut *tx).await.unwrap();
+    sqlx::query("UPDATE oxsum.org_subscriptions SET current_period_end=now()-interval '1 second' WHERE organization_id=$1 AND state='active'").bind(w.org).execute(&mut *tx).await.unwrap();
+    tx.commit().await.unwrap();
+    w.db.rollover_due_subscriptions().await.unwrap();
+    let daily = payment::created_order(&w.db, &w.context, w.org, plan).await;
+    payment::mark_paid(&w.db, &w.context, &daily).await;
+    payment::fulfill(&w.db, &daily).await;
+    let tenant: String =
+        sqlx::query_scalar("SELECT tenant_id FROM oxsum.organizations WHERE organization_id=$1")
+            .bind(w.org)
+            .fetch_one(w.db.pool())
+            .await
+            .unwrap();
+    let wallet = oxsum_core::Wallet::open_existing(w.db.pool().clone(), &tenant)
+        .await
+        .unwrap();
+    lose_order(&w, &wallet, &old).await;
+    lose_order(&w, &wallet, &daily).await;
+    let statement =
+        w.db.plan_statements(w.org, None, 50)
+            .await
+            .unwrap()
+            .statements
+            .into_iter()
+            .find(|s| {
+                s.total_minor > s.paid_minor
+                    && matches!(
+                        s.state,
+                        oxsum_core::PlanStatementState::Issued
+                            | oxsum_core::PlanStatementState::PastDue
+                    )
+            })
+            .unwrap()
+            .statement_id;
+    let req = debt_request(&w, statement, None).await;
+    let terms = req.quote.statement_payment.as_ref().unwrap();
+    assert_eq!(terms.amount_minor, 5_000_000);
+    assert_eq!(terms.allocations.len(), 2);
+    let secret = SecretKey::from_bytes([71; 32]);
+    let order =
+        w.db.create_application_checkout(&w.service, w.org, &req, &secret)
+            .await
+            .unwrap()
+            .0;
+    payment::mark_paid(&w.db, &w.context, &order).await;
+    payment::fulfill(&w.db, &order).await;
+    let refund =
+        w.db.request_order_refund(
+            w.org,
+            order.order_id,
+            &oxsum_core::NewRefundRequest {
+                amount_minor: Some(1_000_000),
+                reason: "partial debt refund".into(),
+                request_key: Uuid::new_v4().to_string(),
+                requested_by: None,
+            },
+        )
+        .await
+        .unwrap();
+    w.db.resolve_order_refund(
+        &w.owner,
+        refund.refund_id,
+        oxsum_core::RefundDecision::Approve,
+        None,
+        &Uuid::new_v4().to_string(),
+    )
+    .await
+    .unwrap();
+    let provider = format!("refund_{}", refund.refund_id);
+    w.db.note_refund_provider(refund.refund_id, &provider)
+        .await
+        .unwrap();
+    let receipt =
+        w.db.receive_merchant_event(
+            &w.context,
+            &oxsum_core::VerifiedMerchantEvent {
+                event_id: Uuid::new_v4().to_string(),
+                kind: oxsum_core::MerchantEventKind::RefundSucceeded,
+                payment_id: Some(order.order_id),
+                provider_payment_id: Some(format!("pay_{}", order.order_id)),
+                organization_id: Some(w.org),
+                provider_account_id: Some(w.context.account_id.clone()),
+                mode: Some(oxsum_core::MerchantMode::Test),
+                amount_minor: Some(refund.display_amount_minor),
+                currency: Some(refund.display_currency),
+                refund_id: Some(provider),
+            },
+            &[84; 32],
+        )
+        .await
+        .unwrap();
+    w.db.apply_refund_event(&wallet, &receipt, time::OffsetDateTime::now_utc().date())
+        .await
+        .unwrap();
+    assert_eq!(
+        debt_request(&w, statement, None)
+            .await
+            .quote
+            .statement_payment
+            .as_ref()
+            .unwrap()
+            .amount_minor,
+        1_000_000
+    );
+    lose_order(&w, &wallet, &order).await;
+    let restored = debt_request(&w, statement, None).await;
+    assert_eq!(
+        restored
+            .quote
+            .statement_payment
+            .as_ref()
+            .unwrap()
+            .amount_minor,
+        5_000_000
+    );
+    assert_eq!(wallet.available().await.unwrap(), 0);
+    assert_eq!(w.db.plan_periods(plan).await.unwrap().len(), 2);
+}
+
+#[tokio::test]
+async fn statement_checkout_hides_portal_intents_and_rechecks_collection_before_reservation() {
+    let Some(w) = world().await else { return };
+    let (statement, _, _) = statement_debt(&w, 2_500_000).await;
+    let original = debt_request(&w, statement, Some(1_000_000)).await;
+    let collection = w.db.collection_terms().await.unwrap();
+    w.db.set_collection_terms(
+        &w.owner,
+        &oxsum_core::CollectionTermsRequest {
+            idempotency_key: Uuid::new_v4().to_string(),
+            reason: "future statement collection terms".into(),
+            expected_revision: collection.revision,
+            currency: oxsum_core::CollectionCurrency {
+                code: "USD".into(),
+                rate_per_credit: "2".into(),
+            },
+        },
+    )
+    .await
+    .unwrap();
+    let secret = SecretKey::from_bytes([71; 32]);
+    assert!(matches!(
+        w.db.create_application_checkout(&w.service, w.org, &original, &secret)
+            .await,
+        Err(WalletError::Conflict(_))
+    ));
+    let held: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM oxsum.statement_payment_reservations WHERE statement_id=$1",
+    )
+    .bind(statement)
+    .fetch_one(w.db.pool())
+    .await
+    .unwrap();
+    assert_eq!(held, 0);
+    let revised = debt_request(&w, statement, Some(1_000_000)).await;
+    let t = revised.quote.statement_payment.as_ref().unwrap();
+    assert_eq!(t.display_amount_minor, 200);
+    let portal =
+        w.db.create_payment_order(
+            &w.context,
+            w.org,
+            &oxsum_core::NewPaymentOrder {
+                expected_statement_quote: Some(t.fingerprint().unwrap()),
+                statement_amount_minor: Some(t.amount_minor),
+                expected_plan_quote: None,
+                expected_collection_revision: Some(t.collection_revision),
+                purpose: PaymentOrderPurpose::StatementRepayment,
+                display_amount_minor: t.display_amount_minor,
+                display_currency: t.display_currency.clone(),
+                purpose_ref: Some(statement),
+                idempotency_key: Uuid::new_v4().to_string(),
+                promo_minor: 0,
+            },
+        )
+        .await
+        .unwrap();
+    let remainder = debt_request(&w, statement, None).await;
+    assert_eq!(
+        remainder
+            .quote
+            .statement_payment
+            .as_ref()
+            .unwrap()
+            .amount_minor,
+        1_500_000
+    );
+    assert!(
+        !serde_json::to_string(&remainder.quote)
+            .unwrap()
+            .contains(&portal.order_id.to_string())
+    );
+    assert!(
+        w.db.application_checkout_orders(&w.service, w.org, None, 50)
+            .await
+            .unwrap()
+            .orders
+            .is_empty()
+    );
+    assert!(matches!(
+        w.db.application_checkout_order(&w.service, w.org, portal.order_id, false)
+            .await,
+        Err(WalletError::NotFound(_))
+    ));
+    let another =
+        w.db.provision_application_customer(
+            &w.service,
+            &oxsum_core::ProvisionCustomerRequest {
+                idempotency_key: Uuid::new_v4().to_string(),
+                external_id: "foreign-statement-owner".into(),
+                name: "Another application customer".into(),
+                contact_email: None,
+            },
+        )
+        .await
+        .unwrap()
+        .customer
+        .organization_id;
+    assert!(matches!(
+        w.db.application_checkout_quote(&w.service, another, &debt_selection(statement, None))
+            .await,
+        Err(WalletError::NotFound(_))
+    ));
 }

@@ -1,13 +1,16 @@
 //! Exact application checkout inputs, server quote and immutable retry identity.
-use crate::{CheckoutChoice, MerchantMode, MerchantRail, PaymentOrderPurpose, PlanPaymentTerms};
+use crate::{
+    CheckoutChoice, MerchantMode, MerchantRail, PaymentOrderPurpose, PlanPaymentTerms,
+    StatementPaymentTerms,
+};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-/// Select wallet funding, a published bundle or one assigned payable plan.
+/// Select wallet funding, a bundle, an assigned plan or exact named statement debt.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ApplicationCheckoutSelection {
-    /// Only walletTopup, bundle and planPeriod are supported by this bounded surface.
+    /// Only walletTopup, bundle, planPeriod and statementRepayment are supported.
     pub purpose: PaymentOrderPurpose,
     /// Owner-selected collection rail.
     pub rail: MerchantRail,
@@ -19,6 +22,12 @@ pub struct ApplicationCheckoutSelection {
     /// Omission on serialization preserves already-retained wallet/bundle requests.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub customer_plan_id: Option<Uuid>,
+    /// Exact owned statement, only for statementRepayment.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub statement_id: Option<Uuid>,
+    /// Exact credit-minor debt; absent selects all verified unreserved debt.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub statement_amount_minor: Option<i64>,
 }
 /// Server-derived immutable quote, checked again when the order is created.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -49,6 +58,9 @@ pub struct ApplicationCheckoutTerms {
     /// Exact sold fee and period terms, present only for planPeriod.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub plan_payment: Option<PlanPaymentTerms>,
+    /// Exact original receivable allocations, only for statementRepayment.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub statement_payment: Option<StatementPaymentTerms>,
 }
 /// A checkout operation retaining its original return URLs and quote on retry.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

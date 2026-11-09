@@ -8360,7 +8360,7 @@ export interface paths {
         put?: never;
         /**
          * quoteApplicationCheckout
-         * @description Application-only checkoutWrite. Read-only exact wallet top-up, published-bundle or assigned plan-period quote under current active customer authority. No provider call or payment reservation. Plans pin their sold fee and period and return zero wallet credit; existing live period intents must be recovered through authorized order history. Named statement debt is not supported by this operation.
+         * @description Application-only checkoutWrite. Read-only exact wallet top-up, published-bundle or assigned plan-period quote under current active customer authority. No provider call or payment reservation. Plans pin their sold fee and period and return zero wallet credit; existing live period intents must be recovered through authorized order history. Named statementRepayment selects only verified unreserved customer debt; statementAmountMinor is exact credit-minor debt, omitted for the full available amount. It creates neither wallet funds nor entitlement and never exposes another application or portal order identity.
          */
         post: operations["quoteApplicationCheckout"];
         delete?: never;
@@ -22138,7 +22138,7 @@ export interface components {
         };
         ApplicationCheckoutSelection: {
             /** @enum {string} */
-            purpose: "walletTopup" | "bundle" | "planPeriod";
+            purpose: "walletTopup" | "bundle" | "planPeriod" | "statementRepayment";
             rail: components["schemas"]["MerchantRail"];
             /** @description Required only for wallet top-up; bundle price is server-selected */
             displayAmountMinor?: number | null;
@@ -22152,6 +22152,13 @@ export interface components {
              * @description Required only for an assigned plan period; no caller amount or bundle version. Existing live period orders must be resumed through application order history.
              */
             customerPlanId?: string | null;
+            /**
+             * Format: uuid
+             * @description Required only for statementRepayment; exact owned issued statement
+             */
+            statementId?: string | null;
+            /** @description Optional exact credit-minor debt for statementRepayment; omission selects all verified unreserved debt. Never a fiat amount or wallet credit. */
+            statementAmountMinor?: number | null;
         };
         ApplicationCheckoutTerms: {
             /** Format: uuid */
@@ -22165,11 +22172,13 @@ export interface components {
             collectionRevision: number;
             displayCurrency: string;
             displayAmountMinor: number;
-            /** @description Wallet or bundle purchased credits; zero for planPeriod, whose exact fee is in planPayment */
+            /** @description Wallet or bundle purchased credits; zero for planPeriod and statementRepayment, whose exact fee or debt is in their payment terms */
             purchasedMinor: number;
             promoMinor: number;
             /** @description Present only for planPeriod; exact sold fee and period boundaries */
             planPayment?: components["schemas"]["PlanPaymentTerms"];
+            /** @description Present only for statementRepayment; immutable original receivable allocations */
+            statementPayment?: components["schemas"]["StatementPaymentTerms"];
         };
         ApplicationCheckoutRequest: {
             idempotencyKey: string;

@@ -1007,3 +1007,20 @@ creating another scope. Changed payload/customer conflicts; missing scope is 403
 foreign customer/statement 404, revoked/expired identity 401, archived initiation
 or private/oversized evidence 409. Accepted work may finish after revocation;
 response authority is rechecked. No share token, supplier cost or money mutation.
+### Scoped application named statement payments (#935)
+
+Application `checkoutWrite` also accepts `statementRepayment` at
+`POST /integration/customers/{organizationId}/checkout-quote`. Supply exactly
+`statementId` and optionally `statementAmountMinor` (positive credit minor units);
+omit the amount for all verified unreserved debt. Wallet fiat, bundle and plan
+selection fields must be absent. The response's `statementPayment` pins original
+receivable allocations, exact debt and collection terms. `purchasedMinor` and
+`promoMinor` remain zero. A fiat ceiling does not change the selected debt.
+
+Submit that complete quote through the existing application order route, retaining
+the operation key and return URLs. The ordinary order transaction rechecks current
+authority and debt sources under existing ownership/append locks before reserving.
+Unknown outcomes retain their reservations and original provider identity; only
+verified callbacks release or fulfill them. Portal/foreign application pending
+order IDs are never exposed by this quote. Unavailable/review-required debt is a
+409, foreign statements are 404, and unauthorized scope is 403.

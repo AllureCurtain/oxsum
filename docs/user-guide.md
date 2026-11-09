@@ -1763,7 +1763,8 @@ does not issue another charge, renew a plan or remove manual account restriction
 ### Allow an external application to initiate payment
 
 In application access, select the explicit checkout grant only when that
-application should create wallet or bundle checkout for its own customers. It
+application should create wallet, bundle, assigned-plan or named-statement
+checkout for its own customers. It
 can quote and recover those orders; it cannot mark payments successful, write a
 manual receipt, approve refunds or read merchant secrets. A linked personal
 account keeps its identity; portal-created orders are outside this grant.
@@ -1787,3 +1788,10 @@ its original proof scope and excludes supplier costs. An interrupted export can
 be resumed without producing a new history. Exports exceeding application limits
 or already containing private costs require operator assistance. The receiving
 application must verify the unchanged file with its retained trust inputs.
+An application with your business's explicit checkout permission can also present
+payment for one named outstanding statement (#935). Check the statement and
+amount before paying: this clears existing debt and does not renew a plan or
+fund your wallet. A partial payment leaves the remainder payable. If checkout
+times out, recover the same order instead of starting another. A refund or lost
+payment restores only its original source debt, with the existing finance review
+and source evidence available to authorized staff.
