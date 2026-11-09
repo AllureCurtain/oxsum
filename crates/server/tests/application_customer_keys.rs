@@ -166,7 +166,7 @@ async fn application_key_routes_enforce_machine_namespace_and_one_time_secrets()
         .await
         .unwrap();
     let chat = support::chat_body(&model);
-    assert_ne!(
+    assert_eq!(
         call(
             &app,
             "POST",
@@ -177,7 +177,7 @@ async fn application_key_routes_enforce_machine_namespace_and_one_time_secrets()
         )
         .await
         .0,
-        StatusCode::OK
+        StatusCode::UNAUTHORIZED
     );
     let (status, answer) = call(
         &app,
@@ -221,19 +221,17 @@ async fn application_key_routes_enforce_machine_namespace_and_one_time_secrets()
     .unwrap();
     let recorded = oxsum_core::Hash::from_bytes(recorded.try_into().unwrap());
     assert!(oxsum_core::verify_bundle(&serde_json::to_string(&proof).unwrap(), &recorded).unwrap());
-    assert_ne!(
-        call(
-            &app,
-            "POST",
-            "/v1/chat/completions",
-            chat,
-            None,
-            Some(consumer)
-        )
-        .await
-        .0,
-        StatusCode::OK
-    );
+    let (status, exceeded) = call(
+        &app,
+        "POST",
+        "/v1/chat/completions",
+        chat,
+        None,
+        Some(consumer),
+    )
+    .await;
+    assert_eq!(status, StatusCode::TOO_MANY_REQUESTS, "{exceeded}");
+    assert_eq!(exceeded["error"]["code"], "KEY_LIMIT_EXCEEDED");
     assert_eq!(wallet.available().await.unwrap(), 60);
     let credential_id =
         Uuid::parse_str(credential["data"]["credentialId"].as_str().unwrap()).unwrap();
