@@ -782,8 +782,8 @@ quotes a fiat wallet top-up or published bundle for its own customer, shows the
 server's exact purchased/promo amount, merchant name and test/live mode, and
 creates the reviewed checkout. Money is credited only by verified payment and
 normal fulfillment. No staff, manual-receipt, refund-approval or merchant-secret
-authority accompanies the grant. Plan activation and statement debt checkout
-remain separate required N21 follow-ups.
+authority accompanies the grant. Assigned plan activation is described below;
+named statement debt checkout remains a separate required N21 follow-up.
 
 Every application order retains its original quote and return/cancel URLs in the
 order transaction. Identical retries and rotated credentials recover the same
