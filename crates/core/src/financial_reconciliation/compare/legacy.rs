@@ -245,11 +245,16 @@ pub(super) fn compare(customer: &mut Customer<'_>) -> Result<(), WalletError> {
             );
             ids.insert(accrual);
         }
+        let voided = header.text("state")? == "void";
         customer.compare_amount(
             "invoice_journals",
             journal,
             "lineTotalMinor",
-            header.amount("total_minor")?,
+            if voided {
+                0
+            } else {
+                header.amount("total_minor")?
+            },
             line_total,
         );
         valid &= customer.shape(
@@ -267,7 +272,6 @@ pub(super) fn compare(customer: &mut Customer<'_>) -> Result<(), WalletError> {
                 "Equity:Promo",
             ],
         );
-        let voided = header.text("state")? == "void";
         let billed = if voided {
             0
         } else {
