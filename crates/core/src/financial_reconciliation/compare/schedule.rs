@@ -26,16 +26,16 @@ pub(super) fn compare(customer: &mut Customer<'_>) -> Result<(), WalletError> {
             .filter(|(_, effect)| effect.id("plan_period_id").ok() == Some(period_id))
             .map(|(id, source)| (*id, source.clone()))
             .collect();
-        // Nonzero movements follow their own official positions, never a
-        // transaction-start timestamp. Zero recognition days precede the next
-        // sequenced service day and any refund/void that must catch that day up
-        // before changing the fee. Disputes preserve income and commute with
-        // zero recognition, so they supply no invented service boundary.
+        // Nonzero movements follow verified official positions. A zero day has
+        // no position: use sequenced neighboring service days and the immutable
+        // correction boundary only where these prove an order. Transaction
+        // start and booking midnight are lower bounds, never commit clocks.
         let mut positions = BTreeMap::new();
         for (id, effect) in &effects {
             if let Some(index) = effect
                 .optional_id("entry_id")?
                 .and_then(|id| customer.ledger.entries.get(&id))
+                .filter(|entry| entry.valid())
                 .and_then(|entry| entry.stored.as_ref().ok())
                 .and_then(|stored| stored.index)
                 .map(|index| index.get())
@@ -44,6 +44,7 @@ pub(super) fn compare(customer: &mut Customer<'_>) -> Result<(), WalletError> {
             }
         }
         let mut anchors = BTreeMap::new();
+        let mut ambiguous = false;
         for (id, effect) in &effects {
             if effect.text("kind")? != "recognition" || positions.contains_key(id) {
                 continue;
@@ -55,30 +56,64 @@ pub(super) fn compare(customer: &mut Customer<'_>) -> Result<(), WalletError> {
                 .midnight()
                 .assume_utc()
                 .min(end);
-            let mut anchor = u64::MAX;
+            let mut previous = None;
+            let mut following = None;
             for (other, candidate) in &effects {
                 let Some(index) = positions.get(other) else {
                     continue;
                 };
-                let precedes = match candidate.text("kind")?.as_str() {
-                    "recognition" => candidate.date("service_day")? > day,
-                    "refund" | "void" => {
-                        let entry_day = candidate
+                if candidate.text("kind")? == "recognition" {
+                    let candidate_day = candidate.date("service_day")?;
+                    if candidate_day < day {
+                        previous = Some(previous.map_or(*index, |prior: u64| prior.max(*index)));
+                    } else if candidate_day > day {
+                        following = Some(following.map_or(*index, |next: u64| next.min(*index)));
+                    }
+                }
+            }
+            let mut anchor = following.unwrap_or(u64::MAX);
+            for (other, candidate) in &effects {
+                let kind = candidate.text("kind")?;
+                if !matches!(kind.as_str(), "refund" | "void") {
+                    continue;
+                }
+                let index = positions.get(other).copied().unwrap_or(u64::MAX);
+                let before = following.is_some_and(|next| next < index)
+                    || if kind == "void" {
+                        // Void retains the completed cutoff's date. The final
+                        // partial day may end during that same date; its retained
+                        // recognition must precede the terminal void as well.
+                        boundary.date() <= candidate.date("service_day")?
+                    } else {
+                        let booked = candidate
                             .optional_id("entry_id")?
                             .and_then(|id| customer.ledger.entries.get(&id))
                             .and_then(|entry| entry.booked_on());
-                        // UTC booking midnight and transaction start are lower
-                        // bounds on the correction's actual recognition clock.
-                        entry_day.is_some_and(|day| boundary <= day.midnight().assume_utc())
+                        booked.is_some_and(|day| boundary <= day.midnight().assume_utc())
                             || boundary <= candidate.instant("created_at")?
-                    }
-                    _ => false,
-                };
-                if precedes {
-                    anchor = anchor.min(*index);
+                    };
+                let after = previous.is_some_and(|prior| prior > index);
+                if before && !after {
+                    anchor = anchor.min(index);
+                } else if before || !after || kind == "void" {
+                    // A refund may start before midnight or the exact final
+                    // endpoint, wait for plan ownership, then recognize the day.
+                    // Its old rows retain no exact recognition clock. A guessed
+                    // order could make incorrect allocations appear matched.
+                    customer.unsupported("plan_accounting_effects", *id, "ambiguousZeroRecognitionOrder", "Retained sources do not prove the zero service day's order relative to a refund or terminal void");
+                    ambiguous = true;
                 }
             }
             anchors.insert(*id, anchor);
+        }
+        if ambiguous {
+            customer
+                .result
+                .coverage
+                .not_compared
+                .push(format!("planRecognitionSchedule/{period_id}"));
+            customer.result.evidence.push(serde_json::json!({"organizationId":customer.organization,"sourceTable":"plan_accounting_periods","sourceId":period_id,"scheduleCompared":false,"reason":"Zero recognition chronology is not retained sufficiently to prove the refund allocation"}));
+            continue;
         }
         effects.sort_by_key(|(id, source)| {
             let position = positions.get(id).copied().unwrap_or_else(|| {

@@ -1611,6 +1611,11 @@ screen has a different cohort. Excluded fields are listed explicitly. The
 source evidence expands to show exact entries, dates and differences, including
 separate refund-payable and suspense amounts.
 
+Matching totals do not remove source exceptions. In particular, an older zero-money
+service day may have no retained sequence proving whether it preceded a refund.
+The affected period's recognition schedule then appears in exclusions with
+incomplete coverage; neither the run nor its evidence claims a verified allocation.
+
 The **Current exception work list** records review work. Its resolution state
 can change after the selected attempt, while that attempt's original differences
 remain in captured evidence. Fix the exact underlying source through its

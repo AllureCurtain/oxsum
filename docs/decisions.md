@@ -3574,6 +3574,16 @@ actual totals and listed as exclusions. Payable and suspense are source evidence
 not income or receivables. Missing sources report incomplete coverage, and
 independently balanced document drift still produces exact amount exceptions.
 
+Zero-money recognition has no official sequence position. Neighboring sequenced
+service days and retained correction service boundaries can establish its order;
+transaction-start time, booking date and PostgreSQL tuple transaction IDs cannot
+establish an exact historical commit order. An unprovable refund/void boundary
+excludes that period's schedule and marks incomplete coverage. This preserves the
+verified monetary comparison without claiming an independently reconstructed
+allocation whose source chronology was never retained. Statement payment lines
+are compared by signed amount and exact original allocation identity as well as
+their aggregate, so equal totals cannot conceal a changed order or correction.
+
 Each completed attempt is immutable. The stable run is only a latest-result
 pointer; exact keyed manual retries return their original attempt. A nonblocking
 transaction lock prevents competing identical captures, with current personal
