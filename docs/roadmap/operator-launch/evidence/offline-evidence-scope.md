@@ -57,7 +57,13 @@ It imports only the installed package and local example modules/fixtures.
   scripts now copy the required helper alongside `verify.mjs`; the candidate
   clean-pack script also runs the eight scope groups against its installed SDK.
 
-Logs: `/tmp/oxsum-876-{scope,consumer,whole,sse}.log`. Missing witnesses remain an
+- The same eight groups and all three export directories also passed under
+  macOS `sandbox-exec -p '(version 1)(allow default)(deny network*)'`. A separate
+  TCP probe to the live local PostgreSQL listener failed with `EPERM` under that
+  profile, confirming process network denial. Installed files remained readable.
+
+Logs: `/tmp/oxsum-876-{scope,consumer,whole,sse}.log` and the corresponding
+`/tmp/oxsum-876-denied-*.log`. Missing witnesses remain an
 explicit skip. The consumer's fetch guard is not an OS-level network sandbox.
 Independent source review and PR integration are recorded in the PR. Re-run the
 candidate's actual exported evidence and original SDK bytes after software
