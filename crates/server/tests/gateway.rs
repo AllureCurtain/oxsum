@@ -1406,7 +1406,7 @@ async fn a_conditional_price_bills_each_dimension_on_its_own_line() {
     // 2 reasoning at 8e6, and the 100-minor flat fee spelled per-million — one
     // ceiling over the sum.
     let record = world.settlement(&id).await.expect("the turn settled");
-    assert_eq!(record["v"], 14);
+    assert_eq!(record["v"], 15);
     assert_eq!(record["priceVersion"], 2);
     assert_eq!(record["matchedRule"]["serviceTier"], "priority");
     let lines = record["lines"].as_array().expect("itemized lines");
@@ -5453,7 +5453,7 @@ async fn an_alias_serves_the_channels_upstream_model() {
 
     // The settlement names the alias the caller asked for, plus what answered.
     let record = world.settlement(&id).await.expect("the turn settled");
-    assert_eq!(record["v"], 14);
+    assert_eq!(record["v"], 15);
     assert_eq!(record["model"], alias.as_str());
     assert_eq!(record["upstreamModel"], upstream.as_str());
     let description = world
