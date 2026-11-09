@@ -466,6 +466,10 @@ const MIGRATIONS: &[(&str, &str)] = &[
         "0118_application_customer_keys",
         include_str!("../migrations/0118_application_customer_keys.sql"),
     ),
+    (
+        "0119_nonplan_chargeback_corrections",
+        include_str!("../migrations/0119_nonplan_chargeback_corrections.sql"),
+    ),
 ];
 
 /// Advisory-lock key serialising the migration runner across processes.
