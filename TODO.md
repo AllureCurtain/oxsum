@@ -4,6 +4,8 @@ Updated: 2026-11-09
 
 ## In progress
 
+- [ ] [#872](https://github.com/AllureCurtain/oxsum/issues/872) — Prepared portal and embedded pilot kits, shared exact-candidate intake and independent participant result template; review/integration pending. No participants or external contact.
+
 - [x] [#867](https://github.com/AllureCurtain/oxsum/issues/867) — Prevent a current wallet reopen from reapplying ledger DDL over an active settlement; baseline lock failure reproduced, 37 focused, 519 engine, 29 engine doc and 2,042 complete workspace checks passed. Strict Clippy, formatting and independent source review passed; integrated in PR #870 (`f89fcb65`).
 - [ ] [#869](https://github.com/AllureCurtain/oxsum/issues/869) — Durable bounded provider harness; 15 boundary tests and complete local whole/SSE/offline fixture passed; independent source review passed; PR integration and actual priced provider calls remain.
 
