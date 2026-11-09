@@ -902,3 +902,16 @@ immutable `planPayment` snapshot and its fingerprint feed the existing activatio
 and refund engine. Absent new optional fields are omitted on serialization so
 retained wallet/bundle request equality and recovery survive the extension.
 No new migration, entitlement writer or provider path is introduced.
+
+Application evidence publication (#934) stores immutable request/application/
+customer/credential/selection identity in migration 0127 while holding current
+authority locks. It releases that connection before the existing multi-step
+evidence publisher; a one-connection pool therefore remains viable. The scope
+input freeze, deterministic marker and frozen descriptor retain crash recovery.
+Application capture has at most 1,000 artifacts, 256 referenced entry links,
+4 MiB serialized collector and 16 MiB final bundle. Direct scans fetch at most
+1,001 rows and reject overflow, while nested statement/journal/effect groups
+cap at 256 rows. Variable usage/payment/fulfillment/refund/adjustment data is
+measured in PostgreSQL within the same snapshot before transfer. Limits refuse
+without truncating the declared evidence scope. The ordinary portal retains its
+existing larger export semantics; it does not inherit these application limits.

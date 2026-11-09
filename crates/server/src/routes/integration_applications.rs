@@ -265,3 +265,34 @@ pub(crate) async fn evidence_download(
     )
         .into_response())
 }
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct PublicationResponse {
+    request_id: Uuid,
+    status: &'static str,
+    bundle: super::evidence::BundleSummaryRes,
+}
+pub(crate) async fn publish_evidence(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(org): Path<Uuid>,
+    ApiJson(request): ApiJson<oxsum_core::ApplicationEvidencePublishRequest>,
+) -> ApiResult<PublicationResponse> {
+    let service = business::integration(&state, &headers).await?;
+    let key = state
+        .config
+        .head_signing_seed()
+        .map(oxsum_core::signing_key)
+        .transpose()
+        .map_err(|_| crate::error::ApiError::Internal)?;
+    let result = state
+        .db
+        .publish_application_evidence(&service, org, &request, key.as_ref())
+        .await?;
+    ok(PublicationResponse {
+        request_id: result.request_id,
+        status: "published",
+        bundle: result.bundle.into(),
+    })
+}

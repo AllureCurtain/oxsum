@@ -2153,6 +2153,7 @@
         "entitlementsRead": "Read application entitlement, permitted models and customer sale terms",
         "customerLinkWrite": "邀请已验证用户成为应用账户的所有者",
         "evidenceRead": "读取客户已冻结的原始证据",
+        "evidenceWrite": "生成应用客户的范围受限证据",
         "checkoutWrite": "发起和恢复应用客户的付款"
       },
       "invalidApplication": "请填写固定标识、名称、原因，以及 1 至 10,000 的账户上限。"

@@ -3738,3 +3738,19 @@ wallet amount fields are zero for this purpose; only `planPayment.feeMinor`
 names the service fee. Existing period intents refuse generically without
 revealing portal order IDs. Optional absent plan fields are not serialized,
 preserving exact stored wallet/bundle replay without rewriting history.
+
+## 2026-11-10 Durable scoped application evidence publication (#934)
+
+Introduce explicit application-only `evidenceWrite`; never upgrade `evidenceRead`
+implicitly. Authorize and retain the exact operation before running the existing
+freeze/marker/descriptor sequence. An accepted publication is recoverable across
+connection/process interruption and credential rotation; later revocation cannot
+undo accepted work but is enforced before returning data. No database connection
+is held across nested Wallet acquisitions.
+
+Preserve one deterministic scope identity and original captured inputs. Private
+cost-inclusive collisions refuse rather than minting competing customer history.
+Bound application spans, artifact/entry counts, serialized capture/final bytes
+and source transfer in PostgreSQL snapshots; reject overflow rather than claim
+completeness after truncation. Existing portal publication limits and proof scope
+remain unchanged. Publication is an evidence marker, never a financial grant.

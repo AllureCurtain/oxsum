@@ -380,3 +380,16 @@ The application cannot change/assign the sold plan or fabricate payment. A pendi
 period intent is recovered from the application's own order history; do not
 create another intent after a timeout. Manual renewal is available only at the
 period boundary. Old unpaid statement debt is a separate payment purpose.
+
+### Publish evidence without an owner session (#934)
+
+Request `evidenceWrite` explicitly in addition to `evidenceRead` if your application
+needs to mint exports. POST a stable operation key and one ended period or exact
+issued statement to the customer's `evidence-publications` route, retain the
+returned bundle descriptor, then download with `evidenceRead`. Retry the same
+request after an interrupted response. A scope already captured with private
+supplier costs or beyond application bounds requires operator recovery; the API
+will not redact an existing signature or silently shorten an export. Retain your
+own verification origin/key/checkpoint: publication by the operator is not an
+independent trust source. Account archive blocks further publication requests,
+while existing historical evidence can still be read with a live read grant.

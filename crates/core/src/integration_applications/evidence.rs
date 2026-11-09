@@ -248,11 +248,26 @@ impl Db {
     ) -> Result<Vec<u8>, WalletError> {
         let mut tx = self.pool().begin().await?;
         authorize(&mut tx, service, org).await?;
-        let row=sqlx::query("SELECT b.bundle_id,b.kind,b.period_from,b.period_to,b.statement_id,b.manifest_digest,b.anchor_log_index,b.entry_count,b.created_at,o.tenant_id,CASE WHEN octet_length(b.bundle_json)<=$3 THEN b.bundle_json END AS bytes FROM oxsum.evidence_bundles b JOIN oxsum.organizations o USING(organization_id) WHERE b.organization_id=$1 AND b.bundle_id=$2")
-            .bind(org).bind(bundle).bind(MAX_BYTES).fetch_optional(&mut *tx).await?.ok_or_else(||WalletError::NotFound("evidence bundle is not known".into()))?;
-        let bytes:Vec<u8>=row.try_get::<Option<Vec<u8>>,_>("bytes")?.ok_or_else(||WalletError::Conflict("retained evidence exceeds the 16 MiB download bound; request a smaller scoped export".into()))?;
-        validate(&bytes, &summary(&row)?, org, row.try_get("tenant_id")?)?;
+        let bytes = safe_bytes_in(&mut tx, org, bundle).await?;
         tx.commit().await?;
         Ok(bytes)
     }
+}
+
+/// Reuse the same bounded integrity/disclosure check after publication authority.
+pub(super) async fn safe_bytes_in(
+    tx: &mut Transaction<'_, Postgres>,
+    org: Uuid,
+    bundle: Uuid,
+) -> Result<Vec<u8>, WalletError> {
+    let row=sqlx::query("SELECT b.bundle_id,b.kind,b.period_from,b.period_to,b.statement_id,b.manifest_digest,b.anchor_log_index,b.entry_count,b.created_at,o.tenant_id,CASE WHEN octet_length(b.bundle_json)<=$3 THEN b.bundle_json END AS bytes FROM oxsum.evidence_bundles b JOIN oxsum.organizations o USING(organization_id) WHERE b.organization_id=$1 AND b.bundle_id=$2")
+            .bind(org).bind(bundle).bind(MAX_BYTES).fetch_optional(&mut **tx).await?.ok_or_else(||WalletError::NotFound("evidence bundle is not known".into()))?;
+    let bytes: Vec<u8> = row.try_get::<Option<Vec<u8>>, _>("bytes")?.ok_or_else(|| {
+        WalletError::Conflict(
+            "retained evidence exceeds the 16 MiB download bound; request a smaller scoped export"
+                .into(),
+        )
+    })?;
+    validate(&bytes, &summary(&row)?, org, row.try_get("tenant_id")?)?;
+    Ok(bytes)
 }

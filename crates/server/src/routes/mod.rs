@@ -321,6 +321,10 @@ pub fn router(state: AppState) -> Router {
             post(application_checkout::resume),
         )
         .route(
+            "/integration/customers/{organization_id}/evidence-publications",
+            post(integration_applications::publish_evidence),
+        )
+        .route(
             "/integration/customers/{organization_id}/evidence-bundles",
             get(integration_applications::evidence_bundles),
         )

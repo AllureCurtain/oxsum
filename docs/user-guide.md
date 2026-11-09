@@ -1780,3 +1780,10 @@ merchant mode. Payment activates that plan's entitlement; it does not top up
 your wallet or repay an older bill. An incomplete payment should be resumed as
 the same order. A cancelled plan or a renewal before its boundary refuses a new
 payment, while a legitimate older payment remains recoverable.
+
+External applications may be granted evidence publication separately from evidence
+reading (#934). Publication captures an ended period or an issued statement with
+its original proof scope and excludes supplier costs. An interrupted export can
+be resumed without producing a new history. Exports exceeding application limits
+or already containing private costs require operator assistance. The receiving
+application must verify the unchanged file with its retained trust inputs.

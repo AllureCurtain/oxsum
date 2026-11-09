@@ -224,9 +224,10 @@ pub use integration_applications::{
     ApplicationCustomer, ApplicationCustomerArchiveRequest, ApplicationCustomerEntitlement,
     ApplicationCustomerKeyPage, ApplicationCustomerKeyRequest, ApplicationCustomerKeyResult,
     ApplicationCustomerModel, ApplicationCustomerModelPage, ApplicationCustomerSaleTerms,
-    ApplicationEvidencePage, ApplicationEvidenceSummary, ApplicationLinkInvitation,
-    ApplicationLinkRequest, ApplicationPlanStanding, ApplicationQuotaStanding,
-    IntegrationApplication, IntegrationApplicationPage, IntegrationApplicationRequest,
+    ApplicationEvidencePage, ApplicationEvidencePublication, ApplicationEvidencePublishRequest,
+    ApplicationEvidenceSummary, ApplicationLinkInvitation, ApplicationLinkRequest,
+    ApplicationPlanStanding, ApplicationQuotaStanding, IntegrationApplication,
+    IntegrationApplicationPage, IntegrationApplicationRequest,
 };
 pub use integration_credentials::{
     ActingService, CreatedIntegrationCredential, IntegrationCredential, IntegrationCredentialPage,

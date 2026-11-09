@@ -418,3 +418,13 @@ four contract checks, generated types and frontend build passed; unchanged #930
 workspace evidence is reused. [Evidence](evidence/application-plan-checkout.md).
 Independent review/integration and browser/candidate gates remain. Named statement repayment,
 notifications, evidence publication and full external app acceptance remain.
+
+## Scoped application evidence publication (#934)
+
+Implementation in `feat/application-evidence-publish`, based on #933; migration
+0127. Explicit evidenceWrite durably authorizes exact active-customer scope and
+reuses original input/marker/descriptor recovery without supplier costs. Eleven
+focused core/HTTP checks passed; shared evidence regression and full workspace/
+strict Clippy validation are in progress. Browser, review, protected integration
+and candidate acceptance remain; named statement checkout, signed notifications
+and the complete external app remain N21 follow-ups.

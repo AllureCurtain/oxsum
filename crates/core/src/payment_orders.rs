@@ -317,7 +317,7 @@ pub(crate) async fn order_in(
     row.as_ref().map(order).transpose()
 }
 
-fn fulfillment(row: &PgRow) -> Result<PaymentFulfillment, WalletError> {
+pub(crate) fn fulfillment(row: &PgRow) -> Result<PaymentFulfillment, WalletError> {
     Ok(PaymentFulfillment {
         fulfillment_id: row.try_get("fulfillment_id")?,
         order_id: row.try_get("order_id")?,
