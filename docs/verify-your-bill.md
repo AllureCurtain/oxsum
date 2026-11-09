@@ -141,7 +141,12 @@ on newly served code. Neither path proves honest upstream token counts.
 The repository's [`examples/verify-consumer`](https://github.com/AllureCurtain/oxsum/tree/main/examples/verify-consumer)
 shows the full form: settlement bundle, signed head, consistency against an
 archived head, and the rejection cases (tampered content, a different hash, a
-different operator key, a different archived head). The package was not on npm
+different operator key, a different archived head). It keeps raw JSON intact,
+requires separate price/sale verdicts for the applicable terms, binds the
+retained key/origin/entry/head and connects consistency to that same bill head.
+Period evidence is also bound to the retained bundle/customer/origin; a valid
+signature for a self-declared foreign origin is insufficient. See its README
+for the signed-evidence requirements and scope regression command. The package was not on npm
 as of 2026-11-04; the example validates the locally packed tarball, and the
 publication step is separate.
 

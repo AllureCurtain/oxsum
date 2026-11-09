@@ -63,6 +63,8 @@ CONSUMER="$WORK/consumer"
 mkdir -p "$CONSUMER"
 cp examples/verify-consumer/package.json "$CONSUMER/package.json"
 cp examples/verify-consumer/verify.mjs "$CONSUMER/verify.mjs"
+cp examples/verify-consumer/scope.mjs "$CONSUMER/scope.mjs"
+cp examples/verify-consumer/scope.test.mjs "$CONSUMER/scope.test.mjs"
 cp -R examples/verify-consumer/fixtures "$CONSUMER/fixtures"
 (
     cd "$CONSUMER"
@@ -74,6 +76,7 @@ echo "== Verifying the exported evidence offline =="
 (
     cd "$CONSUMER"
     node verify.mjs
+    node --test scope.test.mjs
 )
 
 echo

@@ -281,6 +281,7 @@ def main() -> None:
         consumer = Path(consumer_dir)
         write_json(consumer / "package.json", {"name": "oxsum-demo-consumer", "private": True, "type": "module"})
         shutil.copy(REPO / "examples/verify-consumer/verify.mjs", consumer / "verify.mjs")
+        shutil.copy(REPO / "examples/verify-consumer/scope.mjs", consumer / "scope.mjs")
         run(["npm", "install", "--ignore-scripts", "--no-audit", "--no-fund", str(tarballs[0])], env=env, cwd=consumer, log=log)
         with (output / "verification.log").open("w") as verify_log:
             checked = subprocess.run(["node", "verify.mjs", "--dir", str(evidence)], cwd=consumer,
