@@ -37,9 +37,20 @@ The implementation is rebased onto shared borrowed ledger reads #856 / PR #860
 verification, hold decoding, calendars and receipt reads use that integrated
 implementation. The branch is also rebased onto payment migration 0115 in
 PR #868 (`f3802d5e`), and migration 0116 is now registered immediately after it.
-The independent wallet-open DDL repair #867 must integrate before the combined
-admission run. This dependency reconciliation is source work and does not
-constitute executed #849 validation.
+The independent wallet-open DDL repair #867 is integrated in PR #870
+(`f89fcb65`); this branch is rebased on that revision for its admission runs.
+This dependency reconciliation is source work and does not constitute executed
+#849 validation.
+
+The first executed repair suite ran 23 cases: 21 passed and two failed. The
+recovery receipt omitted the zero-use input/output lines required by the existing
+settlement parser; restoring the original recorded rates fixed that case in a
+narrow rerun. The remaining quota-plus-cache case returned a cache hit, then its
+settlement transaction rolled back with `description exceeds 512 characters`.
+Issue #873 owns that independent bounded evidence-capacity repair before this
+branch's final validation. Logs: `/tmp/oxsum-849-focused.log` and
+`/tmp/oxsum-849-two-boundaries.log`. These intermediate results are not a passing
+gate or release acceptance.
 
 Results, exact runtime SHA, final focused/combined regression gates and review
 will be recorded after execution. Customer readiness follows this repair and the

@@ -609,9 +609,8 @@ async fn current_key_state_and_route_permissions_win_before_atomic_admission() {
                     .unwrap();
             }
         }
-        let error = admit(&world.db, &world.wallet().await, &input)
-            .await
-            .unwrap_err();
+        let wallet = world.wallet().await;
+        let error = admit(&world.db, &wallet, &input).await.unwrap_err();
         assert!(
             matches!(
                 error,
@@ -913,14 +912,11 @@ async fn a_failed_watch_write_rolls_back_quota_wallet_and_operation() {
     let world = world_or_skip!(100);
     cover_with(&world, 20).await;
     let input = reservation(&world, 40).await;
+    let wallet = world.wallet().await;
     let function = format!("fixture_{}", Uuid::new_v4().simple());
     sqlx::query(&format!("CREATE FUNCTION oxsum.{function}() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN IF NEW.request_id='{}' THEN RAISE EXCEPTION 'admission rollback fixture'; END IF; RETURN NEW; END $$", input.watch.request_id)).execute(&world.pool).await.unwrap();
     sqlx::query(&format!("CREATE TRIGGER {function} BEFORE INSERT ON oxsum.open_holds FOR EACH ROW EXECUTE FUNCTION oxsum.{function}()" )).execute(&world.pool).await.unwrap();
-    assert!(
-        admit(&world.db, &world.wallet().await, &input)
-            .await
-            .is_err()
-    );
+    assert!(admit(&world.db, &wallet, &input).await.is_err());
     assert_eq!(remaining_draw(&world).await, 0);
     assert_eq!(world.wallet().await.available().await.unwrap(), 100);
     no_reservations(&world).await;
@@ -932,9 +928,7 @@ async fn a_failed_watch_write_rolls_back_quota_wallet_and_operation() {
         .execute(&world.pool)
         .await
         .unwrap();
-    let admitted = admit(&world.db, &world.wallet().await, &input)
-        .await
-        .unwrap();
+    let admitted = admit(&world.db, &wallet, &input).await.unwrap();
     assert_eq!(admitted.subscription.drawn_minor, 20);
     assert_eq!(admitted.wallet_minor, 20);
 }
