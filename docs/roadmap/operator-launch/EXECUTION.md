@@ -6,6 +6,14 @@ Read this file on every resume, then reconcile actual main, worktrees, issues/PR
 
 ## Current state
 
+- #901 personal customer model/sale/sample funding readiness is implemented on
+  `feat/customer-serving-readiness`, locally integrating pending dependency
+  PRs #910/#911/#913. Focused core/HTTP, strict changed-crate Clippy and frontend
+  checks and 2,182 complete workspace cases passed; browser execution is blocked
+  by the missing prior task space, as recorded
+  in [evidence](evidence/customer-serving-readiness.md). Independent approval
+  and protected main integration remain; no provider call occurs on the read.
+
 - #909 implements the immediate receipt slice of #901: scoped successful
   accounting reads, exact private verification links and no closed-report
   prerequisite. 2,156 workspace checks and 59 final affected checks passed;

@@ -40,6 +40,27 @@ impl Wallet {
         model: &str,
         bound_minor: i64,
     ) -> Result<GatewayFundingPreview, WalletError> {
+        let mut tx = db.pool().begin().await?;
+        sqlx::query("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY")
+            .execute(&mut *tx)
+            .await?;
+        let result = self
+            .preview_gateway_funding_in(db, &mut tx, principal, key_id, model, bound_minor)
+            .await?;
+        tx.commit().await?;
+        Ok(result)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) async fn preview_gateway_funding_in(
+        &self,
+        db: &Db,
+        tx: &mut Transaction<'_, Postgres>,
+        principal: &Principal,
+        key_id: Uuid,
+        model: &str,
+        bound_minor: i64,
+    ) -> Result<GatewayFundingPreview, WalletError> {
         principal.require_customer(CustomerCapability::Personal)?;
         if bound_minor < 0 || crate::channels::model_name(model)? != model {
             return Err(WalletError::InvalidInput(
@@ -50,10 +71,6 @@ impl Wallet {
         if organization.tenant_id != self.tenant_id {
             return Err(WalletError::NotFound("customer wallet not found".into()));
         }
-        let mut tx = db.pool().begin().await?;
-        sqlx::query("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY")
-            .execute(&mut *tx)
-            .await?;
         let owner = match principal.key_scope() {
             KeyScope::Own(user) => Some(user),
             _ => None,
@@ -63,7 +80,7 @@ impl Wallet {
              FROM oxsum.api_keys WHERE key_id=$1 AND organization_id=$2 \
              AND ($3::uuid IS NULL OR created_by=$3) AND revoked_at IS NULL \
              AND (expires_at IS NULL OR expires_at>now())",
-        ).bind(key_id).bind(organization.id).bind(owner).fetch_optional(&mut *tx).await?
+        ).bind(key_id).bind(organization.id).bind(owner).fetch_optional(&mut **tx).await?
             .ok_or_else(|| WalletError::NotFound("live customer key not found".into()))?;
         let key = ActingKey {
             key_id,
@@ -74,12 +91,12 @@ impl Wallet {
             required_policies: row.try_get("required_policies")?,
         };
         let access = db
-            .serving_access_in(&mut tx, organization.id, Some(key_id))
+            .serving_access_in(tx, organization.id, Some(key_id))
             .await?;
         let alias =
             sqlx::query("SELECT channel_id,upstream_model FROM oxsum.model_aliases WHERE alias=$1")
                 .bind(model)
-                .fetch_optional(&mut *tx)
+                .fetch_optional(&mut **tx)
                 .await?;
         let upstream = alias
             .as_ref()
@@ -114,16 +131,16 @@ impl Wallet {
             .bind(alias.as_ref().map(|row| row.get::<Uuid,_>("channel_id")))
             .bind([Some(model),upstream.as_deref()].into_iter().flatten().collect::<Vec<_>>())
             .bind(model)
-            .fetch_one(&mut *tx).await?;
+            .fetch_one(&mut **tx).await?;
         if !route {
             result.reason = Some("modelUnavailable");
             return Ok(result);
         }
         let now: OffsetDateTime = sqlx::query_scalar("SELECT now()")
-            .fetch_one(&mut *tx)
+            .fetch_one(&mut **tx)
             .await?;
         if bound_minor > 0 {
-            let quota = quota_in(&mut tx, organization.id, bound_minor, now).await?;
+            let quota = quota_in(tx, organization.id, bound_minor, now).await?;
             result.quota_minor = quota.drawn;
             result.wallet_minor = bound_minor - quota.drawn;
             result.quota_state = quota.state;
@@ -134,7 +151,7 @@ impl Wallet {
             if result.wallet_minor > 0
                 && result.quota_state != "none"
                 && let Err(error) = db
-                    .check_plan_credit_in(&mut tx, organization.id, result.wallet_minor)
+                    .check_plan_credit_in(tx, organization.id, result.wallet_minor)
                     .await
             {
                 match error {
@@ -148,7 +165,7 @@ impl Wallet {
         }
         if let Err(error) = self
             .authorize_key_snapshot_in(
-                &mut tx,
+                tx,
                 &key,
                 Some(model),
                 result.wallet_minor,
@@ -168,8 +185,8 @@ impl Wallet {
             return Ok(result);
         }
         if result.wallet_minor > 0 {
-            let split = self.pool_split(&mut tx, result.wallet_minor).await?;
-            let credit = self.pool_available_in(&mut tx, self.credit_line).await?;
+            let split = self.pool_split(tx, result.wallet_minor).await?;
+            let credit = self.pool_available_in(tx, self.credit_line).await?;
             if split.credit > credit {
                 result.reason = Some("insufficientFunds");
                 return Ok(result);
@@ -179,7 +196,7 @@ impl Wallet {
                     "SELECT COALESCE(SUM(remaining_minor) FILTER(WHERE expires_at IS NULL OR expires_at>$2),0)::bigint, \
                      COALESCE(SUM(remaining_minor) FILTER(WHERE expires_at<=$2),0)::bigint FROM oxsum.promo_lots \
                      WHERE organization_id=$1 AND closed_at IS NULL AND remaining_minor>0",
-                ).bind(organization.id).bind(now).fetch_one(&mut *tx).await?;
+                ).bind(organization.id).bind(now).fetch_one(&mut **tx).await?;
                 // Admission pins due-but-unburned lots first. Never claim a
                 // stable ready balance while an expiry transition is pending.
                 if due > 0 {
@@ -193,7 +210,6 @@ impl Wallet {
             }
         }
         result.allowed = true;
-        tx.commit().await?;
         Ok(result)
     }
 }

@@ -4,9 +4,7 @@ import { Circle, CircleAlert, CircleCheck, Lock } from "lucide-react";
 import { Card, Tag } from "../components/ui";
 import { useGettingStarted, type GettingStartedStep } from "../lib/gettingStarted";
 
-// The operator's path from an empty deployment to a customer bill the recipient
-// can verify (issue #559). Every row reads server data on each load — the page
-// is a map of the existing screens, not a second configuration surface.
+// Personal readiness keeps configuration, funding and receipt evidence distinct.
 
 interface StepCopy {
   key: GettingStartedStep["key"];
@@ -29,23 +27,18 @@ export function GettingStarted() {
     {
       key: "channel",
       title: t("gettingStarted.channel.title"),
-      role: t("gettingStarted.role.platformAdmin"),
+      role: t("gettingStarted.role.member"),
       done: t("gettingStarted.channel.done"),
-      todo:
-        (checklist.steps[0].detail?.channels ?? 0) === 0
-          ? t("gettingStarted.channel.todoEmpty")
-          : t("gettingStarted.channel.todoUnpriced", {
-              channels: checklist.steps[0].detail?.channels ?? 0,
-            }),
-      blocked: t("gettingStarted.channel.blocked"),
-      action: { to: "/admin#admin/channels", label: t("gettingStarted.channel.action") },
+      todo: t("gettingStarted.channel.todo"),
+      blocked: t("gettingStarted.servingRestricted"),
     },
     {
       key: "credit",
       title: t("gettingStarted.credit.title"),
-      role: t("gettingStarted.role.owner"),
+      role: t("gettingStarted.role.member"),
       done: t("gettingStarted.credit.done"),
       todo: t("gettingStarted.credit.todo"),
+      blocked: t("gettingStarted.servingRestricted"),
       action: { to: "/topup", label: t("gettingStarted.credit.action") },
     },
     {
@@ -54,6 +47,7 @@ export function GettingStarted() {
       role: t("gettingStarted.role.member"),
       done: t("gettingStarted.key.done"),
       todo: t("gettingStarted.key.todo"),
+      blocked: t("gettingStarted.servingRestricted"),
       action: { to: "/keys", label: t("gettingStarted.key.action") },
     },
     {
@@ -113,6 +107,21 @@ export function GettingStarted() {
         </div>
       </Card>
 
+      {checklist.serving ? (
+        <Card title={t("gettingStarted.sample.title")}>
+          {checklist.serving.sample ? (
+            <div className="space-y-2 text-sm text-muted">
+              <p>{t("gettingStarted.sample.shape", { model: checklist.serving.sample.model })}</p>
+              <p>{t("gettingStarted.sample.bound", { bound: checklist.serving.sample.boundMinor, quota: checklist.serving.sample.quotaMinor ?? "—", wallet: checklist.serving.sample.walletMinor ?? "—" })}</p>
+              <p className="break-all font-mono text-xs">{t("gettingStarted.sample.key", { key: checklist.serving.sample.keyId })}</p>
+            </div>
+          ) : null}
+          {checklist.serving.reason ? <p className="mt-2 text-sm text-muted">{t(`gettingStarted.reasons.${checklist.serving.reason}`, { defaultValue: t("gettingStarted.reasons.unknown") })}</p> : null}
+          {checklist.serving.scanLimited ? <p className="mt-2 text-sm text-muted">{t("gettingStarted.sample.limited")}</p> : null}
+          <p className="mt-2 text-xs text-muted">{t("gettingStarted.sample.note")}</p>
+        </Card>
+      ) : null}
+
       <ol className="flex flex-col gap-3">
         {steps.map((step, index) => {
           const live = checklist.steps[index];
@@ -132,7 +141,7 @@ export function GettingStarted() {
                     {step.note && live.state !== "loading" ? (
                       <p className="mt-1 text-xs text-muted">{step.note}</p>
                     ) : null}
-                    {live.state !== "done" && live.state !== "loading" && step.action ? (
+                    {live.state !== "done" && live.state !== "loading" && live.state !== "blocked" && step.action ? (
                       <p className="mt-2 flex flex-wrap gap-x-4 gap-y-1 text-sm">
                         <StepLink to={step.action.to} label={step.action.label} />
                         {step.secondary ? (

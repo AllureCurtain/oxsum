@@ -54,10 +54,11 @@ Deployment operators can read a sanitized diagnostic snapshot under the operator
 5. For a closed UTC period, export the appropriate report, statement or evidence
    bundle. These formats verify different claims; see [proofs.md](proofs.md).
 
-The current `/app/getting-started` checklist (#559) still assumes legacy operator
-token access, a positive wallet and a report link. Those assumptions are known
-N09 gaps (#735), not requirements to share an operator token with a customer.
-Browser completion of the full new journey remains an acceptance gate.
+The `/app/getting-started` checklist uses personal customer authority (#901):
+live visible keys, permitted chat models, effective customer sale terms and a
+sample funding snapshot. Actual first-call receipt evidence completes its final
+two steps. It requires neither an operator token, positive wallet balance nor a
+report link. Complete candidate journey acceptance remains a separate gate.
 
 The business setup page now reads `/api/v1/business/readiness` under the current
 personal business session (#843). Its five facts cover initialized identity,
@@ -832,3 +833,24 @@ available after account archive under current authority. Named repayment still
 requires its own checkoutWrite grant and a fresh server quote; reading a balance
 or statement does not authorize collection or activate service. Oversized retained
 documents need operator recovery instead of a silently incomplete history.
+## Immediate first-call evidence
+
+A customer's successful visible call can satisfy the request and bill steps
+immediately, even with a zero wallet charge. The checklist uses scoped canonical
+receipt evidence rather than the last ten operational requests or a report share
+link. Missing, incomplete and failed checks never mark the steps complete.
+The verification action opens the actual entry's prefilled proof; it does not
+claim independent trust merely because the server supplied a matching hash.
+Closed-period exports remain a separate workflow with their own authority and
+UTC boundary. Model/key/funding readiness remains tracked in #901.
+
+## Personal customer getting started
+
+The customer checklist reads visible live keys, permitted configured chat
+models, effective customer sale terms and a bounded sample funding snapshot.
+It requires no deployment token. Free and fully quota-funded samples can pass
+with zero wallet funds; pending reservations, current key/member/team caps and
+manual/account/plan restrictions still apply. Sample selection, limits and
+uncertainty are visible. Missing sale terms, a missing ledger or a period/expiry
+transition never masquerade as readiness. First-call evidence remains a separate
+actual successful receipt; no readiness read sends a provider request.

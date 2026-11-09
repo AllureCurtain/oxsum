@@ -57,6 +57,17 @@ impl ServingAccess {
         after: Option<&str>,
         limit: i64,
     ) -> Result<Vec<String>, WalletError> {
+        self.public_models_filtered_in(connection, after, limit, None)
+            .await
+    }
+
+    pub(crate) async fn public_models_filtered_in(
+        &self,
+        connection: &mut sqlx::PgConnection,
+        after: Option<&str>,
+        limit: i64,
+        mode: Option<&str>,
+    ) -> Result<Vec<String>, WalletError> {
         let key_models = self
             .key_models
             .as_ref()
@@ -84,6 +95,7 @@ impl ServingAccess {
              WHERE c.business_id=$1 AND c.channel_id=ANY($2) \
                AND NOT(c.protocol='tasks' AND n.upstream_model IS NOT NULL) \
                AND (p.mode<>'event' OR c.protocol='tasks') \
+               AND ($7::text IS NULL OR (p.mode=$7 AND c.protocol<>'tasks')) \
                AND ($3::text[] IS NULL OR (n.public_model=ANY($3) \
                     AND (n.upstream_model IS NULL OR n.upstream_model=ANY($3)))) \
                AND ($4::text[] IS NULL OR (n.public_model=ANY($4) \
@@ -97,6 +109,7 @@ impl ServingAccess {
         .bind(customer_models)
         .bind(after)
         .bind(limit)
+        .bind(mode)
         .fetch_all(connection)
         .await?)
     }

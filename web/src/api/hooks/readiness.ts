@@ -21,3 +21,12 @@ export function useCustomerReceiptReadiness() {
     retry: false,
   });
 }
+
+/** One coherent personal key/model/sale/funding snapshot, with no provider request. */
+export function useCustomerServingReadiness() {
+  return useQuery({
+    queryKey: ["customer", "readiness", "serving"],
+    queryFn: () => api<components["schemas"]["CustomerServingReadiness"]>("/org/readiness/serving"),
+    retry: false,
+  });
+}

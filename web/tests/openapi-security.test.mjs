@@ -46,6 +46,7 @@ test("commercial and financial operations retain their audited credential bounda
   const scopedReads = ["/plans", "/plans/{planVersionId}", "/bundles", "/org/promo-lots"];
   const personal = [
     ["get", "/org/readiness/receipt"],
+    ["get", "/org/readiness/serving"],
     ["get", "/org/plan"],
     ["post", "/org/plan/cancel"],
     ["post", "/org/plan/change"],

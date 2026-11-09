@@ -8163,6 +8163,64 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/org/readiness/serving": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Read personal key, customer sale and sample funding readiness
+         * @description Personal customer session only, with owner/admin/member key visibility.
+         *     Examines at most eight live visible keys and sixteen permitted public
+         *     models per key in a read-only repeatable-read snapshot. Selects a funded
+         *     chat sample when found, otherwise the first priced chat sample. Customer
+         *     sale terms use override, assignment and default precedence; supplier
+         *     prices never supply the customer bound. The sample is one user message
+         *     containing Hello, max_tokens 32, no service tier, tools or attachments.
+         *     The conservative undiscounted reservation uses the gateway price bound;
+         *     sale discounts reduce final settlement, not this reservation.
+         *     Explicit missing, restricted, transition, uninitialized-ledger and scan
+         *     limit reasons never assert ready. No ledger bootstrap, financial mutation,
+         *     digest, quota rollover, reservation or provider I/O occurs. This snapshot
+         *     does not certify provider health, rate windows or policy execution;
+         *     actual admission remains authoritative. The selected key ID is metadata,
+         *     never a secret. A model label cannot identify an inaccessible route.
+         */
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Current bounded customer serving readiness */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            data: components["schemas"]["CustomerServingReadiness"];
+                        };
+                    };
+                };
+                401: components["responses"]["Error"];
+                403: components["responses"]["Error"];
+                500: components["responses"]["Error"];
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/org/readiness/receipt": {
         parameters: {
             query?: never;
@@ -16831,6 +16889,40 @@ export interface components {
              * @enum {string|null}
              */
             action: "profile" | "channels" | "prices" | "integrations" | "customers" | null;
+        };
+        CustomerServingReadiness: {
+            /** Format: date-time */
+            asOf: string;
+            keyReady: boolean;
+            modelReady: boolean;
+            fundingReady: boolean;
+            /** @description Explicit refusal or uncertainty class; null only when sample funding passes. */
+            reason: string | null;
+            /** @description More keys or models may exist beyond this read's bound. */
+            scanLimited: boolean;
+            sample: components["schemas"]["CustomerServingSample"] | null;
+        };
+        CustomerServingSample: {
+            /** Format: uuid */
+            keyId: string;
+            model: string;
+            /** @constant */
+            prompt: "Hello";
+            /** @constant */
+            maxOutputTokens: 32;
+            /** Format: int64 */
+            inputUpperBound: number;
+            /** Format: int64 */
+            boundMinor: number;
+            /** Format: int64 */
+            quotaMinor: number | null;
+            /** Format: int64 */
+            walletMinor: number | null;
+            /** @enum {string} */
+            saleSource: "default" | "assigned" | "override";
+            /** Format: int64 */
+            saleVersion: number | null;
+            discountPercent: number;
         };
         CustomerReceiptReadiness: {
             /** @enum {string} */

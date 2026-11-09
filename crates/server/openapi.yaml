@@ -6024,6 +6024,40 @@ paths:
         "403": { $ref: "#/components/responses/Error" }
         "404": { $ref: "#/components/responses/Error" }
         "409": { $ref: "#/components/responses/Error" }
+  /api/v1/org/readiness/serving:
+    get:
+      summary: Read personal key, customer sale and sample funding readiness
+      x-consumption-key-access: denied
+      description: |
+        Personal customer session only, with owner/admin/member key visibility.
+        Examines at most eight live visible keys and sixteen permitted public
+        models per key in a read-only repeatable-read snapshot. Selects a funded
+        chat sample when found, otherwise the first priced chat sample. Customer
+        sale terms use override, assignment and default precedence; supplier
+        prices never supply the customer bound. The sample is one user message
+        containing Hello, max_tokens 32, no service tier, tools or attachments.
+        The conservative undiscounted reservation uses the gateway price bound;
+        sale discounts reduce final settlement, not this reservation.
+        Explicit missing, restricted, transition, uninitialized-ledger and scan
+        limit reasons never assert ready. No ledger bootstrap, financial mutation,
+        digest, quota rollover, reservation or provider I/O occurs. This snapshot
+        does not certify provider health, rate windows or policy execution;
+        actual admission remains authoritative. The selected key ID is metadata,
+        never a secret. A model label cannot identify an inaccessible route.
+      security: [{ sessionCookie: [] }]
+      responses:
+        "200":
+          description: Current bounded customer serving readiness
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data: { $ref: "#/components/schemas/CustomerServingReadiness" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
   /api/v1/org/readiness/receipt:
     get:
       summary: Find a visible successful call with immediate receipt evidence
@@ -11983,6 +12017,35 @@ components:
           type: [string, "null"]
           enum: [profile, channels, prices, integrations, customers, null]
           description: Existing business section the current actor can manage; null requires an appropriately authorized colleague.
+    CustomerServingReadiness:
+      type: object
+      required: [asOf, keyReady, modelReady, fundingReady, reason, scanLimited, sample]
+      properties:
+        asOf: { type: string, format: date-time }
+        keyReady: { type: boolean }
+        modelReady: { type: boolean }
+        fundingReady: { type: boolean }
+        reason: { type: [string, "null"], description: Explicit refusal or uncertainty class; null only when sample funding passes. }
+        scanLimited: { type: boolean, description: More keys or models may exist beyond this read's bound. }
+        sample:
+          oneOf:
+            - $ref: "#/components/schemas/CustomerServingSample"
+            - { type: "null" }
+    CustomerServingSample:
+      type: object
+      required: [keyId, model, prompt, maxOutputTokens, inputUpperBound, boundMinor, quotaMinor, walletMinor, saleSource, saleVersion, discountPercent]
+      properties:
+        keyId: { type: string, format: uuid }
+        model: { type: string }
+        prompt: { type: string, const: Hello }
+        maxOutputTokens: { type: integer, const: 32 }
+        inputUpperBound: { type: integer, format: int64 }
+        boundMinor: { type: integer, format: int64, minimum: 0 }
+        quotaMinor: { type: [integer, "null"], format: int64, minimum: 0 }
+        walletMinor: { type: [integer, "null"], format: int64, minimum: 0 }
+        saleSource: { type: string, enum: [default, assigned, override] }
+        saleVersion: { type: [integer, "null"], format: int64 }
+        discountPercent: { type: integer, minimum: 0, maximum: 100 }
     CustomerReceiptReadiness:
       type: object
       additionalProperties: false
