@@ -394,8 +394,11 @@ async fn invalid_case_terms_are_durable_rejections_without_rewriting_the_first_c
     assert_eq!(amount, 1_250_000);
 }
 
+// A new atomic-writer refund that has not succeeded and has no verified Cash
+// entry consumes no source yet: the loss takes back the retained Wallet leg and
+// the approval fence still rejects its later resolution.
 #[tokio::test]
-async fn prior_refund_history_requires_suspense_and_cannot_be_approved_after_loss() {
+async fn pending_refund_consumes_no_source_and_cannot_be_approved_after_loss() {
     let Some(w) = world().await else { return };
     let order = paid(&w, PaymentOrderPurpose::WalletTopup, true).await;
     let refund =
@@ -415,11 +418,11 @@ async fn prior_refund_history_requires_suspense_and_cannot_be_approved_after_los
     let lost = lose(&w, dispute.dispute_id).await;
     assert_eq!(
         legs(&w, lost.recharge_entry_id.unwrap()).await,
-        json!({"Assets:Cash":TOTAL,"Equity:Adjustments":-TOTAL})
+        json!({"Assets:Cash":TOTAL,"Liabilities:Wallet":-TOTAL})
     );
     assert_eq!(
         detail(&w, dispute.dispute_id).await["source"]["reviewReasons"],
-        json!(["priorRefundHistory"])
+        json!([])
     );
     assert!(matches!(
         w.db.resolve_order_refund(
