@@ -32,6 +32,9 @@ struct World {
     context: crate::MerchantSigningContext,
 }
 async fn world(days: i64, legacy: bool) -> Option<World> {
+    world_with_fee(days, legacy, FEE).await
+}
+async fn world_with_fee(days: i64, legacy: bool, fee: i64) -> Option<World> {
     let url = oxsum_testkit::suite_db_url("independent_reconciliation")?;
     let db = Db::connect(&url, 16).await.unwrap();
     db.migrate().await.unwrap();
@@ -51,7 +54,7 @@ async fn world(days: i64, legacy: bool) -> Option<World> {
     let input = NewSoldPlan {
         plan_id: None,
         name: format!("reconcile-{}", Uuid::new_v4()),
-        price_minor: FEE,
+        price_minor: fee,
         currency: "USD".into(),
         quota_minor: Some(10_000_000),
         period_kind: PeriodKind::Anniversary,
@@ -73,8 +76,42 @@ async fn world(days: i64, legacy: bool) -> Option<World> {
         .unwrap()
         .customer_plan_id;
     let context = payment::merchant_context(&db, &owner).await;
+    if fee < 10_000 {
+        let terms = db.collection_terms().await.unwrap();
+        db.set_collection_terms(
+            &owner,
+            &crate::CollectionTermsRequest {
+                idempotency_key: Uuid::new_v4().to_string(),
+                reason: "exact minor-unit tiny plan fixture".into(),
+                expected_revision: terms.revision,
+                currency: crate::CollectionCurrency {
+                    code: "USD".into(),
+                    rate_per_credit: "10000".into(),
+                },
+            },
+        )
+        .await
+        .unwrap();
+    }
     let order = payment::created_order(&db, &context, org, plan).await;
     payment::mark_paid(&db, &context, &order).await;
+    if fee < 10_000 {
+        let terms = db.collection_terms().await.unwrap();
+        db.set_collection_terms(
+            &owner,
+            &crate::CollectionTermsRequest {
+                idempotency_key: Uuid::new_v4().to_string(),
+                reason: "restore ordinary fixture collection terms".into(),
+                expected_revision: terms.revision,
+                currency: crate::CollectionCurrency {
+                    code: "USD".into(),
+                    rate_per_credit: "1".into(),
+                },
+            },
+        )
+        .await
+        .unwrap();
+    }
     let now: OffsetDateTime = sqlx::query_scalar("SELECT clock_timestamp()")
         .fetch_one(db.pool())
         .await
@@ -380,6 +417,157 @@ async fn balanced_legacy_header_drift_cannot_be_its_own_actual() {
             .iter()
             .any(|d| d.fact == "lineTotalMinor")
     );
+}
+
+#[tokio::test]
+async fn tiny_zero_days_use_service_boundaries_across_earlier_started_refund_and_void() {
+    let _guard = TEST_LOCK.lock().await;
+    for fee in [3, 17] {
+        let Some(w) = world_with_fee(10, false, fee).await else {
+            return;
+        };
+        let zeros: i64 = sqlx::query_scalar("SELECT count(*) FROM oxsum.plan_accounting_effects WHERE plan_period_id=$1 AND kind='recognition' AND entry_id IS NULL")
+        .bind(w.period.plan_period_id).fetch_one(w.db.pool()).await.unwrap();
+        assert!(zeros > 0);
+        clean(&capture(&w, TimeBasis::Booking).await);
+        refund(&w, 1).await;
+        // Transaction start can predate an already completed zero-only pass: the
+        // refund waits for plan ownership and must still follow its service days.
+        corrupt(&w, &format!("UPDATE oxsum.plan_accounting_effects SET created_at=(SELECT MIN(created_at)-interval '1 second' FROM oxsum.plan_accounting_effects WHERE plan_period_id='{}' AND kind='recognition') WHERE plan_period_id='{}' AND kind='refund'",w.period.plan_period_id,w.period.plan_period_id)).await;
+        clean(&capture(&w, TimeBasis::Booking).await);
+        w.db.void_invoice_journal(
+            &w.owner,
+            &w.wallet,
+            w.journal,
+            "tiny complete cancellation",
+            &Uuid::new_v4().to_string(),
+            OffsetDateTime::now_utc().date(),
+        )
+        .await
+        .unwrap();
+        clean(&capture(&w, TimeBasis::Service).await);
+        // Equal microsecond transaction starts cannot merge nonzero movement order.
+        corrupt(&w, &format!("UPDATE oxsum.plan_accounting_effects SET created_at=(SELECT MIN(created_at) FROM oxsum.plan_accounting_effects WHERE plan_period_id='{}') WHERE plan_period_id='{}'",w.period.plan_period_id,w.period.plan_period_id)).await;
+        let result = capture(&w, TimeBasis::Booking).await;
+        clean(&result);
+        assert_eq!(result.actual.billed_minor, 0);
+        assert_eq!(result.actual.refund_minor, 1);
+    }
+}
+
+#[tokio::test]
+async fn free_plan_activation_and_void_compare_without_inventing_official_money() {
+    let _guard = TEST_LOCK.lock().await;
+    let Some(base) = world(0, false).await else {
+        return;
+    };
+    let user = base
+        .db
+        .register(NewUser {
+            email: format!("{}@example.com", Uuid::new_v4()),
+            password: "free source fixture password".into(),
+            organization_name: None,
+        })
+        .await
+        .unwrap();
+    let sold = base
+        .db
+        .publish_sold_plan(
+            base.db.default_business().await.unwrap(),
+            &NewSoldPlan {
+                plan_id: None,
+                name: "Free reconciled daily plan".into(),
+                price_minor: 0,
+                currency: "USD".into(),
+                quota_minor: Some(5),
+                period_kind: PeriodKind::CalendarMonth,
+                overage_enabled: false,
+                sort_order: 0,
+            },
+        )
+        .await
+        .unwrap();
+    let plan = base
+        .db
+        .bind_customer_plan(
+            user.organization.id,
+            sold.plan_version_id,
+            PeriodAuthorization::Complimentary(Uuid::new_v4()),
+        )
+        .await
+        .unwrap();
+    let period = base
+        .db
+        .plan_periods(plan.customer_plan_id)
+        .await
+        .unwrap()
+        .remove(0);
+    let journal = base
+        .db
+        .plan_journals(user.organization.id, None, 50)
+        .await
+        .unwrap()
+        .journals[0]
+        .journal_id;
+    let wallet = Wallet::open_existing(base.db.pool().clone(), &user.organization.tenant_id)
+        .await
+        .unwrap();
+    let w = World {
+        db: base.db,
+        owner: base.owner,
+        org: user.organization.id,
+        tenant: user.organization.tenant_id,
+        wallet,
+        plan: plan.customer_plan_id,
+        period,
+        journal,
+        order: base.order,
+        context: base.context,
+    };
+    for void in [false, true] {
+        if void {
+            w.db.void_invoice_journal(
+                &w.owner,
+                &w.wallet,
+                w.journal,
+                "free invoice cancellation",
+                &Uuid::new_v4().to_string(),
+                OffsetDateTime::now_utc().date(),
+            )
+            .await
+            .unwrap();
+        }
+        let result = capture(&w, TimeBasis::Booking).await;
+        assert!(
+            result.coverage.complete,
+            "{}",
+            serde_json::to_string_pretty(&result.differences).unwrap()
+        );
+        assert!(result.differences.is_empty());
+        assert_eq!(result.actual, super::types::Amounts::default());
+        assert_eq!(result.expected, result.actual);
+        let monetary: i64=sqlx::query_scalar("SELECT count(*) FROM oxsum.plan_accounting_effects WHERE plan_period_id=$1 AND entry_id IS NOT NULL").bind(w.period.plan_period_id).fetch_one(w.db.pool()).await.unwrap();
+        assert_eq!(monetary, 0);
+    }
+}
+
+#[tokio::test]
+async fn changed_registered_financial_path_is_explicitly_incomplete() {
+    let _guard = TEST_LOCK.lock().await;
+    let Some(w) = world(10, false).await else {
+        return;
+    };
+    corrupt(&w, &format!("UPDATE ledger_{}.accounts SET path='Income:UnexpectedPlanFees' WHERE path='Income:PlanFees'",w.tenant)).await;
+    let result = capture(&w, TimeBasis::Booking).await;
+    assert!(!result.coverage.complete);
+    assert!(
+        result
+            .differences
+            .iter()
+            .any(|difference| difference.fact == "postingShape")
+    );
+    assert!(result.coverage.verified_entries > 0);
+    assert_eq!(result.coverage.verified_entries, result.coverage.entries);
 }
 
 #[tokio::test]

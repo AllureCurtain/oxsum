@@ -26,11 +26,13 @@ pub(super) fn compare(customer: &mut Customer<'_>) -> Result<(), WalletError> {
             .filter(|(_, effect)| effect.id("plan_period_id").ok() == Some(period_id))
             .map(|(id, source)| (*id, source.clone()))
             .collect();
-        // created_at is transaction-start time, not the posting order after a
-        // lock wait. Official log positions order nonzero effects; zero effects
-        // in the same transaction inherit that batch's first position.
-        let mut batches = BTreeMap::new();
-        for (_, effect) in &effects {
+        // Nonzero movements follow their own official positions, never a
+        // transaction-start timestamp. Zero recognition days precede the next
+        // sequenced service day and any refund/void that must catch that day up
+        // before changing the fee. Disputes preserve income and commute with
+        // zero recognition, so they supply no invented service boundary.
+        let mut positions = BTreeMap::new();
+        for (id, effect) in &effects {
             if let Some(index) = effect
                 .optional_id("entry_id")?
                 .and_then(|id| customer.ledger.entries.get(&id))
@@ -38,23 +40,57 @@ pub(super) fn compare(customer: &mut Customer<'_>) -> Result<(), WalletError> {
                 .and_then(|stored| stored.index)
                 .map(|index| index.get())
             {
-                batches
-                    .entry(effect.instant("created_at")?)
-                    .and_modify(|current: &mut u64| *current = (*current).min(index))
-                    .or_insert(index);
+                positions.insert(*id, index);
             }
         }
+        let mut anchors = BTreeMap::new();
+        for (id, effect) in &effects {
+            if effect.text("kind")? != "recognition" || positions.contains_key(id) {
+                continue;
+            }
+            let day = effect.date("service_day")?;
+            let boundary = day
+                .next_day()
+                .ok_or_else(|| error::invalid("recognition day overflows"))?
+                .midnight()
+                .assume_utc()
+                .min(end);
+            let mut anchor = u64::MAX;
+            for (other, candidate) in &effects {
+                let Some(index) = positions.get(other) else {
+                    continue;
+                };
+                let precedes = match candidate.text("kind")?.as_str() {
+                    "recognition" => candidate.date("service_day")? > day,
+                    "refund" | "void" => {
+                        let entry_day = candidate
+                            .optional_id("entry_id")?
+                            .and_then(|id| customer.ledger.entries.get(&id))
+                            .and_then(|entry| entry.booked_on());
+                        // UTC booking midnight and transaction start are lower
+                        // bounds on the correction's actual recognition clock.
+                        entry_day.is_some_and(|day| boundary <= day.midnight().assume_utc())
+                            || boundary <= candidate.instant("created_at")?
+                    }
+                    _ => false,
+                };
+                if precedes {
+                    anchor = anchor.min(*index);
+                }
+            }
+            anchors.insert(*id, anchor);
+        }
         effects.sort_by_key(|(id, source)| {
-            let at = source.instant("created_at").ok();
-            let position = at
-                .and_then(|at| batches.get(&at).copied())
-                .unwrap_or_else(|| {
-                    at.and_then(|at| batches.range(at..).next().map(|(_, index)| *index))
-                        .unwrap_or(u64::MAX)
-                });
+            let position = positions.get(id).copied().unwrap_or_else(|| {
+                if source.text("kind").ok().as_deref() == Some("activation") {
+                    0
+                } else {
+                    anchors.get(id).copied().unwrap_or(u64::MAX)
+                }
+            });
             (
                 position,
-                at,
+                positions.contains_key(id),
                 rank(source),
                 source.date("service_day").ok(),
                 *id,
