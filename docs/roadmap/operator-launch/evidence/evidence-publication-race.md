@@ -12,10 +12,14 @@ stored identity cannot be adopted as this publication's result. No existing
 bundle bytes or captured inputs change, and no connection is held across wallet
 calls. The scope and API contract are unchanged.
 
-Two focused regressions hold both actual publishers at the final INSERT using a
-PostgreSQL advisory-lock trigger. They cover statement and period scopes,
+A controlled regression holds both actual publishers at the final INSERT using a
+PostgreSQL advisory-lock trigger. It covers statement and period scopes,
 identical retained descriptors and replay bytes. A separate altered-identity
 trigger checks refusal to adopt another marker id. Existing concurrent
 refund/export, single-connection publication and orphan-marker tests remain in
-the focused selection. Execution results and independent review follow in this
-PR. This core-only correction does not require a workspace test run.
+the focused selection. All five selected core tests passed (1.928 seconds after
+compilation); the other 144 library tests were filtered out. Core-only strict
+Clippy passed in 1m20. Formatting/diff checks and independent source review
+passed on `ec713918`. Logs: `/tmp/oxsum-891-focused.log` and
+`/tmp/oxsum-891-clippy.log`. The prior main CI provides the original failing
+production evidence. This core-only correction ran no workspace test suite.
