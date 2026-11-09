@@ -4447,7 +4447,7 @@ async fn a_discounted_turn_charges_the_discounted_price() {
         .settlement_description(&id)
         .await
         .expect("the turn settled");
-    assert!(description.contains("\"v\":14"), "{description}");
+    assert!(description.contains("\"v\":15"), "{description}");
     assert_eq!(
         oxsum_core::verify_charge(&description),
         oxsum_core::ChargeCheck::Recomputed

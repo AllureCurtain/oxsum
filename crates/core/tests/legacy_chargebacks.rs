@@ -1397,6 +1397,12 @@ async fn official_reversals_of_original_or_correction_refuse_replay() {
                 .unwrap()
                 .correction_entry_id
         } else {
+            // The fixture closed its facility; the raw reversal needs the
+            // settled CreditLine balance the production writer repaid into.
+            w.wallet
+                .set_credit_limit("official-reversal-headroom", TOTAL, today())
+                .await
+                .unwrap();
             old.old_entry
         };
         let store = PostgresStore::<6>::new(
