@@ -1,6 +1,8 @@
 //! Stable owner-created application namespaces and scoped customer lifecycle.
 
 mod applications;
+pub(crate) mod checkout;
+mod checkout_types;
 mod customers;
 mod evidence;
 mod evidence_json;
@@ -25,4 +27,8 @@ pub use keys::{
 pub use read_types::{
     ApplicationCustomerEntitlement, ApplicationCustomerModel, ApplicationCustomerModelPage,
     ApplicationCustomerSaleTerms, ApplicationPlanStanding, ApplicationQuotaStanding,
+};
+
+pub use checkout_types::{
+    ApplicationCheckoutRequest, ApplicationCheckoutSelection, ApplicationCheckoutTerms,
 };

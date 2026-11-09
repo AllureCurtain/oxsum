@@ -53,3 +53,7 @@ test("frozen evidence requires an explicit application grant", () => {
   assert.deepEqual(request.customerIds, []);
   assert.deepEqual(request.scopes, ["evidenceRead"]);
 });
+
+test("checkout grant requires an application namespace", () => {
+  assert.throws(() => credentialRequest({ mode: "customers", applicationId: "", customerIds: ["customer"], scopes: ["checkoutWrite"], name: "", days: "7", reason: "checkout" }, "key", 0));
+});

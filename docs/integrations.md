@@ -351,3 +351,21 @@ zero-usage assertion. A 409 requires operator recovery or a smaller customer-saf
 export. Archived accounts remain readable while the credential is live. This
 reader is one part of N21; checkout, automated evidence publication, notifications
 and the complete separate-store application remain distinct tasks.
+
+### Scoped application wallet/bundle payments
+
+Request `checkoutWrite` as an explicit owner grant on your application. Quote the
+customer's fiat top-up or published bundle through `checkout-quote`, and show
+merchant name/mode, fiat amount, purchased credits and promotion before sending
+the exact quote with one persisted operation key and return/cancel destinations.
+Store the returned order ID alongside your own customer mapping. On an unknown
+response, reuse that operation key; retrieve your application's order list or
+resume the exact order. Do not make a new operation merely because a network
+response was lost. Credential rotation preserves the stable application identity.
+
+Order status is server truth. `provider_pending` is not paid, and returning to
+your URL proves nothing; wait for verified paid/fulfilled status. Keep checkout
+client secrets scoped to the corresponding user. Ordinary runtime needs only
+the application credential and customer-scoped gateway keys. This slice supports
+wallet/bundle orders; plan/debt checkout, signed lifecycle notifications and the
+complete independent application walkthrough remain N21 follow-ups.

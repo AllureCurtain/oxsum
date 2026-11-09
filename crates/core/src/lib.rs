@@ -220,6 +220,7 @@ pub use holds::{
 };
 pub use idempotency::{Claim, credential_fingerprint, fingerprint};
 pub use integration_applications::{
+    ApplicationCheckoutRequest, ApplicationCheckoutSelection, ApplicationCheckoutTerms,
     ApplicationCustomer, ApplicationCustomerArchiveRequest, ApplicationCustomerEntitlement,
     ApplicationCustomerKeyPage, ApplicationCustomerKeyRequest, ApplicationCustomerKeyResult,
     ApplicationCustomerModel, ApplicationCustomerModelPage, ApplicationCustomerSaleTerms,

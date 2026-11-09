@@ -1,6 +1,6 @@
 # TODO
 
-Updated: 2026-11-09
+Updated: 2026-11-10
 
 ## In progress
 
@@ -10,6 +10,8 @@ Updated: 2026-11-09
 - [ ] [#927](https://github.com/AllureCurtain/oxsum/issues/927) — Source-specific mixed statement journal voids implemented on fix/statement-source-void, based on PR #919. All 2,174 ordinary cases have passing full/focused evidence; 67 final financial and 34 final core/HTTP checks, strict core Clippy, contract/build and formatting passed. Browser, independent review and protected integration remain. [Evidence](docs/roadmap/operator-launch/evidence/statement-source-void.md).
 
 - [ ] [#917](https://github.com/AllureCurtain/oxsum/issues/917) — Exact source-verified statement debt mapping before #777 repayment implemented; 773 core tests and final 29 source checks plus strict Clippy passed. PR review/integration pending; [evidence](docs/roadmap/operator-launch/evidence/statement-debt-sources.md).
+- [ ] [#930](https://github.com/AllureCurtain/oxsum/issues/930) — Scoped application wallet/bundle checkout implemented on feat/application-checkout, based on PR #928; 2,175 full workspace, 22 affected and six final core/HTTP checks passed. Strict Clippy, contract/codegen/build, eight frontend checks and formatting passed; independent review, protected integration and browser/candidate acceptance remain. [Evidence](docs/roadmap/operator-launch/evidence/application-checkout.md).
+
 - [ ] [#924](https://github.com/AllureCurtain/oxsum/issues/924) — Application-only original-byte frozen evidence reads implemented on feat/application-evidence-reads, based on PR #922; 2,168 workspace tests and five final core/HTTP checks passed, six existing opt-ins skipped. Strict changed-crate Clippy, contract/codegen/build and seven frontend checks passed; browser acceptance, independent review and protected integration remain. [Evidence](docs/roadmap/operator-launch/evidence/application-evidence-reads.md).
 
 - [ ] [#920](https://github.com/AllureCurtain/oxsum/issues/920) — Verified personal consent for existing application billing accounts implemented on feat/application-account-consent, based on PR #910; 32 focused core/HTTP, six frontend behavior and contract/build checks passed. 2,164 workspace checks and strict changed-crate Clippy passed, with six existing opt-ins skipped; browser acceptance, independent review and protected integration pending. [Evidence](docs/roadmap/operator-launch/evidence/application-consent.md).

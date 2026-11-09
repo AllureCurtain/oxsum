@@ -774,3 +774,20 @@ Cash never moves during void; collected funds become source-owned refund payable
 A live payment intent anywhere on an affected document blocks correction until
 its provider result is resolved. Invalid or reissued history still needs explicit
 financial review. This does not authorize new replacement charges or entitlement.
+
+### Application wallet and bundle checkout (#930)
+
+An owner may explicitly grant application-only `checkoutWrite`. The application
+quotes a fiat wallet top-up or published bundle for its own customer, shows the
+server's exact purchased/promo amount, merchant name and test/live mode, and
+creates the reviewed checkout. Money is credited only by verified payment and
+normal fulfillment. No staff, manual-receipt, refund-approval or merchant-secret
+authority accompanies the grant. Plan activation and statement debt checkout
+remain separate required N21 follow-ups.
+
+Every application order retains its original quote and return/cancel URLs in the
+order transaction. Identical retries and rotated credentials recover the same
+order/provider identity. Application operation keys cannot collide with portal
+keys, and checkout reads include only that application's created orders. Archive
+blocks new/resumed checkout while retaining historical reads and valid late
+provider callbacks. Revocation/expiry and namespace are rechecked per operation.

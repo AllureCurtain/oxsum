@@ -3712,3 +3712,19 @@ source linkage does not certify the external provider or service quality.
 - Repayment-funded refund payable stays reserved to original effects. New
   service invoicing/reissue is not implied by a source cancellation. Ambiguous
   retained history remains review-required rather than guessed.
+## 2026-11-10 Scope application checkout through the existing writer (#930)
+
+- Add application-only `checkoutWrite` with no implicit existing-grant upgrade.
+  Its first reviewed slice covers wallet top-up and published bundles.
+- Reuse ordinary order/provider/callback/fulfillment code, passing internal
+  application authority into the order transaction rather than fabricating a
+  personal principal. Credential/customer checks and immutable order association
+  commit beside the payment binding.
+- Retain exact quote and original return/cancel URLs, domain-separate operation
+  keys, and limit recovery to application-created orders. Require HTTPS or
+  explicit loopback HTTP and reject ambiguous URL normalization.
+- Authorization is decided before external I/O; later revocation does not undo
+  an already committed operation. Unknown outcomes reuse provider idempotency.
+  Archive blocks initiation/resume but not history or legitimate late callbacks.
+- Plan/statement checkout and lifecycle notification remain separate scoped
+  extensions, not capabilities inferred from the new grant.

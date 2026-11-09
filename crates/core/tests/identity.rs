@@ -492,6 +492,7 @@ async fn migrating_twice_and_concurrently_is_safe() {
             "_migrations".to_owned(),
             "admin_audit".to_owned(),
             "api_keys".to_owned(),
+            "application_checkout_orders".to_owned(),
             "application_customer_keys".to_owned(),
             "application_customers".to_owned(),
             "application_link_invitations".to_owned(),

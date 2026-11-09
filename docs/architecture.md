@@ -874,3 +874,23 @@ receivable or reserved payable. Fresh evidence commits the `sourceVoids` rows
 and referenced ledger entries; old frozen bundles remain byte-for-byte unchanged.
 Whole-statement release-review refuses mixed sources and directs finance to the
 original journal; this is source correction, not automatic replacement invoicing.
+
+### Transaction-owned application checkout (#930)
+
+Migration 0126 adds the explicit application-only scope and immutable
+`application_checkout_orders` association (application, customer, credential and
+exact request). Existing grants gain no authority. Wallet/bundle checkout uses
+the ordinary payment writer with an optional internal application authority
+context: business lock, current credential/customer check, existing-order replay
+or exact fresh quote, order/binding/association, commit. Permission checked only
+before this transaction would race revocation/archive and is not sufficient.
+
+A domain-separated SHA-256 key keeps application operations distinct from portal
+keys. The association pins original quote and return destinations. Recovery reads
+recheck current authority and reuse the production checkout driver and retained
+merchant version. Provider calls occur after the local transaction commits; its
+authorization decision is the boundary, and later revocation cannot undo an
+already-authorized external operation. Unknown external outcomes retain the order
+UUID for provider idempotency. Payment and fulfillment remain authenticated
+merchant/outbox operations, not application assertions. Historical reads do not
+bootstrap ledgers, resume providers or change account state.

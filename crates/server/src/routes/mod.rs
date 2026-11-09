@@ -20,6 +20,7 @@ use uuid::Uuid;
 use crate::AppState;
 use crate::error::ApiError;
 
+mod application_checkout;
 mod auth;
 pub(crate) mod billing;
 mod bundles;
@@ -302,6 +303,22 @@ pub fn router(state: AppState) -> Router {
         .route(
             "/integration/customers/{organization_id}/keys/{key_id}/revoke",
             post(integration_applications::revoke_customer_key),
+        )
+        .route(
+            "/integration/customers/{organization_id}/checkout-quote",
+            post(application_checkout::quote),
+        )
+        .route(
+            "/integration/customers/{organization_id}/orders",
+            post(application_checkout::create).get(application_checkout::list),
+        )
+        .route(
+            "/integration/customers/{organization_id}/orders/{order_id}",
+            get(application_checkout::get),
+        )
+        .route(
+            "/integration/customers/{organization_id}/orders/{order_id}/resume",
+            post(application_checkout::resume),
         )
         .route(
             "/integration/customers/{organization_id}/evidence-bundles",

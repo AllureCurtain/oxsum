@@ -1759,3 +1759,17 @@ Voiding records refund payable for collected money; use the existing refund
 workflow to return cash. The payment's original allocation determines which
 source is restored or refunded. A new bill is a separate operator decision; void
 does not issue another charge, renew a plan or remove manual account restrictions.
+
+### Allow an external application to initiate payment
+
+In application access, select the explicit checkout grant only when that
+application should create wallet or bundle checkout for its own customers. It
+can quote and recover those orders; it cannot mark payments successful, write a
+manual receipt, approve refunds or read merchant secrets. A linked personal
+account keeps its identity; portal-created orders are outside this grant.
+
+The application must display whether the merchant is in test or live mode and
+the exact quoted fiat/credit amounts. A provider timeout leaves a recoverable
+order rather than proof of failure. Revoking a credential stops later authorized
+requests; rotating it within the same application preserves order recovery. An
+archived account remains readable but cannot start or resume checkout.

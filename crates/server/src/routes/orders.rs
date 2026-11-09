@@ -57,12 +57,12 @@ pub(crate) struct CreateOrderReq {
 #[derive(serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct OrderCheckout {
-    order: PaymentOrder,
-    provider_payment_id: Option<String>,
-    client_secret: Option<String>,
-    checkout_url: Option<String>,
-    publishable_key: Option<String>,
-    sdk_url: Option<String>,
+    pub(crate) order: PaymentOrder,
+    pub(crate) provider_payment_id: Option<String>,
+    pub(crate) client_secret: Option<String>,
+    pub(crate) checkout_url: Option<String>,
+    pub(crate) publishable_key: Option<String>,
+    pub(crate) sdk_url: Option<String>,
 }
 
 pub(crate) async fn create_order(
@@ -133,7 +133,7 @@ pub(crate) async fn create_order(
 /// binds the result; one already bound — by a prior create, a session recovery
 /// or an early signed callback — returns its standing handles, so a retry
 /// never issues a second charge. Returns the re-read order.
-async fn drive_checkout(
+pub(crate) async fn drive_checkout(
     state: &AppState,
     organization: Uuid,
     order: PaymentOrder,
@@ -180,6 +180,14 @@ async fn drive_checkout(
     let public = state.config.public_url().ok_or_else(|| {
         ApiError::ServiceUnavailable("public return URL is not configured".into())
     })?;
+    let (return_url, cancel_url) = match state
+        .db
+        .application_checkout_destinations(organization, order.order_id)
+        .await?
+    {
+        Some((original_return, original_cancel)) => (Some(original_return), Some(original_cancel)),
+        None => (return_url, cancel_url),
+    };
     let urls = oxsum_integrations::merchant_checkout::ReturnUrls {
         return_url,
         cancel_url,
@@ -219,7 +227,7 @@ fn order_description(new: &NewPaymentOrder) -> &'static str {
     purpose_description(new.purpose)
 }
 
-fn purpose_description(purpose: PaymentOrderPurpose) -> &'static str {
+pub(crate) fn purpose_description(purpose: PaymentOrderPurpose) -> &'static str {
     match purpose {
         PaymentOrderPurpose::WalletTopup => "oxsum wallet top-up",
         PaymentOrderPurpose::Bundle => "oxsum credit bundle",
