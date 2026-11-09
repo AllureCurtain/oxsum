@@ -263,6 +263,12 @@ The dashboard is the React app under `web/` (issue #234): overview, top-up, orde
     key they minted, settled charges and outstanding holds counted together.
     Send `null` to clear it. The members page does not render the control yet;
     the API enforces it.
+  - **Team budget**: an owner or admin assigns `teamId` through the same member
+    PATCH and manages caps through `/api/v1/org/teams`. Moving a member carries
+    their keys' settled and reserved spend into the new roster. Dissolving a
+    team retains its memberships and their own budgets. These changes take
+    effect for later admissions; already admitted requests keep their
+    reservations through settlement.
   - **Remove**: take the membership away. The person's account and their own personal
     organization stay, and if they were logged in, that session stops working.
     The member's keys keep their history but lose the cap a budget gave them.

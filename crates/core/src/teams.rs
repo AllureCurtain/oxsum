@@ -201,6 +201,10 @@ impl Db {
     ) -> Result<Team, WalletError> {
         acting.authorized()?;
         let mut tx = self.pool().begin().await?;
+        // Admission takes the organization's FK share before member/team
+        // budget rows; roster writers already take this exclusive parent.
+        // Own it before DELETE's team lock and ON DELETE SET NULL member writes.
+        crate::orgs::lock_organization(&mut tx, organization_id).await?;
         let target = sqlx::query(
             "DELETE FROM oxsum.teams WHERE organization_id = $1 AND team_id = $2 \
              RETURNING team_id, name, budget_limit_minor, created_at, 0::bigint AS members",

@@ -2623,6 +2623,9 @@ paths:
         Removes the team; every membership it grouped keeps its seat with `teamId`
         nulled — the member layer stays, the team cap simply stops applying. An
         owner or an admin, and only a session.
+        Deletion serializes with request admission and member reassignment.
+        Already admitted reservations remain valid; an admission after deletion
+        observes the retained member without this team's cap.
       responses:
         "200":
           description: The team that was dissolved
