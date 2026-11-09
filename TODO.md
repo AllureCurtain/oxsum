@@ -8,7 +8,7 @@ Updated: 2026-11-09
 
 - [ ] [#872](https://github.com/AllureCurtain/oxsum/issues/872) — Prepared portal and embedded pilot kits, shared exact-candidate intake and independent participant result template; independent review and 28 local-link checks passed; PR integration pending. No participants or external contact.
 
-- [ ] [#873](https://github.com/AllureCurtain/oxsum/issues/873) — Preserve complete quota/cache settlement evidence under a bounded 16,384-character ledger description; standalone main regression reproduced, implementation and native/browser compatibility gates in progress. Required before #849.
+- [ ] [#873](https://github.com/AllureCurtain/oxsum/issues/873) — Complete quota/cache evidence under a bounded 16,384-character description: baseline reproduced, 2,047 full workspace, 521 engine, 29 engine doc, 94 native verifier and ten actual-WASM groups passed; strict Clippy, frontend and independent review passed. Focused protected merge pending before #849.
 
 - [ ] [#875](https://github.com/AllureCurtain/oxsum/issues/875) — Bound configured and response-time gateway evidence before execution so arbitrary guardrail results cannot exceed the receipt budget; required before customer readiness/acceptance. #873 covers known valid composed evidence only.
 

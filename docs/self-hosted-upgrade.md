@@ -21,6 +21,10 @@ After longer entries have been written, retain a compatible reader for rollback
 or restore the pre-upgrade backup; restarting a 512-character binary against the
 same schema is not a compatible rollback. Existing short entries keep their
 original bytes and hashes.
+For native consumers, use this workspace's vendored build or an artifact proven
+against the extended-description fixtures. The manifest's numeric dependency
+version alone does not establish that a registry build includes the vendored
+change; this repair does not publish such a registry artifact.
 
 ## Before you upgrade
 
