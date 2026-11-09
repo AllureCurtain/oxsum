@@ -27,6 +27,8 @@ use uuid::Uuid;
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(crate) struct CreateOrderReq {
     expected_plan_quote: Option<String>,
+    expected_statement_quote: Option<String>,
+    statement_amount_minor: Option<i64>,
     expected_collection_revision: Option<i64>,
     idempotency_key: String,
     rail: MerchantRail,
@@ -36,7 +38,8 @@ pub(crate) struct CreateOrderReq {
     display_amount_minor: i64,
     display_currency: String,
     /// The purpose's argument: the plan a `planPeriod` activates, the
-    /// receivable an `invoiceRepayment` settles, or a published bundle version.
+    /// statement a `statementRepayment` settles, or a published bundle version.
+    /// Legacy `invoiceRepayment` requires a reference but settles CreditLine.
     purpose_ref: Option<Uuid>,
     /// Deprecated bundle assertion; absent/zero or exactly the offer's amount.
     promo_minor: Option<i64>,
@@ -85,6 +88,8 @@ pub(crate) async fn create_order(
         ApiError::ServiceUnavailable("merchant encryption is not configured".into())
     })?;
     let new = NewPaymentOrder {
+        expected_statement_quote: r.expected_statement_quote,
+        statement_amount_minor: r.statement_amount_minor,
         expected_plan_quote: r.expected_plan_quote,
         expected_collection_revision: r.expected_collection_revision,
         purpose: r.purpose,
@@ -220,6 +225,7 @@ fn purpose_description(purpose: PaymentOrderPurpose) -> &'static str {
         PaymentOrderPurpose::Bundle => "oxsum credit bundle",
         PaymentOrderPurpose::PlanPeriod => "oxsum plan period",
         PaymentOrderPurpose::InvoiceRepayment => "oxsum invoice repayment",
+        PaymentOrderPurpose::StatementRepayment => "oxsum statement repayment",
     }
 }
 
@@ -487,4 +493,14 @@ pub(crate) async fn reconciliation(
         .db
         .payment_reconciliation(&super::business::personal_token(&headers)?)
         .await?)
+}
+
+/// Retained original allocation and return evidence for personal finance readers.
+pub(crate) async fn statement_payment_evidence(
+    State(state): State<AppState>,
+    headers: axum::http::HeaderMap,
+    Path(order): Path<Uuid>,
+) -> ApiResult<Vec<oxsum_core::StatementCashEffect>> {
+    let token = super::business::personal_token(&headers)?;
+    ok(state.db.statement_payment_evidence(&token, order).await?)
 }

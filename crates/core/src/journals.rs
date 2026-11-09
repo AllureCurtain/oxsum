@@ -613,9 +613,14 @@ impl Db {
                 "draft or reissued journal requires explicit financial reconciliation".into(),
             ));
         }
+        crate::statement_payments::guard_journal_in(tx, journal_id).await?;
         wallet.lock_append_in(tx).await?;
-        self.validate_journal_void_statements_in(tx, journal)
-            .await?;
+        let documents =
+            crate::statement_payments::voiding::documents_in(tx, wallet, journal).await?;
+        if documents.is_none() {
+            self.validate_journal_void_statements_in(tx, journal)
+                .await?;
+        }
         let lines = lines_in(tx, journal_id).await?;
         // Reverse every line onto the journal itself — the void's record is
         // the second set of lines that nets the bill to zero.
@@ -660,8 +665,15 @@ impl Db {
 
         sqlx::query("UPDATE oxsum.invoice_journals SET state='void',voided_at=now(),void_reason=$2,updated_at=now() WHERE journal_id=$1")
             .bind(journal_id).bind(reason).execute(&mut **tx).await?;
-        self.void_statement_for_journal_in(tx, journal_id, reason)
-            .await?;
+        crate::statement_payments::voiding::allocate_in(tx, wallet, journal, entry).await?;
+        if let Some(documents) = documents {
+            for id in documents {
+                self.void_plan_document_in(tx, id, reason).await?;
+            }
+        } else {
+            self.void_statement_for_journal_in(tx, journal_id, reason)
+                .await?;
+        }
         crate::plan_debt::refresh_in(tx, journal.customer_plan_id).await?;
         Ok(entry)
     }
@@ -1336,55 +1348,35 @@ impl Db {
             }
             return Ok(Some(journal.journal_id));
         }
+        // A later statement payment cannot replenish this original order's
+        // returnable source. Repeated losses still retain full external Cash,
+        // but only the original paid amount less prior cash returns restores AR.
+        let original_amount: i64 =
+            sqlx::query_scalar("SELECT amount_minor FROM oxsum.payment_orders WHERE order_id=$1")
+                .bind(order_id)
+                .fetch_one(&mut **tx)
+                .await?;
+        let refunded_cash:i64=sqlx::query_scalar("SELECT COALESCE(SUM(cash_minor),0)::bigint FROM oxsum.plan_refund_effects WHERE order_id=$1").bind(order_id).fetch_one(&mut **tx).await?;
+        let prior_loss = wallet.plan_order_chargebacks_in(tx, order_id).await?;
+        let retained_original = original_amount
+            .saturating_sub(refunded_cash)
+            .saturating_sub(prior_loss)
+            .max(0);
         let mut receivable = 0;
         let mut payable = 0;
         if journal.state == JournalState::Void {
-            let original = wallet
-                .plan_source_credit_in(
+            payable = amount_minor.min(retained_original).min(
+                crate::statement_payments::voiding::original_payable_in(
                     tx,
-                    &format!("plan-journal/{}/void", journal.journal_id),
-                    crate::wallet::REFUND_PAYABLE,
+                    wallet,
+                    journal.journal_id,
                 )
-                .await?;
-            let refunded:i64=sqlx::query_scalar("SELECT COALESCE(SUM(payable_minor),0)::bigint FROM oxsum.plan_refund_effects WHERE journal_id=$1")
-                .bind(journal.journal_id).fetch_one(&mut **tx).await?;
-            let ids: Vec<Uuid> =
-                sqlx::query_scalar("SELECT dispute_id FROM oxsum.disputes WHERE order_id=$1")
-                    .bind(order_id)
-                    .fetch_all(&mut **tx)
-                    .await?;
-            let mut debited = 0i64;
-            for id in ids {
-                debited = debited
-                    .checked_add(
-                        wallet
-                            .plan_source_debit_in(
-                                tx,
-                                &format!("dispute-recharge/{id}"),
-                                crate::wallet::REFUND_PAYABLE,
-                            )
-                            .await?,
-                    )
-                    .ok_or_else(|| invalid("chargeback total overflows"))?;
-            }
-            // The void entry may contain payable credit and debit legs. Its
-            // net source, not the tenant's aggregate payable, is the limit.
-            let void_debit = wallet
-                .plan_source_debit_in(
-                    tx,
-                    &format!("plan-journal/{}/void", journal.journal_id),
-                    crate::wallet::REFUND_PAYABLE,
-                )
-                .await?;
-            payable = amount_minor.min(
-                original
-                    .saturating_sub(void_debit)
-                    .saturating_sub(refunded)
-                    .saturating_sub(debited)
-                    .max(0),
+                .await?,
             );
         } else {
-            receivable = amount_minor.min(journal.settled_minor);
+            receivable = amount_minor
+                .min(retained_original)
+                .min(journal.settled_minor);
         }
         wallet
             .plan_journal_dispute_recharge_in(

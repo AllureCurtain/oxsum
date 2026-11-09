@@ -356,3 +356,13 @@ remain; #737 stays open. [Evidence](evidence/independent-reconciliation.md).
   upgrade and real example execution remain pending. Independent source review
   passed; expiry uses the database clock, and the prepared consumer regression
   checks the actual Wallet budget/concurrency/model boundaries.
+
+### 2026-11-10 — Statement repayment software and retained recovery (#777)
+
+`feat/statement-repayment` adds quote/create/reserve/apply/return, source-owned
+void payable, customer recovery and personal finance evidence on PR #918.
+Workspace coverage reached 2,170 ordinary cases with resumed unchanged evidence;
+focused money/authority/source tests and frontend checks follow each final edit.
+[Detailed evidence](evidence/statement-repayment.md) records implemented limits.
+Mixed-source financial void recovery, browser, independent review and protected
+integration remain; #777 is not closed. Real-provider budget remains 0/5 and CNY0.

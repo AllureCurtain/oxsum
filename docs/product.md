@@ -705,3 +705,28 @@ The verification action opens the actual entry's prefilled proof; it does not
 claim independent trust merely because the server supplied a matching hash.
 Closed-period exports remain a separate workflow with their own authority and
 UTC boundary. Model/key/funding readiness remains tracked in #901.
+## Named plan-statement repayment (#777)
+
+The personal customer can review a named issued or past-due plan statement and
+pay part or all of its available debt. Exact verified journal slices determine
+the credit-minor amount. Fiat rounds upward once under pinned collection terms;
+inverse conversion never changes the debt allocation. A quote does not reserve
+or call a provider. Creating an order reserves the amount atomically, and the
+quote lists existing orders for recovery after refresh. Uncertain provider
+results keep the reservation; authenticated terminal failure/expiry releases it.
+
+`statementRepayment` settles Cash/Receivables only. Legacy `invoiceRepayment`
+continues settling drawn CreditLine and does not pay a named plan statement.
+Repayment never grants wallet credit, quota, a renewal or income. Clearing debt
+recomputes only debt-based suspension; manual restrictions, archive and plan
+cancellation retain their meaning. A late payment after release retains Cash
+as source-linked RefundPayable with an explicit review result.
+
+Refunds and lost disputes reverse only the original repayment allocation on
+the exact statement. They retain full observed Cash; amounts exceeding retained
+original funds become reconciliation suspense. A financial void reserves each
+repayment-funded payable for that original payment so old plan-order returns
+cannot consume it. Source-exclusive original/follow-up documents can void
+together. Mixed-source financial voids still require explicit source review;
+the system refuses before changing money or documents. Mixed-source repayments
+and their refunds/disputes are supported through exact journal slices.

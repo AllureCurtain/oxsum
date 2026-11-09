@@ -679,6 +679,23 @@ impl Db {
         let Some(statement) = statement else {
             return Ok(());
         };
+        self.void_plan_document_in(tx, statement.statement_id, reason)
+            .await
+    }
+
+    /// Reverse one proven source-exclusive document beside its financial void.
+    pub(crate) async fn void_plan_document_in(
+        &self,
+        tx: &mut Transaction<'_, Postgres>,
+        statement_id: Uuid,
+        reason: &str,
+    ) -> Result<(), WalletError> {
+        let Some(statement) = statement_in(tx, statement_id).await? else {
+            return Ok(());
+        };
+        if statement.state == PlanStatementState::Void {
+            return Ok(());
+        }
         // Reversing lines append so the statement nets to zero — the void's
         // record is the second set of lines, history rewritten nowhere.
         let lines = lines_in(&mut *tx, statement.statement_id).await?;

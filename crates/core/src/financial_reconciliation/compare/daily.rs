@@ -47,6 +47,17 @@ pub(super) fn compare(customer: &mut Customer<'_>) -> Result<(), WalletError> {
             "refund" => format!("plan-refund-cash/{source}"),
             "dispute" => format!("dispute-recharge/{source}"),
             "void" => format!("plan-journal/{journal}/void"),
+            "statement_payment" | "statement_return" => {
+                let e = customer
+                    .sources
+                    .get("statement_payment_effects", source)
+                    .ok_or_else(|| error::invalid("statement accounting source missing"))?;
+                crate::statement_payments::evidence::key(
+                    &e.text("kind")?,
+                    e.id("source_ref")?,
+                    e.optional_id("journal_id")?,
+                )
+            }
             _ => {
                 customer.unsupported(
                     "plan_accounting_effects",
@@ -86,7 +97,11 @@ pub(super) fn compare(customer: &mut Customer<'_>) -> Result<(), WalletError> {
                 id,
                 entry,
                 &key,
-                &format!("daily/{id}"),
+                &if kind.starts_with("statement_") {
+                    format!("statement/{source}")
+                } else {
+                    format!("daily/{id}")
+                },
             );
         } else if expected.fields().iter().any(|amount| *amount != 0)
             || effect.amount("cash_minor")? != 0
@@ -111,7 +126,7 @@ pub(super) fn compare(customer: &mut Customer<'_>) -> Result<(), WalletError> {
                 ledger::RECEIVABLE,
                 ledger::SUSPENSE,
             ],
-            "dispute" => &[
+            "statement_payment" | "statement_return" | "dispute" => &[
                 ledger::CASH,
                 ledger::RECEIVABLE,
                 ledger::PAYABLE,
@@ -167,7 +182,9 @@ pub(super) fn compare(customer: &mut Customer<'_>) -> Result<(), WalletError> {
         let service_day = match kind.as_str() {
             "activation" => period.instant("service_start")?.date(),
             "recognition" => effect.date("service_day")?, // exact day is also bound by the verified entry key
-            "refund" | "dispute" => observed_day.unwrap_or(effect.date("booked_on")?),
+            "refund" | "dispute" | "statement_payment" | "statement_return" => {
+                observed_day.unwrap_or(effect.date("booked_on")?)
+            }
             "void" => {
                 let before = effect
                     .optional_id("entry_id")?
@@ -208,7 +225,10 @@ pub(super) fn compare(customer: &mut Customer<'_>) -> Result<(), WalletError> {
             }
             _ => expected_day,
         };
-        let payment_day = if matches!(kind.as_str(), "refund" | "dispute") {
+        let payment_day = if matches!(
+            kind.as_str(),
+            "refund" | "dispute" | "statement_payment" | "statement_return"
+        ) {
             observed_day.unwrap_or(effect.date("booked_on")?)
         } else {
             period.date("payment_on")?
@@ -489,6 +509,20 @@ fn effect_source(
                     .sources
                     .get("invoice_journals", journal)
                     .is_some_and(|header| header.text("state").ok().as_deref() == Some("void"))
+        }
+        "statement_payment" | "statement_return" => {
+            if let Some(e) = customer.sources.get("statement_payment_effects", source) {
+                let sign = if e.text("kind")? == "payment" { 1 } else { -1 };
+                valid &= e.optional_id("journal_id")? == Some(journal)
+                    && e.optional_id("entry_id")? == effect.optional_id("entry_id")?
+                    && expected.collected_minor == sign * e.amount("receivable_minor")?
+                    && expected.receivable_minor == -sign * e.amount("receivable_minor")?
+                    && expected.billed_minor == 0
+                    && expected.earned_minor == 0
+                    && expected.deferred_minor == 0;
+            } else {
+                valid = false;
+            }
         }
         "refund" => {}
         _ => valid = false,

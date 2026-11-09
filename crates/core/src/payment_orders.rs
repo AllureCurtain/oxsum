@@ -53,6 +53,8 @@ pub enum PaymentOrderPurpose {
     PlanPeriod,
     /// Repays a drawn receivable only — never credits wallet or bonus.
     InvoiceRepayment,
+    /// Pays exact plan-statement receivables without granting wallet or quota.
+    StatementRepayment,
 }
 impl PaymentOrderPurpose {
     fn as_str(self) -> &'static str {
@@ -61,6 +63,7 @@ impl PaymentOrderPurpose {
             Self::Bundle => "bundle",
             Self::PlanPeriod => "plan_period",
             Self::InvoiceRepayment => "invoice_repayment",
+            Self::StatementRepayment => "statement_repayment",
         }
     }
     /// `pub(crate)` so `refunds.rs` reads the same stored spelling rather
@@ -71,6 +74,7 @@ impl PaymentOrderPurpose {
             "bundle" => Ok(Self::Bundle),
             "plan_period" => Ok(Self::PlanPeriod),
             "invoice_repayment" => Ok(Self::InvoiceRepayment),
+            "statement_repayment" => Ok(Self::StatementRepayment),
             _ => Err(invalid("invalid stored payment order purpose")),
         }
     }
@@ -114,6 +118,8 @@ pub struct PaymentOrder {
     pub bundle_offer: Option<crate::BundleOffer>,
     /// Immutable customer, sold version, period and fee for a plan payment.
     pub plan_payment: Option<crate::PlanPaymentTerms>,
+    /// Immutable exact statement debt allocation.
+    pub statement_payment: Option<crate::StatementPaymentTerms>,
     /// Provider-side payment identifier once the provider supplied one.
     pub provider_payment_id: Option<String>,
     /// The checkout handles the provider answered, so a replayed create returns
@@ -200,6 +206,10 @@ pub struct PaymentReconciliation {
 /// the route rather than reaching here.
 #[derive(Debug, Clone)]
 pub struct NewPaymentOrder {
+    /// Required unchanged fingerprint for an exact statement repayment.
+    pub expected_statement_quote: Option<String>,
+    /// Exact credit debt selected from the authoritative quote.
+    pub statement_amount_minor: Option<i64>,
     /// Required authoritative quote fingerprint for a new plan-period payment.
     pub expected_plan_quote: Option<String>,
     /// Optional displayed quote revision, checked only for a new operation.
@@ -254,7 +264,7 @@ fn identifier(value: &str) -> bool {
     !value.is_empty() && value.len() <= 200 && !value.chars().any(char::is_control)
 }
 
-fn order(row: &PgRow) -> Result<PaymentOrder, WalletError> {
+pub(crate) fn order(row: &PgRow) -> Result<PaymentOrder, WalletError> {
     Ok(PaymentOrder {
         order_id: row.try_get("order_id")?,
         merchant_id: row.try_get("merchant_id")?,
@@ -279,6 +289,11 @@ fn order(row: &PgRow) -> Result<PaymentOrder, WalletError> {
             .map(serde_json::from_value)
             .transpose()
             .map_err(|_| WalletError::Misconfigured("invalid stored plan payment intent".into()))?,
+        statement_payment: row
+            .try_get::<Option<serde_json::Value>, _>("statement_payment")?
+            .map(serde_json::from_value)
+            .transpose()
+            .map_err(crate::error::invalid)?,
         provider_payment_id: row.try_get("provider_payment_id")?,
         checkout: row.try_get("checkout")?,
         source: row.try_get("source")?,
@@ -317,7 +332,7 @@ const FULFILL_COLS: &str = "fulfillment_id,order_id,purpose,purpose_payload,outb
 
 /// The fulfillment read inside the caller's transaction — the row a just-landed
 /// fulfillment INSERT wrote, which a pool connection cannot see until commit.
-async fn fulfillment_in(
+pub(crate) async fn fulfillment_in(
     tx: &mut Transaction<'_, Postgres>,
     order_id: Uuid,
 ) -> Result<Option<PaymentFulfillment>, WalletError> {
@@ -344,7 +359,7 @@ const ORDER_STATUSES: &[&str] = &[
 
 const ORDER_COLS: &str = "order_id,merchant_id,merchant_version_id,organization_id,\
      purpose,amount_minor,currency,display_currency,display_amount_minor,\
-     rate_mantissa,rate_scale,purpose_ref,promo_minor,bundle_offer,plan_payment,provider_payment_id,checkout,source,evidence,status,created_at,paid_at";
+     rate_mantissa,rate_scale,purpose_ref,promo_minor,bundle_offer,plan_payment,statement_payment,provider_payment_id,checkout,source,evidence,status,created_at,paid_at";
 
 impl Db {
     /// Creates a payment order: pins the expected payment under the order's own
@@ -399,12 +414,22 @@ impl Db {
                 "plan quote and promotional terms do not match this payment purpose",
             ));
         }
+        if (new.purpose == PaymentOrderPurpose::StatementRepayment)
+            != (new.expected_statement_quote.is_some() && new.statement_amount_minor.is_some())
+            || (new.purpose != PaymentOrderPurpose::StatementRepayment
+                && (new.expected_statement_quote.is_some() || new.statement_amount_minor.is_some()))
+        {
+            return Err(invalid(
+                "statement quote and amount do not match this payment purpose",
+            ));
+        }
         // Purpose-specific validation: a plan period needs its plan, an invoice
         // repayment needs the receivable it settles.
         match new.purpose {
             PaymentOrderPurpose::Bundle
             | PaymentOrderPurpose::PlanPeriod
             | PaymentOrderPurpose::InvoiceRepayment
+            | PaymentOrderPurpose::StatementRepayment
                 if new.purpose_ref.is_none() =>
             {
                 return Err(invalid("this payment order purpose needs a reference"));
@@ -459,6 +484,19 @@ impl Db {
                     "payment order terms changed for the same idempotency key".into(),
                 ));
             }
+            if standing.purpose == PaymentOrderPurpose::StatementRepayment
+                && (standing
+                    .statement_payment
+                    .as_ref()
+                    .map(crate::StatementPaymentTerms::fingerprint)
+                    .transpose()?
+                    != new.expected_statement_quote
+                    || Some(standing.amount_minor) != new.statement_amount_minor)
+            {
+                return Err(WalletError::Conflict(
+                    "statement payment terms changed for the same key".into(),
+                ));
+            }
             // Zero omits the optional bundle assertion. The stored promotion
             // comes from the published offer, so replay compares only an
             // explicit assertion with that original grant.
@@ -511,6 +549,36 @@ impl Db {
         } else {
             None
         };
+        let statement_payment = if new.purpose == PaymentOrderPurpose::StatementRepayment {
+            crate::statement_payments::lock_owner_in(&mut tx, organization, self.pool()).await?;
+            let quote = crate::statement_payments::quote_in(
+                &mut tx,
+                organization,
+                new.purpose_ref
+                    .ok_or_else(|| invalid("statement is required"))?,
+                new.statement_amount_minor,
+            )
+            .await?;
+            if quote.fingerprint != new.expected_statement_quote {
+                return Err(WalletError::Conflict(
+                    "statement quote changed; review the current available debt".into(),
+                ));
+            }
+            let terms = quote
+                .terms
+                .ok_or_else(|| WalletError::Conflict("statement requires source review".into()))?;
+            if terms.display_amount_minor != new.display_amount_minor
+                || terms.display_currency != new.display_currency
+                || terms.business_id != business
+            {
+                return Err(WalletError::Conflict(
+                    "statement checkout differs from quoted terms".into(),
+                ));
+            }
+            Some(terms)
+        } else {
+            None
+        };
         let (amount_minor, promo_minor, rate, plan_payment) = if let Some(bundle) = &bundle {
             (
                 bundle.terms.purchased_minor,
@@ -553,6 +621,10 @@ impl Db {
             };
             let amount = match &plan_payment {
                 Some(terms) => terms.fee_minor,
+                None if statement_payment.is_some() => statement_payment
+                    .as_ref()
+                    .map(|t| t.amount_minor)
+                    .ok_or_else(|| invalid("statement terms missing"))?,
                 None => display
                     .to_credit_minor(new.display_amount_minor)
                     .filter(|amount| *amount > 0)
@@ -590,8 +662,8 @@ impl Db {
             "INSERT INTO oxsum.payment_orders\
              (order_id,business_id,merchant_id,merchant_version_id,organization_id,\
               purpose,amount_minor,currency,display_currency,display_amount_minor,\
-              rate_mantissa,rate_scale,purpose_ref,promo_minor,idempotency_key,status,bundle_offer,plan_payment) \
-             VALUES($1,$2,$3,$4,$5,$6,$7,'USD',$8,$9,$10,$11,$12,$13,$14,'created',$15,$16)",
+              rate_mantissa,rate_scale,purpose_ref,promo_minor,idempotency_key,status,bundle_offer,plan_payment,statement_payment) \
+             VALUES($1,$2,$3,$4,$5,$6,$7,'USD',$8,$9,$10,$11,$12,$13,$14,'created',$15,$16,$17)",
         )
         .bind(order_id)
         .bind(business)
@@ -609,8 +681,13 @@ impl Db {
         .bind(&new.idempotency_key)
         .bind(bundle.as_ref().map(|offer| serde_json::json!(offer)))
         .bind(plan_payment.as_ref().map(|terms| serde_json::json!(terms)))
+        .bind(statement_payment.as_ref().map(|terms| serde_json::json!(terms)))
         .execute(&mut *tx)
         .await?;
+        if let Some(terms) = &statement_payment {
+            sqlx::query("INSERT INTO oxsum.statement_payment_reservations(order_id,statement_id,organization_id,amount_minor) VALUES($1,$2,$3,$4)")
+                .bind(order_id).bind(terms.statement_id).bind(organization).bind(terms.amount_minor).execute(&mut *tx).await?;
+        }
         let created = order_in(&mut tx, order_id)
             .await?
             .ok_or_else(|| invalid("the payment order did not land"))?;
@@ -920,6 +997,26 @@ impl Db {
             return Ok(());
         };
         let mut tx = self.pool().begin().await?;
+        let scope = sqlx::query(
+            "SELECT purpose,organization_id FROM oxsum.payment_orders WHERE order_id=$1",
+        )
+        .bind(order_id)
+        .fetch_optional(&mut *tx)
+        .await?;
+        let statement = scope.as_ref().is_some_and(|r| {
+            r.try_get::<String, _>("purpose").ok().as_deref() == Some("statement_repayment")
+        });
+        if statement {
+            crate::statement_payments::lock_owner_in(
+                &mut tx,
+                scope
+                    .as_ref()
+                    .ok_or_else(|| invalid("missing payment"))?
+                    .try_get("organization_id")?,
+                self.pool(),
+            )
+            .await?;
+        }
         let Some(existing) = order_in(&mut tx, order_id).await? else {
             tx.commit().await?;
             return Ok(());
@@ -929,14 +1026,29 @@ impl Db {
         if !matches!(
             existing.status.as_str(),
             "created" | "provider_pending" | "paid"
-        ) {
+        ) && !(statement
+            && matches!(existing.status.as_str(), "failed" | "expired")
+            && receipt.kind == MerchantEventKind::Succeeded)
+        {
             tx.commit().await?;
             return Ok(());
         }
-        let event = self
-            .merchant_event_data(receipt.id)
+        let event = crate::merchant_events::data_in(&mut tx, receipt.id)
             .await?
             .ok_or_else(|| invalid("missing stored merchant event"))?;
+        if statement {
+            let valid:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM oxsum.merchant_event_inbox e JOIN oxsum.payment_orders p ON p.order_id=$2 WHERE e.receipt_id=$1 AND e.merchant_id=p.merchant_id AND e.version_id=p.merchant_version_id AND e.state IN ('accepted','applied'))").bind(receipt.id).bind(order_id).fetch_one(&mut *tx).await?;
+            if !valid
+                || event.kind != receipt.kind
+                || event.payment_id != Some(order_id)
+                || event.organization_id != Some(existing.organization_id)
+            {
+                return Err(WalletError::Conflict(
+                    "statement payment receipt source differs".into(),
+                ));
+            }
+        }
+
         match receipt.kind {
             MerchantEventKind::Succeeded => {
                 // Re-check the paid terms against the pinned order, not the
@@ -969,7 +1081,7 @@ impl Db {
                 }
                 sqlx::query(
                     "UPDATE oxsum.payment_orders SET status='paid',paid_at=COALESCE(paid_at,now()),updated_at=now() \
-                     WHERE order_id=$1 AND status IN ('created','provider_pending','paid')",
+                     WHERE order_id=$1 AND (status IN ('created','provider_pending','paid') OR purpose='statement_repayment' AND status IN ('failed','expired'))",
                 )
                 .bind(order_id)
                 .execute(&mut *tx)
@@ -998,7 +1110,17 @@ impl Db {
             // and an unsupported kind is intake only.
             _ => {}
         }
-        self.mark_merchant_event_applied(receipt.id).await?;
+        if statement
+            && matches!(
+                receipt.kind,
+                MerchantEventKind::Failed | MerchantEventKind::Expired
+            )
+            && matches!(existing.status.as_str(), "created" | "provider_pending")
+        {
+            sqlx::query("UPDATE oxsum.statement_payment_reservations SET state='released',release_receipt_id=$2 WHERE order_id=$1 AND state='reserved'").bind(order_id).bind(receipt.id).execute(&mut *tx).await?;
+        }
+        sqlx::query("UPDATE oxsum.merchant_event_inbox SET state='applied',updated_at=now() WHERE receipt_id=$1 AND state='accepted'")
+            .bind(receipt.id).execute(&mut *tx).await?;
         tx.commit().await?;
         Ok(())
     }
@@ -1148,6 +1270,9 @@ impl Db {
                 .bind(order_id)
                 .fetch_optional(self.pool())
                 .await?;
+        if purpose.as_deref() == Some("statement_repayment") {
+            return crate::statement_payments::fulfill(self, order_id, wallet, on).await;
+        }
         let nonplan = purpose.as_deref().is_some_and(|p| p != "plan_period");
         let _permit = if nonplan {
             if self.pool().options().get_max_connections() < 3 {
@@ -1398,6 +1523,9 @@ impl Db {
                     "subscriptionId": plan.subscription_id,
                     "planVersionId": plan.plan_version_id,
                 }))
+            }
+            PaymentOrderPurpose::StatementRepayment => {
+                Err(invalid("statement payment requires atomic fulfillment"))
             }
             PaymentOrderPurpose::InvoiceRepayment => {
                 let receipt = wallet.repay_credit(&key, order.amount_minor, on).await?;

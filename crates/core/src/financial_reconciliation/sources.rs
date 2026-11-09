@@ -111,6 +111,11 @@ pub(super) async fn capture(
         ),
         ("payment_orders", "order_id", "t.organization_id=$1"),
         (
+            "statement_payment_effects",
+            "effect_id",
+            "t.organization_id=$1",
+        ),
+        (
             "merchant_payment_bindings",
             "payment_id",
             "t.organization_id=$1",
@@ -125,9 +130,14 @@ pub(super) async fn capture(
         (
             "merchant_event_inbox",
             "receipt_id",
-            "EXISTS(SELECT 1 FROM oxsum.plan_refund_effects e WHERE e.event_receipt_id=t.receipt_id AND e.organization_id=$1) OR EXISTS(SELECT 1 FROM oxsum.nonplan_refund_effects e WHERE e.event_receipt_id=t.receipt_id AND e.organization_id=$1)",
+            "EXISTS(SELECT 1 FROM oxsum.plan_refund_effects e WHERE e.event_receipt_id=t.receipt_id AND e.organization_id=$1) OR EXISTS(SELECT 1 FROM oxsum.nonplan_refund_effects e WHERE e.event_receipt_id=t.receipt_id AND e.organization_id=$1) OR EXISTS(SELECT 1 FROM oxsum.statement_payment_effects e WHERE e.event_receipt_id=t.receipt_id AND e.organization_id=$1)",
         ),
         ("disputes", "dispute_id", "t.organization_id=$1"),
+        (
+            "statement_void_allocations",
+            "effect_id",
+            "EXISTS(SELECT 1 FROM oxsum.statement_payment_effects e WHERE e.effect_id=t.effect_id AND e.organization_id=$1)",
+        ),
         ("plan_refund_effects", "refund_id", "t.organization_id=$1"),
         (
             "plan_accounting_periods",
@@ -196,6 +206,11 @@ pub(super) async fn capture(
                 "merchant_id",
                 "merchant_version_id",
                 "plan_payment",
+                "statement_payment",
+                "original_effect_id",
+                "entry_hash",
+                "source",
+                "suspense_minor",
                 "version_id",
                 "voided_at",
                 "correction_id",

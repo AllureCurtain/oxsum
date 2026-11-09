@@ -1,12 +1,9 @@
-import { useRef, useState } from "react";
-import { Link, useNavigate, useParams } from "react-router-dom";
+import { useState } from "react";
+import { Link, useParams } from "react-router-dom";
 import { useTranslation } from "react-i18next";
 import { AlertCircle, CreditCard, FileText, Receipt } from "lucide-react";
-import { collectionMinor } from "../lib/money";
-import { ApiError } from "../api/client";
+import { StatementPayment } from "../components/statement-payment";
 import {
-  useCreateOrder,
-  useCollectionTerms,
   useDisplay,
   useOrgPlan,
   usePlanStatement,
@@ -30,7 +27,7 @@ import {
 // ---------------------------------------------------------------------------
 // /app/billing — the customer's billing surface (T23): the live plan and its
 // credit standing up top, the plan statements a period close issues below,
-// and a "pay now" CTA that opens an invoiceRepayment order and routes the
+// and exact statement repayment that routes the
 // browser into the checkout the orders pages own (T16). The dunning state
 // reads honest — `pastDue` is shown, never smoothed.
 // ---------------------------------------------------------------------------
@@ -56,10 +53,6 @@ function PlanStanding() {
   const { t } = useTranslation();
   const orgPlan = useOrgPlan();
   const display = useDisplay();
-  const navigate = useNavigate();
-  const create = useCreateOrder();
-  const terms = useCollectionTerms();
-  const intent = useRef<{payload:string;key:string}|null>(null);
 
   if (orgPlan.isLoading) {
     return <PageState>{t("common.loading")}</PageState>;
@@ -82,46 +75,10 @@ function PlanStanding() {
     );
   }
 
-  // Collection uses the operator's quote; personal display remains cosmetic.
-  const pay = () => {
-    const outstanding = credit?.outstandingMinor ?? 0;
-    const currency = terms.data?.currency;
-    if (!terms.data?.ready || !currency || outstanding <= 0) return;
-    const fiatMinor = collectionMinor(outstanding, currency.ratePerCredit);
-    if (fiatMinor === null) return;
-    const payload = JSON.stringify({ fiatMinor, currency: currency.code });
-    if (intent.current?.payload !== payload) intent.current = { payload, key: crypto.randomUUID() };
-    create.mutate(
-      {
-        idempotencyKey: intent.current.key,
-        expectedCollectionRevision: terms.data.revision,
-        rail: "hyperswitch",
-        purpose: "invoiceRepayment",
-        displayAmountMinor: fiatMinor,
-        displayCurrency: currency.code,
-      },
-      {
-        onSuccess: (checkout) =>
-          navigate(`/orders/${checkout.order.orderId}`, { replace: true }),
-      },
-    );
-  };
-
-  const open = credit != null && credit.outstandingMinor > 0 && terms.data?.ready === true;
   return (
-    <Card
-      title={t("billing.plan")}
-      actions={
-        open ? (
-          <Button isLoading={create.isPending} loadingText={t("billing.opening")} onClick={pay}>
-            {t("billing.payNow")}
-          </Button>
-        ) : null
-      }
-    >
+    <Card title={t("billing.plan")}>
       <div className="flex flex-col gap-4">
-        {terms.data?.ready ? <p className="font-mono text-sm">Collection: 1 credit = {terms.data.currency?.ratePerCredit} {terms.data.currency?.code}</p> : <Banner tone="warn">Collection terms are unavailable. Contact the operator before payment.</Banner>}
-        <Button tone="ghost" onClick={() => terms.refetch()} disabled={create.isPending}>Refresh collection terms</Button>
+        <p className="text-sm text-ink-secondary">{t("statementPayment.selectStatement")}</p>
         {plan.state === "pastDue" ? (
           <Banner tone="warn">{t("billing.pastDueNote")}</Banner>
         ) : null}
@@ -156,9 +113,7 @@ function PlanStanding() {
             value={plan.state === "pastDue" ? t("billing.pastDue") : plan.state}
           />
         </div>
-        {create.error instanceof ApiError ? (
-          <Banner tone="error">{create.error.message}</Banner>
-        ) : null}
+
       </div>
     </Card>
   );
@@ -282,6 +237,7 @@ export function BillingStatement() {
           </div>
           {s.state === "pastDue" ? <Banner tone="warn">{t("billing.pastDueNote")}</Banner> : null}
           <Link to={`/evidence?statement=${s.statementId}`} className="text-sm text-primary">{t("evidence.statementLink")}</Link>
+          <StatementPayment key={s.statementId} statementId={s.statementId} />
           <Card title={t("billing.lines")}>
             <TableShell
               head={[

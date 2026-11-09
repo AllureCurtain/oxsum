@@ -102,6 +102,8 @@ async fn context(db: &Db, m: &MerchantMutationResult, version: Uuid) -> Merchant
 fn new_order(purpose: PaymentOrderPurpose, key: &str, display_minor: i64) -> NewPaymentOrder {
     NewPaymentOrder {
         expected_collection_revision: None,
+        expected_statement_quote: None,
+        statement_amount_minor: None,
         expected_plan_quote: None,
         purpose,
         display_amount_minor: display_minor,

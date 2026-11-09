@@ -90,7 +90,7 @@ async fn mixed_historical_collection_currencies_remain_fenced_and_original() {
     // Bundle/plan authority snapshots are new nullable columns, not historical
     // facts. Assert their defaults separately from the original row contents.
     for row in &mut after {
-        for column in ["bundle_offer", "plan_payment"] {
+        for column in ["bundle_offer", "plan_payment", "statement_payment"] {
             assert_eq!(
                 row.as_object_mut().unwrap().remove(column),
                 Some(Value::Null)

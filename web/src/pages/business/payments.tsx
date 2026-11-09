@@ -1,4 +1,5 @@
 import { useRef, useState } from "react";
+import { Link } from "react-router-dom";
 import { useTranslation } from "react-i18next";
 import { AlertTriangle, Landmark, Wallet } from "lucide-react";
 import { decimalMinor } from "../../lib/money";
@@ -11,6 +12,7 @@ import {
   useManualOrder,
   useCollectionTerms,
   usePaymentReconciliation,
+  useStatementPaymentEvidence,
 } from "../../api/hooks";
 import {
   Banner,
@@ -59,7 +61,7 @@ function ReconStrip() {
   );
 }
 
-const PURPOSES = ["walletTopup", "bundle", "planPeriod", "invoiceRepayment"] as const;
+const PURPOSES = ["walletTopup", "bundle", "planPeriod", "invoiceRepayment", "statementRepayment"] as const;
 const STATUSES = ["created", "provider_pending", "paid", "fulfilled", "expired", "failed", "needs_attention"] as const;
 
 function OrderTable() {
@@ -138,6 +140,13 @@ function OrderTable() {
                         <Field2 label={t("biz.payments.merchant")}>
                           <span className="mono text-xs">{o.merchantId?.slice(0, 8) ?? "manual"}</span>
                         </Field2>
+                        {o.statementPayment ? <Field2 label={t("statementPayment.allocations")}>
+                          <Link className="text-primary" to={`/business?statement=${o.statementPayment.statementId}#business/statements`}>{t("statementPayment.statementLink")}</Link>
+                          {o.statementPayment.allocations.map((slice) => <p key={slice.journalId}>
+                            <Link className="text-primary" to={`/business?journal=${slice.journalId}#business/statements`}>{t("statementPayment.journalLink")} · {slice.journalId.slice(0, 8)}</Link> · <Cr minor={slice.amountMinor} />
+                          </p>)}
+                          <StatementCashEvidence orderId={o.orderId} />
+                        </Field2> : null}
                         {o.purpose === "bundle" ? (
                           <Field2 label={t("biz.payments.promo")}>
                             <Cr minor={o.promoMinor} currency={display} />
@@ -248,4 +257,22 @@ export function BusinessPayments() {
       <OrderTable />
     </div>
   );
+}
+
+function StatementCashEvidence({ orderId }: { orderId: string }) {
+  const { t } = useTranslation();
+  const effects = useStatementPaymentEvidence(orderId);
+  if (effects.isLoading) return <p>{t("common.loading")}</p>;
+  if (effects.error) return <Banner tone="error">{effects.error.message}</Banner>;
+  return <TableShell head={[t("billing.colKind"), t("statementPayment.source"), t("statementPayment.cash"), t("statementPayment.receivable"), t("statementPayment.payableLabel"), t("statementPayment.suspense"), t("statementPayment.entry")]}>
+    {(effects.data ?? []).map((effect) => <tr key={effect.id}>
+      <td>{effect.kind}</td><Td mono>{effect.source}</Td>
+      <Td mono align="right"><Cr minor={effect.cash} /></Td>
+      <Td mono align="right"><Cr minor={effect.receivable} /></Td>
+      <Td mono align="right"><Cr minor={effect.payable} /></Td>
+      <Td mono align="right"><Cr minor={effect.suspense} /></Td>
+      <Td mono><p>{effect.entry}</p><p>{effect.hash}</p>{effect.original ? <p>{t("statementPayment.original")}: {effect.original}</p> : null}</Td>
+    </tr>)}
+    {effects.data?.length === 0 ? <EmptyRows colSpan={7}>{t("statementPayment.awaiting")}</EmptyRows> : null}
+  </TableShell>;
 }

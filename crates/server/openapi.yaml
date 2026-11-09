@@ -3115,6 +3115,30 @@ paths:
         "401": { $ref: "#/components/responses/Error" }
         "404": { $ref: "#/components/responses/Error" }
         "500": { $ref: "#/components/responses/Error" }
+  /api/v1/org/statements/{statementId}/payment-quote:
+    get:
+      summary: Quote an exact partial or full statement repayment
+      description: Personal customer session. Read-only source verification returns current outstanding, reservations and source-linked allocation. Omit amountMinor for the full available debt. Unproven sources return an explicit review reason with no payable terms; cancelled plans retain their old debt. No provider call, reservation, wallet credit or entitlement occurs.
+      x-consumption-key-access: denied
+      security: [{ sessionCookie: [] }]
+      parameters:
+        - { name: statementId, in: path, required: true, schema: { type: string, format: uuid } }
+        - { name: amountMinor, in: query, schema: { type: integer, format: int64, minimum: 1, maximum: 9007199254740991 } }
+      responses:
+        "200":
+          description: Proven exact terms or explicit source review with visible debt
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data: { $ref: "#/components/schemas/StatementPaymentQuote" }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "409": { $ref: "#/components/responses/Error" }
   /api/v1/business/statements:
     get:
       summary: List plan statements across customers
@@ -7003,7 +7027,7 @@ paths:
   /api/v1/orders:
     post:
       summary: Create a payment order
-      description: The customer pins an immutable order in its quoted payment currency. A bundle requires a published version in purposeRef; its exact price, purchased credit, promotion and lifetime come from that version. A planPeriod order requires the customer-scoped quote fingerprint, pins its exact sold fee and rounds only the fiat quote upward to the smallest supported currency unit. Other purposes rate through the stored Business collection rate — `amountMinor`/`rate` are not request fields, so a client-supplied figure is a schema rejection, not a negotiated term. The expected payment and the order terms commit before the provider is called; the provider idempotency key is the order's durable local UUID, so a replayed `idempotencyKey` returns the standing order and its original checkout rather than a second charge. `purpose` fixes the one fulfillment arm the order may take — `walletTopup`, `bundle`, `planPeriod` or `invoiceRepayment`. The answer is a checkout to complete, never a paid order — `paid` is established only by the signed provider webhook.
+      description: The customer pins an immutable order in its quoted payment currency. A bundle requires a published version in purposeRef; its exact price, purchased credit, promotion and lifetime come from that version. A planPeriod order requires the customer-scoped quote fingerprint, pins its exact sold fee and rounds only the fiat quote upward to the smallest supported currency unit. A statementRepayment order pins the named statement, exact statementAmountMinor and expectedStatementQuote; fiat rounding never changes the selected debt. Wallet and CreditLine purposes rate through the stored Business collection rate — `amountMinor`/`rate` are not request fields, so a client-supplied figure is a schema rejection, not a negotiated term. The expected payment and the order terms commit before the provider is called; the provider idempotency key is the order's durable local UUID, so a replayed `idempotencyKey` returns the standing order and its original checkout rather than a second charge. `purpose` fixes the one fulfillment arm the order may take — `walletTopup`, `bundle`, `planPeriod`, `invoiceRepayment` or `statementRepayment`. The answer is a checkout to complete, never a paid order — `paid` is established only by the signed provider webhook.
       x-consumption-key-access: denied
       security: [{ sessionCookie: [] }]
       requestBody:
@@ -7171,6 +7195,27 @@ paths:
         "404": { $ref: "#/components/responses/Error" }
         "409": { $ref: "#/components/responses/Error" }
         "500": { $ref: "#/components/responses/Error" }
+  /api/v1/business/orders/{orderId}/statement-payment-evidence:
+    get:
+      summary: Inspect exact statement payment and return allocations
+      description: Current personal business ReportsRead authority. Returns retained source-linked payment, refund and dispute effects for one statement repayment, including Cash, receivable, payable, suspense and official entry hashes. This is recorded evidence, not provider certification.
+      security: [{ sessionCookie: [] }]
+      parameters:
+        - { name: orderId, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        "200":
+          description: Exact original payment and reversal evidence
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data: { type: array, items: { $ref: "#/components/schemas/StatementCashEffect" } }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "409": { $ref: "#/components/responses/Error" }
   /api/v1/business/payment-reconciliation:
     get:
       summary: Reconcile paid orders against fulfillment
@@ -15617,33 +15662,87 @@ components:
         terms: { $ref: "#/components/schemas/PlanPaymentTerms" }
         fingerprint: { type: string, pattern: "^[a-f0-9]{64}$", description: Expected plan quote required for a new planPeriod order }
         existingOrderId: { type: [string, "null"], format: uuid, description: Resume this standing payment intent instead of creating another }
+    StatementCashEffect:
+      type: object
+      required: [id, order, statement, journal, kind, source, original, cash, receivable, payable, suspense, entry, hash, on]
+      properties:
+        id: { type: string, format: uuid }
+        order: { type: string, format: uuid }
+        statement: { type: string, format: uuid }
+        journal: { type: [string, "null"], format: uuid }
+        kind: { type: string, enum: [payment, refund, dispute] }
+        source: { type: string, format: uuid, description: Original order or return identity }
+        original: { type: [string, "null"], format: uuid, description: Original payment effect for a source-bound return }
+        cash: { type: integer, format: int64 }
+        receivable: { type: integer, format: int64 }
+        payable: { type: integer, format: int64 }
+        suspense: { type: integer, format: int64 }
+        entry: { type: string, format: uuid }
+        hash: { type: string }
+        on: { type: string, format: date }
+    StatementPaymentSlice:
+      type: object
+      required: [journalId, customerPlanId, amountMinor]
+      properties:
+        journalId: { type: string, format: uuid }
+        customerPlanId: { type: string, format: uuid }
+        amountMinor: { type: integer, format: int64, minimum: 1 }
+    StatementPaymentTerms:
+      type: object
+      required: [businessId, organizationId, statementId, sourceRevision, amountMinor, allocations, collectionRevision, displayCurrency, displayAmountMinor, rateMantissa, rateScale]
+      properties:
+        businessId: { type: string, format: uuid }
+        organizationId: { type: string, format: uuid }
+        statementId: { type: string, format: uuid }
+        sourceRevision: { type: string }
+        amountMinor: { type: integer, format: int64, minimum: 1 }
+        allocations: { type: array, items: { $ref: "#/components/schemas/StatementPaymentSlice" } }
+        collectionRevision: { type: integer, format: int64, minimum: 1 }
+        displayCurrency: { type: string }
+        displayAmountMinor: { type: integer, format: int64, minimum: 1 }
+        rateMantissa: { type: string }
+        rateScale: { type: integer, minimum: 0, maximum: 8 }
+    StatementPaymentQuote:
+      type: object
+      required: [statementId, outstandingMinor, reservedMinor, availableMinor, pendingOrderIds, reason, terms, fingerprint]
+      properties:
+        statementId: { type: string, format: uuid }
+        outstandingMinor: { type: integer, format: int64 }
+        reservedMinor: { type: integer, format: int64 }
+        availableMinor: { type: integer, format: int64 }
+        pendingOrderIds: { type: array, items: { type: string, format: uuid } }
+        reason: { type: [string, "null"], description: Source review or no available debt; visible outstanding is never silently discarded }
+        terms: { anyOf: [{ $ref: "#/components/schemas/StatementPaymentTerms" }, { type: "null" }] }
+        fingerprint: { type: [string, "null"] }
     OrderPurpose:
       type: string
-      enum: [walletTopup, bundle, planPeriod, invoiceRepayment]
-      description: The one fulfillment arm the order may take. `walletTopup` credits wallet cash only; `bundle` posts purchased credit plus a separate promo lot; `planPeriod` activates quota only; `invoiceRepayment` repays a drawn receivable only. No purpose both grants quota and wallet cash.
+      enum: [walletTopup, bundle, planPeriod, invoiceRepayment, statementRepayment]
+      description: The one fulfillment arm the order may take. `walletTopup` credits wallet cash only; `bundle` posts purchased credit plus a separate promo lot; `planPeriod` activates quota only; `invoiceRepayment` repays drawn CreditLine only; `statementRepayment` pays exact named plan-statement receivables without wallet funding or entitlement. No purpose both grants quota and wallet cash.
     OrderCreateRequest:
       type: object
       additionalProperties: false
       required: [idempotencyKey, rail, purpose, displayAmountMinor, displayCurrency]
-      description: The quoted payment terms. The server pins bundle amounts to the published offer and plan-period fees to the customer-scoped sold quote; other purposes derive credits from `displayAmountMinor` at the persisted Business collection rate. Customer display preferences cannot change these terms. A client-supplied `amountMinor` or `rate` is a schema rejection.
+      description: The quoted payment terms. The server pins bundle amounts to the published offer and plan-period fees to the customer-scoped sold quote; statement repayment pins its exact selected debt through `statementAmountMinor` and `expectedStatementQuote`. Wallet and CreditLine purposes derive credits from `displayAmountMinor` at the persisted Business collection rate. Customer display preferences cannot change these terms. A client-supplied `amountMinor` or `rate` is a schema rejection.
       properties:
         idempotencyKey: { type: string, minLength: 1, maxLength: 200 }
         rail: { $ref: "#/components/schemas/MerchantRail" }
         expectedCheckout: { $ref: "#/components/schemas/CheckoutChoice", description: Optional current route/merchant/version precondition for new orders. Existing exact-key orders retain their original merchant and ignore current-choice preconditions; changing rail conflicts. }
         purpose:
           type: string
-          enum: [walletTopup, bundle, planPeriod, invoiceRepayment]
+          enum: [walletTopup, bundle, planPeriod, invoiceRepayment, statementRepayment]
         expectedCollectionRevision: { type: integer, minimum: 0, maximum: 9007199254740991, description: Optional quote precondition for a new order. Browser clients send the displayed revision; changed settings conflict before provider I/O. An existing idempotent order returns its original terms. }
         displayAmountMinor: { type: integer, format: int64, minimum: 1, description: the fiat minor amount the provider will charge }
         displayCurrency: { type: string, pattern: "^[A-Z]{3}$" }
-        purposeRef: { type: [string, "null"], format: uuid, description: Published `bundleVersionId` for a bundle, the `customerPlanId` a `planPeriod` activates or renews, or the receivable an `invoiceRepayment` settles }
+        purposeRef: { type: [string, "null"], format: uuid, description: Published `bundleVersionId` for a bundle, the `customerPlanId` a `planPeriod` activates or renews, or the exact `statementId` a `statementRepayment` settles. Legacy `invoiceRepayment` requires a reference but settles drawn CreditLine and does not allocate a plan statement }
+        expectedStatementQuote: { type: [string, "null"], description: Required unchanged fingerprint for statementRepayment; exact replay retains the original terms }
+        statementAmountMinor: { type: [integer, "null"], format: int64, minimum: 1, maximum: 9007199254740991, description: Exact selected credit debt for statementRepayment, verified against the quote and never inverse-rounded from fiat }
         expectedPlanQuote: { type: [string, "null"], pattern: "^[a-f0-9]{64}$", description: Required for new planPeriod orders; the fingerprint from the customer-scoped quote. Never overrides the authoritative terms. }
         promoMinor: { type: [integer, "null"], format: int64, minimum: 0, description: Deprecated assertion only; zero/absent or exactly the selected bundle offer promotion. Customers cannot choose promotional credit. }
         returnUrl: { type: [string, "null"], description: "where the provider returns the browser — an absolute http(s) URL or a site-absolute path; absent, the order's own `/app/orders?order={orderId}` page" }
         cancelUrl: { type: [string, "null"], description: "the rail's cancel destination where one exists (Stripe); ignored by single-return rails" }
     PaymentOrder:
       type: object
-      required: [orderId, merchantId, merchantVersionId, organizationId, purpose, amountMinor, currency, displayCurrency, displayAmountMinor, rateMantissa, rateScale, purposeRef, promoMinor, bundleOffer, planPayment, providerPaymentId, source, evidence, status, createdAt, paidAt]
+      required: [orderId, merchantId, merchantVersionId, organizationId, purpose, amountMinor, currency, displayCurrency, displayAmountMinor, rateMantissa, rateScale, purposeRef, promoMinor, bundleOffer, planPayment, statementPayment, providerPaymentId, source, evidence, status, createdAt, paidAt]
       properties:
         orderId: { type: string, format: uuid }
         merchantId: { type: [string, "null"], format: uuid, description: the merchant the checkout was offered under — null on a `manual` order }
@@ -15659,6 +15758,7 @@ components:
         purposeRef: { type: [string, "null"], format: uuid }
         promoMinor: { type: integer, format: int64 }
         bundleOffer: { anyOf: [{ $ref: "#/components/schemas/BundleOffer" }, { type: "null" }], description: Immutable publication snapshot for new bundle orders. Absent legacy unfulfilled bundles require operator review before checkout or granting. }
+        statementPayment: { anyOf: [{ $ref: "#/components/schemas/StatementPaymentTerms" }, { type: "null" }], description: Immutable exact statement and source-journal allocation for repayment }
         planPayment: { anyOf: [{ $ref: "#/components/schemas/PlanPaymentTerms" }, { type: "null" }], description: Immutable period payment intent; unsafe legacy unfulfilled plan orders require operator review }
         providerPaymentId: { type: [string, "null"] }
         source: { type: string, enum: [provider, manual], description: "how the order's payment arrived — a rail's signed webhook or a staff-recorded receipt" }

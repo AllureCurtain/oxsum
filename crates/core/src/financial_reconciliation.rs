@@ -1,7 +1,7 @@
 //! Independent financial reconciliation from a single captured database snapshot.
 
 mod compare;
-mod debt_sources;
+pub(crate) mod debt_sources;
 mod ledger;
 mod persistence;
 mod sources;

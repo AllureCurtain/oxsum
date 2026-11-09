@@ -100,6 +100,8 @@ async fn paid(w: &World, purpose: PaymentOrderPurpose, fulfill: bool) -> Payment
                 display_currency: "USD".into(),
                 idempotency_key: Uuid::new_v4().to_string(),
                 promo_minor: 0,
+                expected_statement_quote: None,
+                statement_amount_minor: None,
                 expected_plan_quote: None,
                 expected_collection_revision: None,
             },

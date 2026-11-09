@@ -5,6 +5,7 @@ mod daily;
 mod documents;
 mod legacy;
 mod refunds;
+mod repayments;
 mod schedule;
 
 use std::collections::BTreeSet;
@@ -196,6 +197,7 @@ pub(super) async fn customer(
 
 /// Shared canonical source comparisons; callers supply one bounded captured snapshot.
 pub(super) fn check(customer: &mut Customer<'_>) -> Result<(), WalletError> {
+    repayments::compare(customer)?;
     refunds::compare(customer)?;
     daily::compare(customer)?;
     schedule::compare(customer)?;

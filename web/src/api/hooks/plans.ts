@@ -89,3 +89,12 @@ export function usePlanStatement(statementId: string | undefined) {
     enabled: Boolean(statementId),
   });
 }
+
+/** A named statement's exact unreserved debt; reading never creates an intent. */
+export function useStatementPaymentQuote(statementId: string, amountMinor?: number) {
+  return useQuery({
+    queryKey: ["statement-payment-quote", statementId, amountMinor ?? null],
+    queryFn: () => api<components["schemas"]["StatementPaymentQuote"]>(`/org/statements/${statementId}/payment-quote${amountMinor === undefined ? "" : `?amountMinor=${amountMinor}`}`),
+    retry: false,
+  });
+}

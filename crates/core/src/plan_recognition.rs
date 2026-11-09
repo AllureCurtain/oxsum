@@ -80,7 +80,7 @@ pub(crate) async fn effect_in(
     effect: &Effect,
 ) -> Result<(), WalletError> {
     sqlx::query("INSERT INTO oxsum.plan_accounting_effects(effect_id,plan_period_id,kind,source_ref,service_day,booked_on,payment_on,billed_minor,earned_minor,deferred_minor,collected_minor,receivable_minor,payable_minor,cash_minor,entry_id) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)")
-        .bind(Uuid::new_v4()).bind(period.id).bind(kind).bind(source).bind(service_day).bind(booked_on).bind(if matches!(kind, "refund" | "dispute") { booked_on } else { period.payment_on })
+        .bind(Uuid::new_v4()).bind(period.id).bind(kind).bind(source).bind(service_day).bind(booked_on).bind(if matches!(kind, "refund" | "dispute" | "statement_payment" | "statement_return") { booked_on } else { period.payment_on })
         .bind(effect.billed).bind(effect.earned).bind(effect.deferred).bind(effect.collected).bind(effect.receivable).bind(effect.payable).bind(effect.cash).bind(entry)
         .execute(&mut **tx).await?;
     Ok(())

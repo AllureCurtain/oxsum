@@ -138,6 +138,10 @@ pub fn router(state: AppState) -> Router {
             "/org/statements/{statement_id}",
             get(statements::my_statement),
         )
+        .route(
+            "/org/statements/{statement_id}/payment-quote",
+            get(statements::payment_quote),
+        )
         // The statement-scoped evidence bundle (issue #616, T25): mint on
         // first ask, serve the standing bytes after.
         .route(
@@ -352,6 +356,10 @@ pub fn router(state: AppState) -> Router {
         .route(
             "/business/disputes/{dispute_id}/resolve",
             post(refunds::resolve_dispute),
+        )
+        .route(
+            "/business/orders/{order}/statement-payment-evidence",
+            get(orders::statement_payment_evidence),
         )
         .route(
             "/business/orders",

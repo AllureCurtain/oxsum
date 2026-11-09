@@ -434,7 +434,15 @@ fn legacy_notes(customer: &mut Customer<'_>) -> Result<(), WalletError> {
         .table("refunds")
         .iter()
         .filter(|(id, _)| {
-            customer.sources.get("plan_refund_effects", **id).is_none()
+            !customer
+                .sources
+                .table("statement_payment_effects")
+                .values()
+                .any(|e| {
+                    e.text("kind").ok().as_deref() == Some("refund")
+                        && e.id("source_ref").ok() == Some(**id)
+                })
+                && customer.sources.get("plan_refund_effects", **id).is_none()
                 && customer
                     .sources
                     .get("nonplan_refund_effects", **id)

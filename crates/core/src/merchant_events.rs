@@ -179,6 +179,18 @@ fn receipt(row: &PgRow) -> Result<MerchantEventReceipt, WalletError> {
         reason: row.try_get("reason")?,
     })
 }
+/// Read immutable authenticated event coordinates on the caller's transaction.
+pub(crate) async fn data_in(
+    tx: &mut Transaction<'_, Postgres>,
+    id: Uuid,
+) -> Result<Option<VerifiedMerchantEvent>, WalletError> {
+    let row = sqlx::query(&format!("{EVENT_SELECT} WHERE e.receipt_id=$1"))
+        .bind(id)
+        .fetch_optional(&mut **tx)
+        .await?;
+    row.as_ref().map(event_data).transpose()
+}
+
 async fn payment_in(
     tx: &mut Transaction<'_, Postgres>,
     id: Uuid,

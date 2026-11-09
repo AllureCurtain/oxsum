@@ -56,6 +56,8 @@ pub async fn created_order(
         organization,
         &NewPaymentOrder {
             expected_collection_revision: Some(quote.terms.collection_revision),
+            expected_statement_quote: None,
+            statement_amount_minor: None,
             expected_plan_quote: Some(quote.fingerprint),
             purpose: PaymentOrderPurpose::PlanPeriod,
             display_amount_minor: quote.terms.display_amount_minor,

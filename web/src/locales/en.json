@@ -1646,7 +1646,8 @@
         "walletTopup": "Wallet top-up",
         "bundle": "Bundle",
         "planPeriod": "Plan period",
-        "invoiceRepayment": "Invoice repayment"
+        "invoiceRepayment": "Invoice repayment",
+        "statementRepayment": "Statement repayment"
       }
     },
     "refunds": {
@@ -2265,5 +2266,43 @@
     "totalCorrection": "Appended cash correction",
     "entry": "Correction entry",
     "retained": "The correction cancels the false receipt and records the actual loss. The original credit benefit, resolution and debt documents are retained for finance review; this is not a second provider loss."
+  },
+  "statementPayment": {
+    "title": "Statement repayment",
+    "help": "Pays the selected bill’s outstanding debt. It does not add wallet credit or renew a plan.",
+    "outstanding": "Outstanding",
+    "reserved": "Pending payments",
+    "available": "Available to pay",
+    "resume": "Resume existing payment",
+    "none": "No unreserved debt is available. Resume a pending payment above.",
+    "notPayable": "This statement has no payable issued debt.",
+    "reviewRequired": "This debt needs source or collection review. Contact the operator; the displayed balance remains outstanding.",
+    "partial": "Partial amount in credits (leave blank for full available debt)",
+    "invalid": "Enter a positive amount with at most six decimal places.",
+    "quote": "Update amount",
+    "refresh": "Refresh availability",
+    "review": "Review payment",
+    "retry": "Retry original payment",
+    "confirm": "Review payment: {{price}}",
+    "confirmHelp": "The fiat price rounds up to the smallest currency unit. The exact selected debt stays fixed. Only a confirmed payment clears the bill.",
+    "exact": "Exact debt payment",
+    "retained": "Retry keeps the original charge of {{amount}} fiat minor {{currency}}.",
+    "retryHelp": "Retry unchanged or resume the existing payment above.",
+    "keepReviewing": "Keep reviewing",
+    "continue": "Continue to payment",
+    "selectStatement": "Choose a statement below to review and repay its exact outstanding debt.",
+    "statementLink": "View the repaid statement",
+    "paid": "Payment applied to statement debt: {{amount}} credits.",
+    "payable": "Payment received: {{amount}} credits retained for refund review. The original debt allocation could not be applied.",
+    "journalLink": "View source journal",
+    "allocations": "Original debt allocations",
+    "source": "Payment or return",
+    "cash": "Cash",
+    "receivable": "Debt allocation",
+    "payableLabel": "Refund payable",
+    "suspense": "Needs reconciliation",
+    "entry": "Ledger entry and hash",
+    "original": "Original payment effect",
+    "awaiting": "No payment has been applied yet."
   }
 }

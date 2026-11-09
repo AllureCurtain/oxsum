@@ -821,3 +821,29 @@ canonical hashes and resulting slices; it excludes the read clock. Subsequent
 payment and reversal work must revalidate under its owner locks and handle new
 immutable allocation types before any checkout is enabled. No ledger bootstrap,
 financial mutation, independent witness claim or provider request occurs here.
+
+## Statement debt intents and original return ownership (#777)
+
+`statement_payments` separates read-only quotes, reservation fences, canonical
+cash evidence, atomic application, returns and financial-void ownership.
+Migration 0122 adds immutable order terms, retained reservation transitions,
+per-journal cash effects and per-original-effect void payable allocations.
+The bounded financial comparison captures those sources beside official ledger
+entries and reconstructs their Cash/AR/payable/suspense, document and schedule
+relationships; missing fulfilled effects and excess original-source returns
+require review. The snapshot's scope remains conservative across the customer.
+
+New intents and returns own subscription, sorted customer plans and the engine
+append lock before order/journal/statement mutation. Destructive debt actions
+check the same plan ownership and refuse live reservations. Successful payment
+commits Cash/Receivables, exact signed document lines, journal/statement counters,
+reservation consumption, fulfillment and outbox together. Unknown/released
+allocation becomes Cash/RefundPayable. Daily policy records collection-only
+effects without calculating earned revenue. Terminal dispute replay validates
+retained effects and audit; it never repairs missing cash implicitly.
+
+Refund/chargeback returns consume each original payment effect once. A journal
+void pins that effect's remaining receivable-funded portion to the canonical
+void entry and hash. Plan-order refunds and disputes exclude those shares.
+All confirmed external cash losses remain recorded, with unallocated excess in
+Adjustments suspense; neither wallet nor CreditLine is used for these returns.

@@ -678,7 +678,7 @@ impl Db {
         let mut w = Where::new();
         let mut binds = Vec::new();
         let mut sql = String::from(
-            "SELECT COALESCE(sum(e.cash_minor),0)::bigint FROM (SELECT organization_id,cash_minor,booked_at::date AS cash_on FROM oxsum.plan_refund_effects UNION ALL SELECT organization_id,cash_minor,cash_booking_date AS cash_on FROM oxsum.nonplan_refund_effects) e WHERE true",
+            "SELECT COALESCE(sum(e.cash_minor),0)::bigint FROM (SELECT organization_id,cash_minor,booked_at::date AS cash_on FROM oxsum.plan_refund_effects UNION ALL SELECT organization_id,cash_minor,cash_booking_date AS cash_on FROM oxsum.nonplan_refund_effects UNION ALL SELECT organization_id,cash_minor,booked_on AS cash_on FROM oxsum.statement_payment_effects WHERE kind='refund') e WHERE true",
         );
         if let Some(org) = filter.organization_id {
             sql.push_str(&w.clause(" AND e.organization_id=?"));
@@ -707,7 +707,7 @@ impl Db {
             let mut w = Where::new();
             let mut binds = Vec::new();
             let mut sql = format!(
-                "SELECT COALESCE(SUM(CASE WHEN p.direction='C' THEN p.amount_minor ELSE -p.amount_minor END),0)::bigint FROM \"{schema}\".entries e JOIN \"{schema}\".postings p USING(entry_id) JOIN \"{schema}\".accounts a USING(account_index) WHERE e.log_index IS NOT NULL AND a.path='Assets:Cash' AND p.layer='settled' AND e.entry_id IN (SELECT n.entry_id FROM oxsum.credit_notes n JOIN oxsum.refunds r USING(refund_id) JOIN oxsum.organizations o ON o.organization_id=r.organization_id WHERE o.tenant_id=$1 AND n.entry_id IS NOT NULL AND NOT EXISTS(SELECT 1 FROM oxsum.plan_refund_effects f WHERE f.refund_id=r.refund_id) AND NOT EXISTS(SELECT 1 FROM oxsum.nonplan_refund_effects f WHERE f.refund_id=r.refund_id))"
+                "SELECT COALESCE(SUM(CASE WHEN p.direction='C' THEN p.amount_minor ELSE -p.amount_minor END),0)::bigint FROM \"{schema}\".entries e JOIN \"{schema}\".postings p USING(entry_id) JOIN \"{schema}\".accounts a USING(account_index) WHERE e.log_index IS NOT NULL AND a.path='Assets:Cash' AND p.layer='settled' AND e.entry_id IN (SELECT n.entry_id FROM oxsum.credit_notes n JOIN oxsum.refunds r USING(refund_id) JOIN oxsum.organizations o ON o.organization_id=r.organization_id WHERE o.tenant_id=$1 AND n.entry_id IS NOT NULL AND NOT EXISTS(SELECT 1 FROM oxsum.plan_refund_effects f WHERE f.refund_id=r.refund_id) AND NOT EXISTS(SELECT 1 FROM oxsum.nonplan_refund_effects f WHERE f.refund_id=r.refund_id) AND NOT EXISTS(SELECT 1 FROM oxsum.statement_payment_effects f WHERE f.kind='refund' AND f.source_ref=r.refund_id))"
             );
             binds.push(Bind::Text(&tenant));
             w.next = 2;

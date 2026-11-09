@@ -105,6 +105,11 @@ async fn historical_authorization_replays_but_pending_legacy_intents_cannot_gran
         Some(serde_json::Value::Null),
         "historical orders must not receive invented period authority"
     );
+    assert_eq!(
+        after.as_object_mut().unwrap().remove("statement_payment"),
+        Some(serde_json::Value::Null),
+        "historical orders must not receive invented statement authority"
+    );
     assert_eq!(before, after);
     assert_eq!(
         db.activate_plan_period(fulfilled, plan)

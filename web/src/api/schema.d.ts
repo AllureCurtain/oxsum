@@ -3638,6 +3638,56 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/org/statements/{statementId}/payment-quote": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Quote an exact partial or full statement repayment
+         * @description Personal customer session. Read-only source verification returns current outstanding, reservations and source-linked allocation. Omit amountMinor for the full available debt. Unproven sources return an explicit review reason with no payable terms; cancelled plans retain their old debt. No provider call, reservation, wallet credit or entitlement occurs.
+         */
+        get: {
+            parameters: {
+                query?: {
+                    amountMinor?: number;
+                };
+                header?: never;
+                path: {
+                    statementId: string;
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Proven exact terms or explicit source review with visible debt */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            data: components["schemas"]["StatementPaymentQuote"];
+                        };
+                    };
+                };
+                400: components["responses"]["Error"];
+                401: components["responses"]["Error"];
+                403: components["responses"]["Error"];
+                404: components["responses"]["Error"];
+                409: components["responses"]["Error"];
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/business/statements": {
         parameters: {
             query?: never;
@@ -9614,7 +9664,7 @@ export interface paths {
         put?: never;
         /**
          * Create a payment order
-         * @description The customer pins an immutable order in its quoted payment currency. A bundle requires a published version in purposeRef; its exact price, purchased credit, promotion and lifetime come from that version. A planPeriod order requires the customer-scoped quote fingerprint, pins its exact sold fee and rounds only the fiat quote upward to the smallest supported currency unit. Other purposes rate through the stored Business collection rate — `amountMinor`/`rate` are not request fields, so a client-supplied figure is a schema rejection, not a negotiated term. The expected payment and the order terms commit before the provider is called; the provider idempotency key is the order's durable local UUID, so a replayed `idempotencyKey` returns the standing order and its original checkout rather than a second charge. `purpose` fixes the one fulfillment arm the order may take — `walletTopup`, `bundle`, `planPeriod` or `invoiceRepayment`. The answer is a checkout to complete, never a paid order — `paid` is established only by the signed provider webhook.
+         * @description The customer pins an immutable order in its quoted payment currency. A bundle requires a published version in purposeRef; its exact price, purchased credit, promotion and lifetime come from that version. A planPeriod order requires the customer-scoped quote fingerprint, pins its exact sold fee and rounds only the fiat quote upward to the smallest supported currency unit. A statementRepayment order pins the named statement, exact statementAmountMinor and expectedStatementQuote; fiat rounding never changes the selected debt. Wallet and CreditLine purposes rate through the stored Business collection rate — `amountMinor`/`rate` are not request fields, so a client-supplied figure is a schema rejection, not a negotiated term. The expected payment and the order terms commit before the provider is called; the provider idempotency key is the order's durable local UUID, so a replayed `idempotencyKey` returns the standing order and its original checkout rather than a second charge. `purpose` fixes the one fulfillment arm the order may take — `walletTopup`, `bundle`, `planPeriod`, `invoiceRepayment` or `statementRepayment`. The answer is a checkout to complete, never a paid order — `paid` is established only by the signed provider webhook.
          */
         post: {
             parameters: {
@@ -9879,6 +9929,53 @@ export interface paths {
                 500: components["responses"]["Error"];
             };
         };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/business/orders/{orderId}/statement-payment-evidence": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Inspect exact statement payment and return allocations
+         * @description Current personal business ReportsRead authority. Returns retained source-linked payment, refund and dispute effects for one statement repayment, including Cash, receivable, payable, suspense and official entry hashes. This is recorded evidence, not provider certification.
+         */
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    orderId: string;
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Exact original payment and reversal evidence */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            data: components["schemas"]["StatementCashEffect"][];
+                        };
+                    };
+                };
+                401: components["responses"]["Error"];
+                403: components["responses"]["Error"];
+                404: components["responses"]["Error"];
+                409: components["responses"]["Error"];
+            };
+        };
+        put?: never;
+        post?: never;
         delete?: never;
         options?: never;
         head?: never;
@@ -20615,19 +20712,96 @@ export interface components {
              */
             existingOrderId: string | null;
         };
+        StatementCashEffect: {
+            /** Format: uuid */
+            id: string;
+            /** Format: uuid */
+            order: string;
+            /** Format: uuid */
+            statement: string;
+            /** Format: uuid */
+            journal: string | null;
+            /** @enum {string} */
+            kind: "payment" | "refund" | "dispute";
+            /**
+             * Format: uuid
+             * @description Original order or return identity
+             */
+            source: string;
+            /**
+             * Format: uuid
+             * @description Original payment effect for a source-bound return
+             */
+            original: string | null;
+            /** Format: int64 */
+            cash: number;
+            /** Format: int64 */
+            receivable: number;
+            /** Format: int64 */
+            payable: number;
+            /** Format: int64 */
+            suspense: number;
+            /** Format: uuid */
+            entry: string;
+            hash: string;
+            /** Format: date */
+            on: string;
+        };
+        StatementPaymentSlice: {
+            /** Format: uuid */
+            journalId: string;
+            /** Format: uuid */
+            customerPlanId: string;
+            /** Format: int64 */
+            amountMinor: number;
+        };
+        StatementPaymentTerms: {
+            /** Format: uuid */
+            businessId: string;
+            /** Format: uuid */
+            organizationId: string;
+            /** Format: uuid */
+            statementId: string;
+            sourceRevision: string;
+            /** Format: int64 */
+            amountMinor: number;
+            allocations: components["schemas"]["StatementPaymentSlice"][];
+            /** Format: int64 */
+            collectionRevision: number;
+            displayCurrency: string;
+            /** Format: int64 */
+            displayAmountMinor: number;
+            rateMantissa: string;
+            rateScale: number;
+        };
+        StatementPaymentQuote: {
+            /** Format: uuid */
+            statementId: string;
+            /** Format: int64 */
+            outstandingMinor: number;
+            /** Format: int64 */
+            reservedMinor: number;
+            /** Format: int64 */
+            availableMinor: number;
+            pendingOrderIds: string[];
+            /** @description Source review or no available debt; visible outstanding is never silently discarded */
+            reason: string | null;
+            terms: components["schemas"]["StatementPaymentTerms"] | null;
+            fingerprint: string | null;
+        };
         /**
-         * @description The one fulfillment arm the order may take. `walletTopup` credits wallet cash only; `bundle` posts purchased credit plus a separate promo lot; `planPeriod` activates quota only; `invoiceRepayment` repays a drawn receivable only. No purpose both grants quota and wallet cash.
+         * @description The one fulfillment arm the order may take. `walletTopup` credits wallet cash only; `bundle` posts purchased credit plus a separate promo lot; `planPeriod` activates quota only; `invoiceRepayment` repays drawn CreditLine only; `statementRepayment` pays exact named plan-statement receivables without wallet funding or entitlement. No purpose both grants quota and wallet cash.
          * @enum {string}
          */
-        OrderPurpose: "walletTopup" | "bundle" | "planPeriod" | "invoiceRepayment";
-        /** @description The quoted payment terms. The server pins bundle amounts to the published offer and plan-period fees to the customer-scoped sold quote; other purposes derive credits from `displayAmountMinor` at the persisted Business collection rate. Customer display preferences cannot change these terms. A client-supplied `amountMinor` or `rate` is a schema rejection. */
+        OrderPurpose: "walletTopup" | "bundle" | "planPeriod" | "invoiceRepayment" | "statementRepayment";
+        /** @description The quoted payment terms. The server pins bundle amounts to the published offer and plan-period fees to the customer-scoped sold quote; statement repayment pins its exact selected debt through `statementAmountMinor` and `expectedStatementQuote`. Wallet and CreditLine purposes derive credits from `displayAmountMinor` at the persisted Business collection rate. Customer display preferences cannot change these terms. A client-supplied `amountMinor` or `rate` is a schema rejection. */
         OrderCreateRequest: {
             idempotencyKey: string;
             rail: components["schemas"]["MerchantRail"];
             /** @description Optional current route/merchant/version precondition for new orders. Existing exact-key orders retain their original merchant and ignore current-choice preconditions; changing rail conflicts. */
             expectedCheckout?: components["schemas"]["CheckoutChoice"];
             /** @enum {string} */
-            purpose: "walletTopup" | "bundle" | "planPeriod" | "invoiceRepayment";
+            purpose: "walletTopup" | "bundle" | "planPeriod" | "invoiceRepayment" | "statementRepayment";
             /** @description Optional quote precondition for a new order. Browser clients send the displayed revision; changed settings conflict before provider I/O. An existing idempotent order returns its original terms. */
             expectedCollectionRevision?: number;
             /**
@@ -20641,6 +20815,13 @@ export interface components {
              * @description Published `bundleVersionId` for a bundle
              */
             purposeRef?: string | null;
+            /** @description Required unchanged fingerprint for statementRepayment; exact replay retains the original terms */
+            expectedStatementQuote?: string | null;
+            /**
+             * Format: int64
+             * @description Exact selected credit debt for statementRepayment
+             */
+            statementAmountMinor?: number | null;
             /** @description Required for new planPeriod orders; the fingerprint from the customer-scoped quote. Never overrides the authoritative terms. */
             expectedPlanQuote?: string | null;
             /**
@@ -20695,6 +20876,8 @@ export interface components {
             promoMinor: number;
             /** @description Immutable publication snapshot for new bundle orders. Absent legacy unfulfilled bundles require operator review before checkout or granting. */
             bundleOffer: components["schemas"]["BundleOffer"] | null;
+            /** @description Immutable exact statement and source-journal allocation for repayment */
+            statementPayment: components["schemas"]["StatementPaymentTerms"] | null;
             /** @description Immutable period payment intent; unsafe legacy unfulfilled plan orders require operator review */
             planPayment: components["schemas"]["PlanPaymentTerms"] | null;
             providerPaymentId: string | null;

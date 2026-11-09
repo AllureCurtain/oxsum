@@ -94,7 +94,7 @@ async fn upgrade_retains_fulfilled_history_and_fences_pending_bundles_and_old_wr
             .unwrap();
     // Newly introduced authority snapshots must remain absent on historical
     // orders; every field that existed before the upgrade remains unchanged.
-    for column in ["bundle_offer", "plan_payment"] {
+    for column in ["bundle_offer", "plan_payment", "statement_payment"] {
         assert_eq!(
             after.as_object_mut().unwrap().remove(column),
             Some(serde_json::Value::Null)

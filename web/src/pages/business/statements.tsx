@@ -1,9 +1,12 @@
 import { useState } from "react";
+import { useSearchParams } from "react-router-dom";
 import { useTranslation } from "react-i18next";
 import { FileText, Receipt } from "lucide-react";
 import {
   useBusiness,
   useBusinessJournals,
+  useBusinessJournal,
+  useBusinessStatement,
   useBusinessStatements,
   useCapability,
   useDisplay,
@@ -193,6 +196,7 @@ export function BusinessStatements() {
   return (
     <div className="flex flex-col gap-6">
       <h2 className="text-xl font-bold">{t("biz.statements.title")}</h2>
+      <StatementPaymentSources />
       <StatementRows />
       <JournalRows />
     </div>
@@ -275,4 +279,30 @@ export function BusinessReceivables() {
       </Card>
     </div>
   );
+}
+
+/** Source links from finance payments open the exact document, independent of pagination. */
+export function StatementPaymentSources() {
+  const { t } = useTranslation();
+  const [params] = useSearchParams();
+  const statement = useBusinessStatement(params.get("statement") ?? undefined);
+  const journal = useBusinessJournal(params.get("journal") ?? undefined);
+  if (!params.has("statement") && !params.has("journal")) return null;
+  const query = params.has("journal") ? journal : statement;
+  const document = query.data;
+  return <Card title={t("statementPayment.allocations")}>
+    {query.isLoading ? <p>{t("common.loading")}</p> : query.error ? <Banner tone="error">{query.error.message}</Banner>
+      : document ? <div className="flex flex-col gap-3">
+        <DetailGrid>
+          <Field2 label={t("common.status")}>{stateBadge(document.state)}</Field2>
+          <Field2 label={t("common.total")}><Cr minor={document.totalMinor} /></Field2>
+          <Field2 label={t("biz.statements.colOrg")}><span className="font-mono text-xs">{document.organizationId}</span></Field2>
+        </DetailGrid>
+        <TableShell head={[t("billing.colKind"), t("billing.colDescription"), { label: t("common.amount"), align: "right" }, t("biz.payments.reference")]}>
+          {document.lines.map((line) => <tr key={line.lineId}>
+            <td>{line.kind}</td><td>{line.description}</td><Td mono align="right"><Cr minor={line.amountMinor} /></Td><Td mono>{line.sourceRef ?? "—"}</Td>
+          </tr>)}
+        </TableShell>
+      </div> : null}
+  </Card>;
 }

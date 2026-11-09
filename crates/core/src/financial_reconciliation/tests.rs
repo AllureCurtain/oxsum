@@ -208,10 +208,18 @@ async fn refund(w: &World, amount: i64) -> Uuid {
     refund_on(w, amount, OffsetDateTime::now_utc().date()).await
 }
 async fn refund_on(w: &World, amount: i64, on: time::Date) -> Uuid {
+    refund_order_on(w, &w.order, amount, on).await
+}
+async fn refund_order_on(
+    w: &World,
+    order: &crate::PaymentOrder,
+    amount: i64,
+    on: time::Date,
+) -> Uuid {
     let refund =
         w.db.request_order_refund(
             w.org,
-            w.order.order_id,
+            order.order_id,
             &crate::NewRefundRequest {
                 amount_minor: Some(amount),
                 reason: "independent cash fixture".into(),
@@ -240,8 +248,8 @@ async fn refund_on(w: &World, amount: i64, on: time::Date) -> Uuid {
             &crate::VerifiedMerchantEvent {
                 event_id: Uuid::new_v4().to_string(),
                 kind: crate::MerchantEventKind::RefundSucceeded,
-                payment_id: Some(w.order.order_id),
-                provider_payment_id: Some(format!("pay_{}", w.order.order_id)),
+                payment_id: Some(order.order_id),
+                provider_payment_id: Some(format!("pay_{}", order.order_id)),
                 organization_id: Some(w.org),
                 provider_account_id: Some(w.context.account_id.clone()),
                 mode: Some(crate::MerchantMode::Test),
@@ -1020,6 +1028,22 @@ async fn mixed_policy_chargebacks_keep_each_original_customer_debt() {
                     && slice.remaining_minor == FEE - 1_000_000)
         );
         assert!(sources.slices.iter().any(|slice|slice.journal_id == current.journal_id && slice.remaining_minor == FEE));
+        let order = statement_order(&w, statement, None).await;
+        assert_eq!(
+            order.statement_payment.as_ref().unwrap().allocations.len(),
+            2
+        );
+        payment::mark_paid(&w.db, &w.context, &order).await;
+        payment::fulfill(&w.db, &order).await;
+        clean(&capture(&w, TimeBasis::Booking).await);
+        refund_order_on(&w, &order, 2_000_000, OffsetDateTime::now_utc().date()).await;
+        clean(&capture(&w, TimeBasis::Booking).await);
+        let reopened =
+            w.db.statement_debt_sources(&debt_principal(&w).await, statement)
+                .await
+                .unwrap();
+        assert!(reopened.verified, "{reopened:?}");
+        assert_eq!(reopened.outstanding_minor, 2_000_000);
     }
 }
 
@@ -1223,6 +1247,8 @@ async fn nonplan_partial_returns_and_payment_only_receipts_reconcile_original_ca
                     display_currency: "USD".into(),
                     idempotency_key: Uuid::new_v4().to_string(),
                     promo_minor: 0,
+                    expected_statement_quote: None,
+                    statement_amount_minor: None,
                     expected_plan_quote: None,
                     expected_collection_revision: None,
                 },
@@ -1564,4 +1590,738 @@ async fn debt_sources_refuse_oversized_history_without_truncating_it() {
             .total_minor,
         FEE
     );
+}
+
+async fn statement_order(w: &World, statement: Uuid, amount: Option<i64>) -> crate::PaymentOrder {
+    let quote =
+        w.db.statement_payment_quote(&debt_principal(w).await, statement, amount)
+            .await
+            .unwrap();
+    let terms = quote
+        .terms
+        .unwrap_or_else(|| panic!("quote refused: {:?}", quote.reason));
+    w.db.create_payment_order(
+        &w.context,
+        w.org,
+        &statement_request(terms, quote.fingerprint),
+    )
+    .await
+    .unwrap()
+}
+fn statement_request(
+    terms: crate::StatementPaymentTerms,
+    fingerprint: Option<String>,
+) -> crate::NewPaymentOrder {
+    crate::NewPaymentOrder {
+        expected_statement_quote: fingerprint,
+        statement_amount_minor: Some(terms.amount_minor),
+        expected_plan_quote: None,
+        expected_collection_revision: Some(terms.collection_revision),
+        purpose: crate::PaymentOrderPurpose::StatementRepayment,
+        display_amount_minor: terms.display_amount_minor,
+        display_currency: terms.display_currency,
+        purpose_ref: Some(terms.statement_id),
+        idempotency_key: Uuid::new_v4().to_string(),
+        promo_minor: 0,
+    }
+}
+
+#[tokio::test]
+async fn statement_repayment_partial_full_and_chargeback_keep_exact_sources() {
+    let _guard = TEST_LOCK.lock().await;
+    for legacy in [true, false] {
+        let Some(w) = world(if legacy { 40 } else { 10 }, legacy).await else {
+            return;
+        };
+        lost(&w, &w.order).await;
+        let statement = unpaid_statement(&w).await;
+        let first = statement_order(&w, statement, Some(1_000_000)).await;
+        let held =
+            w.db.statement_payment_quote(&debt_principal(&w).await, statement, None)
+                .await
+                .unwrap();
+        assert_eq!(held.reserved_minor, 1_000_000);
+        assert_eq!(held.available_minor, FEE - 1_000_000);
+        payment::mark_paid(&w.db, &w.context, &first).await;
+        payment::fulfill(&w.db, &first).await;
+        clean(&capture(&w, TimeBasis::Booking).await);
+        let partial =
+            w.db.statement_debt_sources(&debt_principal(&w).await, statement)
+                .await
+                .unwrap();
+        assert!(partial.verified, "{partial:?}");
+        assert_eq!(partial.outstanding_minor, FEE - 1_000_000);
+        let second = statement_order(&w, statement, None).await;
+        payment::mark_paid(&w.db, &w.context, &second).await;
+        payment::fulfill(&w.db, &second).await;
+        let log = w.wallet.log_size().await.unwrap();
+        payment::fulfill(&w.db, &second).await;
+        assert_eq!(log, w.wallet.log_size().await.unwrap());
+        clean(&capture(&w, TimeBasis::Booking).await);
+        assert_eq!(
+            w.db.plan_statement(w.org, statement)
+                .await
+                .unwrap()
+                .unwrap()
+                .statement
+                .state,
+            crate::PlanStatementState::Paid
+        );
+        lost(&w, &second).await;
+        clean(&capture(&w, TimeBasis::Booking).await);
+        let reopened =
+            w.db.statement_debt_sources(&debt_principal(&w).await, statement)
+                .await
+                .unwrap();
+        assert!(reopened.verified, "{reopened:?}");
+        assert_eq!(reopened.outstanding_minor, second.amount_minor);
+        let third = statement_order(&w, statement, None).await;
+        payment::mark_paid(&w.db, &w.context, &third).await;
+        payment::fulfill(&w.db, &third).await;
+        clean(&capture(&w, TimeBasis::Booking).await);
+    }
+}
+
+#[tokio::test]
+async fn statement_repayment_refund_restores_only_its_original_debt() {
+    let _guard = TEST_LOCK.lock().await;
+    for legacy in [true, false] {
+        let Some(w) = world(if legacy { 40 } else { 10 }, legacy).await else {
+            return;
+        };
+        lost(&w, &w.order).await;
+        let statement = unpaid_statement(&w).await;
+        let order = statement_order(&w, statement, None).await;
+        payment::mark_paid(&w.db, &w.context, &order).await;
+        payment::fulfill(&w.db, &order).await;
+        let before_disputes: i64 = sqlx::query_scalar(
+            "SELECT disputed_minor FROM oxsum.invoice_journals WHERE journal_id=$1",
+        )
+        .bind(w.journal)
+        .fetch_one(w.db.pool())
+        .await
+        .unwrap();
+        refund_order_on(&w, &order, 1_000_000, OffsetDateTime::now_utc().date()).await;
+        clean(&capture(&w, TimeBasis::Booking).await);
+        let result =
+            w.db.statement_debt_sources(&debt_principal(&w).await, statement)
+                .await
+                .unwrap();
+        assert!(result.verified, "{result:?}");
+        assert_eq!(result.outstanding_minor, 1_000_000);
+        let disputes: i64 = sqlx::query_scalar(
+            "SELECT disputed_minor FROM oxsum.invoice_journals WHERE journal_id=$1",
+        )
+        .bind(w.journal)
+        .fetch_one(w.db.pool())
+        .await
+        .unwrap();
+        assert_eq!(
+            disputes, before_disputes,
+            "voluntary refund must not fabricate a dispute counter"
+        );
+        let next = statement_order(&w, statement, None).await;
+        payment::mark_paid(&w.db, &w.context, &next).await;
+        payment::fulfill(&w.db, &next).await;
+        clean(&capture(&w, TimeBasis::Booking).await);
+    }
+}
+
+#[tokio::test]
+async fn statement_repayment_reservations_replay_and_late_cash_are_explicit() {
+    let _guard = TEST_LOCK.lock().await;
+    let Some(w) = world(10, false).await else {
+        return;
+    };
+    lost(&w, &w.order).await;
+    let statement = unpaid_statement(&w).await;
+    let order = statement_order(&w, statement, None).await;
+    let quote =
+        w.db.statement_payment_quote(&debt_principal(&w).await, statement, None)
+            .await
+            .unwrap();
+    assert_eq!(quote.available_minor, 0);
+    assert_eq!(quote.pending_order_ids, vec![order.order_id]);
+    let event = crate::VerifiedMerchantEvent {
+        event_id: Uuid::new_v4().to_string(),
+        kind: crate::MerchantEventKind::Failed,
+        payment_id: Some(order.order_id),
+        provider_payment_id: Some(format!("pay_{}", order.order_id)),
+        organization_id: Some(w.org),
+        provider_account_id: Some(w.context.account_id.clone()),
+        mode: Some(crate::MerchantMode::Test),
+        amount_minor: Some(order.display_amount_minor),
+        currency: Some(order.display_currency.clone()),
+        refund_id: None,
+    };
+    let receipt =
+        w.db.receive_merchant_event(&w.context, &event, &[75; 32])
+            .await
+            .unwrap();
+    w.db.apply_order_event(&receipt).await.unwrap();
+    let replacement = statement_order(&w, statement, None).await;
+    payment::mark_paid(&w.db, &w.context, &replacement).await;
+    payment::fulfill(&w.db, &replacement).await;
+    payment::mark_paid(&w.db, &w.context, &order).await;
+    payment::fulfill(&w.db, &order).await;
+    let fulfillment =
+        w.db.payment_fulfillment(order.order_id)
+            .await
+            .unwrap()
+            .unwrap();
+    assert_eq!(fulfillment.purpose_payload["repaidMinor"], 0);
+    assert_eq!(fulfillment.purpose_payload["payableMinor"], FEE);
+    assert_eq!(
+        w.db.plan_statement(w.org, statement)
+            .await
+            .unwrap()
+            .unwrap()
+            .statement
+            .paid_minor,
+        FEE
+    );
+    clean(&capture(&w, TimeBasis::Booking).await);
+}
+
+#[tokio::test]
+async fn statement_repayment_concurrent_quotes_and_void_fence_keep_one_intent() {
+    let _guard = TEST_LOCK.lock().await;
+    let Some(w) = world(10, false).await else {
+        return;
+    };
+    lost(&w, &w.order).await;
+    let statement = unpaid_statement(&w).await;
+    let quote =
+        w.db.statement_payment_quote(&debt_principal(&w).await, statement, None)
+            .await
+            .unwrap();
+    let request = statement_request(quote.terms.unwrap(), quote.fingerprint);
+    let mut competing = request.clone();
+    competing.idempotency_key = Uuid::new_v4().to_string();
+    let (first, second) = tokio::join!(
+        w.db.create_payment_order(&w.context, w.org, &request),
+        w.db.create_payment_order(&w.context, w.org, &competing)
+    );
+    assert_eq!(usize::from(first.is_ok()) + usize::from(second.is_ok()), 1);
+    let (order, request) = if let Ok(order) = first {
+        (order, request)
+    } else {
+        (second.unwrap(), competing)
+    };
+    assert_eq!(
+        w.db.create_payment_order(&w.context, w.org, &request)
+            .await
+            .unwrap()
+            .order_id,
+        order.order_id
+    );
+    let mut wrong = request.clone();
+    wrong.statement_amount_minor = Some(1);
+    assert!(matches!(
+        w.db.create_payment_order(&w.context, w.org, &wrong).await,
+        Err(WalletError::Conflict(_))
+    ));
+    assert!(
+        matches!(w.db.void_invoice_journal(&w.owner,&w.wallet,w.journal,"live reservation must prevent void",&Uuid::new_v4().to_string(),OffsetDateTime::now_utc().date()).await,Err(WalletError::Conflict(message)) if message.contains("live statement payment"))
+    );
+    let old_terms = w.db.collection_terms().await.unwrap();
+    w.db.set_collection_terms(
+        &w.owner,
+        &crate::CollectionTermsRequest {
+            reason: "changed future rate".into(),
+            idempotency_key: Uuid::new_v4().to_string(),
+            expected_revision: old_terms.revision,
+            currency: crate::CollectionCurrency {
+                code: "USD".into(),
+                rate_per_credit: "2".into(),
+            },
+        },
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        w.db.create_payment_order(&w.context, w.org, &request)
+            .await
+            .unwrap()
+            .display_amount_minor,
+        order.display_amount_minor
+    );
+    w.db.set_collection_terms(
+        &w.owner,
+        &crate::CollectionTermsRequest {
+            reason: "restore fixture rate".into(),
+            idempotency_key: Uuid::new_v4().to_string(),
+            expected_revision: old_terms.revision + 1,
+            currency: old_terms.currency.unwrap(),
+        },
+    )
+    .await
+    .unwrap();
+}
+
+#[tokio::test]
+async fn statement_repayment_effect_failure_rolls_back_cash_documents_and_outbox() {
+    let _guard = TEST_LOCK.lock().await;
+    let Some(w) = world(10, false).await else {
+        return;
+    };
+    lost(&w, &w.order).await;
+    let statement = unpaid_statement(&w).await;
+    let order = statement_order(&w, statement, None).await;
+    payment::mark_paid(&w.db, &w.context, &order).await;
+    let size = w.wallet.log_size().await.unwrap();
+    // Task-owned rejecting trigger exercises a real failure after cash and
+    // documents but before fulfillment commit. No integrity guard is disabled.
+    sqlx::raw_sql(&format!("CREATE FUNCTION oxsum.reject_statement_test() RETURNS trigger LANGUAGE plpgsql AS $f$ BEGIN IF NEW.order_id='{}'::uuid THEN RAISE EXCEPTION 'statement test fault'; END IF; RETURN NEW; END $f$; CREATE TRIGGER statement_test_fault BEFORE INSERT ON oxsum.payment_fulfillments FOR EACH ROW EXECUTE FUNCTION oxsum.reject_statement_test()",order.order_id)).execute(w.db.pool()).await.unwrap();
+    let result =
+        w.db.fulfill_payment_order(order.order_id, &w.wallet, OffsetDateTime::now_utc().date())
+            .await;
+    sqlx::raw_sql("DROP TRIGGER statement_test_fault ON oxsum.payment_fulfillments; DROP FUNCTION oxsum.reject_statement_test()").execute(w.db.pool()).await.unwrap();
+    assert!(result.is_err());
+    assert_eq!(w.wallet.log_size().await.unwrap(), size);
+    assert_eq!(
+        w.db.plan_statement(w.org, statement)
+            .await
+            .unwrap()
+            .unwrap()
+            .statement
+            .paid_minor,
+        0
+    );
+    let n:i64=sqlx::query_scalar("SELECT (SELECT count(*) FROM oxsum.statement_payment_effects WHERE order_id=$1)+(SELECT count(*) FROM oxsum.payment_outbox WHERE order_id=$1)").bind(order.order_id).fetch_one(w.db.pool()).await.unwrap();
+    assert_eq!(n, 0);
+    payment::fulfill(&w.db, &order).await;
+    clean(&capture(&w, TimeBasis::Booking).await);
+}
+
+#[tokio::test]
+async fn statement_repayment_does_not_replenish_an_old_orders_return_source() {
+    let _guard = TEST_LOCK.lock().await;
+    for legacy in [true, false] {
+        let Some(w) = world(if legacy { 40 } else { 10 }, legacy).await else {
+            return;
+        };
+        lost(&w, &w.order).await;
+        let statement = unpaid_statement(&w).await;
+        let order = statement_order(&w, statement, None).await;
+        payment::mark_paid(&w.db, &w.context, &order).await;
+        payment::fulfill(&w.db, &order).await;
+        lost(&w, &w.order).await;
+        assert_eq!(
+            w.db.plan_statement(w.org, statement)
+                .await
+                .unwrap()
+                .unwrap()
+                .statement
+                .state,
+            crate::PlanStatementState::Paid
+        );
+        assert_eq!(
+            w.db.plan_journal(w.org, w.journal)
+                .await
+                .unwrap()
+                .unwrap()
+                .journal
+                .settled_minor,
+            FEE
+        );
+        clean(&capture(&w, TimeBasis::Booking).await);
+    }
+}
+
+#[tokio::test]
+async fn statement_repayment_late_refund_after_loss_retains_cash_without_double_debt() {
+    let _guard = TEST_LOCK.lock().await;
+    let Some(w) = world(10, false).await else {
+        return;
+    };
+    lost(&w, &w.order).await;
+    let statement = unpaid_statement(&w).await;
+    let order = statement_order(&w, statement, None).await;
+    payment::mark_paid(&w.db, &w.context, &order).await;
+    payment::fulfill(&w.db, &order).await;
+    let refund =
+        w.db.request_order_refund(
+            w.org,
+            order.order_id,
+            &crate::NewRefundRequest {
+                amount_minor: Some(1_000_000),
+                reason: "return reserved before chargeback".into(),
+                request_key: Uuid::new_v4().to_string(),
+                requested_by: None,
+            },
+        )
+        .await
+        .unwrap();
+    w.db.resolve_order_refund(
+        &w.owner,
+        refund.refund_id,
+        crate::RefundDecision::Approve,
+        None,
+        &Uuid::new_v4().to_string(),
+    )
+    .await
+    .unwrap();
+    lost(&w, &order).await;
+    let event = crate::VerifiedMerchantEvent {
+        event_id: Uuid::new_v4().to_string(),
+        kind: crate::MerchantEventKind::RefundSucceeded,
+        payment_id: Some(order.order_id),
+        provider_payment_id: Some(format!("pay_{}", order.order_id)),
+        organization_id: Some(w.org),
+        provider_account_id: Some(w.context.account_id.clone()),
+        mode: Some(crate::MerchantMode::Test),
+        amount_minor: Some(refund.display_amount_minor),
+        currency: Some(refund.display_currency),
+        refund_id: Some(refund.refund_id.to_string()),
+    };
+    let receipt =
+        w.db.receive_merchant_event(&w.context, &event, &[76; 32])
+            .await
+            .unwrap();
+    let on = OffsetDateTime::now_utc().date();
+    w.db.apply_refund_event(&w.wallet, &receipt, on)
+        .await
+        .unwrap();
+    let log = w.wallet.log_size().await.unwrap();
+    w.db.apply_refund_event(&w.wallet, &receipt, on)
+        .await
+        .unwrap();
+    assert_eq!(w.wallet.log_size().await.unwrap(), log);
+    let effect=sqlx::query("SELECT cash_minor,receivable_minor,payable_minor,suspense_minor FROM oxsum.statement_payment_effects WHERE source_ref=$1 AND kind='refund'").bind(refund.refund_id).fetch_one(w.db.pool()).await.unwrap();
+    use sqlx::Row;
+    assert_eq!(effect.get::<i64, _>("cash_minor"), 1_000_000);
+    assert_eq!(effect.get::<i64, _>("receivable_minor"), 0);
+    assert_eq!(effect.get::<i64, _>("payable_minor"), 0);
+    assert_eq!(effect.get::<i64, _>("suspense_minor"), 1_000_000);
+    assert_eq!(
+        w.db.plan_statement(w.org, statement)
+            .await
+            .unwrap()
+            .unwrap()
+            .statement
+            .paid_minor,
+        0
+    );
+    clean(&capture(&w, TimeBasis::Booking).await);
+}
+
+#[tokio::test]
+async fn statement_repayment_void_refund_owns_only_its_original_payable() {
+    let _guard = TEST_LOCK.lock().await;
+    for legacy in [true, false] {
+        let Some(w) = world(if legacy { 40 } else { 10 }, legacy).await else {
+            return;
+        };
+        lost(&w, &w.order).await;
+        let statement = unpaid_statement(&w).await;
+        let order = statement_order(&w, statement, None).await;
+        payment::mark_paid(&w.db, &w.context, &order).await;
+        payment::fulfill(&w.db, &order).await;
+        w.db.void_invoice_journal(
+            &w.owner,
+            &w.wallet,
+            w.journal,
+            "void original service after debt repayment",
+            &Uuid::new_v4().to_string(),
+            OffsetDateTime::now_utc().date(),
+        )
+        .await
+        .unwrap();
+        clean(&capture(&w, TimeBasis::Booking).await);
+        assert_eq!(
+            w.db.plan_statement(w.org, statement)
+                .await
+                .unwrap()
+                .unwrap()
+                .statement
+                .state,
+            crate::PlanStatementState::Void
+        );
+        // A second loss of the original payment cannot borrow repayment cash.
+        lost(&w, &w.order).await;
+        refund_order_on(&w, &order, 1_000_000, OffsetDateTime::now_utc().date()).await;
+        let amounts:(i64,i64,i64)=sqlx::query_as("SELECT SUM(receivable_minor)::bigint,SUM(payable_minor)::bigint,SUM(suspense_minor)::bigint FROM oxsum.statement_payment_effects WHERE order_id=$1 AND kind='refund'").bind(order.order_id).fetch_one(w.db.pool()).await.unwrap();
+        assert_eq!(amounts, (0, 1_000_000, 0));
+        lost(&w, &order).await;
+        let amounts:(i64,i64,i64)=sqlx::query_as("SELECT SUM(receivable_minor)::bigint,SUM(payable_minor)::bigint,SUM(suspense_minor)::bigint FROM oxsum.statement_payment_effects WHERE order_id=$1 AND kind='dispute'").bind(order.order_id).fetch_one(w.db.pool()).await.unwrap();
+        assert_eq!(amounts, (0, FEE - 1_000_000, 1_000_000));
+        clean(&capture(&w, TimeBasis::Booking).await);
+    }
+}
+
+#[tokio::test]
+async fn statement_repayment_terminal_replay_refuses_missing_effect_without_repair() {
+    let _guard = TEST_LOCK.lock().await;
+    let Some(w) = world(10, false).await else {
+        return;
+    };
+    lost(&w, &w.order).await;
+    let statement = unpaid_statement(&w).await;
+    let order = statement_order(&w, statement, None).await;
+    payment::mark_paid(&w.db, &w.context, &order).await;
+    payment::fulfill(&w.db, &order).await;
+    let dispute = lost(&w, &order).await;
+    let size = w.wallet.log_size().await.unwrap();
+    for _ in 0..2 {
+        w.db.resolve_order_dispute(
+            &w.wallet,
+            &w.owner,
+            dispute,
+            crate::DisputeResolution::Lost,
+            Some("independent accounting loss"),
+            &Uuid::new_v4().to_string(),
+            OffsetDateTime::now_utc().date(),
+        )
+        .await
+        .unwrap();
+    }
+    assert_eq!(w.wallet.log_size().await.unwrap(), size);
+    corrupt(&w,&format!("DELETE FROM oxsum.statement_payment_effects WHERE source_ref='{dispute}' AND kind='dispute'")).await;
+    assert!(
+        w.db.resolve_order_dispute(
+            &w.wallet,
+            &w.owner,
+            dispute,
+            crate::DisputeResolution::Lost,
+            Some("independent accounting loss"),
+            &Uuid::new_v4().to_string(),
+            OffsetDateTime::now_utc().date()
+        )
+        .await
+        .is_err()
+    );
+    assert_eq!(w.wallet.log_size().await.unwrap(), size);
+}
+
+#[tokio::test]
+async fn statement_repayment_provider_only_release_and_paid_callback_use_one_connection() {
+    let _guard = TEST_LOCK.lock().await;
+    let Some(w) = world(10, false).await else {
+        return;
+    };
+    lost(&w, &w.order).await;
+    let statement = unpaid_statement(&w).await;
+    let order = statement_order(&w, statement, None).await;
+    let provider = format!("pay_{}", order.order_id);
+    w.db.note_order_provider(order.order_id, &provider, &serde_json::json!({}))
+        .await
+        .unwrap();
+    let event = crate::VerifiedMerchantEvent {
+        event_id: Uuid::new_v4().to_string(),
+        kind: crate::MerchantEventKind::Expired,
+        payment_id: None,
+        provider_payment_id: Some(provider),
+        organization_id: None,
+        provider_account_id: Some(w.context.account_id.clone()),
+        mode: Some(crate::MerchantMode::Test),
+        amount_minor: Some(order.display_amount_minor),
+        currency: Some(order.display_currency.clone()),
+        refund_id: None,
+    };
+    let receipt =
+        w.db.receive_merchant_event(&w.context, &event, &[81; 32])
+            .await
+            .unwrap();
+    assert_eq!(receipt.payment_id, Some(order.order_id));
+    let url = oxsum_testkit::suite_db_url("independent_reconciliation").unwrap();
+    let one = Db::connect(&url, 1).await.unwrap();
+    tokio::time::timeout(
+        std::time::Duration::from_secs(2),
+        one.apply_order_event(&receipt),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    let released =
+        w.db.statement_payment_quote(&debt_principal(&w).await, statement, None)
+            .await
+            .unwrap();
+    assert_eq!(released.reserved_minor, 0);
+    let event = crate::VerifiedMerchantEvent {
+        event_id: Uuid::new_v4().to_string(),
+        kind: crate::MerchantEventKind::Succeeded,
+        ..event
+    };
+    let receipt =
+        w.db.receive_merchant_event(&w.context, &event, &[82; 32])
+            .await
+            .unwrap();
+    tokio::time::timeout(
+        std::time::Duration::from_secs(2),
+        one.apply_order_event(&receipt),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    let wallet = Wallet::open(one.pool().clone(), &w.tenant).await.unwrap();
+    tokio::time::timeout(
+        std::time::Duration::from_secs(2),
+        one.fulfill_payment_order(order.order_id, &wallet, OffsetDateTime::now_utc().date()),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    let refund =
+        w.db.request_order_refund(
+            w.org,
+            order.order_id,
+            &crate::NewRefundRequest {
+                amount_minor: None,
+                reason: "return released late payment".into(),
+                request_key: Uuid::new_v4().to_string(),
+                requested_by: None,
+            },
+        )
+        .await
+        .unwrap();
+    w.db.resolve_order_refund(
+        &w.owner,
+        refund.refund_id,
+        crate::RefundDecision::Approve,
+        None,
+        &Uuid::new_v4().to_string(),
+    )
+    .await
+    .unwrap();
+    let event = crate::VerifiedMerchantEvent {
+        event_id: Uuid::new_v4().to_string(),
+        kind: crate::MerchantEventKind::RefundSucceeded,
+        refund_id: None,
+        ..event
+    };
+    let receipt =
+        w.db.receive_merchant_event(&w.context, &event, &[83; 32])
+            .await
+            .unwrap();
+    for _ in 0..2 {
+        tokio::time::timeout(
+            std::time::Duration::from_secs(2),
+            one.apply_refund_event(&wallet, &receipt, OffsetDateTime::now_utc().date()),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+    }
+    clean(&capture(&w, TimeBasis::Booking).await);
+}
+
+#[tokio::test]
+async fn statement_repayment_clears_only_debt_dunning_and_never_renews_cancelled_plans() {
+    let _guard = TEST_LOCK.lock().await;
+    let Some(w) = world(10, false).await else {
+        return;
+    };
+    lost(&w, &w.order).await;
+    let statement = unpaid_statement(&w).await;
+    sqlx::query(
+        "UPDATE oxsum.plan_statements SET due_at=now()-interval '100 days' WHERE statement_id=$1",
+    )
+    .bind(statement)
+    .execute(w.db.pool())
+    .await
+    .unwrap();
+    w.db.run_statement_past_due(100).await.unwrap();
+    let on = OffsetDateTime::now_utc().date();
+    assert!(matches!(
+        w.wallet
+            .hold(
+                &Uuid::new_v4().to_string(),
+                "debt blocks wallet draw",
+                1,
+                on
+            )
+            .await,
+        Err(WalletError::Forbidden(_))
+    ));
+    w.db.set_suspended(w.org, true).await.unwrap();
+    w.db.cancel_customer_plan(w.org).await.unwrap();
+    let state: String =
+        sqlx::query_scalar("SELECT state FROM oxsum.customer_plans WHERE customer_plan_id=$1")
+            .bind(w.plan)
+            .fetch_one(w.db.pool())
+            .await
+            .unwrap();
+    let periods: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM oxsum.plan_periods WHERE customer_plan_id=$1")
+            .bind(w.plan)
+            .fetch_one(w.db.pool())
+            .await
+            .unwrap();
+    let order = statement_order(&w, statement, None).await;
+    payment::mark_paid(&w.db, &w.context, &order).await;
+    payment::fulfill(&w.db, &order).await;
+    let result:(String,bool)=sqlx::query_as("SELECT state,dunning_suspended_at IS NULL FROM oxsum.customer_plans WHERE customer_plan_id=$1").bind(w.plan).fetch_one(w.db.pool()).await.unwrap();
+    assert_eq!(result, (state, true));
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>(
+            "SELECT COUNT(*) FROM oxsum.plan_periods WHERE customer_plan_id=$1"
+        )
+        .bind(w.plan)
+        .fetch_one(w.db.pool())
+        .await
+        .unwrap(),
+        periods
+    );
+    assert!(matches!(
+        w.wallet
+            .hold(
+                &Uuid::new_v4().to_string(),
+                "manual restriction remains",
+                1,
+                on
+            )
+            .await,
+        Err(WalletError::Forbidden(_))
+    ));
+    w.db.set_suspended(w.org, false).await.unwrap();
+    w.wallet
+        .top_up(&Uuid::new_v4().to_string(), 1, on)
+        .await
+        .unwrap();
+    w.wallet
+        .hold(
+            &Uuid::new_v4().to_string(),
+            "debt cleared and manual restriction removed",
+            1,
+            on,
+        )
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
+async fn statement_repayment_status_without_authenticated_cash_never_settles_debt() {
+    let _guard = TEST_LOCK.lock().await;
+    let Some(w) = world(10, false).await else {
+        return;
+    };
+    lost(&w, &w.order).await;
+    let statement = unpaid_statement(&w).await;
+    let order = statement_order(&w, statement, None).await;
+    sqlx::query("UPDATE oxsum.payment_orders SET status='paid',paid_at=now() WHERE order_id=$1")
+        .bind(order.order_id)
+        .execute(w.db.pool())
+        .await
+        .unwrap();
+    let size = w.wallet.log_size().await.unwrap();
+    let result =
+        w.db.fulfill_payment_order(order.order_id, &w.wallet, OffsetDateTime::now_utc().date())
+            .await;
+    assert!(
+        matches!(result,Err(WalletError::Conflict(message)) if message.contains("verified merchant receipt"))
+    );
+    assert_eq!(w.wallet.log_size().await.unwrap(), size);
+    assert_eq!(
+        w.db.plan_statement(w.org, statement)
+            .await
+            .unwrap()
+            .unwrap()
+            .statement
+            .paid_minor,
+        0
+    );
+    payment::mark_paid(&w.db, &w.context, &order).await;
+    payment::fulfill(&w.db, &order).await;
+    clean(&capture(&w, TimeBasis::Booking).await);
 }
