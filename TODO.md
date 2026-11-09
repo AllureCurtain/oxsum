@@ -6,6 +6,10 @@ Updated: 2026-11-09
 
 - [ ] [#872](https://github.com/AllureCurtain/oxsum/issues/872) — Prepared portal and embedded pilot kits, shared exact-candidate intake and independent participant result template; independent review and 28 local-link checks passed; PR integration pending. No participants or external contact.
 
+- [ ] [#873](https://github.com/AllureCurtain/oxsum/issues/873) — Preserve complete quota/cache settlement evidence under a bounded 16,384-character ledger description; standalone main regression reproduced, implementation and native/browser compatibility gates in progress. Required before #849.
+
+- [ ] [#875](https://github.com/AllureCurtain/oxsum/issues/875) — Bound configured and response-time gateway evidence before execution so arbitrary guardrail results cannot exceed the receipt budget; required before customer readiness/acceptance. #873 covers known valid composed evidence only.
+
 - [x] [#867](https://github.com/AllureCurtain/oxsum/issues/867) — Prevent a current wallet reopen from reapplying ledger DDL over an active settlement; baseline lock failure reproduced, 37 focused, 519 engine, 29 engine doc and 2,042 complete workspace checks passed. Strict Clippy, formatting and independent source review passed; integrated in PR #870 (`f89fcb65`).
 - [ ] [#869](https://github.com/AllureCurtain/oxsum/issues/869) — Durable bounded provider harness; 15 boundary tests and complete local whole/SSE/offline fixture passed; independent source review passed; PR integration and actual priced provider calls remain.
 
