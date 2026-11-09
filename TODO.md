@@ -4,6 +4,8 @@ Updated: 2026-11-09
 
 ## In progress
 
+- [ ] [#899](https://github.com/AllureCurtain/oxsum/issues/899) — Whole-response/cache refunds now waive flat fees and release quota while retaining provider cost evidence. Baseline reproduced; 17 guardrail and 122 related checks, formatting and server strict Clippy passed; review and integration pending.
+
 - [ ] [#866](https://github.com/AllureCurtain/oxsum/issues/866) — Bounded application-only customer key lifecycle; contract and implementation in progress, migration 0118 follows integrated 0117.
 
 - [x] [#894](https://github.com/AllureCurtain/oxsum/issues/894) — Record focused validation defaults, changed-crate strict Clippy and reuse of unchanged results after rebase; integrated in PR #895 (`397d07b0`).

@@ -759,3 +759,8 @@ and review status; a corrected terminal `lost` replay cannot append another loss
 
 Historical bundle promo is retained and explicitly named in review reasons;
 the correction does not invoke the forward loss's promo cancellation writer.
+
+
+### Guardrail refund and request fees (#899)
+
+A whole-response guardrail refusal, including a cache hit, charges zero customer usage and zero fixed request fee and releases the entire wallet reservation and subscription draw. Streamed content already delivered remains billed; a successful zero-token answer still owes its configured request fee. A customer refund does not imply zero provider cost: retained provider usage remains on the actual attempt and prices operator cost; absent provider counts remain untracked. A refused cache hit makes no new provider attempt. Exact request replay retains the same receipt and does not repeat a charge or refund.

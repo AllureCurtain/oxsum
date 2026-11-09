@@ -690,3 +690,8 @@ The original lost outcome, audit and entry are retained beside `cashCorrection`.
 Operators preview an exact dispute and authenticated receipt, review the source
 revision and explicitly apply it under current owner/finance authority. Unsupported
 or conflicting history refuses; no generic recovery grants new credit or debt.
+
+
+### Guardrail refund and request fees (#899)
+
+A whole-response guardrail refusal, including a cache hit, charges zero customer usage and zero fixed request fee and releases the entire wallet reservation and subscription draw. Streamed content already delivered remains billed; a successful zero-token answer still owes its configured request fee. A customer refund does not imply zero provider cost: retained provider usage remains on the actual attempt and prices operator cost; absent provider counts remain untracked. A refused cache hit makes no new provider attempt. Exact request replay retains the same receipt and does not repeat a charge or refund.

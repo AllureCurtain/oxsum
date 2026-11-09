@@ -51,7 +51,8 @@ const PROGRESS_EVERY_CHARS: usize = 1024;
 /// What a turn is charged for.
 #[derive(Debug, Clone)]
 pub enum Charge {
-    /// Nothing: upstream failed before emitting anything, or could not be reached at all.
+    /// No customer charge, including flat fees: upstream failed, was unreachable,
+    /// or a whole-response guardrail withheld the answer.
     Nothing,
     /// Upstream's own counts, normalized. Boxed: the record is wide and the other
     /// variants carry nothing.
@@ -802,10 +803,16 @@ impl Plan {
             _ => None,
         };
         // Whether the charge carried something worth recording on the winning
-        // attempt (issue #601): `Nothing` leaves `usage_json` NULL — upstream
-        // answered but reported nothing the bill could price. The flag is
-        // lifted before `charge` is consumed below.
+        // attempt (issue #601). Explicit refunds retain provider usage separately
+        // below, while the customer receipt records zero-priced usage. Lift
+        // the flag before `charge` is consumed below.
         let answered = !matches!(charge, Charge::Nothing);
+        // A withheld whole answer still incurred a provider call. Keep its
+        // actual report separate from the customer's explicit zero-charge usage.
+        let refunded_response = !answered && kind == SettlementKind::Usage;
+        let refunded_provider_usage = refunded_response
+            .then(|| self.frames.usage.clone())
+            .flatten();
         let (mut usage, counts) = match charge {
             Charge::Nothing => (UsageRecord::tokens(0, 0)?, CountsProvenance::None),
             Charge::Usage(usage) => {
@@ -950,12 +957,13 @@ impl Plan {
         oxsum_core::retain_reason_evidence(&mut usage, &self.guardrails, reason.as_deref());
         // The user never pays more than the freeze: that is the gateway's promise (product.md). A
         // usage report above it is charged at the freeze and recorded as `capped`, an anomaly for
-        // the admin page rather than a silent loss. A turn upstream never served owes no flat fee
-        // either — `billable` is whether the request ran.
-        let billable = !matches!(
+        // the admin page rather than a silent loss. Explicit `Nothing` also
+        // refunds flat fees. Successful zero-token usage remains billable.
+        let upstream_billable = !matches!(
             kind,
             SettlementKind::UpstreamError | SettlementKind::UpstreamUnreachable
         );
+        let billable = answered && upstream_billable;
         // The rate the turn prices under: the resolved sale terms' own price
         // when a sale book served the admission (issue #603), the wholesale
         // channel catalog otherwise. The snapshot's price is complete — it
@@ -1106,20 +1114,34 @@ impl Plan {
         // priced with — `None` when it carries no `upstream` block, which is
         // untracked rather than free (issue #112). Bound to a variable so the
         // cost basis below reads the same figure the row records.
-        let upstream_cost_minor =
-            self.price
-                .upstream_cost(&usage, billable)
-                .unwrap_or_else(|error| {
-                    tracing::error!(%error, request = %self.request,
+        let refunded_cache = refunded_response && self.upstream_attempts == 0;
+        let provider_usage = if refunded_response {
+            refunded_provider_usage.as_ref()
+        } else {
+            Some(&usage)
+        };
+        // A customer refund cannot erase provider exposure. Price the actual
+        // retained report, or mark missing counts untracked; a refused cache
+        // reuse made no new provider attempt and has zero new provider cost.
+        let upstream_cost_minor = if refunded_cache {
+            Some(0)
+        } else {
+            provider_usage.and_then(|usage| {
+                self.price
+                    .upstream_cost(usage, upstream_billable)
+                    .unwrap_or_else(|error| {
+                        tracing::error!(%error, request = %self.request,
                     "pricing upstream's cost failed; the row records untracked");
-                    None
-                });
+                        None
+                    })
+            })
+        };
         // How the platform's cost figure was derived (issue #604): a cache hit
         // made no upstream call, a local estimate priced no report, a NULL
         // figure is untracked, and anything else is a real attempt's priced
         // cost — including a failed-but-billed one, which records its cost
         // rather than fabricating a zero.
-        let cost_basis = if charge_cached {
+        let cost_basis = if charge_cached || refunded_cache {
             oxsum_core::CostBasis::CacheReuse
         } else if charge_estimated {
             oxsum_core::CostBasis::Estimate
@@ -1151,9 +1173,12 @@ impl Plan {
             cost_basis,
             upstream_attempts: self.upstream_attempts,
         };
-        let usage_json = answered
-            .then(|| serde_json::to_value(&usage).ok())
-            .flatten();
+        let usage_json = if refunded_response {
+            refunded_provider_usage.as_ref()
+        } else {
+            answered.then_some(&usage)
+        }
+        .and_then(|usage| serde_json::to_value(usage).ok());
         // What the settlement transaction answered: the ledger write's
         // outcome, or the operation CAS that lost — the arms below read it.
         enum Outcome {
