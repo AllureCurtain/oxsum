@@ -1,6 +1,6 @@
 # Funded and free admission (#849)
 
-Status: implementation under validation. This evidence does not certify a release
+Status: development gates passed; protected PR integration pending. This evidence does not certify a release
 candidate, provider, PSP, browser journey or external adoption.
 
 ## Baseline
@@ -58,9 +58,19 @@ mandate, team, organization, subscription, plan, cache, gateway, request and
 sweep selection passed 248 tests (one existing opt-in skipped). Logs:
 `/tmp/oxsum-849-final-focused.log`, `/tmp/oxsum-849-combined.log`. The branch was
 then rebased onto integrated main `134a4aae`; runtime source under core/server,
-the engine and verifier was confirmed identical. The final full workspace,
-strict Clippy and independent source-review gates remain to be recorded. Customer readiness follows this repair and the
-separate cancellation boundary issue #854.
+the engine and verifier was confirmed identical. The final cross-crate run at
+`8dcef5957e3b7a8e2d2e4bb33d4a27749f2a0fe8` passed all 2,070 tests (six existing
+opt-in skips, 326.855 seconds). `cargo clippy -p oxsum-core -p oxsum-server
+--all-targets -- -D warnings` passed in 4m28s. Four frontend contract groups,
+code generation and the production frontend build passed; generated schema had
+no drift. Formatting/diff checks and two independent source reviews passed.
+Logs: `/tmp/oxsum-849-workspace.log`, `/tmp/oxsum-849-clippy.log`,
+`/tmp/oxsum-849-frontend.log`. Per the revised test scope, this one full run is
+justified by the core/server transactional boundary and migration; documentation
+or equivalent-source rebases do not trigger another full run. Customer readiness follows this repair and the
+separate cancellation boundary #854, team deletion #859 and evidence budgeting
+#875 issues. The independent source-publication race #891 is being repaired
+before this PR merges; no result here claims that concurrent path is fixed.
 
 Source review also identified an existing team-deletion lock inversion: admission
 locks membership before team; deletion owns the team before its foreign-key
