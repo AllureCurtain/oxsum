@@ -1531,7 +1531,7 @@ name = "doubleentry"
 version = "0.7.0"
 dependencies = [
  "arrow-array 60.1.0",
- "arrow-schema 58.4.1",
+ "arrow-schema 60.1.0",
  "blake3",
  "dotenvy",
  "ed25519-dalek",
