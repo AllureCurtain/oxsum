@@ -302,7 +302,8 @@ remain; #737 stays open. [Evidence](evidence/independent-reconciliation.md).
 - #866 adds application-only bounded customer key lifecycle after #846/#853.
   Contract, source and prepared core/HTTP regressions live in
   `.worktrees/application-customer-keys`; migration 0118 is deliberately
-  unregistered until the 0115/0116/0117 financial/admission chain integrates.
+  unregistered until the pending 0117 reconciliation migration integrates.
+  The prerequisite 0115 refund and 0116 admission migrations are on main.
   Frontend contract/build and four grant checks pass; Rust compilation/runtime,
   upgrade and real example execution remain pending. Independent source review
   passed; expiry uses the database clock, and the prepared consumer regression
