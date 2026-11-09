@@ -55,3 +55,9 @@ This is a core-only production change; gateway source is test-only and the
 contract changes prose only. Focused plan/subscription and coordinated gateway
 checks, changed-crate strict Clippy and formatting are the local gate. The
 unchanged #849 cross-crate workspace evidence is reused.
+
+The PR was rebased onto integrated independent reconciliation #848
+(`a60e14ca`). Only TODO status conflicted; the cancellation implementation and
+all its tests are byte-identical to validated `090f0124`. The independently
+validated accounting comparison adds no plan/admission behavior, so existing
+focused and strict checks are retained without a rerun.
