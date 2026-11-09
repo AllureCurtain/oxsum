@@ -16,6 +16,24 @@ use crate::{WalletError, ledger_source};
 pub(super) type HoldParts = (i64, i64, i64, i64, Option<String>, Option<String>);
 
 impl Wallet {
+    /// Check the receipt's wallet charge against its actual settled revenue legs.
+    pub(crate) fn receipt_charge_matches(
+        &self,
+        entry: &Entry<Balanced, SCALE>,
+        charged: i64,
+    ) -> bool {
+        let posted: i128 = entry
+            .postings()
+            .iter()
+            .filter(|posting| posting.layer == Layer::Settled && posting.account == self.revenue)
+            .map(|posting| match posting.direction {
+                Direction::Credit => i128::from(posting.amount.to_minor()),
+                Direction::Debit => -i128::from(posting.amount.to_minor()),
+            })
+            .sum();
+        posted == i128::from(charged)
+    }
+
     /// Read the full hash-verified entry on the caller's connection.
     pub(super) async fn entry_in(
         &self,

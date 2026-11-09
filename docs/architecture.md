@@ -764,3 +764,13 @@ the correction does not invoke the forward loss's promo cancellation writer.
 ### Guardrail refund and request fees (#899)
 
 A whole-response guardrail refusal, including a cache hit, charges zero customer usage and zero fixed request fee and releases the entire wallet reservation and subscription draw. Streamed content already delivered remains billed; a successful zero-token answer still owes its configured request fee. A customer refund does not imply zero provider cost: retained provider usage remains on the actual attempt and prices operator cost; absent provider counts remain untracked. A refused cache hit makes no new provider attempt. Exact request replay retains the same receipt and does not repeat a charge or refund.
+## Scoped first-call receipt projection
+
+`customer_readiness` reads the partial indexed successful accounting projection,
+then validates each bounded candidate against the existing scoped receipt path
+and pure verifier. It checks canonical actor/request identity, recomputed charge
+and settled revenue postings for the wallet share after quota allocation before returning a navigation identity. Ledger
+opening uses `open_existing`, so a readiness read never bootstraps a ledger or
+runs lazy financial migrations. The public verification page only resolves a
+private entry after current personal customer authentication and record-scope
+filtering; its ordinary pasted-bundle mode remains public.

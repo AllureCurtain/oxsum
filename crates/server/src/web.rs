@@ -52,12 +52,13 @@ pub fn mount(router: Router<AppState>, state: &AppState) -> Router<AppState> {
 /// bill itself is also never cached: a shared cache holding it would hand one
 /// customer's bill to the next request for that URL.
 async fn page_headers(request: Request, next: Next) -> Response {
-    let bill = request.uri().path().starts_with("/bill/");
+    let private_evidence =
+        request.uri().path().starts_with("/bill/") || request.uri().path() == "/verify";
     let mut response = next.run(request).await;
     let headers = response.headers_mut();
     headers.insert(REFERRER_POLICY, HeaderValue::from_static("no-referrer"));
     headers.insert("x-robots-tag", HeaderValue::from_static("noindex"));
-    if bill {
+    if private_evidence {
         headers.insert(CACHE_CONTROL, HeaderValue::from_static("private, no-store"));
     }
     response

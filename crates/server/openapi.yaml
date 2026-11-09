@@ -5997,6 +5997,35 @@ paths:
         "403": { $ref: "#/components/responses/Error" }
         "404": { $ref: "#/components/responses/Error" }
         "409": { $ref: "#/components/responses/Error" }
+  /api/v1/org/readiness/receipt:
+    get:
+      summary: Find a visible successful call with immediate receipt evidence
+      x-consumption-key-access: denied
+      description: |
+        Personal customer session only. Searches up to 32 newest successful
+        accounting rows inside the same customer record scope as receipt proofs,
+        independent of request-log pagination and closed-period reports. Checks
+        canonical entry identity, attribution, inclusion and charge arithmetic.
+        Zero-cost and fully entitled calls count. Refusals, failed calls and
+        blocked whole responses do not. A ready result identifies one verified
+        receipt, not an audit of all history or an independently trusted head.
+        Missing means no eligible accounting row exists; incomplete means the
+        bounded search or missing/inconsistent evidence could not establish
+        readiness. No ledger, usage, report or reservation is written.
+      security: [{ sessionCookie: [] }]
+      responses:
+        "200":
+          description: Current scoped first-call evidence readiness
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data: { $ref: "#/components/schemas/CustomerReceiptReadiness" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
   /api/v1/business/readiness:
     get:
       summary: Read current business setup readiness
@@ -11472,6 +11501,27 @@ components:
           type: [string, "null"]
           enum: [profile, channels, prices, integrations, customers, null]
           description: Existing business section the current actor can manage; null requires an appropriately authorized colleague.
+    CustomerReceiptReadiness:
+      type: object
+      additionalProperties: false
+      required: [state, receipt]
+      properties:
+        state: { type: string, enum: [ready, missing, incomplete] }
+        receipt:
+          oneOf:
+            - { $ref: "#/components/schemas/CustomerReadyReceipt" }
+            - { type: "null" }
+    CustomerReadyReceipt:
+      type: object
+      additionalProperties: false
+      required: [requestId, entryId, contentHash, model, chargedMinor, walletChargedMinor]
+      properties:
+        requestId: { type: string }
+        entryId: { type: string, format: uuid }
+        contentHash: { type: string, pattern: "^[0-9a-f]{64}$" }
+        model: { type: string }
+        chargedMinor: { type: integer, format: int64, minimum: 0, description: Total priced usage including subscription quota. }
+        walletChargedMinor: { type: integer, format: int64, minimum: 0, description: Wallet amount after the recorded subscription allocation. }
     BusinessReadiness:
       type: object
       additionalProperties: false

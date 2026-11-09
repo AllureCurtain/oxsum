@@ -3,7 +3,9 @@
 // adding the missing thing flips the step by itself. The page and the Overview
 // card share this hook, which also means React Query serves both from one fetch.
 
-import { useBalance, useKeys, useReportLinks, useRequestLog } from "../api/hooks";
+import { useBalance, useKeys } from "../api/hooks";
+import { useCustomerReceiptReadiness } from "../api/hooks/readiness";
+import { receiptProofHref, receiptReadinessState } from "./receipt-readiness";
 import { useAdmin, useAdminToken } from "../pages/admin/api";
 
 /** One step's outcome. `blocked` means the read was skipped because the operator
@@ -14,7 +16,7 @@ export interface GettingStartedStep {
   key: "channel" | "credit" | "key" | "request" | "bill";
   state: StepState;
   /** The counts the page's copy names when a step is unmet. */
-  detail?: { channels?: number; pricedChannels?: number; refused?: number; errored?: number };
+  detail?: { channels?: number; pricedChannels?: number };
 }
 
 export interface GettingStarted {
@@ -23,6 +25,7 @@ export interface GettingStarted {
   total: number;
   loading: boolean;
   ready: boolean;
+  proofHref?: string;
 }
 
 interface AdminChannel {
@@ -35,17 +38,8 @@ export function useGettingStarted(): GettingStarted {
   const channels = useAdmin<AdminChannel[]>(adminToken ?? "", "/channels", [], Boolean(adminToken));
   const balance = useBalance();
   const keys = useKeys();
-  const requests = useRequestLog({ limit: 10 });
-  const links = useReportLinks();
-
-  const rows = requests.data?.rows ?? [];
-  const settled = rows.some((row) => row.status === "settled");
-  const refused = rows.filter((row) => row.status === "refused").length;
-  const errored = rows.filter((row) => row.status === "errored").length;
-
-  const liveLinks = (links.data?.rows ?? []).filter(
-    (link) => !link.revokedAt && new Date(link.expiresAt).getTime() > Date.now(),
-  );
+  const receipt = useCustomerReceiptReadiness();
+  const receiptState = receiptReadinessState({ ...receipt, error: receipt.error as { status?: number } | null });
 
   let channelStep: GettingStartedStep;
   if (!adminToken) {
@@ -86,27 +80,8 @@ export function useGettingStarted(): GettingStarted {
             ? "done"
             : "todo",
     },
-    {
-      key: "request",
-      state: requests.isPending
-        ? "loading"
-        : requests.isError
-          ? "error"
-          : settled
-            ? "done"
-            : "todo",
-      detail: { refused, errored },
-    },
-    {
-      key: "bill",
-      state: links.isPending
-        ? "loading"
-        : links.isError
-          ? "error"
-          : liveLinks.length > 0
-            ? "done"
-            : "todo",
-    },
+    { key: "request", state: receiptState },
+    { key: "bill", state: receiptState },
   ];
 
   const done = steps.filter((step) => step.state === "done").length;
@@ -116,5 +91,6 @@ export function useGettingStarted(): GettingStarted {
     total: steps.length,
     loading: steps.some((step) => step.state === "loading"),
     ready: done === steps.length,
+    proofHref: receiptProofHref(receipt.data),
   };
 }

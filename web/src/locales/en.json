@@ -108,20 +108,20 @@
     },
     "request": {
       "title": "Send a real request",
-      "done": "A request was admitted, settled and charged through the normal hold pipeline.",
-      "todoNone": "No request has been recorded yet.",
+      "done": "A successful call has settled with a visible, recomputable receipt, including zero-cost calls.",
+      "todoNone": "No eligible successful call is recorded in your current scope yet.",
       "todoRecorded": "{{refused}} refused and {{errored}} errored request(s) are recorded, but none settled. Open Requests to see the recorded outcome.",
       "action": "Send a turn from Chat",
       "secondary": "See request outcomes",
-      "note": "The test turn is a real billable request — credit is frozen before it starts and settled afterwards. It is not a free connection probe."
+      "note": "Calls use the applicable published price and funding. Free or fully entitled calls can settle without a wallet charge."
     },
     "bill": {
-      "title": "Share a customer bill",
-      "done": "A live report link exists. Open it in a logged-out window; the check runs in that browser.",
-      "todo": "No live report link exists. Mint a report for one customer and share its link.",
-      "action": "Open Reports",
-      "secondary": "Open the public verifier",
-      "note": "Reports cover only fully ended UTC days: a turn sent today appears in tomorrow's report. The bill page's verdict is the customer's own — this page cannot observe it."
+      "title": "Verify your first call",
+      "done": "A receipt is available now. Open it to verify its entry and charge in your browser.",
+      "todo": "Complete a successful call to obtain its immediate receipt.",
+      "action": "See request outcomes",
+      "secondary": "Verify this receipt",
+      "note": "Closed-period reports are available separately after the UTC period ends. They are not required to verify a call today."
     },
     "boundary": {
       "title": "What the customer's check establishes",
@@ -133,7 +133,8 @@
       "checking": "Checking setup…",
       "next": "Next: {{step}}.",
       "action": "Get started"
-    }
+    },
+    "receiptRestricted": "Sign in with a personal customer session to check your visible receipts."
   },
   "overview": {
     "title": "Overview",

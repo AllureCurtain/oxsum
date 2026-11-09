@@ -846,3 +846,22 @@ request also returns current standing; a new request for another outcome conflic
 ### Guardrail refund and request fees (#899)
 
 A whole-response guardrail refusal, including a cache hit, charges zero customer usage and zero fixed request fee and releases the entire wallet reservation and subscription draw. Streamed content already delivered remains billed; a successful zero-token answer still owes its configured request fee. A customer refund does not imply zero provider cost: retained provider usage remains on the actual attempt and prices operator cost; absent provider counts remain untracked. A refused cache hit makes no new provider attempt. Exact request replay retains the same receipt and does not repeat a charge or refund.
+## Immediate customer receipt readiness
+
+`GET /api/v1/org/readiness/receipt` requires a personal customer session and
+applies the same member/key record scope as receipt proofs. It checks at most 32
+newest eligible accounting rows, independently of operational request logs.
+`ready` carries an exact request, entry, canonical hash, model, total priced usage and the separate wallet charge;
+zero-cost and fully quota-funded success qualify. `missing` means no eligible row was found;
+`incomplete` means available evidence did not establish readiness within the
+bound. Failed/refused calls and whole-response blocks do not qualify. Reads
+validate attribution, entry identity, charge arithmetic, posted revenue and log
+inclusion without writing accounting data or creating a ledger.
+
+`/verify?entry=<uuid>` prefills the existing verification form from a current
+personal session's scoped receipt. Foreign/invisible entries return 404,
+missing sessions return 401 and explicit machine headers return 403 rather than
+inheriting a cookie. Malformed entry IDs return 400. Plain `/verify` and its
+public sample remain available without authentication. The prefilled hash comes
+from this server and is labeled accordingly; retaining it and independent head
+trust are separate from internal inclusion/arithmetic checks.

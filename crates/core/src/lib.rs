@@ -26,6 +26,7 @@ mod channels;
 mod collection_terms;
 mod credit_notes;
 mod customer_authority;
+mod customer_readiness;
 mod customers;
 mod db;
 mod deposit_refunds;
@@ -365,6 +366,7 @@ pub use x402::{
 };
 
 pub use customer_authority::{CustomerCapability, CustomerRecordScope};
+pub use customer_readiness::{CustomerReadyReceipt, CustomerReceiptReadiness};
 
 pub use sale_books::{
     SaleBook, SaleBookHistory, SaleBookPage, SaleChange, SaleChangeRequest, SaleDraft,

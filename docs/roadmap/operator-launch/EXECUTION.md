@@ -6,6 +6,13 @@ Read this file on every resume, then reconcile actual main, worktrees, issues/PR
 
 ## Current state
 
+- #909 implements the immediate receipt slice of #901: scoped successful
+  accounting reads, exact private verification links and no closed-report
+  prerequisite. 2,156 workspace checks and 59 final affected checks passed;
+  strict core/server/web Clippy, contract/frontend and real browser/WASM
+  positive/negative checks passed. Independent review/integration remain.
+  [Evidence](evidence/first-call-receipt.md). The model/key/funding slice remains #901.
+
 - #848 independently compares captured financial sources with verified official
   postings and retains immutable attempts and explicit exclusions. Twenty-two
   new source/fault cases, 49 related core/upgrade checks, seven HTTP checks and

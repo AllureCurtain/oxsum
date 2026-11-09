@@ -61,12 +61,8 @@ export function GettingStarted() {
       title: t("gettingStarted.request.title"),
       role: t("gettingStarted.role.member"),
       done: t("gettingStarted.request.done"),
-      todo: (checklist.steps[3].detail?.refused ?? 0) + (checklist.steps[3].detail?.errored ?? 0) > 0
-        ? t("gettingStarted.request.todoRecorded", {
-            refused: checklist.steps[3].detail?.refused ?? 0,
-            errored: checklist.steps[3].detail?.errored ?? 0,
-          })
-        : t("gettingStarted.request.todoNone"),
+      todo: t("gettingStarted.request.todoNone"),
+      blocked: t("gettingStarted.receiptRestricted"),
       action: { to: "/chat", label: t("gettingStarted.request.action") },
       secondary: { to: "/requests", label: t("gettingStarted.request.secondary") },
       note: t("gettingStarted.request.note"),
@@ -74,11 +70,14 @@ export function GettingStarted() {
     {
       key: "bill",
       title: t("gettingStarted.bill.title"),
-      role: t("gettingStarted.role.owner"),
+      role: t("gettingStarted.role.member"),
       done: t("gettingStarted.bill.done"),
       todo: t("gettingStarted.bill.todo"),
-      action: { to: "/reports", label: t("gettingStarted.bill.action") },
-      secondary: { to: "/verify", label: t("gettingStarted.bill.secondary"), external: true },
+      blocked: t("gettingStarted.receiptRestricted"),
+      action: { to: "/requests", label: t("gettingStarted.bill.action") },
+      secondary: checklist.proofHref
+        ? { to: checklist.proofHref, label: t("gettingStarted.bill.secondary"), external: true }
+        : undefined,
       note: t("gettingStarted.bill.note"),
     },
   ];

@@ -695,3 +695,13 @@ or conflicting history refuses; no generic recovery grants new credit or debt.
 ### Guardrail refund and request fees (#899)
 
 A whole-response guardrail refusal, including a cache hit, charges zero customer usage and zero fixed request fee and releases the entire wallet reservation and subscription draw. Streamed content already delivered remains billed; a successful zero-token answer still owes its configured request fee. A customer refund does not imply zero provider cost: retained provider usage remains on the actual attempt and prices operator cost; absent provider counts remain untracked. A refused cache hit makes no new provider attempt. Exact request replay retains the same receipt and does not repeat a charge or refund.
+## Immediate first-call evidence
+
+A customer's successful visible call can satisfy the request and bill steps
+immediately, even with a zero wallet charge. The checklist uses scoped canonical
+receipt evidence rather than the last ten operational requests or a report share
+link. Missing, incomplete and failed checks never mark the steps complete.
+The verification action opens the actual entry's prefilled proof; it does not
+claim independent trust merely because the server supplied a matching hash.
+Closed-period exports remain a separate workflow with their own authority and
+UTC boundary. Model/key/funding readiness remains tracked in #901.

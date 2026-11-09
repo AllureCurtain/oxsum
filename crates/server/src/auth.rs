@@ -260,7 +260,8 @@ fn customer_route_capability(method: &str, path: &str) -> oxsum_core::CustomerCa
         | ("PUT", "/org/experiments/{name}") => C::AccountManage,
         (
             "GET",
-            "/orgs"
+            "/org/readiness/receipt"
+            | "/orgs"
             | "/org/groups"
             | "/org/members"
             | "/org/teams"
