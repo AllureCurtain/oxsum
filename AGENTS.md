@@ -33,8 +33,8 @@ Full command list in docs/development.md.
 docker compose up -d                       # start the database
 cargo run -p oxsum-server                  # start the server (needs variables from .env)
 cargo nextest run -p oxsum-<crate>       # focused tests while iterating (loads .env when present)
-cargo nextest run --workspace            # the full suite — cross-crate changes, or just before a risky push
-scripts/fmt.sh && cargo clippy --workspace --all-targets
+cargo nextest run --workspace            # true cross-crate changes or a risky candidate freeze
+scripts/fmt.sh && cargo clippy -p oxsum-<crate> --all-targets -- -D warnings
 ```
 
 `cargo nextest` is the default test runner: it runs test binaries in parallel
@@ -54,12 +54,25 @@ cargo nextest run -p oxsum-core --test <suite> --test <other>   # several, one s
 
 `cargo nextest run --workspace` is **not** the iteration command — it compiles
 and runs every test binary (~7 minutes, dozens of `de_*`/`oxsum_test_*`
-scratch databases). Reach for it only when the change crosses crates (a shared
-trait, a migration ordering rule, a workspace dependency) or right before a
-merge whose red CI would cost more than the suite. PR-required CI (`fmt`,
+scratch databases). Run it only for true cross-crate changes (for example core
+and server/web, a shared trait/configuration, migration ordering or workspace
+dependency) or a risky candidate-freeze push. Documentation, frontend-only UI and
+single-crate fixes do not require it. PR-required CI (`fmt`,
 `clippy`, `test`, `wasm`, `frontend`) stays cheap because the `test` job is
 `--lib`/`--doc` only; the heavy integration shards run post-merge on `main`,
 not on pull requests.
+
+Reuse completed checks when the tested code has not changed. A rebase that only
+changes commit ids or appends docs/TODO/decisions does not require another run.
+When rebasing brings relevant code changes, run only affected focused tests; do
+not repeat the full suite merely to prove a new base. Follow the same rule for
+prior fmt, strict Clippy and contract/codegen results. New failures or changed
+behavior justify additional targeted checks.
+
+Keep pinned formatting, strict Clippy for the changed Rust crates (repeat `-p`
+for several), and relevant contract/codegen checks. Cross-crate work runs one
+complete suite after focused fixes; further local changes use affected focused
+coverage. CI and the candidate's exact-artifact gates retain their own scope.
 
 ### Test scratch databases
 
@@ -132,11 +145,13 @@ The local gate is the fast half:
 
 ```bash
 scripts/fmt-check.sh
-cargo clippy --workspace --all-targets
+cargo clippy -p oxsum-<crate> --all-targets -- -D warnings
 cargo nextest run -p <crate>   # the crates the change touched
 ```
 
-Run `cargo nextest run --workspace` locally when the change crosses crates — a trait, shared config, a workspace dependency — or when CI being red would cost more than the seven minutes the suite takes. A `--admin` merge skips every check; never use it on a PR whose CI is not fully green.
+Apply the testing-scope and evidence-reuse rules above; do not expand local
+validation solely because a PR is ready to merge. Merge normally only after
+required checks and independent review pass. Never use `--admin` to bypass them.
 
 ## Development process
 
@@ -216,12 +231,12 @@ Check a change with:
 
 ```bash
 scripts/fmt-check.sh
-cargo clippy --workspace --all-targets -- -D warnings
+cargo clippy -p oxsum-<crate> --all-targets -- -D warnings
 cargo nextest run -p <crate>   # the crates the change touched
 ```
 
-Cross-crate changes also run `cargo nextest run --workspace`; `oxsum-verify`
-changes also run
+True cross-crate changes use the single full run and reuse rules above.
+`oxsum-verify` changes also run
 `cargo check -p oxsum-verify --target wasm32-unknown-unknown --features wasm`.
 
 ## Hard rules

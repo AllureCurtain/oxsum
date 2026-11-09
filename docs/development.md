@@ -572,18 +572,30 @@ revisions require the upgrade runbook's stop/drain boundary.
 | Validate the environment | `cargo run -p oxsum-server -- --check-config` (runs the startup config parse and prints a JSON verdict without touching the database — issue #619) |
 | Collect sanitized deployment diagnostics | `python3 scripts/operator-diagnostics.py --url http://127.0.0.1:3000 --token-file /private/operator-token --env-file deploy/.env --output /private/diagnostics.json` — private inputs, new output; optional token/env flags; fixed counts/presence only ([guide](operator-diagnostics.md), #819) |
 | Seed the demo world | `OXSUM_DEMO_SEED=true cargo run -p oxsum-server -- seed` (populates, prints the credentials, exits — see "Demo data") |
-| All tests | `cargo nextest run --workspace` — runs the full suite locally (loads `DATABASE_URL` from `.env` or the shell; `cargo test --workspace` is the fallback and covers doctests). Worth it for cross-crate changes; otherwise CI runs the same coverage on every PR — see "CI" below |
-| Focused while iterating | `cargo nextest run -p oxsum-<crate>` — only the crates the change touched; the local pre-push gate is fmt + clippy + these focused runs, with CI holding the full suite |
+| Focused tests (default) | `cargo nextest run -p oxsum-<crate> --test <suite>` or the changed crate's suites |
+| Full workspace | `cargo nextest run --workspace` — only true cross-crate changes/shared traits/configuration/migration ordering/workspace dependencies, or a risky candidate freeze; see validation scope below |
 | Run the end-to-end demo | `python3 demo/demo.py` (Python dependencies in `demo/requirements.txt`, Node 20.16+, WASM toolchain and PostgreSQL CREATEDB role; isolated database, stub SDK call, clean offline consumer; see README) |
-| All tests | `cargo nextest run --workspace` — runs the full suite locally (loads `DATABASE_URL` from `.env` or the shell; `cargo test --workspace` is the fallback and covers doctests). Worth it for cross-crate changes; PR CI runs the fast tier; heavy integration/engine evidence requires the full workflow — see "CI" below |
-| Focused while iterating | `cargo nextest run -p oxsum-<crate>` — only the crates the change touched; the local pre-push gate is fmt + clippy + these focused runs, with full workspace coverage additionally required for cross-crate changes |
-| Demo replacement | Follow #728 / PR #751 after integration; the baseline script has stale authority/isolation assumptions and must not run against an ordinary database |
 | Generative sequences, quick run | `PROPTEST_CASES=50 cargo test -p oxsum-core --test generative` |
 | Bounded provider exercise | `python3 scripts/bounded-provider-smoke.py --help` (explicit artifacts, shared allowance and isolated runtime; see docs/provider-smoke.md) |
 | doubleentry's Postgres tests | `cargo test -p doubleentry --features postgres --test postgres` (spins up its own container via testcontainers; `DOUBLEENTRY_DATABASE_URL`/`DATABASE_URL` set → that server instead, no Docker) |
 | Format | `scripts/fmt.sh` (pinned nightly; write) |
 | Check formatting | `scripts/fmt-check.sh` |
-| Lint | `cargo clippy --workspace --all-targets` |
+| Lint changed crates | `cargo clippy -p oxsum-<crate> --all-targets -- -D warnings` (repeat `-p` for multiple changed crates) |
+
+### Validation scope and reuse
+
+Default to the changed crate/test binary. Documentation, frontend-only UI and
+single-crate fixes do not require workspace nextest. Core plus server/web is a
+true cross-crate change: run the full suite once after focused fixes. A risky
+candidate freeze retains its full gate. Frontend, contract/codegen, pinned
+formatting and changed-crate strict Clippy checks remain required where relevant.
+
+Reuse prior passing checks when code is unchanged. Rebase-only commit ids and
+append-only docs/TODO/decisions edits require no test rerun. If a rebase brings
+relevant code changes, run only affected focused tests, not another full suite
+to certify the new base. Use failures and behavior changes to choose additional
+coverage. Required CI still runs its configured fast tier; post-merge and final
+candidate full CI are distinct gates.
 
 ## Web dashboard
 
@@ -1061,8 +1073,8 @@ Tailwind v4 theme colors in `web/src/index.css`.
 Before committing, confirm:
 
 - [ ] Branch name matches the branch naming policy above, and the PR links its issue in the title or body where applicable
-- [ ] `scripts/fmt-check.sh` and `cargo clippy --workspace --all-targets` produce no warnings
-- [ ] With `DATABASE_URL` available, the relevant `cargo nextest` suites pass; cross-crate changes also pass `cargo nextest run --workspace`. Doctests and final candidate full CI remain separate required gates.
+- [ ] `scripts/fmt-check.sh` and changed-crate `cargo clippy -p oxsum-<crate> --all-targets -- -D warnings` pass, reusing unchanged results
+- [ ] With `DATABASE_URL` available, relevant focused suites pass. True cross-crate changes or a risky candidate freeze use one workspace run; unchanged rebases reuse results, and relevant changes need only affected focused checks. Doctests and final candidate full CI remain separate gates.
 - [ ] Interface changed: `openapi.yaml`, implementation, tests and callers are all in sync
 - [ ] `crates/doubleentry` changed: carries an `oxsum change` comment and an entry in docs/decisions.md
 - [ ] UI changed: loading, empty and error states all checked
