@@ -4,6 +4,8 @@ Updated: 2026-11-09
 
 ## In progress
 
+- [ ] [#894](https://github.com/AllureCurtain/oxsum/issues/894) — Record focused validation defaults, changed-crate strict Clippy and reuse of unchanged results after rebase; documentation review pending.
+
 - [x] [#891](https://github.com/AllureCurtain/oxsum/issues/891) — Fix concurrent statement/period evidence descriptor publication after main CI exposed a non-arbiter unique-index race; five focused core checks, core-only strict Clippy and independent source review passed; integrated in PR #893 (`dcd226c6`).
 
 - [x] [#876](https://github.com/AllureCurtain/oxsum/issues/876) — Offline consumer retained scope, separate price/sale verdicts and original JSON preservation; eight real-SDK/transport groups and v13/v14/v2 export rejection matrices passed. Independent review passed; integrated in PR #889 (`5d70ef34`).
