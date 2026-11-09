@@ -14,6 +14,11 @@ preserved CreditLine benefit B, stays source-linked Adjustments review suspense.
 The correction is not a second provider cash loss. Later top-ups cannot replace
 spent original source.
 
+Historical bundle promotional grants also remain unchanged and carry the
+`bundlePromoRetained` review reason. This Cash-only correction does not cancel
+or reopen an old entitlement. The forward non-plan loss policy separately
+cancels the original bundle promo lot when recording a new loss.
+
 ## Exact evidence
 
 Stop and drain older financial writers before deployment and retain a verified

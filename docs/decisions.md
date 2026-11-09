@@ -3645,3 +3645,6 @@ audit remain intact. Missing, foreign, reversed or contradictory historical
 sources refuse. Existing actual refunds and losses cap original source once;
 corrected chargebacks consume L, never the B + L repair amount. Gross receipt
 and refund reports retain their current meanings.
+Historical bundle promo is retained under the unchanged-entitlement boundary and
+named `bundlePromoRetained` for finance review. Forward losses still use their
+separately defined promo-cancellation policy.

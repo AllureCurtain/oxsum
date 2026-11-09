@@ -27,6 +27,7 @@ pub(super) fn revision(source: &serde_json::Value) -> Result<String, WalletError
 pub(super) struct Source {
     pub dispute_id: Uuid,
     pub order_id: Uuid,
+    pub purpose: String,
     pub organization_id: Uuid,
     pub business_id: Uuid,
     pub loss: i64,
@@ -235,6 +236,7 @@ pub(super) async fn source_in(
     Ok(Source {
         dispute_id: dispute,
         order_id: order,
+        purpose: row.try_get("purpose")?,
         organization_id: organization,
         business_id: business,
         loss,

@@ -21182,7 +21182,7 @@ export interface components {
              * @description the ledger entry retaining the lost dispute cash effect
              */
             rechargeEntryId: string | null;
-            /** @description Verified append-only compensation of a historical wrong-direction non-plan chargeback. The old entry and terminal outcome are preserved; null does not certify historical correctness. */
+            /** @description Retained append-only compensation of a historical wrong-direction non-plan chargeback. The old entry and terminal outcome are preserved; null means no retained correction. This read projection does not independently reverify the evidence or certify historical correctness. */
             cashCorrection: components["schemas"]["NonplanChargebackCorrection"] | null;
             /** Format: date-time */
             createdAt: string;
