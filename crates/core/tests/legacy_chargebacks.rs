@@ -165,7 +165,7 @@ async fn lose(w: &World, dispute: Uuid) -> OrderDispute {
 
 async fn detail(w: &World, dispute: Uuid) -> serde_json::Value {
     sqlx::query_scalar(
-        "SELECT detail FROM oxsum.finance_audit WHERE action='dispute.resolve' AND target=$1",
+        "SELECT a.detail FROM oxsum.finance_audit a JOIN oxsum.disputes d ON d.audit_ref=a.audit_id WHERE a.action='dispute.resolve' AND a.target=$1",
     )
     .bind(dispute.to_string())
     .fetch_one(w.db.pool())
@@ -220,6 +220,17 @@ async fn legacy_order(
     fiat: i64,
     terminal: &str,
 ) -> Legacy {
+    legacy_order_with_evidence(w, order, wrong, fiat, terminal, false).await
+}
+
+async fn legacy_order_with_evidence(
+    w: &World,
+    order: PaymentOrder,
+    wrong: i64,
+    fiat: i64,
+    terminal: &str,
+    earlier_evidence: bool,
+) -> Legacy {
     let original_wallet = w.wallet.available().await.unwrap();
     // Reserve the original Wallet while drawing a separate credit hold. The
     // legitimate old wrong writer repays that draw, then the original hold is
@@ -243,6 +254,19 @@ async fn legacy_order(
         .await
         .unwrap();
     let dispute = open(w, &order, fiat).await;
+    if earlier_evidence {
+        w.db.resolve_order_dispute(
+            &w.wallet,
+            &w.owner,
+            dispute.dispute_id,
+            DisputeResolution::EvidenceDue,
+            Some("historical evidence requested"),
+            &format!("legacy-evidence/{}", dispute.dispute_id),
+            today(),
+        )
+        .await
+        .unwrap();
+    }
     let key = format!("dispute-recharge/{}", dispute.dispute_id);
     w.wallet.repay_credit(&key, wrong, today()).await.unwrap();
     if original_wallet > 0 {
@@ -290,6 +314,102 @@ async fn legacy_order(
         old_hash: hash(w, old_entry).await,
         old_audit,
     }
+}
+
+#[tokio::test]
+async fn earlier_exact_resolution_replays_current_corrected_standing() {
+    let Some(w) = world().await else { return };
+    let order = paid(&w, PaymentOrderPurpose::WalletTopup, true).await;
+    let mut old = legacy_order_with_evidence(&w, order, 500_000, 250, "lost", true).await;
+    old.request.expected_revision = Some(
+        w.db.recover_nonplan_chargeback(&w.owner, &w.wallet, &old.request, false, today())
+            .await
+            .unwrap()
+            .source_revision,
+    );
+    let correction =
+        w.db.recover_nonplan_chargeback(&w.owner, &w.wallet, &old.request, true, today())
+            .await
+            .unwrap()
+            .effect
+            .unwrap();
+    let before = w.wallet.log_size().await.unwrap();
+    let audits = audit_count(&w, old.dispute.dispute_id).await;
+    for (resolution, reason, key) in [
+        (
+            DisputeResolution::EvidenceDue,
+            "historical evidence requested",
+            format!("legacy-evidence/{}", old.dispute.dispute_id),
+        ),
+        (
+            DisputeResolution::Lost,
+            "retained historical loss",
+            format!("legacy-loss/{}", old.dispute.dispute_id),
+        ),
+        (
+            DisputeResolution::Lost,
+            "read current terminal outcome",
+            Uuid::new_v4().to_string(),
+        ),
+    ] {
+        let replay =
+            w.db.resolve_order_dispute(
+                &w.wallet,
+                &w.owner,
+                old.dispute.dispute_id,
+                resolution,
+                Some(reason),
+                &key,
+                today(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(replay.state, "lost");
+        assert_eq!(replay.recharge_entry_id, Some(old.old_entry));
+        assert_eq!(
+            replay.cash_correction.unwrap().correction_entry_id,
+            correction.correction_entry_id
+        );
+    }
+    for (resolution, reason, key) in [
+        (
+            DisputeResolution::EvidenceDue,
+            "changed request",
+            format!("legacy-evidence/{}", old.dispute.dispute_id),
+        ),
+        (
+            DisputeResolution::Won,
+            "historical evidence requested",
+            format!("legacy-evidence/{}", old.dispute.dispute_id),
+        ),
+        (
+            DisputeResolution::EvidenceDue,
+            "new backward transition",
+            Uuid::new_v4().to_string(),
+        ),
+        (
+            DisputeResolution::Won,
+            "new terminal transition",
+            Uuid::new_v4().to_string(),
+        ),
+    ] {
+        assert!(matches!(
+            w.db.resolve_order_dispute(
+                &w.wallet,
+                &w.owner,
+                old.dispute.dispute_id,
+                resolution,
+                Some(reason),
+                &key,
+                today()
+            )
+            .await,
+            Err(WalletError::Conflict(_))
+        ));
+    }
+    assert_eq!(w.wallet.log_size().await.unwrap(), before);
+    assert_eq!(audit_count(&w, old.dispute.dispute_id).await, audits);
+    assert_eq!(detail(&w, old.dispute.dispute_id).await, old.old_audit);
 }
 
 #[tokio::test]
