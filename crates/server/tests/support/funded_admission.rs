@@ -1424,13 +1424,16 @@ async fn cancel_at_due_boundary(world: &World, plan: &oxsum_core::CustomerPlan) 
         .bind(plan.customer_plan_id).execute(&world.pool).await.unwrap();
 }
 
-async fn closed_cancelled_period(
-    world: &World,
-    plan: &oxsum_core::CustomerPlan,
-    consumed: i64,
-) {
+async fn closed_cancelled_period(world: &World, plan: &oxsum_core::CustomerPlan, consumed: i64) {
     let organization = world.organization_id.parse().unwrap();
-    assert!(world.db.customer_plan(organization).await.unwrap().is_none());
+    assert!(
+        world
+            .db
+            .customer_plan(organization)
+            .await
+            .unwrap()
+            .is_none()
+    );
     assert!(
         world
             .db
@@ -1450,13 +1453,12 @@ async fn closed_cancelled_period(
     let periods = world.db.plan_periods(plan.customer_plan_id).await.unwrap();
     assert_eq!(periods.len(), 1);
     assert_eq!(periods[0].state, oxsum_core::PlanPeriodState::Closed);
-    let journals: i64 = sqlx::query_scalar(
-        "SELECT count(*) FROM oxsum.invoice_journals WHERE customer_plan_id=$1",
-    )
-    .bind(plan.customer_plan_id)
-    .fetch_one(&world.pool)
-    .await
-    .unwrap();
+    let journals: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM oxsum.invoice_journals WHERE customer_plan_id=$1")
+            .bind(plan.customer_plan_id)
+            .fetch_one(&world.pool)
+            .await
+            .unwrap();
     assert_eq!(journals, 1, "cancellation closes and bills exactly once");
 }
 
@@ -1476,7 +1478,10 @@ async fn a_cancelled_boundary_refusal_rolls_back_every_admission_effect() {
         let response = chat(&world.app, &world.key, &world.model, json!({})).await;
         assert_eq!(response.status(), StatusCode::PAYMENT_REQUIRED);
         let _ = response.into_body().collect().await.unwrap();
-        assert!(world.script.seen().is_empty(), "ended quota never reaches upstream");
+        assert!(
+            world.script.seen().is_empty(),
+            "ended quota never reaches upstream"
+        );
         assert_eq!(remaining_draw(&world).await, 0);
         no_reservations(&world).await;
         let periods = world
@@ -1484,7 +1489,10 @@ async fn a_cancelled_boundary_refusal_rolls_back_every_admission_effect() {
             .subscription_periods(plan.subscription_id)
             .await
             .unwrap();
-        assert_eq!(periods[0].outcome, "open", "the refused transaction rolls back");
+        assert_eq!(
+            periods[0].outcome, "open",
+            "the refused transaction rolls back"
+        );
         let effects: (i64, i64) = sqlx::query_as(
             "SELECT (SELECT count(*) FROM oxsum.subscription_draws WHERE subscription_id=$1), \
                     (SELECT count(*) FROM oxsum.invoice_journals WHERE customer_plan_id=$2)",
@@ -1500,7 +1508,11 @@ async fn a_cancelled_boundary_refusal_rolls_back_every_admission_effect() {
     world
         .wallet()
         .await
-        .top_up("cancelled-boundary-funding", 100, OffsetDateTime::now_utc().date())
+        .top_up(
+            "cancelled-boundary-funding",
+            100,
+            OffsetDateTime::now_utc().date(),
+        )
         .await
         .unwrap();
     let record = complete(&world).await;
@@ -1601,9 +1613,8 @@ async fn both_cancelled_boundary_winners_preserve_old_draws_and_charge_new_calls
         }
         let db = world.db.clone();
         let settle_key = old_key.clone();
-        let settlement = tokio::spawn(async move {
-            db.settle_subscription_draw(&settle_key, 20).await
-        });
+        let settlement =
+            tokio::spawn(async move { db.settle_subscription_draw(&settle_key, 20).await });
         wait_for_blocked(&world, winner_pid, 2).await;
         blocker.commit().await.unwrap();
         let (worker, request, settled) = tokio::time::timeout(Duration::from_secs(5), async {
@@ -1623,7 +1634,11 @@ async fn both_cancelled_boundary_winners_preserve_old_draws_and_charge_new_calls
         assert_eq!(world.wallet().await.available().await.unwrap(), 60);
         assert_eq!(world.script.seen().len(), 1);
         assert_eq!(
-            world.db.settle_subscription_draw(&old_key, 20).await.unwrap(),
+            world
+                .db
+                .settle_subscription_draw(&old_key, 20)
+                .await
+                .unwrap(),
             Some(20)
         );
         no_reservations(&world).await;
