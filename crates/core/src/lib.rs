@@ -119,11 +119,11 @@ pub use anomaly::{AnomalyFacts, Severity, anomaly_score};
 pub use audit::{AuditEntry, AuditPage, action as audit_action};
 pub use billing::{
     BillLine, BillingMode, CacheRef, ExperimentRef, GATEWAY_SETTLEMENT_JSON_BYTES, GuardrailRef,
-    ItemizedCharge, MandateRef, MeteredSettlement, MeteredUsage, Price, PriceBook, PriceRule,
-    PriceSet, RuleMatch, SaleRef, Settlement, SettlementCache, SettlementExperiment,
-    SettlementGuardrail, SettlementGuardrailOwned, SettlementKind, SettlementMandate,
-    SettlementRecord, SettlementSale, SettlementSubscription, SubscriptionRef, UpstreamPrices,
-    estimate_tokens, hold_description, input_upper_bound, retain_reason_evidence,
+    INLINE_REASON_JSON_BYTES, ItemizedCharge, MandateRef, MeteredSettlement, MeteredUsage, Price,
+    PriceBook, PriceRule, PriceSet, RuleMatch, SaleRef, Settlement, SettlementCache,
+    SettlementExperiment, SettlementGuardrail, SettlementGuardrailOwned, SettlementKind,
+    SettlementMandate, SettlementRecord, SettlementSale, SettlementSubscription, SubscriptionRef,
+    UpstreamPrices, estimate_tokens, hold_description, input_upper_bound, retain_reason_evidence,
     validate_gateway_description,
 };
 pub use business::{

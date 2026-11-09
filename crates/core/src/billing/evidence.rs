@@ -4,6 +4,8 @@ use serde::Serialize;
 
 use crate::WalletError;
 
+pub use oxsum_verify::INLINE_REASON_JSON_BYTES;
+
 /// Gateway admission is stricter than the engine's Unicode-scalar capacity.
 pub const GATEWAY_SETTLEMENT_JSON_BYTES: usize = 16_384;
 

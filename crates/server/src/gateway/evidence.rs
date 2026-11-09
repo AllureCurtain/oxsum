@@ -56,7 +56,7 @@ fn upper_envelope(route: &RouteEvidence<'_>) -> Result<String, WalletError> {
     let id = Uuid::nil();
     let digest = "f".repeat(64);
     // A full inline string is larger than its fixed commitment representation.
-    let reason = "x".repeat(oxsum_verify::INLINE_REASON_JSON_BYTES - 2);
+    let reason = "x".repeat(oxsum_core::INLINE_REASON_JSON_BYTES - 2);
     let usage = UsageRecord {
         input_tokens: i64::MAX,
         output_tokens: i64::MAX,
