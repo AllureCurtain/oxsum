@@ -42,7 +42,7 @@ topcoat = { version = "0.10", default-features = false, features = ["tower", "co
 # cargo step, while release builds embed the directory at compile time (the
 # Dockerfile builds `dist` first).
 rust-embed = "8.5"
-password-auth = "1"
+password-auth = "2"
 proptest = "1"
 rand = "0.10"
 # The browser-contract test matches the served HTML and the wasm glue with targeted
