@@ -325,7 +325,7 @@ async fn issuance_limits_expiry_and_cross_operation_identity_fail_before_keys_ex
             .await,
         Err(WalletError::Conflict(_))
     ));
-    sqlx::query("UPDATE oxsum.integration_credentials SET expires_at=clock_timestamp()-interval '1 second' WHERE credential_id=$1").bind(credential).execute(db.pool()).await.unwrap();
+    sqlx::query("UPDATE oxsum.integration_credentials SET created_at=clock_timestamp()-interval '2 days',expires_at=clock_timestamp()-interval '1 day' WHERE credential_id=$1").bind(credential).execute(db.pool()).await.unwrap();
     assert!(matches!(
         db.application_customer_keys(&service, customer, None, 10)
             .await,

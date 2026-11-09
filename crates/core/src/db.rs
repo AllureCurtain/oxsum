@@ -462,6 +462,10 @@ const MIGRATIONS: &[(&str, &str)] = &[
         "0117_independent_reconciliation",
         include_str!("../migrations/0117_independent_reconciliation.sql"),
     ),
+    (
+        "0118_application_customer_keys",
+        include_str!("../migrations/0118_application_customer_keys.sql"),
+    ),
 ];
 
 /// Advisory-lock key serialising the migration runner across processes.
