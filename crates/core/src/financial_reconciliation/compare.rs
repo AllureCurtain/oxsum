@@ -191,11 +191,16 @@ pub(super) async fn customer(
         captured_at,
         result,
     };
-    refunds::compare(&mut customer)?;
-    daily::compare(&mut customer)?;
-    schedule::compare(&mut customer)?;
-    legacy::compare(&mut customer)?;
-    documents::compare(&mut customer)?;
+    check(&mut customer)
+}
+
+/// Shared canonical source comparisons; callers supply one bounded captured snapshot.
+pub(super) fn check(customer: &mut Customer<'_>) -> Result<(), WalletError> {
+    refunds::compare(customer)?;
+    daily::compare(customer)?;
+    schedule::compare(customer)?;
+    legacy::compare(customer)?;
+    documents::compare(customer)?;
     // A corrupted entry cannot evade the result simply because its source mapping
     // disappeared. Unclaimed financial entries make coverage explicitly incomplete.
     let unmatched: Vec<_> = customer
@@ -217,7 +222,7 @@ pub(super) async fn customer(
             "unclaimedEntry",
             "Official financial entry has no supported source mapping in this captured comparison",
         );
-        customer.result.evidence.push(serde_json::json!({"organizationId":organization,"sourceTable":"ledger","sourceId":id,"entries":customer.ledger.evidence(&BTreeSet::from([id]))}));
+        customer.result.evidence.push(serde_json::json!({"organizationId":customer.organization,"sourceTable":"ledger","sourceId":id,"entries":customer.ledger.evidence(&BTreeSet::from([id]))}));
     }
     if customer.result.coverage.sources > types::SOURCE_LIMIT {
         return Err(error::invalid(

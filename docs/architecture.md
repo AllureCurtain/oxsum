@@ -795,3 +795,29 @@ opening uses `open_existing`, so a readiness read never bootstraps a ledger or
 runs lazy financial migrations. The public verification page only resolves a
 private entry after current personal customer authentication and record-scope
 filtering; its ordinary pasted-bundle mode remains public.
+## Statement debt source mapping
+
+Uncorrected historical `usage_overage` journals explicitly require source review:
+balanced AR does not authorize collecting a charge that an old binary may have
+duplicated from already-settled usage. The source-linked historical correction
+must establish the remaining receivable before a later quote can use it.
+
+`financial_reconciliation::debt_sources` (#917) captures one personal customer's
+bounded sources and canonical ledger in a read-only repeatable-read snapshot.
+It reuses the financial comparator before deriving exact per-journal debt slices
+from the selected statement's original charges and chargeback sources. A
+chargeback line follows its dispute → original paid order → authorized period →
+original journal, including a chargeback-only or mixed-policy document. Its
+amount must equal that exact verified entry's receivable debit. The sum displayed
+across all active statements must equal every original journal's unpaid amount.
+
+This is a core source proof prerequisite for #777, not a new payment purpose,
+quote, reservation or HTTP endpoint. Missing/mismatched/unsupported source
+history retains the displayed outstanding amount and returns review-required
+without slices. The existing limits apply: 10,000 source rows, 20,000 canonical
+entries and 16 MiB combined captured evidence. Exceeding a limit refuses rather
+than truncates. The stable revision includes the ordered original sources,
+canonical hashes and resulting slices; it excludes the read clock. Subsequent
+payment and reversal work must revalidate under its owner locks and handle new
+immutable allocation types before any checkout is enabled. No ledger bootstrap,
+financial mutation, independent witness claim or provider request occurs here.
