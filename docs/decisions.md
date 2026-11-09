@@ -24,6 +24,16 @@ before acceptance. Terminal retry returns history without restoring membership.
 Plaintext appears once, reaches the browser through a fragment, and may survive
 sign-in only in bounded tab-local storage; it is never a URL query or query-cache
 key. Independent browser acceptance remains required.
+## 2026-11-10 — Gate the optional SQLite advisory exclusion on reachability (#925)
+
+The release is PostgreSQL-only, and the locked active build graph has no SQLite path from
+`oxsum-server`. Cargo.lock still includes the vendored engine's optional SQLite
+backend, which is affected by RUSTSEC-2026-0459. Retain a documented audit exception
+for that excluded backend, conditional on an executable graph guard in the same
+Audit workflow. A future reachable SQLite driver/native dependency fails before
+the exception can hide it. The optional backend remains vulnerable and outside
+release support. A broad sqlx upgrade does not currently supply the required
+>=0.39.0 native fix and is not introduced merely to refresh an unused backend.
 
 ## 2026-11-09 — Stable application ownership and exact operation replay (#846)
 
