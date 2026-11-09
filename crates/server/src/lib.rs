@@ -79,6 +79,8 @@ impl AppState {
     /// call, never on a restart; the build is cheap and the verdicts are the
     /// hot path. `build_guardrail_set` skips a policy that cannot build, so a
     /// misconfigured rule degrades to its absence rather than fail the app.
+    /// Over-limit keyword configurations and effective policy unions are the
+    /// explicit exception: affected turns refuse before evaluation/execution.
     pub(crate) async fn guardrails_for(
         &self,
         channel: &str,
@@ -91,7 +93,7 @@ impl AppState {
         // the key that would open its bearer.
         let set = guardrail::build_guardrail_set(&self.db, self.http.clone(), self.config.secret())
             .await?;
-        Ok(set.for_turn(channel, key_id, key_required, mandate_required))
+        set.for_turn(channel, key_id, key_required, mandate_required)
     }
 }
 

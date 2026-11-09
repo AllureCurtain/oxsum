@@ -118,12 +118,13 @@ pub use adapters::{
 pub use anomaly::{AnomalyFacts, Severity, anomaly_score};
 pub use audit::{AuditEntry, AuditPage, action as audit_action};
 pub use billing::{
-    BillLine, BillingMode, CacheRef, ExperimentRef, GuardrailRef, ItemizedCharge, MandateRef,
-    MeteredSettlement, MeteredUsage, Price, PriceBook, PriceRule, PriceSet, RuleMatch, SaleRef,
-    Settlement, SettlementCache, SettlementExperiment, SettlementGuardrail,
-    SettlementGuardrailOwned, SettlementKind, SettlementMandate, SettlementRecord, SettlementSale,
-    SettlementSubscription, SubscriptionRef, UpstreamPrices, estimate_tokens, hold_description,
-    input_upper_bound,
+    BillLine, BillingMode, CacheRef, ExperimentRef, GATEWAY_SETTLEMENT_JSON_BYTES, GuardrailRef,
+    ItemizedCharge, MandateRef, MeteredSettlement, MeteredUsage, Price, PriceBook, PriceRule,
+    PriceSet, RuleMatch, SaleRef, Settlement, SettlementCache, SettlementExperiment,
+    SettlementGuardrail, SettlementGuardrailOwned, SettlementKind, SettlementMandate,
+    SettlementRecord, SettlementSale, SettlementSubscription, SubscriptionRef, UpstreamPrices,
+    estimate_tokens, hold_description, input_upper_bound, retain_reason_evidence,
+    validate_gateway_description,
 };
 pub use business::{
     Business, BusinessMigration, BusinessMigrationPreview, BusinessOwnership, CustomerProfile,
@@ -194,8 +195,9 @@ pub use financial_reconciliation::{ReconciliationCoverage, ReconciliationSnapsho
 pub use groups::{Group, GroupChannel};
 pub use guardrail::{
     Guardrail, GuardrailBinding, GuardrailPolicy, GuardrailSet, KeywordConfig, KeywordPattern,
-    KeywordPolicy, ModerationConfig, PiiScanner, RequestContext, ResponseContext, Verdict,
-    validate_policy_names,
+    KeywordPolicy, MAX_GUARDRAIL_POLICIES, MAX_KEYWORD_PATTERN_BYTES, MAX_KEYWORD_PATTERNS,
+    ModerationConfig, PiiScanner, RequestContext, ResponseContext, Verdict,
+    validate_keyword_patterns, validate_policy_names,
 };
 pub use heads::{
     Consistency, Cosigner, HeadSigningKey, KeyPublication, MemoryWitnessStore, Origin,

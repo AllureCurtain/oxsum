@@ -82,6 +82,11 @@ pub enum GatewayError {
     /// The credential is not allowed to do this. Unreachable until roles arrive; mapped rather
     /// than dropped so a future role check cannot silently turn into a 500.
     Forbidden(String),
+    /// A pre-call policy refusal, retaining every verdict evaluated before it.
+    Guardrail {
+        message: String,
+        notes: Vec<oxsum_core::SettlementGuardrailOwned>,
+    },
     /// The request id was already used for a different turn. A caller cannot cause this today —
     /// the id is minted per request — so it maps the wallet's refusal rather than inviting it.
     Conflict(String),
@@ -152,7 +157,8 @@ impl GatewayError {
             | Self::InsufficientFunds(message)
             | Self::KeyLimitExceeded(message)
             | Self::RateLimited { message, .. }
-            | Self::Forbidden(message) => Some(message),
+            | Self::Forbidden(message)
+            | Self::Guardrail { message, .. } => Some(message),
             Self::InvalidMandate => Some("the presented mandate is not valid for this key"),
             Self::MandateOutOfWindow { message, .. } | Self::MandateExceeded { message } => {
                 Some(message)
@@ -179,6 +185,14 @@ impl GatewayError {
         }
     }
 
+    /// The exact typed verdicts a pre-call refusal must retain in its marker.
+    pub fn guardrail_notes(&self) -> &[oxsum_core::SettlementGuardrailOwned] {
+        match self {
+            Self::Guardrail { notes, .. } => notes,
+            _ => &[],
+        }
+    }
+
     /// The idempotency key was claimed under a different request body.
     pub fn idempotency_mismatch() -> Self {
         Self::Idempotency {
@@ -199,9 +213,10 @@ impl GatewayError {
             | Self::RateLimited { .. }
             | Self::MandateExceeded { .. }
             | Self::PoolBusy => StatusCode::TOO_MANY_REQUESTS,
-            Self::InvalidMandate | Self::MandateOutOfWindow { .. } | Self::Forbidden(_) => {
-                StatusCode::FORBIDDEN
-            }
+            Self::InvalidMandate
+            | Self::MandateOutOfWindow { .. }
+            | Self::Forbidden(_)
+            | Self::Guardrail { .. } => StatusCode::FORBIDDEN,
             Self::Idempotency { status, .. } => *status,
             Self::Upstream { status, .. } => *status,
             Self::Unauthorized => StatusCode::UNAUTHORIZED,
@@ -412,7 +427,7 @@ impl IntoResponse for GatewayError {
                 "UNAUTHORIZED",
                 None,
             ),
-            Self::Forbidden(message) => error_response(
+            Self::Forbidden(message) | Self::Guardrail { message, .. } => error_response(
                 StatusCode::FORBIDDEN,
                 &message,
                 "permission_error",
@@ -546,7 +561,7 @@ impl GatewayError {
                 "authentication_error",
                 "UNAUTHORIZED",
             ),
-            Self::Forbidden(message) => (
+            Self::Forbidden(message) | Self::Guardrail { message, .. } => (
                 StatusCode::FORBIDDEN,
                 message,
                 "permission_error",

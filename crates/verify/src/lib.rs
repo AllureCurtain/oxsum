@@ -20,6 +20,7 @@ mod charge;
 mod evidence;
 mod head;
 mod price;
+mod reason;
 mod sale;
 mod usage_report;
 #[cfg(all(feature = "wasm", target_arch = "wasm32"))]
@@ -34,6 +35,9 @@ pub use doubleentry::{ConsistencyProof, Hash, TreeHead};
 pub use evidence::{EvidenceError, verify_evidence_bundle};
 pub use head::{HeadError, PublishedKey, verify_consistency, verify_signed_head};
 pub use price::{PriceError, PriceLink, PriceLinkBuilder, verify_price_head};
+pub use reason::{
+    INLINE_REASON_JSON_BYTES, ReasonCommitment, reason_fits_inline, verify_reason_commitment,
+};
 pub use sale::{SaleError, SaleLink, SaleLinkBuilder, verify_sale_head};
 pub use usage_report::{
     USAGE_ANCHOR_MAP_DOMAIN, UsageReportError, usage_anchor_map_root, usage_anchor_pair_leaf,

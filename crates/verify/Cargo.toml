@@ -35,6 +35,7 @@ wasm = ["dep:wasm-bindgen"]
 doubleentry = { path = "../doubleentry", version = "0.7.0", default-features = false, features = ["serde", "witness"] }
 serde.workspace = true
 serde_json.workspace = true
+sha2.workspace = true
 # The browser exports under the `wasm` feature; no `tsify` — the exports speak
 # JSON strings, so the page needs no generated TypeScript.
 wasm-bindgen = { version = "0.2", optional = true }

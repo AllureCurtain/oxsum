@@ -415,6 +415,10 @@ pub struct RequestEntry {
     /// `None` for a clean settle.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub failure_reason: Option<String>,
+    /// Long v15 failure reason identity, exclusive with inline `failure_reason`.
+    /// This projection does not verify separately retained full text.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub failure_reason_commitment: Option<oxsum_verify::ReasonCommitment>,
 }
 
 /// One slice of a list that walks the log backward, newest first (issue #93).
@@ -4765,15 +4769,31 @@ impl Wallet {
         reason: &str,
         actor: Option<&str>,
     ) -> Result<EntryId, WalletError> {
+        self.record_refusal_with_guardrails(request_id, model, channel, reason, actor, &[])
+            .await
+    }
+
+    /// Append a refusal marker retaining the exact evaluated guardrail slots.
+    /// This remains best-effort at the HTTP boundary and never authorizes an
+    /// execution when retaining evidence fails.
+    ///
+    /// # Errors
+    ///
+    /// Refuses invalid or oversized encoded evidence and propagates storage
+    /// failures with the same replay behavior as [`Self::record_refusal`].
+    #[allow(clippy::too_many_arguments)]
+    pub async fn record_refusal_with_guardrails(
+        &self,
+        request_id: &str,
+        model: &str,
+        channel: &str,
+        reason: &str,
+        actor: Option<&str>,
+        guardrails: &[crate::SettlementGuardrailOwned],
+    ) -> Result<EntryId, WalletError> {
         let key = format!("req-{request_id}:refused");
         let usage = UsageRecord::default();
-        // The reason keeps its existing 150-byte excerpt; the full message is
-        // already in the answer the caller got. Evidence has a separate bound.
-        let mut end = reason.len().min(150);
-        while end > 0 && !reason.is_char_boundary(end) {
-            end -= 1;
-        }
-        let reason = &reason[..end];
+        // Version 15 commits complete reasons that exceed the inline budget.
         let description = Settlement {
             request: request_id,
             channel,
@@ -4796,13 +4816,17 @@ impl Wallet {
             mandate: None,
             subscription: None,
             cache: None,
-            guardrail: Vec::new(),
+            guardrail: guardrails
+                .iter()
+                .map(crate::SettlementGuardrailOwned::borrowed)
+                .collect(),
             reason: Some(reason),
             experiment: None,
             // A refused request never priced: no sale terms to commit.
             sale: None,
         }
         .description()?;
+        crate::validate_gateway_description(&description)?;
         let mut draft = Entry::<Draft, SCALE>::new(
             entry_id_for(&key),
             idem(&key)?,
@@ -5448,6 +5472,7 @@ impl Wallet {
                 key_id: turn.key_id,
                 status: turn.record.kind.status(),
                 failure_reason: turn.record.reason,
+                failure_reason_commitment: turn.record.reason_commitment,
             }))
     }
 

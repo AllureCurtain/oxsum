@@ -51,8 +51,20 @@ macro_rules! world_or_skip {
 
 /// The scripted upstream: one completion per model, plus a `seen` log so a
 /// test can prove a blocked turn never reached it.
-async fn upstream(State(seen): State<Arc<Mutex<Vec<Value>>>>) -> Response {
+async fn upstream(
+    State(seen): State<Arc<Mutex<Vec<Value>>>>,
+    axum::Json(body): axum::Json<Value>,
+) -> Response {
     seen.lock().unwrap().push(json!({"served": true}));
+    if body["stream"] == true {
+        let chunk = json!({"id":"chatcmpl-test","object":"chat.completion.chunk","created":1,"model":"served","choices":[{"index":0,"delta":{"content":"the answer's PII is 4111-1111-1111-1111"},"finish_reason":null}]});
+        let end = json!({"id":"chatcmpl-test","object":"chat.completion.chunk","created":1,"model":"served","choices":[{"index":0,"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":2,"completion_tokens":3,"total_tokens":5}});
+        return (
+            [("content-type", "text/event-stream")],
+            format!("data: {chunk}\n\ndata: {end}\n\ndata: [DONE]\n\n"),
+        )
+            .into_response();
+    }
     axum::Json(json!({
         "id": "chatcmpl-test",
         "object": "chat.completion",
@@ -83,16 +95,27 @@ async fn start_upstream() -> (String, Arc<Mutex<Vec<Value>>>) {
 
 /// The scripted moderation endpoint: answers the verdict the test staged.
 async fn start_moderation(verdict: Value) -> (String, Arc<Mutex<Vec<Value>>>) {
+    start_moderation_sequence(vec![verdict]).await
+}
+
+/// Consecutive evaluations consume scripted answers; the last answer repeats.
+async fn start_moderation_sequence(verdicts: Vec<Value>) -> (String, Arc<Mutex<Vec<Value>>>) {
     let seen: Arc<Mutex<Vec<Value>>> = Arc::new(Mutex::new(vec![]));
+    let verdicts = Arc::new(verdicts);
     let calls = seen.clone();
     let app = Router::new()
         .route(
             "/moderate",
             post(move |axum::Json(body): axum::Json<Value>| {
                 let calls = calls.clone();
-                let verdict = verdict.clone();
+                let verdicts = verdicts.clone();
                 async move {
-                    calls.lock().unwrap().push(body);
+                    let verdict = {
+                        let mut calls = calls.lock().unwrap();
+                        let verdict = verdicts[calls.len().min(verdicts.len() - 1)].clone();
+                        calls.push(body);
+                        verdict
+                    };
                     axum::Json(verdict).into_response()
                 }
             }),
@@ -110,6 +133,7 @@ async fn start_moderation(verdict: Value) -> (String, Arc<Mutex<Vec<Value>>>) {
 /// priced channel on one model — and the admin token the policy writes use.
 struct World {
     app: Router,
+    db: Db,
     tenants: oxsum_core::Tenants,
     tenant_id: String,
     key: String,
@@ -174,7 +198,7 @@ async fn world(database_url: &str) -> World {
     oxsum_server::prepare(&db, &config)
         .await
         .expect("the deployment is prepared");
-    let app = support::app(db, config);
+    let app = support::app(db.clone(), config);
 
     let email = format!(
         "gr_{}@example.com",
@@ -215,6 +239,7 @@ async fn world(database_url: &str) -> World {
 
     World {
         app,
+        db,
         tenants,
         tenant_id,
         key,
@@ -268,6 +293,10 @@ async fn call(
 /// `Idempotency-Key` names the turn, which fixes the request id — and so the
 /// ledger keys — rather than the server minting one.
 async fn chat(world: &World, text: &str, idem: &str) -> Response {
+    chat_with_stream(world, text, idem, false).await
+}
+
+async fn chat_with_stream(world: &World, text: &str, idem: &str, stream: bool) -> Response {
     let request = Request::builder()
         .method("POST")
         .uri("/v1/chat/completions")
@@ -275,7 +304,7 @@ async fn chat(world: &World, text: &str, idem: &str) -> Response {
         .header("authorization", format!("Bearer {}", world.key))
         .header("idempotency-key", idem)
         .body(Body::from(
-            json!({"model": world.model, "messages": [{"role": "user", "content": text}]})
+            json!({"model": world.model, "stream":stream, "messages": [{"role": "user", "content": text}]})
                 .to_string(),
         ))
         .expect("the test's own request");
@@ -637,4 +666,517 @@ async fn an_uncompilable_keyword_policy_is_refused_at_write() {
         StatusCode::BAD_REQUEST,
         "a regex that cannot compile never lands: {body}"
     );
+}
+
+async fn bind_policies(world: &World, names: &[String]) {
+    let (status, body) = call(
+        &world.app,
+        "PUT",
+        &format!("/api/v1/admin/guardrail-bindings/channel/{}", world.channel),
+        Some(json!({"policies":names})),
+        Some(TOKEN),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+}
+
+async fn moderation_policy(world: &World, name: &str, endpoint: &str) {
+    let (status,body) = call(&world.app,"PUT",
+        &format!("/api/v1/admin/guardrail-policies/{name}"),
+        Some(json!({"kind":"moderation","config":{"endpoint":format!("{endpoint}/moderate"),"timeoutMs":1000},"apiKey":"local-test-only"})),Some(TOKEN)).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+}
+
+fn request_id(response: &Response) -> String {
+    response.headers()["x-oxsum-request-id"]
+        .to_str()
+        .unwrap()
+        .to_owned()
+}
+
+async fn retained_reasons(world: &World, request: &str) -> Value {
+    let details: Value = sqlx::query_scalar(
+        "SELECT usage_details FROM oxsum.usage_records WHERE request_id=$1 AND tenant_id=$2",
+    )
+    .bind(request)
+    .bind(&world.tenant_id)
+    .fetch_one(world.db.pool())
+    .await
+    .unwrap();
+    details["oxsumReasonEvidence"].clone()
+}
+
+fn check_exact_reason(field: &Value, full: &str) {
+    assert!(
+        field.get("reason").is_none(),
+        "long text must not masquerade as shortened inline text"
+    );
+    let commitment: oxsum_verify::ReasonCommitment =
+        serde_json::from_value(field["reasonCommitment"].clone()).unwrap();
+    assert!(oxsum_verify::verify_reason_commitment(&commitment, full));
+    assert!(!oxsum_verify::verify_reason_commitment(
+        &commitment,
+        &format!("{full} ")
+    ));
+}
+
+async fn check_proof(world: &World, request: &str, refused: bool) {
+    let key = if refused {
+        format!("req-{request}:refused")
+    } else {
+        oxsum_core::settlement_key_for(&format!("req-{request}:hold"))
+    };
+    let wallet = world.tenants.get(&world.tenant_id).await.unwrap();
+    let bundle = wallet
+        .receipt_proof(oxsum_core::entry_id_for(&key), None)
+        .await
+        .unwrap()
+        .unwrap();
+    let hash = bundle.entry.content_hash();
+    let mut value = serde_json::to_value(&bundle).unwrap();
+    assert!(oxsum_verify::verify_bundle(&value.to_string(), &hash).unwrap());
+    assert_eq!(
+        oxsum_verify::verify_charge(bundle.entry.description().as_str()),
+        oxsum_verify::ChargeCheck::Recomputed
+    );
+    let mut description: Value = serde_json::from_str(bundle.entry.description().as_str()).unwrap();
+    description["guardrail"][0]["reasonCommitment"]["sha256"] = Value::from("0".repeat(64));
+    value["entry"]["description"] = Value::from(description.to_string());
+    assert!(!oxsum_verify::verify_bundle(&value.to_string(), &hash).unwrap());
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn eight_long_two_phase_reasons_survive_whole_cache_and_exact_replay() {
+    let world = world_or_skip!();
+    let full = "  🦀\n\"\\\u{0001}".repeat(200);
+    let (endpoint, calls) = start_moderation(json!({"verdict":"flag","reason":full})).await;
+    let names: Vec<String> = (0..8)
+        .map(|i| format!("long-{i}-{}", world.channel))
+        .collect();
+    for name in &names {
+        moderation_policy(&world, name, &endpoint).await;
+    }
+    bind_policies(&world, &names).await;
+    world
+        .db
+        .set_semantic_cache(
+            &world.channel,
+            Some(&json!({"enabled":true,"ttlSeconds":60})),
+        )
+        .await
+        .unwrap();
+    for (idem, is_cache) in [("full-first", false), ("full-cache", true)] {
+        if is_cache {
+            tokio::time::timeout(Duration::from_secs(5),async {
+                loop {
+                    let stored:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM oxsum.cached_responses c JOIN oxsum.channels h ON h.channel_id=c.channel_id WHERE h.name=$1)").bind(&world.channel).fetch_one(world.db.pool()).await.unwrap();
+                    if stored { break; }
+                    tokio::time::sleep(Duration::from_millis(10)).await;
+                }
+            }).await.expect("the asynchronously stored answer becomes visible");
+        }
+        let response = chat(&world, "exact cache prompt", idem).await;
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(response.headers().get("x-oxsum-cache").is_some(), is_cache);
+        let request = request_id(&response);
+        let body = response.into_body().collect().await.unwrap().to_bytes();
+        let description = settled(&world, &request).await;
+        assert_eq!(description["v"], 15);
+        assert!(description.to_string().len() <= oxsum_core::GATEWAY_SETTLEMENT_JSON_BYTES);
+        assert_eq!(description["guardrail"].as_array().unwrap().len(), 16);
+        let retained = retained_reasons(&world, &request).await;
+        for (index, note) in description["guardrail"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .enumerate()
+        {
+            check_exact_reason(note, &full);
+            let stored = &retained["guardrails"][index];
+            assert_eq!(stored["index"], index);
+            assert_eq!(stored["reason"], full);
+            assert_eq!(stored["phase"], note["phase"]);
+            assert_eq!(stored["policy"], note["policy"]);
+        }
+        check_proof(&world, &request, false).await;
+        if !is_cache && let Some(path) = std::env::var_os("OXSUM_GUARDRAIL_FIXTURE_OUT") {
+            let wallet = world.tenants.get(&world.tenant_id).await.unwrap();
+            let bundle = wallet
+                .receipt_proof(
+                    oxsum_core::entry_id_for(&oxsum_core::settlement_key_for(&format!(
+                        "req-{request}:hold"
+                    ))),
+                    None,
+                )
+                .await
+                .unwrap()
+                .unwrap();
+            std::fs::write(path,serde_json::to_vec_pretty(&json!({"bundle":bundle,"expectedHash":bundle.entry.content_hash().to_hex(),"reason":full})).unwrap()).unwrap();
+        }
+        let seen = calls.lock().unwrap().len();
+        let replay = chat(&world, "exact cache prompt", idem).await;
+        assert_eq!(replay.status(), StatusCode::OK);
+        assert_eq!(request_id(&replay), request);
+        assert_eq!(replay.into_body().collect().await.unwrap().to_bytes(), body);
+        assert_eq!(calls.lock().unwrap().len(), seen);
+        assert_eq!(settled(&world, &request).await, description);
+        if is_cache {
+            assert_eq!(description["upstreamAttempts"], 0);
+            assert!(description["cache"].is_object());
+        }
+    }
+    assert_eq!(world.seen.lock().unwrap().len(), 1);
+    assert_eq!(calls.lock().unwrap().len(), 32);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn long_preblock_keeps_typed_full_reason_without_hold_or_operation() {
+    let world = world_or_skip!();
+    let full = "\"🦀\n".repeat(300);
+    let (endpoint, calls) = start_moderation(json!({"verdict":"block","reason":full})).await;
+    let name = format!("pre-{}", world.channel);
+    moderation_policy(&world, &name, &endpoint).await;
+    bind_policies(&world, std::slice::from_ref(&name)).await;
+    let wallet = world.tenants.get(&world.tenant_id).await.unwrap();
+    let before = wallet.available().await.unwrap();
+    let response = chat(&world, "blocked", "long-preblock").await;
+    assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    let request = request_id(&response);
+    let bundle = wallet
+        .receipt_proof(
+            oxsum_core::entry_id_for(&format!("req-{request}:refused")),
+            None,
+        )
+        .await
+        .unwrap()
+        .unwrap();
+    let description: Value = serde_json::from_str(bundle.entry.description().as_str()).unwrap();
+    check_exact_reason(&description["guardrail"][0], &full);
+    assert_eq!(description["guardrail"][0]["phase"], "pre_call");
+    let message = format!("guardrail {name} refused the request: {full}");
+    check_exact_reason(&description, &message);
+    let retained = retained_reasons(&world, &request).await;
+    assert_eq!(retained["guardrails"][0]["reason"], full);
+    assert_eq!(retained["failure"]["reason"], message);
+    check_proof(&world, &request, true).await;
+    let records = wallet.recent_requests(10).await.unwrap();
+    let record = records
+        .iter()
+        .find(|record| record.request_id == request)
+        .unwrap();
+    assert!(record.failure_reason.is_none());
+    let commitment = record.failure_reason_commitment.as_ref().unwrap();
+    assert!(oxsum_verify::verify_reason_commitment(commitment, &message));
+    let (status, body) = call(
+        &world.app,
+        "GET",
+        "/api/v1/billing-records",
+        None,
+        Some(&world.key),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let row = body["data"]["rows"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|row| row["requestId"] == request)
+        .unwrap();
+    assert!(row.get("failureReason").is_none());
+    assert_eq!(
+        row["failureReasonCommitment"],
+        serde_json::to_value(commitment).unwrap()
+    );
+    assert_eq!(wallet.available().await.unwrap(), before);
+    assert_eq!(wallet.reserved().await.unwrap(), 0);
+    let operations: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM oxsum.request_operations WHERE key_id=$1")
+            .bind(Uuid::parse_str(&world.key_id).unwrap())
+            .fetch_one(world.db.pool())
+            .await
+            .unwrap();
+    assert_eq!(operations, 0);
+    assert_eq!(world.seen.lock().unwrap().len(), 0);
+    assert_eq!(calls.lock().unwrap().len(), 1);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn long_postblock_refunds_whole_but_streamed_block_still_bills_and_commits() {
+    let world = world_or_skip!();
+    let full = "post 🦀\n\"".repeat(300);
+    let (endpoint, calls) = start_moderation_sequence(vec![
+        json!({"verdict":"allow"}),
+        json!({"verdict":"block","reason":full}),
+        json!({"verdict":"allow"}),
+        json!({"verdict":"block","reason":full}),
+    ])
+    .await;
+    let name = format!("post-{}", world.channel);
+    moderation_policy(&world, &name, &endpoint).await;
+    bind_policies(&world, &[name]).await;
+    let wallet = world.tenants.get(&world.tenant_id).await.unwrap();
+    let before = wallet.available().await.unwrap();
+    for (stream, idem) in [(false, "post-whole"), (true, "post-stream")] {
+        let response = chat_with_stream(&world, "go", idem, stream).await;
+        assert_eq!(
+            response.status(),
+            if stream {
+                StatusCode::OK
+            } else {
+                StatusCode::FORBIDDEN
+            }
+        );
+        let request = request_id(&response);
+        let bytes = response.into_body().collect().await.unwrap().to_bytes();
+        if stream {
+            assert!(String::from_utf8_lossy(&bytes).contains("4111-1111"));
+        }
+        let description = settled(&world, &request).await;
+        let note = &description["guardrail"][0];
+        check_exact_reason(note, &full);
+        assert_eq!(note["verdict"], "blocked");
+        assert_eq!(note["phase"], "post_call");
+        assert_eq!(note.get("streamed").is_some(), stream);
+        assert_eq!(description["charged"].as_i64().unwrap() > 0, stream);
+        assert_eq!(
+            retained_reasons(&world, &request).await["guardrails"][0]["reason"],
+            full
+        );
+        assert_eq!(wallet.reserved().await.unwrap(), 0);
+        check_proof(&world, &request, false).await;
+        if !stream {
+            assert_eq!(wallet.available().await.unwrap(), before);
+        }
+    }
+    assert_eq!(calls.lock().unwrap().len(), 4);
+    assert_eq!(world.seen.lock().unwrap().len(), 2);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn oversized_moderation_transport_uses_existing_phase_failure_rules() {
+    let world = world_or_skip!();
+    let (endpoint, calls) = start_moderation_sequence(vec![
+        json!({"verdict":"flag","reason":"x".repeat(70_000)}),
+        json!({"verdict":"allow"}),
+        json!({"verdict":"block","reason":"x".repeat(70_000)}),
+    ])
+    .await;
+    let name = format!("body-{}", world.channel);
+    moderation_policy(&world, &name, &endpoint).await;
+    bind_policies(&world, &[name]).await;
+    let start = std::time::Instant::now();
+    let refused = chat(&world, "go", "oversized-pre").await;
+    assert_eq!(refused.status(), StatusCode::FORBIDDEN);
+    assert!(start.elapsed() < Duration::from_secs(5));
+    assert_eq!(world.seen.lock().unwrap().len(), 0);
+    let answered = chat(&world, "go", "oversized-post").await;
+    assert_eq!(answered.status(), StatusCode::OK);
+    let request = request_id(&answered);
+    answered.into_body().collect().await.unwrap();
+    let description = settled(&world, &request).await;
+    assert!(description.get("guardrail").is_none());
+    assert!(description["charged"].as_i64().unwrap() > 0);
+    assert_eq!(calls.lock().unwrap().len(), 3);
+    assert_eq!(world.seen.lock().unwrap().len(), 1);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn oversized_new_and_historical_policy_sets_refuse_before_moderation() {
+    let world = world_or_skip!();
+    let (endpoint, calls) = start_moderation(json!({"verdict":"flag","reason":"short"})).await;
+    let live = format!("live-{}", world.channel);
+    moderation_policy(&world, &live, &endpoint).await;
+    for policies in [
+        vec![live.clone(); 2],
+        (0..9).map(|i| format!("p{i}")).collect(),
+    ] {
+        let (status, _) = call(
+            &world.app,
+            "PUT",
+            &format!("/api/v1/admin/guardrail-bindings/channel/{}", world.channel),
+            Some(json!({"policies":policies})),
+            Some(TOKEN),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        let (status, _) = call(
+            &world.app,
+            "PATCH",
+            &format!("/api/v1/org/keys/{}", world.key_id),
+            Some(json!({"requiredPolicies":policies})),
+            Some(&world.session),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+    }
+    let name = format!("keyword-{}", world.channel);
+    for patterns in [
+        vec![json!({"re":"🦀".repeat(1025),"action":"flag"})],
+        vec![json!({"re":"x","action":"unknown"})],
+        vec![json!({"re":"x","action":"flag"}); 65],
+    ] {
+        let (status, _) = call(
+            &world.app,
+            "PUT",
+            &format!("/api/v1/admin/guardrail-policies/{name}"),
+            Some(json!({"kind":"keyword","config":{"patterns":patterns}})),
+            Some(TOKEN),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+    }
+    // Historical dangling names remain visible to the union bound.
+    let mut legacy: Vec<String> = (0..8).map(|i| format!("missing{i}")).collect();
+    legacy.push(live.clone());
+    sqlx::query("INSERT INTO oxsum.guardrail_bindings(scope,target,policies) VALUES('channel',$1,$2) ON CONFLICT(scope,target) DO UPDATE SET policies=EXCLUDED.policies").bind(&world.channel).bind(&legacy).execute(world.db.pool()).await.unwrap();
+    let response = chat(&world, "go", "legacy-union").await;
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    assert_eq!(world.seen.lock().unwrap().len(), 0);
+    assert_eq!(calls.lock().unwrap().len(), 0);
+    // Individually valid lists must still refuse when their complete union
+    // exceeds eight. Clearing it allows the next independent configuration.
+    let mut current = vec![live.clone()];
+    for i in 0..8 {
+        let name = format!("union-{i}-{}", world.channel);
+        keyword_policy(&world, &name, "x", "flag").await;
+        current.push(name);
+    }
+    bind_policies(&world, &current[..8]).await;
+    let (status, body) = call(
+        &world.app,
+        "PATCH",
+        &format!("/api/v1/org/keys/{}", world.key_id),
+        Some(json!({"requiredPolicies":[current[8]]})),
+        Some(&world.session),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(
+        chat(&world, "go", "combined-union").await.status(),
+        StatusCode::BAD_REQUEST
+    );
+    assert_eq!(calls.lock().unwrap().len(), 0);
+    let (status, body) = call(
+        &world.app,
+        "PATCH",
+        &format!("/api/v1/org/keys/{}", world.key_id),
+        Some(json!({"requiredPolicies":null})),
+        Some(&world.session),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    keyword_policy(&world, &name, "x", "flag").await;
+    sqlx::query("UPDATE oxsum.guardrail_policies SET config=$2 WHERE name=$1")
+        .bind(&name)
+        .bind(json!({"patterns":[{"re":"x".repeat(4097),"action":"flag"}]}))
+        .execute(world.db.pool())
+        .await
+        .unwrap();
+    bind_policies(&world, &[live, name]).await;
+    let response = chat(&world, "go", "legacy-keyword").await;
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    assert_eq!(world.seen.lock().unwrap().len(), 0);
+    assert_eq!(calls.lock().unwrap().len(), 0);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn oversized_fallback_evidence_refuses_even_when_primary_could_answer() {
+    let world = world_or_skip!();
+    let price:oxsum_core::Price=serde_json::from_value(json!({"inputPricePerMillion":1,"outputPricePerMillion":1,"maxOutputTokens":100,"rules":[{"match":{"serviceTier":"\u{0001}".repeat(3000)},"price":{"inputPricePerMillion":1,"outputPricePerMillion":1,"maxOutputTokens":100}}]})).unwrap();
+    let fallback = format!("fallback-{}", world.channel);
+    world
+        .db
+        .append_price(&world.channel, &fallback, price, 100)
+        .await
+        .unwrap();
+    world
+        .db
+        .set_fallbacks(&world.model, &[fallback])
+        .await
+        .unwrap();
+    let (endpoint, calls) = start_moderation(json!({"verdict":"allow"})).await;
+    let name = format!("route-{}", world.channel);
+    moderation_policy(&world, &name, &endpoint).await;
+    bind_policies(&world, &[name]).await;
+    let response = chat(&world, "go", "oversized-fallback").await;
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    assert_eq!(world.seen.lock().unwrap().len(), 0);
+    assert_eq!(calls.lock().unwrap().len(), 0);
+    let wallet = world.tenants.get(&world.tenant_id).await.unwrap();
+    assert_eq!(wallet.reserved().await.unwrap(), 0);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_full_reason_usage_fault_rolls_back_ledger_settlement_and_terminal_state() {
+    let world = world_or_skip!();
+    let full = "fault \"🦀\n".repeat(300);
+    let (endpoint, _) = start_moderation(json!({"verdict":"flag","reason":full})).await;
+    let name = format!("fault-{}", world.channel);
+    moderation_policy(&world, &name, &endpoint).await;
+    bind_policies(&world, &[name]).await;
+    // The trigger targets one generated tenant, so parallel suites cannot be
+    // affected. It fails at the full-text write after the append and operation CAS.
+    let suffix = Uuid::new_v4().simple().to_string();
+    let function = format!("guardrail_fault_{suffix}");
+    let trigger = format!("guardrail_fault_{suffix}");
+    sqlx::raw_sql(&format!("CREATE FUNCTION oxsum.{function}() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN IF NEW.tenant_id=TG_ARGV[0] THEN RAISE EXCEPTION 'injected full reason write fault'; END IF; RETURN NEW; END $$; CREATE TRIGGER {trigger} BEFORE INSERT ON oxsum.usage_records FOR EACH ROW EXECUTE FUNCTION oxsum.{function}('{}');",world.tenant_id)).execute(world.db.pool()).await.unwrap();
+    let response = chat(&world, "go", "reason-row-fault").await;
+    let status = response.status();
+    let request = request_id(&response);
+    response.into_body().collect().await.unwrap();
+    sqlx::raw_sql(&format!(
+        "DROP TRIGGER {trigger} ON oxsum.usage_records; DROP FUNCTION oxsum.{function}();"
+    ))
+    .execute(world.db.pool())
+    .await
+    .unwrap();
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "the provider response already arrived"
+    );
+    let wallet = world.tenants.get(&world.tenant_id).await.unwrap();
+    let hold = format!("req-{request}:hold");
+    assert!(
+        wallet
+            .receipt_proof(
+                oxsum_core::entry_id_for(&oxsum_core::settlement_key_for(&hold)),
+                None
+            )
+            .await
+            .unwrap()
+            .is_none()
+    );
+    assert!(
+        wallet.reserved().await.unwrap() > 0,
+        "the sweeper still owns the original reservation"
+    );
+    let rows: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM oxsum.usage_records WHERE request_id=$1")
+            .bind(&request)
+            .fetch_one(world.db.pool())
+            .await
+            .unwrap();
+    assert_eq!(rows, 0);
+    let state:String=sqlx::query_scalar("SELECT state FROM oxsum.request_operations WHERE key_id=$1 ORDER BY created_at DESC LIMIT 1").bind(Uuid::parse_str(&world.key_id).unwrap()).fetch_one(world.db.pool()).await.unwrap();
+    assert!(!["succeeded", "failed", "cancelled", "timed_out"].contains(&state.as_str()));
+    let watched: bool =
+        sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM oxsum.open_holds WHERE hold_key=$1)")
+            .bind(&hold)
+            .fetch_one(world.db.pool())
+            .await
+            .unwrap();
+    assert!(watched);
+    assert_eq!(world.seen.lock().unwrap().len(), 1);
+    // A different request after removing the fault retains both halves.
+    let response = chat(&world, "go", "reason-row-recovered").await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let recovered = request_id(&response);
+    response.into_body().collect().await.unwrap();
+    settled(&world, &recovered).await;
+    assert_eq!(
+        retained_reasons(&world, &recovered).await["guardrails"][0]["reason"],
+        full
+    );
+    check_proof(&world, &recovered, false).await;
 }

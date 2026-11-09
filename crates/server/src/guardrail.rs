@@ -14,6 +14,8 @@
 use std::sync::Arc;
 use std::time::Duration;
 
+use futures_util::StreamExt;
+
 use oxsum_core::{
     Db, Guardrail, GuardrailPolicy, GuardrailSet, KeywordConfig, KeywordPolicy, ModerationConfig,
     PiiScanner, RequestContext, ResponseContext, Verdict, WalletError,
@@ -23,6 +25,7 @@ use oxsum_core::{
 /// cannot stall admission — `pre_call` runs inside the request's admit path.
 const MODERATION_TIMEOUT_CAP: Duration = Duration::from_secs(10);
 const MODERATION_TIMEOUT_DEFAULT: Duration = Duration::from_secs(5);
+const MODERATION_BODY_BYTES: usize = 65_536;
 
 /// The external-moderation callout: posts the request's texts to the org's
 /// configured endpoint and maps its JSON verdict.
@@ -88,7 +91,19 @@ impl ModerationCallout {
         match outcome {
             Ok(response) if response.status().is_success() => {
                 let body = tokio::task::block_in_place(|| {
-                    handle.block_on(response.json::<serde_json::Value>())
+                    handle.block_on(async {
+                        let mut bytes = Vec::new();
+                        let mut stream = response.bytes_stream();
+                        while let Some(chunk) = stream.next().await {
+                            let chunk = chunk.map_err(|_| "moderation response read failed")?;
+                            if bytes.len().saturating_add(chunk.len()) > MODERATION_BODY_BYTES {
+                                return Err("moderation response exceeds 65536 bytes");
+                            }
+                            bytes.extend_from_slice(&chunk);
+                        }
+                        serde_json::from_slice::<serde_json::Value>(&bytes)
+                            .map_err(|_| "moderation response is not JSON")
+                    })
                 });
                 match body {
                     Ok(body) => verdict_from_moderation(&self.name, &body),
@@ -137,9 +152,7 @@ fn verdict_from_moderation(name: &str, body: &serde_json::Value) -> Verdict {
         .and_then(|r| r.as_str())
         .or_else(|| body.get("categories").and_then(|c| c.as_str()))
         .unwrap_or("moderation verdict")
-        .chars()
-        .take(150)
-        .collect::<String>();
+        .to_owned();
     match body.get("verdict").and_then(|v| v.as_str()) {
         Some("flag") => Verdict::Flag {
             policy: name.to_owned(),
@@ -182,7 +195,8 @@ impl Guardrail for ModerationCallout {
 /// scope map. `secret` opens each `moderation` policy's `secret_sealed` the
 /// way a channel's upstream key opens — `None` (a deployment with no
 /// configured secret) means nothing can open, so a moderation policy is
-/// skipped.
+/// skipped. Stored keyword configurations outside the finite limits remain
+/// registered as admission refusals for turns that bind them.
 pub async fn build_guardrail_set(
     db: &Db,
     http: reqwest::Client,
@@ -190,6 +204,13 @@ pub async fn build_guardrail_set(
 ) -> Result<GuardrailSet, WalletError> {
     let mut set = GuardrailSet::empty();
     for row in db.list_guardrail_policies().await? {
+        if row.kind == "keyword"
+            && let Ok(config) = serde_json::from_value::<KeywordConfig>(row.config.clone())
+            && oxsum_core::validate_keyword_patterns(&config.patterns).is_err()
+        {
+            set.refuse_over_limit(&row.name);
+            continue;
+        }
         match build_policy(&row, http.clone(), secret) {
             Ok(Some(policy)) => set.register(policy),
             Ok(None) => {}

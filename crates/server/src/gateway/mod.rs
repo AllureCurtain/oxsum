@@ -13,6 +13,7 @@
 mod chat;
 mod embeddings;
 pub(crate) mod error;
+mod evidence;
 mod messages;
 mod models;
 mod pipeline;
