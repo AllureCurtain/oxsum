@@ -43,6 +43,18 @@ The objects these functions speak — `ProofBundle`, the signed-note head, `Pric
 
 ## Status
 
-`publish = true` so it can ship on its own (issue #468), but the crate is developed inside the oxsum workspace — the vendored `doubleentry` copy it depends on is published too, and the two move together. This README is for the consumer verifying a bill or embedding the check; contributor notes live in the [repo](https://github.com/AllureCurtain/oxsum).
+`publish = true` permits packaging (issue #468); it does not certify that a
+registry artifact contains this repository's vendored engine changes. This
+workspace's native build and its generated WASM support descriptions up to
+16,384 Unicode scalar values (#873). Older 512-character readers cannot decode
+longer new receipts. The `doubleentry` path dependency resolves the vendored
+source locally, but packaging strips that path and the same numeric version on
+crates.io may resolve different bytes. Use a verified native build from this
+workspace or the matching built WASM artifact; do not infer compatibility from
+the package name/version. The fixtures under `fixtures/` exercise the extended
+bound and preserved old proof bytes. This change publishes no registry package.
+
+This README is for the consumer verifying a bill or embedding the check;
+contributor notes live in the [repo](https://github.com/AllureCurtain/oxsum).
 
 License: MIT OR Apache-2.0.

@@ -1,7 +1,7 @@
 # Bounded composed settlement evidence (#873)
 
-Status: implementation under validation. No candidate, publication, provider,
-PSP, deployment or browser journey is certified here.
+Status: development gates passed; focused protected merge pending. No candidate,
+publication, provider, PSP, deployment or browser journey is certified here.
 
 ## Reproduced failure
 
@@ -61,5 +61,18 @@ finite capacity increase does not make unbounded configured evidence safe.
   `/tmp/oxsum-873-wasm`.
 - Frontend: four contract groups, code generation and production build passed.
 
-Full workspace, strict Clippy, exact final source SHA and independent review
-remain to be recorded before the focused PR.
+- Complete workspace at code source
+  `eeb80593396bd9c5c3beb5e167e00f8992ed4b7f`: 2,047 passed, six existing opt-in
+  skips, 339.821 seconds. Compilation took 4m11s; macOS test-binary enumeration
+  delayed the start separately, with no database wait. No timeout changed.
+- Strict `cargo clippy --workspace --all-targets -- -D warnings` passed in 4m26s.
+- Formatting and diff checks passed. Independent source review of `eeb80593`
+  passed. The final documentation commit adds these results and clarifies that
+  registry version numbers do not certify vendored native-verifier bytes.
+
+Logs are retained locally as `/tmp/oxsum-873-{baseline,focused,capacity,engine,
+scale-isolated,engine-serial,engine-doc,verify,wasm-build,wasm-tests,workspace,
+clippy}.log`. The committed native/WASM capacity fixtures are synthetic local
+receipts, not a claimed live provider or candidate proof. No registry package was
+published; native compatibility requires the verified vendored workspace build
+or an equivalently tested artifact.
