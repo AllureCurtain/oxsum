@@ -7,7 +7,8 @@ use uuid::Uuid;
 
 use super::Customer;
 use crate::WalletError;
-use crate::financial_reconciliation::types;
+use crate::financial_reconciliation::sources::Source;
+use crate::financial_reconciliation::{ledger, types};
 
 pub(super) fn compare(customer: &mut Customer<'_>) -> Result<(), WalletError> {
     let statements: Vec<_> = customer
@@ -72,6 +73,7 @@ pub(super) fn compare(customer: &mut Customer<'_>) -> Result<(), WalletError> {
         }
         let mut charges = BTreeMap::<(String, Option<Uuid>), i64>::new();
         let mut payments = 0;
+        let mut payment_sources = BTreeMap::<Option<Uuid>, i64>::new();
         let mut dispute_amount = 0;
         let mut origins = BTreeMap::<Uuid, i64>::new();
         for line in &lines {
@@ -86,6 +88,8 @@ pub(super) fn compare(customer: &mut Customer<'_>) -> Result<(), WalletError> {
             let source = line.optional_id("source_ref")?;
             if kind == "payment_applied" {
                 payments = types::sub(payments, amount)?;
+                let prior = payment_sources.get(&source).copied().unwrap_or(0);
+                payment_sources.insert(source, types::add(prior, amount)?);
                 continue;
             }
             if kind == "dispute_chargeback" {
@@ -179,6 +183,12 @@ pub(super) fn compare(customer: &mut Customer<'_>) -> Result<(), WalletError> {
                 .try_get::<Option<i32>, _>("period_index")?
                 .is_some();
             if state != "void" && original_document {
+                let mut expected_payments = payment_sources_for(customer, &journal)?;
+                expected_payments.retain(|_, amount| *amount != 0);
+                payment_sources.retain(|_, amount| *amount != 0);
+                if payment_sources != expected_payments {
+                    customer.unsupported("plan_statements", statement, "paymentSources", "Statement payments differ from the exact original order, refund or usage-correction allocation");
+                }
                 let mut expected = BTreeMap::<(String, Option<Uuid>), i64>::new();
                 for line in customer.sources.table("invoice_journal_lines").values() {
                     if line.id("journal_id")? != id {
@@ -293,4 +303,68 @@ fn category(kind: &str) -> &str {
     } else {
         kind
     }
+}
+
+fn payment_sources_for(
+    customer: &Customer<'_>,
+    journal: &Source,
+) -> Result<BTreeMap<Option<Uuid>, i64>, WalletError> {
+    let id = journal.id("journal_id")?;
+    let period = journal
+        .optional_id("plan_period_id")?
+        .and_then(|id| customer.sources.get("plan_periods", id));
+    let mut expected = BTreeMap::new();
+    if let Some(period) = period {
+        if period.text("authorization_kind")? == "payment_order" {
+            let order = period.id("authorization_ref")?;
+            let (key, path) = if journal.policy()? == 2 {
+                (format!("payment-order/{order}/prepay"), ledger::DEFERRED)
+            } else {
+                (
+                    format!("plan-journal/{id}/prepay-settle"),
+                    ledger::RECEIVABLE,
+                )
+            };
+            let source = BTreeSet::from([*crate::entry_id_for(&key).as_uuid()]);
+            expected.insert(
+                Some(order),
+                types::sub(0, customer.ledger.net(&source, path)?)?,
+            );
+        }
+    }
+    let suffix = format!("/journal/{id}");
+    for (entry_id, entry) in &customer.ledger.entries {
+        let Some(order) = entry
+            .key()
+            .and_then(|key| std::str::from_utf8(key).ok())
+            .and_then(|key| key.strip_prefix("payment-order/"))
+            .and_then(|key| key.strip_suffix(&suffix))
+            .and_then(|id| Uuid::parse_str(id).ok())
+        else {
+            continue;
+        };
+        let paid = customer
+            .ledger
+            .net(&BTreeSet::from([*entry_id]), ledger::RECEIVABLE)?;
+        let previous = expected.get(&Some(order)).copied().unwrap_or(0);
+        expected.insert(Some(order), types::sub(previous, paid)?);
+    }
+    for effect in customer.sources.table("plan_refund_effects").values() {
+        if effect.optional_id("journal_id")? == Some(id) {
+            let amount = types::add(
+                effect.amount("earned_minor")?,
+                effect.amount("deferred_minor")?,
+            )?;
+            let note = Some(effect.id("credit_note_id")?);
+            let previous = expected.get(&note).copied().unwrap_or(0);
+            expected.insert(note, types::add(previous, amount)?);
+        }
+    }
+    if let Some(correction) = customer.sources.get("plan_usage_corrections", id) {
+        expected.insert(
+            Some(correction.id("correction_id")?),
+            correction.amount("payable_minor")?,
+        );
+    }
+    Ok(expected)
 }

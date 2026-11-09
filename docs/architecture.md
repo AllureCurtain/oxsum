@@ -598,8 +598,15 @@ recognition, cash refunds, disputes, voids, usage corrections and customer
 statement lines. Nonzero daily movements follow their individual official log
 positions. A zero recognition day is placed before the next sequenced service
 day or correction whose completed service boundary includes it; transaction-start
-timestamps do not establish commit order. Historical usage corrections recheck
-their retained source
+timestamps do not establish commit order. If immutable neighboring entries and
+retained service boundaries cannot prove a zero day's order relative to a refund
+or void, that period's schedule is explicitly excluded and coverage is incomplete.
+Booking midnight and transaction start are only lower bounds: a writer may wait
+across midnight or the exact partial-day endpoint before sampling its recognition
+clock. Source totals and ledger amounts still remain separately visible.
+Statement payment lines also match exact order, refund-note and usage-correction
+identities and signed allocations; an unchanged total cannot hide a changed
+payment source. Historical usage corrections recheck their retained source
 digest against the official correction description and each original usage,
 accrual and payment entry against complete verified bytes and an earlier official
 sequence position. These source checks do not certify usage measurement or

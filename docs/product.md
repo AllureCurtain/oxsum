@@ -634,7 +634,11 @@ The comparison covers plan billed, earned, deferred, collected and receivable
 amounts plus confirmed refund Cash. Legacy v1 uses original-posting journal
 cohorts; v2 uses signed movements under booking, service or payment clocks.
 Statement lines and outstanding debt are checked against their original journal
-and dispute sources, including mixed-policy statements. Refund payable and
+and dispute sources, including mixed-policy statements. Payment lines must retain
+their exact original order, refund-note or usage-correction allocation. A missing
+historical ordering boundary between zero-money recognition and a refund or void
+leaves the period's recognition schedule explicitly unverified and coverage
+incomplete, even if the visible totals agree. Refund payable and
 cash-loss suspense are retained separately and do not become income or debt.
 Usage, entitlement, funding, costs and actual service delivery remain outside
 this comparison and are explicitly listed as such. The result is a bounded

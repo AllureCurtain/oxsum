@@ -193,6 +193,9 @@ fn clean(result: &Comparison) {
     assert_eq!(result.coverage.entries, result.coverage.verified_entries);
 }
 async fn refund(w: &World, amount: i64) -> Uuid {
+    refund_on(w, amount, OffsetDateTime::now_utc().date()).await
+}
+async fn refund_on(w: &World, amount: i64, on: time::Date) -> Uuid {
     let refund =
         w.db.request_order_refund(
             w.org,
@@ -238,7 +241,7 @@ async fn refund(w: &World, amount: i64) -> Uuid {
         )
         .await
         .unwrap();
-    w.db.apply_refund_event(&w.wallet, &receipt, OffsetDateTime::now_utc().date())
+    w.db.apply_refund_event(&w.wallet, &receipt, on)
         .await
         .unwrap();
     refund.refund_id
@@ -420,6 +423,34 @@ async fn balanced_legacy_header_drift_cannot_be_its_own_actual() {
 }
 
 #[tokio::test]
+async fn equal_payment_total_cannot_hide_a_different_original_order() {
+    let _guard = TEST_LOCK.lock().await;
+    for legacy in [false, true] {
+        let Some(w) = world(if legacy { 40 } else { 10 }, legacy).await else {
+            return;
+        };
+        clean(&capture(&w, TimeBasis::Booking).await);
+        let replaced = Uuid::new_v4();
+        corrupt(&w, &format!("UPDATE oxsum.plan_statement_lines SET source_ref='{replaced}' WHERE statement_id IN (SELECT statement_id FROM oxsum.plan_statements WHERE journal_id='{}') AND kind='payment_applied' AND source_ref='{}'", w.journal, w.order.order_id)).await;
+        let result = capture(&w, TimeBasis::Booking).await;
+        assert_eq!(result.expected, result.actual);
+        assert!(!result.coverage.complete);
+        assert!(
+            result
+                .differences
+                .iter()
+                .any(|d| d.fact == "paymentSources")
+        );
+        assert!(
+            !result
+                .differences
+                .iter()
+                .any(|d| d.fact == "paymentLinesMinor")
+        );
+    }
+}
+
+#[tokio::test]
 async fn tiny_zero_days_use_service_boundaries_across_earlier_started_refund_and_void() {
     let _guard = TEST_LOCK.lock().await;
     for fee in [3, 17] {
@@ -453,6 +484,51 @@ async fn tiny_zero_days_use_service_boundaries_across_earlier_started_refund_and
         assert_eq!(result.actual.billed_minor, 0);
         assert_eq!(result.actual.refund_minor, 1);
     }
+}
+
+#[tokio::test]
+async fn refund_waiting_across_midnight_does_not_invent_zero_day_chronology() {
+    let _guard = TEST_LOCK.lock().await;
+    let Some(w) = world_with_fee(1, false, 3).await else {
+        return;
+    };
+    let midnight = OffsetDateTime::now_utc().date().midnight().assume_utc();
+    let zeros: i64 = sqlx::query_scalar("SELECT count(*) FROM oxsum.plan_accounting_effects WHERE plan_period_id=$1 AND kind='recognition' AND entry_id IS NULL")
+        .bind(w.period.plan_period_id).fetch_one(w.db.pool()).await.unwrap();
+    assert!(zeros > 0);
+    // Keep a real, verified refund entry booked on the caller's earlier date.
+    // A transaction that waited for plan ownership across midnight retains this
+    // date and its earlier start, while recognition samples the later clock.
+    refund_on(&w, 1, midnight.date().previous_day().unwrap()).await;
+    clean(&capture(&w, TimeBasis::Booking).await);
+    let mut tx = w.db.pool().begin().await.unwrap();
+    sqlx::query("SET LOCAL session_replication_role='replica'")
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+    sqlx::query("UPDATE oxsum.plan_accounting_effects SET created_at=$2 WHERE plan_period_id=$1 AND kind='refund'")
+        .bind(w.period.plan_period_id).bind(midnight-Duration::seconds(1)).execute(&mut *tx).await.unwrap();
+    tx.commit().await.unwrap();
+    let result = capture(&w, TimeBasis::Booking).await;
+    assert_eq!(result.expected, result.actual);
+    assert_eq!(result.coverage.entries, result.coverage.verified_entries);
+    assert!(!result.coverage.complete);
+    assert!(
+        result
+            .differences
+            .iter()
+            .any(|d| d.fact == "ambiguousZeroRecognitionOrder")
+    );
+    assert!(result.coverage.not_compared.contains(&format!(
+        "planRecognitionSchedule/{}",
+        w.period.plan_period_id
+    )));
+    assert!(
+        !result
+            .differences
+            .iter()
+            .any(|d| d.fact.starts_with("schedule."))
+    );
 }
 
 #[tokio::test]
