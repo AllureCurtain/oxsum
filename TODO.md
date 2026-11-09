@@ -4,13 +4,13 @@ Updated: 2026-11-09
 
 ## In progress
 
-- [ ] [#891](https://github.com/AllureCurtain/oxsum/issues/891) — Fix concurrent statement/period evidence descriptor publication after main CI exposed a non-arbiter unique-index race; five focused core checks, core-only strict Clippy and independent source review passed; PR integration pending.
+- [x] [#891](https://github.com/AllureCurtain/oxsum/issues/891) — Fix concurrent statement/period evidence descriptor publication after main CI exposed a non-arbiter unique-index race; five focused core checks, core-only strict Clippy and independent source review passed; integrated in PR #893 (`dcd226c6`).
 
-- [ ] [#876](https://github.com/AllureCurtain/oxsum/issues/876) — Offline consumer retained scope, separate price/sale verdicts and original JSON preservation; eight real-SDK/transport groups and v13/v14/v2 export rejection matrices passed. Independent review and PR integration pending.
+- [x] [#876](https://github.com/AllureCurtain/oxsum/issues/876) — Offline consumer retained scope, separate price/sale verdicts and original JSON preservation; eight real-SDK/transport groups and v13/v14/v2 export rejection matrices passed. Independent review passed; integrated in PR #889 (`5d70ef34`).
 
 - [ ] [#872](https://github.com/AllureCurtain/oxsum/issues/872) — Prepared portal and embedded pilot kits, shared exact-candidate intake and independent participant result template; independent review and 28 local-link checks passed; PR integration pending. No participants or external contact.
 
-- [ ] [#873](https://github.com/AllureCurtain/oxsum/issues/873) — Complete quota/cache evidence under a bounded 16,384-character description: baseline reproduced, 2,047 full workspace, 521 engine, 29 engine doc, 94 native verifier and ten actual-WASM groups passed; strict Clippy, frontend and independent review passed. Focused protected merge pending before #849.
+- [x] [#873](https://github.com/AllureCurtain/oxsum/issues/873) — Complete quota/cache evidence under a bounded 16,384-character description: baseline reproduced, 2,047 full workspace, 521 engine, 29 engine doc, 94 native verifier and ten actual-WASM groups passed; strict Clippy, frontend and independent review passed. Integrated in PR #890 (`134a4aae`); admission validation follows in #849.
 
 - [ ] [#875](https://github.com/AllureCurtain/oxsum/issues/875) — Bound configured and response-time gateway evidence before execution so arbitrary guardrail results cannot exceed the receipt budget; required before customer readiness/acceptance. #873 covers known valid composed evidence only.
 
