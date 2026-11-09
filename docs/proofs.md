@@ -84,3 +84,10 @@ An older orphan marker with no matching captured inputs explicitly refuses
 publication rather than serving an export bound to a different digest. Existing
 stored bundles remain unchanged; independent ledger verification still requires
 the retained trust inputs and stays within the documented proof scope.
+
+Version-15 settlements may commit a long reason by SHA-256 and UTF-8 byte length
+instead of carrying its full text. The entry hash/inclusion binds the commitment.
+Only comparison with the exact separately supplied full UTF-8 reason establishes
+that text matches; a bundle lacking it makes no such claim. Neither a digest nor
+a matched reason certifies policy semantics or truthful provider output. Earlier
+v3–v14 entries retain their original verification rules.

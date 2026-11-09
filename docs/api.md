@@ -818,3 +818,9 @@ with `secret: null`; list reads current metadata. Current authority is checked e
 on replay, and changed operation terms conflict across create/revoke/customer
 operations sharing the same application namespace. The API does not recover lost
 plaintext: explicitly revoke and intentionally create a replacement.
+Gateway settlement v15 and guardrail configuration (#875) use the
+[bounded evidence contract](gateway-evidence-budget.md). New required-policy
+lists and bindings permit at most eight distinct names; their effective union
+is also checked before execution. A complete reason larger than 256 encoded
+UTF-8 JSON bytes is represented exclusively by `reasonCommitment` with SHA-256
+and UTF-8 length. Prior settlement versions remain readable.

@@ -3608,3 +3608,19 @@ claiming it was independently verified.
   revoking management stops future management; issued keys retain their own
   expiry/revocation and ordinary customer archive/suspension restrictions. This
   avoids silently breaking ongoing customer keys during management rotation.
+## 2026-11-09 — Preflight composed gateway evidence and commit complete reasons (#875)
+
+The larger engine capacity in #873 repairs valid composed settlement metadata,
+but unbounded guardrail unions and configured/callout reasons can still overflow
+a finite description after a model answers. Admission uses the complete canonical
+encoder and a conservative 16,384 UTF-8-byte envelope across every resolved route
+before holding funds or executing. Eight effective policies cap the two-phase
+verdict count; new bindings/key/mandate lists are finite and historical oversized
+unions refuse without silently skipping policies.
+
+Version 15 reasons are either complete inline text (at most 256 encoded JSON
+bytes) or an explicit SHA-256/UTF-8-length commitment, with complete text retained
+in the same usage/settlement transaction. This replaces silent moderation/error
+truncation. Verifiers retain old-version behavior and distinguish digest binding
+from comparison with separately supplied text and from policy semantics. The
+[contract](gateway-evidence-budget.md) defines the scope and runtime gates.

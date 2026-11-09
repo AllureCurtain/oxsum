@@ -1641,3 +1641,10 @@ retries give metadata without plaintext. Retrieve the operation receipt, revoke
 the old key and deliberately create a replacement if the first secret response
 was lost. Revoking the management grant stops future management but does not
 silently revoke keys already issued; those keep their own expiry/revocation.
+### Long policy reasons
+
+A version-15 bill may show a reason commitment instead of inline text when the
+complete explanation is long. The hash and byte length identify the separately
+retained full text; an ordinary proof check establishes the committed bytes,
+not that the policy's judgment was correct. An over-capacity guardrail setup is
+refused before the model call. See [the evidence contract](gateway-evidence-budget.md).
