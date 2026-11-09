@@ -791,3 +791,13 @@ order/provider identity. Application operation keys cannot collide with portal
 keys, and checkout reads include only that application's created orders. Archive
 blocks new/resumed checkout while retaining historical reads and valid late
 provider callbacks. Revocation/expiry and namespace are rechecked per operation.
+
+### Application plan-period checkout (#931)
+
+An explicitly granted application's `checkoutWrite` can purchase the customer's
+already assigned payable plan. It cannot assign a plan or change its price. The
+quote includes the exact sold fee, version and period; fiat rounding changes only
+the collected currency amount. Purchased/promotional wallet amounts are zero.
+Verified payment alone authorizes the existing plan activation path. Cancellation,
+scheduled changes, early renewal and complimentary or foreign plans refuse.
+One outstanding intent per period is shared with portal checkout.

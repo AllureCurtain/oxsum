@@ -394,6 +394,93 @@ async fn machine_checkout_recovers_unknown_provider_outcomes_without_owner_runti
         .0,
         StatusCode::OK
     );
+    let sold = db
+        .publish_sold_plan(
+            db.default_business().await.unwrap(),
+            &oxsum_core::NewSoldPlan {
+                plan_id: None,
+                name: "HTTP assigned plan".into(),
+                price_minor: 1_000_001,
+                currency: "USD".into(),
+                quota_minor: Some(7_000_000),
+                period_kind: oxsum_core::PeriodKind::CalendarMonth,
+                overage_enabled: false,
+                sort_order: 0,
+            },
+        )
+        .await
+        .unwrap();
+    let plan = db
+        .bind_customer_plan(
+            org,
+            sold.plan_version_id,
+            oxsum_core::PeriodAuthorization::PaymentOrder(Uuid::nil()),
+        )
+        .await
+        .unwrap();
+    let (status, quote) = call(
+        &app,
+        "POST",
+        &format!("{root}/checkout-quote"),
+        json!({"purpose":"planPeriod","rail":"hyperswitch","customerPlanId":plan.customer_plan_id}),
+        Some(&rotated),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{quote}");
+    assert_eq!(quote["data"]["purchasedMinor"], 0);
+    assert_eq!(quote["data"]["planPayment"]["feeMinor"], 1_000_001);
+    assert_eq!(quote["data"]["displayAmountMinor"], 101);
+    let plan_request = json!({"idempotencyKey":"plan-period","quote":quote["data"],
+        "returnUrl":"https://external.example/plan","cancelUrl":"https://external.example/cancel"});
+    assert_eq!(
+        call(
+            &app,
+            "POST",
+            &format!("{root}/orders"),
+            plan_request.clone(),
+            Some(&rotated)
+        )
+        .await
+        .0,
+        StatusCode::SERVICE_UNAVAILABLE
+    );
+    let (status, recovered) = call(
+        &app,
+        "POST",
+        &format!("{root}/orders"),
+        plan_request.clone(),
+        Some(&rotated),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{recovered}");
+    assert_eq!(recovered["data"]["order"]["amountMinor"], 1_000_001);
+    assert_eq!(recovered["data"]["order"]["purpose"], "planPeriod");
+    let plan_order = &recovered["data"]["order"]["orderId"];
+    assert!(
+        db.plan_periods(plan.customer_plan_id)
+            .await
+            .unwrap()
+            .is_empty()
+    );
+    assert_eq!(
+        call(
+            &app,
+            "POST",
+            &format!("{root}/orders"),
+            plan_request,
+            Some(&rotated)
+        )
+        .await
+        .1["data"]["order"]["orderId"],
+        *plan_order
+    );
+    {
+        let calls = attempts.lock().unwrap();
+        assert_eq!(calls.len(), 6);
+        assert_eq!(calls[4]["payment_id"], calls[5]["payment_id"]);
+        assert_eq!(calls[5]["amount"], 101);
+        assert_eq!(calls[5]["return_url"], "https://external.example/plan");
+    }
     let lifecycle = credential(&db, appid, vec![IntegrationScope::CustomersLifecycleWrite]).await;
     let lifecycle = db.authenticate_service(&lifecycle).await.unwrap().unwrap();
     db.archive_application_customer(
@@ -430,6 +517,6 @@ async fn machine_checkout_recovers_unknown_provider_outcomes_without_owner_runti
         .0,
         StatusCode::OK
     );
-    assert_eq!(attempts.lock().unwrap().len(), 4);
+    assert_eq!(attempts.lock().unwrap().len(), 6);
     task.abort();
 }

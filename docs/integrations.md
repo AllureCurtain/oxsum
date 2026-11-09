@@ -367,5 +367,16 @@ Order status is server truth. `provider_pending` is not paid, and returning to
 your URL proves nothing; wait for verified paid/fulfilled status. Keep checkout
 client secrets scoped to the corresponding user. Ordinary runtime needs only
 the application credential and customer-scoped gateway keys. This slice supports
-wallet/bundle orders; plan/debt checkout, signed lifecycle notifications and the
+wallet/bundle orders. Assigned plan checkout is described below; named debt checkout, signed lifecycle notifications and the
 complete independent application walkthrough remain N21 follow-ups.
+
+### Pay an assigned application customer's plan (#931)
+
+With explicit `checkoutWrite`, quote the application's own customer using
+`{ "purpose": "planPeriod", "rail": "hyperswitch", "customerPlanId": "..." }`.
+Display the returned merchant mode, fiat price, sold fee and period terms, then
+submit the exact quote with the stable operation key and original return URLs.
+The application cannot change/assign the sold plan or fabricate payment. A pending
+period intent is recovered from the application's own order history; do not
+create another intent after a timeout. Manual renewal is available only at the
+period boundary. Old unpaid statement debt is a separate payment purpose.

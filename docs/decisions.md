@@ -3728,3 +3728,13 @@ source linkage does not certify the external provider or service quality.
   Archive blocks initiation/resume but not history or legitimate late callbacks.
 - Plan/statement checkout and lifecycle notification remain separate scoped
   extensions, not capabilities inferred from the new grant.
+
+## 2026-11-10 Reuse assigned-plan payment authority for applications (#931)
+
+The explicit application checkout grant may buy only its own already assigned
+plan. Reuse `PlanPaymentTerms`, its exact fee/period fingerprint, the business
+then plan-row lock order and the existing once-only activation engine. The
+wallet amount fields are zero for this purpose; only `planPayment.feeMinor`
+names the service fee. Existing period intents refuse generically without
+revealing portal order IDs. Optional absent plan fields are not serialized,
+preserving exact stored wallet/bundle replay without rewriting history.
