@@ -19,7 +19,7 @@ use serde_json::Value;
 /// written before descriptions were versioned counts as older; every `v` above
 /// this is newer than this build. Versions it does know each get their own
 /// rule: an old bill stays recomputable after the writer has moved on.
-const KNOWN_VERSION: i64 = 14;
+const KNOWN_VERSION: i64 = 15;
 
 /// The line items the input side prices: their units must account for the
 /// whole `inputTokens`, between them and the usage record — cached reads and
@@ -105,7 +105,8 @@ pub fn verify_charge(description: &str) -> ChargeCheck {
             Some(11) => recompute_v11(&value),
             Some(12) => recompute_v12(&value),
             Some(13) => recompute_v13(&value),
-            Some(KNOWN_VERSION) => recompute_v14(&value),
+            Some(14) => recompute_v14(&value),
+            Some(KNOWN_VERSION) => recompute_v15(&value),
             Some(v) if v > KNOWN_VERSION => ChargeCheck::NewerSchema { version: v },
             Some(_) => ChargeCheck::OlderSchema,
             // A `v` that names no version is a broken record, not an old one.
@@ -482,6 +483,64 @@ fn recompute_v14(value: &Value) -> ChargeCheck {
         return ChargeCheck::Mismatch;
     }
     recompute_v13(value)
+}
+
+/// Version 15 binds full short reasons or explicit complete-text commitments.
+/// The old arithmetic rules receive a separate shape-only view after v15's
+/// original fields were checked; the entry hash always covers original bytes.
+fn recompute_v15(value: &Value) -> ChargeCheck {
+    if !crate::reason::valid_fields(value, false) {
+        return ChargeCheck::Mismatch;
+    }
+    let mut arithmetic = value.clone();
+    if let Some(notes) = value.get("guardrail") {
+        let Some(notes) = notes.as_array() else {
+            return ChargeCheck::Mismatch;
+        };
+        if notes.len() > 16 {
+            return ChargeCheck::Mismatch;
+        }
+        let mut slots = std::collections::BTreeSet::new();
+        let mut policies = std::collections::BTreeSet::new();
+        for note in notes {
+            let Some(policy) = note.get("policy").and_then(Value::as_str) else {
+                return ChargeCheck::Mismatch;
+            };
+            let Some(phase) = note.get("phase").and_then(Value::as_str) else {
+                return ChargeCheck::Mismatch;
+            };
+            if policy.is_empty()
+                || policy.len() > 64
+                || !policy
+                    .bytes()
+                    .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b"._-".contains(&b))
+                || !policy.as_bytes()[0].is_ascii_alphanumeric()
+                || !matches!(phase, "pre_call" | "post_call")
+                || !slots.insert((policy, phase))
+                || !crate::reason::valid_fields(note, true)
+                || note
+                    .get("streamed")
+                    .is_some_and(|v| v.as_bool() != Some(true) || phase != "post_call")
+            {
+                return ChargeCheck::Mismatch;
+            }
+            policies.insert(policy);
+        }
+        if policies.len() > 8 {
+            return ChargeCheck::Mismatch;
+        }
+        if let Some(notes) = arithmetic
+            .get_mut("guardrail")
+            .and_then(Value::as_array_mut)
+        {
+            for note in notes {
+                if note.get("reasonCommitment").is_some() {
+                    note["reason"] = Value::String(String::new());
+                }
+            }
+        }
+    }
+    recompute_v14(&arithmetic)
 }
 
 /// A 64-character lowercase-hex digest — the spelling every committed hash on
@@ -918,6 +977,122 @@ mod tests {
         }
     }
 
+    fn v15_with_reason(reason: &str) -> Value {
+        let mut value: Value = serde_json::from_str(V14).unwrap();
+        value["v"] = Value::from(15);
+        let fields = if crate::reason_fits_inline(reason) {
+            serde_json::json!({"reason":reason})
+        } else {
+            serde_json::json!({"reasonCommitment":crate::ReasonCommitment::from_reason(reason)})
+        };
+        for (key, field) in fields.as_object().unwrap() {
+            value[key] = field.clone();
+        }
+        value["guardrail"] = Value::Array(
+            (0..8)
+                .flat_map(|index| {
+                    let fields = &fields;
+                    ["pre_call", "post_call"].into_iter().map(move |phase| {
+                        let mut note = fields.clone();
+                        note["policy"] = Value::from(format!("p{index}"));
+                        note["verdict"] = Value::from("flagged");
+                        note["phase"] = Value::from(phase);
+                        if phase == "post_call" {
+                            note["streamed"] = Value::Bool(true);
+                        }
+                        note
+                    })
+                })
+                .collect(),
+        );
+        value
+    }
+
+    #[test]
+    fn v15_recomputes_full_reason_commitments_and_sixteen_distinct_slots() {
+        for reason in ["a".repeat(254), "🦀\n\"\\\u{0001}".repeat(400)] {
+            let value = v15_with_reason(&reason);
+            assert_eq!(verify_charge(&value.to_string()), ChargeCheck::Recomputed);
+            if let Some(raw) = value.get("reasonCommitment") {
+                let commitment = serde_json::from_value(raw.clone()).unwrap();
+                assert!(crate::verify_reason_commitment(&commitment, &reason));
+                assert!(!crate::verify_reason_commitment(
+                    &commitment,
+                    &(reason + " ")
+                ));
+            }
+            let mut altered_charge = value;
+            altered_charge["charged"] = Value::from(251);
+            assert_eq!(
+                verify_charge(&altered_charge.to_string()),
+                ChargeCheck::Mismatch
+            );
+        }
+    }
+
+    #[test]
+    fn v15_refuses_ambiguous_reasons_and_invalid_commitment_shapes() {
+        let original = v15_with_reason(&"long ".repeat(100));
+        for path in ["", "/guardrail/0"] {
+            for malformed in [
+                serde_json::json!({"sha256":"f".repeat(64),"utf8Bytes":0}),
+                serde_json::json!({"sha256":"F".repeat(64),"utf8Bytes":600}),
+                serde_json::json!({"sha256":"f".repeat(63),"utf8Bytes":600}),
+                serde_json::json!({"sha256":"f".repeat(64),"utf8Bytes":u64::MAX}),
+                serde_json::json!({"sha256":"f".repeat(64),"utf8Bytes":1.5}),
+                serde_json::json!({"sha256":"f".repeat(64),"utf8Bytes":600,"extra":true}),
+            ] {
+                let mut bad = original.clone();
+                bad.pointer_mut(path).unwrap()["reasonCommitment"] = malformed;
+                assert_eq!(verify_charge(&bad.to_string()), ChargeCheck::Mismatch);
+            }
+            let mut ambiguous = original.clone();
+            ambiguous.pointer_mut(path).unwrap()["reason"] = Value::from("partial");
+            assert_eq!(verify_charge(&ambiguous.to_string()), ChargeCheck::Mismatch);
+            for reason in ["a".repeat(255), "\u{0001}".repeat(43), "🦀".repeat(64)] {
+                let mut oversized = original.clone();
+                let fields = oversized
+                    .pointer_mut(path)
+                    .unwrap()
+                    .as_object_mut()
+                    .unwrap();
+                fields.remove("reasonCommitment");
+                fields.insert("reason".into(), Value::from(reason));
+                assert_eq!(verify_charge(&oversized.to_string()), ChargeCheck::Mismatch);
+            }
+        }
+    }
+
+    #[test]
+    fn v15_refuses_invalid_phase_union_and_duplicate_slots() {
+        let original = v15_with_reason("exact");
+        for (field, bad_value) in [
+            ("policy", Value::from("Bad")),
+            ("policy", Value::from(".bad")),
+            ("policy", Value::from("p".repeat(65))),
+            ("phase", Value::from("unknown")),
+            ("streamed", Value::Bool(true)),
+            ("verdict", Value::from("allow")),
+        ] {
+            let mut bad = original.clone();
+            bad["guardrail"][0][field] = bad_value;
+            assert_eq!(verify_charge(&bad.to_string()), ChargeCheck::Mismatch);
+        }
+        let mut duplicate = original.clone();
+        duplicate["guardrail"][1] = duplicate["guardrail"][0].clone();
+        assert_eq!(verify_charge(&duplicate.to_string()), ChargeCheck::Mismatch);
+        let mut ninth = original.clone();
+        ninth["guardrail"][0]["policy"] = Value::from("ninth");
+        assert_eq!(verify_charge(&ninth.to_string()), ChargeCheck::Mismatch);
+        let mut seventeenth = original;
+        let extra = seventeenth["guardrail"][0].clone();
+        seventeenth["guardrail"].as_array_mut().unwrap().push(extra);
+        assert_eq!(
+            verify_charge(&seventeenth.to_string()),
+            ChargeCheck::Mismatch
+        );
+    }
+
     #[test]
     fn a_v3_record_must_account_for_the_whole_usage() {
         // The input lines split 116 into 20 + 96; claim only part of it and the
@@ -1048,10 +1223,10 @@ mod tests {
         // One version beyond the newest this build recomputes — a verifier an
         // upgrade behind meets a settlement it cannot price, and inclusion
         // proof alone answers for it.
-        let future = r#"{"v":15,"kind":"usage","charged":1,"freeze":1}"#;
+        let future = r#"{"v":16,"kind":"usage","charged":1,"freeze":1}"#;
         assert_eq!(
             verify_charge(future),
-            ChargeCheck::NewerSchema { version: 15 }
+            ChargeCheck::NewerSchema { version: 16 }
         );
     }
 

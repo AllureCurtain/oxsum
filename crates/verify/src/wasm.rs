@@ -60,6 +60,27 @@ fn expected_hash(hex: &str) -> Result<Hash, JsError> {
         .map_err(|_| JsError::new("the content hash is not 64 hex characters"))
 }
 
+/// Compare separately retained complete reason text to the commitment in an
+/// already verified entry. This neither verifies the entry nor policy semantics.
+///
+/// # Errors
+///
+/// [`JsError`] when the commitment is not its exact JSON shape.
+#[wasm_bindgen(js_name = verifyReasonCommitment)]
+pub fn verify_reason_commitment_js(commitment_json: &str, reason: &str) -> Result<String, JsError> {
+    let commitment: crate::ReasonCommitment = serde_json::from_str(commitment_json)
+        .map_err(|_| JsError::new("reason commitment did not parse"))?;
+    let matched = crate::verify_reason_commitment(&commitment, reason);
+    Ok(verdict(
+        matched,
+        if matched {
+            "complete reason matches its committed UTF-8 bytes"
+        } else {
+            "complete reason differs from its commitment"
+        },
+    ))
+}
+
 /// Verifies a bill's proof bundle and — when it is a settlement the build
 /// knows — recomputes the charge and the signed price binding inside it.
 ///

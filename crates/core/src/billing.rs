@@ -6,6 +6,12 @@
 //! freeze must never come out below what the turn can cost, and the charge must never come out above
 //! the freeze. Nothing on this path is floating point.
 
+mod evidence;
+
+pub use evidence::{
+    GATEWAY_SETTLEMENT_JSON_BYTES, retain_reason_evidence, validate_gateway_description,
+};
+
 use std::collections::BTreeMap;
 use std::sync::OnceLock;
 
@@ -1023,8 +1029,9 @@ impl SettlementKind {
 /// under (issue #509); absent on every turn no experiment picked. v14 adds the
 /// optional `sale` — `{digest}`, the resolved customer sale snapshot's hash the
 /// proof bundle's `sale` link attests (issue #600); absent on a turn the
-/// wholesale channel catalog priced.
-const DESCRIPTION_VERSION: i64 = 14;
+/// wholesale channel catalog priced. v15 makes guardrail evaluation phase
+/// explicit and uses complete inline reasons or exact UTF-8 commitments.
+const DESCRIPTION_VERSION: i64 = 15;
 
 /// The canonical settlement description a turn writes into its ledger entry:
 /// what was frozen, what was charged, and every input a verifier needs to
@@ -1106,9 +1113,8 @@ pub struct Settlement<'a> {
     /// turn only carries the field when a verdict named itself.
     pub guardrail: Vec<SettlementGuardrail<'a>>,
     /// Why the turn refused or errored, when it did (issue #233): the refusal
-    /// or upstream error in the caller-facing words the answer already carried,
-    /// truncated to fit the description — under the hash, so a bill proves the
-    /// reason it was given, not one invented after the fact.
+    /// or upstream error in the caller-facing words the answer already carried.
+    /// Long complete text uses an explicit v15 commitment under the entry hash.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub reason: Option<&'a str>,
     /// The experiment a settled turn served under (issue #509): `{id, variant}`
@@ -1204,8 +1210,7 @@ pub struct SettlementSale<'a> {
 /// description's `guardrail` object (issue #502): which configured policy
 /// acted and how — the audit trail a `Flag` exists to leave, and the reason a
 /// `Block`'s refunded turn reads on the bill.
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
+#[derive(Debug, Clone)]
 pub struct SettlementGuardrail<'a> {
     /// The policy that produced the verdict — its `guardrail_policies.name`.
     pub policy: &'a str,
@@ -1213,13 +1218,37 @@ pub struct SettlementGuardrail<'a> {
     /// normally (the exposure is the record); `blocked` means the turn was
     /// refused or its hold refunded.
     pub verdict: &'a str,
-    /// The rule's own reason, bounded by the caller.
+    /// The rule's complete reason; the encoder selects inline text or commitment.
     pub reason: &'a str,
+    /// Evaluation phase: `pre_call` or `post_call`.
+    pub phase: &'a str,
     /// Whether the answer had already streamed when the verdict landed: a
     /// streamed `Block` cannot un-send bytes, so it settles as a flag and this
     /// says so — `true` only on the post-call judgment of a finished stream.
-    #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub streamed: bool,
+}
+
+impl Serialize for SettlementGuardrail<'_> {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        #[derive(Serialize)]
+        struct Verdict<'a> {
+            policy: &'a str,
+            verdict: &'a str,
+            phase: &'a str,
+            #[serde(flatten)]
+            reason: evidence::ReasonFields<'a>,
+            #[serde(skip_serializing_if = "std::ops::Not::not")]
+            streamed: bool,
+        }
+        Verdict {
+            policy: self.policy,
+            verdict: self.verdict,
+            phase: self.phase,
+            reason: evidence::ReasonFields::of(Some(self.reason)),
+            streamed: self.streamed,
+        }
+        .serialize(serializer)
+    }
 }
 
 /// Whether a metered count is zero: zero fields are not written, so the common
@@ -1404,8 +1433,8 @@ struct SettlementV9<'a> {
     guardrail: Vec<SettlementGuardrail<'a>>,
     /// Why the turn refused or errored, when it did (issue #233): the caller's
     /// own answer words, under the content hash — absent for a clean settle.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    reason: Option<&'a str>,
+    #[serde(flatten)]
+    reason: evidence::ReasonFields<'a>,
     /// The experiment the turn served under, v13's addition (issue #509):
     /// `{id, variant}` — the binding whose weighted pick chose the model.
     /// Absent on a turn no experiment served.
@@ -1454,7 +1483,7 @@ impl Settlement<'_> {
             subscription: self.subscription.clone(),
             cache: self.cache.clone(),
             guardrail: self.guardrail.clone(),
-            reason: self.reason,
+            reason: evidence::ReasonFields::of(self.reason),
             experiment: self.experiment.clone(),
             sale: self.sale.clone(),
         })
@@ -1642,6 +1671,8 @@ pub struct SettlementRecord {
     /// Why the turn refused or errored, when the writer recorded one (issue
     /// #233); `None` on a clean settle and on records that predate it.
     pub reason: Option<String>,
+    /// Complete long reason identity (v15); full text is retained separately.
+    pub reason_commitment: Option<oxsum_verify::ReasonCommitment>,
     /// The experiment the turn served under (v13, issue #509): `{id, variant}`;
     /// `None` on a turn no experiment served and on records that predate it.
     pub experiment: Option<ExperimentRef>,
@@ -1719,8 +1750,12 @@ pub struct GuardrailRef {
     pub policy: String,
     /// `flagged` or `blocked`.
     pub verdict: String,
-    /// The rule's own reason.
-    pub reason: String,
+    /// The complete short reason; v15 long reasons carry a commitment instead.
+    pub reason: Option<String>,
+    /// Long complete reason identity (v15), exclusive with inline `reason`.
+    pub reason_commitment: Option<oxsum_verify::ReasonCommitment>,
+    /// Explicit evaluation phase on v15; older records did not carry one.
+    pub phase: Option<String>,
     /// Whether the answer had already streamed when the verdict landed.
     #[serde(default)]
     pub streamed: bool,
@@ -1738,6 +1773,8 @@ pub struct SettlementGuardrailOwned {
     pub verdict: &'static str,
     /// The rule's own reason.
     pub reason: String,
+    /// `pre_call` or `post_call`, independent of whether an answer streamed.
+    pub phase: &'static str,
     /// Whether the answer had already streamed.
     pub streamed: bool,
 }
@@ -1749,6 +1786,7 @@ impl SettlementGuardrailOwned {
             policy: &self.policy,
             verdict: self.verdict,
             reason: &self.reason,
+            phase: self.phase,
             streamed: self.streamed,
         }
     }
@@ -1788,9 +1826,6 @@ struct SettlementRecordWire {
     subscription: Option<SubscriptionRef>,
     /// The cached-answer a v10 record carries; `None` on earlier versions.
     cache: Option<CacheRef>,
-    /// The guardrail verdicts a v11 record carries; absent/`[]` earlier.
-    #[serde(default)]
-    guardrail: Vec<GuardrailRef>,
     charged: i64,
     freeze: i64,
     reason: Option<String>,
@@ -1799,6 +1834,29 @@ struct SettlementRecordWire {
     /// The sale a v14 record carries; `None` on earlier versions and on a turn
     /// the wholesale channel catalog priced.
     sale: Option<SaleRef>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct GuardrailReasonWire {
+    #[serde(default)]
+    guardrail: Vec<GuardrailRef>,
+    reason_commitment: Option<oxsum_verify::ReasonCommitment>,
+}
+
+#[derive(Deserialize)]
+struct LegacyGuardrailWire {
+    policy: String,
+    verdict: String,
+    reason: String,
+    #[serde(default)]
+    streamed: bool,
+}
+
+#[derive(Deserialize)]
+struct LegacyGuardrailReasonWire {
+    #[serde(default)]
+    guardrail: Vec<LegacyGuardrailWire>,
 }
 
 impl SettlementRecord {
@@ -1811,6 +1869,29 @@ impl SettlementRecord {
         if !(3..=DESCRIPTION_VERSION).contains(&wire.v) {
             return None;
         }
+        let reasons = if wire.v < 15 {
+            // Parse directly from original JSON so older required text,
+            // duplicate known fields and ignored unknown fields keep their
+            // original behavior, including names first introduced by v15.
+            let legacy: LegacyGuardrailReasonWire = serde_json::from_str(description).ok()?;
+            GuardrailReasonWire {
+                guardrail: legacy
+                    .guardrail
+                    .into_iter()
+                    .map(|note| GuardrailRef {
+                        policy: note.policy,
+                        verdict: note.verdict,
+                        reason: Some(note.reason),
+                        reason_commitment: None,
+                        phase: None,
+                        streamed: note.streamed,
+                    })
+                    .collect(),
+                reason_commitment: None,
+            }
+        } else {
+            serde_json::from_str(description).ok()?
+        };
         let price_of = |item: &str| {
             wire.lines
                 .iter()
@@ -1859,8 +1940,9 @@ impl SettlementRecord {
             mandate: wire.mandate,
             subscription: wire.subscription,
             cache: wire.cache,
-            guardrail: wire.guardrail,
+            guardrail: reasons.guardrail,
             reason: wire.reason,
+            reason_commitment: reasons.reason_commitment,
             experiment: wire.experiment,
             sale: wire.sale,
         })
@@ -2467,7 +2549,7 @@ mod tests {
         let json = settlement.description().unwrap();
         assert_eq!(
             json,
-            r#"{"v":14,"request":"abc","channel":"deepseek","model":"deepseek-chat","servedModel":"deepseek-chat","priceVersion":3,"kind":"usage","usage":{"inputTokens":116,"outputTokens":100},"lines":[["input",116,1000000],["output",100,2000000]],"upstreamAttempts":1,"charged":316,"freeze":400}"#
+            r#"{"v":15,"request":"abc","channel":"deepseek","model":"deepseek-chat","servedModel":"deepseek-chat","priceVersion":3,"kind":"usage","usage":{"inputTokens":116,"outputTokens":100},"lines":[["input",116,1000000],["output",100,2000000]],"upstreamAttempts":1,"charged":316,"freeze":400}"#
         );
         // Within the ledger's limit, whatever the model is called.
         assert!(json.len() < 512);
@@ -2796,7 +2878,7 @@ mod tests {
         // (v2), or one whose priced lines are missing. A v3 record parses — the
         // reader tolerates the shape v4 superseded — but one that lacks the
         // lines the prices are read out of still cannot.
-        assert!(SettlementRecord::parse(r#"{"v":15,"request":"a","channel":"c","model":"m","priceVersion":1,"kind":"usage","usage":{"inputTokens":1},"lines":[["input",1,1],["output",0,1]],"charged":1,"freeze":1}"#).is_none());
+        assert!(SettlementRecord::parse(r#"{"v":16,"request":"a","channel":"c","model":"m","priceVersion":1,"kind":"usage","usage":{"inputTokens":1},"lines":[["input",1,1],["output",0,1]],"charged":1,"freeze":1}"#).is_none());
         assert!(SettlementRecord::parse(r#"{"v":2,"request":"a","channel":"c","model":"m","priceVersion":1,"kind":"usage","usage":{"inputTokens":1},"lines":[{"item":"input","units":1,"pricePerM":1},{"item":"output","units":1,"pricePerM":1}],"charged":1,"freeze":1}"#).is_none());
         assert!(SettlementRecord::parse(r#"{"v":3,"request":"a","channel":"c","model":"m","priceVersion":1,"kind":"usage","usage":{"inputTokens":1},"lines":[],"charged":1,"freeze":1}"#).is_none());
         assert!(
@@ -2805,6 +2887,23 @@ mod tests {
         );
         // An unknown settlement kind is not one this build can price.
         assert!(SettlementRecord::parse(r#"{"v":3,"request":"a","channel":"c","model":"m","priceVersion":1,"kind":"teleported","usage":{},"lines":[["input",0,1],["output",0,1]],"charged":0,"freeze":1}"#).is_none());
+    }
+
+    #[test]
+    fn old_guardrail_reads_keep_required_text_and_ignore_new_field_names() {
+        let mut legacy:serde_json::Value = serde_json::from_str(r#"{"v":14,"request":"a","channel":"c","model":"m","servedModel":"m","priceVersion":1,"kind":"usage","usage":{"inputTokens":1},"lines":[["input",1,1],["output",0,1]],"charged":1,"freeze":1,"upstreamAttempts":1}"#).unwrap();
+        legacy["reasonCommitment"] = serde_json::json!({"unknownOldField":true});
+        legacy["guardrail"] = serde_json::json!([{"policy":"p","verdict":"flagged","reason":"full old reason","phase":17,"reasonCommitment":false}]);
+        let old = SettlementRecord::parse(&legacy.to_string()).unwrap();
+        assert_eq!(old.guardrail[0].reason.as_deref(), Some("full old reason"));
+        assert!(old.reason_commitment.is_none());
+        assert!(old.guardrail[0].reason_commitment.is_none());
+        assert!(old.guardrail[0].phase.is_none());
+        legacy["guardrail"][0]
+            .as_object_mut()
+            .unwrap()
+            .remove("reason");
+        assert!(SettlementRecord::parse(&legacy.to_string()).is_none());
     }
 
     #[test]

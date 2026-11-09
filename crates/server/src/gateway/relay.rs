@@ -570,6 +570,7 @@ impl Turn {
                         policy,
                         verdict: "flagged",
                         reason,
+                        phase: "post_call",
                         streamed: true,
                     });
                 }
@@ -581,6 +582,7 @@ impl Turn {
                         policy,
                         verdict: "blocked",
                         reason,
+                        phase: "post_call",
                         streamed: true,
                     });
                 }
@@ -784,16 +786,8 @@ impl Plan {
         charge: Charge,
         reason: Option<String>,
     ) -> Result<i64, WalletError> {
-        // The reason rides the ledger description — bounded so a long upstream
-        // error cannot push the record past the description limit. The full
-        // message already reached the caller in the answer itself.
-        let reason = reason.map(|reason| {
-            let mut end = reason.len().min(150);
-            while end > 0 && !reason.is_char_boundary(end) {
-                end -= 1;
-            }
-            reason[..end].to_owned()
-        });
+        // Complete reason bytes survive in the usage transaction. The canonical
+        // encoder uses an explicit commitment when inline JSON would be large.
         // A cache hit's provenance: the source entry id has to outlive the
         // match that produces `usage` — the `SettlementCache` below borrows
         // it — so it is named here, on the plan's own stack frame. The flag
@@ -953,6 +947,7 @@ impl Plan {
         usage.end_user = self.attribution.end_user.clone();
         usage.tags = self.attribution.tags.clone();
         usage.service_tier = self.attribution.service_tier.clone();
+        oxsum_core::retain_reason_evidence(&mut usage, &self.guardrails, reason.as_deref());
         // The user never pays more than the freeze: that is the gateway's promise (product.md). A
         // usage report above it is charged at the freeze and recorded as `capped`, an anomaly for
         // the admin page rather than a silent loss. A turn upstream never served owes no flat fee
@@ -1064,6 +1059,7 @@ impl Plan {
                 .map(|s| oxsum_core::SettlementSale { digest: &s.digest }),
         };
         let description = settlement.description()?;
+        oxsum_core::validate_gateway_description(&description)?;
         // The wallet settles only its own share: the hold took `freeze -
         // drawn_minor`, so settling the full `charged` would exceed the
         // reservation. The description still carries the full figure — the

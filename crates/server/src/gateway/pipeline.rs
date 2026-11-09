@@ -338,7 +338,14 @@ async fn record_refusal(
     };
     let actor = format!("{}", key.key_id.simple());
     let entry_id = match wallet
-        .record_refusal(request_id, model, "", reason, Some(&actor))
+        .record_refusal_with_guardrails(
+            request_id,
+            model,
+            "",
+            reason,
+            Some(&actor),
+            error.guardrail_notes(),
+        )
         .await
     {
         Ok(entry_id) => *entry_id.as_uuid(),
@@ -348,6 +355,8 @@ async fn record_refusal(
             return;
         }
     };
+    let mut usage = UsageRecord::default();
+    oxsum_core::retain_reason_evidence(&mut usage, error.guardrail_notes(), Some(reason));
     let row = UsageRow {
         request_id: request_id.to_owned(),
         tenant_id: organization.tenant_id.clone(),
@@ -360,7 +369,7 @@ async fn record_refusal(
         entry_id,
         status: "refused".to_owned(),
         failure_reason: Some(reason.to_owned()),
-        usage: UsageRecord::default(),
+        usage,
         // A refusal never counts tokens — the columns stay NULL, not zero.
         counts: oxsum_core::CountsProvenance::None,
         charged_minor: 0,
@@ -1081,6 +1090,25 @@ async fn run(
             &mandate_policies,
         )
         .await?;
+    let policy_names: Vec<String> = guardrails
+        .iter()
+        .map(|policy| policy.name().to_owned())
+        .collect();
+    for routes in &model_routes {
+        for serving in &routes.ordered {
+            super::evidence::preflight(&super::evidence::RouteEvidence {
+                request: request_id,
+                channel: &serving.channel,
+                requested_model: &requested_model,
+                served_model: &routes.model,
+                upstream_model: routes.upstream_model.as_deref(),
+                service_tier: request.attribution.service_tier.as_deref(),
+                experiment_variant: experiment.as_ref().map(|binding| binding.variant.as_str()),
+                price: sale.as_ref().map_or(&serving.price, |sale| &sale.price),
+                policies: &policy_names,
+            })?;
+        }
+    }
     let mut pending_flags: Vec<oxsum_core::SettlementGuardrailOwned> = Vec::new();
     if !guardrails.is_empty() {
         let ctx = oxsum_core::RequestContext {
@@ -1099,6 +1127,7 @@ async fn run(
                         policy,
                         verdict: "flagged",
                         reason,
+                        phase: "pre_call",
                         streamed: false,
                     });
                 }
@@ -1106,9 +1135,18 @@ async fn run(
                     // A blocked turn never takes a hold: refuse now, and the
                     // `refused` marker records it like every other admission
                     // refusal so the billing page sees the policy's verdict.
-                    return Err(GatewayError::Forbidden(format!(
-                        "guardrail {policy} refused the request: {reason}"
-                    )));
+                    let message = format!("guardrail {policy} refused the request: {reason}");
+                    pending_flags.push(oxsum_core::SettlementGuardrailOwned {
+                        policy,
+                        verdict: "blocked",
+                        reason,
+                        phase: "pre_call",
+                        streamed: false,
+                    });
+                    return Err(GatewayError::Guardrail {
+                        message,
+                        notes: pending_flags,
+                    });
                 }
             }
         }
@@ -1776,6 +1814,7 @@ async fn run(
                                             policy,
                                             verdict: "flagged",
                                             reason,
+                                            phase: "post_call",
                                             streamed: false,
                                         });
                                     }
@@ -1784,6 +1823,7 @@ async fn run(
                                             policy: policy.clone(),
                                             verdict: "blocked",
                                             reason: reason.clone(),
+                                            phase: "post_call",
                                             streamed: false,
                                         });
                                         blocked = Some((policy, reason));
@@ -2035,6 +2075,7 @@ async fn serve_cache_hit(
                         policy,
                         verdict: "flagged",
                         reason,
+                        phase: "post_call",
                         streamed: false,
                     });
                 }
@@ -2043,6 +2084,7 @@ async fn serve_cache_hit(
                         policy: policy.clone(),
                         verdict: "blocked",
                         reason: reason.clone(),
+                        phase: "post_call",
                         streamed: false,
                     });
                     blocked = Some((policy, reason));

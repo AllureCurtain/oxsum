@@ -36,6 +36,15 @@ use crate::channels::SecretKey;
 use crate::db::Db;
 use crate::error::WalletError;
 
+/// Maximum distinct policies in one stored binding or effective turn union.
+pub const MAX_GUARDRAIL_POLICIES: usize = 8;
+
+/// Maximum regexes evaluated by one keyword policy.
+pub const MAX_KEYWORD_PATTERNS: usize = 64;
+
+/// Maximum UTF-8 bytes of one configured keyword regex.
+pub const MAX_KEYWORD_PATTERN_BYTES: usize = 4096;
+
 /// A `guardrail_policies` row as the admin surface and the registry read it.
 /// `config` is each kind's own shape — `keyword`'s `{patterns:[{re,action}]}`,
 /// `pii`'s empty object, `moderation`'s `{endpoint, timeout_ms?}` — and
@@ -98,6 +107,13 @@ pub struct KeywordConfig {
 /// PUT, a key's `requiredPolicies`, a binding's list) is rejected by the same
 /// rule before the name reaches a lookup that can only fail to resolve.
 pub fn validate_policy_names(policies: &[String]) -> Result<(), WalletError> {
+    if policies.len() > MAX_GUARDRAIL_POLICIES
+        || policies.iter().collect::<HashSet<_>>().len() != policies.len()
+    {
+        return Err(WalletError::InvalidInput(
+            "guardrail policies must be at most eight distinct names".into(),
+        ));
+    }
     for name in policies {
         let valid = !name.is_empty()
             && name.len() <= 64
@@ -140,6 +156,12 @@ impl Db {
         config: &serde_json::Value,
         secret_sealed: Option<&str>,
     ) -> Result<GuardrailPolicy, WalletError> {
+        validate_policy_names(&[name.to_owned()])?;
+        if kind == "keyword" {
+            let parsed: KeywordConfig = serde_json::from_value(config.clone())
+                .map_err(|error| WalletError::InvalidInput(format!("keyword config: {error}")))?;
+            KeywordPolicy::compile(name, &parsed.patterns)?;
+        }
         let row = sqlx::query(
             "INSERT INTO oxsum.guardrail_policies (name, kind, config, secret_sealed) \
              VALUES ($1, $2, $3, $4) \
@@ -187,6 +209,7 @@ impl Db {
         target: &str,
         policies: &[String],
     ) -> Result<(), WalletError> {
+        validate_policy_names(policies)?;
         let mut tx = self.pool().begin().await?;
         for name in policies {
             let exists: bool = sqlx::query_scalar(
@@ -242,6 +265,7 @@ impl Db {
         let Some(policies) = policies else {
             return Ok(());
         };
+        validate_policy_names(policies)?;
         for name in policies {
             let exists: bool = sqlx::query_scalar(
                 "SELECT EXISTS (SELECT 1 FROM oxsum.guardrail_policies WHERE name = $1)",
@@ -407,6 +431,8 @@ pub struct GuardrailSet {
     policies: HashMap<String, Arc<dyn Guardrail>>,
     /// `scope`/`target` → the ordered policy names that scope runs.
     bindings: HashMap<(String, String), Vec<String>>,
+    /// Existing over-limit configurations refuse only turns bound to them.
+    over_limit: HashSet<String>,
 }
 
 impl GuardrailSet {
@@ -422,6 +448,12 @@ impl GuardrailSet {
         self.policies.insert(policy.name().to_owned(), policy);
     }
 
+    /// Keep a stored over-limit policy visible to admission instead of silently
+    /// dropping its protection when the runtime cannot build its bounded form.
+    pub fn refuse_over_limit(&mut self, name: &str) {
+        self.over_limit.insert(name.to_owned());
+    }
+
     /// Sets one scope's binding — `(scope, target)` → the ordered policy names.
     pub fn bind(&mut self, scope: &str, target: &str, policies: Vec<String>) {
         self.bindings
@@ -433,14 +465,16 @@ impl GuardrailSet {
     /// impl are skipped — a binding is validated on write, so a miss here means
     /// the policy was deleted after binding, and a protection layer skips it
     /// rather than refuse the turn over its own bookkeeping.
-    #[must_use]
+    /// The complete named union is checked before resolving implementations,
+    /// including deleted policies. An over-limit stored configuration refuses
+    /// admission rather than shortening the union or silently skipping a rule.
     pub fn for_turn(
         &self,
         channel: &str,
         key_id: Uuid,
         key_required: &[String],
         mandate_required: &[String],
-    ) -> Vec<Arc<dyn Guardrail>> {
+    ) -> Result<Vec<Arc<dyn Guardrail>>, WalletError> {
         let mut names: Vec<&str> = Vec::new();
         // Channel-bound policies, in their stored order.
         if let Some(bound) = self
@@ -462,11 +496,21 @@ impl GuardrailSet {
         // De-duplicate preserving order — a policy bound on both the channel
         // and the key runs once, not twice.
         let mut seen = HashSet::new();
-        names
+        let names: Vec<String> = names
             .into_iter()
             .filter(|name| seen.insert(*name))
+            .map(str::to_owned)
+            .collect();
+        validate_policy_names(&names)?;
+        if names.iter().any(|name| self.over_limit.contains(name)) {
+            return Err(WalletError::InvalidInput(
+                "a bound guardrail policy exceeds supported configuration limits".into(),
+            ));
+        }
+        Ok(names
+            .iter()
             .filter_map(|name| self.policies.get(name).cloned())
-            .collect()
+            .collect())
     }
 }
 
@@ -478,6 +522,24 @@ pub struct KeywordPattern {
     pub re: String,
     /// `flag` or `block` — the verdict a hit produces.
     pub action: String,
+}
+
+/// Check the finite keyword configuration before regex compilation or admission.
+pub fn validate_keyword_patterns(patterns: &[KeywordPattern]) -> Result<(), WalletError> {
+    if patterns.is_empty() || patterns.len() > MAX_KEYWORD_PATTERNS {
+        return Err(WalletError::InvalidInput(
+            "keyword policies require between one and 64 patterns".into(),
+        ));
+    }
+    if patterns.iter().any(|pattern| {
+        pattern.re.len() > MAX_KEYWORD_PATTERN_BYTES
+            || !matches!(pattern.action.as_str(), "flag" | "block")
+    }) {
+        return Err(WalletError::InvalidInput(
+            "keyword patterns require at most 4096 UTF-8 bytes and a flag or block action".into(),
+        ));
+    }
+    Ok(())
 }
 
 /// The org-configured keyword/regex policy: a named list of patterns the
@@ -498,11 +560,7 @@ impl KeywordPolicy {
     /// Compiles the policy's patterns; an unparseable regex is a config error
     /// the write path surfaces, never a stored policy that fails at scan time.
     pub fn compile(name: &str, patterns: &[KeywordPattern]) -> Result<Self, crate::WalletError> {
-        if patterns.is_empty() {
-            return Err(crate::WalletError::InvalidInput(format!(
-                "keyword policy {name} needs at least one pattern"
-            )));
-        }
+        validate_keyword_patterns(patterns)?;
         let res: Vec<String> = patterns.iter().map(|p| p.re.clone()).collect();
         let set = RegexSet::new(&res).map_err(|error| {
             crate::WalletError::InvalidInput(format!("keyword policy {name}: {error}"))
@@ -716,5 +774,50 @@ mod tests {
             ..ctx
         };
         assert_eq!(scanner.evaluate_response(&ctx), Verdict::Allow);
+    }
+
+    #[test]
+    fn policy_union_is_bounded_before_missing_implementations_are_filtered() {
+        let mut set = GuardrailSet::empty();
+        let key = Uuid::nil();
+        let names: Vec<String> = (0..MAX_GUARDRAIL_POLICIES)
+            .map(|i| format!("p{i}"))
+            .collect();
+        set.bind("channel", "c", names.clone());
+        // Deleted names still occupy their configured union slots. Repeating
+        // one across bindings is one requirement, not two evaluations.
+        assert!(set.for_turn("c", key, &names, &names).unwrap().is_empty());
+        assert!(matches!(
+            set.for_turn("c", key, &["ninth".into()], &[]),
+            Err(WalletError::InvalidInput(_))
+        ));
+        set.refuse_over_limit("p3");
+        assert!(set.for_turn("c", key, &[], &[]).is_err());
+        assert!(set.for_turn("other", key, &[], &[]).unwrap().is_empty());
+        assert!(validate_policy_names(&["p".into(), "p".into()]).is_err());
+        assert!(validate_policy_names(&names).is_ok());
+    }
+
+    #[test]
+    fn keyword_limits_bind_bytes_count_and_action_before_compilation() {
+        let mut patterns: Vec<KeywordPattern> = (0..MAX_KEYWORD_PATTERNS)
+            .map(|_| KeywordPattern {
+                re: "a".repeat(MAX_KEYWORD_PATTERN_BYTES),
+                action: "flag".into(),
+            })
+            .collect();
+        assert!(validate_keyword_patterns(&patterns).is_ok());
+        patterns.push(KeywordPattern {
+            re: "x".into(),
+            action: "block".into(),
+        });
+        assert!(validate_keyword_patterns(&patterns).is_err());
+        patterns.pop();
+        patterns[0].re = "🦀".repeat(MAX_KEYWORD_PATTERN_BYTES / 4 + 1);
+        assert!(validate_keyword_patterns(&patterns).is_err());
+        patterns[0].re = "x".into();
+        patterns[0].action = "ignore".into();
+        assert!(validate_keyword_patterns(&patterns).is_err());
+        assert!(validate_keyword_patterns(&[]).is_err());
     }
 }

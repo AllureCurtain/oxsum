@@ -12,6 +12,11 @@ Given a `ProofBundle` — the entry source, an inclusion proof, the tree head as
 - **`verify_bill`** composes the full verdict: inclusion, the charge recomputation (`verify_charge`), and the signed price binding (`verify_price_head`), reduced to the sentence a page prints.
 - **`verify_signed_head`** / **`verify_consistency`** / **`verify_witnesses`** establish that the tree head itself is trustworthy — the operator's Ed25519 signed-note signature, and that a new head extends one the holder archived.
 - **`verify_statement_anchor`** / **`verify_usage_report`** cover the statement and usage-report proofs the same ledger also carries.
+- **`verify_reason_commitment`** compares separately supplied complete text with
+  v15's SHA-256/UTF-8-byte-length commitment. First verify the containing entry;
+  inclusion without the full text binds only the commitment, and matching text
+  does not establish whether the policy's judgment was correct. Historical
+  v3–v14 settlement interpretation is unchanged.
 
 ## The pieces a verifier needs
 
