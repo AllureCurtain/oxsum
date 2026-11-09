@@ -17964,7 +17964,7 @@ export interface components {
              * @description the entry id — `GET /api/v1/entries/{entryId}/proof` names it
              */
             id: string;
-            /** @description what the writer recorded — a settlement record, a hold, a reason */
+            /** @description what the writer recorded — a settlement record, a hold, a reason; Unicode scalar limit, requiring a compatible verifier */
             description: string;
             /** @description the hash the Merkle log commits to */
             contentHash: string;

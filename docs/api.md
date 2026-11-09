@@ -2,6 +2,14 @@
 
 Field definitions for each endpoint are authoritative in `crates/server/openapi.yaml`; this file only records general conventions.
 
+Ledger evidence descriptions (#873) are bounded to 16,384 Unicode scalar values,
+at most 65,536 UTF-8 bytes before JSON escaping. Settlement version 14, the
+canonical encoding and all existing hashes stay unchanged. Subscription and
+cache provenance coexist in the complete receipt. Writers, server readers and
+offline/browser verifiers share the bound; older 512-character readers cannot
+read longer new entries. Arbitrary configured guardrail-output budgeting is a
+separate admission requirement tracked by #875.
+
 Non-plan refund effects (#841): `OrderRefund` and
 `OrderCreditNote` expose nullable `cashEffect`. Its immutable verified Cash return
 is separate from approval and note state, so late terminal and unapproved cash

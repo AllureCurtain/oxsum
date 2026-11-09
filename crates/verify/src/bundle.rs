@@ -122,4 +122,26 @@ pub(crate) mod tests {
     fn malformed_bundle_is_an_error_not_a_verdict() {
         assert!(verify_bundle("{ not json", &content_hash()).is_err());
     }
+
+    #[test]
+    fn composed_and_maximum_unicode_receipts_verify_without_losing_provenance() {
+        for (fixture, characters) in [
+            (include_str!("../fixtures/description-composed.json"), 3_114),
+            (include_str!("../fixtures/description-max.json"), 16_384),
+        ] {
+            let fixture: serde_json::Value = serde_json::from_str(fixture).unwrap();
+            let mut bundle = fixture["bundle"].clone();
+            let hash = Hash::parse_hex(fixture["contentHash"].as_str().unwrap()).unwrap();
+            let description = bundle["entry"]["description"].as_str().unwrap();
+            assert_eq!(description.chars().count(), characters);
+            assert!(verify_bundle(&bundle.to_string(), &hash).unwrap());
+            bundle["entry"]["description"] = serde_json::Value::String(format!(
+                "x{}",
+                description.chars().skip(1).collect::<String>()
+            ));
+            assert!(!verify_bundle(&bundle.to_string(), &hash).unwrap());
+            bundle["entry"]["description"] = serde_json::Value::String("🧾".repeat(16_385));
+            assert!(verify_bundle(&bundle.to_string(), &hash).is_err());
+        }
+    }
 }

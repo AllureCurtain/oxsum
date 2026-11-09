@@ -12,6 +12,16 @@ again — `oxsum --migrate-only` is idempotent — but there is no path that
 exact same schema may be restarted only after the operator has also checked
 behavior and data compatibility; equal schema alone does not prove that policy.
 
+Description capacity is one such data boundary (#873): this build writes and
+reads ledger descriptions up to 16,384 Unicode scalar values, while older
+readers accepted only 512. PostgreSQL/SQLite TEXT and the canonical hash format
+are unchanged, but a new longer receipt cannot be read by an old server or
+offline verifier. Upgrade the served WASM, packaged verifier and server together.
+After longer entries have been written, retain a compatible reader for rollback
+or restore the pre-upgrade backup; restarting a 512-character binary against the
+same schema is not a compatible rollback. Existing short entries keep their
+original bytes and hashes.
+
 ## Before you upgrade
 
 ```bash

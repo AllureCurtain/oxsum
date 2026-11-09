@@ -32,8 +32,11 @@ use crate::period::{PeriodCalendar, PeriodState};
 use crate::posting::{Layer, Posting};
 use crate::serde_support::validating_string_serde;
 
-/// Maximum characters in an entry description.
-pub const MAX_DESCRIPTION_LEN: usize = 512;
+/// Maximum Unicode scalar values in an entry description (at most 65,536 UTF-8 bytes).
+// oxsum change (not upstream): v14 usage, quota, cache and delegated-sale
+// evidence compose inside the same immutable description. Keep a finite bound
+// shared by writers and verifiers without changing the canonical encoding.
+pub const MAX_DESCRIPTION_LEN: usize = 16_384;
 
 /// Maximum bytes in an idempotency key.
 pub const MAX_IDEMPOTENCY_KEY_LEN: usize = 128;
@@ -1868,6 +1871,39 @@ mod tests {
             Err(EntryFieldError::DescriptionControlCharacter)
         );
         assert!(Description::new("multi\nline").is_ok());
+    }
+
+    // oxsum change (not upstream): prove the expanded bound on both entry
+    // construction and external deserialization, including four-byte scalars.
+    #[test]
+    fn composed_description_capacity_is_bounded_and_roundtrips() {
+        assert_eq!(MAX_DESCRIPTION_LEN, 16_384);
+        for character in ["x", "🧾"] {
+            let text = character.repeat(MAX_DESCRIPTION_LEN);
+            let description = Description::new(text.clone()).expect("the bound is accepted");
+            assert_eq!(description.as_str(), text);
+            assert!(text.len() <= 65_536);
+            let too_long = character.repeat(MAX_DESCRIPTION_LEN + 1);
+            assert_eq!(
+                Description::new(too_long.clone()),
+                Err(EntryFieldError::DescriptionTooLong)
+            );
+            #[cfg(feature = "serde")]
+            {
+                let json = serde_json::to_string(&description).expect("serializes");
+                assert_eq!(
+                    serde_json::from_str::<Description>(&json).expect("reads back"),
+                    description
+                );
+                assert!(
+                    serde_json::from_str::<Description>(
+                        &serde_json::to_string(&too_long).expect("serializes")
+                    )
+                    .is_err()
+                );
+                assert!(serde_json::from_str::<Description>(r#""bad\u0007""#).is_err());
+            }
+        }
     }
 
     #[test]

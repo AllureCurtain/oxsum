@@ -120,6 +120,31 @@ async fn the_sqlite_backend_conforms() {
     report.assert_passed();
 }
 
+// oxsum change (not upstream): the bounded composed-evidence description must
+// survive every supported store's rehydration, not only PostgreSQL receipts.
+#[tokio::test]
+async fn the_description_bound_survives_sqlite_roundtrip() {
+    let h = Harness::start().await;
+    let text = "🧾".repeat(doubleentry::entry::MAX_DESCRIPTION_LEN);
+    let entry = Entry::<Draft, 2>::new(
+        EntryId::generate(),
+        IdempotencyKey::new(b"description-bound".to_vec()).expect("valid"),
+        date!(2026 - 03 - 15),
+    )
+    .with_description(doubleentry::Description::new(text.clone()).expect("at the bound"))
+    .debit(h.left, Eur::from_minor(1), Currency::EUR)
+    .credit(h.right, Eur::from_minor(1), Currency::EUR)
+    .seal(&h.ctx())
+    .expect("balances");
+    h.store
+        .append(&EntryBatch::single(entry.clone()))
+        .await
+        .expect("appends");
+    let read = h.store.get(entry.id()).await.expect("reads").expect("exists");
+    assert_eq!(read.entry.description().as_str(), text);
+    assert_eq!(read.content_hash, entry.content_hash());
+}
+
 #[tokio::test]
 async fn migration_is_idempotent() {
     let h = Harness::start().await;

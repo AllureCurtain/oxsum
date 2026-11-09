@@ -418,7 +418,7 @@ fn recompute_v11(value: &Value) -> ChargeCheck {
 /// The v12 rule: the model the caller asked for and the model that answered
 /// (issue #500) — v11's arithmetic unchanged, plus `servedModel`, always, and
 /// `requestedModel` only on a cross-model failover (it is omitted on a clean
-/// serve so the record stays inside the ledger's 512-char description cap).
+/// serve to keep the original compact v12 encoding unchanged).
 /// The served name is what priced the turn — it is what `model` has always
 /// meant, so the price binding below still reads `lines` against `usage`, and
 /// `requestedModel` is recorded, never a pricing input. `servedModel` must be

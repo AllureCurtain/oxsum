@@ -4994,9 +4994,8 @@ impl Wallet {
     ) -> Result<EntryId, WalletError> {
         let key = format!("req-{request_id}:refused");
         let usage = UsageRecord::default();
-        // The reason truncates to keep the record inside the description's
-        // 512-character cap — the full message is already in the answer the
-        // caller got.
+        // The reason keeps its existing 150-byte excerpt; the full message is
+        // already in the answer the caller got. Evidence has a separate bound.
         let mut end = reason.len().min(150);
         while end > 0 && !reason.is_char_boundary(end) {
             end -= 1;

@@ -1,0 +1,54 @@
+{
+  "bundle": {
+    "entry": {
+      "booking_date": [
+        2026,
+        313
+      ],
+      "description": "{\"v\":14,\"request\":\"66a21888-8750-42b4-bde9-06b5cfe00d9d\",\"channel\":\"cccccccccccccccccccccccccccccccccccccccc\",\"model\":\"mmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmm\",\"requestedModel\":\"qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq\",\"servedModel\":\"mmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmm\",\"upstreamModel\":\"uuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuu\",\"priceVersion\":1,\"kind\":\"usage\",\"usage\":{\"inputTokens\":10,\"outputTokens\":2,\"cachedTokens\":10,\"serviceTier\":\"tttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttt\"},\"lines\":[[\"input\",0,1000000],[\"cache_read\",10,100000],[\"output\",2,1000000]],\"upstreamAttempts\":0,\"charged\":3,\"freeze\":12,\"mandate\":{\"id\":\"bef09468-fa43-42ce-8770-bf55aff2ba16\",\"hash\":\"abababababababababababababababababababababababababababababababab\"},\"subscription\":{\"subscriptionId\":\"8d1f9159-b87f-4c99-b98c-224f2b883b1b\",\"periodId\":\"eef4b8d5-e454-4239-a552-ec9694698041\",\"drawnMinor\":12,\"chargedMinor\":3},\"cache\":{\"sourceEntryId\":\"f1e3000e-5a0b-46d2-af35-b60b71a48e0f\",\"similarity\":1.0},\"guardrail\":[{\"policy\":\"pppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppp\",\"verdict\":\"flagged\",\"reason\":\"an auditable quotation: \\\"quoted\\\" and \\\\ path 🧾 an auditable quotation: \\\"quoted\\\" and \\\\ path 🧾 an auditable quotation: \\\"quoted\\\" and \\\\ path 🧾 an auditable quotation: \\\"quoted\\\" and \\\\ path 🧾 an auditable quotation: \\\"quoted\\\" and \\\\ path 🧾 an auditable quotation: \\\"quoted\\\" and \\\\ path 🧾 an auditable quotation: \\\"quoted\\\" and \\\\ path 🧾 an auditable quotation: \\\"quoted\\\" and \\\\ path 🧾 an auditable quotation: \\\"quoted\\\" and \\\\ path 🧾 an auditable quotation: \\\"quoted\\\" and \\\\ path 🧾 \"}],\"reason\":\"an auditable quotation: \\\"quoted\\\" and \\\\ path 🧾 an auditable quotation: \\\"quoted\\\" and \\\\ path 🧾 an auditable quotation: \\\"quoted\\\" and \\\\ path 🧾 an auditable quotation: \\\"quoted\\\" and \\\\ path 🧾 an auditable quotation: \\\"quoted\\\" and \\\\ path 🧾 an auditable quotation: \\\"quoted\\\" and \\\\ path 🧾 an auditable quotation: \\\"quoted\\\" and \\\\ path 🧾 an auditable quotation: \\\"quoted\\\" and \\\\ path 🧾 an auditable quotation: \\\"quoted\\\" and \\\\ path 🧾 an auditable quotation: \\\"quoted\\\" and \\\\ path 🧾 \",\"experiment\":{\"id\":\"4d4eede7-2474-4dae-bd54-60c72da7c205\",\"variant\":\"mmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmm\"},\"sale\":{\"digest\":\"abababababababababababababababababababababababababababababababab\"}}",
+      "document": null,
+      "id": "f83549c7-5687-547e-9e10-e9ee457733ad",
+      "idempotency_key": "736574746c653a3030383864383336366462313530653161393238313839323064343837346261",
+      "kind": null,
+      "original_booking_date": null,
+      "postings": [
+        {
+          "account": 8,
+          "amount": "0.000001",
+          "currency": "USD",
+          "dimensions": {},
+          "direction": "Debit",
+          "layer": "Settled"
+        },
+        {
+          "account": 8,
+          "amount": "0.000001",
+          "currency": "USD",
+          "dimensions": {},
+          "direction": "Credit",
+          "layer": "Settled"
+        }
+      ],
+      "provenance": {
+        "actor": null,
+        "correlation": null,
+        "source": null
+      },
+      "reverses": null,
+      "value_date": [
+        2026,
+        313
+      ]
+    },
+    "head": {
+      "root": "845cee0da34bc56d54e008bf3c7c2f7c9b4bfad64bd7622fb8cb69b6ee52fe25",
+      "size": 1
+    },
+    "proof": {
+      "leaf_index": 0,
+      "path": [],
+      "tree_size": 1
+    }
+  },
+  "contentHash": "33bd2a28f4dfb9a44bcc850e6edcc53525799f89ec8bbf3c29d4736b57dd0a35"
+}
