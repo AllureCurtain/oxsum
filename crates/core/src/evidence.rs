@@ -33,6 +33,10 @@
 //! the organization, and whether the operator counted the tokens the model
 //! returned.
 
+#[cfg(test)]
+#[path = "evidence/publication_tests.rs"]
+mod publication_tests;
+
 use std::fmt::Write;
 
 use rand::Rng;
@@ -1097,11 +1101,14 @@ impl Db {
         let bundle_json = serde_json::to_vec(&bundle).map_err(|e| invalid(&e.to_string()))?;
         let entry_count = bundle.entries.len() as i64;
 
+        // A concurrent publisher can conflict on either the primary key or
+        // a partial scope index. Cover all arbiters, then read only our exact
+        // deterministic marker identity; never adopt a different scope's row.
         sqlx::query(
             "INSERT INTO oxsum.evidence_bundles \
              (bundle_id, organization_id, kind, period_from, period_to, statement_id, \
               manifest_digest, anchor_log_index, bundle_json, entry_count) \
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) ON CONFLICT(bundle_id) DO NOTHING",
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) ON CONFLICT DO NOTHING",
         )
         .bind(*marker_id.as_uuid())
         .bind(organization_id)
