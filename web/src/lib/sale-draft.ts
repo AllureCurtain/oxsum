@@ -1,3 +1,4 @@
+import { SaleInputError } from "./sale-input-error.ts";
 import { decimalMinor } from "./money.ts";
 import type { components } from "../api/schema";
 
@@ -19,12 +20,12 @@ export type RuleDraft = { serviceTier: string; minInputTokens: string; maxInputT
 export type ModelDraft = { model: string; mode: NonNullable<Price["mode"]>; discount: string; price: PriceDraft; rules: RuleDraft[] };
 
 export function whole(raw: string, label: string, maximum = Number.MAX_SAFE_INTEGER): number {
-  if (!/^\d+$/.test(raw) || raw.length > 16 || BigInt(raw) > BigInt(maximum)) throw new Error(`${label} must be a whole number from 0 to ${maximum}`);
+  if (!/^\d+$/.test(raw) || raw.length > 16 || BigInt(raw) > BigInt(maximum)) throw new SaleInputError("whole", `${label} must be a whole number from 0 to ${maximum}`, { label, maximum });
   return Number(raw);
 }
 export function creditsText(minor: number | null | undefined): string {
   if (minor == null) return "";
-  if (!Number.isSafeInteger(minor) || minor < 0) throw new Error("Stored amount exceeds this editor's exact range");
+  if (!Number.isSafeInteger(minor) || minor < 0) throw new SaleInputError("storedRange", "Stored amount exceeds this editor's exact range");
   const n = BigInt(minor);
   return `${n / 1000000n}.${String(n % 1000000n).padStart(6, "0")}`;
 }
@@ -48,13 +49,13 @@ function priceValue(draft: PriceDraft, mode: ModelDraft["mode"]): components["sc
   for (const [key, label] of RATE_FIELDS) {
     if (!draft[key].trim() && key !== "inputPricePerMillion" && key !== "outputPricePerMillion") continue;
     const value = decimalMinor(draft[key], 6, true);
-    if (value == null) throw new Error(`${label}: use an exact nonnegative amount with at most six fractional digits`);
+    if (value == null) throw new SaleInputError("exactAmount", `${label}: use an exact nonnegative amount with at most six fractional digits`, { label });
     result[key] = value;
   }
   result.maxOutputTokens = whole(draft.maxOutputTokens, "Maximum output tokens");
-  if (mode === "chat" && result.maxOutputTokens === 0) throw new Error("Chat maximum output must be positive");
-  if (mode !== "chat" && result.maxOutputTokens !== 0) throw new Error("Non-chat maximum output must be zero");
-  if ((mode === "embeddings" || mode === "rerank") && result.outputPricePerMillion !== 0) throw new Error("Input-only modes require zero output price");
+  if (mode === "chat" && result.maxOutputTokens === 0) throw new SaleInputError("chatPositive", "Chat maximum output must be positive");
+  if (mode !== "chat" && result.maxOutputTokens !== 0) throw new SaleInputError("nonChatZero", "Non-chat maximum output must be zero");
+  if ((mode === "embeddings" || mode === "rerank") && result.outputPricePerMillion !== 0) throw new SaleInputError("inputOnlyZero", "Input-only modes require zero output price");
   return result;
 }
 export function termsValue(draft: ModelDraft): Terms {
@@ -63,19 +64,19 @@ export function termsValue(draft: ModelDraft): Terms {
     if (rule.serviceTier.trim()) match.serviceTier = rule.serviceTier.trim();
     if (rule.minInputTokens) match.minInputTokens = whole(rule.minInputTokens, "Minimum input tokens");
     if (rule.maxInputTokens) match.maxInputTokens = whole(rule.maxInputTokens, "Maximum input tokens");
-    if (!Object.keys(match).length) throw new Error("Each conditional rate needs a tier or token bound");
-    if (match.minInputTokens != null && match.maxInputTokens != null && match.minInputTokens > match.maxInputTokens) throw new Error("Conditional minimum exceeds maximum");
+    if (!Object.keys(match).length) throw new SaleInputError("conditionRequired", "Each conditional rate needs a tier or token bound");
+    if (match.minInputTokens != null && match.maxInputTokens != null && match.minInputTokens > match.maxInputTokens) throw new SaleInputError("conditionBounds", "Conditional minimum exceeds maximum");
     return { match, price: priceValue(rule.price, draft.mode) };
   });
-  if (rules.length > 100) throw new Error("At most 100 conditional rates are supported");
+  if (rules.length > 100) throw new SaleInputError("conditionLimit", "At most 100 conditional rates are supported");
   return { price: { ...priceValue(draft.price, draft.mode), mode: draft.mode, rules }, discountPercent: whole(draft.discount, "Discount", 100) };
 }
 export function modelsValue(drafts: ModelDraft[]): Models {
-  if (drafts.length < 1 || drafts.length > 500) throw new Error("A book requires 1 to 500 models");
+  if (drafts.length < 1 || drafts.length > 500) throw new SaleInputError("modelLimit", "A book requires 1 to 500 models");
   const result: Models = Object.create(null);
   for (const row of drafts) {
     const name = row.model.trim();
-    if (!name || name.length > 200 || Object.hasOwn(result, name)) throw new Error("Model names must be nonempty and unique, at most 200 characters");
+    if (!name || name.length > 200 || Object.hasOwn(result, name)) throw new SaleInputError("modelNames", "Model names must be nonempty and unique, at most 200 characters");
     result[name] = termsValue(row);
   }
   return result;
@@ -84,15 +85,15 @@ export function modelsValue(drafts: ModelDraft[]): Models {
 export function utc(raw: string): string | null {
   if (!raw.trim()) return null;
   const text = raw.trim();
-  if (!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,6})?Z$/.test(text) || !Number.isFinite(Date.parse(text))) throw new Error("Use a UTC timestamp such as 2026-12-01T00:00:00Z");
+  if (!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,6})?Z$/.test(text) || !Number.isFinite(Date.parse(text))) throw new SaleInputError("utcFormat", "Use a UTC timestamp such as 2026-12-01T00:00:00Z");
   const result = new Date(text).toISOString();
-  if (result.slice(0, 19) !== text.slice(0, 19)) throw new Error("Invalid UTC calendar date");
+  if (result.slice(0, 19) !== text.slice(0, 19)) throw new SaleInputError("utcCalendar", "Invalid UTC calendar date");
   return /\.\d{4,6}Z$/.test(text) ? text : result;
 }
 /** Preserve the API's microsecond boundaries even though JS Date uses milliseconds. */
 export function utcMicros(raw: string): bigint {
   const text = utc(raw);
-  if (!text) throw new Error("A UTC timestamp is required");
+  if (!text) throw new SaleInputError("utcRequired", "A UTC timestamp is required");
   const fraction = text.match(/\.(\d+)Z$/)?.[1] ?? "";
   return BigInt(Date.parse(text.slice(0, 19) + "Z")) * 1000n + BigInt(fraction.padEnd(6, "0"));
 }
