@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
-import yaml from "js-yaml";
+import * as yaml from "js-yaml";
 
 const api = yaml.load(readFileSync(new URL("../../crates/server/openapi.yaml", import.meta.url), "utf8"));
 const methods = new Set(["get", "put", "post", "delete", "options", "head", "patch", "trace"]);
