@@ -83,6 +83,8 @@ mod checkout_routes;
 mod consumption_scope;
 #[path = "server/coordinated.rs"]
 mod coordinated;
+#[path = "server/customer_credit.rs"]
+mod customer_credit;
 #[path = "server/customer_invitation_delivery.rs"]
 mod customer_invitation_delivery;
 #[path = "server/customer_lifecycle.rs"]

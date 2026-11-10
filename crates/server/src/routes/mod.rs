@@ -508,6 +508,10 @@ pub fn router(state: AppState) -> Router {
         )
         // Service-only customer billing read (billingRead, issue #788).
         .route(
+            "/business/customers/{organization_id}/credit-terms",
+            get(business::customer_credit_terms).put(business::set_customer_credit_terms),
+        )
+        .route(
             "/business/customers/{organization_id}/billing",
             get(business::customer_billing),
         )

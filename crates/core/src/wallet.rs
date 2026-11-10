@@ -23,7 +23,7 @@ use doubleentry::{
     Provenance, Seal, SealContext, StoredEntry,
 };
 use sha2::{Digest, Sha256};
-use sqlx::PgPool;
+use sqlx::{PgPool, Postgres, Transaction};
 use time::macros::date;
 use time::{Date, OffsetDateTime};
 use uuid::Uuid;
@@ -3564,6 +3564,23 @@ impl Wallet {
         limit_minor: i64,
         on: Date,
     ) -> Result<Option<Receipt>, WalletError> {
+        let mut tx = self.store.pool().begin().await?;
+        let result = self
+            .set_credit_limit_in(&mut tx, key, limit_minor, on)
+            .await?;
+        tx.commit().await?;
+        Ok(result)
+    }
+
+    /// Resize credit inside the caller's transaction so terms and actor audit
+    /// can commit with the ledger effect. The caller owns commit and rollback.
+    pub(crate) async fn set_credit_limit_in(
+        &self,
+        tx: &mut Transaction<'_, Postgres>,
+        key: &str,
+        limit_minor: i64,
+        on: Date,
+    ) -> Result<Option<Receipt>, WalletError> {
         if limit_minor < 0 {
             return Err(WalletError::InvalidInput(
                 "a credit limit cannot be negative".into(),
@@ -3575,26 +3592,15 @@ impl Wallet {
         // — same key, same limit — from a different one under a reused key.
         let description = description_of(&format!("credit limit set to {limit_minor} minor"))?;
         let entry_id = entry_id_for(key);
-        if let Some(stored) = self.store.get(entry_id).await? {
-            if stored.entry.description().as_str() == description.as_str() {
-                return Ok(Some(stored_receipt(&stored)));
-            }
-            return Err(WalletError::Conflict(format!(
-                "idempotency key {key:?} is already taken"
-            )));
-        }
-        let mut tx = self.store.pool().begin().await?;
         sqlx::query("SELECT pg_advisory_xact_lock($1)")
             .bind(credit_lock_key(&self.tenant_id))
-            .execute(&mut *tx)
+            .execute(&mut **tx)
             .await?;
         // A same-key call may have committed while this one waited on the
-        // lock: answer it from the stored entry exactly as the pre-lock check
-        // does — a matching change replays its receipt, anything else is the
+        // lock: a matching change replays its receipt, anything else is the
         // key-reuse conflict — rather than reporting a no-op for a change
         // that did write.
-        if let Some(stored) = self.entry_in(&mut tx, entry_id).await? {
-            tx.rollback().await?;
+        if let Some(stored) = self.entry_in(tx, entry_id).await? {
             if stored.entry.description().as_str() == description.as_str() {
                 return Ok(Some(stored_receipt(&stored)));
             }
@@ -3602,10 +3608,11 @@ impl Wallet {
                 "idempotency key {key:?} is already taken"
             )));
         }
-        let committed = self.committed_limit_in(&mut tx).await?;
-        let delta = limit_minor - committed;
+        let committed = self.committed_limit_in(tx).await?;
+        let delta = limit_minor.checked_sub(committed).ok_or_else(|| {
+            WalletError::InvalidInput("credit limit delta exceeds integer range".into())
+        })?;
         if delta == 0 {
-            tx.rollback().await?;
             return Ok(None);
         }
         let amt = Credits::from_minor(delta.abs());
@@ -3620,16 +3627,13 @@ impl Wallet {
                 .debit(self.credit_line, amt, currency())
                 .credit(self.facility, amt, currency())
         };
-        let receipt = self.append_in(&mut tx, draft).await;
+        let receipt = self.append_in(tx, draft).await;
         match receipt {
             // A shrink that would cut into the outstanding draw surfaces as the
             // credit line's `InsufficientFunds`; name what it actually is.
-            Err(WalletError::InsufficientFunds) if delta < 0 => {
-                tx.rollback().await?;
-                Err(WalletError::InvalidInput(
-                    "the credit limit cannot go below what is still drawn".into(),
-                ))
-            }
+            Err(WalletError::InsufficientFunds) if delta < 0 => Err(WalletError::InvalidInput(
+                "the credit limit cannot go below what is still drawn".into(),
+            )),
             Ok(receipt) => {
                 // The re-set line re-arms the organization's threshold latches
                 // (issue #232), like the key PATCH clears its forecast date.
@@ -3638,16 +3642,22 @@ impl Wallet {
                      WHERE scope = 'organization' AND scope_id = $1",
                 )
                 .bind(Uuid::parse_str(&self.tenant_id).unwrap_or_default())
-                .execute(&mut *tx)
+                .execute(&mut **tx)
                 .await?;
-                tx.commit().await?;
                 Ok(Some(receipt))
             }
-            Err(error) => {
-                tx.rollback().await?;
-                Err(error)
-            }
+            Err(error) => Err(error),
         }
+    }
+
+    /// Monthly facility and drawn/reserved usage in the caller's snapshot.
+    pub(crate) async fn credit_state_in(
+        &self,
+        conn: &mut sqlx::PgConnection,
+    ) -> Result<(i64, i64), WalletError> {
+        let committed = self.committed_limit_in(conn).await?;
+        let headroom = self.pool_available_in(conn, self.credit_line).await?;
+        Ok((committed, (committed - headroom).max(0)))
     }
 
     /// Credits the pools have been charged on or after `from`, in minor units: the

@@ -66,6 +66,8 @@ mod collection_terms;
 mod collection_upgrade;
 #[path = "core/customer_authority.rs"]
 mod customer_authority;
+#[path = "core/customer_credit.rs"]
+mod customer_credit;
 #[path = "core/customer_lifecycle.rs"]
 mod customer_lifecycle;
 #[path = "core/customer_readiness.rs"]

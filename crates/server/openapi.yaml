@@ -7087,6 +7087,63 @@ paths:
         "403": { $ref: "#/components/responses/Error" }
         "404": { $ref: "#/components/responses/Error" }
         "409": { $ref: "#/components/responses/Error" }
+  /api/v1/business/customers/{organizationId}/credit-terms:
+    get:
+      operationId: getBusinessCustomerCreditTerms
+      summary: Read a customer's monthly credit facility
+      description: Personal Business session with reportsRead. Returns monthly wallet credit and payment terms separately from sold-plan receivable limits. Does not create a ledger or change suspension.
+      security: [{ sessionCookie: [] }]
+      x-consumption-key-access: denied
+      parameters:
+        - name: organizationId
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        "200":
+          description: Current monthly credit terms
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data: { $ref: "#/components/schemas/BusinessCustomerCreditTerms" }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+    put:
+      operationId: setBusinessCustomerCreditTerms
+      summary: Approve a customer's monthly credit terms
+      description: Personal Business session with commercialWrite (owner or finance). Atomically records the exact total credit facility, future invoice payment terms, current dunning grace, immutable mutation receipt and actor audit. A limit below drawn or reserved credit refuses without changing terms. Exact replays recover the original mutation without restoring old values after later edits. No payment, plan activation or suspension removal occurs. Foreign customers are not found; archived customers refuse new mutations.
+      security: [{ sessionCookie: [] }]
+      x-consumption-key-access: denied
+      parameters:
+        - name: organizationId
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/BusinessCustomerCreditTermsRequest" }
+      responses:
+        "200":
+          description: Immutable mutation identity, including exact replay
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data: { $ref: "#/components/schemas/BusinessMutationResult" }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "409": { $ref: "#/components/responses/Error" }
   /api/v1/business/customers/{organizationId}/billing:
     get:
       x-integration-scope: billingRead
@@ -12307,6 +12364,25 @@ components:
           type: array
           items: { $ref: "#/components/schemas/BusinessCustomer" }
         nextCursor: { type: [string, "null"], format: uuid }
+    BusinessCustomerCreditTerms:
+      type: object
+      required: [organizationId, creditLimitMinor, creditUsedMinor, paymentTermsDays, dunningGraceDays]
+      properties:
+        organizationId: { type: string, format: uuid }
+        creditLimitMinor: { type: integer, format: int64, minimum: 0, description: Total monthly credit facility; not the sold-plan receivable cap. }
+        creditUsedMinor: { type: integer, format: int64, minimum: 0, description: Settled credit draws plus current credit reservations. }
+        paymentTermsDays: { type: integer, format: int32, minimum: 0, description: Snapshotted by future monthly invoice finalization. }
+        dunningGraceDays: { type: [integer, "null"], format: int32, minimum: 0, description: Current monthly dunning grace; null disables automatic monthly dunning. Existing independent suspension reasons remain. }
+    BusinessCustomerCreditTermsRequest:
+      type: object
+      additionalProperties: false
+      required: [idempotencyKey, creditLimitMinor, paymentTermsDays, dunningGraceDays, reason]
+      properties:
+        idempotencyKey: { type: string, minLength: 1, maxLength: 200 }
+        creditLimitMinor: { type: integer, format: int64, minimum: 0, maximum: 9007199254740991 }
+        paymentTermsDays: { type: integer, format: int32, minimum: 0, maximum: 3650 }
+        dunningGraceDays: { type: [integer, "null"], format: int32, minimum: 0, maximum: 3650 }
+        reason: { type: string, minLength: 1, maxLength: 500 }
     BusinessCustomerUpdate:
       type: object
       additionalProperties: false
