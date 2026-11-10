@@ -12,6 +12,7 @@ mod links;
 mod publication;
 mod read_types;
 mod reads;
+mod statements;
 
 pub(crate) use applications::application_in;
 pub use applications::{

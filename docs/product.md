@@ -822,3 +822,13 @@ This is the existing statement repayment purpose: it neither adds wallet credits
 nor activates/renews a plan. Paid/refund/lost outcomes keep the same journal and
 statement evidence, including mixed historical/daily policy sources. Checkout
 recovery and archive boundaries are identical to the application order lifecycle.
+
+### Application customer statement history
+
+An application with explicit billingRead can discover and display its own customers'
+issued, paid, past-due and void plan statements, with complete customer-visible
+source-linked lines. Draft/open statements stay private. Historical reads remain
+available after account archive under current authority. Named repayment still
+requires its own checkoutWrite grant and a fresh server quote; reading a balance
+or statement does not authorize collection or activate service. Oversized retained
+documents need operator recovery instead of a silently incomplete history.

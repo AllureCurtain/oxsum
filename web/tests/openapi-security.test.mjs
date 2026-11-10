@@ -76,3 +76,14 @@ test("commercial and financial operations retain their audited credential bounda
     assert.ok(operation.responses["403"], `${method} ${path} declares the authority refusal`);
   }
 });
+
+
+test("application statement history requires explicit scoped billing authority", () => {
+  for (const suffix of ["", "/{statementId}"]) {
+    const operation = api.paths["/api/v1/integration/customers/{organizationId}/statements" + suffix].get;
+    assert.deepEqual(operation.security, [{ integrationCredential: [] }]);
+    assert.equal(operation["x-integration-scope"], "billingRead");
+    assert.ok(operation.responses["404"]);
+    assert.ok(operation.responses["409"]);
+  }
+});

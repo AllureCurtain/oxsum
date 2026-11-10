@@ -1330,6 +1330,37 @@ async fn application_mixed_statement_refund_and_loss_keep_original_allocations()
     );
     assert_eq!(wallet.available().await.unwrap(), 0);
     assert_eq!(w.db.plan_periods(plan).await.unwrap().len(), 2);
+    let reader = grant(&w.db, w.app, vec![IntegrationScope::BillingRead]).await;
+    let read =
+        w.db.application_customer_statement(&reader, w.org, statement)
+            .await
+            .unwrap();
+    let original =
+        w.db.plan_statement(w.org, statement)
+            .await
+            .unwrap()
+            .unwrap();
+    assert_eq!(
+        serde_json::to_value(&read).unwrap(),
+        serde_json::to_value(&original).unwrap()
+    );
+    let effects: Vec<Uuid> = sqlx::query_scalar(
+        "SELECT effect_id FROM oxsum.statement_payment_effects WHERE order_id=$1 AND receivable_minor>0",
+    )
+    .bind(order.order_id)
+    .fetch_all(w.db.pool())
+    .await
+    .unwrap();
+    assert!(!effects.is_empty());
+    assert!(
+        effects
+            .iter()
+            .all(|id| read.lines.iter().any(|line| line.source_ref == Some(*id)))
+    );
+    assert_eq!(
+        read.statement.total_minor - read.statement.paid_minor,
+        5_000_000
+    );
 }
 
 #[tokio::test]

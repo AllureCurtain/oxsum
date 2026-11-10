@@ -296,3 +296,28 @@ pub(crate) async fn publish_evidence(
         bundle: result.bundle.into(),
     })
 }
+
+pub(crate) async fn statements(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(org): Path<Uuid>,
+    ApiQuery(query): ApiQuery<PageQuery>,
+) -> ApiResult<oxsum_core::PlanStatementPage> {
+    let service = business::integration(&state, &headers).await?;
+    ok(state
+        .db
+        .application_customer_statements(&service, org, query.after, query.limit.unwrap_or(20))
+        .await?)
+}
+
+pub(crate) async fn statement(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path((org, statement)): Path<(Uuid, Uuid)>,
+) -> ApiResult<oxsum_core::PlanStatementDetail> {
+    let service = business::integration(&state, &headers).await?;
+    ok(state
+        .db
+        .application_customer_statement(&service, org, statement)
+        .await?)
+}

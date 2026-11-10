@@ -434,3 +434,15 @@ and the complete external app remain N21 follow-ups.
   mixed-source cases passed. Joined-stack full regression passed 2,205 tests;
   13 final core cases, strict Clippy, contract/codegen/build and formatting passed.
   Review, protected integration, browser and candidate J18 remain.
+
+
+## Scoped application statement history (#939)
+
+Based on named-statement application checkout PR #938, this slice adds discoverable
+bounded list/detail under explicit billingRead, coherent current authority and
+complete customer-visible source links. Open/foreign/oversized documents refuse;
+archived history remains. All 37 focused core/HTTP cases have passing evidence;
+three final core cases, strict changed-crate Clippy, five contract checks,
+codegen/build and formatting passed. [Evidence](evidence/application-statement-reads.md).
+Independent review and protected integration remain. The independent
+separate-store application, notification-stack integration and candidate J18 remain.
