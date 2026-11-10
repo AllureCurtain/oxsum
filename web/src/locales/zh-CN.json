@@ -1734,11 +1734,27 @@
       "colOpened": "发起时间",
       "resolve": "处理",
       "resolveTitle": "处理此争议?",
-      "resolveExplain": "此操作关闭争议，不变动资金。败诉结果会完整记录现金损失，并核对原始资金或明确保留待审核金额。",
+      "resolveExplain": "选择支付方的实际处理结果并填写依据。本地决定本身不能证明外部资金变动。",
       "collectionCurrency": "原收款币种",
       "recharge": "拒付分录",
       "updated": "更新时间",
-      "empty": "暂无争议。"
+      "empty": "暂无争议。",
+      "outcome": "已确认的支付方处理结果",
+      "chooseOutcome": "请选择结果",
+      "outcomes": {
+        "evidenceDue": "待补充证据",
+        "won": "胜诉",
+        "lost": "败诉",
+        "closed": "关闭且无损失"
+      },
+      "effects": {
+        "evidenceDue": "保持争议开启并等待补充证据。此决定不变动资金。",
+        "won": "记录商户赢得本次争议。此决定不变动资金。",
+        "lost": "记录已确认的现金损失，并仅一次核算原始资金、相应客户欠款或待审核金额。此操作不会发起支付方退款。",
+        "closed": "关闭案件且不记录现金损失。此决定不变动资金。"
+      },
+      "frozenResolution": "此决定已固定，可安全重试。重试保留相同结果、原因和操作标识。",
+      "retryResolution": "重试同一决定"
     },
     "statements": {
       "title": "对账单",

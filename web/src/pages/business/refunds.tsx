@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { Fragment, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { ArrowLeftRight, ShieldCheck, Ticket } from "lucide-react";
 import {
@@ -8,7 +8,6 @@ import {
   useBusinessRefunds,
   useCapability,
   useDisplay,
-  useResolveDispute,
   useResolveRefund,
 } from "../../api/hooks";
 import {
@@ -21,6 +20,7 @@ import {
   Td,
 } from "../../components/ui";
 import { AuditAction, DetailGrid, Field2, stateBadge } from "./biz";
+import { DisputeResolution } from "./dispute-resolution";
 
 // ---------------------------------------------------------------------------
 // /app/business#business/refunds + #business/disputes — the finance-review
@@ -180,7 +180,6 @@ export function BusinessRefunds() {
 export function BusinessDisputes() {
   const { t } = useTranslation();
   const disputes = useBusinessDisputes();
-  const resolve = useResolveDispute();
   const canWrite = useCapability(useBusiness().data, "refundsWrite");
   const [expanded, setExpanded] = useState<string | null>(null);
 
@@ -205,7 +204,7 @@ export function BusinessDisputes() {
           >
             {!disputes.isLoading &&
               (disputes.data?.disputes ?? []).map((d) => (
-                <>
+                <Fragment key={d.disputeId}>
                   <tr key={d.disputeId} className="cursor-pointer" onClick={() => setExpanded(expanded === d.disputeId ? null : d.disputeId)}>
                     <Td mono truncate>{d.disputeId.slice(0, 8)}</Td>
                     <Td mono truncate>{d.orderId.slice(0, 8)}</Td>
@@ -214,19 +213,8 @@ export function BusinessDisputes() {
                     <td>{stateBadge(d.state)}</td>
                     <Td mono>{d.createdAt.slice(0, 10)}</Td>
                     <td className="text-right">
-                      {canWrite && (d.state === "opened" || d.state === "evidence_due") ? (
-                        <AuditAction
-                          trigger={<Button tone="ghost">{t("biz.disputes.resolve")}</Button>}
-                          title={t("biz.disputes.resolveTitle")}
-                          description={t("biz.disputes.resolveExplain")}
-                          confirmLabel={t("biz.disputes.resolve")}
-                          reasonLabel={t("biz.reason")}
-                          isPending={resolve.isPending}
-                          error={resolve.error}
-                          onConfirm={(reason, key) =>
-                            resolve.mutate({ disputeId: d.disputeId, idempotencyKey: key, resolution: "closed", reason })
-                          }
-                        />
+                      {canWrite ? (
+                        <DisputeResolution dispute={d} />
                       ) : null}
                     </td>
                   </tr>
@@ -255,7 +243,7 @@ export function BusinessDisputes() {
                       </td>
                     </tr>
                   ) : null}
-                </>
+                </Fragment>
               ))}
             {!disputes.isLoading && (disputes.data?.disputes.length ?? 0) === 0 ? (
               <EmptyRows colSpan={7} icon={<ShieldCheck />}>
