@@ -8,6 +8,9 @@ Updated: 2026-11-11
 
 - [ ] [#997](https://github.com/AllureCurtain/oxsum/issues/997) — Business monthly customer credit terms implemented with atomic ledger/terms/audit and exact replay. Focused core/HTTP, strict Clippy, frontend and isolated bilingual browser checks passed; 2,261 workspace passes plus the known #975 baseline failure. Protected integration and candidate acceptance remain. [Evidence](docs/roadmap/operator-launch/evidence/customer-credit-terms.md).
 
+- [ ] [#1006](https://github.com/AllureCurtain/oxsum/issues/1006) — Complete monthly wallet-credit statement inspection, issuance and repayment through Business authority in separate minimal units.
+- [ ] [#1007](https://github.com/AllureCurtain/oxsum/issues/1007) — Bounded personal-Business monthly statement list/detail and bilingual customer card implemented. 27 related + five final focused checks, strict Clippy, frontend and browser pagination/detail checks passed; 2,260 workspace passes with the known #975 baseline failure. Protected integration remains; issuance and repayment remain #1006. [Evidence](docs/roadmap/operator-launch/evidence/monthly-statement-reads.md).
+
 - [ ] [#969](https://github.com/AllureCurtain/oxsum/issues/969) — Actual browser bundle purchase/return and paid-plan activation, fee/payment statement, early-renewal refusal and cancellation service passed with local signed fixtures. Stale plan consumption display is #973; statement correction/dispute, embedded and candidate/external gates remain. [Evidence](docs/roadmap/operator-launch/evidence/commercial-browser/README.md).
 
 - [ ] [#1027](https://github.com/AllureCurtain/oxsum/issues/1027) — Local source-verified invoice correction preview and integer allocation now pass ten focused and one HTTP check. Atomic apply, successor lifecycle, complete source-linked reconciliation and browser acceptance remain.
