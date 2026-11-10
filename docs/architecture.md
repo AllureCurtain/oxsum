@@ -1076,3 +1076,24 @@ document binding and exact metadata-only marker shape agree; otherwise issuance
 refuses with an explicit recovery conflict. Existing ledger bytes and canonical
 hash formats are unchanged. Staff authority/audit and repayment operations are
 separate follow-ups under #1006.
+
+
+## Reviewed monthly staff mutations (#1011)
+
+`monthly_statement_actions` composes the atomic monthly writer under the existing
+personal Business authority lock. It preflights current `fundsWrite`, customer
+ownership and exact replay, releases that connection before wallet initialization,
+then repeats authority/replay/state checks in the writing transaction. Locks then
+follow organization admission/share, ledger append, document. The read's draft
+review digest commits identity, figures, lines, terms and UTC day. Finalization
+recomputes its document under those locks; a mismatch rolls back the newly appended
+anchor and all other effects before any receipt can commit.
+
+Migration 0129 retains immutable `(mutation_id, statement_id)` result coordinates,
+with null for an empty generation. The existing immutable business mutation/audit
+keeps actor, exact action and reason. Result and financial writes share the commit,
+so an old generation replay cannot refresh a newer draft and a finalized replay
+cannot append another anchor or event. Current authority still gates historical
+recovery. Bounded line decoding is shared with staff inspection; over-limit detail
+cannot be silently issued through this reviewed path. These actions do not alter
+monthly repayment or plan-statement policy.

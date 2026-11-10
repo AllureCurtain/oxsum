@@ -3891,3 +3891,19 @@ match exactly; fail incompatible recovery explicitly. Do not rewrite ledger
 history or regenerate an already-issued statement. A bounded one-connection
 pool must support the whole write without a nested checkout. This does not add
 new staff endpoints, repayment allocation or historical-usage completeness.
+
+
+## 2026-11-10 — Bind monthly issuance to explicit reviewed figures (#1011)
+
+Give owner/finance `fundsWrite` a customer-scoped generate/finalize action, separate
+from sold-plan invoices and monthly repayment. Require an exact actor key/reason
+and a draft review digest for finalization. The digest binds displayed financial
+figures, itemization, terms and UTC day. Recompute in the atomic writer and roll
+back if the review became stale; retain server-owned posting dates.
+
+Store immutable result coordinates beside the existing mutation/audit rather
+than recomputing an old result: an empty month may later gain usage, and a draft
+may already have been issued. Current authority remains mandatory for replay.
+Release preflight connections before opening a wallet, then recheck authority
+under the Business lock in the actual financial transaction. No new payment,
+provider-usage attestation or independent proof scope is implied.

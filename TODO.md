@@ -8,6 +8,8 @@ Updated: 2026-11-11
 
 - [ ] [#997](https://github.com/AllureCurtain/oxsum/issues/997) — Business monthly customer credit terms implemented with atomic ledger/terms/audit and exact replay. Focused core/HTTP, strict Clippy, frontend and isolated bilingual browser checks passed; 2,261 workspace passes plus the known #975 baseline failure. Protected integration and candidate acceptance remain. [Evidence](docs/roadmap/operator-launch/evidence/customer-credit-terms.md).
 
+- [ ] [#1011](https://github.com/AllureCurtain/oxsum/issues/1011) — Personal Business reviewed monthly generation/finalization and immutable audit implemented on #1008/#1010. 37 related and 10 final checks pass; 2,270-case full run had one repaired migration inventory assertion and the known #975 baseline failure. Strict Clippy/contract/build and actual HTTP retry pass. Browser space 2 missing; UI acceptance, review and integration pending. [Evidence](docs/roadmap/operator-launch/evidence/monthly-staff-issuance/README.md).
+
 - [ ] [#1006](https://github.com/AllureCurtain/oxsum/issues/1006) — Complete monthly wallet-credit statement inspection, issuance and repayment through Business authority in separate minimal units.
 - [ ] [#1007](https://github.com/AllureCurtain/oxsum/issues/1007) — Bounded personal-Business monthly statement list/detail and bilingual customer card implemented. 27 related + five final focused checks, strict Clippy, frontend and browser pagination/detail checks passed; 2,260 workspace passes with the known #975 baseline failure. Protected integration remains; issuance and repayment remain #1006. [Evidence](docs/roadmap/operator-launch/evidence/monthly-statement-reads.md).
 

@@ -929,3 +929,11 @@ requires explicit recovery and cannot silently become a different bill.
 Sold-plan period consumption reads the matching quota-engine window, including outstanding reservations and released unused amounts. Closed windows retain their own consumption; new periods do not replace historical counters. The read does not post money or rewrite authorization history.
 
 The Business dispute resolution dialog requires an explicit provider outcome: evidence due, won, lost or closed. Each outcome explains its financial effect. The exact decision, reason and idempotency identity remain fixed across ambiguous retries; the dialog closes only after a successful response.
+
+Business owner/finance can generate and issue monthly credit statements from the
+customer's separate Monthly statements card (#1011). Generation is a working
+copy for a closed UTC month. Issuance confirms the displayed usage, credit draw,
+lines and payment terms; changed data or UTC review day requires renewed review.
+The reason and actor are audited atomically with issuance. Exact retries retain
+their original result, including empty months. Monthly repayment remains a
+separate workflow under #1006; these actions do not record incoming money.

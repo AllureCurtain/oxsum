@@ -616,3 +616,19 @@ archive event, synchronized current state and deduplicated two local replays;
 invalid signature refused. The initially wrong receiver path, its three 404s and
 reasoned endpoint replacement remain in [evidence](evidence/embedded-browser/README.md).
 This development handoff does not close exact-candidate J18 or external gates.
+
+### Reviewed monthly staff issuance — #1011
+
+`feat/monthly-staff-issuance` joins #1008/#1010 from main `2ee70601`. Owner/finance
+can generate and issue customer-bound monthly statements with a current review
+digest, immutable actor receipt and atomic audit. 37 related and 10 final focused
+checks pass; the full 2,270-case run initially had 2 failures (migration inventory
+fixed and retested; unchanged #975 bundle fixture remains), with 6 opt-ins skipped.
+Strict core/server Clippy, contract/codegen/build and pinned formatting pass.
+Actual HTTP generation and discarded-response retry retain one anchor/receipt/audit.
+[Evidence and artifacts](evidence/monthly-staff-issuance/README.md).
+
+Browser TaskSpace 2 is missing; actual UI acceptance requires restoring or
+user-authorizing a replacement space under the installed browser skill. Review,
+prerequisite protected integration and monthly repayment remain. Provider budget
+unchanged at 2/5 attempts; no candidate frozen or external gate claimed.
