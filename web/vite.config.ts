@@ -17,31 +17,20 @@ export default defineConfig({
     rollupOptions: {
       output: {
         // Vendor chunks keep the app code thin and let the browser cache the
-        // slow-moving libraries separately.
-        manualChunks: {
-          "react-vendor": ["react", "react-dom", "react-router-dom", "@tanstack/react-query"],
-          motion: ["motion"],
-          "ui-vendor": [
-            "lucide-react",
-            "@radix-ui/react-tabs",
-            "@radix-ui/react-select",
-            "@radix-ui/react-switch",
-            "@radix-ui/react-progress",
-            "@radix-ui/react-slot",
-            "@radix-ui/react-dialog",
-            "@radix-ui/react-alert-dialog",
-            "@radix-ui/react-dropdown-menu",
-            "@radix-ui/react-popover",
-            "@radix-ui/react-tooltip",
-            "@radix-ui/react-hover-card",
-            "@radix-ui/react-scroll-area",
-            "@radix-ui/react-separator",
-            "@radix-ui/react-label",
-            "@radix-ui/react-checkbox",
-            "@radix-ui/react-radio-group",
-            "@radix-ui/react-avatar",
-            "@radix-ui/react-toggle",
-            "sonner",
+        // slow-moving libraries separately. rolldown-vite (Vite 8) dropped the
+        // object form of `manualChunks`; `codeSplitting.groups` takes the same
+        // intent as name + package test.
+        codeSplitting: {
+          groups: [
+            {
+              name: "react-vendor",
+              test: /node_modules[\\/](react|react-dom|react-router-dom|@tanstack[\\/]react-query)[\\/]/,
+            },
+            { name: "motion", test: /node_modules[\\/]motion[\\/]/ },
+            {
+              name: "ui-vendor",
+              test: /node_modules[\\/](lucide-react|@radix-ui[\\/]react-(tabs|select|switch|progress|slot|dialog|alert-dialog|dropdown-menu|popover|tooltip|hover-card|scroll-area|separator|label|checkbox|radio-group|avatar|toggle)|sonner)[\\/]/,
+            },
           ],
         },
       },
