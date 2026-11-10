@@ -13,6 +13,17 @@ Read this file on every resume, then reconcile actual main, worktrees, issues/PR
   by the missing prior task space, as recorded
   in [evidence](evidence/customer-serving-readiness.md). Independent approval
   and protected main integration remain; no provider call occurs on the read.
+- #946 records isolated development browser acceptance on `98238b38` for fresh
+  owner setup, public profile, provider/model, exact published customer prices,
+  collection conversion, customer invitation/verification, staff roles and mobile
+  layouts. Observed staff-preview failure is repaired in #950 (2,191 full checks,
+  strict Clippy and original-link browser retry); section reload is repaired in
+  #956. Further checkout/commercial/embedded browser and final candidate gates
+  remain. [Evidence](evidence/browser-acceptance/README.md).
+- The persistent provider allowance is **2/5 attempts**, with 16,896 CNY millionths
+  reserved and 52 millionths conservative peak-rate usage estimate. #944/#945
+  retains the two completed DeepSeek development scenarios. Historical 0/5 entries
+  below are superseded; no provider call was made during #946.
 
 - #909 implements the immediate receipt slice of #901: scoped successful
   accounting reads, exact private verification links and no closed-report
