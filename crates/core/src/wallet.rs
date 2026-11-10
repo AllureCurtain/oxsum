@@ -3489,6 +3489,17 @@ impl Wallet {
         to: Option<Date>,
     ) -> Result<i64, WalletError> {
         let mut conn = self.store.pool().acquire().await?;
+        self.credit_flow_in(&mut conn, direction, from, to).await
+    }
+
+    /// Credit movement on the caller's connection; excludes facility resizing.
+    pub(crate) async fn credit_flow_in(
+        &self,
+        conn: &mut sqlx::PgConnection,
+        direction: &str,
+        from: Option<Date>,
+        to: Option<Date>,
+    ) -> Result<i64, WalletError> {
         let sql = format!(
             "SELECT COALESCE(SUM(p.amount_minor), 0)::bigint AS flow \
              FROM ledger_{schema}.postings p \
@@ -4465,35 +4476,61 @@ impl Wallet {
     ///
     /// # Errors
     ///
+    /// A retained marker is replayed only when its exact descriptor, document
+    /// binding and balanced metadata postings match. A legacy orphan with
+    /// different source inputs requires explicit recovery; it is never adopted.
     /// Storage and ledger failures surface as [`WalletError`].
-    pub(crate) async fn anchor_statement(
+    pub(crate) async fn anchor_statement_in(
         &self,
+        tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
         statement_id: Uuid,
         description_json: &str,
         window_hash: Hash,
     ) -> Result<(EntryId, u64), WalletError> {
+        self.lock_append_in(tx).await?;
         let key = format!("statement-anchor/{statement_id}");
-        let minor = Credits::from_minor(1);
-        let entry = Entry::<Draft, SCALE>::new(
-            entry_id_for(&key),
-            idem(&key)?,
-            OffsetDateTime::now_utc().date(),
-        )
-        .with_document(DocumentRef::new(STATEMENT_ANCHOR_DOCUMENT, window_hash).map_err(invalid)?)
-        .with_description(description_of(description_json)?)
-        .debit(self.adjustments, minor, currency())
-        .credit(self.adjustments, minor, currency());
-        let receipt = match self.append(entry).await {
-            Ok(receipt) => receipt,
-            Err(error) => {
-                // A raced finalize can land on the same idempotency key; the
-                // standing entry is the same anchor either way, so read it back
-                // instead of failing the race's loser.
-                let Some(stored) = self.store.get(entry_id_for(&key)).await? else {
-                    return Err(error);
-                };
-                stored_receipt(&stored)
+        let receipt = if let Some(stored) = self.entry_in(tx, entry_id_for(&key)).await? {
+            let postings = stored.entry.postings();
+            let marker = postings.len() == 2
+                && postings.iter().all(|p| {
+                    p.account == self.adjustments
+                        && p.amount.to_minor() == 1
+                        && p.currency == currency()
+                        && p.layer == Layer::Settled
+                        && p.dimensions.is_empty()
+                })
+                && stored.entry.kind().is_none()
+                && stored.entry.provenance() == &Provenance::none()
+                && stored.entry.reverses().is_none()
+                && stored.entry.original_booking_date().is_none()
+                && stored.entry.value_date() == stored.entry.booking_date()
+                && postings[0].direction == Direction::Debit
+                && postings[1].direction == Direction::Credit;
+            let exact = marker
+                && stored.entry.idempotency_key().as_bytes() == key.as_bytes()
+                && stored.entry.description().as_str() == description_json
+                && stored.entry.document().is_some_and(|document| {
+                    document.id.as_str() == STATEMENT_ANCHOR_DOCUMENT
+                        && document.content_hash == Some(window_hash)
+                });
+            if !exact {
+                return Err(WalletError::Conflict("retained statement anchor names different source inputs; explicit recovery required".into()));
             }
+            stored_receipt(&stored)
+        } else {
+            let minor = Credits::from_minor(1);
+            let entry = Entry::<Draft, SCALE>::new(
+                entry_id_for(&key),
+                idem(&key)?,
+                OffsetDateTime::now_utc().date(),
+            )
+            .with_document(
+                DocumentRef::new(STATEMENT_ANCHOR_DOCUMENT, window_hash).map_err(invalid)?,
+            )
+            .with_description(description_of(description_json)?)
+            .debit(self.adjustments, minor, currency())
+            .credit(self.adjustments, minor, currency());
+            self.append_in(tx, entry).await?
         };
         let index = receipt.log_index.ok_or_else(|| {
             WalletError::InvalidInput("the statement anchor did not sequence".into())

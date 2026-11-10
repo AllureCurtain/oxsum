@@ -106,7 +106,29 @@ async fn turn(
         .settle(&hold_key, "", charged, on)
         .await
         .expect("the turn settles");
-    f.db.record_usage(&UsageRow {
+    f.db.record_usage(&usage_row(
+        f,
+        request,
+        channel,
+        model,
+        freeze,
+        charged,
+        *receipt.entry_id.as_uuid(),
+    ))
+    .await
+    .expect("the usage row is written");
+}
+
+fn usage_row(
+    f: &Fixture,
+    request: &str,
+    channel: &str,
+    model: &str,
+    freeze: i64,
+    charged: i64,
+    entry_id: Uuid,
+) -> UsageRow {
+    UsageRow {
         // The usage table deduplicates on request_id globally, so a fixed
         // id a previous run wrote would silently skip this insert.
         request_id: format!("{request}-{}", uuid::Uuid::new_v4().simple()),
@@ -117,7 +139,7 @@ async fn turn(
         channel: channel.to_owned(),
         price_version: 1,
         kind: SettlementKind::Usage,
-        entry_id: *receipt.entry_id.as_uuid(),
+        entry_id,
         status: "settled".to_owned(),
         failure_reason: None,
         usage: UsageRecord {
@@ -134,9 +156,7 @@ async fn turn(
         upstream_cost_minor: None,
         cost_basis: oxsum_core::CostBasis::Missing,
         upstream_attempts: 1,
-    })
-    .await
-    .expect("the usage row is written");
+    }
 }
 
 #[tokio::test]
@@ -620,4 +640,308 @@ async fn statement_lifecycle_enqueues_its_events() {
         .filter(|e| *e == "statement.payment_status_updated")
         .count();
     assert_eq!(paid_updates, 2, "overdue then paid: {events:?}");
+}
+
+async fn monthly_draft(f: &Fixture) -> oxsum_core::Statement {
+    f.wallet
+        .set_credit_limit("credit", 10 * ONE, AUG)
+        .await
+        .unwrap();
+    turn(f, "initial", "openai", "model", 5 * ONE, 3 * ONE, SEPT).await;
+    f.db.generate_statement(&f.org, &f.wallet, &statement_period("2026-09").unwrap())
+        .await
+        .unwrap()
+        .unwrap()
+}
+
+async fn finalized_events(f: &Fixture) -> i64 {
+    sqlx::query_scalar("SELECT count(*) FROM oxsum.webhook_deliveries WHERE organization_id=$1 AND event_type='statement.finalized'")
+        .bind(f.org.id).fetch_one(f.db.pool()).await.unwrap()
+}
+
+async fn subscribe(f: &Fixture) {
+    f.db.create_webhook(
+        f.org.id,
+        "https://receiver.example/hook",
+        &["statement.finalized".to_owned()],
+        &SecretKey::from_bytes([8; 32]),
+    )
+    .await
+    .unwrap();
+}
+
+async fn wait_for_blocked(pool: &PgPool, pid: i32) {
+    tokio::time::timeout(std::time::Duration::from_secs(5),async {
+        loop {
+            let blocked:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM pg_stat_activity WHERE datname=current_database() AND $1=ANY(pg_blocking_pids(pid)))")
+                .bind(pid).fetch_one(pool).await.unwrap();
+            if blocked {break;}
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    }).await.expect("writer reaches controlled database lock");
+}
+
+#[tokio::test]
+async fn issuance_rolls_back_anchor_document_lines_and_event_on_failure() {
+    let url = db_or_skip!();
+    let f = fixture(&url, "atomic_failure").await;
+    subscribe(&f).await;
+    let draft = monthly_draft(&f).await;
+    // A changed working source makes rollback of both the document and its
+    // replacement lines observable, even when enqueue fails last.
+    turn(&f, "later", "other", "later", 2 * ONE, ONE, SEPT).await;
+    let before = serde_json::to_value(f.db.statement_lines(draft.id).await.unwrap()).unwrap();
+    let size = f.wallet.log_size().await.unwrap();
+    for (table, condition) in [
+        (
+            "statements",
+            format!("NEW.statement_id='{}' AND NEW.status='finalized'", draft.id),
+        ),
+        (
+            "webhook_deliveries",
+            format!(
+                "NEW.organization_id='{}' AND NEW.event_type='statement.finalized'",
+                f.org.id
+            ),
+        ),
+    ] {
+        let name = fresh("fail_monthly");
+        sqlx::raw_sql(&format!("CREATE FUNCTION oxsum.{name}() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN IF {condition} THEN RAISE EXCEPTION 'injected monthly issuance failure'; END IF; RETURN NEW; END $$; CREATE TRIGGER {name} BEFORE INSERT OR UPDATE ON oxsum.{table} FOR EACH ROW EXECUTE FUNCTION oxsum.{name}();"))
+            .execute(f.db.pool()).await.unwrap();
+        let result = f.db.finalize_statement(draft.id, &f.wallet, today()).await;
+        sqlx::raw_sql(&format!(
+            "DROP TRIGGER {name} ON oxsum.{table}; DROP FUNCTION oxsum.{name}();"
+        ))
+        .execute(f.db.pool())
+        .await
+        .unwrap();
+        assert!(result.is_err(), "injected failure must escape");
+        let retained = f.db.statement_by_id(draft.id).await.unwrap().unwrap();
+        assert_eq!(
+            serde_json::to_value(&retained).unwrap(),
+            serde_json::to_value(&draft).unwrap()
+        );
+        assert_eq!(
+            serde_json::to_value(f.db.statement_lines(draft.id).await.unwrap()).unwrap(),
+            before
+        );
+        assert_eq!(f.wallet.log_size().await.unwrap(), size, "no orphan anchor");
+        assert_eq!(finalized_events(&f).await, 0);
+    }
+    let (left, right) = tokio::join!(
+        f.db.finalize_statement(draft.id, &f.wallet, today()),
+        f.db.finalize_statement(draft.id, &f.wallet, today())
+    );
+    let left = left.unwrap();
+    let right = right.unwrap();
+    assert_eq!(
+        serde_json::to_value(&left).unwrap(),
+        serde_json::to_value(&right).unwrap()
+    );
+    assert_eq!(left.total_minor, 4 * ONE);
+    assert_eq!(f.wallet.log_size().await.unwrap(), size + 1);
+    assert_eq!(finalized_events(&f).await, 1);
+}
+
+#[tokio::test]
+async fn issuance_uses_one_connection_and_preserves_issued_history() {
+    let url = db_or_skip!();
+    let f = fixture(&url, "monthly_single").await;
+    let draft = monthly_draft(&f).await;
+    let pool = sqlx::postgres::PgPoolOptions::new()
+        .max_connections(1)
+        .connect(&url)
+        .await
+        .unwrap();
+    let db = Db::from_pool(pool.clone());
+    let wallet = Wallet::open(pool, &f.org.tenant_id).await.unwrap();
+    let issued = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        let generated = db
+            .generate_statement(&f.org, &wallet, &statement_period("2026-09").unwrap())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(generated.id, draft.id);
+        db.finalize_statement(draft.id, &wallet, today())
+            .await
+            .unwrap()
+    })
+    .await
+    .expect("no nested pool checkout");
+    let lines = serde_json::to_value(db.statement_lines(issued.id).await.unwrap()).unwrap();
+    f.db.set_payment_terms(f.org.id, 90).await.unwrap();
+    turn(&f, "after_issue", "new", "new", ONE, ONE, SEPT).await;
+    let regenerated = db
+        .generate_statement(&f.org, &wallet, &statement_period("2026-09").unwrap())
+        .await
+        .unwrap()
+        .unwrap();
+    let repeated = db
+        .finalize_statement(issued.id, &wallet, today() + Duration::days(5))
+        .await
+        .unwrap();
+    assert_eq!(
+        serde_json::to_value(&regenerated).unwrap(),
+        serde_json::to_value(&issued).unwrap()
+    );
+    assert_eq!(
+        serde_json::to_value(&repeated).unwrap(),
+        serde_json::to_value(&issued).unwrap()
+    );
+    assert_eq!(
+        serde_json::to_value(db.statement_lines(issued.id).await.unwrap()).unwrap(),
+        lines
+    );
+    let foreign = fixture(&url, "monthly_foreign").await;
+    assert!(matches!(
+        db.finalize_statement(issued.id, &foreign.wallet, today())
+            .await,
+        Err(WalletError::InvalidInput(_))
+    ));
+    assert!(matches!(
+        db.generate_statement(
+            &f.org,
+            &foreign.wallet,
+            &statement_period("2026-09").unwrap()
+        )
+        .await,
+        Err(WalletError::InvalidInput(_))
+    ));
+}
+
+#[tokio::test]
+async fn legacy_orphan_anchor_requires_exact_source_replay() {
+    let url = db_or_skip!();
+    let f = fixture(&url, "monthly_orphan").await;
+    let draft = monthly_draft(&f).await;
+    let first =
+        f.db.finalize_statement(draft.id, &f.wallet, today())
+            .await
+            .unwrap();
+    let size = f.wallet.log_size().await.unwrap();
+    // Recreate the old split-transaction failure using only the application
+    // document. The retained ledger entry is never edited or deleted.
+    let reset = "UPDATE oxsum.statements SET status='draft',finalized_at=NULL,anchor_entry_id=NULL,anchor_log_index=NULL,window_hash=NULL,rollup_hash=NULL WHERE statement_id=$1";
+    sqlx::query(reset)
+        .bind(draft.id)
+        .execute(f.db.pool())
+        .await
+        .unwrap();
+    let exact =
+        f.db.finalize_statement(draft.id, &f.wallet, today())
+            .await
+            .unwrap();
+    assert_eq!(exact.anchor_entry_id, first.anchor_entry_id);
+    assert_eq!(f.wallet.log_size().await.unwrap(), size);
+    sqlx::query(reset)
+        .bind(draft.id)
+        .execute(f.db.pool())
+        .await
+        .unwrap();
+    turn(&f, "late", "new", "new", ONE, ONE, SEPT).await;
+    let before = f.wallet.log_size().await.unwrap();
+    assert!(matches!(
+        f.db.finalize_statement(draft.id, &f.wallet, today()).await,
+        Err(WalletError::Conflict(_))
+    ));
+    assert_eq!(f.wallet.log_size().await.unwrap(), before);
+    assert_eq!(
+        f.db.statement_by_id(draft.id)
+            .await
+            .unwrap()
+            .unwrap()
+            .status,
+        StatementStatus::Draft
+    );
+}
+
+#[tokio::test]
+async fn late_usage_cannot_split_the_lines_totals_and_window_snapshot() {
+    let url = db_or_skip!();
+    let f = fixture(&url, "monthly_source").await;
+    let draft = monthly_draft(&f).await;
+    f.wallet.hold("late-hold", "", ONE, SEPT).await.unwrap();
+    let receipt = f.wallet.settle("late-hold", "", ONE, SEPT).await.unwrap();
+    let late = usage_row(
+        &f,
+        "late",
+        "new",
+        "new",
+        ONE,
+        ONE,
+        *receipt.entry_id.as_uuid(),
+    );
+    let hashes =
+        f.db.statement_window_hashes(&f.org.tenant_id, &statement_period("2026-09").unwrap())
+            .await
+            .unwrap();
+    let mut pin = f.db.pool().begin().await.unwrap();
+    sqlx::query(&format!(
+        "LOCK TABLE ledger_{}.postings IN ACCESS EXCLUSIVE MODE",
+        f.org.tenant_id
+    ))
+    .execute(&mut *pin)
+    .await
+    .unwrap();
+    let pid: i32 = sqlx::query_scalar("SELECT pg_backend_pid()")
+        .fetch_one(&mut *pin)
+        .await
+        .unwrap();
+    let db = f.db.clone();
+    let wallet = std::sync::Arc::new(f.wallet);
+    let worker_wallet = std::sync::Arc::clone(&wallet);
+    let task = tokio::spawn(async move {
+        db.finalize_statement(draft.id, &worker_wallet, today())
+            .await
+    });
+    wait_for_blocked(f.db.pool(), pid).await;
+    f.db.record_usage(&late).await.unwrap();
+    pin.commit().await.unwrap();
+    let issued = task.await.unwrap().unwrap();
+    let lines = f.db.statement_lines(issued.id).await.unwrap();
+    assert_eq!(issued.entry_count, 1);
+    assert_eq!(issued.total_minor, 3 * ONE);
+    assert_eq!(lines.len(), 1);
+    assert_eq!(lines[0].amount_minor, issued.total_minor);
+    let payload: Vec<u8> = hashes.iter().flat_map(|h| h.as_bytes().to_vec()).collect();
+    assert_eq!(
+        issued.window_hash,
+        Some(doubleentry::Hash::digest(b"oxsum/statement-window/v1", &payload).to_hex())
+    );
+}
+
+#[tokio::test]
+async fn issuance_reads_repayment_that_committed_before_its_append_lock() {
+    let url = db_or_skip!();
+    let f = fixture(&url, "monthly_repayment").await;
+    let draft = monthly_draft(&f).await;
+    let mut pin = f.db.pool().begin().await.unwrap();
+    sqlx::query(
+        "SELECT pg_advisory_xact_lock(hashtextextended('oxsum/org-admission/v1:' || $1,0))",
+    )
+    .bind(f.org.id.to_string())
+    .execute(&mut *pin)
+    .await
+    .unwrap();
+    let pid: i32 = sqlx::query_scalar("SELECT pg_backend_pid()")
+        .fetch_one(&mut *pin)
+        .await
+        .unwrap();
+    let db = f.db.clone();
+    let wallet = std::sync::Arc::new(f.wallet);
+    let worker_wallet = std::sync::Arc::clone(&wallet);
+    let task = tokio::spawn(async move {
+        db.finalize_statement(draft.id, &worker_wallet, today())
+            .await
+    });
+    wait_for_blocked(f.db.pool(), pid).await;
+    wallet
+        .repay_credit("before-issue", ONE, today())
+        .await
+        .unwrap();
+    pin.commit().await.unwrap();
+    let issued = task.await.unwrap().unwrap();
+    assert_eq!(issued.credit_drawn_minor, 3 * ONE);
+    assert_eq!(issued.paid_minor, ONE);
+    assert_eq!(issued.outstanding_minor, 2 * ONE);
 }
