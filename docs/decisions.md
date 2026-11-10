@@ -3809,3 +3809,23 @@ No historical backfill or natural-time expiration event is promised. Endpoint
 delivery authorization is independent of runtime credential expiry/revocation;
 disable the endpoint to stop future unclaimed sends. Customer balance signals
 cover documented source writes, not arbitrary ledger-level data capture.
+
+## 2026-11-10 — Generate the migration registry via build.rs (#948)
+
+`crates/core/src/db.rs` carried a hand-edited `MIGRATIONS` array alongside the
+`migrations/` files. Every migration-adding change appended one line to that
+single shared array, which made it a persistent merge hotspot: during the
+N-batch integration a dozen parallel stacked PRs each collided on the array tail
+and required a manual union-merge plus re-sort on every rebase.
+
+`build.rs` now scans `migrations/*.sql`, sorts by file stem and emits the
+`MIGRATIONS` array into `OUT_DIR`; `db.rs` does `include!(concat!(env!("OUT_DIR"),
+"/migrations.rs"))`. Chosen over `include_dir!`/runtime directory reads because it
+preserves the existing `include_str!`-per-file compile-time embedding (a binary
+still carries its own schema and a missing file is a build error, not a runtime
+surprise) and keeps `latest_schema_version`, the `_migrations` ledger and the
+`windows(2)` sorted-order test unchanged. The trade-off: generated `include_str!`
+paths are absolute, so the build is not path-independent — acceptable for a
+self-hosted single binary that is built per target, not relocated. A new
+migration is now only a new `migrations/NNNN_name.sql`; no tracked registry file
+is edited, so parallel migration work no longer conflicts on `db.rs`.
