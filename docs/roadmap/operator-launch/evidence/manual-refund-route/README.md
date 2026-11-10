@@ -59,3 +59,12 @@ Baseline backend source `ac7bb191ee7a2b52af4a23f2ce54cd9c6f9d82e5`, binary
 SHA-256 `941e9f1776e64ed5559074c637bf73d67de7380a382dc12f56e1b149ca610c53`.
 Frontend base `879e6e6f` plus this repair, byte inventory attached. These are
 local development facts, not candidate, genuine PSP or money-out certification.
+
+## Aggregate test layout continuation
+
+After main `2ee70601` consolidated integration binaries, the unchanged repair
+was merged onto that layout. The exact `bundle_upgrade::` PostgreSQL regression
+passed (1/1), core all-target strict Clippy and pinned formatting passed. The
+original 2,256-pass evidence remains scoped to its recorded development tree;
+it is not relabeled as a new main/candidate run. Main's duplicate issue #1002
+is the same failure. The independent obsolete CI-selector regression is #1003.
