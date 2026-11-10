@@ -2481,7 +2481,5 @@
     "issuedSuccess": "月结账单已签发。",
     "generatedSuccess": "月结草稿已生成，可开始复核。",
     "emptyMonth": "该月份没有已记录用量，未创建账单。"
-
-    "channel": "渠道"
   }
 }

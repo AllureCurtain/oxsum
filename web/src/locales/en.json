@@ -2481,7 +2481,5 @@
     "issuedSuccess": "Monthly statement issued.",
     "generatedSuccess": "Monthly draft is ready for review.",
     "emptyMonth": "No recorded usage for that month; no statement was created."
-
-    "channel": "Channel"
   }
 }
