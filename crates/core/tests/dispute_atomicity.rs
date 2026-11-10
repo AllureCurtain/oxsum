@@ -93,6 +93,8 @@ async fn world(plan: bool) -> Option<World> {
             org,
             &NewPaymentOrder {
                 expected_collection_revision: None,
+                expected_statement_quote: None,
+                statement_amount_minor: None,
                 expected_plan_quote: None,
                 purpose: PaymentOrderPurpose::WalletTopup,
                 display_amount_minor: 250,

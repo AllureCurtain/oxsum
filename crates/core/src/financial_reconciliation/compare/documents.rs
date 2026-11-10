@@ -87,6 +87,26 @@ pub(super) fn compare(customer: &mut Customer<'_>) -> Result<(), WalletError> {
             let amount = line.amount("amount_minor")?;
             let source = line.optional_id("source_ref")?;
             if kind == "payment_applied" {
+                if let Some(effect) =
+                    source.and_then(|id| customer.sources.get("statement_payment_effects", id))
+                {
+                    let expected = effect.amount("receivable_minor")?
+                        * if effect.text("kind")? == "payment" {
+                            -1
+                        } else {
+                            1
+                        };
+                    if effect.id("statement_id")? != statement || expected != amount {
+                        customer.unsupported(
+                            "plan_statements",
+                            statement,
+                            "repaymentLine",
+                            "Repayment line differs from its exact cash allocation",
+                        );
+                    }
+                    payments = types::sub(payments, amount)?;
+                    continue;
+                }
                 payments = types::sub(payments, amount)?;
                 let prior = payment_sources.get(&source).copied().unwrap_or(0);
                 payment_sources.insert(source, types::add(prior, amount)?);
@@ -258,6 +278,31 @@ pub(super) fn compare(customer: &mut Customer<'_>) -> Result<(), WalletError> {
         customer.result.coverage.verified_sources +=
             usize::from(customer.result.differences.len() == before);
         customer.result.evidence.push(serde_json::json!({"organizationId":customer.organization,"sourceTable":"plan_statements","sourceId":statement,"source":header.evidence,"lines":lines.iter().map(|line|&line.evidence).collect::<Vec<_>>(),"lineTotalMinor":charge_total,"paymentLinesMinor":payments}));
+    }
+    if customer
+        .sources
+        .table("statement_payment_effects")
+        .values()
+        .any(|e| e.amount("receivable_minor").is_ok_and(|v| v > 0))
+    {
+        if let Some(mapping) =
+            super::super::debt_sources::map_documents(&customer.sources, &customer.ledger)?
+        {
+            displayed.clear();
+            for slices in mapping.values() {
+                for slice in slices {
+                    let previous = displayed.entry(slice.journal_id).or_default();
+                    *previous = types::add(*previous, slice.remaining_minor)?;
+                }
+            }
+        } else {
+            customer.unsupported(
+                "plan_statements",
+                customer.organization,
+                "repaymentDebtMap",
+                "Repayment documents do not match original receivable allocations",
+            );
+        }
     }
     let journals: Vec<_> = customer
         .sources

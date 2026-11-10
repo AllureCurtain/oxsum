@@ -190,6 +190,11 @@ pub(super) fn compare(customer: &mut Customer<'_>) -> Result<(), WalletError> {
                                 .amount("cash_minor")?
                                 .min(position.billed_minor.max(0))
                                 .min(position.collected_minor.max(0))
+                                .min(remaining_original_cash(
+                                    customer,
+                                    &period,
+                                    effect.optional_id("entry_id")?,
+                                )?)
                         };
                         let net = types::sub(position.billed_minor, cancelled)?;
                         let target = if voided.is_some() {
@@ -235,10 +240,31 @@ pub(super) fn compare(customer: &mut Customer<'_>) -> Result<(), WalletError> {
                             .transpose()?
                             .unwrap_or(0)
                             .min(position.collected_minor.max(0))
+                            .min(remaining_original_cash(
+                                customer,
+                                &period,
+                                effect.optional_id("entry_id")?,
+                            )?)
                     };
                     Amounts {
                         collected_minor: -restored,
                         receivable_minor: restored,
+                        ..Amounts::default()
+                    }
+                }
+                "statement_payment" | "statement_return" => {
+                    let source = customer
+                        .sources
+                        .get("statement_payment_effects", effect.id("source_ref")?)
+                        .ok_or_else(|| error::invalid("statement accounting source missing"))?;
+                    let sign = if source.text("kind")? == "payment" {
+                        1
+                    } else {
+                        -1
+                    };
+                    Amounts {
+                        collected_minor: sign * source.amount("receivable_minor")?,
+                        receivable_minor: -sign * source.amount("receivable_minor")?,
                         ..Amounts::default()
                     }
                 }
@@ -342,4 +368,44 @@ fn earned(
         .checked_mul(elapsed)
         .ok_or_else(|| error::invalid("reconciliation recognition overflows"))?;
     i64::try_from(numerator / duration).map_err(error::invalid)
+}
+
+fn remaining_original_cash(
+    customer: &Customer<'_>,
+    period: &Source,
+    before: Option<uuid::Uuid>,
+) -> Result<i64, WalletError> {
+    let order = period.id("authorization_ref")?;
+    let amount = customer
+        .sources
+        .get("payment_orders", order)
+        .map(|p| p.amount("amount_minor"))
+        .transpose()?
+        .unwrap_or(0);
+    let position = before
+        .and_then(|id| customer.ledger.entries.get(&id))
+        .and_then(|e| e.stored.as_ref().ok())
+        .and_then(|e| e.index)
+        .map(|i| i.get());
+    let earlier = |id: uuid::Uuid| {
+        customer
+            .ledger
+            .entries
+            .get(&id)
+            .and_then(|e| e.stored.as_ref().ok())
+            .and_then(|e| e.index)
+            .is_some_and(|i| position.is_some_and(|p| i.get() < p))
+    };
+    let mut returns = 0i64;
+    for r in customer.sources.table("plan_refund_effects").values() {
+        if r.id("order_id")? == order && earlier(r.id("entry_id")?) {
+            returns = types::add(returns, r.amount("cash_minor")?)?;
+        }
+    }
+    for d in customer.sources.table("disputes").values() {
+        if d.id("order_id")? == order && d.optional_id("recharge_entry_id")?.is_some_and(earlier) {
+            returns = types::add(returns, d.amount("amount_minor")?)?;
+        }
+    }
+    Ok(types::sub(amount, returns)?.max(0))
 }

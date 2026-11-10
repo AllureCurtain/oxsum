@@ -80,6 +80,8 @@ function purposeLabel(t: (k: string) => string, purpose: string): string {
       return t("orders.purposeBundle");
     case "planPeriod":
       return t("orders.purposePlanPeriod");
+    case "statementRepayment":
+      return t("statementPayment.title");
     case "invoiceRepayment":
       return t("orders.purposeInvoiceRepayment");
     default:
@@ -91,7 +93,7 @@ function purposeLabel(t: (k: string) => string, purpose: string): string {
  *  `Record<string, never>`; the fields the row actually carries are read
  *  through this narrow shape. The fulfillment's `purposePayload` is the same. */
 type OrderEvidence = { reference?: string; reason?: string; recordedBy?: string };
-type FulfillmentPayload = { creditedMinor?: number; promoMinor?: number };
+type FulfillmentPayload = { creditedMinor?: number; promoMinor?: number; repaidMinor?: number; payableMinor?: number; requiresReview?: boolean };
 
 // ---------------------------------------------------------------------------
 // /app/orders — the payment history: provider orders and manual receipts in
@@ -156,6 +158,7 @@ export function Orders() {
             <option value="walletTopup">{t("orders.purposeWalletTopup")}</option>
             <option value="bundle">{t("orders.purposeBundle")}</option>
             <option value="planPeriod">{t("orders.purposePlanPeriod")}</option>
+            <option value="statementRepayment">{t("statementPayment.title")}</option>
             <option value="invoiceRepayment">{t("orders.purposeInvoiceRepayment")}</option>
           </NativeSelect>
         </Field>
@@ -453,6 +456,11 @@ function FulfillmentBlock({ order }: { order: PaymentOrder }) {
   const record = fulfillment.data?.fulfillment;
   if (order.status === "fulfilled" && record) {
     const payload = record.purposePayload as FulfillmentPayload;
+    if (order.purpose === "statementRepayment") {
+      return <Banner tone={payload.requiresReview ? "warn" : "success"}>{payload.requiresReview
+        ? t("statementPayment.payable", { amount: credits(payload.payableMinor ?? 0) })
+        : t("statementPayment.paid", { amount: credits(payload.repaidMinor ?? 0) })}</Banner>;
+    }
     const credited =
       typeof payload.creditedMinor === "number" ? payload.creditedMinor : order.amountMinor;
     return <Banner tone="success">{t("orders.fulfilled", { amount: credits(credited) })}</Banner>;
@@ -655,6 +663,7 @@ export function OrderDetail() {
       {o.bundleOffer ? <Card title={`${o.bundleOffer.terms.name} · version ${o.bundleOffer.version}`}>
         <p>This order purchases <Cr minor={o.bundleOffer.terms.purchasedMinor} /> and grants <Cr minor={o.bundleOffer.terms.promoMinor} /> promotional credit. Promotion {o.bundleOffer.terms.promoLifetimeDays == null ? "has no expiry" : `expires ${o.bundleOffer.terms.promoLifetimeDays} days after confirmed payment`}. A confirmed partial or full refund cancels remaining promotional credit without cash reimbursement.</p>
       </Card> : o.purpose === "bundle" && o.status !== "fulfilled" ? <Banner tone="warn">This legacy bundle has no published offer snapshot. Checkout and fulfillment require operator review.</Banner> : null}
+      {o.statementPayment ? <Card title={t("statementPayment.title")}><p>{t("statementPayment.help")}</p><p><Cr minor={o.statementPayment.amountMinor} /></p><Link className="text-primary" to={`/billing/${o.statementPayment.statementId}`}>{t("statementPayment.statementLink")}</Link></Card> : null}
       {o.planPayment ? <Card title="Purchased plan period"><p>Period {o.planPayment.periodIndex + 1} · exact sold fee <Cr minor={o.planPayment.feeMinor} />. {o.planPayment.periodStart ? `${o.planPayment.periodStart} – ${o.planPayment.periodEnd} (UTC)` : "First service period begins at paid activation."}</p><p className="text-sm text-muted">This payment grants plan entitlement and never adds wallet credit. Its sold version and collection quote remain fixed.</p></Card> : o.purpose === "planPeriod" && o.status !== "fulfilled" ? <Banner tone="warn">This legacy order has no verified period quote. Contact the operator for reconciliation; it cannot automatically grant new entitlement.</Banner> : null}
       <div className="grid grid-cols-2 gap-4 sm:grid-cols-4">
         <div>

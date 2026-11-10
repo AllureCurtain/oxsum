@@ -91,6 +91,7 @@ mod service_credentials;
 mod serving_access;
 mod sessions;
 mod staff_invitations;
+mod statement_payments;
 mod statement_pdf;
 mod statements;
 mod subscriptions;
@@ -379,3 +380,6 @@ pub use sale_books::{
 pub use collection_terms::{
     CollectionCurrency, CollectionTerms, CollectionTermsMutation, CollectionTermsRequest,
 };
+
+pub use statement_payments::evidence::Effect as StatementCashEffect;
+pub use statement_payments::{StatementPaymentQuote, StatementPaymentSlice, StatementPaymentTerms};

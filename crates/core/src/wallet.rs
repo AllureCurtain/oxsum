@@ -1699,6 +1699,54 @@ impl Wallet {
         self.append_in(tx, draft).await
     }
 
+    /// Exact statement payment/return Cash and its original AR/payable allocation.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) async fn statement_cash_in(
+        &self,
+        tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+        key: &str,
+        inflow: bool,
+        cash: i64,
+        receivable: i64,
+        payable: i64,
+        suspense: i64,
+        on: Date,
+    ) -> Result<Receipt, WalletError> {
+        if cash <= 0
+            || receivable < 0
+            || payable < 0
+            || suspense < 0
+            || receivable
+                .checked_add(payable)
+                .and_then(|v| v.checked_add(suspense))
+                != Some(cash)
+            || inflow && suspense != 0
+        {
+            return Err(invalid("invalid statement cash allocation"));
+        }
+        let mut draft=Entry::<Draft,SCALE>::new(entry_id_for(key),idem(key)?,on)
+            .with_description(description_of(&format!("statement cash {key}; cash {cash}, receivable {receivable}, payable {payable}, suspense {suspense}"))?);
+        draft = if inflow {
+            draft.debit(self.cash, Credits::from_minor(cash), currency())
+        } else {
+            draft.credit(self.cash, Credits::from_minor(cash), currency())
+        };
+        for (account, amount) in [
+            (self.receivables, receivable),
+            (self.refund_payable, payable),
+            (self.adjustments, suspense),
+        ] {
+            if amount > 0 {
+                draft = if inflow {
+                    draft.credit(account, Credits::from_minor(amount), currency())
+                } else {
+                    draft.debit(account, Credits::from_minor(amount), currency())
+                };
+            }
+        }
+        self.append_in(tx, draft).await
+    }
+
     /// The reversal a staff void posts: every line's leg reversed in one entry
     /// — `debit PlanFees / credit Receivables` for the charge sums,
     /// `debit Receivables / credit Discounts` and `debit Receivables / credit

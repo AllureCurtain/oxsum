@@ -83,6 +83,7 @@ impl Db {
             }
             return Ok(report);
         }
+        crate::statement_payments::guard_journal_in(&mut tx, request.journal_id).await?;
         wallet.lock_append_in(&mut tx).await?;
         let mut report = evidence::inspect(&mut tx, wallet, &journal).await?;
         let evidence_bytes = serde_json::to_vec(&report.evidence).map_err(error::invalid)?;

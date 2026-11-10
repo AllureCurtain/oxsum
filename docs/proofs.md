@@ -93,3 +93,12 @@ Only comparison with the exact separately supplied full UTF-8 reason establishes
 that text matches; a bundle lacking it makes no such claim. Neither a digest nor
 a matched reason certifies policy semantics or truthful provider output. Earlier
 v3–v14 entries retain their original verification rules.
+
+Statement repayment (#777) retains exact order/statement/journal allocation and
+return links beside canonical entry hashes. The finance evidence route validates
+recorded entry shape and original allocation limits. Reconciliation snapshots
+also compare those effects and the exact customer document lines; financial
+voids retain per-payment payable ownership. These records prove recorded source
+relationships within the existing operator/ledger trust scope. They do not
+independently prove external provider settlement, fair collection, delivery of
+service, or events after a captured artifact was minted.

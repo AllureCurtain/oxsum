@@ -865,3 +865,36 @@ inheriting a cookie. Malformed entry IDs return 400. Plain `/verify` and its
 public sample remain available without authentication. The prefilled hash comes
 from this server and is labeled accordingly; retaining it and independent head
 trust are separate from internal inclusion/arithmetic checks.
+### Exact statement repayment (#777)
+
+`GET /api/v1/org/statements/{statementId}/payment-quote` requires a personal
+customer session. Optional positive `amountMinor` selects credit-minor debt;
+omitting it selects all unreserved debt. Foreign statements are 404. The
+response includes outstanding/reserved/available amounts, pending order IDs,
+exact journal/plan slices, pinned collection terms and a fingerprint. Review
+reasons preserve the displayed debt but omit payable terms. Old duplicated
+usage must be corrected before collection even when its recorded AR balances.
+
+Create `/api/v1/orders` with `purpose: statementRepayment`, `purposeRef` equal
+to that statement, `statementAmountMinor`, `expectedStatementQuote` and the
+exact fiat terms. `amountMinor`/`rate` remain invalid creation fields. Changed
+quotes/fiat or reused keys with different terms refuse before provider I/O;
+exact-key retries keep their original price and checkout after collection
+changes. The reservation and binding commit before provider execution. Browser
+return/cancellation and elapsed time never establish payment or release debt.
+
+The immutable `statementPayment` field exposes original source allocations on
+customer and business order reads. Fulfillment `purposePayload` names
+`repaidMinor`, `payableMinor`, `requiresReview` and source-linked entries.
+Refunds use existing customer request, personal finance approval and verified
+merchant-event paths; dispute resolution commits decision, cash and audit in
+one transaction. Canonical reconciliation evidence retains exact reversal
+entries and void-source allocations. The existing `invoiceRepayment` purpose
+remains Cash/CreditLine and its reference is not a plan-statement allocation.
+
+Finance uses `GET /api/v1/business/orders/{orderId}/statement-payment-evidence`
+under a current personal `ReportsRead` capability to read original payment and
+return allocations, canonical entry IDs/hashes and Cash/AR/payable/suspense.
+The read opens only an existing ledger and refuses damaged retained effects.
+Unknown, foreign-business or other-purpose orders are 404. It creates no payment,
+refund, finance decision or source repair.

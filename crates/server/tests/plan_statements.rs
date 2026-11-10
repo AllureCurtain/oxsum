@@ -414,3 +414,49 @@ async fn financial_void_requires_staff_and_replays_the_exact_request_once() {
     assert_eq!(audit.0, 1);
     assert!(audit.1.is_some());
 }
+
+#[tokio::test]
+async fn statement_payment_quote_is_personal_scoped_and_refuses_historical_duplicate_usage() {
+    let Some(w) = world().await else {
+        return;
+    };
+    let version = publish(&w, "repayment HTTP source", 2500).await;
+    bound_and_active(&w, version).await;
+    close_period(&w).await;
+    let statement = the_statement(&w).await;
+    let id = statement["statementId"].as_str().unwrap();
+    let path = format!("/api/v1/org/statements/{id}/payment-quote");
+    let (status, body) = call(&w.app, "GET", &path, Value::Null, Some(&w.customer)).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["data"]["reason"], "historicalUsageReviewRequired");
+    assert_eq!(body["data"]["outstandingMinor"], 1000);
+    assert!(body["data"]["terms"].is_null());
+    assert_eq!(
+        call(
+            &w.app,
+            "GET",
+            &format!("{path}?amountMinor=0"),
+            Value::Null,
+            Some(&w.customer)
+        )
+        .await
+        .0,
+        StatusCode::BAD_REQUEST
+    );
+    assert_eq!(
+        call(&w.app, "GET", &path, Value::Null, None).await.0,
+        StatusCode::UNAUTHORIZED
+    );
+    assert_eq!(
+        call(
+            &w.app,
+            "GET",
+            &format!("/api/v1/org/statements/{}/payment-quote", Uuid::new_v4()),
+            Value::Null,
+            Some(&w.customer)
+        )
+        .await
+        .0,
+        StatusCode::NOT_FOUND
+    );
+}

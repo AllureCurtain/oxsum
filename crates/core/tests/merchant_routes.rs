@@ -81,6 +81,8 @@ async fn explicit_checkout_selection_retains_replay_and_never_falls_back() {
     };
     let new = NewPaymentOrder {
         expected_collection_revision: None,
+        expected_statement_quote: None,
+        statement_amount_minor: None,
         expected_plan_quote: None,
         purpose: PaymentOrderPurpose::WalletTopup,
         display_amount_minor: 200,

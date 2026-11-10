@@ -825,6 +825,8 @@ async fn a_refund_retry_storm_retains_the_reservation_at_the_attempt_budget() {
             &context,
             org,
             &oxsum_core::NewPaymentOrder {
+                expected_statement_quote: None,
+                statement_amount_minor: None,
                 expected_plan_quote: None,
                 expected_collection_revision: None,
                 purpose: oxsum_core::PaymentOrderPurpose::WalletTopup,

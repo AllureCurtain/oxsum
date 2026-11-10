@@ -54,6 +54,8 @@ async fn world() -> Option<(Db, String, Uuid, Uuid)> {
 fn intent(quote: &oxsum_core::PlanPaymentQuote) -> NewPaymentOrder {
     NewPaymentOrder {
         expected_collection_revision: Some(quote.terms.collection_revision),
+        expected_statement_quote: None,
+        statement_amount_minor: None,
         expected_plan_quote: Some(quote.fingerprint.clone()),
         purpose: PaymentOrderPurpose::PlanPeriod,
         display_amount_minor: quote.terms.display_amount_minor,

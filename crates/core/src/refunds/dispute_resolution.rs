@@ -225,6 +225,120 @@ impl Db {
                 "dispute wallet or order ownership differs".into(),
             ));
         }
+        if scope.try_get::<String, _>("purpose")? == "statement_repayment" {
+            crate::statement_payments::lock_owner_in(&mut tx, organization, self.pool()).await?;
+            crate::nonplan_returns::lock_source_in(&mut tx, scope.try_get("order_id")?).await?;
+            let row = sqlx::query(&format!("{SCOPED_DISPUTE} FOR UPDATE OF d"))
+                .bind(dispute_id)
+                .bind(business)
+                .fetch_one(&mut *tx)
+                .await?;
+            let dispute = dispute_from_row(&row)?;
+            let receipt: Uuid = row
+                .try_get::<Option<Uuid>, _>("inbox_receipt_id")?
+                .ok_or_else(review)?;
+            let valid:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM oxsum.merchant_event_inbox e JOIN oxsum.payment_orders p ON p.order_id=$2 WHERE e.receipt_id=$1 AND e.merchant_id=p.merchant_id AND e.version_id=p.merchant_version_id AND e.state IN ('accepted','applied'))").bind(receipt).bind(dispute.order_id).fetch_one(&mut *tx).await?;
+            let event = crate::merchant_events::data_in(&mut tx, receipt)
+                .await?
+                .ok_or_else(review)?;
+            let amount = crate::nonplan_returns::disputed_minor(
+                row.try_get("order_amount")?,
+                row.try_get("display_amount_minor")?,
+                &row.try_get::<String, _>("display_currency")?,
+                &event,
+            )
+            .map_err(|_| review())?;
+            if !valid
+                || event.kind != crate::MerchantEventKind::Dispute
+                || amount != dispute.amount_minor
+                || event.payment_id != Some(dispute.order_id)
+                || event.organization_id != Some(organization)
+                || event.refund_id.as_deref() != Some(dispute.provider_dispute_id.as_str())
+            {
+                return Err(review());
+            }
+            let prior=sqlx::query("SELECT target,actor_user_id,detail FROM oxsum.finance_audit WHERE business_id=$1 AND action='dispute.resolve' AND idempotency_key=$2").bind(business).bind(idempotency_key).fetch_optional(&mut *tx).await?;
+            if let Some(prior) = &prior {
+                let detail: serde_json::Value = prior.try_get("detail")?;
+                if prior.try_get::<String, _>("target")? != dispute_id.to_string()
+                    || prior.try_get::<Uuid, _>("actor_user_id")? != actor.user_id
+                    || detail["resolution"] != resolution.as_str()
+                    || detail.get("reason").and_then(serde_json::Value::as_str) != reason
+                {
+                    return Err(review());
+                }
+            }
+            if matches!(dispute.state.as_str(), "lost" | "won" | "closed") {
+                if dispute.state != resolution.as_str() {
+                    return Err(WalletError::Conflict(
+                        "dispute already has a different outcome".into(),
+                    ));
+                }
+                let audit: Option<serde_json::Value> = sqlx::query_scalar("SELECT a.detail FROM oxsum.finance_audit a JOIN oxsum.disputes d ON d.audit_ref=a.audit_id WHERE d.dispute_id=$1 AND a.action='dispute.resolve' AND a.target=d.dispute_id::text AND a.actor_user_id=d.resolved_by")
+                    .bind(dispute_id).fetch_optional(&mut *tx).await?;
+                let audit = audit.ok_or_else(review)?;
+                let effects = crate::statement_payments::evidence::effects_in(
+                    &mut tx,
+                    wallet,
+                    dispute.order_id,
+                )
+                .await?;
+                let effects: Vec<_> = effects
+                    .into_iter()
+                    .filter(|e| e.kind == "dispute" && e.source == dispute_id)
+                    .collect();
+                let total = effects
+                    .iter()
+                    .try_fold(0i64, |sum, e| sum.checked_add(e.cash).ok_or_else(review))?;
+                if audit["resolution"] != resolution.as_str()
+                    || audit["rechargeEntryId"] != json!(dispute.recharge_entry_id)
+                    || (resolution == DisputeResolution::Lost
+                        && (total != amount
+                            || !effects
+                                .iter()
+                                .any(|e| Some(e.entry) == dispute.recharge_entry_id)))
+                    || (resolution != DisputeResolution::Lost
+                        && (!effects.is_empty() || dispute.recharge_entry_id.is_some()))
+                {
+                    return Err(review());
+                }
+                tx.commit().await?;
+                return Ok(dispute);
+            }
+            if prior.is_some() {
+                return Err(review());
+            }
+            let effects = if resolution == DisputeResolution::Lost {
+                crate::statement_payments::reverse_in(
+                    &mut tx,
+                    wallet,
+                    dispute.order_id,
+                    "dispute",
+                    dispute_id,
+                    Some(receipt),
+                    amount,
+                    on,
+                )
+                .await?
+            } else {
+                Vec::new()
+            };
+            let entry = effects.first().map(|e| e.entry);
+            let audit = Uuid::new_v4();
+            sqlx::query("UPDATE oxsum.disputes SET state=$2,recharge_entry_id=$3,resolved_by=$4,audit_ref=$5,updated_at=now() WHERE dispute_id=$1")
+                .bind(dispute_id).bind(resolution.as_str()).bind(entry).bind(actor.user_id).bind(audit).execute(&mut *tx).await?;
+            sqlx::query("INSERT INTO oxsum.finance_audit(audit_id,business_id,actor_user_id,action,target,detail,idempotency_key) VALUES($1,$2,$3,'dispute.resolve',$4,$5,$6)")
+                .bind(audit).bind(business).bind(actor.user_id).bind(dispute_id.to_string()).bind(json!({"orderId":dispute.order_id,"resolution":resolution.as_str(),"contestedMinor":amount,"currency":dispute.currency,"rechargeEntryId":entry,"allocations":effects,"reason":reason})).bind(idempotency_key).execute(&mut *tx).await?;
+            let result = dispute_from_row(
+                &sqlx::query(SCOPED_DISPUTE)
+                    .bind(dispute_id)
+                    .bind(business)
+                    .fetch_one(&mut *tx)
+                    .await?,
+            )?;
+            tx.commit().await?;
+            return Ok(result);
+        }
         let plan = scope.try_get::<String, _>("purpose")? == "plan_period";
         // Immutable coordinates are read before locking. Plan ownership always
         // precedes dispute/journal/ledger/statement locks, even for won/closed.

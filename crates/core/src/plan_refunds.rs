@@ -251,12 +251,9 @@ impl Db {
                         "legacy refund followed by a void needs combined source review".into(),
                     ));
                 }
-                let prior_payable: i64 = sqlx::query_scalar("SELECT COALESCE(SUM(payable_minor),0)::bigint FROM oxsum.plan_refund_effects WHERE journal_id=$1")
-                    .bind(id).fetch_one(&mut **tx).await?;
-                result.payable_minor = source
-                    .amount
-                    .min(remaining)
-                    .min(settled.saturating_sub(prior_payable).max(0));
+                result.payable_minor = source.amount.min(remaining).min(
+                    crate::statement_payments::voiding::original_payable_in(tx, wallet, id).await?,
+                );
             } else {
                 old_discount = sqlx::query_scalar::<_,i64>("SELECT -COALESCE(SUM(amount_minor),0)::bigint FROM oxsum.invoice_journal_lines WHERE journal_id=$1 AND source_ref=$2 AND kind='discount'")
                     .bind(id).bind(source.note_id).fetch_one(&mut **tx).await?;

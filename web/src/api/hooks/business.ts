@@ -740,3 +740,11 @@ export function useRevokeStaffInvitation() {
     onSuccess: () => client.invalidateQueries({ queryKey: ["biz-staff-invitations"] }),
   });
 }
+
+/** Exact original journal and cash-return evidence under current ReportsRead. */
+export function useStatementPaymentEvidence(orderId: string) {
+  return useQuery({
+    queryKey: ["biz-statement-payment-evidence", orderId],
+    queryFn: () => api<components["schemas"]["StatementCashEffect"][]>(`/business/orders/${orderId}/statement-payment-evidence`),
+  });
+}

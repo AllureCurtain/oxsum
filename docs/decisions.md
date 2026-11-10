@@ -3648,3 +3648,28 @@ and refund reports retain their current meanings.
 Historical bundle promo is retained under the unchanged-entitlement boundary and
 named `bundlePromoRetained` for finance review. Forward losses still use their
 separately defined promo-cancellation policy.
+
+## 2026-11-10 — Separate exact statement repayment from CreditLine (#777)
+
+Keep `invoiceRepayment` unchanged. Introduce `statementRepayment` only with its
+quote, reservation, atomic application and original-source refund/dispute arms.
+Pin integer debt independently of fiat rounding and use the #917 bounded
+canonical source map for mixed and chargeback-only documents. Unknown provider
+outcomes reserve; authenticated failed/expired outcomes release. Confirmed late
+Cash is retained as payable, never wallet funding or a discarded event.
+
+A repayment allocation has its own deterministic entry identity, original
+statement and journal. Refunds reopen the exact document through immutable
+source-linked effects; voluntary refunds do not fabricate a dispute counter.
+The journal and statement guards accept only same-transaction return evidence
+for the new reopening path. A financial void retains exact per-payment payable
+ownership and excludes it from original plan-order return limits. Unproven or
+mixed-source voids refuse explicitly; safe repayment of mixed debt does not
+authorize deleting all charges on its wrapper document.
+
+Retain one transaction for statement cash, document counters, reservation,
+fulfillment and outbox. Dispute decision/money/audit is atomic, and terminal
+replay validates rather than repairs history. Full observed cash loss beyond
+the original retained source goes to named reconciliation suspense. Customer
+proofs continue proving recorded entries within their documented trust scope;
+source linkage does not certify the external provider or service quality.

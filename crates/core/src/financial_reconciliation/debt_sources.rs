@@ -4,7 +4,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use serde::Serialize;
 use sha2::{Digest, Sha256};
-use sqlx::Row;
+use sqlx::{Postgres, Row, Transaction};
 use time::{Date, OffsetDateTime};
 use uuid::Uuid;
 
@@ -70,125 +70,138 @@ impl Db {
         sqlx::query("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY")
             .execute(&mut *tx)
             .await?;
-        let header = sqlx::query("SELECT total_minor,paid_minor,state FROM oxsum.plan_statements WHERE statement_id=$1 AND organization_id=$2 AND state<>'open'")
-            .bind(statement).bind(organization.id).fetch_optional(&mut *tx).await?
-            .ok_or_else(||WalletError::NotFound("customer statement not found".into()))?;
-        let as_of = sqlx::query_scalar("SELECT now()")
-            .fetch_one(&mut *tx)
-            .await?;
-        let state: String = header.try_get("state")?;
-        let outstanding = types::sub(
-            header.try_get("total_minor")?,
-            header.try_get("paid_minor")?,
-        )?;
-        let mut answer = StatementDebtSources {
-            statement_id: statement,
-            organization_id: organization.id,
-            as_of,
-            outstanding_minor: outstanding.max(0),
-            verified: false,
-            reason: Some("sourceReviewRequired"),
-            revision: None,
-            slices: Vec::new(),
-        };
-        if !matches!(state.as_str(), "issued" | "past_due") || outstanding <= 0 {
-            answer.reason = Some("statementNotPayable");
-            return Ok(answer);
-        }
-        let captured = sources::capture(&mut tx, organization.id).await?;
-        let official = ledger::capture(&mut tx, &organization.tenant_id).await?;
-        if captured
-            .bytes
-            .checked_add(official.bytes)
-            .is_none_or(|total| total > types::BYTE_LIMIT)
-        {
-            return Err(WalletError::InvalidInput(
-                "statement source evidence byte limit exceeded".into(),
-            ));
-        }
-        let mut comparison = Comparison::new(TimeBasis::Booking);
-        let mut customer = Customer {
-            organization: organization.id,
-            sources: captured,
-            ledger: official,
-            scope: Scope {
-                start: Date::MIN,
-                end: Date::MAX,
-                basis: TimeBasis::Booking,
-            },
-            captured_at: as_of,
-            result: &mut comparison,
-        };
-        compare::check(&mut customer)?;
-        if !customer.result.coverage.complete || !customer.result.differences.is_empty() {
-            return Ok(answer);
-        }
-        // Old binaries could invoice usage already settled by the wallet. A
-        // balanced accrual proves the recorded AR, not that collecting it is
-        // justified. Require the source-linked correction before quoting debt.
-        if customer
-            .sources
-            .table("invoice_journals")
-            .iter()
-            .any(|(id, journal)| {
-                journal.text("state").ok().as_deref() == Some("posted")
-                    && customer
-                        .sources
-                        .get("plan_usage_corrections", *id)
-                        .is_none()
-                    && customer
-                        .sources
-                        .table("invoice_journal_lines")
-                        .values()
-                        .any(|line| {
-                            line.id("journal_id").ok() == Some(*id)
-                                && line.text("kind").ok().as_deref() == Some("usage_overage")
-                                && line.amount("amount_minor").is_ok_and(|amount| amount > 0)
-                        })
-            })
-        {
-            answer.reason = Some("historicalUsageReviewRequired");
-            return Ok(answer);
-        }
-        let mapping = map_documents(&customer.sources, &customer.ledger)?;
-        let Some(mapping) = mapping else {
-            answer.reason = Some("ambiguousDocumentAllocation");
-            return Ok(answer);
-        };
-        let slices = mapping.get(&statement).cloned().unwrap_or_default();
-        let total = slices
-            .iter()
-            .try_fold(0, |sum, slice| types::add(sum, slice.remaining_minor))?;
-        if total != outstanding {
-            answer.reason = Some("unmappedStatementDebt");
-            return Ok(answer);
-        }
-        // Stable sorted source captures and official hashes bind cross-document
-        // allocation as well as this statement; snapshot time is not a quote field.
-        let source_values:Vec<_>=customer.sources.tables.iter().map(|(table,rows)|
-            serde_json::json!({"table":table,"rows":rows.values().map(|row|&row.evidence).collect::<Vec<_>>()})).collect();
-        let hashes:Vec<_>=customer.ledger.entries.iter().map(|(id,entry)|
-            serde_json::json!({"entryId":id,"hash":entry.stored.as_ref().ok().map(|entry|entry.content_hash.to_hex())})).collect();
-        let bytes=serde_json::to_vec(&serde_json::json!({"statementId":statement,"sources":source_values,"entries":hashes,"slices":slices}))
-            .map_err(crate::error::invalid)?;
-        let mut hash = Sha256::new();
-        hash.update(b"oxsum/statement-debt-sources/v1\0");
-        hash.update(bytes);
-        answer.revision = Some(
-            hash.finalize()
-                .iter()
-                .map(|byte| format!("{byte:02x}"))
-                .collect(),
-        );
-        answer.verified = true;
-        answer.reason = None;
-        answer.slices = slices;
+        let answer =
+            inspect_in(&mut tx, organization.id, &organization.tenant_id, statement).await?;
         tx.commit().await?;
         Ok(answer)
     }
 }
 
-fn map_documents(
+/// The caller owns snapshot isolation and, for mutation, the subscription and
+/// plan locks. Capture never obtains a second connection or bootstraps a ledger.
+pub(crate) async fn inspect_in(
+    tx: &mut Transaction<'_, Postgres>,
+    organization: Uuid,
+    tenant: &str,
+    statement: Uuid,
+) -> Result<StatementDebtSources, WalletError> {
+    let header = sqlx::query("SELECT total_minor,paid_minor,state FROM oxsum.plan_statements WHERE statement_id=$1 AND organization_id=$2 AND state<>'open'")
+        .bind(statement).bind(organization).fetch_optional(&mut **tx).await?
+        .ok_or_else(||WalletError::NotFound("customer statement not found".into()))?;
+    let as_of = sqlx::query_scalar("SELECT now()")
+        .fetch_one(&mut **tx)
+        .await?;
+    let state: String = header.try_get("state")?;
+    let outstanding = types::sub(
+        header.try_get("total_minor")?,
+        header.try_get("paid_minor")?,
+    )?;
+    let mut answer = StatementDebtSources {
+        statement_id: statement,
+        organization_id: organization,
+        as_of,
+        outstanding_minor: outstanding.max(0),
+        verified: false,
+        reason: Some("sourceReviewRequired"),
+        revision: None,
+        slices: Vec::new(),
+    };
+    if !matches!(state.as_str(), "issued" | "past_due") || outstanding <= 0 {
+        answer.reason = Some("statementNotPayable");
+        return Ok(answer);
+    }
+    let captured = sources::capture(tx, organization).await?;
+    let official = ledger::capture(tx, tenant).await?;
+    if captured
+        .bytes
+        .checked_add(official.bytes)
+        .is_none_or(|total| total > types::BYTE_LIMIT)
+    {
+        return Err(WalletError::InvalidInput(
+            "statement source evidence byte limit exceeded".into(),
+        ));
+    }
+    let mut comparison = Comparison::new(TimeBasis::Booking);
+    let mut customer = Customer {
+        organization,
+        sources: captured,
+        ledger: official,
+        scope: Scope {
+            start: Date::MIN,
+            end: Date::MAX,
+            basis: TimeBasis::Booking,
+        },
+        captured_at: as_of,
+        result: &mut comparison,
+    };
+    compare::check(&mut customer)?;
+    if !customer.result.coverage.complete || !customer.result.differences.is_empty() {
+        return Ok(answer);
+    }
+    // Old binaries could invoice usage already settled by the wallet. A
+    // balanced accrual proves the recorded AR, not that collecting it is
+    // justified. Require the source-linked correction before quoting debt.
+    if customer
+        .sources
+        .table("invoice_journals")
+        .iter()
+        .any(|(id, journal)| {
+            journal.text("state").ok().as_deref() == Some("posted")
+                && customer
+                    .sources
+                    .get("plan_usage_corrections", *id)
+                    .is_none()
+                && customer
+                    .sources
+                    .table("invoice_journal_lines")
+                    .values()
+                    .any(|line| {
+                        line.id("journal_id").ok() == Some(*id)
+                            && line.text("kind").ok().as_deref() == Some("usage_overage")
+                            && line.amount("amount_minor").is_ok_and(|amount| amount > 0)
+                    })
+        })
+    {
+        answer.reason = Some("historicalUsageReviewRequired");
+        return Ok(answer);
+    }
+    let mapping = map_documents(&customer.sources, &customer.ledger)?;
+    let Some(mapping) = mapping else {
+        answer.reason = Some("ambiguousDocumentAllocation");
+        return Ok(answer);
+    };
+    let slices = mapping.get(&statement).cloned().unwrap_or_default();
+    let total = slices
+        .iter()
+        .try_fold(0, |sum, slice| types::add(sum, slice.remaining_minor))?;
+    if total != outstanding {
+        answer.reason = Some("unmappedStatementDebt");
+        return Ok(answer);
+    }
+    // Stable sorted source captures and official hashes bind cross-document
+    // allocation as well as this statement; snapshot time is not a quote field.
+    let source_values:Vec<_>=customer.sources.tables.iter().map(|(table,rows)|
+        serde_json::json!({"table":table,"rows":rows.values().map(|row|&row.evidence).collect::<Vec<_>>()})).collect();
+    let hashes:Vec<_>=customer.ledger.entries.iter().map(|(id,entry)|
+        serde_json::json!({"entryId":id,"hash":entry.stored.as_ref().ok().map(|entry|entry.content_hash.to_hex())})).collect();
+    let bytes=serde_json::to_vec(&serde_json::json!({"statementId":statement,"sources":source_values,"entries":hashes,"slices":slices}))
+        .map_err(crate::error::invalid)?;
+    let mut hash = Sha256::new();
+    hash.update(b"oxsum/statement-debt-sources/v1\0");
+    hash.update(bytes);
+    answer.revision = Some(
+        hash.finalize()
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect(),
+    );
+    answer.verified = true;
+    answer.reason = None;
+    answer.slices = slices;
+    Ok(answer)
+}
+
+pub(super) fn map_documents(
     sources: &Sources,
     ledger: &ledger::Ledger,
 ) -> Result<Option<BTreeMap<Uuid, Vec<StatementDebtSlice>>>, WalletError> {
@@ -211,7 +224,13 @@ fn map_documents(
             let amount = line.amount("amount_minor")?;
             match line.text("kind")?.as_str() {
                 "payment_applied" => {
-                    payment = types::sub(payment, amount)?;
+                    if line
+                        .optional_id("source_ref")?
+                        .and_then(|id| sources.get("statement_payment_effects", id))
+                        .is_none()
+                    {
+                        payment = types::sub(payment, amount)?;
+                    }
                 }
                 "dispute_chargeback" => {
                     let Some(dispute) = line.optional_id("source_ref")? else {
@@ -301,6 +320,31 @@ fn map_documents(
             part.remaining_minor = types::add(part.remaining_minor, original)?;
             part.statement_line_ids.extend(original_lines);
         }
+        for effect in sources
+            .table("statement_payment_effects")
+            .values()
+            .filter(|e| e.id("statement_id").ok() == Some(*id))
+        {
+            let amount = effect.amount("receivable_minor")?;
+            if amount == 0 {
+                continue;
+            }
+            let Some(journal) = effect.optional_id("journal_id")? else {
+                return Ok(None);
+            };
+            let Some(part) = parts.get_mut(&journal) else {
+                return Ok(None);
+            };
+            part.remaining_minor = if effect.text("kind")? == "payment" {
+                types::sub(part.remaining_minor, amount)?
+            } else {
+                types::add(part.remaining_minor, amount)?
+            };
+        }
+        if parts.values().any(|p| p.remaining_minor < 0) {
+            return Ok(None);
+        }
+        parts.retain(|_, p| p.remaining_minor > 0);
         let total = parts
             .values()
             .try_fold(0, |sum, part| types::add(sum, part.remaining_minor))?;
@@ -334,4 +378,43 @@ fn map_documents(
         }
     }
     Ok(Some(result))
+}
+
+/// Verify the complete customer history before widening the old one-document void.
+pub(crate) async fn verify_void_in(
+    tx: &mut Transaction<'_, Postgres>,
+    organization: Uuid,
+    tenant: &str,
+) -> Result<(), WalletError> {
+    let captured = sources::capture(tx, organization).await?;
+    let official = ledger::capture(tx, tenant).await?;
+    if captured
+        .bytes
+        .checked_add(official.bytes)
+        .is_none_or(|n| n > types::BYTE_LIMIT)
+    {
+        return Err(crate::error::invalid(
+            "void source evidence byte limit exceeded",
+        ));
+    }
+    let mut comparison = Comparison::new(TimeBasis::Booking);
+    let mut customer = Customer {
+        organization,
+        sources: captured,
+        ledger: official,
+        scope: Scope {
+            start: Date::MIN,
+            end: Date::MAX,
+            basis: TimeBasis::Booking,
+        },
+        captured_at: OffsetDateTime::now_utc(),
+        result: &mut comparison,
+    };
+    compare::check(&mut customer)?;
+    if !customer.result.coverage.complete || !customer.result.differences.is_empty() {
+        return Err(WalletError::Conflict(
+            "journal void requires exact financial source review".into(),
+        ));
+    }
+    Ok(())
 }

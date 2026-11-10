@@ -130,3 +130,21 @@ pub(crate) async fn release_review(
         )
         .await?)
 }
+
+/// Read-only exact partial/full statement quote, personal customer scope.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(crate) struct PaymentQuoteRequest {
+    amount_minor: Option<i64>,
+}
+pub(crate) async fn payment_quote(
+    State(state): State<AppState>,
+    Extension(principal): Extension<Principal>,
+    Path(statement): Path<Uuid>,
+    ApiQuery(query): ApiQuery<PaymentQuoteRequest>,
+) -> ApiResult<oxsum_core::StatementPaymentQuote> {
+    ok(state
+        .db
+        .statement_payment_quote(&principal, statement, query.amount_minor)
+        .await?)
+}

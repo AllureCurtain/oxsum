@@ -1646,7 +1646,8 @@
         "walletTopup": "钱包充值",
         "bundle": "组合包",
         "planPeriod": "套餐周期",
-        "invoiceRepayment": "发票还款"
+        "invoiceRepayment": "发票还款",
+        "statementRepayment": "偿还账单"
       }
     },
     "refunds": {
@@ -2265,5 +2266,43 @@
     "totalCorrection": "追加的现金纠正金额",
     "entry": "纠正记账凭证",
     "retained": "此纠正撤销原错误现金收入并记录实际损失。原信用额度变化、处理结论和债务单据保留供财务复核；这不是第二次支付机构拒付。"
+  },
+  "statementPayment": {
+    "title": "偿还账单",
+    "help": "偿还所选账单的未付欠款，不增加钱包余额，也不续订套餐。",
+    "outstanding": "未付欠款",
+    "reserved": "待完成支付",
+    "available": "可支付金额",
+    "resume": "继续已有支付",
+    "none": "暂无未被支付订单占用的欠款。请继续上方待完成支付。",
+    "notPayable": "这张账单没有可支付的已出账欠款。",
+    "reviewRequired": "欠款来源或收款配置需要复核，请联系运营方。当前显示的欠款仍然保留。",
+    "partial": "部分付款金额（积分；留空支付全部可用欠款）",
+    "invalid": "请输入正数，最多六位小数。",
+    "quote": "更新金额",
+    "refresh": "刷新支付状态",
+    "review": "核对付款",
+    "retry": "重试原支付",
+    "confirm": "核对付款：{{price}}",
+    "confirmHelp": "法币金额向上取整到最小货币单位，所选欠款金额保持精确。只有确认到账才会冲销账单。",
+    "exact": "精确还款金额",
+    "retained": "重试保留原收款金额：{{amount}} 法币最小单位 {{currency}}。",
+    "retryHelp": "请保持原条件重试，或继续上方已有支付。",
+    "keepReviewing": "继续核对",
+    "continue": "前往支付",
+    "selectStatement": "选择下方账单，核对并偿还该账单的欠款。",
+    "statementLink": "查看已还款账单",
+    "paid": "已偿还账单欠款：{{amount}} 积分。",
+    "payable": "已收到款项：{{amount}} 积分，待核对退款。原欠款分配未能执行。",
+    "journalLink": "查看来源凭证",
+    "allocations": "原始欠款分配",
+    "source": "付款或退回记录",
+    "cash": "现金",
+    "receivable": "欠款分配",
+    "payableLabel": "应退金额",
+    "suspense": "待核对金额",
+    "entry": "账本条目与哈希",
+    "original": "原付款分配",
+    "awaiting": "尚未应用付款。"
   }
 }

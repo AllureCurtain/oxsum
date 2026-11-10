@@ -224,6 +224,11 @@ pub(super) fn compare(customer: &mut Customer<'_>) -> Result<(), WalletError> {
             );
             ids.insert(entry);
         }
+        for effect in customer.sources.table("statement_payment_effects").values() {
+            if effect.optional_id("journal_id")? == Some(journal) {
+                ids.insert(effect.id("entry_id")?);
+            }
+        }
         let mut line_total = 0;
         let mut charged = false;
         for line in customer.sources.table("invoice_journal_lines").values() {

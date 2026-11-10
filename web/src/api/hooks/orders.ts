@@ -71,6 +71,7 @@ export type CreateOrderBody = Record<string, unknown> & {
   displayAmountMinor: number;
   displayCurrency: string;
   promoMinor?: number;
+  statementAmountMinor?: number;
 };
 
 export function useCreateOrder() {

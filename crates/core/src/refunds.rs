@@ -336,7 +336,7 @@ async fn committed_minor_in(
 ) -> Result<i64, WalletError> {
     let committed: i64 = sqlx::query_scalar(
         "SELECT COALESCE(SUM(amount_minor),0)::bigint FROM oxsum.refunds \
-         WHERE order_id=$1 AND (state IN ('requested','provider_pending','succeeded') OR EXISTS(SELECT 1 FROM oxsum.plan_refund_effects e WHERE e.refund_id=refunds.refund_id) OR EXISTS(SELECT 1 FROM oxsum.nonplan_refund_effects e WHERE e.refund_id=refunds.refund_id))",
+         WHERE order_id=$1 AND (state IN ('requested','provider_pending','succeeded') OR EXISTS(SELECT 1 FROM oxsum.plan_refund_effects e WHERE e.refund_id=refunds.refund_id) OR EXISTS(SELECT 1 FROM oxsum.nonplan_refund_effects e WHERE e.refund_id=refunds.refund_id) OR EXISTS(SELECT 1 FROM oxsum.statement_payment_effects e WHERE e.kind='refund' AND e.source_ref=refunds.refund_id))",
     )
     .bind(order_id)
     .fetch_one(&mut **tx)
@@ -352,7 +352,7 @@ async fn committed_display_minor_in(
 ) -> Result<i64, WalletError> {
     let committed: i64 = sqlx::query_scalar(
         "SELECT COALESCE(SUM(display_amount_minor),0)::bigint FROM oxsum.refunds \
-         WHERE order_id=$1 AND (state IN ('requested','provider_pending','succeeded') OR EXISTS(SELECT 1 FROM oxsum.plan_refund_effects e WHERE e.refund_id=refunds.refund_id) OR EXISTS(SELECT 1 FROM oxsum.nonplan_refund_effects e WHERE e.refund_id=refunds.refund_id))",
+         WHERE order_id=$1 AND (state IN ('requested','provider_pending','succeeded') OR EXISTS(SELECT 1 FROM oxsum.plan_refund_effects e WHERE e.refund_id=refunds.refund_id) OR EXISTS(SELECT 1 FROM oxsum.nonplan_refund_effects e WHERE e.refund_id=refunds.refund_id) OR EXISTS(SELECT 1 FROM oxsum.statement_payment_effects e WHERE e.kind='refund' AND e.source_ref=refunds.refund_id))",
     )
     .bind(order_id)
     .fetch_one(&mut **tx)
@@ -487,9 +487,11 @@ impl Db {
                 order.status
             )));
         }
-        if order.purpose == "bundle" && order.status != "fulfilled" {
+        if matches!(order.purpose.as_str(), "bundle" | "statement_repayment")
+            && order.status != "fulfilled"
+        {
             return Err(WalletError::Conflict(
-                "bundle fulfillment must complete before a refund can be requested".into(),
+                "payment fulfillment must complete before a refund can be requested".into(),
             ));
         }
         let committed = committed_minor_in(&mut tx, order_id).await?;
@@ -561,7 +563,7 @@ impl Db {
         let total: i64 = row.try_get("amount_minor")?;
         let committed: i64 = sqlx::query_scalar(
             "SELECT COALESCE(SUM(amount_minor),0)::bigint FROM oxsum.refunds \
-             WHERE order_id=$1 AND (state IN ('requested','provider_pending','succeeded') OR EXISTS(SELECT 1 FROM oxsum.plan_refund_effects e WHERE e.refund_id=refunds.refund_id) OR EXISTS(SELECT 1 FROM oxsum.nonplan_refund_effects e WHERE e.refund_id=refunds.refund_id))",
+             WHERE order_id=$1 AND (state IN ('requested','provider_pending','succeeded') OR EXISTS(SELECT 1 FROM oxsum.plan_refund_effects e WHERE e.refund_id=refunds.refund_id) OR EXISTS(SELECT 1 FROM oxsum.nonplan_refund_effects e WHERE e.refund_id=refunds.refund_id) OR EXISTS(SELECT 1 FROM oxsum.statement_payment_effects e WHERE e.kind='refund' AND e.source_ref=refunds.refund_id))",
         )
         .bind(order_id)
         .fetch_one(self.pool())
@@ -694,9 +696,11 @@ impl Db {
                 let order = refund_order_in(&mut tx, existing.order_id)
                     .await?
                     .ok_or_else(|| invalid("the refund's order is gone"))?;
-                if order.purpose == "bundle" && order.status != "fulfilled" {
+                if matches!(order.purpose.as_str(), "bundle" | "statement_repayment")
+                    && order.status != "fulfilled"
+                {
                     return Err(WalletError::Conflict(
-                        "bundle fulfillment must complete before refund approval".into(),
+                        "payment fulfillment must complete before refund approval".into(),
                     ));
                 }
                 let committed =
@@ -956,6 +960,10 @@ impl Db {
                 .bind(refund.order_id)
                 .fetch_optional(self.pool())
                 .await?;
+        if purpose.as_deref() == Some("statement_repayment") {
+            return crate::statement_payments::refund(self, wallet, refund.refund_id, receipt, on)
+                .await;
+        }
         if purpose.as_deref() != Some("plan_period") {
             return self
                 .settle_nonplan_refund(wallet, refund.refund_id, receipt.id, on)
@@ -1055,7 +1063,7 @@ impl Db {
             )).bind(order_id).bind(provider_refund).fetch_all(&mut **tx).await?
         } else {
             let retained = sqlx::query(&format!(
-                "{REFUND_SELECT} WHERE r.order_id=$1 AND EXISTS(SELECT 1 FROM oxsum.nonplan_refund_effects e WHERE e.refund_id=r.refund_id AND e.event_receipt_id=$2) FOR UPDATE OF r"
+                "{REFUND_SELECT} WHERE r.order_id=$1 AND (EXISTS(SELECT 1 FROM oxsum.nonplan_refund_effects e WHERE e.refund_id=r.refund_id AND e.event_receipt_id=$2) OR EXISTS(SELECT 1 FROM oxsum.statement_payment_effects e WHERE e.source_ref=r.refund_id AND e.kind='refund' AND e.event_receipt_id=$2)) FOR UPDATE OF r"
             )).bind(order_id).bind(receipt.id).fetch_all(&mut **tx).await?;
             if retained.is_empty() {
                 sqlx::query(&format!(
