@@ -85,6 +85,8 @@ Updated: 2026-11-11
 
 - [ ] [#1028](https://github.com/AllureCurtain/oxsum/issues/1028) — Exact partial plan dispute intake, once-only case tracking and original-event reconciliation implemented. Baseline reproduced; 73 focused library, 100 related core, nine final affected, one historical refusal and 18 HTTP checks passed, with strict core Clippy, contract/build and pinned formatting. Review/integration pending. [Evidence](docs/roadmap/operator-launch/evidence/plan-dispute-amounts/README.md).
 
+- [ ] [#1023](https://github.com/AllureCurtain/oxsum/issues/1023) — Owner rotation/repoint and pinned SSE, staff denial, exact 70-minor conservation and six offline proofs/36 rejection checks passed on local fixtures. HTTP status mismatch found as #1024; browser/listeners closed. Review/integration and candidate remain. [Evidence](docs/roadmap/operator-launch/evidence/provider-rotation-browser/README.md).
+
 - [ ] [#969](https://github.com/AllureCurtain/oxsum/issues/969) — Actual browser bundle purchase/return and paid-plan activation, fee/payment statement, early-renewal refusal and cancellation service passed with local signed fixtures. Stale plan consumption display is #973; statement correction/dispute, embedded and candidate/external gates remain. [Evidence](docs/roadmap/operator-launch/evidence/commercial-browser/README.md).
 
 - [ ] [#973](https://github.com/AllureCurtain/oxsum/issues/973) — Read sold-plan consumption from its exact quota window; real browser baseline 0 now reads 80/100 minor. All 17 affected core/HTTP checks, strict core/server Clippy, contract/codegen/build and pinned formatting passed; review/integration pending. [Evidence](docs/roadmap/operator-launch/evidence/plan-consumption-read/README.md).
