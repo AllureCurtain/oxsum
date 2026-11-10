@@ -1,0 +1,9 @@
+{
+  "README.md": "583e3cb04248b9de63239b673a95ae62843b3c71d21c217edb5e035ce0c11090",
+  "bundle.json": "0010ea5b16993b23fa273872a3ea46363aca0a8bdd30495f90c2798f4fa7a74e",
+  "expected-hash.txt": "ff717e151b1f6882cddce2a26efe74da7b9a4580a1aff99a7696c7f40ddbbddf",
+  "first-receipt-valid.png": "78495e1f758d481f27bdfa9b76eaae08656c02b62c76837e2713f42fa5394e18",
+  "readiness-complete.png": "d5bb2fb6d0840cc4a00e489185f5220b32200f682c01fd87501f46a49a6edab4",
+  "readiness-unfunded.png": "25008efacaaa947e097850923d4269d1fa518bb07f569431fc26e7fce6190bcd",
+  "runtime.json": "23e6813767a840f5025337e05381b9b92ce872b9fb8b082db7b91af081d2b0b5"
+}

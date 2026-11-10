@@ -6,6 +6,11 @@ Read this file on every resume, then reconcile actual main, worktrees, issues/PR
 
 ## Current state
 
+- #960 records integrated `ac7bb191` customer browser readiness, explicit free
+  terms, successful local SSE call and immediate offline WASM proof with
+  wrong-hash rejection. [Evidence](evidence/first-call-browser/README.md). Paid
+  collection/commercial/team/candidate acceptance remains distinct.
+
 - #901 personal customer model/sale/sample funding readiness is implemented on
   `feat/customer-serving-readiness`, locally integrating pending dependency
   PRs #910/#911/#913. Focused core/HTTP, strict changed-crate Clippy and frontend
