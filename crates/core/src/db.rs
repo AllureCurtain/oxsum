@@ -482,6 +482,10 @@ const MIGRATIONS: &[(&str, &str)] = &[
         "0122_statement_repayment",
         include_str!("../migrations/0122_statement_repayment.sql"),
     ),
+    (
+        "0123_application_account_consent",
+        include_str!("../migrations/0123_application_account_consent.sql"),
+    ),
 ];
 
 /// Advisory-lock key serialising the migration runner across processes.

@@ -6122,6 +6122,122 @@ paths:
         "401": { $ref: "#/components/responses/Error" }
         "403": { $ref: "#/components/responses/Error" }
         "409": { $ref: "#/components/responses/Error" }
+  /api/v1/integration/customers/{organizationId}/link-invitations:
+    post:
+      summary: Offer verified personal ownership of this application's account
+      description: Application-only customerLinkWrite. Only an own-namespace account with no memberships can receive a seven-day invitation. A first committed creation returns the secret once; exact replay returns metadata only. An invitation never grants membership until the intended verified recipient explicitly accepts. The app retains its scoped access after linking.
+      security: [{ integrationCredential: [] }]
+      parameters:
+        - { name: organizationId, in: path, required: true, schema: { type: string, format: uuid } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ApplicationLinkRequest" }
+      responses:
+        "200":
+          description: Original invitation metadata and one-time secret only at creation
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data: { $ref: "#/components/schemas/ApplicationLinkInvitation" }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "409": { $ref: "#/components/responses/Error" }
+  /api/v1/integration/customers/{organizationId}/link-invitations/{invitationId}/revoke:
+    post:
+      summary: Revoke an unaccepted application link invitation
+      security: [{ integrationCredential: [] }]
+      parameters:
+        - { name: organizationId, in: path, required: true, schema: { type: string, format: uuid } }
+        - { name: invitationId, in: path, required: true, schema: { type: string, format: uuid } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ApplicationCustomerArchiveRequest" }
+      responses:
+        "200":
+          description: Retained revoked invitation metadata
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data: { $ref: "#/components/schemas/ApplicationLinkInvitation" }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "409": { $ref: "#/components/responses/Error" }
+  /api/v1/application-links/preview:
+    post:
+      summary: Review an application account invitation as its verified recipient
+      description: Personal authenticated session in either context with current second factor and matching verified email. Original issuer must still have live customerLinkWrite authority. Acceptance adds the first customer owner exactly once, never business staff or a new ledger. Terminal replay returns history without regranting authority. No email is sent.
+      security: [{ sessionCookie: [] }]
+      x-consumption-key-access: denied
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [token]
+              properties:
+                token: { type: string, minLength: 72, maxLength: 72 }
+      responses:
+        "200":
+          description: Exact application account and consent state
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data: { $ref: "#/components/schemas/ApplicationLinkInvitation" }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "409": { $ref: "#/components/responses/Error" }
+  /api/v1/application-links/accept:
+    post:
+      summary: Accept an application account invitation as its verified recipient
+      description: Personal authenticated session in either context with current second factor and matching verified email. Original issuer must still have live customerLinkWrite authority. Acceptance adds the first customer owner exactly once, never business staff or a new ledger. Terminal replay returns history without regranting authority. No email is sent.
+      security: [{ sessionCookie: [] }]
+      x-consumption-key-access: denied
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [token]
+              properties:
+                token: { type: string, minLength: 72, maxLength: 72 }
+      responses:
+        "200":
+          description: Exact application account and consent state
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data: { $ref: "#/components/schemas/ApplicationLinkInvitation" }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "409": { $ref: "#/components/responses/Error" }
   /api/v1/integration/customers:
     get:
       summary: Retrieve this application's customer by external identity
@@ -16488,6 +16604,28 @@ components:
       properties:
         applications: { type: array, items: { $ref: "#/components/schemas/IntegrationApplication" } }
         nextCursor: { type: [string, "null"], format: uuid }
+    ApplicationLinkRequest:
+      type: object
+      additionalProperties: false
+      required: [idempotencyKey, intendedEmail, reason]
+      properties:
+        idempotencyKey: { type: string, minLength: 1, maxLength: 200 }
+        intendedEmail: { type: string, format: email }
+        reason: { type: string, minLength: 1, maxLength: 500 }
+    ApplicationLinkInvitation:
+      type: object
+      required: [invitationId, applicationId, organizationId, applicationName, customerName, intendedEmail, expiresAt, acceptedAt, revokedAt, token]
+      properties:
+        invitationId: { type: string, format: uuid }
+        applicationId: { type: string, format: uuid }
+        organizationId: { type: string, format: uuid }
+        applicationName: { type: string }
+        customerName: { type: string }
+        intendedEmail: { type: string, format: email }
+        expiresAt: { type: string, format: date-time }
+        acceptedAt: { type: [string, "null"], format: date-time }
+        revokedAt: { type: [string, "null"], format: date-time }
+        token: { type: [string, "null"], description: First creation only; deliver in the application consent page fragment and never a query string }
     ApplicationCustomer:
       type: object
       required: [applicationId, externalId, customer]
@@ -16596,7 +16734,7 @@ components:
         nextCursor: { type: [string, "null"] }
     IntegrationScope:
       type: string
-      enum: [customersRead, meteringWrite, customersProvision, billingRead, customersLifecycleWrite, customerKeysWrite, entitlementsRead]
+      enum: [customersRead, meteringWrite, customersProvision, billingRead, customersLifecycleWrite, customerKeysWrite, entitlementsRead, customerLinkWrite]
     ProvisionCustomerRequest:
       type: object
       additionalProperties: false
@@ -16618,7 +16756,7 @@ components:
         idempotencyKey: { type: string, minLength: 1, maxLength: 200 }
         name: { type: [string, "null"], maxLength: 80 }
         applicationId: { type: [string, "null"], format: uuid, description: "Owner-selected stable application; customerIds must be empty. Only that application’s provisioned accounts are accessible. Omit for existing explicit grants." }
-        scopes: { type: array, minItems: 1, maxItems: 6, uniqueItems: true, items: { $ref: "#/components/schemas/IntegrationScope" } }
+        scopes: { type: array, minItems: 1, maxItems: 8, uniqueItems: true, items: { $ref: "#/components/schemas/IntegrationScope" } }
         customerIds: { type: array, minItems: 0, maxItems: 1000, uniqueItems: true, items: { type: string, format: uuid }, description: "Existing customers the credential may read or meter. Must be empty for an application grant. Legacy grants may be empty only for customersProvision alone." }
         expiresAt: { type: string, format: date-time }
         reason: { type: string, minLength: 1, maxLength: 500 }

@@ -494,6 +494,8 @@ async fn migrating_twice_and_concurrently_is_safe() {
             "api_keys".to_owned(),
             "application_customer_keys".to_owned(),
             "application_customers".to_owned(),
+            "application_link_invitations".to_owned(),
+            "application_link_resolutions".to_owned(),
             "budget_threshold_fires".to_owned(),
             "bundle_offer_mutations".to_owned(),
             "bundle_offers".to_owned(),

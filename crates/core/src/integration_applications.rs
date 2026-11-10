@@ -3,6 +3,8 @@
 mod applications;
 mod customers;
 mod keys;
+mod link_types;
+mod links;
 mod read_types;
 mod reads;
 
@@ -11,6 +13,7 @@ pub use applications::{
     IntegrationApplication, IntegrationApplicationPage, IntegrationApplicationRequest,
 };
 pub use customers::{ApplicationCustomer, ApplicationCustomerArchiveRequest};
+pub use link_types::{ApplicationLinkInvitation, ApplicationLinkRequest};
 
 pub use keys::{
     ApplicationCustomerKeyPage, ApplicationCustomerKeyRequest, ApplicationCustomerKeyResult,

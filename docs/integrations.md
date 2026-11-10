@@ -317,3 +317,22 @@ These reads never reserve, roll quota, refresh dunning, publish a sale digest,
 write a bill or contact a provider. They show current recorded/configured facts;
 actual request admission remains authoritative. Personal sessions and consumption
 keys cannot use these application management routes.
+
+### Verified ownership handoff (#920)
+
+Add `customerLinkWrite` only to the application credential that needs to offer
+human ownership. Create a keyed invitation for a provisioned unclaimed customer,
+then deliver `/app/application-link#<token>` inside your authenticated application.
+Retain the invitation ID and exact request before retries; never persist plaintext
+in logs or analytics. The API sends no mail. A retry returns metadata only, so
+revoke the retained invitation and intentionally issue a new key when first
+plaintext delivery is lost. A live rotated credential in the same namespace can
+revoke, but its existence cannot revive the old creator's revoked authority.
+
+The person authenticates and verifies their email independently in oxsum before
+acceptance. Your application cannot accept on their behalf. Linking keeps your
+existing explicitly granted account and own-key permissions; disclose that in
+your flow as the oxsum page does. It grants no access to the person's other
+accounts and does not transfer any ledger or cash. Later member removal is not
+repaired by replaying consent. Scoped checkout/evidence, signed notifications and
+the complete separate-store application remain later N21 units.

@@ -1,3 +1,4 @@
+import { ApplicationLink } from "./pages/auth/ApplicationLink";
 import { Navigate, Route, Routes } from "react-router-dom";
 import { AppShell } from "./components/AppShell";
 import { Admin } from "./pages/Admin";
@@ -37,6 +38,7 @@ export function App() {
     <Routes>
       <Route path="/login" element={<Login />} />
       <Route path="/register" element={<Register />} />
+      <Route path="/application-link" element={<ApplicationLink />} />
       <Route path="/invite" element={<RedeemInvitation />} />
       <Route path="/setup" element={<Setup />} />
       <Route path="/forgot-password" element={<ForgotPassword />} />

@@ -13,7 +13,7 @@ export function Login() {
   const navigate = useNavigate();
   const [params] = useSearchParams();
   const offeredReturn = params.get("returnTo") ?? "";
-  const returnTo = offeredReturn === "/setup" || offeredReturn.startsWith("/invite?token=") ? offeredReturn : "/";
+  const returnTo = offeredReturn === "/application-link" || offeredReturn === "/setup" || offeredReturn.startsWith("/invite?token=") ? offeredReturn : "/";
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   // When the first leg answers `requiresTotp`, the page swaps the password

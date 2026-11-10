@@ -166,3 +166,54 @@ pub(crate) async fn models(
         )
         .await?)
 }
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct LinkToken {
+    token: String,
+}
+
+pub(crate) async fn create_link(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(id): Path<Uuid>,
+    ApiJson(request): ApiJson<oxsum_core::ApplicationLinkRequest>,
+) -> ApiResult<oxsum_core::ApplicationLinkInvitation> {
+    let service = business::integration(&state, &headers).await?;
+    ok(state
+        .db
+        .create_application_link(&service, id, &request)
+        .await?)
+}
+pub(crate) async fn revoke_link(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path((org, id)): Path<(Uuid, Uuid)>,
+    ApiJson(request): ApiJson<ApplicationCustomerArchiveRequest>,
+) -> ApiResult<oxsum_core::ApplicationLinkInvitation> {
+    let service = business::integration(&state, &headers).await?;
+    ok(state
+        .db
+        .revoke_application_link(&service, org, id, &request)
+        .await?)
+}
+pub(crate) async fn preview_link(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    ApiJson(request): ApiJson<LinkToken>,
+) -> ApiResult<oxsum_core::ApplicationLinkInvitation> {
+    ok(state
+        .db
+        .preview_application_link(&business::personal_token(&headers)?, &request.token)
+        .await?)
+}
+pub(crate) async fn accept_link(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    ApiJson(request): ApiJson<LinkToken>,
+) -> ApiResult<oxsum_core::ApplicationLinkInvitation> {
+    ok(state
+        .db
+        .accept_application_link(&business::personal_token(&headers)?, &request.token)
+        .await?)
+}
