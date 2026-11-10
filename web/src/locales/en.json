@@ -2430,6 +2430,7 @@
     "saved": "Credit decision confirmed. Current terms are shown above.",
     "uncertain": "The server outcome could not be confirmed. Retry this same decision to recover its result."
   },
+
   "monthlyStatements": {
     "title": "Monthly wallet-credit statements",
     "description": "Monthly usage and borrowing statements, separate from sold-plan statements. Open a document to inspect its original itemization and issue terms.",
@@ -2480,5 +2481,7 @@
     "issuedSuccess": "Monthly statement issued.",
     "generatedSuccess": "Monthly draft is ready for review.",
     "emptyMonth": "No recorded usage for that month; no statement was created."
+
+    "channel": "Channel"
   }
 }

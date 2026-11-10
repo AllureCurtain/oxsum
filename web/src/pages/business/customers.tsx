@@ -308,6 +308,8 @@ function CustomerDetail({ customer, onBack }: { customer: BusinessCustomer; onBa
       <CustomerPlanCard customer={c} />
       {canReports ? <CustomerMonthlyStatements key={c.organizationId} customer={c.organizationId} active={c.state === "active"} /> : null}
 
+      {canReports ? <CustomerMonthlyStatements key={c.organizationId} customer={c.organizationId} /> : null}
+
       {canReports ? <>
       {/* statements */}
       <Card title={t("biz.customers.statements")}>

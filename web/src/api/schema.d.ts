@@ -9305,6 +9305,7 @@ export interface paths {
         patch: operations["updateBusinessCustomer"];
         trace?: never;
     };
+<<<<<<< HEAD
     "/api/v1/business/customers/{organizationId}/credit-terms": {
         parameters: {
             query?: never;
@@ -9329,6 +9330,8 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+=======
+>>>>>>> 09c27e1 (feat: show monthly statement history in the Business portal)
     "/api/v1/business/customers/{organizationId}/monthly-statements": {
         parameters: {
             query?: never;
@@ -9349,6 +9352,7 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+<<<<<<< HEAD
     "/api/v1/business/customers/{organizationId}/monthly-statements/actions": {
         parameters: {
             query?: never;
@@ -9369,6 +9373,8 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+=======
+>>>>>>> 09c27e1 (feat: show monthly statement history in the Business portal)
     "/api/v1/business/customers/{organizationId}/monthly-statements/{statementId}": {
         parameters: {
             query?: never;
@@ -21203,6 +21209,7 @@ export interface components {
             /** Format: uuid */
             nextCursor: string | null;
         };
+<<<<<<< HEAD
         BusinessMonthlyStatementAction: {
             /** @enum {string} */
             action: "generate";
@@ -21231,6 +21238,10 @@ export interface components {
             statement: components["schemas"]["Statement"];
             /** @description Draft-only review digest binding original id, customer, period, shown usage figures, itemization, terms and current UTC review day. Not independent source attestation. Finalization rejects changed reviewed figures atomically. */
             reviewDigest: string | null;
+=======
+        BusinessMonthlyStatementDetail: {
+            statement: components["schemas"]["Statement"];
+>>>>>>> 09c27e1 (feat: show monthly statement history in the Business portal)
             lines: components["schemas"]["StatementLine"][];
         };
         StatementDetail: {
@@ -24629,6 +24640,7 @@ export interface operations {
             409: components["responses"]["Error"];
         };
     };
+<<<<<<< HEAD
     getBusinessCustomerCreditTerms: {
         parameters: {
             query?: never;
@@ -24690,6 +24702,8 @@ export interface operations {
             409: components["responses"]["Error"];
         };
     };
+=======
+>>>>>>> 09c27e1 (feat: show monthly statement history in the Business portal)
     listBusinessMonthlyStatements: {
         parameters: {
             query?: {
@@ -24723,6 +24737,7 @@ export interface operations {
             404: components["responses"]["Error"];
         };
     };
+<<<<<<< HEAD
     mutateBusinessMonthlyStatement: {
         parameters: {
             query?: never;
@@ -24756,6 +24771,8 @@ export interface operations {
             409: components["responses"]["Error"];
         };
     };
+=======
+>>>>>>> 09c27e1 (feat: show monthly statement history in the Business portal)
     getBusinessMonthlyStatement: {
         parameters: {
             query?: never;

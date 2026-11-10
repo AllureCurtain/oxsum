@@ -99,6 +99,7 @@ test("monthly credit terms require personal Business authority", () => {
   }
 });
 
+
 test("monthly statement inspection only advertises personal staff authority", () => {
   for (const suffix of ["", "/{statementId}"]) {
     const operation = api.paths[`/api/v1/business/customers/{organizationId}/monthly-statements${suffix}`].get;
@@ -122,3 +123,4 @@ test("monthly issuance is personal-only and requires reviewed exact intent", () 
   assert.ok(schema.oneOf[1].required.includes("reviewDigest"));
   assert.ok(api.components.schemas.BusinessMonthlyStatementDetail.required.includes("reviewDigest"));
 });
+
