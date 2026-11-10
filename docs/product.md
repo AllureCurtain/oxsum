@@ -876,3 +876,14 @@ work; already-claimed sends may finish. Secret rotation uses a replacement.
 Credential rotation/revocation is separate from owner-authorized endpoint delivery.
 A new endpoint has no historical replay guarantee; initial reads and time-based
 state rechecks remain necessary. Local fixtures do not certify public delivery.
+
+### Standalone application adoption example
+
+The bundled external example owns a separate SQLite application store/process and
+uses the owner's existing scoped grants for signup, key lifecycle, checkout,
+current statement state and evidence. The customer UI in that example is a local
+command interface plus a private loopback checkout page, with a separate signed
+notification receiver. It demonstrates exact operation recovery and separately
+retained trust; it is not a public multiuser authentication server. Genuine PSP
+certification, browser acceptance and deployment of an exact candidate remain
+separate from its isolated local acceptance fixture.

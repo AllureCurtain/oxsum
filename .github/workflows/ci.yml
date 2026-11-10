@@ -152,6 +152,10 @@ jobs:
           python3 -m venv /tmp/oxsum-example-test-venv
           /tmp/oxsum-example-test-venv/bin/pip install -r scripts/verify-examples-requirements.txt
           /tmp/oxsum-example-test-venv/bin/python -m unittest discover -s scripts -p test_verify_examples.py
+      - name: Test external application durability and notification intake
+        run: |
+          python3 -m unittest discover -s examples/embedded-application -p 'test_*.py'
+          python3 -m unittest discover -s examples/application-notifications -p 'test_*.py'
 
   clippy:
     name: clippy
