@@ -193,7 +193,9 @@ pub use financial_facts::{
     ReconciliationException, ReconciliationRepair, ReconciliationReport, ReconciliationRun,
     TimeBasis,
 };
-pub use financial_reconciliation::{ReconciliationCoverage, ReconciliationSnapshot};
+pub use financial_reconciliation::{
+    ReconciliationCoverage, ReconciliationSnapshot, StatementDebtSlice, StatementDebtSources,
+};
 pub use groups::{Group, GroupChannel};
 pub use guardrail::{
     Guardrail, GuardrailBinding, GuardrailPolicy, GuardrailSet, KeywordConfig, KeywordPattern,

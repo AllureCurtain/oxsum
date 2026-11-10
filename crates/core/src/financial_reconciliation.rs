@@ -1,6 +1,7 @@
 //! Independent financial reconciliation from a single captured database snapshot.
 
 mod compare;
+mod debt_sources;
 mod ledger;
 mod persistence;
 mod sources;
@@ -9,3 +10,5 @@ mod tests;
 mod types;
 
 pub use types::{ReconciliationCoverage, ReconciliationSnapshot};
+
+pub use debt_sources::{StatementDebtSlice, StatementDebtSources};

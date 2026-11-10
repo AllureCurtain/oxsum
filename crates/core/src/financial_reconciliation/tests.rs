@@ -36,6 +36,14 @@ async fn world(days: i64, legacy: bool) -> Option<World> {
     world_with_fee(days, legacy, FEE).await
 }
 async fn world_with_fee(days: i64, legacy: bool, fee: i64) -> Option<World> {
+    world_with_history(days, legacy, fee, None).await
+}
+async fn world_with_history(
+    days: i64,
+    legacy: bool,
+    fee: i64,
+    historical_overage: Option<i64>,
+) -> Option<World> {
     let url = oxsum_testkit::suite_db_url("independent_reconciliation")?;
     let db = Db::connect(&url, 16).await.unwrap();
     db.migrate().await.unwrap();
@@ -121,6 +129,9 @@ async fn world_with_fee(days: i64, legacy: bool, fee: i64) -> Option<World> {
         .await
         .unwrap();
     if legacy {
+        if let Some(overage) = historical_overage {
+            payment::legacy_close(&db, org, plan, overage).await;
+        }
         db.rollover_due_subscriptions().await.unwrap();
     }
     let period = db.plan_periods(plan).await.unwrap().remove(0);
@@ -985,6 +996,30 @@ async fn mixed_policy_chargebacks_keep_each_original_customer_debt() {
         let result = capture(&w, TimeBasis::Booking).await;
         clean(&result);
         assert_eq!(result.actual.receivable_minor, 2 * FEE - 1_000_000);
+        let statement = unpaid_statement(&w).await;
+        let sources =
+            w.db.statement_debt_sources(&debt_principal(&w).await, statement)
+                .await
+                .unwrap();
+        assert!(sources.verified, "{sources:?}");
+        assert_eq!(sources.slices.len(), 2);
+        assert_eq!(sources.outstanding_minor, 2 * FEE - 1_000_000);
+        assert_eq!(
+            sources
+                .slices
+                .iter()
+                .map(|slice| slice.remaining_minor)
+                .sum::<i64>(),
+            sources.outstanding_minor
+        );
+        assert!(
+            sources
+                .slices
+                .iter()
+                .any(|slice| slice.journal_id == w.journal
+                    && slice.remaining_minor == FEE - 1_000_000)
+        );
+        assert!(sources.slices.iter().any(|slice|slice.journal_id == current.journal_id && slice.remaining_minor == FEE));
     }
 }
 
@@ -1262,4 +1297,271 @@ async fn nonplan_partial_returns_and_payment_only_receipts_reconcile_original_ca
                 .any(|d| d.fact == "retainedMetadata")
         );
     }
+}
+
+async fn debt_principal(w: &World) -> crate::Principal {
+    let email: String = sqlx::query_scalar("SELECT u.email FROM oxsum.users u JOIN oxsum.memberships m USING(user_id) WHERE m.organization_id=$1 AND m.role='owner' LIMIT 1")
+        .bind(w.org).fetch_one(w.db.pool()).await.unwrap();
+    crate::Principal::Session(
+        w.db.login(&email, "independent accounting fixture password")
+            .await
+            .unwrap()
+            .into_session()
+            .principal
+            .unwrap(),
+    )
+}
+async fn unpaid_statement(w: &World) -> Uuid {
+    w.db.plan_statements(w.org, None, 50)
+        .await
+        .unwrap()
+        .statements
+        .into_iter()
+        .find(|s| {
+            s.total_minor > s.paid_minor
+                && matches!(
+                    s.state,
+                    crate::PlanStatementState::Issued | crate::PlanStatementState::PastDue
+                )
+        })
+        .unwrap()
+        .statement_id
+}
+#[tokio::test]
+async fn debt_sources_verify_chargeback_only_v1_and_v2_without_writes() {
+    let _guard = TEST_LOCK.lock().await;
+    for legacy in [true, false] {
+        let Some(w) = world(if legacy { 40 } else { 10 }, legacy).await else {
+            return;
+        };
+        let principal = debt_principal(&w).await;
+        let paid =
+            w.db.plan_statements(w.org, None, 50)
+                .await
+                .unwrap()
+                .statements[0]
+                .statement_id;
+        assert_eq!(
+            w.db.statement_debt_sources(&principal, paid)
+                .await
+                .unwrap()
+                .reason,
+            Some("statementNotPayable")
+        );
+        let dispute = lost(&w, &w.order).await;
+        let statement = unpaid_statement(&w).await;
+        assert_ne!(
+            statement, paid,
+            "the new debt must not target the old paid statement"
+        );
+        let log = w.wallet.log_size().await.unwrap();
+        let first =
+            w.db.statement_debt_sources(&principal, statement)
+                .await
+                .unwrap();
+        assert!(first.verified, "{first:?}");
+        assert_eq!(first.outstanding_minor, FEE);
+        assert_eq!(first.slices.len(), 1);
+        assert_eq!(first.slices[0].journal_id, w.journal);
+        assert_eq!(first.slices[0].dispute_ids, vec![dispute]);
+        assert_eq!(first.slices[0].remaining_minor, FEE);
+        let second =
+            w.db.statement_debt_sources(&principal, statement)
+                .await
+                .unwrap();
+        assert_eq!(first.revision, second.revision);
+        assert_eq!(log, w.wallet.log_size().await.unwrap());
+        assert_eq!(
+            w.db.plan_statement(w.org, statement)
+                .await
+                .unwrap()
+                .unwrap()
+                .statement
+                .paid_minor,
+            0
+        );
+    }
+}
+#[tokio::test]
+async fn debt_sources_hide_foreign_statement_and_refuse_consumption_credentials() {
+    let _guard = TEST_LOCK.lock().await;
+    let Some(w) = world(10, false).await else {
+        return;
+    };
+    lost(&w, &w.order).await;
+    let statement = unpaid_statement(&w).await;
+    let other =
+        w.db.register(NewUser {
+            email: format!("{}@example.com", Uuid::new_v4()),
+            password: "another source fixture password".into(),
+            organization_name: None,
+        })
+        .await
+        .unwrap();
+    let foreign = crate::Principal::Session(
+        w.db.login(&other.user.email, "another source fixture password")
+            .await
+            .unwrap()
+            .into_session()
+            .principal
+            .unwrap(),
+    );
+    assert!(matches!(
+        w.db.statement_debt_sources(&foreign, statement).await,
+        Err(WalletError::NotFound(_))
+    ));
+    let (organization, key) =
+        w.db.authenticate(&other.api_key.secret)
+            .await
+            .unwrap()
+            .unwrap();
+    assert!(matches!(
+        w.db.statement_debt_sources(
+            &crate::Principal::Key(crate::KeyPrincipal { organization, key }),
+            statement
+        )
+        .await,
+        Err(WalletError::Forbidden(_))
+    ));
+}
+#[tokio::test]
+async fn debt_sources_preserve_amount_when_canonical_history_needs_review() {
+    let _guard = TEST_LOCK.lock().await;
+    let Some(w) = world(10, false).await else {
+        return;
+    };
+    lost(&w, &w.order).await;
+    let statement = unpaid_statement(&w).await;
+    let principal = debt_principal(&w).await;
+    assert!(
+        w.db.statement_debt_sources(&principal, statement)
+            .await
+            .unwrap()
+            .verified
+    );
+    // Official balanced append, but no supported business source: no invented
+    // allocation may treat this receivable movement as a payment of the bill.
+    let mut tx = w.db.pool().begin().await.unwrap();
+    w.wallet
+        .plan_journal_dispute_recharge_in(
+            &mut tx,
+            &w.journal,
+            &Uuid::new_v4(),
+            1,
+            1,
+            0,
+            OffsetDateTime::now_utc().date(),
+        )
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+    let result =
+        w.db.statement_debt_sources(&principal, statement)
+            .await
+            .unwrap();
+    assert!(!result.verified);
+    assert_eq!(result.outstanding_minor, FEE);
+    assert_eq!(result.reason, Some("sourceReviewRequired"));
+    assert!(result.slices.is_empty() && result.revision.is_none());
+}
+
+#[tokio::test]
+async fn debt_sources_refuse_duplicate_document_chargeback_and_keep_visible_debt() {
+    let _guard = TEST_LOCK.lock().await;
+    let Some(w) = world(10, false).await else {
+        return;
+    };
+    let dispute = lost(&w, &w.order).await;
+    let statement = unpaid_statement(&w).await;
+    // Normal append-only document insertion followed by its guarded header
+    // update; no guard is disabled and only one cash/AR source exists.
+    let mut tx = w.db.pool().begin().await.unwrap();
+    sqlx::query("INSERT INTO oxsum.plan_statement_lines(line_id,statement_id,kind,amount_minor,description,source_ref) VALUES($1,$2,'dispute_chargeback',$3,'duplicate source fixture',$4)")
+        .bind(Uuid::new_v4()).bind(statement).bind(FEE).bind(dispute).execute(&mut *tx).await.unwrap();
+    sqlx::query(
+        "UPDATE oxsum.plan_statements SET total_minor=total_minor+$2 WHERE statement_id=$1",
+    )
+    .bind(statement)
+    .bind(FEE)
+    .execute(&mut *tx)
+    .await
+    .unwrap();
+    tx.commit().await.unwrap();
+    let result =
+        w.db.statement_debt_sources(&debt_principal(&w).await, statement)
+            .await
+            .unwrap();
+    assert!(!result.verified);
+    assert_eq!(result.outstanding_minor, 2 * FEE);
+    assert!(result.slices.is_empty());
+}
+
+#[tokio::test]
+async fn debt_sources_cancelled_plan_debt_is_still_exact_and_readable() {
+    let _guard = TEST_LOCK.lock().await;
+    let Some(w) = world(40, true).await else {
+        return;
+    };
+    lost(&w, &w.order).await;
+    let statement = unpaid_statement(&w).await;
+    w.db.cancel_customer_plan(w.org).await.unwrap();
+    w.db.rollover_due_subscriptions().await.unwrap();
+    let principal = debt_principal(&w).await;
+    let result =
+        w.db.statement_debt_sources(&principal, statement)
+            .await
+            .unwrap();
+    assert!(result.verified, "{result:?}");
+    assert_eq!(result.outstanding_minor, FEE);
+}
+
+#[tokio::test]
+async fn debt_sources_do_not_collect_balanced_historical_duplicate_usage() {
+    let _guard = TEST_LOCK.lock().await;
+    let Some(w) = world_with_history(40, true, FEE, Some(700)).await else {
+        return;
+    };
+    let statement = unpaid_statement(&w).await;
+    clean(&capture(&w, TimeBasis::Booking).await);
+    let log = w.wallet.log_size().await.unwrap();
+    let result =
+        w.db.statement_debt_sources(&debt_principal(&w).await, statement)
+            .await
+            .unwrap();
+    assert!(!result.verified);
+    assert_eq!(result.reason, Some("historicalUsageReviewRequired"));
+    assert_eq!(result.outstanding_minor, 700);
+    assert!(result.slices.is_empty() && result.revision.is_none());
+    assert_eq!(w.wallet.log_size().await.unwrap(), log);
+}
+
+#[tokio::test]
+async fn debt_sources_refuse_oversized_history_without_truncating_it() {
+    let _guard = TEST_LOCK.lock().await;
+    let Some(w) = world(10, false).await else {
+        return;
+    };
+    lost(&w, &w.order).await;
+    let statement = unpaid_statement(&w).await;
+    // Zero-value immutable lines leave displayed debt unchanged but exceed the
+    // shared capture bound. The reader must fail, never prove a truncated set.
+    sqlx::query("INSERT INTO oxsum.plan_statement_lines(line_id,statement_id,kind,amount_minor,description) SELECT gen_random_uuid(),$1,'discount',0,'source bound fixture' FROM generate_series(1,10001)")
+        .bind(statement).execute(w.db.pool()).await.unwrap();
+    let log = w.wallet.log_size().await.unwrap();
+    let result =
+        w.db.statement_debt_sources(&debt_principal(&w).await, statement)
+            .await;
+    assert!(
+        matches!(result, Err(WalletError::InvalidInput(message)) if message.contains("source limit"))
+    );
+    assert_eq!(w.wallet.log_size().await.unwrap(), log);
+    assert_eq!(
+        w.db.plan_statement(w.org, statement)
+            .await
+            .unwrap()
+            .unwrap()
+            .statement
+            .total_minor,
+        FEE
+    );
 }
