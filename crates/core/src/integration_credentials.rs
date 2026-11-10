@@ -33,6 +33,10 @@ pub enum IntegrationScope {
     CustomerLinkWrite,
     /// Read retained customer-safe evidence for this application's own accounts.
     EvidenceRead,
+    /// Initiate and recover this application's own customer checkout orders.
+    CheckoutWrite,
+    /// Publish bounded customer-safe evidence for this application.
+    EvidenceWrite,
 }
 impl IntegrationScope {
     pub(crate) fn as_str(self) -> &'static str {
@@ -46,6 +50,8 @@ impl IntegrationScope {
             Self::EntitlementsRead => "entitlementsRead",
             Self::CustomerLinkWrite => "customerLinkWrite",
             Self::EvidenceRead => "evidenceRead",
+            Self::CheckoutWrite => "checkoutWrite",
+            Self::EvidenceWrite => "evidenceWrite",
         }
     }
 }
@@ -171,6 +177,8 @@ fn from_row(row: &sqlx::postgres::PgRow) -> Result<IntegrationCredential, Wallet
             "entitlementsRead" => Ok(IntegrationScope::EntitlementsRead),
             "customerLinkWrite" => Ok(IntegrationScope::CustomerLinkWrite),
             "evidenceRead" => Ok(IntegrationScope::EvidenceRead),
+            "checkoutWrite" => Ok(IntegrationScope::CheckoutWrite),
+            "evidenceWrite" => Ok(IntegrationScope::EvidenceWrite),
             _ => Err(WalletError::Forbidden("unknown integration scope".into())),
         })
         .collect::<Result<_, _>>()?;
@@ -292,7 +300,9 @@ impl Db {
                     || scopes.contains(&"customerKeysWrite")
                     || scopes.contains(&"entitlementsRead")
                     || scopes.contains(&"customerLinkWrite")
-                    || scopes.contains(&"evidenceRead")))
+                    || scopes.contains(&"evidenceRead")
+                    || scopes.contains(&"checkoutWrite")
+                    || scopes.contains(&"evidenceWrite")))
         {
             return Err(WalletError::InvalidInput(
                 "scopes must be distinct; application grants require empty customerIds, legacy grants require 1 to 1000 distinct ids or customersProvision alone".into(),

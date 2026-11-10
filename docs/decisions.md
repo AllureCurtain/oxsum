@@ -3712,3 +3712,45 @@ source linkage does not certify the external provider or service quality.
 - Repayment-funded refund payable stays reserved to original effects. New
   service invoicing/reissue is not implied by a source cancellation. Ambiguous
   retained history remains review-required rather than guessed.
+## 2026-11-10 Scope application checkout through the existing writer (#930)
+
+- Add application-only `checkoutWrite` with no implicit existing-grant upgrade.
+  Its first reviewed slice covers wallet top-up and published bundles.
+- Reuse ordinary order/provider/callback/fulfillment code, passing internal
+  application authority into the order transaction rather than fabricating a
+  personal principal. Credential/customer checks and immutable order association
+  commit beside the payment binding.
+- Retain exact quote and original return/cancel URLs, domain-separate operation
+  keys, and limit recovery to application-created orders. Require HTTPS or
+  explicit loopback HTTP and reject ambiguous URL normalization.
+- Authorization is decided before external I/O; later revocation does not undo
+  an already committed operation. Unknown outcomes reuse provider idempotency.
+  Archive blocks initiation/resume but not history or legitimate late callbacks.
+- Plan/statement checkout and lifecycle notification remain separate scoped
+  extensions, not capabilities inferred from the new grant.
+
+## 2026-11-10 Reuse assigned-plan payment authority for applications (#931)
+
+The explicit application checkout grant may buy only its own already assigned
+plan. Reuse `PlanPaymentTerms`, its exact fee/period fingerprint, the business
+then plan-row lock order and the existing once-only activation engine. The
+wallet amount fields are zero for this purpose; only `planPayment.feeMinor`
+names the service fee. Existing period intents refuse generically without
+revealing portal order IDs. Optional absent plan fields are not serialized,
+preserving exact stored wallet/bundle replay without rewriting history.
+
+## 2026-11-10 Durable scoped application evidence publication (#934)
+
+Introduce explicit application-only `evidenceWrite`; never upgrade `evidenceRead`
+implicitly. Authorize and retain the exact operation before running the existing
+freeze/marker/descriptor sequence. An accepted publication is recoverable across
+connection/process interruption and credential rotation; later revocation cannot
+undo accepted work but is enforced before returning data. No database connection
+is held across nested Wallet acquisitions.
+
+Preserve one deterministic scope identity and original captured inputs. Private
+cost-inclusive collisions refuse rather than minting competing customer history.
+Bound application spans, artifact/entry counts, serialized capture/final bytes
+and source transfer in PostgreSQL snapshots; reject overflow rather than claim
+completeness after truncation. Existing portal publication limits and proof scope
+remain unchanged. Publication is an evidence marker, never a financial grant.

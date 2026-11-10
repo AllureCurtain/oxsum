@@ -874,3 +874,44 @@ receivable or reserved payable. Fresh evidence commits the `sourceVoids` rows
 and referenced ledger entries; old frozen bundles remain byte-for-byte unchanged.
 Whole-statement release-review refuses mixed sources and directs finance to the
 original journal; this is source correction, not automatic replacement invoicing.
+
+### Transaction-owned application checkout (#930)
+
+Migration 0126 adds the explicit application-only scope and immutable
+`application_checkout_orders` association (application, customer, credential and
+exact request). Existing grants gain no authority. Wallet/bundle checkout uses
+the ordinary payment writer with an optional internal application authority
+context: business lock, current credential/customer check, existing-order replay
+or exact fresh quote, order/binding/association, commit. Permission checked only
+before this transaction would race revocation/archive and is not sufficient.
+
+A domain-separated SHA-256 key keeps application operations distinct from portal
+keys. The association pins original quote and return destinations. Recovery reads
+recheck current authority and reuse the production checkout driver and retained
+merchant version. Provider calls occur after the local transaction commits; its
+authorization decision is the boundary, and later revocation cannot undo an
+already-authorized external operation. Unknown external outcomes retain the order
+UUID for provider idempotency. Payment and fulfillment remain authenticated
+merchant/outbox operations, not application assertions. Historical reads do not
+bootstrap ledgers, resume providers or change account state.
+
+Application plan checkout extends the existing quote and payment writer (#931).
+The plan quote takes the business lock before the existing customer-plan row lock;
+current application authority remains checked within the order transaction. The
+immutable `planPayment` snapshot and its fingerprint feed the existing activation
+and refund engine. Absent new optional fields are omitted on serialization so
+retained wallet/bundle request equality and recovery survive the extension.
+No new migration, entitlement writer or provider path is introduced.
+
+Application evidence publication (#934) stores immutable request/application/
+customer/credential/selection identity in migration 0127 while holding current
+authority locks. It releases that connection before the existing multi-step
+evidence publisher; a one-connection pool therefore remains viable. The scope
+input freeze, deterministic marker and frozen descriptor retain crash recovery.
+Application capture has at most 1,000 artifacts, 256 referenced entry links,
+4 MiB serialized collector and 16 MiB final bundle. Direct scans fetch at most
+1,001 rows and reject overflow, while nested statement/journal/effect groups
+cap at 256 rows. Variable usage/payment/fulfillment/refund/adjustment data is
+measured in PostgreSQL within the same snapshot before transfer. Limits refuse
+without truncating the declared evidence scope. The ordinary portal retains its
+existing larger export semantics; it does not inherit these application limits.

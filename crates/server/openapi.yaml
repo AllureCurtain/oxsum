@@ -6125,6 +6125,168 @@ paths:
         "401": { $ref: "#/components/responses/Error" }
         "403": { $ref: "#/components/responses/Error" }
         "409": { $ref: "#/components/responses/Error" }
+  /api/v1/integration/customers/{organizationId}/checkout-quote:
+    post:
+      operationId: quoteApplicationCheckout
+      summary: quoteApplicationCheckout
+      description: Application-only checkoutWrite. Read-only exact wallet top-up, published-bundle or assigned plan-period quote under current active customer authority. No provider call or payment reservation. Plans pin their sold fee and period and return zero wallet credit; existing live period intents must be recovered through authorized order history. Named statement debt is not supported by this operation.
+      security: [{ integrationCredential: [] }]
+      parameters:
+        - { in: path, name: organizationId, required: true, schema: { type: string, format: uuid } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ApplicationCheckoutSelection" }
+      responses:
+        "200":
+          description: Scoped application checkout result
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data: { $ref: "#/components/schemas/ApplicationCheckoutTerms" }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "409": { $ref: "#/components/responses/Error" }
+        "503": { $ref: "#/components/responses/Error" }
+  /api/v1/integration/customers/{organizationId}/orders:
+    get:
+      operationId: listApplicationCheckouts
+      summary: listApplicationCheckouts
+      description: Application-only checkoutWrite. Bounded UUID page of only this application-created customer orders; current grant required, including after rotation. No provider I/O.
+      security: [{ integrationCredential: [] }]
+      parameters:
+        - { in: path, name: organizationId, required: true, schema: { type: string, format: uuid } }
+        - { in: query, name: after, schema: { type: string, format: uuid } }
+        - { in: query, name: limit, schema: { type: integer, minimum: 1, maximum: 50, default: 20 } }
+      responses:
+        "200":
+          description: Scoped application checkout result
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data: { $ref: "#/components/schemas/PaymentOrderPage" }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "409": { $ref: "#/components/responses/Error" }
+        "503": { $ref: "#/components/responses/Error" }
+    post:
+      operationId: createApplicationCheckout
+      summary: createApplicationCheckout
+      description: Application-only checkoutWrite. Current authority and exact quote are rechecked in the order transaction. Retains application identity and original return destinations with the order. Identical replay/credential rotation uses the original merchant version and provider idempotency identity. Changed terms conflict. Checkout is not payment confirmation. Archived customers cannot start/resume checkout.
+      security: [{ integrationCredential: [] }]
+      parameters:
+        - { in: path, name: organizationId, required: true, schema: { type: string, format: uuid } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ApplicationCheckoutRequest" }
+      responses:
+        "200":
+          description: Scoped application checkout result
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data: { $ref: "#/components/schemas/ApplicationCheckoutResult" }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "409": { $ref: "#/components/responses/Error" }
+        "503": { $ref: "#/components/responses/Error" }
+  /api/v1/integration/customers/{organizationId}/orders/{orderId}:
+    get:
+      operationId: readApplicationCheckout
+      summary: readApplicationCheckout
+      description: Application-only checkoutWrite. Reads only this application-created order for this exact customer. No provider I/O. Archived customers retain historical reads.
+      security: [{ integrationCredential: [] }]
+      parameters:
+        - { in: path, name: organizationId, required: true, schema: { type: string, format: uuid } }
+        - { in: path, name: orderId, required: true, schema: { type: string, format: uuid } }
+      responses:
+        "200":
+          description: Scoped application checkout result
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data: { $ref: "#/components/schemas/PaymentOrder" }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "409": { $ref: "#/components/responses/Error" }
+        "503": { $ref: "#/components/responses/Error" }
+  /api/v1/integration/customers/{organizationId}/orders/{orderId}/resume:
+    post:
+      operationId: resumeApplicationCheckout
+      summary: resumeApplicationCheckout
+      description: Application-only checkoutWrite under current active customer authority. Resumes this application-created durable order with its original return destinations and merchant version. Unknown provider outcomes retain the original order UUID; payment confirmation still requires a verified callback.
+      security: [{ integrationCredential: [] }]
+      parameters:
+        - { in: path, name: organizationId, required: true, schema: { type: string, format: uuid } }
+        - { in: path, name: orderId, required: true, schema: { type: string, format: uuid } }
+      responses:
+        "200":
+          description: Scoped application checkout result
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data: { $ref: "#/components/schemas/ApplicationCheckoutResult" }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "409": { $ref: "#/components/responses/Error" }
+        "503": { $ref: "#/components/responses/Error" }
+  /api/v1/integration/customers/{organizationId}/evidence-publications:
+    post:
+      operationId: publishApplicationEvidence
+      summary: publishApplicationEvidence
+      description: Explicit application-only evidenceWrite. Durably authorizes one exact ended span (at most 31 UTC days) or owned issued statement before publication; supplier costs always excluded. Current credential and active account required even on retry. A failed response can leave an accepted request; retry the identical key/selection. Later revocation cannot retract accepted work. Retains deterministic original scope bytes; private or oversized existing scope refuses without rewriting. No share token, payment or external request. evidenceRead is separately required to download.
+      security: [{ integrationCredential: [] }]
+      parameters:
+        - { in: path, name: organizationId, required: true, schema: { type: string, format: uuid } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ApplicationEvidencePublishRequest" }
+      responses:
+        "200":
+          description: Published original scope descriptor under current application authority
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data: { $ref: "#/components/schemas/ApplicationEvidencePublication" }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "409": { $ref: "#/components/responses/Error" }
+        "503": { $ref: "#/components/responses/Error" }
   /api/v1/integration/customers/{organizationId}/evidence-bundles:
     get:
       summary: List retained evidence for this application's customer
@@ -16648,6 +16810,69 @@ components:
       properties:
         applications: { type: array, items: { $ref: "#/components/schemas/IntegrationApplication" } }
         nextCursor: { type: [string, "null"], format: uuid }
+    ApplicationCheckoutSelection:
+      type: object
+      additionalProperties: false
+      required: [purpose, rail]
+      properties:
+        purpose: { type: string, enum: [walletTopup, bundle, planPeriod] }
+        rail: { $ref: "#/components/schemas/MerchantRail" }
+        displayAmountMinor: { type: [integer, "null"], minimum: 1, maximum: 9007199254740991, description: Required only for wallet top-up; bundle price is server-selected }
+        bundleVersionId: { type: [string, "null"], format: uuid, description: Required only for a published bundle }
+        customerPlanId: { type: [string, "null"], format: uuid, description: Required only for an assigned plan period; no caller amount or bundle version. Existing live period orders must be resumed through application order history. }
+    ApplicationCheckoutTerms:
+      type: object
+      additionalProperties: false
+      required: [applicationId, organizationId, selection, checkout, merchantMode, merchantName, collectionRevision, displayCurrency, displayAmountMinor, purchasedMinor, promoMinor]
+      properties:
+        applicationId: { type: string, format: uuid }
+        organizationId: { type: string, format: uuid }
+        selection: { $ref: "#/components/schemas/ApplicationCheckoutSelection" }
+        checkout: { $ref: "#/components/schemas/CheckoutChoice" }
+        merchantMode: { $ref: "#/components/schemas/MerchantMode" }
+        merchantName: { type: string }
+        collectionRevision: { type: integer }
+        displayCurrency: { type: string }
+        displayAmountMinor: { type: integer }
+        purchasedMinor: { type: integer, description: "Wallet or bundle purchased credits; zero for planPeriod, whose exact fee is in planPayment" }
+        promoMinor: { type: integer }
+        planPayment: { $ref: "#/components/schemas/PlanPaymentTerms", description: Present only for planPeriod; exact sold fee and period boundaries, never a wallet grant }
+    ApplicationCheckoutRequest:
+      type: object
+      additionalProperties: false
+      required: [idempotencyKey, quote, returnUrl, cancelUrl]
+      properties:
+        idempotencyKey: { type: string, minLength: 1, maxLength: 200 }
+        quote: { $ref: "#/components/schemas/ApplicationCheckoutTerms" }
+        returnUrl: { type: string, format: uri, maxLength: 2000, description: Absolute HTTPS; HTTP only on literal loopback addresses or localhost. No userinfo or fragments. Retained for every retry. }
+        cancelUrl: { type: string, format: uri, maxLength: 2000, description: Same policy and immutable retry identity as returnUrl }
+    ApplicationCheckoutResult:
+      type: object
+      required: [order, providerPaymentId, clientSecret, checkoutUrl, publishableKey, sdkUrl]
+      properties:
+        order: { $ref: "#/components/schemas/PaymentOrder" }
+        providerPaymentId: { type: [string, "null"] }
+        clientSecret: { type: [string, "null"] }
+        checkoutUrl: { type: [string, "null"] }
+        publishableKey: { type: [string, "null"] }
+        sdkUrl: { type: [string, "null"] }
+    ApplicationEvidencePublishRequest:
+      type: object
+      additionalProperties: false
+      required: [idempotencyKey, kind]
+      properties:
+        idempotencyKey: { type: string, minLength: 1, maxLength: 200 }
+        kind: { type: string, enum: [period, statement] }
+        from: { type: [string, "null"], format: date, description: Required only for period }
+        to: { type: [string, "null"], format: date, description: Required only for period; ended UTC day; at most 31 inclusive days }
+        statementId: { type: [string, "null"], format: uuid, description: Required only for statement }
+    ApplicationEvidencePublication:
+      type: object
+      required: [requestId, status, bundle]
+      properties:
+        requestId: { type: string, format: uuid }
+        status: { type: string, enum: [published] }
+        bundle: { $ref: "#/components/schemas/EvidenceBundleSummary" }
     ApplicationEvidencePage:
       type: object
       required: [applicationId, organizationId, bundles, nextCursor]
@@ -16786,7 +17011,7 @@ components:
         nextCursor: { type: [string, "null"] }
     IntegrationScope:
       type: string
-      enum: [customersRead, meteringWrite, customersProvision, billingRead, customersLifecycleWrite, customerKeysWrite, entitlementsRead, customerLinkWrite, evidenceRead]
+      enum: [customersRead, meteringWrite, customersProvision, billingRead, customersLifecycleWrite, customerKeysWrite, entitlementsRead, customerLinkWrite, evidenceRead, checkoutWrite, evidenceWrite]
     ProvisionCustomerRequest:
       type: object
       additionalProperties: false
@@ -16808,7 +17033,7 @@ components:
         idempotencyKey: { type: string, minLength: 1, maxLength: 200 }
         name: { type: [string, "null"], maxLength: 80 }
         applicationId: { type: [string, "null"], format: uuid, description: "Owner-selected stable application; customerIds must be empty. Only that application’s provisioned accounts are accessible. Omit for existing explicit grants." }
-        scopes: { type: array, minItems: 1, maxItems: 9, uniqueItems: true, items: { $ref: "#/components/schemas/IntegrationScope" } }
+        scopes: { type: array, minItems: 1, maxItems: 11, uniqueItems: true, items: { $ref: "#/components/schemas/IntegrationScope" } }
         customerIds: { type: array, minItems: 0, maxItems: 1000, uniqueItems: true, items: { type: string, format: uuid }, description: "Existing customers the credential may read or meter. Must be empty for an application grant. Legacy grants may be empty only for customersProvision alone." }
         expiresAt: { type: string, format: date-time }
         reason: { type: string, minLength: 1, maxLength: 500 }

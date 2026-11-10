@@ -317,7 +317,7 @@ pub(crate) async fn order_in(
     row.as_ref().map(order).transpose()
 }
 
-fn fulfillment(row: &PgRow) -> Result<PaymentFulfillment, WalletError> {
+pub(crate) fn fulfillment(row: &PgRow) -> Result<PaymentFulfillment, WalletError> {
     Ok(PaymentFulfillment {
         fulfillment_id: row.try_get("fulfillment_id")?,
         order_id: row.try_get("order_id")?,
@@ -392,6 +392,18 @@ impl Db {
         new: &NewPaymentOrder,
         route: Option<&crate::CheckoutChoice>,
     ) -> Result<PaymentOrder, WalletError> {
+        self.create_payment_order_authorized(context, organization, new, route, None)
+            .await
+    }
+
+    pub(crate) async fn create_payment_order_authorized(
+        &self,
+        context: &crate::MerchantSigningContext,
+        organization: Uuid,
+        new: &NewPaymentOrder,
+        route: Option<&crate::CheckoutChoice>,
+        application: Option<(&crate::ActingService, &crate::ApplicationCheckoutRequest)>,
+    ) -> Result<PaymentOrder, WalletError> {
         authority::validate(&new.idempotency_key, None)?;
         if new.display_amount_minor <= 0
             || new.display_currency.len() != 3
@@ -438,6 +450,16 @@ impl Db {
         }
         let mut tx = self.pool().begin().await?;
         let business = authority::lock_business(&mut tx).await?;
+        if let Some((service, request)) = application {
+            crate::integration_applications::checkout::guard_in(
+                &mut tx,
+                service,
+                organization,
+                request,
+                new,
+            )
+            .await?;
+        }
         // The order's own UUID serializes its create: two racing creates of the
         // same idempotency key lock the same expected-payment identity.
         sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1,0))")
@@ -691,6 +713,12 @@ impl Db {
         let created = order_in(&mut tx, order_id)
             .await?
             .ok_or_else(|| invalid("the payment order did not land"))?;
+        if let Some((service, request)) = application {
+            crate::integration_applications::checkout::record_in(
+                &mut tx, service, &created, request,
+            )
+            .await?;
+        }
         tx.commit().await?;
         Ok(created)
     }

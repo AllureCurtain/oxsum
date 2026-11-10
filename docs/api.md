@@ -949,3 +949,61 @@ include `sourceVoids` with the original/reversal IDs, journal ID and canonical
 void entry/hash. These are committed source assertions; independent runtime
 reconciliation checks their financial ownership. The generic offline verifier
 checks manifest inclusion/integrity, not this additional business interpretation.
+
+### Application checkout (#930)
+
+All routes below require application-only `checkoutWrite` for the exact namespace
+and customer. They reject owner cookies, consumption keys and legacy grants.
+
+- `POST /integration/customers/{organizationId}/checkout-quote`: select
+  `walletTopup` with positive `displayAmountMinor`, or `bundle` with a published
+  `bundleVersionId`; include the selected `rail`. The quote returns exact
+  server-derived credits, promo, fiat, collection revision, merchant choice,
+  public name and test/live mode. It is read-only, not a payment reservation.
+- `POST /integration/customers/{organizationId}/orders`: submit `idempotencyKey`,
+  the unchanged `quote`, `returnUrl` and `cancelUrl`. Absolute HTTPS is required;
+  literal loopback HTTP/localhost supports local development. Userinfo, fragments,
+  control characters, whitespace and backslash normalization are rejected.
+- `GET /integration/customers/{organizationId}/orders`: UUID-ascending page of
+  application-created orders (`after`, `limit` 1–50, default 20).
+- `GET /integration/customers/{organizationId}/orders/{orderId}`: read that
+  application-created order without provider I/O.
+- `POST /integration/customers/{organizationId}/orders/{orderId}/resume`: recover
+  original provider checkout using retained destinations and merchant version.
+
+These paths share the `/api/v1` prefix and ordinary data/error envelopes. Missing
+namespace/order is 404, missing scope 403, expired/revoked identity 401, stale
+quote/changed retry/archive 409 and unknown provider outcome 503. A 503 may leave a
+durable created order: retry the same request or list and resume that exact order.
+Return `clientSecret` only to the corresponding application user; never treat
+checkout handles or browser return as payment confirmation. Archived accounts
+retain reads, while create/resume refuse. Assigned plan payment is described
+below; named statement debt remains separate. Personal checkout keeps its own
+customer-session authority.
+
+### Assigned application plan payment (#931)
+
+The application checkout selection additionally accepts `purpose: planPeriod`
+and `customerPlanId`, with both `displayAmountMinor` and `bundleVersionId` absent.
+`planPayment` in the returned quote contains the exact sold fee and period terms;
+`purchasedMinor` and `promoMinor` are zero. Submit that complete quote unchanged
+through the existing application orders route. A foreign assignment is 404; a
+changed/nonpayable quote or already-standing period intent is 409. No standing
+portal order identifier is exposed; application order history returns only its
+own recoverable intents. This does not add named statement debt repayment.
+
+### Application evidence publication (#934)
+
+`POST /api/v1/integration/customers/{organizationId}/evidence-publications` uses
+explicit application-only `evidenceWrite`. Send `idempotencyKey`, `kind: period`
+with `from`/`to` (YYYY-MM-DD, up to 31 ended UTC days), or `kind: statement` with
+`statementId`. Mixed selections, open days and oversized spans refuse. Success
+returns `{requestId, status: "published", bundle}`; the descriptor has the normal
+evidence summary shape. `evidenceRead` separately downloads original bytes.
+
+Authorization is durable before publication. A failed response may leave an
+accepted request or completed marker; retry the identical operation instead of
+creating another scope. Changed payload/customer conflicts; missing scope is 403,
+foreign customer/statement 404, revoked/expired identity 401, archived initiation
+or private/oversized evidence 409. Accepted work may finish after revocation;
+response authority is rechecked. No share token, supplier cost or money mutation.

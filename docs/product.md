@@ -774,3 +774,42 @@ Cash never moves during void; collected funds become source-owned refund payable
 A live payment intent anywhere on an affected document blocks correction until
 its provider result is resolved. Invalid or reissued history still needs explicit
 financial review. This does not authorize new replacement charges or entitlement.
+
+### Application wallet and bundle checkout (#930)
+
+An owner may explicitly grant application-only `checkoutWrite`. The application
+quotes a fiat wallet top-up or published bundle for its own customer, shows the
+server's exact purchased/promo amount, merchant name and test/live mode, and
+creates the reviewed checkout. Money is credited only by verified payment and
+normal fulfillment. No staff, manual-receipt, refund-approval or merchant-secret
+authority accompanies the grant. Assigned plan activation is described below;
+named statement debt checkout remains a separate required N21 follow-up.
+
+Every application order retains its original quote and return/cancel URLs in the
+order transaction. Identical retries and rotated credentials recover the same
+order/provider identity. Application operation keys cannot collide with portal
+keys, and checkout reads include only that application's created orders. Archive
+blocks new/resumed checkout while retaining historical reads and valid late
+provider callbacks. Revocation/expiry and namespace are rechecked per operation.
+
+### Application plan-period checkout (#931)
+
+An explicitly granted application's `checkoutWrite` can purchase the customer's
+already assigned payable plan. It cannot assign a plan or change its price. The
+quote includes the exact sold fee, version and period; fiat rounding changes only
+the collected currency amount. Purchased/promotional wallet amounts are zero.
+Verified payment alone authorizes the existing plan activation path. Cancellation,
+scheduled changes, early renewal and complimentary or foreign plans refuse.
+One outstanding intent per period is shared with portal checkout.
+
+### Application evidence publication (#934)
+
+The owner may explicitly grant application-only `evidenceWrite` to request one
+ended span (at most 31 days) or an owned issued statement. `evidenceRead` remains
+a separate download/list permission. An immutable publication request records
+current active-customer authority before evidence work; identical retries and
+rotated credentials recover the original deterministic scope. Later revocation
+blocks responses and future requests but cannot retract already accepted work.
+Supplier costs are excluded. Private or oversized existing captures refuse;
+original signed bytes and ledger markers are never rewritten. No share token or
+financial operation is granted.

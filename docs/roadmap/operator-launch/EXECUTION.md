@@ -389,3 +389,42 @@ evidence covers 2,174 ordinary cases; 67 final financial and 34 final core/HTTP
 cases, strict core Clippy and contract/build/format checks passed. See
 [evidence/statement-source-void.md](evidence/statement-source-void.md). This does
 not close #777's separate replacement-invoice/browser/integration acceptance.
+
+### Application checkout slice (#930)
+
+Wallet/bundle application checkout is implemented on the #928 stack, with
+transaction-owned authority, retained quote/destinations and ordinary provider
+recovery. Six local core/HTTP boundary checks passed before full regression;
+full/strict and final evidence are in progress. No genuine PSP operation ran.
+Plan/statement checkout, evidence publication, lifecycle notifications and the
+complete external application remain required N21 follow-ups.
+
+#930 development validation passed 2,175 full workspace checks (six existing
+opt-ins skipped), 22 affected regressions and six final application core/HTTP
+checks. The latter recover lost provider responses from both machine and verified
+linked-customer portal routes while retaining original identity/destinations.
+Strict core/server Clippy, pinned format, four contract and eight frontend checks
+and production build passed. [Evidence](evidence/application-checkout.md).
+Plan-period checkout follows as #931; independent review/integration and
+browser/candidate/external gates remain pending.
+
+## Assigned application plan checkout (#931)
+
+Implemented on `feat/application-plan-checkout`, stacked on #932. Explicit
+application checkout reuses sold-plan quote/activation, exact fiat rounding and
+one intent per period. No new grant, assignment authority or wallet credit.
+16 core/HTTP checks, strict core/server all-target Clippy, pinned formatting,
+four contract checks, generated types and frontend build passed; unchanged #930
+workspace evidence is reused. [Evidence](evidence/application-plan-checkout.md).
+Independent review/integration and browser/candidate gates remain. Named statement repayment,
+notifications, evidence publication and full external app acceptance remain.
+
+## Scoped application evidence publication (#934)
+
+Implementation in `feat/application-evidence-publish`, based on #933; migration
+0127. Explicit evidenceWrite durably authorizes exact active-customer scope and
+reuses original input/marker/descriptor recovery without supplier costs. Eleven
+focused core/HTTP checks passed; shared evidence regression and full workspace/
+strict Clippy validation are in progress. Browser, review, protected integration
+and candidate acceptance remain; named statement checkout, signed notifications
+and the complete external app remain N21 follow-ups.

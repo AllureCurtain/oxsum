@@ -8349,6 +8349,110 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/integration/customers/{organizationId}/checkout-quote": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * quoteApplicationCheckout
+         * @description Application-only checkoutWrite. Read-only exact wallet top-up, published-bundle or assigned plan-period quote under current active customer authority. No provider call or payment reservation. Plans pin their sold fee and period and return zero wallet credit; existing live period intents must be recovered through authorized order history. Named statement debt is not supported by this operation.
+         */
+        post: operations["quoteApplicationCheckout"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/integration/customers/{organizationId}/orders": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * listApplicationCheckouts
+         * @description Application-only checkoutWrite. Bounded UUID page of only this application-created customer orders; current grant required, including after rotation. No provider I/O.
+         */
+        get: operations["listApplicationCheckouts"];
+        put?: never;
+        /**
+         * createApplicationCheckout
+         * @description Application-only checkoutWrite. Current authority and exact quote are rechecked in the order transaction. Retains application identity and original return destinations with the order. Identical replay/credential rotation uses the original merchant version and provider idempotency identity. Changed terms conflict. Checkout is not payment confirmation. Archived customers cannot start/resume checkout.
+         */
+        post: operations["createApplicationCheckout"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/integration/customers/{organizationId}/orders/{orderId}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * readApplicationCheckout
+         * @description Application-only checkoutWrite. Reads only this application-created order for this exact customer. No provider I/O. Archived customers retain historical reads.
+         */
+        get: operations["readApplicationCheckout"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/integration/customers/{organizationId}/orders/{orderId}/resume": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * resumeApplicationCheckout
+         * @description Application-only checkoutWrite under current active customer authority. Resumes this application-created durable order with its original return destinations and merchant version. Unknown provider outcomes retain the original order UUID; payment confirmation still requires a verified callback.
+         */
+        post: operations["resumeApplicationCheckout"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/integration/customers/{organizationId}/evidence-publications": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * publishApplicationEvidence
+         * @description Explicit application-only evidenceWrite. Durably authorizes one exact ended span (at most 31 UTC days) or owned issued statement before publication; supplier costs always excluded. Current credential and active account required even on retry. A failed response can leave an accepted request; retry the identical key/selection. Later revocation cannot retract accepted work. Retains deterministic original scope bytes; private or oversized existing scope refuses without rewriting. No share token, payment or external request. evidenceRead is separately required to download.
+         */
+        post: operations["publishApplicationEvidence"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/integration/customers/{organizationId}/evidence-bundles": {
         parameters: {
             query?: never;
@@ -22032,6 +22136,90 @@ export interface components {
             /** Format: uuid */
             nextCursor: string | null;
         };
+        ApplicationCheckoutSelection: {
+            /** @enum {string} */
+            purpose: "walletTopup" | "bundle" | "planPeriod";
+            rail: components["schemas"]["MerchantRail"];
+            /** @description Required only for wallet top-up; bundle price is server-selected */
+            displayAmountMinor?: number | null;
+            /**
+             * Format: uuid
+             * @description Required only for a published bundle
+             */
+            bundleVersionId?: string | null;
+            /**
+             * Format: uuid
+             * @description Required only for an assigned plan period; no caller amount or bundle version. Existing live period orders must be resumed through application order history.
+             */
+            customerPlanId?: string | null;
+        };
+        ApplicationCheckoutTerms: {
+            /** Format: uuid */
+            applicationId: string;
+            /** Format: uuid */
+            organizationId: string;
+            selection: components["schemas"]["ApplicationCheckoutSelection"];
+            checkout: components["schemas"]["CheckoutChoice"];
+            merchantMode: components["schemas"]["MerchantMode"];
+            merchantName: string;
+            collectionRevision: number;
+            displayCurrency: string;
+            displayAmountMinor: number;
+            /** @description Wallet or bundle purchased credits; zero for planPeriod, whose exact fee is in planPayment */
+            purchasedMinor: number;
+            promoMinor: number;
+            /** @description Present only for planPeriod; exact sold fee and period boundaries */
+            planPayment?: components["schemas"]["PlanPaymentTerms"];
+        };
+        ApplicationCheckoutRequest: {
+            idempotencyKey: string;
+            quote: components["schemas"]["ApplicationCheckoutTerms"];
+            /**
+             * Format: uri
+             * @description Absolute HTTPS; HTTP only on literal loopback addresses or localhost. No userinfo or fragments. Retained for every retry.
+             */
+            returnUrl: string;
+            /**
+             * Format: uri
+             * @description Same policy and immutable retry identity as returnUrl
+             */
+            cancelUrl: string;
+        };
+        ApplicationCheckoutResult: {
+            order: components["schemas"]["PaymentOrder"];
+            providerPaymentId: string | null;
+            clientSecret: string | null;
+            checkoutUrl: string | null;
+            publishableKey: string | null;
+            sdkUrl: string | null;
+        };
+        ApplicationEvidencePublishRequest: {
+            idempotencyKey: string;
+            /** @enum {string} */
+            kind: "period" | "statement";
+            /**
+             * Format: date
+             * @description Required only for period
+             */
+            from?: string | null;
+            /**
+             * Format: date
+             * @description Required only for period; ended UTC day; at most 31 inclusive days
+             */
+            to?: string | null;
+            /**
+             * Format: uuid
+             * @description Required only for statement
+             */
+            statementId?: string | null;
+        };
+        ApplicationEvidencePublication: {
+            /** Format: uuid */
+            requestId: string;
+            /** @enum {string} */
+            status: "published";
+            bundle: components["schemas"]["EvidenceBundleSummary"];
+        };
         ApplicationEvidencePage: {
             /** Format: uuid */
             applicationId: string;
@@ -22208,7 +22396,7 @@ export interface components {
             nextCursor: string | null;
         };
         /** @enum {string} */
-        IntegrationScope: "customersRead" | "meteringWrite" | "customersProvision" | "billingRead" | "customersLifecycleWrite" | "customerKeysWrite" | "entitlementsRead" | "customerLinkWrite" | "evidenceRead";
+        IntegrationScope: "customersRead" | "meteringWrite" | "customersProvision" | "billingRead" | "customersLifecycleWrite" | "customerKeysWrite" | "entitlementsRead" | "customerLinkWrite" | "evidenceRead" | "checkoutWrite" | "evidenceWrite";
         ProvisionCustomerRequest: {
             idempotencyKey: string;
             /** @description Caller-chosen identifier within the application (integration route) or legacy business namespace (business route). */
@@ -23201,6 +23389,203 @@ export interface operations {
             403: components["responses"]["Error"];
             404: components["responses"]["Error"];
             409: components["responses"]["Error"];
+        };
+    };
+    quoteApplicationCheckout: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                organizationId: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ApplicationCheckoutSelection"];
+            };
+        };
+        responses: {
+            /** @description Scoped application checkout result */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: components["schemas"]["ApplicationCheckoutTerms"];
+                    };
+                };
+            };
+            400: components["responses"]["Error"];
+            401: components["responses"]["Error"];
+            403: components["responses"]["Error"];
+            404: components["responses"]["Error"];
+            409: components["responses"]["Error"];
+            503: components["responses"]["Error"];
+        };
+    };
+    listApplicationCheckouts: {
+        parameters: {
+            query?: {
+                after?: string;
+                limit?: number;
+            };
+            header?: never;
+            path: {
+                organizationId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Scoped application checkout result */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: components["schemas"]["PaymentOrderPage"];
+                    };
+                };
+            };
+            400: components["responses"]["Error"];
+            401: components["responses"]["Error"];
+            403: components["responses"]["Error"];
+            404: components["responses"]["Error"];
+            409: components["responses"]["Error"];
+            503: components["responses"]["Error"];
+        };
+    };
+    createApplicationCheckout: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                organizationId: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ApplicationCheckoutRequest"];
+            };
+        };
+        responses: {
+            /** @description Scoped application checkout result */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: components["schemas"]["ApplicationCheckoutResult"];
+                    };
+                };
+            };
+            400: components["responses"]["Error"];
+            401: components["responses"]["Error"];
+            403: components["responses"]["Error"];
+            404: components["responses"]["Error"];
+            409: components["responses"]["Error"];
+            503: components["responses"]["Error"];
+        };
+    };
+    readApplicationCheckout: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                organizationId: string;
+                orderId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Scoped application checkout result */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: components["schemas"]["PaymentOrder"];
+                    };
+                };
+            };
+            400: components["responses"]["Error"];
+            401: components["responses"]["Error"];
+            403: components["responses"]["Error"];
+            404: components["responses"]["Error"];
+            409: components["responses"]["Error"];
+            503: components["responses"]["Error"];
+        };
+    };
+    resumeApplicationCheckout: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                organizationId: string;
+                orderId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Scoped application checkout result */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: components["schemas"]["ApplicationCheckoutResult"];
+                    };
+                };
+            };
+            400: components["responses"]["Error"];
+            401: components["responses"]["Error"];
+            403: components["responses"]["Error"];
+            404: components["responses"]["Error"];
+            409: components["responses"]["Error"];
+            503: components["responses"]["Error"];
+        };
+    };
+    publishApplicationEvidence: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                organizationId: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ApplicationEvidencePublishRequest"];
+            };
+        };
+        responses: {
+            /** @description Published original scope descriptor under current application authority */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: components["schemas"]["ApplicationEvidencePublication"];
+                    };
+                };
+            };
+            400: components["responses"]["Error"];
+            401: components["responses"]["Error"];
+            403: components["responses"]["Error"];
+            404: components["responses"]["Error"];
+            409: components["responses"]["Error"];
+            503: components["responses"]["Error"];
         };
     };
     getApplicationCustomerEntitlement: {

@@ -351,3 +351,45 @@ zero-usage assertion. A 409 requires operator recovery or a smaller customer-saf
 export. Archived accounts remain readable while the credential is live. This
 reader is one part of N21; checkout, automated evidence publication, notifications
 and the complete separate-store application remain distinct tasks.
+
+### Scoped application wallet/bundle payments
+
+Request `checkoutWrite` as an explicit owner grant on your application. Quote the
+customer's fiat top-up or published bundle through `checkout-quote`, and show
+merchant name/mode, fiat amount, purchased credits and promotion before sending
+the exact quote with one persisted operation key and return/cancel destinations.
+Store the returned order ID alongside your own customer mapping. On an unknown
+response, reuse that operation key; retrieve your application's order list or
+resume the exact order. Do not make a new operation merely because a network
+response was lost. Credential rotation preserves the stable application identity.
+
+Order status is server truth. `provider_pending` is not paid, and returning to
+your URL proves nothing; wait for verified paid/fulfilled status. Keep checkout
+client secrets scoped to the corresponding user. Ordinary runtime needs only
+the application credential and customer-scoped gateway keys. This slice supports
+wallet/bundle orders. Assigned plan checkout is described below; named debt checkout, signed lifecycle notifications and the
+complete independent application walkthrough remain N21 follow-ups.
+
+### Pay an assigned application customer's plan (#931)
+
+With explicit `checkoutWrite`, quote the application's own customer using
+`{ "purpose": "planPeriod", "rail": "hyperswitch", "customerPlanId": "..." }`.
+Display the returned merchant mode, fiat price, sold fee and period terms, then
+submit the exact quote with the stable operation key and original return URLs.
+The application cannot change/assign the sold plan or fabricate payment. A pending
+period intent is recovered from the application's own order history; do not
+create another intent after a timeout. Manual renewal is available only at the
+period boundary. Old unpaid statement debt is a separate payment purpose.
+
+### Publish evidence without an owner session (#934)
+
+Request `evidenceWrite` explicitly in addition to `evidenceRead` if your application
+needs to mint exports. POST a stable operation key and one ended period or exact
+issued statement to the customer's `evidence-publications` route, retain the
+returned bundle descriptor, then download with `evidenceRead`. Retry the same
+request after an interrupted response. A scope already captured with private
+supplier costs or beyond application bounds requires operator recovery; the API
+will not redact an existing signature or silently shorten an export. Retain your
+own verification origin/key/checkpoint: publication by the operator is not an
+independent trust source. Account archive blocks further publication requests,
+while existing historical evidence can still be read with a live read grant.

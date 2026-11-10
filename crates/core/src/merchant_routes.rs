@@ -282,6 +282,19 @@ impl Db {
         secret: &SecretKey,
         new: &NewPaymentOrder,
     ) -> Result<(PaymentOrder, MerchantSigningContext), WalletError> {
+        self.create_routed_payment_order_authorized(organization, rail, expected, secret, new, None)
+            .await
+    }
+
+    pub(crate) async fn create_routed_payment_order_authorized(
+        &self,
+        organization: Uuid,
+        rail: MerchantRail,
+        expected: Option<&CheckoutChoice>,
+        secret: &SecretKey,
+        new: &NewPaymentOrder,
+        application: Option<(&crate::ActingService, &crate::ApplicationCheckoutRequest)>,
+    ) -> Result<(PaymentOrder, MerchantSigningContext), WalletError> {
         let existing = sqlx::query("SELECT merchant_id,merchant_version_id FROM oxsum.payment_orders WHERE organization_id=$1 AND idempotency_key=$2")
             .bind(organization).bind(&new.idempotency_key).fetch_optional(self.pool()).await?;
         let (merchant, version, guard) = if let Some(row) = existing {
@@ -316,7 +329,13 @@ impl Db {
             ));
         }
         let order = self
-            .create_payment_order_checked(&context, organization, new, guard.as_ref())
+            .create_payment_order_authorized(
+                &context,
+                organization,
+                new,
+                guard.as_ref(),
+                application,
+            )
             .await?;
         // A concurrent identical create may have committed another retained
         // version before our business lock. Always return the winning version.
