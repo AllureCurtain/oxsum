@@ -768,6 +768,7 @@
     "keyMintError": "对话密钥签发失败",
     "modelsError": "模型列表读取失败",
     "gatewayError": "网关返回 {{status}}",
+    "accountChanged": "当前账户已变化，请刷新对话页面后再发送。",
     "streamError": "流式输出失败",
     "send": "发送",
     "userMessage": "用户消息",

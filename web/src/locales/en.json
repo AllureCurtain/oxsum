@@ -768,6 +768,7 @@
     "keyMintError": "the chat key could not be minted",
     "modelsError": "the model list could not be read",
     "gatewayError": "the gateway answered {{status}}",
+    "accountChanged": "The active account changed. Reload Chat before sending.",
     "streamError": "the stream failed",
     "send": "Send",
     "userMessage": "User message",

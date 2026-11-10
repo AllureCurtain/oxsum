@@ -23,9 +23,11 @@ export function chatIdentityKey(identity: ChatIdentity): string {
 function matches(left: ChatIdentity, right: ChatIdentity): boolean {
   return left.organizationId === right.organizationId && left.userId === right.userId;
 }
+export class ChatIdentityChangedError extends Error {}
+
 /** Reject a session transition before a credential can be used or retained. */
 export async function requireChatIdentity(identity: ChatIdentity, session: Dependencies["session"]): Promise<void> {
-  if (!matches(identity, await session())) throw new Error("The active account changed. Reload Chat before sending.");
+  if (!matches(identity, await session())) throw new ChatIdentityChangedError("The active account changed. Reload Chat before sending.");
 }
 function live(key: ChatKey, identity: ChatIdentity, now: number): boolean {
   return key.name === "chat" && key.createdBy === identity.userId && !key.revokedAt &&

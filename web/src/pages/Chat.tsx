@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { Trans, useTranslation } from "react-i18next";
 import { useSession, type SessionInfo } from "../api/hooks";
 import type { components } from "../api/schema";
-import { chatIdentityKey, createChatCredentialStore, requireChatIdentity, type ChatIdentity } from "../lib/chat-credential";
+import { ChatIdentityChangedError, chatIdentityKey, createChatCredentialStore, requireChatIdentity, type ChatIdentity } from "../lib/chat-credential";
 import { Banner, Card, Field, TextInput } from "../components/ui";
 import { Button } from "../components/ui";
 import {
@@ -151,9 +151,9 @@ function CustomerChat({ identity }: { identity: ChatIdentity }) {
           }
         }
       }
-    } catch {
+    } catch (failure) {
       if (!abort.current?.signal.aborted) {
-        setError(t("chat.streamError"));
+        setError(t(failure instanceof ChatIdentityChangedError ? "chat.accountChanged" : "chat.streamError"));
       }
     } finally {
       setStreaming(false);
@@ -343,8 +343,8 @@ function Probe(props: {
             } catch {
               setResult(text);
             }
-          } catch {
-            setResult(t("chat.requestFailed"));
+          } catch (failure) {
+            setResult(t(failure instanceof ChatIdentityChangedError ? "chat.accountChanged" : "chat.requestFailed"));
           } finally {
             setBusy(false);
           }
