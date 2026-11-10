@@ -48,6 +48,8 @@ Updated: 2026-11-11
 
 - [ ] [#981](https://github.com/AllureCurtain/oxsum/issues/981) — Expose paid journal source-specific voids to Finance, retaining exact retries/errors. Actual browser paid correction, byte-identical lost-response replay and 1+3-credit original-source refunds passed; contract/build/format passed. Review/integration pending. [Evidence](docs/roadmap/operator-launch/evidence/paid-journal-void/README.md).
 
+- [ ] [#986](https://github.com/AllureCurtain/oxsum/issues/986) — Actual browser mixed quota/wallet and exhausted-quota overage passed, with funded no-overage refusal and no residual effects. Two raw exported proofs passed offline inclusion/arithmetic and separate price/sale checks; altered inputs failed. [Evidence](docs/roadmap/operator-launch/evidence/quota-browser/README.md). Review/integration pending.
+
 - [ ] [#969](https://github.com/AllureCurtain/oxsum/issues/969) — Actual browser bundle purchase/return and paid-plan activation, fee/payment statement, early-renewal refusal and cancellation service passed with local signed fixtures. Stale plan consumption display is #973; statement correction/dispute, embedded and candidate/external gates remain. [Evidence](docs/roadmap/operator-launch/evidence/commercial-browser/README.md).
 
 - [ ] [#973](https://github.com/AllureCurtain/oxsum/issues/973) — Read sold-plan consumption from its exact quota window; real browser baseline 0 now reads 80/100 minor. All 17 affected core/HTTP checks, strict core/server Clippy, contract/codegen/build and pinned formatting passed; review/integration pending. [Evidence](docs/roadmap/operator-launch/evidence/plan-consumption-read/README.md).
