@@ -62,3 +62,8 @@ test("evidence publication is explicit and application-only", () => {
   assert.throws(() => credentialRequest({ ...draft, mode: "customers", scopes: ["evidenceWrite"] }, "key", 0), /scopes/);
   assert.deepEqual(credentialRequest({ ...draft, scopes: ["evidenceWrite"] }, "key", 0).scopes, ["evidenceWrite"]);
 });
+
+test("notification metadata requires its own application-only grant", () => {
+  assert.throws(() => credentialRequest({ ...draft, mode: "customers", scopes: ["notificationsRead"] }, "key", 0), /scopes/);
+  assert.deepEqual(credentialRequest({ ...draft, scopes: ["notificationsRead"] }, "key", 0).scopes, ["notificationsRead"]);
+});

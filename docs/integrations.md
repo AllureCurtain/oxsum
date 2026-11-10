@@ -434,3 +434,19 @@ statementId into the named-statement quote, review its current available amount,
 then persist the exact quote and operation before creating an order. Pending
 orders remain unpaid; verified merchant events alone complete collection.
 For offline verification use separately authorized original evidence downloads.
+### Receive signed application lifecycle signals (#937)
+
+Configure notification destinations once with the Business owner, then operate
+with scoped credentials. `notificationsRead` is independent of customer, key,
+entitlement, billing, checkout and evidence grants. A destination is immutable;
+keep the one-time signing secret and create a replacement to rotate. Stop the
+old endpoint explicitly. Owner-authorized delivery persists through management
+credential rotation; revocation stops runtime API access, not the endpoint.
+
+Use [the independent Python/SQLite receiver](../examples/application-notifications/README.md)
+for original-byte HMAC, durable deduplication and current-read reconciliation.
+Never apply a state transition or payment from the notification payload. Initial
+reads reconcile pre-existing state; time boundaries require reads even without
+a signal. Bill windows/key pages are bounded, and a statement signal does not
+claim a full statement export. The complete separate-store application remains
+a distinct N21 acceptance task.

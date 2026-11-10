@@ -1841,3 +1841,21 @@ notice means other choices may exist. The snapshot does not send a call or
 certify provider, policy or rate-limit availability. Send a deliberate actual
 call through Chat or your SDK, then open its immediate receipt. Business setup
 remains in the separate Business console.
+### Configure an application's signed notifications
+
+Select an application in Business → Application access. In Notifications, enter
+its receiving HTTPS URL, select lifecycle events, and record the reason. Only
+approve internal IPs for an exact destination you operate. Save the signing
+secret from its first response; it cannot be read again. After a lost creation
+response, the same operation recovers the endpoint metadata; configure a
+replacement if you did not receive the secret.
+
+Each target lists delivery states and sanitized failures. Enter a reason before
+retrying a failed delivery or disabling the target. Confirm the exact destination
+before disabling it. An unresolved retry keeps its original operation; use the
+explicit new-action control to start another intent after checking current state.
+Retry keeps the original
+delivery ID and body. Disabling stops new and unclaimed sends, although an already
+claimed attempt can finish. Rotate by creating a replacement and disabling the
+old target. Applications need the corresponding current-read grants to process
+signals; notification status access alone does not disclose bills or keys.

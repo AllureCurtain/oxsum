@@ -8491,6 +8491,109 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/business/applications/{applicationId}/notification-endpoints": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List owner-configured application notification endpoints */
+        get: operations["listApplicationNotificationEndpoints"];
+        put?: never;
+        /** Configure immutable application destination and one-time signing secret */
+        post: operations["createApplicationNotificationEndpoint"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/business/applications/{applicationId}/notification-endpoints/{endpointId}/disable": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Disable future enqueue and unclaimed sends */
+        post: operations["disableApplicationNotificationEndpoint"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/business/applications/{applicationId}/notification-endpoints/{endpointId}/deliveries": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Read bounded delivery status under owner authority */
+        get: operations["listApplicationNotificationDeliveries"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/business/applications/{applicationId}/notification-endpoints/{endpointId}/deliveries/{deliveryId}/retry": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Retry one failed application delivery under owner authority */
+        post: operations["retryApplicationNotificationDelivery"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/integration/notification-endpoints": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Read only this application notification metadata under notificationsRead */
+        get: operations["applicationNotificationEndpoints"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/integration/notification-endpoints/{endpointId}/deliveries": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Read only this application notification metadata under notificationsRead */
+        get: operations["applicationNotificationDeliveries"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/integration/customers/{organizationId}/evidence-publications": {
         parameters: {
             query?: never;
@@ -22334,6 +22437,72 @@ export interface components {
             publishableKey: string | null;
             sdkUrl: string | null;
         };
+        ApplicationNotificationMutation: {
+            idempotencyKey: string;
+            reason: string;
+        };
+        ApplicationNotificationEndpointRequest: {
+            idempotencyKey: string;
+            reason: string;
+            /**
+             * Format: uri
+             * @description Immutable exact destination; public HTTPS by default
+             */
+            url: string;
+            destinationPolicy?: components["schemas"]["ProviderDestinationPolicy"];
+            events: components["schemas"]["ApplicationNotificationEvent"][];
+        };
+        /** @enum {string} */
+        ApplicationNotificationEvent: "customer.changed" | "key.changed" | "entitlement.changed" | "order.changed" | "statement.changed" | "evidence.published" | "balance.changed";
+        ApplicationNotificationEndpoint: {
+            /** Format: uuid */
+            endpointId: string;
+            /** Format: uuid */
+            applicationId: string;
+            /** Format: uri */
+            url: string;
+            destinationPolicy: components["schemas"]["ProviderDestinationPolicy"];
+            events: components["schemas"]["ApplicationNotificationEvent"][];
+            enabled: boolean;
+            secretLast4: string;
+            /** Format: date-time */
+            createdAt: string;
+        };
+        CreatedApplicationNotificationEndpoint: {
+            endpoint: components["schemas"]["ApplicationNotificationEndpoint"];
+            /** @description Only on first create; exact replay never recovers signing material */
+            secret: string | null;
+        };
+        ApplicationNotificationEndpoints: {
+            endpoints: components["schemas"]["ApplicationNotificationEndpoint"][];
+        };
+        ApplicationNotificationDelivery: {
+            /** Format: uuid */
+            deliveryId: string;
+            /** Format: uuid */
+            endpointId: string;
+            /** Format: uuid */
+            organizationId: string;
+            eventType: components["schemas"]["ApplicationNotificationEvent"];
+            /** Format: uuid */
+            entityId: string;
+            /** @enum {string} */
+            status: "pending" | "sending" | "delivered" | "failed";
+            attempts: number;
+            /** Format: date-time */
+            nextAttemptAt: string;
+            responseStatus: number | null;
+            lastError: string | null;
+            /** Format: date-time */
+            createdAt: string;
+            /** Format: date-time */
+            deliveredAt: string | null;
+        };
+        ApplicationNotificationDeliveries: {
+            deliveries: components["schemas"]["ApplicationNotificationDelivery"][];
+            /** Format: uuid */
+            nextCursor: string | null;
+        };
         ApplicationEvidencePublishRequest: {
             idempotencyKey: string;
             /** @enum {string} */
@@ -22537,7 +22706,7 @@ export interface components {
             nextCursor: string | null;
         };
         /** @enum {string} */
-        IntegrationScope: "customersRead" | "meteringWrite" | "customersProvision" | "billingRead" | "customersLifecycleWrite" | "customerKeysWrite" | "entitlementsRead" | "customerLinkWrite" | "evidenceRead" | "checkoutWrite" | "evidenceWrite";
+        IntegrationScope: "customersRead" | "meteringWrite" | "customersProvision" | "billingRead" | "customersLifecycleWrite" | "customerKeysWrite" | "entitlementsRead" | "customerLinkWrite" | "evidenceRead" | "checkoutWrite" | "evidenceWrite" | "notificationsRead";
         ProvisionCustomerRequest: {
             idempotencyKey: string;
             /** @description Caller-chosen identifier within the application (integration route) or legacy business namespace (business route). */
@@ -23684,6 +23853,236 @@ export interface operations {
                 content: {
                     "application/json": {
                         data: components["schemas"]["ApplicationCheckoutResult"];
+                    };
+                };
+            };
+            400: components["responses"]["Error"];
+            401: components["responses"]["Error"];
+            403: components["responses"]["Error"];
+            404: components["responses"]["Error"];
+            409: components["responses"]["Error"];
+            503: components["responses"]["Error"];
+        };
+    };
+    listApplicationNotificationEndpoints: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                applicationId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Current authorized application notification result */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: components["schemas"]["ApplicationNotificationEndpoints"];
+                    };
+                };
+            };
+            400: components["responses"]["Error"];
+            401: components["responses"]["Error"];
+            403: components["responses"]["Error"];
+            404: components["responses"]["Error"];
+            409: components["responses"]["Error"];
+            503: components["responses"]["Error"];
+        };
+    };
+    createApplicationNotificationEndpoint: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                applicationId: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ApplicationNotificationEndpointRequest"];
+            };
+        };
+        responses: {
+            /** @description Current authorized application notification result */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: components["schemas"]["CreatedApplicationNotificationEndpoint"];
+                    };
+                };
+            };
+            400: components["responses"]["Error"];
+            401: components["responses"]["Error"];
+            403: components["responses"]["Error"];
+            404: components["responses"]["Error"];
+            409: components["responses"]["Error"];
+            503: components["responses"]["Error"];
+        };
+    };
+    disableApplicationNotificationEndpoint: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                applicationId: string;
+                endpointId: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ApplicationNotificationMutation"];
+            };
+        };
+        responses: {
+            /** @description Current authorized application notification result */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: components["schemas"]["ApplicationNotificationEndpoint"];
+                    };
+                };
+            };
+            400: components["responses"]["Error"];
+            401: components["responses"]["Error"];
+            403: components["responses"]["Error"];
+            404: components["responses"]["Error"];
+            409: components["responses"]["Error"];
+            503: components["responses"]["Error"];
+        };
+    };
+    listApplicationNotificationDeliveries: {
+        parameters: {
+            query?: {
+                after?: string;
+                limit?: number;
+            };
+            header?: never;
+            path: {
+                applicationId: string;
+                endpointId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Current authorized application notification result */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: components["schemas"]["ApplicationNotificationDeliveries"];
+                    };
+                };
+            };
+            400: components["responses"]["Error"];
+            401: components["responses"]["Error"];
+            403: components["responses"]["Error"];
+            404: components["responses"]["Error"];
+            409: components["responses"]["Error"];
+            503: components["responses"]["Error"];
+        };
+    };
+    retryApplicationNotificationDelivery: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                applicationId: string;
+                endpointId: string;
+                deliveryId: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ApplicationNotificationMutation"];
+            };
+        };
+        responses: {
+            /** @description Current authorized application notification result */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: components["schemas"]["ApplicationNotificationDelivery"];
+                    };
+                };
+            };
+            400: components["responses"]["Error"];
+            401: components["responses"]["Error"];
+            403: components["responses"]["Error"];
+            404: components["responses"]["Error"];
+            409: components["responses"]["Error"];
+            503: components["responses"]["Error"];
+        };
+    };
+    applicationNotificationEndpoints: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Current authorized application notification result */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: components["schemas"]["ApplicationNotificationEndpoints"];
+                    };
+                };
+            };
+            400: components["responses"]["Error"];
+            401: components["responses"]["Error"];
+            403: components["responses"]["Error"];
+            404: components["responses"]["Error"];
+            409: components["responses"]["Error"];
+            503: components["responses"]["Error"];
+        };
+    };
+    applicationNotificationDeliveries: {
+        parameters: {
+            query?: {
+                after?: string;
+                limit?: number;
+            };
+            header?: never;
+            path: {
+                endpointId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Current authorized application notification result */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: components["schemas"]["ApplicationNotificationDeliveries"];
                     };
                 };
             };

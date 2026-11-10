@@ -6292,6 +6292,187 @@ paths:
         "404": { $ref: "#/components/responses/Error" }
         "409": { $ref: "#/components/responses/Error" }
         "503": { $ref: "#/components/responses/Error" }
+  /api/v1/business/applications/{applicationId}/notification-endpoints:
+    get:
+      operationId: listApplicationNotificationEndpoints
+      summary: List owner-configured application notification endpoints
+      security: [{ sessionCookie: [] }]
+      parameters:
+        - { in: path, name: applicationId, required: true, schema: { type: string, format: uuid } }
+      responses:
+        "200":
+          description: Current authorized application notification result
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data: { $ref: "#/components/schemas/ApplicationNotificationEndpoints" }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "409": { $ref: "#/components/responses/Error" }
+        "503": { $ref: "#/components/responses/Error" }
+    post:
+      operationId: createApplicationNotificationEndpoint
+      summary: Configure immutable application destination and one-time signing secret
+      security: [{ sessionCookie: [] }]
+      parameters:
+        - { in: path, name: applicationId, required: true, schema: { type: string, format: uuid } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ApplicationNotificationEndpointRequest" }
+      responses:
+        "200":
+          description: Current authorized application notification result
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data: { $ref: "#/components/schemas/CreatedApplicationNotificationEndpoint" }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "409": { $ref: "#/components/responses/Error" }
+        "503": { $ref: "#/components/responses/Error" }
+  /api/v1/business/applications/{applicationId}/notification-endpoints/{endpointId}/disable:
+    post:
+      operationId: disableApplicationNotificationEndpoint
+      summary: Disable future enqueue and unclaimed sends
+      security: [{ sessionCookie: [] }]
+      parameters:
+        - { in: path, name: applicationId, required: true, schema: { type: string, format: uuid } }
+        - { in: path, name: endpointId, required: true, schema: { type: string, format: uuid } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ApplicationNotificationMutation" }
+      responses:
+        "200":
+          description: Current authorized application notification result
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data: { $ref: "#/components/schemas/ApplicationNotificationEndpoint" }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "409": { $ref: "#/components/responses/Error" }
+        "503": { $ref: "#/components/responses/Error" }
+  /api/v1/business/applications/{applicationId}/notification-endpoints/{endpointId}/deliveries:
+    get:
+      operationId: listApplicationNotificationDeliveries
+      summary: Read bounded delivery status under owner authority
+      security: [{ sessionCookie: [] }]
+      parameters:
+        - { in: path, name: applicationId, required: true, schema: { type: string, format: uuid } }
+        - { in: path, name: endpointId, required: true, schema: { type: string, format: uuid } }
+        - { in: query, name: after, schema: { type: string, format: uuid } }
+        - { in: query, name: limit, schema: { type: integer, minimum: 1, maximum: 50, default: 50 } }
+      responses:
+        "200":
+          description: Current authorized application notification result
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data: { $ref: "#/components/schemas/ApplicationNotificationDeliveries" }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "409": { $ref: "#/components/responses/Error" }
+        "503": { $ref: "#/components/responses/Error" }
+  /api/v1/business/applications/{applicationId}/notification-endpoints/{endpointId}/deliveries/{deliveryId}/retry:
+    post:
+      operationId: retryApplicationNotificationDelivery
+      summary: Retry one failed application delivery under owner authority
+      security: [{ sessionCookie: [] }]
+      parameters:
+        - { in: path, name: applicationId, required: true, schema: { type: string, format: uuid } }
+        - { in: path, name: endpointId, required: true, schema: { type: string, format: uuid } }
+        - { in: path, name: deliveryId, required: true, schema: { type: string, format: uuid } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ApplicationNotificationMutation" }
+      responses:
+        "200":
+          description: Current authorized application notification result
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data: { $ref: "#/components/schemas/ApplicationNotificationDelivery" }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "409": { $ref: "#/components/responses/Error" }
+        "503": { $ref: "#/components/responses/Error" }
+  /api/v1/integration/notification-endpoints:
+    get:
+      operationId: applicationNotificationEndpoints
+      summary: Read only this application notification metadata under notificationsRead
+      security: [{ integrationCredential: [] }]
+      responses:
+        "200":
+          description: Current authorized application notification result
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data: { $ref: "#/components/schemas/ApplicationNotificationEndpoints" }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "409": { $ref: "#/components/responses/Error" }
+        "503": { $ref: "#/components/responses/Error" }
+  /api/v1/integration/notification-endpoints/{endpointId}/deliveries:
+    get:
+      operationId: applicationNotificationDeliveries
+      summary: Read only this application notification metadata under notificationsRead
+      security: [{ integrationCredential: [] }]
+      parameters:
+        - { in: path, name: endpointId, required: true, schema: { type: string, format: uuid } }
+        - { in: query, name: after, schema: { type: string, format: uuid } }
+        - { in: query, name: limit, schema: { type: integer, minimum: 1, maximum: 50, default: 50 } }
+      responses:
+        "200":
+          description: Current authorized application notification result
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data: { $ref: "#/components/schemas/ApplicationNotificationDeliveries" }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "409": { $ref: "#/components/responses/Error" }
+        "503": { $ref: "#/components/responses/Error" }
   /api/v1/integration/customers/{organizationId}/evidence-publications:
     post:
       operationId: publishApplicationEvidence
@@ -16973,6 +17154,71 @@ components:
         checkoutUrl: { type: [string, "null"] }
         publishableKey: { type: [string, "null"] }
         sdkUrl: { type: [string, "null"] }
+    ApplicationNotificationMutation:
+      type: object
+      additionalProperties: false
+      required: [idempotencyKey, reason]
+      properties:
+        idempotencyKey: { type: string, minLength: 1, maxLength: 200 }
+        reason: { type: string, minLength: 1, maxLength: 500 }
+    ApplicationNotificationEndpointRequest:
+      type: object
+      additionalProperties: false
+      required: [idempotencyKey, reason, url, events]
+      properties:
+        idempotencyKey: { type: string, minLength: 1, maxLength: 200 }
+        reason: { type: string, minLength: 1, maxLength: 500 }
+        url: { type: string, format: uri, maxLength: 2000, description: Immutable exact destination; public HTTPS by default, explicit owner approval required for exact internal addresses }
+        destinationPolicy: { $ref: "#/components/schemas/ProviderDestinationPolicy" }
+        events: { type: array, minItems: 1, maxItems: 7, uniqueItems: true, items: { $ref: "#/components/schemas/ApplicationNotificationEvent" } }
+    ApplicationNotificationEvent:
+      type: string
+      enum: [customer.changed, key.changed, entitlement.changed, order.changed, statement.changed, evidence.published, balance.changed]
+    ApplicationNotificationEndpoint:
+      type: object
+      required: [endpointId, applicationId, url, destinationPolicy, events, enabled, secretLast4, createdAt]
+      properties:
+        endpointId: { type: string, format: uuid }
+        applicationId: { type: string, format: uuid }
+        url: { type: string, format: uri }
+        destinationPolicy: { $ref: "#/components/schemas/ProviderDestinationPolicy" }
+        events: { type: array, items: { $ref: "#/components/schemas/ApplicationNotificationEvent" } }
+        enabled: { type: boolean }
+        secretLast4: { type: string }
+        createdAt: { type: string, format: date-time }
+    CreatedApplicationNotificationEndpoint:
+      type: object
+      required: [endpoint, secret]
+      properties:
+        endpoint: { $ref: "#/components/schemas/ApplicationNotificationEndpoint" }
+        secret: { type: [string, "null"], description: Only on first create; exact replay never recovers signing material }
+    ApplicationNotificationEndpoints:
+      type: object
+      required: [endpoints]
+      properties:
+        endpoints: { type: array, maxItems: 20, items: { $ref: "#/components/schemas/ApplicationNotificationEndpoint" } }
+    ApplicationNotificationDelivery:
+      type: object
+      required: [deliveryId, endpointId, organizationId, eventType, entityId, status, attempts, nextAttemptAt, responseStatus, lastError, createdAt, deliveredAt]
+      properties:
+        deliveryId: { type: string, format: uuid }
+        endpointId: { type: string, format: uuid }
+        organizationId: { type: string, format: uuid }
+        eventType: { $ref: "#/components/schemas/ApplicationNotificationEvent" }
+        entityId: { type: string, format: uuid }
+        status: { type: string, enum: [pending, sending, delivered, failed] }
+        attempts: { type: integer }
+        nextAttemptAt: { type: string, format: date-time }
+        responseStatus: { type: [integer, "null"] }
+        lastError: { type: [string, "null"] }
+        createdAt: { type: string, format: date-time }
+        deliveredAt: { type: [string, "null"], format: date-time }
+    ApplicationNotificationDeliveries:
+      type: object
+      required: [deliveries, nextCursor]
+      properties:
+        deliveries: { type: array, maxItems: 50, items: { $ref: "#/components/schemas/ApplicationNotificationDelivery" } }
+        nextCursor: { type: [string, "null"], format: uuid }
     ApplicationEvidencePublishRequest:
       type: object
       additionalProperties: false
@@ -17128,7 +17374,7 @@ components:
         nextCursor: { type: [string, "null"] }
     IntegrationScope:
       type: string
-      enum: [customersRead, meteringWrite, customersProvision, billingRead, customersLifecycleWrite, customerKeysWrite, entitlementsRead, customerLinkWrite, evidenceRead, checkoutWrite, evidenceWrite]
+      enum: [customersRead, meteringWrite, customersProvision, billingRead, customersLifecycleWrite, customerKeysWrite, entitlementsRead, customerLinkWrite, evidenceRead, checkoutWrite, evidenceWrite, notificationsRead]
     ProvisionCustomerRequest:
       type: object
       additionalProperties: false
@@ -17150,7 +17396,7 @@ components:
         idempotencyKey: { type: string, minLength: 1, maxLength: 200 }
         name: { type: [string, "null"], maxLength: 80 }
         applicationId: { type: [string, "null"], format: uuid, description: "Owner-selected stable application; customerIds must be empty. Only that application’s provisioned accounts are accessible. Omit for existing explicit grants." }
-        scopes: { type: array, minItems: 1, maxItems: 11, uniqueItems: true, items: { $ref: "#/components/schemas/IntegrationScope" } }
+        scopes: { type: array, minItems: 1, maxItems: 12, uniqueItems: true, items: { $ref: "#/components/schemas/IntegrationScope" } }
         customerIds: { type: array, minItems: 0, maxItems: 1000, uniqueItems: true, items: { type: string, format: uuid }, description: "Existing customers the credential may read or meter. Must be empty for an application grant. Legacy grants may be empty only for customersProvision alone." }
         expiresAt: { type: string, format: date-time }
         reason: { type: string, minLength: 1, maxLength: 500 }

@@ -2180,9 +2180,42 @@
         "customerLinkWrite": "Invite verified personal ownership of application accounts",
         "evidenceRead": "Read original frozen customer evidence",
         "evidenceWrite": "Publish bounded application customer evidence",
-        "checkoutWrite": "Initiate and recover application customer checkout"
+        "checkoutWrite": "Initiate and recover application customer checkout",
+        "notificationsRead": "Read application notification status"
       },
       "invalidApplication": "Enter a stable key, a name, a reason and an account limit from 1 to 10,000."
+    },
+    "notifications": {
+      "title": "Notifications · {{name}}",
+      "help": "Send signed lifecycle signals to your application. The receiver must deduplicate delivery IDs and read current scoped state. At most two destinations are active; existing events are not replayed when a destination is created.",
+      "url": "Receiver URL",
+      "internal": "Approve this exact internal destination",
+      "ips": "Approved internal IP addresses (comma separated)",
+      "events": "Lifecycle signals",
+      "eventsList": {
+        "customer_changed": "Customer account changes",
+        "key_changed": "Customer key changes",
+        "entitlement_changed": "Plan and entitlement changes",
+        "order_changed": "Application payment and return changes",
+        "statement_changed": "Statement changes",
+        "evidence_published": "Evidence publication",
+        "balance_changed": "Balance changes"
+      },
+      "create": "Create notification endpoint",
+      "disable": "Disable endpoint",
+      "disabled": "Disabled",
+      "disableHelp": "Disabling stops new enqueue and unclaimed sends. An already claimed delivery may finish. Create a replacement endpoint to rotate the address or signing key.",
+      "retry": "Retry failed delivery",
+      "attempts": "Attempts: {{count}}",
+      "emptyDeliveries": "No signals have been queued for this endpoint.",
+      "secretUnavailable": "This operation already created an endpoint. Its signing secret cannot be read again; configure a replacement if the first response was lost.",
+      "status": {
+        "pending": "Pending",
+        "sending": "Sending",
+        "delivered": "Delivered",
+        "failed": "Failed"
+      },
+      "emptyEndpoints": "No notification endpoint configured."
     }
   },
   "setup": {

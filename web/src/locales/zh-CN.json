@@ -2180,9 +2180,42 @@
         "customerLinkWrite": "邀请已验证用户成为应用账户的所有者",
         "evidenceRead": "读取客户已冻结的原始证据",
         "evidenceWrite": "生成应用客户的范围受限证据",
-        "checkoutWrite": "发起和恢复应用客户的付款"
+        "checkoutWrite": "发起和恢复应用客户的付款",
+        "notificationsRead": "读取应用通知状态"
       },
       "invalidApplication": "请填写固定标识、名称、原因，以及 1 至 10,000 的账户上限。"
+    },
+    "notifications": {
+      "title": "通知 · {{name}}",
+      "help": "向应用发送带签名的生命周期通知。接收器须按投递 ID 去重，并通过受限接口读取当前状态。最多启用两个目标；新建目标不会重放已有事件。",
+      "url": "接收器地址",
+      "internal": "批准此明确的内部目标",
+      "ips": "批准的内部 IP 地址（逗号分隔）",
+      "events": "生命周期通知",
+      "eventsList": {
+        "customer_changed": "客户账户变化",
+        "key_changed": "客户密钥变化",
+        "entitlement_changed": "套餐与权益变化",
+        "order_changed": "应用支付及退款变化",
+        "statement_changed": "账单变化",
+        "evidence_published": "证据发布",
+        "balance_changed": "余额变化"
+      },
+      "create": "创建通知目标",
+      "disable": "停用目标",
+      "disabled": "已停用",
+      "disableHelp": "停用后停止新增和未领取的投递；已领取的投递可能完成。更换地址或签名密钥须创建新目标。",
+      "retry": "重试失败投递",
+      "attempts": "尝试次数：{{count}}",
+      "emptyDeliveries": "此目标尚无排队通知。",
+      "secretUnavailable": "此操作已创建目标，签名密钥不能再次读取。如果首次响应丢失，请配置替代目标。",
+      "status": {
+        "pending": "等待投递",
+        "sending": "投递中",
+        "delivered": "已送达",
+        "failed": "失败"
+      },
+      "emptyEndpoints": "尚未配置通知接收地址。"
     }
   },
   "setup": {

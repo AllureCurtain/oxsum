@@ -350,7 +350,7 @@ pub enum DeliveryOutcome {
 
 /// A minted signing secret: `whsec-` plus 48 lowercase hex characters, the same
 /// spelling distance from an API key's `oxs-` that Stripe's `whsec_` keeps.
-fn mint_secret() -> String {
+pub(crate) fn mint_secret() -> String {
     let mut rng = rand::rng();
     let hex: String = (0..24)
         .map(|_| format!("{:02x}", rng.random::<u8>()))

@@ -502,6 +502,10 @@ const MIGRATIONS: &[(&str, &str)] = &[
         "0127_application_evidence_publication",
         include_str!("../migrations/0127_application_evidence_publication.sql"),
     ),
+    (
+        "0128_application_notifications",
+        include_str!("../migrations/0128_application_notifications.sql"),
+    ),
 ];
 
 /// Advisory-lock key serialising the migration runner across processes.

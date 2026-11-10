@@ -3773,3 +3773,24 @@ order identities. Creation validates current application authority inside the
 order transaction and verifies the source fingerprint again under debt ownership
 locks. Optional absent fields remain unencoded for stable historical request
 replay. No new schema, entitlement mutation or wallet funding is required.
+
+## 2026-11-10 Transactional application lifecycle identity signals (#937)
+
+Configure application endpoints under owner IntegrationsManage authority, retaining
+immutable URL/policy/key identity and one-time secret behavior. Machine runtime
+receives only explicit notificationsRead metadata authority. A different
+application's endpoint or a human's customer webhook never transfers ownership.
+
+Use source-table AFTER triggers solely for bounded identity-signal enqueue in
+the source transaction. This avoids missing staff/job/callback updates without
+embedding financial policy or secrets in triggers. Two active endpoints cap fan-out;
+source updates and signals roll back together. Bodies remain exact bytes; a
+separate durable queue isolates ownership while reusing existing signature,
+retry schedule and worker job. Safe ProviderHttp enforces explicit owner-approved
+network destinations, pinned DNS answers and no proxies/redirects. Consumers
+deduplicate and fetch current facts; message time is not financial ordering.
+
+No historical backfill or natural-time expiration event is promised. Endpoint
+delivery authorization is independent of runtime credential expiry/revocation;
+disable the endpoint to stop future unclaimed sends. Customer balance signals
+cover documented source writes, not arbitrary ledger-level data capture.

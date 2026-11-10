@@ -1573,3 +1573,11 @@ certified safe or supported by this release. sqlx 0.8.6 constrains its native
 dependency to ^0.30.1, while the advisory requires >=0.39.0; revisit when a compatible
 patched path exists. The unmaintained optional `astral-tokio-tar` warning remains
 visible. No dependency versions change for this scope correction.
+### Application notification receiver fixture
+
+`python3 -m unittest discover -s examples/application-notifications -p 'test_*.py'`
+checks independent original-byte HMAC, durable SQLite deduplication and
+current-state reconciliation. The Rust application_notifications HTTP suite
+passes actual signed Rust bodies to Python as stdin, not secret-bearing command
+arguments. See [receiver setup](../examples/application-notifications/README.md)
+for the explicit loopback destination and example-only environment variables.

@@ -469,3 +469,12 @@ Original shared allowance records 2/5 attempts, CNY0.016896 reserved and CNY0.00
 conservative peak-rate usage cost; completed scenarios must not automatically repeat.
 This development artifact cannot certify the unmerged application stack or final
 candidate. No PSP, publication, external contact or existing-service upgrade.
+- #937 owner-configured application lifecycle notifications implement immutable
+  targets, one-time signing material, explicit runtime metadata scope and
+  transactional bounded source signals. Four core authority/lifecycle/lease cases,
+  HTTP and existing-webhook regression, and independent Python exact-byte/dedup
+  checks passed. Full workspace: 2,194 passed (six existing opt-ins); 38 final
+  focused checks and strict core/server Clippy, format, contract/codegen/build,
+  three Python and ten frontend checks passed. [Evidence](evidence/application-notifications.md).
+  Browser, independent review, protected integration and candidate remain.
+  No external receiver/provider/payment was contacted.
