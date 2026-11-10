@@ -1040,6 +1040,7 @@ credential model and is not a replacement for a public application's own auth.
 
 `customer_credit.rs` authorizes monthly facility reads/decisions under current personal Business capabilities. Reads check ledger absence and terms in one repeatable-read snapshot; existing wallets use a read-only facade and an authority-checked snapshot. A fresh read-committed authority check runs after releasing the snapshot so a concurrent completed staff revocation cannot be hidden by repeatable-read visibility. The facade opens outside the transaction to avoid a second checkout from a one-connection pool. Writes preflight authority/replay/archive state before wallet initialization, then recheck inside the Business lock, acquire the organization admission lock and reuse the credit lock. `Wallet::set_credit_limit_in` borrows that transaction so its ledger append and threshold reset commit with organization terms, `business_mutations` and `admin_audit`. The receipt stores no-op decisions too, preventing a historical retry from overwriting later terms. Initial empty ledger bootstrap remains outside the financial transaction; no facility or terms commit until final authority succeeds. Existing statement issuance and dunning continue consuming the same term columns.
 
+
 ### Staff monthly statement inspection
 
 `customer_statements.rs` reads monthly `statements`/`statement_lines` under
@@ -1112,3 +1113,4 @@ Existing payment entries retain their original keys and bytes. Replays require
 the complete credit-only ledger shape and matching statement/amount/entry audit;
 missing or inconsistent source evidence fails closed without a new posting.
 The helper returns current standing beside the original receipt.
+

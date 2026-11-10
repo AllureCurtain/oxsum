@@ -1931,6 +1931,7 @@ A blank grace value disables automatic monthly dunning; zero gives no additional
 
 A total below already drawn or reserved credit is refused and leaves every term unchanged; close the error dialog to correct the input. If the connection fails or the outcome is uncertain, the form retains the original request and offers an exact retry, even after closing and reopening its dialog. Complete that retry before making another decision. A historical retry returns its original receipt and cannot overwrite a later approval. Archived customers can be inspected but cannot receive new credit decisions. Monthly statement issue/payment management remains separate from this approval card.
 
+
 ## Inspect monthly wallet-credit statements
 
 Open **Business → Customers**, select a customer, and find **Monthly wallet-credit
@@ -1990,3 +1991,4 @@ payment cannot exceed remaining credit debt through the selected month; earlier
 unbilled debt is repaid first. The operation never turns excess into wallet funds.
 A source-audit conflict requires reconciliation of the original payment; do not
 invent a new key to work around it.
+

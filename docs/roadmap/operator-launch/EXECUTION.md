@@ -79,6 +79,13 @@ Read this file on every resume, then reconcile actual main, worktrees, issues/PR
   protected integration and #1006 staff reference/portal acceptance remain.
   [Evidence](evidence/monthly-payment-atomic.md).
 
+- #1007 implements bounded Business monthly statement inspection with separate
+  bilingual customer UI, immutable rows, exact recorded money and fresh authority.
+  27 related + five final focused tests and 2,260 workspace cases passed; the known
+  #975 bundle-upgrade fixture is the sole baseline failure. Browser 20+2 pagination,
+  bilingual detail/mobile and read-side-effect checks passed. [Evidence](evidence/monthly-statement-reads.md).
+  Independent review/integration and #1006 monthly issuance/repayment remain.
+
 - #960 records integrated `ac7bb191` customer browser readiness, explicit free
   terms, successful local SSE call and immediate offline WASM proof with
   wrong-hash rejection. [Evidence](evidence/first-call-browser/README.md). Paid
