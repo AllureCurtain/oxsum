@@ -1983,6 +1983,7 @@ Monthly action feedback follows the selected language. Refreshing a draft after
 changed source figures clears the old review warning; successful issuance keeps
 its confirmation visible beside the issued document.
 
+
 ## Retry a recorded monthly payment
 
 After a deployment administrator records a verified monthly payment, retain the
@@ -1992,6 +1993,7 @@ payment cannot exceed remaining credit debt through the selected month; earlier
 unbilled debt is repaid first. The operation never turns excess into wallet funds.
 A source-audit conflict requires reconciliation of the original payment; do not
 invent a new key to work around it.
+
 
 
 

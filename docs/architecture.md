@@ -1100,6 +1100,7 @@ recovery. Bounded line decoding is shared with staff inspection; over-limit deta
 cannot be silently issued through this reviewed path. These actions do not alter
 monthly repayment or plan-statement policy.
 
+
 ## Atomic monthly repayments (#1013)
 
 `monthly_payments.rs` owns deployment recorded payments. A global action-key
@@ -1114,6 +1115,7 @@ Existing payment entries retain their original keys and bytes. Replays require
 the complete credit-only ledger shape and matching statement/amount/entry audit;
 missing or inconsistent source evidence fails closed without a new posting.
 The helper returns current standing beside the original receipt.
+
 
 
 

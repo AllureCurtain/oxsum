@@ -940,6 +940,7 @@ The reason and actor are audited atomically with issuance. Exact retries retain
 their original result, including empty months. Monthly repayment remains a
 separate workflow under #1006; these actions do not record incoming money.
 
+
 ## Atomic recorded monthly repayments (#1013)
 
 A deployment-recorded monthly payment names one issued statement and preserves
@@ -948,5 +949,6 @@ or exceed unpaid credit draws through that month. Cash, credit restoration,
 statement standing, events and source-bound audit commit together. Exact retries
 remain valid after full payment; a changed amount or statement conflicts. Staff
 portal repayment and explicit bank-reference collection remain tracked by #1006.
+
 
 
