@@ -10,6 +10,8 @@ Updated: 2026-11-11
 
 - [ ] [#1015](https://github.com/AllureCurtain/oxsum/issues/1015) — Complete personal Business monthly repayment with globally unique verified payment references, atomic funds/audit, recoverable portal intent and customer/browser acceptance. Prerequisite portal #1012 and atomic repayment #1014 composed; contract and implementation pending.
 
+- [ ] [#1015](https://github.com/AllureCurtain/oxsum/issues/1015) — Complete personal Business monthly repayment with globally unique verified payment references, atomic funds/audit, recoverable portal intent and customer/browser acceptance. Prerequisite portal #1012 and atomic repayment #1014 composed; all 16 focused core/HTTP composition cases passed. Contract and implementation pending.
+
 - [ ] [#1011](https://github.com/AllureCurtain/oxsum/issues/1011) — Personal Business reviewed monthly generation/finalization and immutable audit implemented on #1008/#1010. 37 related and 10 final checks pass; 2,270-case full run had one repaired migration inventory assertion and the known #975 baseline failure. Strict Clippy/contract/build and actual HTTP retry pass. Chinese/English desktop/mobile browser acceptance and exact lost-response retry passed; feedback fixes verified. Browser space closed; review and integration pending. [Evidence](docs/roadmap/operator-launch/evidence/monthly-staff-issuance/README.md).
 
 - [ ] [#1006](https://github.com/AllureCurtain/oxsum/issues/1006) — Complete monthly wallet-credit statement inspection, issuance and repayment through Business authority in separate minimal units.
