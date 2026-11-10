@@ -401,7 +401,7 @@ jobs:
           # /usr/local root fails on a runner whose cargo home is not writable as
           # root-owned (the first dispatch hit `/usr/local/.crates.toml` denied).
       - run: rustup target add wasm32-unknown-unknown
-      - uses: actions/setup-python@v6
+      - uses: actions/setup-python@v7
         with:
           python-version: '3.12'
       - run: python3 -m pip install -r scripts/verify-examples-requirements.txt
