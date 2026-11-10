@@ -29,6 +29,16 @@ continues to the Business console.
   skipped, including delivery replay, wrong authority, consent, upgrade and
   concurrent redemption coverage.
 - Contract code generation and the TypeScript/production frontend build passed.
-- Full workspace, strict changed-crate Clippy and actual browser retry are being
-  recorded before submission. This development repair is not final candidate
-  or external-provider/payment certification.
+- Complete workspace: **2,191 passed**, zero failed, six existing opt-ins skipped
+  (1,977.571 seconds). Strict core/server all-target Clippy passed (6m55s).
+- Actual browser retry used source `013bc8cb`, binary SHA-256
+  `d90c5e178ded6b8e3fe5d9045736f739329a7b57c733907764f020d444f09b37`,
+  against the same isolated database and original mailed invitations. A different
+  signed-in email was refused. Finance and Support recipients registered, saw
+  the staff-specific consent/result and logged into their correct capabilities.
+  Finance had no secret editor; Support had no payments/reports/staff management.
+  Revoking Support through the owner portal removed authority; the original
+  accepted invitation no longer previewed or enabled acceptance. No customer
+  organization, key or funds were returned by either staff registration.
+- Fast PR CI `42741717964` passed. Independent approval and protected integration
+  remain. This is development repair evidence, not final candidate certification.
