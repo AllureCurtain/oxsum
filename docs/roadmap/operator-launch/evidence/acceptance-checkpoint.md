@@ -44,8 +44,8 @@ PR CI does not replace full integration, engine or candidate evidence.
 | #989 | Explicit complimentary binding and ambiguous recovery | Independent approval and candidate remain |
 | #991 | Browser quota boundary and offline proof | Independent approval; preserves tested stack |
 | #993 | Chat credential isolation across user/customer | Independent approval and candidate remain |
-| #995 | Distinct customer and in-flight sale prices | Post-fix locale acceptance remains #996 |
-| #996 | Bilingual sale editor and exact validation | Actual browser reacceptance pending |
+| #995 | Distinct customer and in-flight sale prices | Independent review and candidate remain |
+| #996 | Bilingual sale editor and exact validation | Browser reacceptance passed, including retained feedback language repair |
 | #1004 | Aggregate CI/process-shared suite execution | Includes #975; exact branch full CI passed |
 | #1005 | Staff monthly credit terms | Actual credit approval browser passed |
 | #1008 | Staff monthly statement reads | Bilingual detail/mobile/pagination passed |
@@ -72,10 +72,17 @@ reference and actor audit. Customer credit used is zero; no wallet funds were
 created. TaskSpace 5 and its local listener were closed. Evidence remains on that
 PR and is not yet on main or a final candidate.
 
+#996 subsequently completed actual desktop/mobile save, publication, assignment
+and exact customer preview in Chinese/English. Browser reacceptance found retained
+feedback stuck in its original language; commit `6e4198b3` repairs render-time
+translation. Four focused and five contract checks and production build passed.
+TaskSpace 6 and its local listener were closed. Its new CI remains a separate
+required gate; no model/PSP/email request or provider budget was consumed.
+
 ## Remaining execution
 
 - Complete renewal success/failure, cancellation/expiry boundary, provider edit/
-  credential rotation, sale locale reacceptance, replacement/reissued invoice and
+  credential rotation, replacement/reissued invoice and
   complete embedded application browser journeys. Tests support their own tested
   scope; existing local fixtures do not complete every advertised journey.
 - Obtain independent review and integrate dependencies normally. Freeze one
