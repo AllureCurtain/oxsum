@@ -471,6 +471,10 @@ const MIGRATIONS: &[(&str, &str)] = &[
         include_str!("../migrations/0119_nonplan_chargeback_corrections.sql"),
     ),
     (
+        "0120_application_entitlement_reads",
+        include_str!("../migrations/0120_application_entitlement_reads.sql"),
+    ),
+    (
         "0121_customer_receipt_readiness",
         include_str!("../migrations/0121_customer_receipt_readiness.sql"),
     ),

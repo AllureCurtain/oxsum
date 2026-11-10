@@ -49,6 +49,58 @@ impl ServingAccess {
         self.channels.contains(&channel)
     }
 
+    /// Bounded public-name projection of the same direct/alias authority as the catalog.
+    /// Filtering precedes pagination; no provider identity, price or secret is selected.
+    pub(crate) async fn public_models_in(
+        &self,
+        connection: &mut sqlx::PgConnection,
+        after: Option<&str>,
+        limit: i64,
+    ) -> Result<Vec<String>, WalletError> {
+        let key_models = self
+            .key_models
+            .as_ref()
+            .map(|names| names.iter().cloned().collect::<Vec<_>>());
+        let customer_models = self
+            .customer_models
+            .as_ref()
+            .map(|names| names.iter().cloned().collect::<Vec<_>>());
+        Ok(sqlx::query_scalar(
+            "WITH latest AS (SELECT DISTINCT ON (p.channel_id,p.model) \
+                 p.channel_id,p.model,p.mode FROM oxsum.channel_prices p \
+                 JOIN oxsum.channels c USING(channel_id) \
+                 WHERE c.business_id=$1 AND c.channel_id=ANY($2) \
+                 ORDER BY p.channel_id,p.model,p.version DESC), \
+             names AS (SELECT p.channel_id,p.model AS public_model,p.model AS price_model, \
+                     NULL::text AS upstream_model FROM latest p \
+                 WHERE NOT EXISTS(SELECT 1 FROM oxsum.model_aliases a WHERE a.alias=p.model) \
+                 UNION ALL SELECT a.channel_id,a.alias, \
+                     CASE WHEN EXISTS(SELECT 1 FROM latest p WHERE p.channel_id=a.channel_id \
+                         AND p.model=a.alias) THEN a.alias ELSE a.upstream_model END, \
+                     a.upstream_model FROM oxsum.model_aliases a WHERE a.channel_id=ANY($2)) \
+             SELECT DISTINCT n.public_model COLLATE \"C\" FROM names n \
+             JOIN latest p ON p.channel_id=n.channel_id AND p.model=n.price_model \
+             JOIN oxsum.channels c ON c.channel_id=n.channel_id \
+             WHERE c.business_id=$1 AND c.channel_id=ANY($2) \
+               AND NOT(c.protocol='tasks' AND n.upstream_model IS NOT NULL) \
+               AND (p.mode<>'event' OR c.protocol='tasks') \
+               AND ($3::text[] IS NULL OR (n.public_model=ANY($3) \
+                    AND (n.upstream_model IS NULL OR n.upstream_model=ANY($3)))) \
+               AND ($4::text[] IS NULL OR (n.public_model=ANY($4) \
+                    AND (n.upstream_model IS NULL OR n.upstream_model=ANY($4)))) \
+               AND ($5::text IS NULL OR n.public_model COLLATE \"C\">$5 COLLATE \"C\") \
+             ORDER BY n.public_model COLLATE \"C\" LIMIT $6",
+        )
+        .bind(self.business_id)
+        .bind(self.channel_ids())
+        .bind(key_models)
+        .bind(customer_models)
+        .bind(after)
+        .bind(limit)
+        .fetch_all(connection)
+        .await?)
+    }
+
     pub(crate) fn channel_ids(&self) -> Vec<Uuid> {
         self.channels.iter().copied().collect()
     }

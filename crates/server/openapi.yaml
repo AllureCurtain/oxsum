@@ -6165,6 +6165,70 @@ paths:
         "401": { $ref: "#/components/responses/Error" }
         "403": { $ref: "#/components/responses/Error" }
         "409": { $ref: "#/components/responses/Error" }
+  /api/v1/integration/customers/{organization_id}/entitlement:
+    get:
+      operationId: getApplicationCustomerEntitlement
+      summary: Read this application's recorded customer entitlement standing
+      description: >-
+        Application-only entitlementsRead, explicitly granted by the owner. Returns one
+        coherent current snapshot of customer restrictions, the live or latest sold-plan
+        binding, recorded quota window and shared statement/journal debt. Quota consumption
+        includes pending draws. Ended or cancelled windows are historical recorded amounts,
+        never a promise of spendable quota. This read performs no rollover, admission,
+        reservation, dunning refresh, payment, digest publication or other domain mutation.
+        It does not guarantee that a subsequent call can execute.
+      security: [{ integrationCredential: [] }]
+      parameters:
+        - { in: path, name: organization_id, required: true, schema: { type: string, format: uuid } }
+      responses:
+        "200":
+          description: Recorded entitlement standing; nullable plan/quota means none recorded
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data: { $ref: "#/components/schemas/ApplicationCustomerEntitlement" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
+  /api/v1/integration/customers/{organization_id}/models:
+    get:
+      operationId: listApplicationCustomerModels
+      summary: Read permitted configured public models and effective customer sale terms
+      description: >-
+        Application-only entitlementsRead. Filters configured routes by this customer's
+        current model and channel authority before pagination. Optional keyId must be a
+        live consumption key issued inside this exact application/customer and can only
+        narrow the result. Alias and target must both be permitted. Returns published
+        customer sale terms under override, assigned-book, then default-book precedence;
+        saleTerms null explicitly means no active published customer sale for that model.
+        Channel wholesale prices, provider identities, credentials, endpoints and upstream
+        model names are never returned. No provider reachability or admission guarantee,
+        reservation, sale digest write or other domain mutation. Each page is a fresh snapshot.
+      security: [{ integrationCredential: [] }]
+      parameters:
+        - { in: path, name: organization_id, required: true, schema: { type: string, format: uuid } }
+        - { in: query, name: keyId, schema: { type: string, format: uuid } }
+        - { in: query, name: after, schema: { type: string, minLength: 1, maxLength: 200 } }
+        - { in: query, name: limit, schema: { type: integer, minimum: 1, maximum: 50, default: 20 } }
+      responses:
+        "200":
+          description: Permitted public model page, ordered by UTF-8 model name
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data: { $ref: "#/components/schemas/ApplicationCustomerModelPage" }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
   /api/v1/integration/customers/{organization_id}/keys:
     get:
       operationId: listApplicationCustomerKeys
@@ -16463,9 +16527,76 @@ components:
       properties:
         keys: { type: array, items: { $ref: "#/components/schemas/ApiKey" } }
         nextCursor: { type: [string, "null"], format: uuid }
+    ApplicationCustomerEntitlement:
+      type: object
+      required: [applicationId, organizationId, asOf, customerState, manuallySuspended, organizationDunningSuspended, planOverageSuspended, outstandingPlanDebtMinor, plan, quota]
+      properties:
+        applicationId: { type: string, format: uuid }
+        organizationId: { type: string, format: uuid }
+        asOf: { type: string, format: date-time }
+        customerState: { type: string, enum: [active, archived] }
+        manuallySuspended: { type: boolean }
+        organizationDunningSuspended: { type: boolean }
+        planOverageSuspended: { type: boolean, description: Shared plan admission debt/dunning projection; separate from organization-wide restrictions. }
+        outstandingPlanDebtMinor: { type: integer, format: int64, description: All retained statement/journal debt across this customer's plans; excludes pending holds. }
+        plan: { anyOf: [{ $ref: "#/components/schemas/ApplicationPlanStanding" }, { type: "null" }] }
+        quota: { anyOf: [{ $ref: "#/components/schemas/ApplicationQuotaStanding" }, { type: "null" }] }
+    ApplicationPlanStanding:
+      type: object
+      description: Live sold-plan binding, or the latest terminal binding when none is live. No lifecycle transition is performed.
+      required: [customerPlanId, planVersionId, state, cancelAtPeriodEnd, scheduledChange, credit]
+      properties:
+        customerPlanId: { type: string, format: uuid }
+        planVersionId: { type: string, format: uuid }
+        state: { type: string, enum: [pendingPayment, active, renewalPending, pastDue, expired, cancelled] }
+        cancelAtPeriodEnd: { type: boolean }
+        scheduledChange: { type: [string, "null"], format: uuid }
+        credit: { $ref: "#/components/schemas/PlanCreditStanding" }
+    ApplicationQuotaStanding:
+      type: object
+      description: Active subscription, or the retained subscription of the selected sold-plan binding. Amounts belong only to the recorded window and are not an available-to-call balance.
+      required: [subscriptionId, planPeriodId, state, windowState, periodStart, periodEnd, quotaMinor, consumedMinor, remainingRecordedMinor, allowWalletOverflow]
+      properties:
+        subscriptionId: { type: string, format: uuid }
+        planPeriodId: { type: [string, "null"], format: uuid, description: Authorized sold-plan period matching this exact quota window, if any. }
+        state: { type: string, enum: [active, cancelled, expired] }
+        windowState: { type: string, enum: [notStarted, current, ended], description: Clock position only; current does not override state, cancellation, restrictions or admission checks. }
+        periodStart: { type: string, format: date-time }
+        periodEnd: { type: [string, "null"], format: date-time }
+        quotaMinor: { type: [integer, "null"], format: int64, description: Null means unmetered in the recorded subscription. }
+        consumedMinor: { type: integer, format: int64, description: Recorded subscription consumption, including pending draws. }
+        remainingRecordedMinor: { type: [integer, "null"], format: int64, description: Max of recorded quota minus consumption and zero; null for unmetered. Never promised spendable after a boundary or restriction. }
+        allowWalletOverflow: { type: boolean, description: Recorded overflow policy; actual debt, holds and gateway checks still apply. }
+    ApplicationCustomerSaleTerms:
+      type: object
+      required: [source, scheduleId, bookId, version, effectiveFrom, effectiveUntil, terms]
+      properties:
+        source: { type: string, enum: [override, assigned, default] }
+        scheduleId: { type: string, format: uuid }
+        bookId: { type: [string, "null"], format: uuid }
+        version: { type: [integer, "null"], format: int64 }
+        effectiveFrom: { type: string, format: date-time }
+        effectiveUntil: { type: [string, "null"], format: date-time }
+        terms: { $ref: "#/components/schemas/SaleTerms" }
+    ApplicationCustomerModel:
+      type: object
+      required: [model, saleTerms]
+      properties:
+        model: { type: string }
+        saleTerms: { anyOf: [{ $ref: "#/components/schemas/ApplicationCustomerSaleTerms" }, { type: "null" }], description: Null explicitly means no active published customer sale terms; no wholesale-price fallback. }
+    ApplicationCustomerModelPage:
+      type: object
+      required: [applicationId, organizationId, keyId, asOf, models, nextCursor]
+      properties:
+        applicationId: { type: string, format: uuid }
+        organizationId: { type: string, format: uuid }
+        keyId: { type: [string, "null"], format: uuid }
+        asOf: { type: string, format: date-time }
+        models: { type: array, maxItems: 50, items: { $ref: "#/components/schemas/ApplicationCustomerModel" } }
+        nextCursor: { type: [string, "null"] }
     IntegrationScope:
       type: string
-      enum: [customersRead, meteringWrite, customersProvision, billingRead, customersLifecycleWrite, customerKeysWrite]
+      enum: [customersRead, meteringWrite, customersProvision, billingRead, customersLifecycleWrite, customerKeysWrite, entitlementsRead]
     ProvisionCustomerRequest:
       type: object
       additionalProperties: false

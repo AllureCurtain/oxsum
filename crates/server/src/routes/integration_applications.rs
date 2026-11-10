@@ -9,8 +9,9 @@ use crate::AppState;
 use crate::error::{ApiJson, ApiQuery};
 use crate::routes::{ApiResult, business, ok};
 use oxsum_core::{
-    ApplicationCustomer, ApplicationCustomerArchiveRequest, IntegrationApplication,
-    IntegrationApplicationPage, IntegrationApplicationRequest, ProvisionCustomerRequest,
+    ApplicationCustomer, ApplicationCustomerArchiveRequest, ApplicationCustomerEntitlement,
+    ApplicationCustomerModelPage, IntegrationApplication, IntegrationApplicationPage,
+    IntegrationApplicationRequest, ProvisionCustomerRequest,
 };
 
 #[derive(Deserialize)]
@@ -124,5 +125,44 @@ pub(crate) async fn revoke_customer_key(
     ok(state
         .db
         .revoke_application_customer_key(&service, id, key, &request)
+        .await?)
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(crate) struct ModelQuery {
+    key_id: Option<Uuid>,
+    after: Option<String>,
+    limit: Option<i64>,
+}
+
+pub(crate) async fn entitlement(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(id): Path<Uuid>,
+) -> ApiResult<ApplicationCustomerEntitlement> {
+    let service = business::integration(&state, &headers).await?;
+    ok(state
+        .db
+        .application_customer_entitlement(&service, id)
+        .await?)
+}
+
+pub(crate) async fn models(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(id): Path<Uuid>,
+    ApiQuery(query): ApiQuery<ModelQuery>,
+) -> ApiResult<ApplicationCustomerModelPage> {
+    let service = business::integration(&state, &headers).await?;
+    ok(state
+        .db
+        .application_customer_models(
+            &service,
+            id,
+            query.key_id,
+            query.after.as_deref(),
+            query.limit.unwrap_or(20),
+        )
         .await?)
 }

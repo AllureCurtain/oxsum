@@ -19,6 +19,8 @@ test("application grants exclude unrelated customers and freeze exact expiry and
 
 test("legacy grant paths cannot inherit an application or its lifecycle scope", () => {
   assert.throws(() => credentialRequest({ ...draft, mode: "customers", scopes: ["customersLifecycleWrite"] }, "key", 0), /scopes/);
+  assert.throws(() => credentialRequest({ ...draft, mode: "customers", scopes: ["entitlementsRead"] }, "key", 0), /scopes/);
+  assert.deepEqual(credentialRequest({ ...draft, scopes: ["entitlementsRead"] }, "key", 0).scopes, ["entitlementsRead"]);
   assert.throws(() => credentialRequest({ ...draft, mode: "customers", customerIds: [] }, "key", 0), /customers/);
   const provision = credentialRequest({ ...draft, mode: "provision" }, "key", 0);
   assert.equal(provision.applicationId, undefined);

@@ -737,7 +737,26 @@ async fn resolve(
     model: &str,
     at: OffsetDateTime,
 ) -> Result<SalePriceSnapshot, WalletError> {
-    let rows=sqlx::query(&format!("{SCHEDULES} WHERE s.business_id=$1 AND (s.kind='default' OR (s.organization_id=$2 AND (s.kind='assigned' OR s.model=$3))) AND s.effective_from<=$4 AND (COALESCE(e.effective_until,s.scheduled_until) IS NULL OR $4<COALESCE(e.effective_until,s.scheduled_until)) ORDER BY CASE s.kind WHEN 'override' THEN 0 WHEN 'assigned' THEN 1 ELSE 2 END")).bind(business).bind(org).bind(model).bind(at).fetch_all(&mut **tx).await?;
+    let snapshot = read_effective_in(tx, business, org, model, at)
+        .await?
+        .ok_or_else(|| {
+            WalletError::NotFound("no active sale price for this model and customer".into())
+        })?;
+    record_digest(tx, &snapshot).await?;
+    Ok(snapshot)
+}
+
+/// Resolves the same published terms without recording a digest or taking a second connection.
+/// The caller must authorize the exact business/customer and choose its snapshot clock.
+pub(crate) async fn read_effective_in(
+    tx: &mut Transaction<'_, Postgres>,
+    business: Uuid,
+    org: Uuid,
+    model: &str,
+    at: OffsetDateTime,
+) -> Result<Option<SalePriceSnapshot>, WalletError> {
+    let at = super::instant(at)?;
+    let rows=sqlx::query(&format!("{SCHEDULES} WHERE s.business_id=$1 AND (s.kind='default' OR (s.organization_id=$2 AND (s.kind='assigned' OR s.model=$3))) AND s.effective_from<=$4 AND (COALESCE(e.effective_until,s.scheduled_until) IS NULL OR $4<COALESCE(e.effective_until,s.scheduled_until)) ORDER BY CASE s.kind WHEN 'override' THEN 0 WHEN 'assigned' THEN 1 ELSE 2 END LIMIT 4")).bind(business).bind(org).bind(model).bind(at).fetch_all(&mut **tx).await?;
     let schedules = rows.iter().map(schedule).collect::<Result<Vec<_>, _>>()?;
     // Refuse corrupted ambiguity instead of relying on row order to choose a bill.
     for kind in ["override", "assigned", "default"] {
@@ -775,13 +794,10 @@ async fn resolve(
                 effective_until: current.effective_until,
                 terms,
             };
-            record_digest(tx, &snapshot).await?;
-            return Ok(snapshot);
+            return Ok(Some(snapshot));
         }
     }
-    Err(WalletError::NotFound(
-        "no active sale price for this model and customer".into(),
-    ))
+    Ok(None)
 }
 
 /// Persists the snapshot's digest → canonical-row mapping so a later proof can

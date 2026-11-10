@@ -294,3 +294,26 @@ Management credential revocation does not cascade to previously issued gateway
 keys, which retain explicit expiry/revocation and customer lifecycle restrictions.
 Entitlement/checkout/evidence scopes, consent linking, signed notifications and
 the complete separate-application J18 remain distinct N21 deliverables.
+
+
+### Application entitlement and customer sale reads (#898)
+
+An owner can explicitly grant application-only `entitlementsRead`. Existing
+credentials gain no permission. `GET /api/v1/integration/customers/{organization_id}/entitlement`
+returns recorded customer restrictions, sold-plan lifecycle, quota window/counters
+and shared plan debt. Recorded remainder includes pending draws and is never a
+promise of admission after cancellation, expiry or a restriction.
+
+`GET /api/v1/integration/customers/{organization_id}/models` filters configured
+public models by current customer, alias-target and optional application-issued
+key/group permissions before pagination (`limit` 1–50, default 20; `after` is the
+last public name). `keyId` must be live and belong to this exact application and
+customer. Effective published customer sale terms use override, assigned-book,
+then default precedence. `saleTerms: null` means unavailable, without substituting
+wholesale channel prices. Provider names, destinations, secrets and costs stay
+private. Every page chooses its own database snapshot.
+
+These reads never reserve, roll quota, refresh dunning, publish a sale digest,
+write a bill or contact a provider. They show current recorded/configured facts;
+actual request admission remains authoritative. Personal sessions and consumption
+keys cannot use these application management routes.
