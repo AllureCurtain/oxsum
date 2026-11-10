@@ -89,7 +89,6 @@ test("application statement history requires explicit scoped billing authority",
   }
 });
 
-
 test("monthly credit terms require personal Business authority", () => {
   const path = api.paths["/api/v1/business/customers/{organizationId}/credit-terms"];
   for (const method of ["get", "put"]) {
@@ -97,5 +96,13 @@ test("monthly credit terms require personal Business authority", () => {
     assert.equal(path[method]["x-consumption-key-access"], "denied");
     assert.ok(path[method].responses["403"]);
     assert.ok(path[method].responses["404"]);
+  }
+});
+
+test("monthly statement inspection only advertises personal staff authority", () => {
+  for (const suffix of ["", "/{statementId}"]) {
+    const operation = api.paths[`/api/v1/business/customers/{organizationId}/monthly-statements${suffix}`].get;
+    assert.deepEqual(operation.security, [{ sessionCookie: [] }]);
+    assert.equal(operation["x-consumption-key-access"], "denied");
   }
 });
