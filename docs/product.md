@@ -1,5 +1,9 @@
 # Product specification
 
+The Business sold-plan editor preserves exact credit amounts with up to six
+decimal places. Invalid precision or unsafe integer amounts cannot publish an
+immutable plan version; explicit zero and blank unmetered quota remain distinct.
+
 ## Self-hosted release target
 
 The accepted [self-hosted release contract](roadmap/self-hosted-v1/README.md) (#591) supersedes the portfolio-only product direction. Operators own providers, sale prices and merchant collection; the oxsum project takes no payment or cut. Release one supports one business with many individual/team customer accounts. Existing organizations remain customers; business staff authority is separate. The contract specifies planned behavior, and [status](roadmap/self-hosted-v1/STATUS.md) distinguishes implementation and external validation. Shipped behavior below changes only as the corresponding issues integrate.

@@ -2,6 +2,7 @@ import { useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Layers } from "lucide-react";
 import { ApiError } from "../../api/client";
+import { decimalMinor } from "../../lib/money";
 import {
   useBusinessPlans,
   useCapability,
@@ -19,7 +20,6 @@ import {
   EmptyRows,
   Field,
   NativeSelect,
-  NumberInput,
   TableShell,
   Td,
   TextInput,
@@ -43,7 +43,12 @@ function PublishForm() {
   const [quota, setQuota] = useState("");
   const [period, setPeriod] = useState<"calendarMonth" | "anniversary">("calendarMonth");
   const [overage, setOverage] = useState(false);
+  const [attempted, setAttempted] = useState(false);
   const [sort] = useState("0");
+  const priceMinor = decimalMinor(price, 6, true);
+  const quotaMinor = quota.trim() === "" ? null : decimalMinor(quota, 6, true);
+  const invalidPrice = priceMinor === null;
+  const invalidQuota = quota.trim() !== "" && quotaMinor === null;
 
   // Distinct planIds already in the catalogue — a version bump reuses one.
   const planIds = Array.from(new Set((plans.data ?? []).map((p) => p.planId)));
@@ -54,13 +59,15 @@ function PublishForm() {
         className="flex flex-col gap-3"
         onSubmit={(e) => {
           e.preventDefault();
+          setAttempted(true);
+          if (priceMinor === null || invalidQuota) return;
           publish.mutate(
             {
               planId: planId || null,
               name,
-              priceMinor: Math.round(Number(price) * 1_000_000),
+              priceMinor,
               currency,
-              quotaMinor: quota === "" ? null : Math.round(Number(quota) * 1_000_000),
+              quotaMinor,
               periodKind: period,
               overageEnabled: overage,
               sortOrder: Number(sort) || 0,
@@ -70,6 +77,7 @@ function PublishForm() {
                 setName("");
                 setPrice("");
                 setQuota("");
+                setAttempted(false);
               },
             },
           );
@@ -80,7 +88,7 @@ function PublishForm() {
         </Field>
         <div className="grid grid-cols-2 gap-3">
           <Field label={t("biz.plans.colPrice")} hint={t("biz.plans.creditsHint")}>
-            <NumberInput value={price} onChange={(e) => setPrice(e.target.value)} required min={0} step="any" />
+            <TextInput inputMode="decimal" maxLength={40} value={price} onChange={(e) => setPrice(e.target.value)} required aria-invalid={attempted && invalidPrice} aria-describedby={attempted && invalidPrice ? "plan-money-error" : undefined} />
           </Field>
           <Field label={t("biz.plans.colCurrency")}>
             <TextInput value={currency} onChange={(e) => setCurrency(e.target.value)} required maxLength={3} />
@@ -88,7 +96,7 @@ function PublishForm() {
         </div>
         <div className="grid grid-cols-2 gap-3">
           <Field label={t("biz.plans.colQuota")} hint={t("biz.plans.unmeteredHint")}>
-            <NumberInput value={quota} onChange={(e) => setQuota(e.target.value)} min={0} step="any" />
+            <TextInput inputMode="decimal" maxLength={40} value={quota} onChange={(e) => setQuota(e.target.value)} aria-invalid={attempted && invalidQuota} aria-describedby={attempted && invalidQuota ? "plan-money-error" : undefined} />
           </Field>
           <Field label={t("biz.plans.colPeriod")}>
             <NativeSelect value={period} onChange={(e) => setPeriod(e.target.value as typeof period)}>
@@ -114,6 +122,7 @@ function PublishForm() {
           {t("biz.plans.overage")}
         </label>
         {publish.error instanceof ApiError ? <Banner tone="error">{publish.error.message}</Banner> : null}
+        {attempted && (invalidPrice || invalidQuota) ? <p id="plan-money-error" role="alert" className="text-sm text-danger">{t("biz.plans.invalidMoney")}</p> : null}
         <Button type="submit" isLoading={publish.isPending}>{t("biz.plans.publish")}</Button>
       </form>
     </Card>

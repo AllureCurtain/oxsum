@@ -1650,6 +1650,7 @@
       "colPeriod": "周期",
       "colCurrency": "币种",
       "creditsHint": "以积分计",
+      "invalidMoney": "请输入零或正数，最多六位小数，且不超过 9007199254.740991 积分。配额留空表示不限量。系统不会对输入金额四舍五入。",
       "unmeteredHint": "留空 = 不限量",
       "overage": "允许超出配额",
       "versionOf": "新版本所属",

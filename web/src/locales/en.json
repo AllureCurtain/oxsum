@@ -1650,6 +1650,7 @@
       "colPeriod": "Period",
       "colCurrency": "Currency",
       "creditsHint": "in credits",
+      "invalidMoney": "Enter zero or a positive decimal amount with at most six decimal places, no larger than 9007199254.740991 credits. Leave quota blank for unmetered usage. Values are never rounded.",
       "unmeteredHint": "blank = unmetered",
       "overage": "Allow overage past quota",
       "versionOf": "New version of",
