@@ -841,3 +841,8 @@ read projection does not independently reverify the evidence. Original
 terminal/audit/debt history remains unchanged. A valid corrected `lost` replay
 retains its standing result without another money leg. An exact earlier resolution
 request also returns current standing; a new request for another outcome conflicts.
+
+
+### Guardrail refund and request fees (#899)
+
+A whole-response guardrail refusal, including a cache hit, charges zero customer usage and zero fixed request fee and releases the entire wallet reservation and subscription draw. Streamed content already delivered remains billed; a successful zero-token answer still owes its configured request fee. A customer refund does not imply zero provider cost: retained provider usage remains on the actual attempt and prices operator cost; absent provider counts remain untracked. A refused cache hit makes no new provider attempt. Exact request replay retains the same receipt and does not repeat a charge or refund.

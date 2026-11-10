@@ -56,6 +56,21 @@ async fn upstream(
     axum::Json(body): axum::Json<Value>,
 ) -> Response {
     seen.lock().unwrap().push(json!({"served": true}));
+    if body["messages"][0]["content"] == "zero-token-baseline" {
+        return axum::Json(json!({
+            "id": "chatcmpl-empty",
+            "choices": [{"message": {"role": "assistant", "content": ""}, "finish_reason": "stop"}],
+            "usage": {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
+        }))
+        .into_response();
+    }
+    if body["messages"][0]["content"] == "missing-usage-block" {
+        return axum::Json(json!({
+            "id": "chatcmpl-no-usage",
+            "choices": [{"message": {"role": "assistant", "content": "4111-1111-1111-1111"}}]
+        }))
+        .into_response();
+    }
     if body["stream"] == true {
         let chunk = json!({"id":"chatcmpl-test","object":"chat.completion.chunk","created":1,"model":"served","choices":[{"index":0,"delta":{"content":"the answer's PII is 4111-1111-1111-1111"},"finish_reason":null}]});
         let end = json!({"id":"chatcmpl-test","object":"chat.completion.chunk","created":1,"model":"served","choices":[{"index":0,"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":2,"completion_tokens":3,"total_tokens":5}});
@@ -145,6 +160,10 @@ struct World {
 }
 
 async fn world(database_url: &str) -> World {
+    world_with_funding(database_url, true).await
+}
+
+async fn world_with_funding(database_url: &str, funded: bool) -> World {
     let pool = sqlx::postgres::PgPoolOptions::new()
         .max_connections(8)
         .connect(database_url)
@@ -183,8 +202,13 @@ async fn world(database_url: &str) -> World {
             cache_write_5m_price_per_million: None,
             cache_write_1h_price_per_million: None,
             reasoning_price_per_million: None,
-            cost_per_request: None,
-            upstream: None,
+            cost_per_request: Some(700),
+            upstream: Some(oxsum_core::UpstreamPrices {
+                input_price_per_million: Some(1_000_000),
+                output_price_per_million: Some(1_000_000),
+                cost_per_request: Some(200),
+                ..Default::default()
+            }),
             mode: oxsum_core::BillingMode::Chat,
             rules: vec![],
         },
@@ -227,15 +251,17 @@ async fn world(database_url: &str) -> World {
         .expect("registration names a tenant")
         .to_owned();
     let tenants = oxsum_core::Tenants::new(pool.clone());
-    let (status, body) = call(
-        &app,
-        "POST",
-        "/__test/funding",
-        Some(json!({"idempotencyKey": format!("top-{suffix}"), "amountMinor": 100_000_000})),
-        Some(&key),
-    )
-    .await;
-    assert_eq!(status, StatusCode::OK, "top-up failed: {body}");
+    if funded {
+        let (status, body) = call(
+            &app,
+            "POST",
+            "/__test/funding",
+            Some(json!({"idempotencyKey": format!("top-{suffix}"), "amountMinor": 100_000_000})),
+            Some(&key),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "top-up failed: {body}");
+    }
 
     World {
         app,
@@ -952,6 +978,183 @@ async fn long_postblock_refunds_whole_but_streamed_block_still_bills_and_commits
     assert_eq!(world.seen.lock().unwrap().len(), 2);
 }
 
+/// The same explicit refund releases both money and entitlement reservations.
+/// A previously served cache source stays charged; replay cannot settle twice.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn flat_fee_refunds_preserve_provider_cost_and_release_wallet_or_quota() {
+    let Some(url) = url() else { return };
+    for quota in [false, true] {
+        let world = world_with_funding(&url, !quota).await;
+        let wallet = world.tenants.get(&world.tenant_id).await.unwrap();
+        let organization: Uuid = sqlx::query_scalar(
+            "SELECT organization_id FROM oxsum.organizations WHERE tenant_id=$1",
+        )
+        .bind(&world.tenant_id)
+        .fetch_one(world.db.pool())
+        .await
+        .unwrap();
+        if quota {
+            let (status, plan) = call(
+                &world.app,
+                "PUT",
+                &format!("/api/v1/admin/subscription-plans/{}", world.channel),
+                Some(json!({"quotaMinor":1_000_000,"resetPeriod":"monthly","allowWalletOverflow":false})),
+                Some(TOKEN),
+            )
+            .await;
+            assert_eq!(status, StatusCode::OK, "{plan}");
+            let (status, body) = call(
+                &world.app,
+                "PUT",
+                &format!("/api/v1/admin/organizations/{organization}/subscription"),
+                Some(json!({"planId":plan["data"]["planId"]})),
+                Some(TOKEN),
+            )
+            .await;
+            assert_eq!(status, StatusCode::OK, "{body}");
+            assert_eq!(wallet.available().await.unwrap(), 0);
+        }
+        let full = "complete refund reason 🦀\n".repeat(200);
+        let (endpoint, calls) = start_moderation_sequence(vec![
+            json!({"verdict":"allow"}),
+            json!({"verdict":"allow"}),
+            json!({"verdict":"allow"}),
+            json!({"verdict":"block","reason":full}),
+            json!({"verdict":"allow"}),
+            json!({"verdict":"block","reason":full}),
+            json!({"verdict":"allow"}),
+            json!({"verdict":"block","reason":full}),
+            json!({"verdict":"allow"}),
+            json!({"verdict":"allow"}),
+        ])
+        .await;
+        let name = format!("flat-{}", world.channel);
+        moderation_policy(&world, &name, &endpoint).await;
+        bind_policies(&world, &[name]).await;
+        world
+            .db
+            .set_semantic_cache(
+                &world.channel,
+                Some(&json!({"enabled":true,"ttlSeconds":60})),
+            )
+            .await
+            .unwrap();
+        let before = wallet.available().await.unwrap();
+        let mut total = 0;
+        for (index, text, stream, blocked, charged) in [
+            (0, "cache prompt", false, false, 705),
+            (1, "cache prompt", false, true, 0),
+            (2, "fresh blocked", false, true, 0),
+            (3, "stream blocked", true, true, 705),
+            (4, "zero-token-baseline", false, false, 700),
+        ] {
+            if index == 1 {
+                tokio::time::timeout(Duration::from_secs(5), async {
+                    loop {
+                        let stored: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM oxsum.cached_responses c JOIN oxsum.channels h ON h.channel_id=c.channel_id WHERE h.name=$1)")
+                            .bind(&world.channel).fetch_one(world.db.pool()).await.unwrap();
+                        if stored { break; }
+                        tokio::time::sleep(Duration::from_millis(10)).await;
+                    }
+                }).await.unwrap();
+            }
+            let idem = format!("flat-{index}");
+            let response = chat_with_stream(&world, text, &idem, stream).await;
+            let status = if blocked && !stream {
+                StatusCode::FORBIDDEN
+            } else {
+                StatusCode::OK
+            };
+            assert_eq!(response.status(), status);
+            let request = request_id(&response);
+            let body = response.into_body().collect().await.unwrap().to_bytes();
+            let description = settled(&world, &request).await;
+            assert_eq!(description["charged"], charged, "{description}");
+            assert_eq!(description["upstreamAttempts"], i64::from(index != 1));
+            let (usage_charge, provider_cost, basis): (i64, Option<i64>, String) = sqlx::query_as(
+                "SELECT charged_minor, upstream_cost_minor, cost_basis FROM oxsum.usage_records WHERE request_id=$1",
+            ).bind(&request).fetch_one(world.db.pool()).await.unwrap();
+            assert_eq!(usage_charge, charged);
+            assert_eq!(
+                provider_cost,
+                Some(if index == 1 {
+                    0
+                } else if index == 4 {
+                    200
+                } else {
+                    205
+                })
+            );
+            assert_eq!(
+                basis,
+                if index == 1 {
+                    "cache_reuse"
+                } else {
+                    "real_attempt"
+                }
+            );
+            let operation_charge: i64 = sqlx::query_scalar(
+                "SELECT charged_minor FROM oxsum.request_operations WHERE hold_key=$1",
+            )
+            .bind(format!("req-{request}:hold"))
+            .fetch_one(world.db.pool())
+            .await
+            .unwrap();
+            assert_eq!(operation_charge, charged);
+            if index != 1 {
+                let provider_usage: Value = sqlx::query_scalar("SELECT a.usage_json FROM oxsum.request_attempts a JOIN oxsum.request_operations o USING(operation_id) WHERE o.hold_key=$1")
+                    .bind(format!("req-{request}:hold")).fetch_one(world.db.pool()).await.unwrap();
+                assert_eq!(
+                    provider_usage["inputTokens"].as_i64().unwrap_or(0),
+                    if index == 4 { 0 } else { 2 }
+                );
+                assert_eq!(
+                    provider_usage["outputTokens"].as_i64().unwrap_or(0),
+                    if index == 4 { 0 } else { 3 }
+                );
+            }
+            if blocked {
+                check_exact_reason(&description["guardrail"][0], &full);
+                assert_eq!(description["guardrail"][0]["verdict"], "blocked");
+                assert_eq!(
+                    retained_reasons(&world, &request).await["guardrails"][0]["reason"],
+                    full
+                );
+                check_proof(&world, &request, false).await;
+            }
+            assert_eq!(wallet.reserved().await.unwrap(), 0);
+            total += charged;
+            assert_eq!(
+                wallet.available().await.unwrap(),
+                before - if quota { 0 } else { total }
+            );
+            if quota {
+                let consumed: i64 = sqlx::query_scalar("SELECT consumed_minor FROM oxsum.org_subscriptions WHERE organization_id=$1 AND state='active'")
+                    .bind(organization).fetch_one(world.db.pool()).await.unwrap();
+                assert_eq!(consumed, total);
+                let (drawn, settled): (i64, Option<i64>) = sqlx::query_as("SELECT drawn_minor,settled_minor FROM oxsum.subscription_draws WHERE hold_key=$1")
+                    .bind(format!("req-{request}:hold")).fetch_one(world.db.pool()).await.unwrap();
+                assert!(drawn > 0);
+                assert_eq!(settled, Some(charged));
+                assert_eq!(description["subscription"]["chargedMinor"], charged);
+            }
+            if !stream {
+                let seen = world.seen.lock().unwrap().len();
+                let moderated = calls.lock().unwrap().len();
+                let replay = chat(&world, text, &idem).await;
+                assert_eq!(replay.status(), status);
+                assert_eq!(request_id(&replay), request);
+                assert_eq!(replay.into_body().collect().await.unwrap().to_bytes(), body);
+                assert_eq!(world.seen.lock().unwrap().len(), seen);
+                assert_eq!(calls.lock().unwrap().len(), moderated);
+                assert_eq!(settled(&world, &request).await, description);
+            }
+        }
+        assert_eq!(world.seen.lock().unwrap().len(), 4);
+        assert_eq!(calls.lock().unwrap().len(), 10);
+    }
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn oversized_moderation_transport_uses_existing_phase_failure_rules() {
     let world = world_or_skip!();
@@ -1179,4 +1382,25 @@ async fn a_full_reason_usage_fault_rolls_back_ledger_settlement_and_terminal_sta
         full
     );
     check_proof(&world, &recovered, false).await;
+}
+
+/// No observed provider counts must not turn a customer refund into a false
+/// zero provider-cost claim, even when an upstream price is configured.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_refunded_answer_without_provider_usage_keeps_cost_untracked() {
+    let world = world_or_skip!();
+    keyword_policy(&world, "missing-report", "4111-1111-1111-1111", "block").await;
+    let response = chat(&world, "missing-usage-block", "missing-report").await;
+    assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    let request = request_id(&response);
+    assert_eq!(settled(&world, &request).await["charged"], 0);
+    let (cost, basis): (Option<i64>, String) = sqlx::query_as(
+        "SELECT upstream_cost_minor,cost_basis FROM oxsum.usage_records WHERE request_id=$1",
+    )
+    .bind(&request)
+    .fetch_one(world.db.pool())
+    .await
+    .unwrap();
+    assert_eq!(cost, None);
+    assert_eq!(basis, "missing");
 }
