@@ -12,6 +12,15 @@
 
 [advisories]
 ignore = [
+    # SQLite C CVE-2026-119375. Present only in the vendored engine's optional
+    # sqlite backend (sqlx-sqlite 0.8.6 -> libsqlite3-sys 0.30.1). The released
+    # oxsum server supports PostgreSQL only. CI checks the actual server graph
+    # before applying this exclusion; introducing either SQLite crate fails.
+    # This does NOT declare the optional backend fixed or supported for release.
+    # Current sqlx 0.8 requires ^0.30.1; the advisory requires >=0.39.0.
+    # Revisit with a compatible patched sqlx dependency path. See issue #925.
+    "RUSTSEC-2026-0459",
+
     # rsa — Marvin attack, timing sidechannel key recovery. Medium (5.9), no
     # fixed release available upstream.
     #

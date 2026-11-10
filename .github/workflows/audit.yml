@@ -13,6 +13,9 @@ on:
       # otherwise a broken install step goes unnoticed until the next lockfile
       # bump (which is what this PR's cargo-audit install change is).
       - '.github/workflows/audit.yml'
+      - '.cargo/audit.toml'
+      - 'scripts/check-release-dependencies.py'
+      - 'scripts/test_release_dependencies.py'
   push:
     branches: [main]
     paths:
@@ -20,6 +23,9 @@ on:
       - Cargo.lock
       - '**/Cargo.toml'
       - '.github/workflows/audit.yml'
+      - '.cargo/audit.toml'
+      - 'scripts/check-release-dependencies.py'
+      - 'scripts/test_release_dependencies.py'
   schedule:
     - cron: '0 6 * * 1'  # Monday 06:00 UTC
 
@@ -40,5 +46,9 @@ jobs:
         uses: taiki-e/install-action@v2
         with:
           tool: cargo-audit
+      - name: Check release dependency reachability
+        run: |
+          python3 scripts/test_release_dependencies.py
+          python3 scripts/check-release-dependencies.py
       - name: Audit the lockfile
         run: cargo audit

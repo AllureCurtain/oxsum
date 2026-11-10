@@ -1556,3 +1556,20 @@ with `nonplan_chargebacks`, `nonplan_refunds`, `refunds`, `dispute_atomicity` an
 server `refunds`; a new migration and source-reader change require the full
 workspace gate. CLI parser checks use `cargo test -p oxsum-core --example
 recover_nonplan_chargeback`. Validation remains in progress until recorded.
+
+### Release dependency audit scope (#925)
+
+The server ships PostgreSQL support. `python3 scripts/check-release-dependencies.py`
+walks the locked active Cargo build graph from `oxsum-server` across all platforms and fails
+if `sqlx-sqlite` or `libsqlite3-sys` becomes reachable. The Audit workflow runs this
+guard and its fault fixtures before `cargo audit`, including changes to the audit
+configuration and guard itself. Do not enable optional workspace-wide features
+when measuring the production server graph. `cargo tree -p doubleentry --features
+sqlite -i libsqlite3-sys` deliberately shows the separate optional engine backend.
+
+RUSTSEC-2026-0459 remains present in that optional SQLite backend; its exclusion
+from the PostgreSQL release audit is conditional on the guard. The backend is not
+certified safe or supported by this release. sqlx 0.8.6 constrains its native
+dependency to ^0.30.1, while the advisory requires >=0.39.0; revisit when a compatible
+patched path exists. The unmaintained optional `astral-tokio-tar` warning remains
+visible. No dependency versions change for this scope correction.
