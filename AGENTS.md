@@ -48,8 +48,8 @@ Default to the narrowest run that still covers the change:
 
 ```bash
 cargo nextest run -p oxsum-<crate>                     # one crate's suites
-cargo nextest run -p oxsum-server --test <suite>       # one test binary
-cargo nextest run -p oxsum-core --test <suite> --test <other>   # several, one selection
+cargo nextest run -p oxsum-server --test server -E 'test(/^<suite>::/)'
+cargo nextest run -p oxsum-core --test core -E 'test(/^(<suite>|<other>)::/)'
 ```
 
 Each crate's integration tests live in ONE aggregate binary —

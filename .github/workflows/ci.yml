@@ -133,7 +133,9 @@ jobs:
         if: needs.filter.outputs.rust == 'true'
         run: scripts/fmt-check.sh
       - name: Test verified tool installation
-        run: python3 scripts/test-ci-tools.py
+        run: |
+          python3 scripts/test-ci-tools.py
+          python3 scripts/test-shared-suites.py
       - name: Test candidate evidence validation
         run: |
           python3 scripts/test-candidate-ci.py
@@ -537,7 +539,7 @@ jobs:
         run: >-
           cargo nextest run --archive-file nextest-archive.tar.zst
           --partition count:${{ matrix.shard }}/3
-          -E 'not binary(generative) and not binary(seed) and not binary(jobs)'
+          -E 'not ((package(=oxsum-core) and binary(=core) and test(/^(generative|seed|jobs)::/)) or (package(=oxsum-server) and binary(=server) and test(/^jobs::/)))'
 
   # The suites that can't run under nextest, plus doctests, plus doubleentry's
   # Postgres conformance suite — all small enough to live on one runner that
@@ -587,21 +589,10 @@ jobs:
       # container even under DATABASE_URL, and a Ryuk miss leaves it.
       - name: Sweep stale testcontainers
         run: ./scripts/clean-testcontainers.sh --drop
-      # Extracted archive binaries run directly under the shell — same
-      # process-per-binary model as `cargo test`, so the process-global
-      # coordination inside generative/seed/jobs stays sound. The binaries
-      # directory holds every compiled test binary plus binaries-metadata.json.
+      # The aggregate binaries retain module prefixes. Run each process-shared
+      # module in one process; refuse absent binaries or empty suite selections.
       - name: Run the process-shared suites
-        run: |
-          bins=target/nextest/extracted/target/debug/deps
-          # `jobs-*` matches two binaries (oxsum-core and oxsum-server both
-          # have a jobs suite) — run all of them, not just the first.
-          for f in generative seed jobs; do
-            find "$bins" -name "$f-*" -type f | while read -r exe; do
-              echo "=== $f -> $exe"
-              "$exe" --test-threads=4
-            done
-          done
+        run: python3 scripts/run-shared-suites.py target/nextest/extracted/target/debug/deps
       # Doctests already run in the `test` job — no need to pay for a fresh
       # compile here.
       # doubleentry's Postgres conformance suite spins up testcontainers for several

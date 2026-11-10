@@ -1,5 +1,14 @@
 # Operator launch execution ledger
 
+## Continuation: aggregate test execution (#1003)
+
+Main `2ee70601` retains the new single integration binary per core/server crate.
+CI `42819010276` failed all shards before execution because it selected removed
+binary names; its process-shared step found no old executables and ran no tests.
+#1003 restores module-aware selection and fail-closed archived execution.
+The known manual-refund upgrade failure remains separately repaired in PR #975.
+No prior development pass or empty CI step is final-candidate evidence.
+
 Updated: 2026-11-10 (Asia/Shanghai). Owner: this task. Umbrella: [#725](https://github.com/AllureCurtain/oxsum/issues/725).
 
 Read this file on every resume, then reconcile actual main, worktrees, issues/PRs, CI and the persistent provider budget before proceeding. The [accepted contract](CONTRACT.md) preserves every N/R/J requirement; the [baseline evidence](evidence/baseline.md) distinguishes observed results from pending candidate acceptance.
