@@ -78,7 +78,7 @@ reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"
 # a stock macOS contributor has. 9 bundles ring, which is already in the tree
 # through rustls, and carries no advisory. Revisit when 11 can be built without
 # either cost. See docs/decisions.md, "jsonwebtoken stays on 9".
-jsonwebtoken = "11.1.0"
+jsonwebtoken = "9.3.1"
 # Polling the relay by hand needs the `Stream` trait itself, nothing else from futures.
 futures-core = "0.3"
 # The relay is a generator: it forwards chunks, then awaits the settlement before it ends. A
