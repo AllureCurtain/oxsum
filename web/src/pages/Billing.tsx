@@ -133,6 +133,7 @@ function StatementRows() {
   return (
     <>
       <TableShell
+        className="[&_th]:whitespace-nowrap [&_td]:whitespace-nowrap"
         head={[
           t("billing.colStatement"),
           t("common.status"),
