@@ -25,12 +25,13 @@ implementation and targeted browser evidence in the pending PRs below.
 
 ## Pending integration
 
-GitHub read on November 11 found **19 open PRs**, all with zero recorded reviews.
-All 19 have all five fast required checks green on their recorded heads; #1016
+GitHub read on November 11 found **22 open PRs**, all with zero recorded reviews.
+The original 19 have all five fast required checks green on their recorded heads; #1016
 completed [CI 42865423868](https://github.com/AllureCurtain/oxsum/actions/runs/42865423868)
 on `3e5b7d65`. This checkpoint revision will receive a new CI run. Entire reports missing
 independent reviewer approval. No self-approval or protection bypass is accepted.
 PR CI does not replace full integration, engine or candidate evidence.
+New #1020/#1021 fast CI passed; #1022 was still running at this checkpoint update.
 
 | PR | Reviewed change should establish | Dependency / remaining acceptance |
 | --- | --- | --- |
@@ -53,6 +54,9 @@ PR CI does not replace full integration, engine or candidate evidence.
 | #1012 | Reviewed staff monthly issuance | Depends on #1008/#1010; browser exact recovery passed |
 | #1014 | Atomic monthly repayment/paid replay | Depends on #1010/#975; 2,266 workspace tests passed |
 | #1016 | Staff monthly verified payment | Depends on #1012/#1014; browser and 52 final affected checks passed |
+| #1020 | Separate manual renewal from overdue-debt guidance | Four focused cases and English/Chinese browser passed |
+| #1021 | Readable mobile statement amounts | 390px local scroll and reachable detail verified |
+| #1022 | Policy-2 renewal/change/cancel/expiry browser evidence | Depends on #979/#1020/#1021; exact candidate remains |
 
 Full [CI 42853550892](https://github.com/AllureCurtain/oxsum/actions/runs/42853550892)
 on #1004 source `532d766c86a0f50ff001ceb4ff2c09eb38f034ee` passed 2,230 ordinary,
@@ -79,11 +83,22 @@ translation. Four focused and five contract checks and production build passed.
 TaskSpace 6 and its local listener were closed. Its new CI remains a separate
 required gate; no model/PSP/email request or provider budget was consumed.
 
+#1022 records actual four-customer policy-2 boundary acceptance. Original service
+bounds and immutable accounting inputs were created together with the existing
+private test clock, never edited afterward. Failed/expired orders were inert;
+paid renewal/replay, new-version payment, worker cancellation and no-renewal
+expiry preserved the expected periods and balanced ledger. A bounded direct
+quota probe confirms cancelled quota draws zero and expired remainder retains
+its original window. Zero-debt guidance and mobile amount wrapping were repaired
+in #1020/#1021. TaskSpace 7 and ports 18817/18818 are closed; no provider budget
+was consumed. These tests do not claim a real elapsed month or genuine PSP.
+
 ## Remaining execution
 
-- Complete renewal success/failure, cancellation/expiry boundary, provider edit/
-  credential rotation, replacement/reissued invoice and
-  complete embedded application browser journeys. Tests support their own tested
+- Complete provider edit/credential rotation, replacement/reissued invoice and
+  complete embedded application browser journeys. Renewal failure/expiry/success,
+  replay and boundary change/cancel/no-renewal expiry now have scoped policy-2
+  development evidence in #1022; actual future-boundary/candidate acceptance remains. Tests support their own tested
   scope; existing local fixtures do not complete every advertised journey.
 - Obtain independent review and integrate dependencies normally. Freeze one
   integrated SHA only after main is repaired, then execute full CI with engine

@@ -4,6 +4,10 @@ Updated: 2026-11-11
 
 ## In progress
 
+- [ ] [#1017](https://github.com/AllureCurtain/oxsum/issues/1017) — Policy-2 browser renewal failure/expiry/success/replay and boundary change/cancel/expiry passed; original accounting, ledger conservation and bounded quota probe retained in PR #1022. Browser/listeners closed; protected integration and exact candidate remain.
+- [ ] [#1018](https://github.com/AllureCurtain/oxsum/issues/1018) — Separate renewal/debt guidance and labels in PR #1020; four focused and actual bilingual browser checks plus fast CI passed. Protected integration pending.
+- [ ] [#1019](https://github.com/AllureCurtain/oxsum/issues/1019) — Mobile Billing amounts/dates retained on one line with local scroll in PR #1021; 390px/desktop/detail-link browser and fast CI passed. Protected integration pending.
+
 - [x] [#998](https://github.com/AllureCurtain/oxsum/issues/998) — Aggregate integration binaries integrated in PR #1001 (`2ee70601`).
 - [x] [#999](https://github.com/AllureCurtain/oxsum/issues/999) — Shared target and manual artifact cleanup rules integrated in PR #1000 (`33730767`).
 - [x] [#1003](https://github.com/AllureCurtain/oxsum/issues/1003) — Integrated in PR #1004. Aggregate integration/process-shared CI repair; full branch CI 42853550892 passed 2,230 ordinary, 26 shared and 37 PostgreSQL engine tests plus all fast/build jobs.
@@ -18,7 +22,7 @@ Updated: 2026-11-11
 
 - [ ] [#984](https://github.com/AllureCurtain/oxsum/issues/984) — Reconcile verified merge identities, current browser accounting evidence, pending review/candidate gates and merged-worktree cleanup. [Checkpoint](docs/roadmap/operator-launch/evidence/acceptance-checkpoint.md).
 
-- [ ] [#969](https://github.com/AllureCurtain/oxsum/issues/969) — Actual browser bundle purchase/return and paid-plan activation, fee/payment statement, early-renewal refusal and cancellation service passed with local signed fixtures. Plan consumption/correction/dispute repairs are pending #979/#980/#982; renewal/expiry, complete embedded and candidate/external gates remain. [Evidence](docs/roadmap/operator-launch/evidence/commercial-browser/README.md).
+- [ ] [#969](https://github.com/AllureCurtain/oxsum/issues/969) — Actual browser bundle purchase/return and paid-plan activation, fee/payment statement, early-renewal refusal and cancellation service passed with local signed fixtures. Plan consumption/correction/dispute repairs are pending #979/#980/#982; renewal/expiry evidence is PR #1022; complete embedded and candidate/external gates remain. [Evidence](docs/roadmap/operator-launch/evidence/commercial-browser/README.md).
 
 - [x] [#966](https://github.com/AllureCurtain/oxsum/issues/966) — Integrated in PR #967 (`e4f08975`). Reject unroutable manual receipt refunds and retain historical retry-safe review. Browser and focused checks passed; fixture follow-up #975 has 2,256 workspace passes. [Evidence](docs/roadmap/operator-launch/evidence/manual-refund-route/README.md). Full journey/exact-candidate gates remain separate.
 
