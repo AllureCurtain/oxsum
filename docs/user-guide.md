@@ -2017,3 +2017,5 @@ the updated repayment and outstanding amount. Archived customers accept exact
 recovery of past successful requests but no new payment.
 
 Chat retains a browser key only for its exact customer organization and signed-in user. The portal checks its live key identity and credential organization before reuse, ignores the legacy unscoped browser key, and isolates pending initialization across account switches. A changed session requires reloading Chat before sending.
+
+In Business → Statements, use Void on the original posted or paid invoice journal to record a source-specific correction. Review the retained payment/refund-payable effect and enter a reason. No external money is returned by this action. If the response is uncertain, retry the same retained correction; handle any original-source refund separately.

@@ -11,7 +11,6 @@ import {
   useCapability,
   useDisplay,
   useReleaseStatement,
-  useVoidJournal,
 } from "../../api/hooks";
 import {
   Banner,
@@ -24,6 +23,7 @@ import {
   Td,
 } from "../../components/ui";
 import { AuditAction, DetailGrid, Field2, stateBadge } from "./biz";
+import { JournalVoid } from "./journal-void";
 
 // ---------------------------------------------------------------------------
 // /app/business#business/statements + #business/receivables — the plan-fee
@@ -133,7 +133,6 @@ function JournalRows() {
   const { t } = useTranslation();
   const display = useDisplay();
   const journals = useBusinessJournals({});
-  const voidJournal = useVoidJournal();
   const canWrite = useCapability(useBusiness().data, "fundsWrite");
 
   return (
@@ -164,21 +163,7 @@ function JournalRows() {
                 <Td mono align="right"><Cr minor={j.settledMinor} currency={display} /></Td>
                 <Td mono align="right"><Cr minor={j.disputedMinor} currency={display} /></Td>
                 <td className="text-right">
-                  {canWrite && j.state === "posted" ? (
-                    <AuditAction
-                      trigger={<Button tone="danger">{t("biz.journals.void")}</Button>}
-                      title={t("biz.journals.voidTitle")}
-                      description={t("biz.journals.voidExplain")}
-                      confirmLabel={t("biz.journals.void")}
-                      tone="danger"
-                      reasonLabel={t("biz.reason")}
-                      isPending={voidJournal.isPending}
-                      error={voidJournal.error}
-                      onConfirm={(reason, key) =>
-                        voidJournal.mutate({ journalId: j.journalId, idempotencyKey: key, reason })
-                      }
-                    />
-                  ) : null}
+                  {canWrite ? <JournalVoid journal={j} /> : null}
                 </td>
               </tr>
             ))}

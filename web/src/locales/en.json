@@ -1785,6 +1785,8 @@
       "colSettled": "Settled",
       "colDisputed": "Disputed",
       "void": "Void",
+      "retryVoid": "Retry this correction",
+      "frozenVoid": "This correction is fixed for retry. Its journal, reason and operation identity stay unchanged.",
       "voidTitle": "Void this journal?",
       "voidExplain": "Cancels only this journal’s charges and payments, including its lines on mixed statements. Other sources remain. Cash stays unchanged; collected funds become refund payable. Resolve pending checkouts first.",
       "empty": "No journals."

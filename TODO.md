@@ -44,6 +44,8 @@ Updated: 2026-11-11
 
 - [ ] [#990](https://github.com/AllureCurtain/oxsum/issues/990) — Isolate browser chat credentials by organization and user; actual A/B/A read-only credential mismatch reproduced. Five focused identity/asynchronous checks, contract/build/format and actual A/B/A, revoked-key recovery, scoped call and stale-session refusal passed. [Evidence](docs/roadmap/operator-launch/evidence/chat-credential-isolation/README.md). Review/integration pending.
 
+- [ ] [#981](https://github.com/AllureCurtain/oxsum/issues/981) — Expose paid journal source-specific voids to Finance, retaining exact retries/errors. Actual browser found paid journals lack the supported correction action; validation in progress.
+
 - [ ] [#969](https://github.com/AllureCurtain/oxsum/issues/969) — Actual browser bundle purchase/return and paid-plan activation, fee/payment statement, early-renewal refusal and cancellation service passed with local signed fixtures. Stale plan consumption display is #973; statement correction/dispute, embedded and candidate/external gates remain. [Evidence](docs/roadmap/operator-launch/evidence/commercial-browser/README.md).
 
 - [ ] [#973](https://github.com/AllureCurtain/oxsum/issues/973) — Read sold-plan consumption from its exact quota window; real browser baseline 0 now reads 80/100 minor. All 17 affected core/HTTP checks, strict core/server Clippy, contract/codegen/build and pinned formatting passed; review/integration pending. [Evidence](docs/roadmap/operator-launch/evidence/plan-consumption-read/README.md).

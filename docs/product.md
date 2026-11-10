@@ -970,3 +970,5 @@ Customer statement reads reflect the updated FIFO standing; original usage
 lines, terms and proof anchor remain unchanged. No external collection is initiated.
 
 Chat retains a browser key only for its exact customer organization and signed-in user. The portal checks its live key identity and credential organization before reuse, ignores the legacy unscoped browser key, and isolates pending initialization across account switches. A changed session requires reloading Chat before sending.
+
+The Business journal list permits FundsWrite staff to correct posted or paid journals. Paid corrections retain original payment ownership as refund payable; they do not move Cash or initiate a provider refund. The confirmation retains the exact journal, reason and idempotency identity through an uncertain response and row refresh.
