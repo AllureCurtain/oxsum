@@ -341,7 +341,8 @@ pub struct PlanPeriod {
     pub period_end: OffsetDateTime,
     /// Quota granted for the period in credit minor units; `None` is unmetered.
     pub quota_minor: Option<i64>,
-    /// Quota consumed so far, in credit minor units.
+    /// Quota reserved or consumed in this exact window, net of released
+    /// reservations, in credit minor units. Closed windows retain their counter.
     pub consumed_minor: i64,
     /// `paymentOrder` or `complimentary` — what authorized the period.
     pub authorization_kind: PlanAuthorizationKind,
@@ -543,7 +544,9 @@ impl Db {
     }
 
     /// The periods a customer plan has authorized, in index order — the audit
-    /// of what the entitlement ran under.
+    /// of what the entitlement ran under. Consumption comes from the original
+    /// quota-engine window, including reservations and late settlement returns,
+    /// rather than the authorization row's initial snapshot.
     ///
     /// # Errors
     ///
@@ -553,11 +556,18 @@ impl Db {
         customer_plan_id: Uuid,
     ) -> Result<Vec<PlanPeriod>, WalletError> {
         let rows = sqlx::query(
-            "SELECT plan_period_id, customer_plan_id, period_index, period_start, period_end, \
-                    quota_minor, consumed_minor, authorization_kind, authorization_ref, \
-                    state, created_at, COALESCE((SELECT accounting_policy_version FROM oxsum.plan_accounting_periods a WHERE a.plan_period_id=plan_periods.plan_period_id),1)::smallint AS accounting_policy_version \
-             FROM oxsum.plan_periods \
-             WHERE customer_plan_id = $1 ORDER BY period_index",
+            "SELECT p.plan_period_id, p.customer_plan_id, p.period_index, p.period_start, p.period_end, \
+                    p.quota_minor, COALESCE((SELECT q.consumed_minor \
+                        FROM oxsum.subscription_periods q \
+                        JOIN oxsum.customer_plans c ON c.subscription_id=q.subscription_id \
+                        WHERE c.customer_plan_id=p.customer_plan_id \
+                          AND q.organization_id=c.organization_id \
+                          AND q.period_start=p.period_start),p.consumed_minor) AS consumed_minor, \
+                    p.authorization_kind, p.authorization_ref, p.state, p.created_at, \
+                    COALESCE((SELECT accounting_policy_version FROM oxsum.plan_accounting_periods a \
+                        WHERE a.plan_period_id=p.plan_period_id),1)::smallint AS accounting_policy_version \
+             FROM oxsum.plan_periods p \
+             WHERE p.customer_plan_id = $1 ORDER BY p.period_index",
         )
         .bind(customer_plan_id)
         .fetch_all(self.pool())

@@ -925,3 +925,5 @@ figures, lines and finalized notification together. A failed issuance leaves the
 draft and no new anchor; repeating a successful issuance returns the original
 statement. A retained legacy anchor that disagrees with current source inputs
 requires explicit recovery and cannot silently become a different bill.
+
+Sold-plan period consumption reads the matching quota-engine window, including outstanding reservations and released unused amounts. Closed windows retain their own consumption; new periods do not replace historical counters. The read does not post money or rewrite authorization history.

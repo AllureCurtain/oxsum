@@ -296,6 +296,28 @@ async fn the_catalogue_publishes_and_binds_over_http() {
     );
     assert_eq!(periods[0]["state"].as_str().unwrap(), "active");
     assert_eq!(periods[0]["accountingPolicyVersion"], 2);
+    world
+        .db
+        .admit_subscription_draw(world.customer_org, "http-consumption", 40)
+        .await
+        .unwrap();
+    world
+        .db
+        .settle_subscription_draw("http-consumption", 30)
+        .await
+        .unwrap();
+    for (path, token) in [
+        ("/api/v1/org/plan".to_owned(), world.customer.as_str()),
+        (
+            format!("/api/v1/business/customers/{}/plan", world.customer_org),
+            world.owner.as_str(),
+        ),
+    ] {
+        let (status, read) = call(&world.app, "GET", &path, Value::Null, Some(token)).await;
+        assert_eq!(status, StatusCode::OK, "{read}");
+        assert_eq!(read["data"]["periods"][0]["consumedMinor"], 30);
+    }
+
     let (status, journals) = call(
         &world.app,
         "GET",
