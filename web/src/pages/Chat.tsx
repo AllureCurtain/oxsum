@@ -1,6 +1,8 @@
 import { useEffect, useRef, useState } from "react";
 import { Trans, useTranslation } from "react-i18next";
-import { useKeys, useCreateKey } from "../api/hooks";
+import { useSession, type SessionInfo } from "../api/hooks";
+import type { components } from "../api/schema";
+import { chatIdentityKey, createChatCredentialStore, requireChatIdentity, type ChatIdentity } from "../lib/chat-credential";
 import { Banner, Card, Field, TextInput } from "../components/ui";
 import { Button } from "../components/ui";
 import {
@@ -20,34 +22,33 @@ import { CodeBlock } from "../components/ui";
 import { Typewriter } from "../components/ui";
 import { api } from "../api/client";
 
-// The chat page, moved from the server-rendered `/dashboard/chat`: the browser
-// mints a `chat`-named API key once and keeps its secret in localStorage (the
-// same trust model — the secret never leaves the browser), then streams
-// `/v1/chat/completions` by hand over the gateway's OpenAI-shaped SSE.
-const KEY_STORAGE = "oxsum.chat-key";
-
-interface Message {
-  role: "user" | "assistant";
-  text: string;
+async function currentIdentity(): Promise<ChatIdentity> {
+  const session = await api<SessionInfo>("/session");
+  return { organizationId: session.organization.id, userId: session.user.id };
 }
-
-async function ensureChatKey(existing: ReturnType<typeof useKeys>["data"]): Promise<string> {
-  const stored = localStorage.getItem(KEY_STORAGE);
-  if (stored && existing?.some((k) => k.name === "chat" && !k.revokedAt)) {
-    return stored;
-  }
-  const created = await api<{ secret: string }>("/org/keys", {
-    method: "POST",
-    body: { name: "chat" },
-  });
-  localStorage.setItem(KEY_STORAGE, created.secret);
-  return created.secret;
-}
+const credentials = createChatCredentialStore({
+  storage: { getItem: (key) => localStorage.getItem(key), setItem: (key, value) => localStorage.setItem(key, value) },
+  session: currentIdentity,
+  keys: () => api<components["schemas"]["ApiKey"][]>("/org/keys"),
+  mint: () => api<components["schemas"]["CreatedApiKey"]>("/org/keys", { method: "POST", body: { name: "chat" } }),
+  keyOrganization: async (secret) => {
+    const response = await fetch("/api/v1/org", { credentials: "omit", headers: { Authorization: `Bearer ${secret}` } });
+    if (!response.ok) return "";
+    return ((await response.json()) as { data: { id: string } }).data.id;
+  },
+});
+interface Message { role: "user" | "assistant"; text: string }
 
 export function Chat() {
+  const session = useSession();
   const { t } = useTranslation();
-  const keys = useKeys();
-  const createKey = useCreateKey();
+  if (!session.data) return <p>{t(session.isError ? "chat.keyMintError" : "chat.mintingKey")}</p>;
+  const identity = { organizationId: session.data.organization.id, userId: session.data.user.id };
+  return <CustomerChat key={chatIdentityKey(identity)} identity={identity} />;
+}
+
+function CustomerChat({ identity }: { identity: ChatIdentity }) {
+  const { t } = useTranslation();
   const [secret, setSecret] = useState<string | null>(null);
   const [models, setModels] = useState<string[]>([]);
   const [model, setModel] = useState("");
@@ -57,32 +58,27 @@ export function Chat() {
   const [error, setError] = useState<string | null>(null);
   const abort = useRef<AbortController | null>(null);
 
+  const identityKey = chatIdentityKey(identity);
   useEffect(() => {
-    if (!keys.data) {
-      return;
-    }
-    ensureChatKey(keys.data)
-      .then(setSecret)
-      .catch(() => setError(t("chat.keyMintError")));
-  }, [keys.data, t]);
+    let active = true;
+    credentials.ensure(identity).then((credential) => { if (active) setSecret(credential.secret); })
+      .catch(() => { if (active) setError(t("chat.keyMintError")); });
+    return () => { active = false; abort.current?.abort(); };
+  }, [identityKey]);
 
   useEffect(() => {
-    if (!secret) {
-      return;
-    }
-    fetch("/v1/models", { headers: { Authorization: `Bearer ${secret}` } })
-      .then((r) => r.json())
+    if (!secret) return;
+    const controller = new AbortController();
+    let active = true;
+    fetch("/v1/models", { credentials: "omit", headers: { Authorization: `Bearer ${secret}` }, signal: controller.signal })
+      .then((response) => { if (!response.ok) throw new Error("Models unavailable"); return response.json(); })
       .then((data) => {
-        const ids = (data?.data ?? data ?? [])
-          .map((m: { id?: string }) => m.id)
-          .filter(Boolean) as string[];
-        setModels(ids);
-        if (ids[0]) {
-          setModel(ids[0]);
-        }
-      })
-      .catch(() => setError(t("chat.modelsError")));
-  }, [secret, t]);
+        if (!active) return;
+        const ids = (data?.data ?? data ?? []).map((item: { id?: string }) => item.id).filter(Boolean) as string[];
+        setModels(ids); setModel(ids[0] ?? "");
+      }).catch(() => { if (active) setError(t("chat.modelsError")); });
+    return () => { active = false; controller.abort(); };
+  }, [secret]);
 
   async function send() {
     if (!secret || !input.trim() || streaming) {
@@ -95,7 +91,10 @@ export function Chat() {
     setError(null);
     abort.current = new AbortController();
     try {
+      await requireChatIdentity(identity, currentIdentity);
+      if (abort.current.signal.aborted) return;
       const res = await fetch("/v1/chat/completions", {
+        credentials: "omit",
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -168,7 +167,7 @@ export function Chat() {
         <Trans i18nKey="chat.intro" components={{ code: <code className="mono" /> }} />
       </p>
       {error ? <Banner tone="error">{error}</Banner> : null}
-      {createKey.isPending || !secret ? (
+      {!secret ? (
         <p className="text-sm text-muted">{t("chat.mintingKey")}</p>
       ) : (
         <>
@@ -244,6 +243,7 @@ export function Chat() {
             </TabsContent>
             <TabsContent value="messages">
               <Probe
+                authorize={() => requireChatIdentity(identity, currentIdentity)}
                 path="/v1/messages"
                 secret={secret}
                 build={(fields) => ({
@@ -255,6 +255,7 @@ export function Chat() {
             </TabsContent>
             <TabsContent value="embeddings">
               <Probe
+                authorize={() => requireChatIdentity(identity, currentIdentity)}
                 path="/v1/embeddings"
                 secret={secret}
                 build={(fields) => ({ model, input: fields.text ?? "" })}
@@ -263,6 +264,7 @@ export function Chat() {
             </TabsContent>
             <TabsContent value="rerank">
               <Probe
+                authorize={() => requireChatIdentity(identity, currentIdentity)}
                 path="/v1/rerank"
                 secret={secret}
                 build={(fields) => ({
@@ -298,6 +300,7 @@ interface ProbeField {
 function Probe(props: {
   path: string;
   secret: string;
+  authorize: () => Promise<void>;
   fields: ProbeField[];
   build: (fields: Record<string, string>) => Record<string, unknown>;
 }) {
@@ -306,6 +309,8 @@ function Probe(props: {
   const [busy, setBusy] = useState(false);
   const [result, setResult] = useState<string | null>(null);
   const [charge, setCharge] = useState<string | null>(null);
+  const request = useRef<AbortController | null>(null);
+  useEffect(() => () => { request.current?.abort(); }, []);
 
   return (
     <Card title={props.path}>
@@ -316,8 +321,14 @@ function Probe(props: {
           setBusy(true);
           setResult(null);
           setCharge(null);
+          const controller = new AbortController();
+          request.current = controller;
           try {
+            await props.authorize();
+            if (controller.signal.aborted) return;
             const res = await fetch(props.path, {
+              credentials: "omit",
+              signal: controller.signal,
               method: "POST",
               headers: {
                 "Content-Type": "application/json",
