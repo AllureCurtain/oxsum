@@ -13,6 +13,12 @@ updates:
       cargo-minor-patch:
         applies-to: version-updates
         update-types: ["minor", "patch"]
+    # jsonwebtoken stays on 9 (docs/decisions.md): 10/11 ship no crypto
+    # backend, so every encode/decode panics without an explicit rustls
+    # provider feature. Stop dependabot re-proposing the forbidden major.
+    ignore:
+      - dependency-name: "jsonwebtoken"
+        update-types: ["version-update:semver-major"]
     # Cargo has no conventional commit prefix rule; keep the repo's type
     # prefix so the PR title matches the branch naming policy.
     commit-message:
