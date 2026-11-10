@@ -2044,3 +2044,15 @@ Business customer plan binding asks for a confirmation naming the customer and s
 
 
 The Plans page shows quota reserved or consumed in the displayed period. A running request reserves quota; unused quota returns when it settles. Paid-plan quota is separate from wallet spending, and a new period starts its own counter.
+
+
+### Partial plan payment disputes
+
+The disputed amount is the amount reported by the payment provider for that
+specific case, converted exactly using the original payment terms. A partial
+case does not contest the whole plan payment. Repeated notifications keep the
+same case and amount. If a provider event omits its case ID or currency, disagrees
+with the original currency, or cannot convert to a whole credit minor unit,
+inspect the rejected event before resolving it. A lost resolution uses the
+recorded amount; previously recorded cases that disagree with their retained
+provider event require source review rather than another resolution attempt.

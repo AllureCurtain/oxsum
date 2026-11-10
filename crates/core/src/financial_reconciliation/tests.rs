@@ -267,6 +267,10 @@ async fn refund_order_on(
     refund.refund_id
 }
 async fn lost(w: &World, order: &crate::PaymentOrder) -> Uuid {
+    lost_amount(w, order, order.display_amount_minor).await
+}
+
+async fn lost_amount(w: &World, order: &crate::PaymentOrder, display_amount: i64) -> Uuid {
     let reference = format!("dispute_{}", Uuid::new_v4());
     let event = crate::VerifiedMerchantEvent {
         event_id: Uuid::new_v4().to_string(),
@@ -276,7 +280,7 @@ async fn lost(w: &World, order: &crate::PaymentOrder) -> Uuid {
         organization_id: Some(w.org),
         provider_account_id: Some(w.context.account_id.clone()),
         mode: Some(crate::MerchantMode::Test),
-        amount_minor: Some(order.display_amount_minor),
+        amount_minor: Some(display_amount),
         currency: Some(order.display_currency.clone()),
         refund_id: Some(reference.clone()),
     };
@@ -305,6 +309,73 @@ async fn lost(w: &World, order: &crate::PaymentOrder) -> Uuid {
     .await
     .unwrap();
     id
+}
+
+#[tokio::test]
+async fn partial_plan_dispute_compares_to_authenticated_event_not_just_matching_books() {
+    let _guard = TEST_LOCK.lock().await;
+    for legacy in [false, true] {
+        let w = world(if legacy { 40 } else { 10 }, legacy)
+            .await
+            .expect("source comparison test requires PostgreSQL");
+        let dispute = lost_amount(&w, &w.order, 100).await;
+        clean(&capture(&w, TimeBasis::Booking).await);
+        let receipt: Uuid =
+            sqlx::query_scalar("SELECT inbox_receipt_id FROM oxsum.disputes WHERE dispute_id=$1")
+                .bind(dispute)
+                .fetch_one(w.db.pool())
+                .await
+                .unwrap();
+        // Reproduce the former defect's shape: the books and dispute agree on a
+        // larger loss than the retained event. Mutate only the captured event in
+        // this isolated fault fixture; never rewrite real financial history.
+        corrupt(&w, &format!("UPDATE oxsum.merchant_event_inbox SET normalized=jsonb_set(normalized,'{{amountMinor}}','50'::jsonb) WHERE receipt_id='{receipt}'")).await;
+        let result = capture(&w, TimeBasis::Booking).await;
+        assert_eq!(
+            result.expected, result.actual,
+            "ledger agreement alone is insufficient"
+        );
+        assert!(
+            result
+                .differences
+                .iter()
+                .any(|difference| difference.fact == "authenticatedAmountMinor")
+        );
+    }
+}
+
+#[tokio::test]
+async fn plan_dispute_nonintegral_partial_fiat_requires_review_without_rounding() {
+    let _guard = TEST_LOCK.lock().await;
+    let w = world_with_fee(0, false, 10_001)
+        .await
+        .expect("nonintegral dispute test requires PostgreSQL");
+    assert_eq!(w.order.display_amount_minor, 2);
+    let event = crate::VerifiedMerchantEvent {
+        event_id: Uuid::new_v4().to_string(),
+        kind: crate::MerchantEventKind::Dispute,
+        payment_id: Some(w.order.order_id),
+        provider_payment_id: Some(format!("pay_{}", w.order.order_id)),
+        organization_id: Some(w.org),
+        provider_account_id: Some(w.context.account_id.clone()),
+        mode: Some(crate::MerchantMode::Test),
+        amount_minor: Some(1),
+        currency: Some(w.order.display_currency.clone()),
+        refund_id: Some(format!("case_{}", Uuid::new_v4())),
+    };
+    let receipt =
+        w.db.receive_merchant_event(&w.context, &event, &[101; 32])
+            .await
+            .unwrap();
+    assert_eq!(receipt.state, "rejected");
+    assert_eq!(receipt.reason.as_deref(), Some("disputeAmountNotIntegral"));
+    let count: i64 = sqlx::query_scalar("SELECT count(*) FROM oxsum.disputes WHERE order_id=$1")
+        .bind(w.order.order_id)
+        .fetch_one(w.db.pool())
+        .await
+        .unwrap();
+    assert_eq!(count, 0);
+    clean(&capture(&w, TimeBasis::Booking).await);
 }
 async fn corrupt(w: &World, sql: &str) {
     let mut tx = w.db.pool().begin().await.unwrap();

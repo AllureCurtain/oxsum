@@ -1141,3 +1141,19 @@ period debt and updates FIFO standing/events on the borrowed connection. The
 reference/result row commits last, so a claim or event failure rolls back cash,
 mutation, audit and standing. Exact retry returns immutable result coordinates
 after current authorization; it never repeats a financial write.
+
+
+### Authenticated plan dispute amount and replay (#1028)
+
+Merchant intake validates every order dispute against its immutable order
+conversion. Recording re-reads the accepted retained event, checks its receipt
+coordinates, serializes the merchant/case identity, and commits one dispute and
+one plan contest increment. Identical later notifications return before tracking;
+changed source terms conflict. Non-plan return locking retains its existing order.
+
+Independent reconciliation captures each dispute's authenticated inbox receipt
+and compares identity, pinned currency and exact integer fiat-to-credit amount
+before comparing official cash entries. Its independent arithmetic does not reuse
+the writer's conversion helper. Thus a wrong dispute amount and an equally wrong
+ledger posting cannot certify each other. Missing historical source evidence is
+reported as incomplete comparison, never guessed from the order's full price.

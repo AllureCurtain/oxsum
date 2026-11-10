@@ -2,6 +2,7 @@
 
 mod corrections;
 mod daily;
+mod disputes;
 pub(super) mod documents;
 mod legacy;
 mod refunds;
@@ -197,6 +198,7 @@ pub(super) async fn customer(
 
 /// Shared canonical source comparisons; callers supply one bounded captured snapshot.
 pub(super) fn check(customer: &mut Customer<'_>) -> Result<(), WalletError> {
+    disputes::compare(customer)?;
     repayments::compare(customer)?;
     refunds::compare(customer)?;
     daily::compare(customer)?;

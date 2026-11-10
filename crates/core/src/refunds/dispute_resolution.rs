@@ -388,7 +388,7 @@ impl Db {
             tx.commit().await?;
             return Ok(dispute);
         }
-        if !plan {
+        {
             let event_id: Option<Uuid> = row.try_get("inbox_receipt_id")?;
             let event_id = event_id.ok_or_else(review)?;
             let valid_receipt: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM oxsum.merchant_event_inbox e JOIN oxsum.payment_orders p ON p.order_id=$2 WHERE e.receipt_id=$1 AND e.merchant_id=p.merchant_id AND e.version_id=p.merchant_version_id AND e.state IN ('accepted','applied'))")
@@ -396,8 +396,7 @@ impl Db {
             if !valid_receipt {
                 return Err(review());
             }
-            let event = self
-                .merchant_event_data(event_id)
+            let event = crate::merchant_events::data_in(&mut tx, event_id)
                 .await?
                 .ok_or_else(review)?;
             let amount = crate::nonplan_returns::disputed_minor(
@@ -416,7 +415,9 @@ impl Db {
             {
                 return Err(review());
             }
-            wallet.lock_append_in(&mut tx).await?;
+            if !plan {
+                wallet.lock_append_in(&mut tx).await?;
+            }
         }
         let retained = retained_effect(&mut tx, wallet, &dispute, plan).await?;
         verify_history(&mut tx, &row, business, &dispute, &retained).await?;

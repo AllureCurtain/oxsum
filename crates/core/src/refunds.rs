@@ -1134,8 +1134,8 @@ impl Db {
         Ok(())
     }
 
-    /// Retain one authenticated case. Non-plan amounts must map exactly from
-    /// pinned fiat; incompatible duplicate identities remain visible inbox review.
+    /// Retain one authenticated case with an exact original fiat-to-credit amount.
+    /// Duplicate notifications preserve the first case and never track it twice.
     pub async fn record_order_dispute(
         &self,
         event: &crate::VerifiedMerchantEvent,
@@ -1145,59 +1145,78 @@ impl Db {
             return Ok(());
         };
         let mut tx = self.pool().begin().await?;
-        let provider_dispute_id = event
+        let stored = sqlx::query("SELECT merchant_id,version_id,event_id,state FROM oxsum.merchant_event_inbox WHERE receipt_id=$1")
+            .bind(receipt.id).fetch_optional(&mut *tx).await?
+            .ok_or_else(|| invalid("missing stored dispute receipt"))?;
+        let retained = crate::merchant_events::data_in(&mut tx, receipt.id)
+            .await?
+            .ok_or_else(|| invalid("missing stored dispute event"))?;
+        if !matches!(
+            stored.try_get::<String, _>("state")?.as_str(),
+            "accepted" | "applied"
+        ) || stored.try_get::<Uuid, _>("merchant_id")? != receipt.merchant_id
+            || stored.try_get::<Uuid, _>("version_id")? != receipt.version_id
+            || stored.try_get::<String, _>("event_id")? != receipt.event_id
+            || retained.kind != MerchantEventKind::Dispute
+            || retained.kind != receipt.kind
+            || retained.payment_id != Some(order_id)
+            || serde_json::to_value(&retained).map_err(crate::error::invalid)?
+                != serde_json::to_value(event).map_err(crate::error::invalid)?
+        {
+            return Err(WalletError::Conflict(
+                "dispute differs from its accepted receipt".into(),
+            ));
+        }
+        let provider_dispute_id = retained
             .refund_id
-            .clone()
-            .or_else(|| event.provider_payment_id.clone())
-            .unwrap_or_else(|| order_id.to_string());
+            .as_deref()
+            .filter(|id| !id.trim().is_empty())
+            .ok_or_else(|| {
+                WalletError::Conflict("dispute source requires review: missingDisputeId".into())
+            })?;
+        let claimed: bool =
+            sqlx::query_scalar("SELECT pg_try_advisory_xact_lock(hashtextextended($1,0))")
+                .bind(format!(
+                    "merchant-dispute:{}:{provider_dispute_id}",
+                    receipt.merchant_id
+                ))
+                .fetch_one(&mut *tx)
+                .await?;
+        if !claimed {
+            return Err(WalletError::PoolBusy);
+        }
         let purpose: Option<String> =
             sqlx::query_scalar("SELECT purpose FROM oxsum.payment_orders WHERE order_id=$1")
                 .bind(order_id)
                 .fetch_optional(&mut *tx)
                 .await?;
         if purpose.as_deref().is_some_and(|p| p != "plan_period") {
-            let claimed: bool =
-                sqlx::query_scalar("SELECT pg_try_advisory_xact_lock(hashtextextended($1,0))")
-                    .bind(format!(
-                        "merchant-dispute:{}:{provider_dispute_id}",
-                        receipt.merchant_id
-                    ))
-                    .fetch_one(&mut *tx)
-                    .await?;
-            if !claimed {
-                return Err(WalletError::PoolBusy);
-            }
             crate::nonplan_returns::lock_source_in(&mut tx, order_id).await?;
         }
         let Some(order) = refund_order_in(&mut tx, order_id).await? else {
             tx.commit().await?;
             return Ok(());
         };
-        let nonplan = order.purpose != "plan_period";
-        let amount = if nonplan {
-            match crate::nonplan_returns::disputed_minor(
-                order.amount_minor,
-                order.display_amount_minor,
-                &order.display_currency,
-                event,
-            ) {
-                Ok(amount) => amount,
-                Err(reason) => {
-                    sqlx::query("UPDATE oxsum.merchant_event_inbox SET reason=$2,updated_at=now() WHERE receipt_id=$1 AND state='accepted'")
-                        .bind(receipt.id).bind(reason).execute(&mut *tx).await?;
-                    tx.commit().await?;
-                    return Err(WalletError::Conflict(format!(
-                        "dispute source requires review: {reason}"
-                    )));
-                }
+        let amount = match crate::nonplan_returns::disputed_minor(
+            order.amount_minor,
+            order.display_amount_minor,
+            &order.display_currency,
+            &retained,
+        ) {
+            Ok(amount) => amount,
+            Err(reason) => {
+                sqlx::query("UPDATE oxsum.merchant_event_inbox SET reason=$2,updated_at=now() WHERE receipt_id=$1 AND state='accepted'")
+                    .bind(receipt.id).bind(reason).execute(&mut *tx).await?;
+                tx.commit().await?;
+                return Err(WalletError::Conflict(format!(
+                    "dispute source requires review: {reason}"
+                )));
             }
-        } else {
-            order.amount_minor
         };
-        let currency = event.currency.as_deref().unwrap_or(&order.display_currency);
-        let standing=sqlx::query("SELECT order_id,organization_id,amount_minor,currency FROM oxsum.disputes WHERE merchant_id=$1 AND provider_dispute_id=$2")
-            .bind(receipt.merchant_id).bind(&provider_dispute_id).fetch_optional(&mut *tx).await?;
-        if nonplan && let Some(standing) = standing {
+        let currency = order.display_currency.as_str();
+        let standing = sqlx::query("SELECT order_id,organization_id,amount_minor,currency FROM oxsum.disputes WHERE merchant_id=$1 AND provider_dispute_id=$2")
+            .bind(receipt.merchant_id).bind(provider_dispute_id).fetch_optional(&mut *tx).await?;
+        if let Some(standing) = standing {
             if standing.try_get::<Uuid, _>("order_id")? != order_id
                 || standing.try_get::<Uuid, _>("organization_id")? != order.organization_id
                 || standing.try_get::<i64, _>("amount_minor")? != amount
@@ -1213,10 +1232,10 @@ impl Db {
             tx.commit().await?;
             return Ok(());
         }
-        sqlx::query("INSERT INTO oxsum.disputes(dispute_id,order_id,organization_id,merchant_id,provider_dispute_id,amount_minor,currency,state,inbox_receipt_id) VALUES($1,$2,$3,$4,$5,$6,$7,'opened',$8) ON CONFLICT (merchant_id,provider_dispute_id) DO NOTHING")
+        sqlx::query("INSERT INTO oxsum.disputes(dispute_id,order_id,organization_id,merchant_id,provider_dispute_id,amount_minor,currency,state,inbox_receipt_id) VALUES($1,$2,$3,$4,$5,$6,$7,'opened',$8)")
             .bind(Uuid::new_v4()).bind(order_id).bind(order.organization_id).bind(receipt.merchant_id)
-            .bind(provider_dispute_id).bind(amount.max(1)).bind(currency).bind(receipt.id).execute(&mut *tx).await?;
-        if !nonplan {
+            .bind(provider_dispute_id).bind(amount).bind(currency).bind(receipt.id).execute(&mut *tx).await?;
+        if order.purpose == "plan_period" {
             self.track_journal_dispute_in(&mut tx, order_id, amount)
                 .await?;
         }
