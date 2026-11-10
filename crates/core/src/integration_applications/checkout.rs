@@ -386,8 +386,6 @@ impl Db {
                 .map(crate::PlanPaymentTerms::fingerprint)
                 .transpose()?,
             expected_collection_revision: Some(q.collection_revision),
-            expected_statement_quote: None,
-            statement_amount_minor: None,
             purpose: q.selection.purpose,
             display_amount_minor: q.display_amount_minor,
             display_currency: q.display_currency.clone(),
