@@ -1,0 +1,31 @@
+{
+  "status": 200,
+  "headers": {
+    "content-type": "text/event-stream",
+    "cache-control": "no-cache",
+    "trailer": "x-oxsum-charged-minor",
+    "x-oxsum-freeze-minor": "139",
+    "x-oxsum-request-id": "7664910b-db6d-459d-844c-d7880792d2fb",
+    "connection": "close",
+    "transfer-encoding": "chunked",
+    "date": "Tue, 10 Nov 2026 09:54:14 GMT"
+  },
+  "request": {
+    "model": "browser-chat",
+    "messages": [
+      {
+        "role": "user",
+        "content": "pinned-sale acceptance 992"
+      }
+    ],
+    "max_tokens": 3,
+    "stream": true,
+    "stream_options": {
+      "include_usage": true
+    }
+  },
+  "startedAt": 1794304454.2880168,
+  "finishedAt": 1794304536.011167,
+  "organizationId": "57ae06a2-47b1-4989-806b-69a8229e4569",
+  "keyId": "5505fdc6-2c0c-4cea-ac9a-4233c31563be"
+}

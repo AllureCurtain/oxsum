@@ -1,0 +1,175 @@
+{
+  "fetchAttempts": 0,
+  "results": [
+    {
+      "name": "customer-b",
+      "entryId": "3ab7b576-e24e-5029-a3f4-58292a538210",
+      "retainedHash": "23384a1d86df3125d3bcce1e81c9224446cd9d27defa1dbb570457a209a64c5c",
+      "verdict": {
+        "charge": " The recorded charge itself recomputes from the usage and rates inside the entry.",
+        "ok": true,
+        "price": " The price it names is bound to a checkpoint the operator signed.",
+        "sale": " The customer sale terms it names are bound to a checkpoint the operator signed.",
+        "verdict": "pass"
+      },
+      "price": {
+        "detail": "the price binding verifies",
+        "ok": true
+      },
+      "sale": {
+        "detail": "the sale binding verifies",
+        "ok": true
+      },
+      "wrongHash": {
+        "charge": "",
+        "ok": false,
+        "price": "",
+        "sale": null,
+        "verdict": "fail"
+      },
+      "alteredCharge": {
+        "charge": "",
+        "ok": false,
+        "price": "",
+        "sale": null,
+        "verdict": "fail"
+      }
+    },
+    {
+      "name": "pinned-a",
+      "entryId": "9371e0b4-0b9b-5be7-b0f9-151562dd6a64",
+      "retainedHash": "4bb2e04f252c012bce6e31e4a52adaa58d12dcd9bfbf613ab8eaccdfdcc9dede",
+      "verdict": {
+        "charge": " The recorded charge itself recomputes from the usage and rates inside the entry.",
+        "ok": true,
+        "price": " The price it names is bound to a checkpoint the operator signed.",
+        "sale": " The customer sale terms it names are bound to a checkpoint the operator signed.",
+        "verdict": "pass"
+      },
+      "price": {
+        "detail": "the price binding verifies",
+        "ok": true
+      },
+      "sale": {
+        "detail": "the sale binding verifies",
+        "ok": true
+      },
+      "wrongHash": {
+        "charge": "",
+        "ok": false,
+        "price": "",
+        "sale": null,
+        "verdict": "fail"
+      },
+      "alteredCharge": {
+        "charge": "",
+        "ok": false,
+        "price": "",
+        "sale": null,
+        "verdict": "fail"
+      }
+    },
+    {
+      "name": "changed-a",
+      "entryId": "eba6efad-c55c-59eb-8934-754dd988b2c5",
+      "retainedHash": "dc0ac27bd42fad9cc97a44bfc76f55fbcb39ac109215054b6c6f168a473eadd5",
+      "verdict": {
+        "charge": " The recorded charge itself recomputes from the usage and rates inside the entry.",
+        "ok": true,
+        "price": " The price it names is bound to a checkpoint the operator signed.",
+        "sale": " The customer sale terms it names are bound to a checkpoint the operator signed.",
+        "verdict": "pass"
+      },
+      "price": {
+        "detail": "the price binding verifies",
+        "ok": true
+      },
+      "sale": {
+        "detail": "the sale binding verifies",
+        "ok": true
+      },
+      "wrongHash": {
+        "charge": "",
+        "ok": false,
+        "price": "",
+        "sale": null,
+        "verdict": "fail"
+      },
+      "alteredCharge": {
+        "charge": "",
+        "ok": false,
+        "price": "",
+        "sale": null,
+        "verdict": "fail"
+      }
+    },
+    {
+      "name": "unchanged-b",
+      "entryId": "17f85412-da33-5252-b089-3287cb36cd36",
+      "retainedHash": "beac714bd3d0d73edf5048496a60e27627a886485371ab130c62b25bf4b13415",
+      "verdict": {
+        "charge": " The recorded charge itself recomputes from the usage and rates inside the entry.",
+        "ok": true,
+        "price": " The price it names is bound to a checkpoint the operator signed.",
+        "sale": " The customer sale terms it names are bound to a checkpoint the operator signed.",
+        "verdict": "pass"
+      },
+      "price": {
+        "detail": "the price binding verifies",
+        "ok": true
+      },
+      "sale": {
+        "detail": "the sale binding verifies",
+        "ok": true
+      },
+      "wrongHash": {
+        "charge": "",
+        "ok": false,
+        "price": "",
+        "sale": null,
+        "verdict": "fail"
+      },
+      "alteredCharge": {
+        "charge": "",
+        "ok": false,
+        "price": "",
+        "sale": null,
+        "verdict": "fail"
+      }
+    },
+    {
+      "name": "pinned-provider",
+      "entryId": "b2e7589b-c627-5d5b-b9f0-171c106d83fa",
+      "retainedHash": "0071b17b87164ae1f3875beb97e8b90f915aca48cacf14d35f00d0c533fe38e9",
+      "verdict": {
+        "charge": " The recorded charge itself recomputes from the usage and rates inside the entry.",
+        "ok": true,
+        "price": " The price it names is bound to a checkpoint the operator signed.",
+        "sale": " The customer sale terms it names are bound to a checkpoint the operator signed.",
+        "verdict": "pass"
+      },
+      "price": {
+        "detail": "the price binding verifies",
+        "ok": true
+      },
+      "sale": {
+        "detail": "the sale binding verifies",
+        "ok": true
+      },
+      "wrongHash": {
+        "charge": "",
+        "ok": false,
+        "price": "",
+        "sale": null,
+        "verdict": "fail"
+      },
+      "alteredCharge": {
+        "charge": "",
+        "ok": false,
+        "price": "",
+        "sale": null,
+        "verdict": "fail"
+      }
+    }
+  ]
+}
