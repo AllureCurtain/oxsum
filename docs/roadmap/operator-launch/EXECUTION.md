@@ -1,19 +1,22 @@
 # Operator launch execution ledger
 
-## Continuation: aggregate test execution (#1003)
+## Current checkpoint (2026-11-10)
 
-The combined repair source `532d766c` (including #975) passed full CI
-[42853550892](https://github.com/AllureCurtain/oxsum/actions/runs/42853550892):
-2,230 ordinary, 26 shared and 37 PostgreSQL engine tests, plus fast/build jobs.
-This is branch evidence; independent approval, main integration and final
-candidate gates remain outstanding.
+[Verified integration and acceptance checkpoint](evidence/acceptance-checkpoint.md)
+supersedes pending-integration and 0/5 budget statements in the historical log
+below. Main is verified through `07df5378`. Application/readiness software and
+commercial browser evidence are integrated; the CI-selection repair #1003/#1004
+and refund-history repair #975 are now integrated as well (full CI 42853550892
+passed 2,230 ordinary, 26 shared and 37 PostgreSQL engine tests plus all fast/build
+jobs). #977/#979/#980/#982 remain open pending protected integration. Full local
+regression passed 2,256 tests with six existing opt-ins skipped after #975's
+fixture repair. Actual Finance browser comparison verified all 15 source and 20
+ledger entries, with six equal totals and four explicit missing-cost exceptions.
+Shared DeepSeek budget remains 2/5 attempts, 16,896 CNY millionths reserved, 52
+usage estimate. The checkpoint names remaining browser, artifact and external
+acceptance gates.
 
-Main `2ee70601` retains the new single integration binary per core/server crate.
-CI `42819010276` failed all shards before execution because it selected removed
-binary names; its process-shared step found no old executables and ran no tests.
-#1003 restores module-aware selection and fail-closed archived execution.
-The known manual-refund upgrade failure remains separately repaired in PR #975.
-No prior development pass or empty CI step is final-candidate evidence.
+## Historical execution log
 
 Updated: 2026-11-10 (Asia/Shanghai). Owner: this task. Umbrella: [#725](https://github.com/AllureCurtain/oxsum/issues/725).
 
