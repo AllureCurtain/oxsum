@@ -517,3 +517,14 @@ No external provider/PSP/receiver contact or spend occurred.
 - #942 submitted as draft PR #943 (`f9ed9593`); fast CI `42730958099` passed.
   Full local evidence is recorded above. Independent approval and candidate
   browser/runtime acceptance remain; no normal merge has occurred.
+
+### Commercial browser checkpoint (#969)
+
+The owner/customer/Finance portal completed local bundle purchase and full return,
+paid-plan activation, source-linked paid fee statement, early-renewal refusal,
+and continued paid quota after cancellation. [Evidence](evidence/commercial-browser/README.md)
+retains original JSON, seven inspected screenshots and byte identities. Local
+signed protocol fixtures do not certify an SDK, real PSP or final candidate.
+The quota engine correctly consumed 80 minor while the Plans view showed zero;
+#973 tracks that read defect. Statement exception/debt and embedded browser
+journeys plus the unchanged external/candidate gates remain open.
