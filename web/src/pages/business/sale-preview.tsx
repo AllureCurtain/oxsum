@@ -1,5 +1,6 @@
 import { Trans, useTranslation } from "react-i18next";
 import { saleError, saleLabel } from "../../lib/sale-text";
+import { SaleInputError } from "../../lib/sale-input-error";
 import { useState } from "react";
 import { useSalePreview, type SaleHistory } from "../../api/hooks/sales";
 import { Banner, Button, Card, Cr, Field, NativeSelect, TableShell, Td, TextInput } from "../../components/ui";
@@ -19,21 +20,21 @@ export function SalePreview({ history }: { history: SaleHistory }) {
   const [at, setAt] = useState("");
   const [tier, setTier] = useState("");
   const [counts, setCounts] = useState<Record<string, string>>({ inputTokens: "1000", outputTokens: "100" });
-  const [error, setError] = useState("");
+  const [error, setError] = useState<unknown>(null);
   const preview = useSalePreview();
   const result = preview.data;
   return <Card title={t("sale.previewTitle")}><div className="flex flex-col gap-4">
     <p>{t("sale.previewDescription")}</p>
     <form className="flex flex-col gap-4" onSubmit={async (e) => {
-      e.preventDefault(); setError(""); preview.reset();
+      e.preventDefault(); setError(null); preview.reset();
       try {
         const revision = history.drafts.find((d) => String(d.revision) === source)?.revision;
-        if (source !== "effective" && revision == null) throw new Error(t("sale.selectExistingDraft"));
+        if (source !== "effective" && revision == null) throw new SaleInputError("selectExistingDraft", "selectExistingDraft");
         await preview.mutateAsync({ organizationId: customer, model, at: utc(at),
           source: revision == null ? { kind: "effective" } : { kind: "draft", bookId: history.book.id, revision },
           usage: { ...Object.fromEntries(COUNTS.map(([key, label]) => [key, whole(counts[key] || "0", label)])), serviceTier: tier || null },
         });
-      } catch (e) { setError(saleError(e, t, t("sale.previewError"))); }
+      } catch (e) { setError(e); }
     }}>
       <CustomerPicker value={customer} onChange={setCustomer} />
       <div className="grid gap-4 sm:grid-cols-2">
@@ -43,7 +44,7 @@ export function SalePreview({ history }: { history: SaleHistory }) {
         <Field label={t("sale.serviceTier")}><TextInput value={tier} maxLength={64} onChange={(e) => setTier(e.target.value)} /></Field>
         {COUNTS.map(([key, label]) => <Field key={key} label={saleLabel(label, t)}><TextInput inputMode="numeric" value={counts[key] ?? ""} maxLength={16} onChange={(e) => setCounts({ ...counts, [key]: e.target.value })} placeholder="0" /></Field>)}
       </div>
-      {error ? <Banner tone="error">{error}</Banner> : null}
+      {error != null ? <Banner tone="error">{saleError(error, t, t("sale.previewError"))}</Banner> : null}
       <Button type="submit" isLoading={preview.isPending} disabled={!customer || !model.trim()}>{t("sale.preview")}</Button>
     </form>
     {result ? <div className="flex flex-col gap-3" aria-live="polite">
