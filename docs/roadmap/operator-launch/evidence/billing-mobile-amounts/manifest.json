@@ -1,0 +1,22 @@
+{
+  "backendSource": "d3a09475675f69761c1ad1fa193268ade88d9f2b",
+  "frontendSource": "0c0031b9856fe187ca9c98258a73845bd5d71010",
+  "binarySha256": "2e7866b627d8e230f73537b4f6594d1c22e902d872759c5a36d0d35503dc35a5",
+  "mobile": {
+    "viewportWidth": 390,
+    "documentWidth": 390,
+    "tableClientWidth": 325,
+    "tableScrollWidth": 565
+  },
+  "desktop": {
+    "viewportWidth": 1280,
+    "documentWidth": 1280,
+    "tableWidth": 1005
+  },
+  "detailLinkReached": true,
+  "artifacts": {
+    "billing-mobile-right.png": "b6fd6a1e627f8a2cb746036acd82b06171504f4a27dd902ffcc6a00cd0c4574c",
+    "billing-desktop-readable.png": "457fa898961d0245037d649db6347c5959e4fd00d5ae7c0e69b10ff4c8c187a5",
+    "billing-mobile-readable.png": "ae063a79c8dedb722c0d76c62fedda44e3665340fde01ef9b5ff1fa7c1d90fda"
+  }
+}
