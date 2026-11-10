@@ -52,6 +52,14 @@ cargo nextest run -p oxsum-server --test <suite>       # one test binary
 cargo nextest run -p oxsum-core --test <suite> --test <other>   # several, one selection
 ```
 
+Each crate's integration tests live in ONE aggregate binary —
+`tests/server.rs`, `tests/core.rs` — which `#[path]`-loads every former
+`tests/*.rs` file as a submodule (issue #998; a per-file binary each embedded
+~127 MB of `oxsum_server` and pushed `deps/` past 100 GB). New integration
+tests go inside an existing `tests/server/` / `tests/core/` submodule (or a new
+file there plus a `#[path] mod` line in the aggregate), never a new top-level
+`tests/*.rs`.
+
 `cargo nextest run --workspace` is **not** the iteration command — it compiles
 and runs every test binary (~7 minutes, dozens of `de_*`/`oxsum_test_*`
 scratch databases). Run it only for true cross-crate changes (for example core

@@ -3829,3 +3829,29 @@ paths are absolute, so the build is not path-independent — acceptable for a
 self-hosted single binary that is built per target, not relocated. A new
 migration is now only a new `migrations/NNNN_name.sql`; no tracked registry file
 is edited, so parallel migration work no longer conflicts on `db.rs`.
+
+## 2026-11-10 — Fold per-file integration tests into one aggregate binary per crate (#998)
+
+Every `tests/*.rs` file compiles to a standalone binary that statically links
+`oxsum_server` (~127 MB), and cargo keeps every fingerprinted artifact — with
+~220 test files the shared `.worktrees/target/debug/deps/` reached 101 GB
+(942 test executables, ~800k codegen-unit `.o` files, 8 duplicate
+`liboxsum_server` rlibs). Server and core now each build one binary —
+`tests/server.rs` and `tests/core.rs` — whose submodules are the former test
+files, so `oxsum_server`/`oxsum_core` link once per crate instead of ~100×.
+
+`oxsum_testkit::suite_db_url` moved from a single `OnceLock` database to a
+per-slug `Mutex<HashMap>`: the aggregate binary hosts ~100 suites in one
+process, and a single shared scratch database would both break the per-suite
+isolation convention and concentrate every suite's `PgPool` on one database.
+The `#[dtor]` teardown now drops every database the process created. Submodule
+name spacing keeps `nextest` selection by module path; `#[path]` attributes on
+`mod` decls let former files keep their original names.
+
+`clippy::duplicate_mod` is allowed on the aggregate binaries only: loading the
+same `support/` source under each former file's alias (`setup`, `support`,
+`integration` …) is deliberate — rewriting every call site to a single
+canonical name would have doubled the diff for no behavioural gain.
+
+Verified: a clean-build `deps/` is ~3.3 GB (was 101 GB). `nextest run -p
+oxsum-server` and `-p oxsum-core` each pass fully under one binary.
