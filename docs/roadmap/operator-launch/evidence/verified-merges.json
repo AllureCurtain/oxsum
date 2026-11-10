@@ -1,5 +1,17 @@
 [
   {
+    "pr": 1001,
+    "mergeSha": "2ee706019a02f24b4b8ed4b949b8c5254b27a178",
+    "mergedAt": "2026-11-10T12:49:14Z",
+    "title": "test: fold per-file integration tests into one binary per crate"
+  },
+  {
+    "pr": 1000,
+    "mergeSha": "33730767f093f1c7219181dec302e14b6cbb04f8",
+    "mergedAt": "2026-11-10T12:12:52Z",
+    "title": "docs: codify shared target dir and manual artifact GC"
+  },
+  {
     "pr": 974,
     "mergeSha": "07df53783fa71fb400d6ab818cd31dee9a775acc",
     "mergedAt": "2026-11-10T06:14:22Z",

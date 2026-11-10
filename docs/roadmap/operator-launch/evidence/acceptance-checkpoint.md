@@ -1,66 +1,103 @@
-# Acceptance checkpoint — 2026-11-10
+# Acceptance checkpoint — 2026-11-11
 
-Issue #984. Verified GitHub main `07df5378`; merge identities and timestamps are
-retained in [verified-merges.json](verified-merges.json). Integration is distinct
-from complete journey or exact-artifact release acceptance. Historical entries
-below the current execution checkpoint retain what was known at their time.
+Issue #984. GitHub main is `2ee706019a02f24b4b8ed4b949b8c5254b27a178`.
+[Verified merge identities](verified-merges.json) now include #1000/#1001.
+Implementation integration, development acceptance and exact-artifact release
+acceptance remain separate. N00/N01/N02/N07/N08 owner issues are closed; 17 owner
+issues and umbrella #725 remain open. This ratio is not software completion.
 
-## Integrated software and executed development acceptance
+## Integrated software and development evidence
 
-The scoped application stack, statement repayment/source corrections, personal
-consent, signed notifications and durable external application are integrated
-through #949. Readiness, staff invitation, routing/reload, exact plan-money input
-and first-call/offline-WASM repairs are integrated through #967. Fresh owner,
-customer/staff, bundle purchase/return and paid-plan activation/cancel browser
-evidence is integrated through #974. TODO now identifies the actual PR/merge
-for each integrated unit and removes duplicate #866/#898 entries.
+Application lifecycle/keys/entitlement/checkout/evidence, personal consent, signed
+notifications and durable external application are integrated through #943/#949.
+Readiness, staff invitations, console reload, exact plan amounts and first-call
+WASM repairs are integrated through #967. Owner/customer/staff, bundle purchase/
+return and paid-plan activation/cancellation evidence is integrated through #974.
+Aggregate integration binaries and shared-target rules integrated in #1001/#1000.
+TODO removes duplicate #866/#898 entries and records exact merged implementations.
 
-Current review queue (all five required fast CI checks passed for each PR):
-
-| PR | Concrete result | Integration boundary |
-| --- | --- | --- |
-| #975 | Historical manual refund upgrade fixture; 12 focused checks and full 2,256-pass workspace run, six existing opt-ins skipped | Independent approval pending |
-| #977 | Actual application consent and signed durable receiver delivery/replay | Independent approval pending |
-| #979 | Original quota-window consumption; 17 core/HTTP tests, strict Clippy, browser 0 → 80/100 | Independent approval pending |
-| #980 | Explicit dispute outcomes, source debt repayment, terminal-refresh-safe identical retry | Independent approval pending |
-| #982 | Paid journal correction, cashless 1+3-credit payable shares and original-source returns | Independent approval pending |
-
-Entire Gates reports missing reviewer approval; no author self-approval or admin
-bypass is recorded. Latest executed main CI `42764820019` on `1cd9dcd8` failed
-only the obsolete bundle-upgrade fixture repaired by #975. The local full result
-is not a claim that current main or a final candidate has green full CI. #983
-repairs the year/ordinal reconciliation response discovered in browser acceptance.
-
-Finance's actual [source/ledger comparison](browser-financial-comparison/README.md)
+Finance's retained [source/ledger comparison](browser-financial-comparison/README.md)
 verified 15 sources and 20 entries with all six monetary totals equal. Four
-missing-cost exceptions stay visible and open. No invented provider cost or
-silent waiver is counted as acceptance.
+missing-cost exceptions remain open; no invented cost or waiver supplies evidence.
+Quota exhaustion/overage and two-customer/pinned in-flight price acceptance now
+have separate evidence PRs #991/#995. Monthly operations now have complete local
+implementation and targeted browser evidence in the pending PRs below.
+
+## Pending integration
+
+GitHub read on November 11 found **19 open PRs**, all with zero recorded reviews.
+All 19 have all five fast required checks green on their recorded heads; #1016
+completed [CI 42865423868](https://github.com/AllureCurtain/oxsum/actions/runs/42865423868)
+on `3e5b7d65`. This checkpoint revision will receive a new CI run. Entire reports missing
+independent reviewer approval. No self-approval or protection bypass is accepted.
+PR CI does not replace full integration, engine or candidate evidence.
+
+| PR | Reviewed change should establish | Dependency / remaining acceptance |
+| --- | --- | --- |
+| #975 | Historical manual refund upgrade fixture | Included in #1004; independent approval pending |
+| #977 | Application consent and signed durable delivery/replay | Complete embedded journey remains |
+| #979 | Original quota-window consumption | Browser 0 → 80/100 passed; integrate with #991 |
+| #980 | Explicit dispute outcomes and retained exact retry | Independent approval and candidate remain |
+| #982 | Paid journal correction and original-source returns | Replacement/reissue journey remains |
+| #985 | Current integration and Finance comparison evidence | This checkpoint; no feature acceptance implied |
+| #987 | ISO reconciliation dates | Independent approval and candidate remain |
+| #989 | Explicit complimentary binding and ambiguous recovery | Independent approval and candidate remain |
+| #991 | Browser quota boundary and offline proof | Independent approval; preserves tested stack |
+| #993 | Chat credential isolation across user/customer | Independent approval and candidate remain |
+| #995 | Distinct customer and in-flight sale prices | Post-fix locale acceptance remains #996 |
+| #996 | Bilingual sale editor and exact validation | Actual browser reacceptance pending |
+| #1004 | Aggregate CI/process-shared suite execution | Includes #975; exact branch full CI passed |
+| #1005 | Staff monthly credit terms | Actual credit approval browser passed |
+| #1008 | Staff monthly statement reads | Bilingual detail/mobile/pagination passed |
+| #1010 | Atomic monthly issuance/anchor | Source/audit failure and concurrency tests passed |
+| #1012 | Reviewed staff monthly issuance | Depends on #1008/#1010; browser exact recovery passed |
+| #1014 | Atomic monthly repayment/paid replay | Depends on #1010/#975; 2,266 workspace tests passed |
+| #1016 | Staff monthly verified payment | Depends on #1012/#1014; browser and 52 final affected checks passed |
+
+Full [CI 42853550892](https://github.com/AllureCurtain/oxsum/actions/runs/42853550892)
+on #1004 source `532d766c86a0f50ff001ceb4ff2c09eb38f034ee` passed 2,230 ordinary,
+26 process-shared and 37 PostgreSQL engine cases plus fast checks. Main
+[CI 42819010276](https://github.com/AllureCurtain/oxsum/actions/runs/42819010276)
+on `2ee70601` failed three shards because old per-file invocations did not match
+aggregate binaries. The branch result must become main evidence after protected
+integration; a successful Release image job does not repair failed main CI.
+
+#1016 ran 2,284 workspace tests successfully before extending reference sharing to
+staff manual orders; 52 final affected tests then passed with strict core/server
+Clippy, contract/codegen/build checks. Actual browser sent five payment requests:
+overpayment refusal, successful August payment, exact recovery after intentionally
+lost success response, duplicate-reference refusal and successful September
+payment. Two unique receipts totaling 2,000,003 minor each have one ledger entry,
+reference and actor audit. Customer credit used is zero; no wallet funds were
+created. TaskSpace 5 and its local listener were closed. Evidence remains on that
+PR and is not yet on main or a final candidate.
 
 ## Remaining execution
 
-- Complete the remaining advertised UI cases: second customer sale, pinned
-  in-flight edit, quota exhaustion/overage, actual renewal/change/expiry boundary,
-  and the monthly controlled-postpaid cycle. Existing focused domain tests are
-  evidence for their tested scope, not a replacement for every browser journey.
-- Integrate reviewed repairs normally, then freeze one SHA and run full CI with
-  engine conformance. Build/smoke the exact candidate image, frontend and SDK;
-  run J01–J16/J18, independent offline export, deployment/upgrade/restore and
-  compatible rollback on those same bytes. No final candidate is frozen yet.
-- Genuine PSP sandbox keys, served secure SDK/HTTPS callback path, two actual
-  independent operators and native Linux amd64 4CPU/8GiB reference capacity /
-  eight-hour soak environment remain external prerequisites. Local fixtures and
-  this macOS development host do not fulfill them.
-- Public publication and existing-service upgrades remain outside this execution.
+- Complete renewal success/failure, cancellation/expiry boundary, provider edit/
+  credential rotation, sale locale reacceptance, replacement/reissued invoice and
+  complete embedded application browser journeys. Tests support their own tested
+  scope; existing local fixtures do not complete every advertised journey.
+- Obtain independent review and integrate dependencies normally. Freeze one
+  integrated SHA only after main is repaired, then execute full CI with engine
+  and process-shared coverage. Build/smoke and accept that exact image, frontend
+  and SDK across J01–J16/J18, offline evidence, deployment/upgrade/restore and
+  compatible rollback. No final operator-launch candidate has been frozen.
+- Genuine PSP sandbox credentials and secure SDK/HTTPS automatic callback path,
+  native Linux amd64 4CPU/8GiB capacity/eight-hour soak host, and two independent
+  operator participants remain external prerequisites. Local macOS fixtures
+  cannot replace these gates. Pilot preparation is already integrated in #874.
+- Public publication and existing-service upgrades remain unperformed under the
+  recorded scope; tooling and isolated rehearsal do not claim those actions.
 
-## Persistent budget and cleanup
+## Persistent allowance and cleanup
 
-Actual DeepSeek development allowance remains **2/5 attempts**, **16,896 CNY
-millionths reserved**, **52 millionths** conservative peak-rate usage estimate.
-No new real-provider request was made during these browser repairs. Historical
-0/5 entries are superseded; the allowance is never reset per task.
+DeepSeek allowance remains **2/5 attempts**, **16,896 CNY millionths reserved**,
+**52 millionths** estimated usage. No new real-provider request occurred during
+monthly acceptance. Historical 0/5 entries are superseded, never a reset.
 
-The private cleanup journal records **67** explicitly removed merged worktrees,
-including #974's commercial evidence and #967's manual-refund tree. Generated
-frontend evidence was retained privately before removal. Unmerged repair trees
-and the two unregistered asset directories required by the active debug runtime
-remain protected. Another actor's deletions are not included in this count.
+The private cleanup journal retained 67 explicitly removed merged worktrees;
+this checkpoint does not increase that count. Current unmerged worktrees and the
+shared `plan-consumption-read/web/node_modules` asset source remain in use. The
+shared build cache is not a task checkout. Temporary acceptance browser spaces
+and task listeners are closed when their acceptance completes.

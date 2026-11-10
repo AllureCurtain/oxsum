@@ -1,16 +1,24 @@
 # TODO
 
-Updated: 2026-11-10
+Updated: 2026-11-11
 
 ## In progress
 
-- [x] [#1003](https://github.com/AllureCurtain/oxsum/issues/1003) — Integrated in PR #1004. Restored aggregate-aware CI selection and fail-closed process-shared execution; combined with #975, full CI 42853550892 passed 2,230 ordinary, 26 shared and 37 PostgreSQL engine tests plus all fast/build jobs.
-
+- [x] [#998](https://github.com/AllureCurtain/oxsum/issues/998) — Aggregate integration binaries integrated in PR #1001 (`2ee70601`).
+- [x] [#999](https://github.com/AllureCurtain/oxsum/issues/999) — Shared target and manual artifact cleanup rules integrated in PR #1000 (`33730767`).
+- [x] [#1003](https://github.com/AllureCurtain/oxsum/issues/1003) — Integrated in PR #1004. Aggregate integration/process-shared CI repair; full branch CI 42853550892 passed 2,230 ordinary, 26 shared and 37 PostgreSQL engine tests plus all fast/build jobs.
 - [x] [#975](https://github.com/AllureCurtain/oxsum/pull/975) — Integrated. Preserved historical manual bundle refund requests and repaired the obsolete upgrade assertion.
+- [ ] [#997](https://github.com/AllureCurtain/oxsum/issues/997) — Personal Business monthly credit approval implemented and browser-verified in PR #1005; protected integration pending.
+- [ ] [#1006](https://github.com/AllureCurtain/oxsum/issues/1006) — Monthly inspection, issuance and repayment implementations are PRs #1008/#1010/#1012/#1014/#1016; protected integration and final candidate remain.
+- [ ] [#1007](https://github.com/AllureCurtain/oxsum/issues/1007) — Monthly statement inspection implemented and browser-verified in PR #1008; protected integration pending.
+- [ ] [#1009](https://github.com/AllureCurtain/oxsum/issues/1009) — Atomic document/anchor issuance implemented in PR #1010; protected integration pending.
+- [ ] [#1011](https://github.com/AllureCurtain/oxsum/issues/1011) — Reviewed Business monthly issuance implemented and browser-verified in PR #1012; protected integration pending.
+- [ ] [#1013](https://github.com/AllureCurtain/oxsum/issues/1013) — Atomic monthly repayment and paid exact replay implemented in PR #1014; full 2,266 tests and seven final regressions passed, protected integration pending.
+- [ ] [#1015](https://github.com/AllureCurtain/oxsum/issues/1015) — Staff monthly repayment implemented in PR #1016; 2,284 full tests before manual-order extension, 52 final affected cases and actual bilingual desktop/mobile/customer acceptance passed. Browser and listener closed; protected integration pending.
 
 - [ ] [#984](https://github.com/AllureCurtain/oxsum/issues/984) — Reconcile verified merge identities, current browser accounting evidence, pending review/candidate gates and merged-worktree cleanup. [Checkpoint](docs/roadmap/operator-launch/evidence/acceptance-checkpoint.md).
 
-- [ ] [#969](https://github.com/AllureCurtain/oxsum/issues/969) — Actual browser bundle purchase/return and paid-plan activation, fee/payment statement, early-renewal refusal and cancellation service passed with local signed fixtures. Stale plan consumption display is #973; statement correction/dispute, embedded and candidate/external gates remain. [Evidence](docs/roadmap/operator-launch/evidence/commercial-browser/README.md).
+- [ ] [#969](https://github.com/AllureCurtain/oxsum/issues/969) — Actual browser bundle purchase/return and paid-plan activation, fee/payment statement, early-renewal refusal and cancellation service passed with local signed fixtures. Plan consumption/correction/dispute repairs are pending #979/#980/#982; renewal/expiry, complete embedded and candidate/external gates remain. [Evidence](docs/roadmap/operator-launch/evidence/commercial-browser/README.md).
 
 - [x] [#966](https://github.com/AllureCurtain/oxsum/issues/966) — Integrated in PR #967 (`e4f08975`). Reject unroutable manual receipt refunds and retain historical retry-safe review. Browser and focused checks passed; fixture follow-up #975 has 2,256 workspace passes. [Evidence](docs/roadmap/operator-launch/evidence/manual-refund-route/README.md). Full journey/exact-candidate gates remain separate.
 
@@ -136,21 +144,21 @@ Updated: 2026-11-10
 - [x] [#728](https://github.com/AllureCurtain/oxsum/issues/728) — N02: Isolated current-authority demo integrated in PR #751; example isolation in PR #772. Development evidence passed; final candidate rerun remains.
 - [ ] [#729](https://github.com/AllureCurtain/oxsum/issues/729) — N03: Owner setup/profile/collection software and fresh isolated browser workflow recorded in #958. Exact-candidate fresh deployment remains.
 - [ ] [#730](https://github.com/AllureCurtain/oxsum/issues/730) — N04: Connection/secret and model/alias/routing/cache/fallback editors integrated (#755/#823); development browser configuration recorded in #958. Full operation/candidate journey remains.
-- [ ] [#731](https://github.com/AllureCurtain/oxsum/issues/731) — N05: Sale-book editing, publication, scheduling and customer terms integrated (#775); exact local settlement evidence passed, browser and candidate acceptance remain.
-- [ ] [#732](https://github.com/AllureCurtain/oxsum/issues/732) — N06: Pinned Hyperswitch sandbox integrated (#762); merchant configuration UI, checkout selection and HTTPS/automatic callback acceptance remain.
-- [x] [#733](https://github.com/AllureCurtain/oxsum/issues/733) — N07: Customer invitation history, explicit local SMTP delivery and registration controls integrated (#781); browser journey acceptance remains.
-- [x] [#734](https://github.com/AllureCurtain/oxsum/issues/734) — N08: Email-bound staff invitations and role lifecycle integrated (#782); focused authority/mail tests passed, browser journey acceptance remains.
+- [ ] [#731](https://github.com/AllureCurtain/oxsum/issues/731) — N05: Sale editor/publication/scheduling integrated (#775); distinct-customer and pinned in-flight browser evidence is PR #995. Locale fix #996 needs browser reacceptance; candidate remains.
+- [ ] [#732](https://github.com/AllureCurtain/oxsum/issues/732) — N06: Pinned sandbox, merchant configuration and checkout selection integrated (#762/#834/#844); actual secure SDK/HTTPS callbacks and PSP certification remain.
+- [x] [#733](https://github.com/AllureCurtain/oxsum/issues/733) — N07: Invitation history, local SMTP and registration integrated (#781); development browser journey recorded in #958. Candidate journey remains.
+- [x] [#734](https://github.com/AllureCurtain/oxsum/issues/734) — N08: Staff invitations/roles integrated (#782); preview repair #950 and actual finance/support enrollment/revocation recorded in #958. Candidate journey remains.
 - [ ] [#735](https://github.com/AllureCurtain/oxsum/issues/735) — N09: Readiness, admission and scoped receipt/funding software integrated through #916; actual customer 2/5 → 3/5 → 5/5, free/zero-wallet and offline WASM browser evidence integrated in #961. Full candidate journey remains.
-- [ ] [#736](https://github.com/AllureCurtain/oxsum/issues/736) — N10: Payment/refund authority and recovery repairs integrated; explicit statement repayment, remaining conservation fixes and complete commercial journeys remain.
-- [ ] [#737](https://github.com/AllureCurtain/oxsum/issues/737) — N11: Daily policy and captured evidence are integrated in PR #851. Independent runtime comparison #848 integrated in PR #896 (`a60e14ca`) after 2,098 workspace checks and source review; browser/candidate acceptance remains.
+- [ ] [#736](https://github.com/AllureCurtain/oxsum/issues/736) — N10: Statement source/repayment and cash repairs integrated through #953; finance portal repairs #980/#982 and monthly operations #1005/#1008/#1010/#1012/#1014/#1016 await integration. Renewal/expiry/reissue and candidate journeys remain.
+- [ ] [#737](https://github.com/AllureCurtain/oxsum/issues/737) — N11: Daily policy/evidence #851 and independent reconciliation #896 integrated. Finance browser comparison has 15 sources/20 entries and six equal totals in #985, retaining four missing-cost exceptions. Candidate remains.
 - [ ] [#738](https://github.com/AllureCurtain/oxsum/issues/738) — N12: Complete evidence delivery, retained trust inputs and candidate offline-verifier acceptance using the existing verifier foundations.
 - [ ] [#739](https://github.com/AllureCurtain/oxsum/issues/739) — N13: Candidate byte/provenance gate integrated (#753); original-byte image promotion integrated (#806); digest deployment tooling integrated (#813); original SDK publication integrated (#816); actual candidate deployment/rollback rehearsal remains.
 - [ ] [#740](https://github.com/AllureCurtain/oxsum/issues/740) — N14: DeepSeek whole/SSE development scenarios passed in #945. Shared budget: 2/5 attempts, 16,896 CNY millionths reserved, 52 estimated usage. Exact-candidate real-provider certification remains.
 - [ ] [#741](https://github.com/AllureCurtain/oxsum/issues/741) — N15: Genuine PSP sandbox certification remains external pending; local payment/callback fixtures do not close that gate.
 - [ ] [#742](https://github.com/AllureCurtain/oxsum/issues/742) — N16: Job-clock fixture correction integrated (#773); reference capacity, fairness and eight-hour soak remain.
 - [ ] [#743](https://github.com/AllureCurtain/oxsum/issues/743) — N17: Sanitized diagnostics integrated in #825 (`22e2ad7`); #827 explicit private backup/restore integrated (#832); #833 development artifact upgrade/drain/restore/rollback and old/new offline proofs integrated in PR #839 (`8a51109c`). Candidate upgrade, independent representative restore and compatible rollback remain.
-- [ ] [#744](https://github.com/AllureCurtain/oxsum/issues/744) — N18: Final integrated candidate acceptance remains; no operator-launch candidate frozen; latest executed main CI on `1cd9dcd8` failed the obsolete bundle-upgrade fixture; #975 fixes it with 2,256 local passes. Required full-CI/engine evidence on the final candidate remains absent.
-- [ ] [#745](https://github.com/AllureCurtain/oxsum/issues/745) — N19: Prepare both independent operator pilot kits; actual participants have not been supplied.
+- [ ] [#744](https://github.com/AllureCurtain/oxsum/issues/744) — N18: No operator-launch candidate frozen. Main 2ee70601 CI fails obsolete aggregate selectors; PR #1004 full branch CI passes with #975. Protected integration and exact-candidate full CI/engine remain.
+- [ ] [#745](https://github.com/AllureCurtain/oxsum/issues/745) — N19: Both independent pilot kits are integrated in #874; two actual participants have not been supplied.
 - [ ] [#746](https://github.com/AllureCurtain/oxsum/issues/746) — N20: Complete publication/deployment tooling and isolated rehearsal; public actions and existing-service upgrades remain unperformed under this scope.
 - [ ] [#747](https://github.com/AllureCurtain/oxsum/issues/747) — N21: Customer/key/entitlement, wallet/bundle/plan/statement checkout, original-byte evidence, consent, notifications and separate-store application software are integrated through #949. Actual browser consent/receiver evidence is PR #977; complete exact-candidate J18 remains.
 - [x] [#748](https://github.com/AllureCurtain/oxsum/issues/748) — Initial owner browser consent and recovery integrated (#750); development browser checks passed, full J02 remains with N03/N09.
