@@ -29,3 +29,12 @@ read-only follow-up was checked with the affected plan suites.
 
 This is development acceptance, not an exact release candidate, external PSP,
 month-end, capacity or independent pilot claim. No secrets are included.
+
+## Aggregate-test continuation
+
+Updated to main `2ee70601` after integration suites moved under `tests/core.rs`
+and `tests/server.rs`. All 17 plan core/HTTP cases pass through those aggregate
+binaries; changed core/server strict Clippy and pinned formatting pass. The
+consumption implementation and retained browser artifacts are unchanged. Prior
+full regression/browser evidence remains reusable; independent approval and
+protected integration remain required.
