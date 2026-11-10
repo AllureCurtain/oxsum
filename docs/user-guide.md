@@ -1674,6 +1674,22 @@ applying its unchanged revision. A refusal needs source investigation; another
 key, replacement order or changed terminal outcome does not repair history.
 
 
+### Guardrail refund and request fees (#899)
+
+A whole-response guardrail refusal, including a cache hit, charges zero customer usage and zero fixed request fee and releases the entire wallet reservation and subscription draw. Streamed content already delivered remains billed; a successful zero-token answer still owes its configured request fee. A customer refund does not imply zero provider cost: retained provider usage remains on the actual attempt and prices operator cost; absent provider counts remain untracked. A refused cache hit makes no new provider attempt. Exact request replay retains the same receipt and does not repeat a charge or refund.
+## Verify your first successful call
+
+On **Get started**, the request and bill steps become ready when a successful
+call in your current customer scope has consistent receipt evidence. Free and
+fully entitled calls count. Later failed requests do not hide an earlier success.
+Choose **Verify this receipt** to open its proof and content hash, then run the
+verification. The page explains that this freshly loaded hash comes from the
+same server; retain evidence and trusted heads for later independent comparison.
+
+No closed-day report or share link is needed for this step. Period reports are
+available separately after their UTC period ends. If evidence is incomplete or a
+read fails, the checklist shows a failed check and never a completed step;
+refresh to retry. Members see only their permitted history.
 ### Application entitlement and customer sale reads (#898)
 
 An owner can explicitly grant application-only `entitlementsRead`. Existing
