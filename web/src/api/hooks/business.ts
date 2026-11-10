@@ -26,6 +26,8 @@ export type BusinessRole = components["schemas"]["BusinessRole"];
 export type BusinessStaff = components["schemas"]["BusinessStaff"];
 export type BusinessMutationResult = components["schemas"]["BusinessMutationResult"];
 export type BusinessCustomer = components["schemas"]["BusinessCustomer"];
+export type BusinessCustomerCreditTerms = components["schemas"]["BusinessCustomerCreditTerms"];
+export type BusinessCustomerCreditTermsRequest = components["schemas"]["BusinessCustomerCreditTermsRequest"];
 export type BusinessCustomerPage = components["schemas"]["BusinessCustomerPage"];
 export type InvoiceJournal = components["schemas"]["InvoiceJournal"];
 export type InvoiceJournalDetail = components["schemas"]["InvoiceJournalDetail"];
@@ -157,6 +159,23 @@ export function useBusinessCustomer(organizationId: string | undefined) {
     queryKey: ["biz-customer", organizationId],
     queryFn: () => api<BusinessCustomer>(`/business/customers/${organizationId}`),
     enabled: Boolean(organizationId),
+  });
+}
+
+export function useCustomerCreditTerms(organizationId: string, enabled = true) {
+  return useQuery({
+    enabled,
+    queryKey: ["biz-customer-credit", organizationId],
+    queryFn: () => api<BusinessCustomerCreditTerms>(`/business/customers/${organizationId}/credit-terms`),
+  });
+}
+
+export function useSetCustomerCreditTerms(organizationId: string) {
+  const client = useQueryClient();
+  return useMutation({
+    mutationFn: (body: BusinessCustomerCreditTermsRequest) =>
+      api<BusinessMutationResult>(`/business/customers/${organizationId}/credit-terms`, { method: "PUT", body }),
+    onSuccess: () => client.invalidateQueries({ queryKey: ["biz-customer-credit", organizationId] }),
   });
 }
 
