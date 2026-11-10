@@ -4,6 +4,8 @@ Updated: 2026-11-10
 
 ## In progress
 
+- [ ] [#947](https://github.com/AllureCurtain/oxsum/issues/947) — Repair the staff invitation preview HTTP 500 observed during browser acceptance; return business identity without a customer organization and cover the mailed browser prerequisite.
+
 - [ ] [#899](https://github.com/AllureCurtain/oxsum/issues/899) — Whole-response/cache refunds now waive flat fees and release quota while retaining provider cost evidence. Baseline reproduced; 17 guardrail and 122 related checks, formatting and server strict Clippy passed; review and integration pending.
 - [ ] [#909](https://github.com/AllureCurtain/oxsum/issues/909) — Scoped immediate first-call receipt readiness and working private verification links implemented; 2,156 workspace and 59 final focused checks passed, strict Clippy/contract/frontend and real browser WASM checks passed. Independent review and protected integration pending. [Evidence](docs/roadmap/operator-launch/evidence/first-call-receipt.md).
 - [ ] [#912](https://github.com/AllureCurtain/oxsum/issues/912) — Side-effect-free personal gateway funding preview sharing current admission constraints; 777 core, 11 final funding and 35 coordinated HTTP checks passed, strict core Clippy and formatting passed. Independent review and protected integration pending; model/sale/checklist follow-up remains #901.

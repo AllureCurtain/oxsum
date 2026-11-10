@@ -12377,7 +12377,7 @@ components:
       required: [organizationId, name, role, expiresAt]
       properties:
         organizationId: { type: string, format: uuid, description: "The customer organization, or the nil UUID for a business-scoped staff invitation" }
-        name: { type: string }
+        name: { type: string, description: "The invited customer name, or the inviting business name for a staff invitation" }
         role: { type: string, enum: [owner, member], description: "The customer membership role; staff invitations carry the staff role instead" }
         staffRole: { type: string, enum: [admin, finance, support, viewer], nullable: true, description: "The business staff role a staff invitation grants" }
         expiresAt: { type: string, format: date-time }

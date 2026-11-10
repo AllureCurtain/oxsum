@@ -17251,6 +17251,7 @@ export interface components {
              * @description The customer organization, or the nil UUID for a business-scoped staff invitation
              */
             organizationId: string;
+            /** @description The invited customer name, or the inviting business name for a staff invitation */
             name: string;
             /**
              * @description The customer membership role; staff invitations carry the staff role instead

@@ -122,9 +122,9 @@ pub struct InvitationAcceptance {
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct InvitationPreview {
-    /// Organization the invitation admits the recipient to.
+    /// Invited customer organization, or the nil UUID for business staff.
     pub organization_id: Uuid,
-    /// Name of the organization or pending customer.
+    /// Name of the customer organization, pending customer or inviting business.
     pub name: String,
     /// Role the recipient will hold after accepting.
     pub role: Role,
@@ -231,7 +231,7 @@ impl Db {
     /// Reads the public details of a live invitation by its secret. Invalid,
     /// expired or already-used tokens are reported as not found.
     pub async fn invitation_preview(&self, token: &str) -> Result<InvitationPreview, WalletError> {
-        let row=sqlx::query("SELECT COALESCE(i.organization_id,i.pending_customer_id) AS organization_id,COALESCE(o.name,i.customer_name) AS name,i.kind,i.staff_role,i.expires_at FROM oxsum.invitations i LEFT JOIN oxsum.organizations o USING (organization_id) WHERE i.token_hash=$1 AND i.accepted_at IS NULL AND i.revoked_at IS NULL AND i.expires_at>clock_timestamp()")
+        let row=sqlx::query("SELECT COALESCE(i.organization_id,i.pending_customer_id) AS organization_id,CASE WHEN i.kind='staff' THEN b.name ELSE COALESCE(o.name,i.customer_name) END AS name,i.kind,i.staff_role,i.expires_at FROM oxsum.invitations i LEFT JOIN oxsum.organizations o USING (organization_id) LEFT JOIN oxsum.businesses b ON b.business_id=i.business_id WHERE i.token_hash=$1 AND i.accepted_at IS NULL AND i.revoked_at IS NULL AND i.expires_at>clock_timestamp()")
             .bind(hash_token(token)).fetch_optional(self.pool()).await?.ok_or_else(invalid)?;
         let kind: String = row.try_get("kind")?;
         let staff_role = if kind == "staff" {
@@ -242,7 +242,11 @@ impl Db {
             None
         };
         Ok(InvitationPreview {
-            organization_id: row.try_get("organization_id")?,
+            organization_id: if kind == "staff" {
+                Uuid::nil()
+            } else {
+                row.try_get("organization_id")?
+            },
             name: row.try_get("name")?,
             role: if kind == "customer" {
                 Role::Owner

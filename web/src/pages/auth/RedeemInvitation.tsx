@@ -26,15 +26,16 @@ export function RedeemInvitation() {
     onSuccess: () => client.invalidateQueries({ queryKey: ["orgs"] }),
   });
   const registeredKey = redeem.data?.kind === "customer" ? redeem.data.apiKey.secret : null;
+  const staffInvitation = !!preview.data?.staffRole;
   if (accept.isSuccess || redeem.isSuccess) return (
     <AuthCard title={t("auth.invitationAccepted")}>
-      {registeredKey ? <Banner tone="success">{t("auth.firstKey")} <code className="mono break-all">{registeredKey}</code></Banner> : <p>{t("auth.invitationAcceptedHint")}</p>}
-      <Button className="mt-4 w-full" onClick={() => navigate(redeem.data ? "/login" : "/")}>{t("auth.invitationContinue")}</Button>
+      {registeredKey ? <Banner tone="success">{t("auth.firstKey")} <code className="mono break-all">{registeredKey}</code></Banner> : <p>{t(staffInvitation ? "auth.staffInvitationAcceptedHint" : "auth.invitationAcceptedHint")}</p>}
+      <Button className="mt-4 w-full" onClick={() => navigate(redeem.data ? "/login" : staffInvitation ? "/business" : "/")}>{t("auth.invitationContinue")}</Button>
     </AuthCard>
   );
   return (
-    <AuthCard title={t("auth.joinOrgTitle")}>
-      {preview.data ? <p className="mb-4 text-sm">{t("auth.invitationOffer", { name: preview.data.name, role: preview.data.staffRole ?? preview.data.role })}</p> : null}
+    <AuthCard title={t(staffInvitation ? "auth.joinBusinessTitle" : "auth.joinOrgTitle")}>
+      {preview.data ? <p className="mb-4 text-sm">{t(staffInvitation ? "auth.staffInvitationOffer" : "auth.invitationOffer", { name: preview.data.name, role: preview.data.staffRole ?? preview.data.role })}</p> : null}
       <ErrorText error={preview.error} />
       {!token ? <p>{t("auth.invitationMissing")}</p> : null}
       {identity.isPending ? <p>{t("auth.invitationLoading")}</p> : identity.data ? (
@@ -52,7 +53,7 @@ export function RedeemInvitation() {
               <TextInput type="password" required minLength={12} autoComplete="new-password" value={password} onChange={(e) => setPassword(e.target.value)} />
             </Field>
             <ErrorText error={redeem.error} />
-            <Button type="submit" disabled={redeem.isPending || !preview.data}>{t("auth.registerIntoOrg")}</Button>
+            <Button type="submit" disabled={redeem.isPending || !preview.data}>{t(staffInvitation ? "auth.registerIntoBusiness" : "auth.registerIntoOrg")}</Button>
           </form>
         </>
       )}
