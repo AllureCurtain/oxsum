@@ -252,6 +252,24 @@ True cross-crate changes use the single full run and reuse rules above.
 - Read DESIGN.md before touching styles.
 - Read docs/decisions.md before making a technology choice or overturning an existing one.
 
+## Build artifacts & target directory
+
+- Every worktree points its cargo output at the single shared target dir
+  `<repo>/.worktrees/target`, set via `.worktrees/.cargo/config.toml`
+  (`[build] target-dir`, absolute path). Never aim a worktree at a target
+  outside the project, and never create a second shared target — each extra
+  target dir costs another ~100 GB.
+- Cargo keeps every fingerprinted artifact; nothing is auto-deleted, so
+  `deps/` grows ~127 MB per `tests/*.rs` per rebuild across all worktrees.
+  Reclaim by hand every day or two: `cargo clean` or
+  `rm -rf .worktrees/target/debug/deps`. We deliberately do **not** automate
+  this (no cargo-sweep/cron) — an automated sweep can delete in-flight
+  artifacts; `cargo clean` alone removes orphaned `.o` files.
+- Scratch test databases (`oxsum_test_*`, `de_*`) drop on suite exit and via
+  `scripts/drop-test-scratch.sql` (>24 h). A suite killed mid-run leaves its
+  DB; the next CI run's sweep reclaims it. That is the intended design — no
+  extra cleanup rule needed.
+
 ## Doc index
 
 | When | Read |
