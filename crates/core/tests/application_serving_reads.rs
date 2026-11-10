@@ -544,17 +544,28 @@ async fn sale_precedence_zero_future_missing_and_two_customers_match_gateway_wit
             .input_price_per_million,
         100
     );
+    // Wholesale values must not appear anywhere in the response. Numeric and
+    // name sweeps are scoped to the price/discount payload because timestamps
+    // (`asOf`, `effectiveFrom`) can legitimately contain those digit runs.
     let serialized = serde_json::to_string(&page).unwrap();
     for hidden in [
         "provider-private-key",
         "private-provider.example",
         "upstream",
-        "777777",
-        "888888",
-        "999999",
-        route.as_str(),
     ] {
         assert!(!serialized.contains(hidden), "leaked {hidden}");
+    }
+    let sale_terms = serde_json::to_string(
+        &page
+            .models
+            .iter()
+            .filter_map(|model| model.sale_terms.as_ref())
+            .map(|terms| &terms.terms)
+            .collect::<Vec<_>>(),
+    )
+    .unwrap();
+    for hidden in ["777777", "888888", "999999", route.as_str()] {
+        assert!(!sale_terms.contains(hidden), "leaked {hidden}");
     }
     let business = db.default_business().await.unwrap();
     for row in page.models.iter().take(2) {
