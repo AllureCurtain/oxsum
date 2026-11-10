@@ -4,7 +4,11 @@ Updated: 2026-11-11
 
 ## In progress
 
-- [ ] [#1028](https://github.com/AllureCurtain/oxsum/issues/1028) — Partial plan dispute amount defect reproduced while implementing #1027 and repaired in PR #1029; exact-event conversion, once-only case tracking and independent source comparison passed focused core/HTTP checks. Review/integration pending.
+- [ ] [#1028](https://github.com/AllureCurtain/oxsum/issues/1028) — Partial plan dispute amount defect reproduced while implementing #1027 and repaired in PR #1029; exact-event conversion, once-only case tracking and independent source comparison passed focused core/HTTP checks. Protected integration pending.
+
+- [ ] [#997](https://github.com/AllureCurtain/oxsum/issues/997) — Business monthly customer credit terms implemented with atomic ledger/terms/audit and exact replay. Focused core/HTTP, strict Clippy, frontend and isolated bilingual browser checks passed; 2,261 workspace passes plus the known #975 baseline failure. Protected integration and candidate acceptance remain. [Evidence](docs/roadmap/operator-launch/evidence/customer-credit-terms.md).
+
+- [ ] [#969](https://github.com/AllureCurtain/oxsum/issues/969) — Actual browser bundle purchase/return and paid-plan activation, fee/payment statement, early-renewal refusal and cancellation service passed with local signed fixtures. Stale plan consumption display is #973; statement correction/dispute, embedded and candidate/external gates remain. [Evidence](docs/roadmap/operator-launch/evidence/commercial-browser/README.md).
 
 - [ ] [#1027](https://github.com/AllureCurtain/oxsum/issues/1027) — Local source-verified invoice correction preview and integer allocation now pass ten focused and one HTTP check. Atomic apply, successor lifecycle, complete source-linked reconciliation and browser acceptance remain.
 

@@ -1915,3 +1915,11 @@ provider coordinates return `409` before reserving a refund or issuing a note.
 Retained manual requests remain readable and may be declined while requested;
 old pending records stay unresolved for financial review, without provider retry
 calls. Their approval/note state does not confirm that cash was returned.
+
+## Approve monthly wallet credit
+
+In **Business → Customers**, open a customer and locate **Monthly credit terms** (#997). This card is separate from the plan credit settings. Reports readers can inspect the approved total and the portion already drawn or reserved. Owners and finance staff can enter an exact credit amount (up to six decimal places), payment terms in days, optional monthly dunning grace and a reason. Review the customer, amount and terms in the confirmation dialog before approving.
+
+A blank grace value disables automatic monthly dunning; zero gives no additional grace. Both day counts accept 0–3650. Payment terms apply when future monthly statements are finalized. Issued documents, sold-plan terms and manual/archive restrictions retain their own history. Increasing credit does not receive a payment or immediately remove suspension.
+
+A total below already drawn or reserved credit is refused and leaves every term unchanged; close the error dialog to correct the input. If the connection fails or the outcome is uncertain, the form retains the original request and offers an exact retry, even after closing and reopening its dialog. Complete that retry before making another decision. A historical retry returns its original receipt and cannot overwrite a later approval. Archived customers can be inspected but cannot receive new credit decisions. Monthly statement issue/payment management remains separate from this approval card.

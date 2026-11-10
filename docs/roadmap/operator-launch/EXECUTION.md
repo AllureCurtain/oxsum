@@ -48,6 +48,15 @@ Read this file on every resume, then reconcile actual main, worktrees, issues/PR
 
 ### Historical state snapshots
 
+- #997 implements staff-authorized monthly wallet credit terms, separately from
+  plan receivable caps. Atomic ledger/terms/audit, exact historical replay,
+  permission and single-connection tests passed, alongside bilingual desktop/mobile
+  browser success, lost-response retry and rejected-shrink correction. One complete
+  workspace run passed 2,261 cases with the known #975 bundle-upgrade fixture failure;
+  that exact test passed with the pending repair. [Evidence](evidence/customer-credit-terms.md).
+  Independent review/protected integration, monthly statement management/payment
+  and final-candidate acceptance remain.
+
 - #960 records integrated `ac7bb191` customer browser readiness, explicit free
   terms, successful local SSE call and immediate offline WASM proof with
   wrong-hash rejection. [Evidence](evidence/first-call-browser/README.md). Paid
