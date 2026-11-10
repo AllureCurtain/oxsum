@@ -4,6 +4,8 @@ Updated: 2026-11-10
 
 ## In progress
 
+- [ ] [#960](https://github.com/AllureCurtain/oxsum/issues/960) — Integrated browser customer readiness 2/5 → 3/5 → 5/5, zero-wallet refusal/free SSE call and offline WASM receipt verification passed; evidence prepared. [Evidence](docs/roadmap/operator-launch/evidence/first-call-browser/README.md).
+
 - [ ] [#947](https://github.com/AllureCurtain/oxsum/issues/947) — Repair staff invitation preview HTTP 500 and staff consent copy; baseline reproduced, 28 focused and 2,191 full checks passed, strict Clippy and actual finance/support browser registration/revocation passed. Review/integration pending.
 - [ ] [#951](https://github.com/AllureCurtain/oxsum/issues/951) — Restore documentation lost during consent/evidence integration; retain pre-merge guidance plus both intended application additions.
 - [ ] [#955](https://github.com/AllureCurtain/oxsum/issues/955) — Preserve the selected Business section across reload and direct links using router-relative paths; desktop/mobile reload and customer-route redirect passed, frontend build passed. Review/integration pending.
