@@ -1,0 +1,56 @@
+{
+  "receipts": [
+    {
+      "mutation_id": "ab7ee967-f3eb-4c6b-b993-4e641ef425ec",
+      "statement_id": "7010930e-c6fd-413c-b30c-8fba2134a693",
+      "amount_minor": 1000001,
+      "reference": "monthly-bank-1015-aug",
+      "entry_id": "81ed37d0-24ba-5956-9a8e-9592259385a9",
+      "content_hash": "a20398a8f2399f24ff1a2cdaadb3401aca918a1a993b3ffb893830f11c429c4c",
+      "audit_count": 1,
+      "reference_count": 1,
+      "entry_count": 1
+    },
+    {
+      "mutation_id": "c163f411-f11b-48eb-a307-0d90a75c1f1f",
+      "statement_id": "64652f85-3d3d-4f78-8667-e1fbad4942db",
+      "amount_minor": 1000002,
+      "reference": "monthly-bank-1015-sept",
+      "entry_id": "4b5ff3ac-b7d4-5b3d-be22-9ea53ce1fddc",
+      "content_hash": "832fa2297a1d84420e9af973879aa70ceee560aa83d34d092c3173bb587cccb6",
+      "audit_count": 1,
+      "reference_count": 1,
+      "entry_count": 1
+    }
+  ],
+  "postings": [
+    {
+      "reference": "monthly-bank-1015-aug",
+      "path": "Assets:Cash",
+      "direction": "D",
+      "amount_minor": 1000001
+    },
+    {
+      "reference": "monthly-bank-1015-aug",
+      "path": "Liabilities:CreditLine",
+      "direction": "C",
+      "amount_minor": 1000001
+    },
+    {
+      "reference": "monthly-bank-1015-sept",
+      "path": "Assets:Cash",
+      "direction": "D",
+      "amount_minor": 1000002
+    },
+    {
+      "reference": "monthly-bank-1015-sept",
+      "path": "Liabilities:CreditLine",
+      "direction": "C",
+      "amount_minor": 1000002
+    }
+  ],
+  "receiptTotalMinor": 2000003,
+  "browserRequests": 5,
+  "successfulUniquePayments": 2,
+  "onceOnlyAuditReferenceEntry": true
+}

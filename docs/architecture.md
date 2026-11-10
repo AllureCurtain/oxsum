@@ -1119,3 +1119,25 @@ The helper returns current standing beside the original receipt.
 
 
 
+
+## Staff payment reference ownership (#1015)
+
+Migration 0130 backfills `payment_receipt_references` from existing immutable
+manual receipts and manual orders without rewriting them. Existing duplicate
+references retain a historical-conflict reservation without selecting a winner.
+Source table write locks span backfill and trigger installation so an older
+writer cannot insert an unclaimed reference during upgrade. AFTER INSERT triggers
+claim one exact reference for a manual receipt, manual order or monthly repayment;
+this protects old manual writers too. Source identity and claims are immutable. The constraint is shared
+across customers, keys and actors; manual ON CONFLICT retries still skip insertion
+and retain the original source. A duplicate claim aborts the source transaction.
+
+`monthly_repayments` performs current Business funds authority/source preflight,
+releases its connection before wallet initialization, then checks again inside
+the financial transaction. The existing Business mutation/audit assigns a stable
+actor receipt, whose UUID derives the credit-only ledger key. The monthly payment
+helper locks organization admission/share, credit, append and document; it checks
+period debt and updates FIFO standing/events on the borrowed connection. The
+reference/result row commits last, so a claim or event failure rolls back cash,
+mutation, audit and standing. Exact retry returns immutable result coordinates
+after current authorization; it never repeats a financial write.

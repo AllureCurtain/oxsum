@@ -9305,7 +9305,6 @@ export interface paths {
         patch: operations["updateBusinessCustomer"];
         trace?: never;
     };
-<<<<<<< HEAD
     "/api/v1/business/customers/{organizationId}/credit-terms": {
         parameters: {
             query?: never;
@@ -9330,8 +9329,6 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-=======
->>>>>>> 09c27e1 (feat: show monthly statement history in the Business portal)
     "/api/v1/business/customers/{organizationId}/monthly-statements": {
         parameters: {
             query?: never;
@@ -9352,7 +9349,6 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-<<<<<<< HEAD
     "/api/v1/business/customers/{organizationId}/monthly-statements/actions": {
         parameters: {
             query?: never;
@@ -9373,8 +9369,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-=======
->>>>>>> 09c27e1 (feat: show monthly statement history in the Business portal)
+    "/api/v1/business/customers/{organizationId}/monthly-statements/{statementId}/payments": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Record verified money toward monthly credit debt
+         * @description Personal Business fundsWrite authority only. Confirm an exact positive credit amount, verified bank/payment reference and reason against this customer's issued monthly statement. The amount is capped at unpaid credit draws through this month, including older unbilled draws; only Cash to CreditLine is posted. Payment references are globally unique across monthly repayments and manual top-ups. Cash, FIFO standings/events, reference claim and immutable actor audit commit together. Exact successful retries return the original receipt even after full payment or customer archival, under current authority. New archived-customer writes, changed idempotency terms and reused payment references refuse. No PSP call, currency conversion, wallet excess or plan allocation occurs. No client financial dates.
+         */
+        post: operations["recordBusinessMonthlyPayment"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/business/customers/{organizationId}/monthly-statements/{statementId}": {
         parameters: {
             query?: never;
@@ -21209,7 +21223,35 @@ export interface components {
             /** Format: uuid */
             nextCursor: string | null;
         };
-<<<<<<< HEAD
+        BusinessMonthlyPaymentRequest: {
+            /**
+             * Format: int64
+             * @description Exact credit minor units; server caps against unpaid credit through the selected month
+             */
+            amountMinor: number;
+            /** @description Verified payment reference; preserve exact case and spacing */
+            reference: string;
+            reason: string;
+            idempotencyKey: string;
+        };
+        BusinessMonthlyPaymentResult: {
+            /**
+             * Format: uuid
+             * @description Immutable actor mutation receipt
+             */
+            id: string;
+            /** Format: uuid */
+            organizationId: string;
+            /** Format: uuid */
+            statementId: string;
+            /** Format: int64 */
+            amountMinor: number;
+            reference: string;
+            /** Format: uuid */
+            entryId: string;
+            /** @description Original repayment ledger entry hash */
+            contentHash: string;
+        };
         BusinessMonthlyStatementAction: {
             /** @enum {string} */
             action: "generate";
@@ -21238,10 +21280,6 @@ export interface components {
             statement: components["schemas"]["Statement"];
             /** @description Draft-only review digest binding original id, customer, period, shown usage figures, itemization, terms and current UTC review day. Not independent source attestation. Finalization rejects changed reviewed figures atomically. */
             reviewDigest: string | null;
-=======
-        BusinessMonthlyStatementDetail: {
-            statement: components["schemas"]["Statement"];
->>>>>>> 09c27e1 (feat: show monthly statement history in the Business portal)
             lines: components["schemas"]["StatementLine"][];
         };
         StatementDetail: {
@@ -24640,7 +24678,6 @@ export interface operations {
             409: components["responses"]["Error"];
         };
     };
-<<<<<<< HEAD
     getBusinessCustomerCreditTerms: {
         parameters: {
             query?: never;
@@ -24702,8 +24739,6 @@ export interface operations {
             409: components["responses"]["Error"];
         };
     };
-=======
->>>>>>> 09c27e1 (feat: show monthly statement history in the Business portal)
     listBusinessMonthlyStatements: {
         parameters: {
             query?: {
@@ -24737,7 +24772,6 @@ export interface operations {
             404: components["responses"]["Error"];
         };
     };
-<<<<<<< HEAD
     mutateBusinessMonthlyStatement: {
         parameters: {
             query?: never;
@@ -24771,8 +24805,40 @@ export interface operations {
             409: components["responses"]["Error"];
         };
     };
-=======
->>>>>>> 09c27e1 (feat: show monthly statement history in the Business portal)
+    recordBusinessMonthlyPayment: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                organizationId: string;
+                statementId: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["BusinessMonthlyPaymentRequest"];
+            };
+        };
+        responses: {
+            /** @description Original immutable payment receipt */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: components["schemas"]["BusinessMonthlyPaymentResult"];
+                    };
+                };
+            };
+            400: components["responses"]["Error"];
+            401: components["responses"]["Error"];
+            403: components["responses"]["Error"];
+            404: components["responses"]["Error"];
+            409: components["responses"]["Error"];
+        };
+    };
     getBusinessMonthlyStatement: {
         parameters: {
             query?: never;

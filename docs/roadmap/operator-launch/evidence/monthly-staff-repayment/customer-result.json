@@ -1,0 +1,65 @@
+{
+  "balance": {
+    "data": {
+      "availableMinor": 5000000,
+      "creditLimitMinor": 5000000,
+      "creditUsedMinor": 0,
+      "reservedMinor": 0,
+      "spentThisMonthMinor": 0
+    }
+  },
+  "statements": {
+    "data": [
+      {
+        "id": "64652f85-3d3d-4f78-8667-e1fbad4942db",
+        "organizationId": "f72fa904-ad2e-44d8-afdc-093be84fbff6",
+        "period": "2026-09",
+        "status": "finalized",
+        "paymentStatus": "paid",
+        "totalMinor": 1000002,
+        "creditDrawnMinor": 1000002,
+        "paidMinor": 1000002,
+        "outstandingMinor": 0,
+        "paymentTermsDays": 30,
+        "dueDate": "2026-12-10",
+        "logFromIndex": 5,
+        "logToIndex": 5,
+        "entryCount": 1,
+        "finalizedAt": "2026-11-10T17:17:27.975287Z",
+        "paidAt": "2026-11-10T17:23:04.30051Z",
+        "overdueAt": null,
+        "suspendedAt": null,
+        "anchorEntryId": "f9ca6104-900c-5a76-9db6-1256b4d5b04c",
+        "anchorLogIndex": 6,
+        "windowHash": "38b1b7b3561cea2477b79d505575f5c527c115b3fd814cb206c1b411c37e7e98",
+        "rollupHash": "157437be2f78c01674c3d42721e655b7ea7f32a739f477f875106e56ae695fe3",
+        "createdAt": "2026-11-10T17:17:27.97275Z"
+      },
+      {
+        "id": "7010930e-c6fd-413c-b30c-8fba2134a693",
+        "organizationId": "f72fa904-ad2e-44d8-afdc-093be84fbff6",
+        "period": "2026-08",
+        "status": "finalized",
+        "paymentStatus": "paid",
+        "totalMinor": 1000001,
+        "creditDrawnMinor": 1000001,
+        "paidMinor": 1000001,
+        "outstandingMinor": 0,
+        "paymentTermsDays": 30,
+        "dueDate": "2026-12-10",
+        "logFromIndex": 2,
+        "logToIndex": 2,
+        "entryCount": 1,
+        "finalizedAt": "2026-11-10T17:17:27.948224Z",
+        "paidAt": "2026-11-10T17:20:05.396656Z",
+        "overdueAt": null,
+        "suspendedAt": null,
+        "anchorEntryId": "4c182e49-2981-5493-8de0-8614a1ee4c5e",
+        "anchorLogIndex": 3,
+        "windowHash": "e5709ab04c26ed4d131cfa9cddcfe4c089c425b09d9f2d5c79956f5ae4c8d937",
+        "rollupHash": "72a0b5728e286668e0c940d567e5c0303e70ee59b41a060705d6f25a9c86a6d0",
+        "createdAt": "2026-11-10T17:17:27.942099Z"
+      }
+    ]
+  }
+}

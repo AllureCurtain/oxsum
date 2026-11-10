@@ -1197,3 +1197,26 @@ without rerunning finalization. Changed action/target/reason/digest under an old
 key conflicts. Existing monthly customer proof/PDF routes remain unchanged.
 
 
+
+### Staff monthly credit repayments (#1015)
+
+`POST /api/v1/business/customers/{organizationId}/monthly-statements/{statementId}/payments`
+requires a personal Business owner/finance session with `fundsWrite`. Explicit
+machine credentials refuse even beside a valid cookie. Send exact `amountMinor`,
+`reference`, `reason` and `idempotencyKey`; financial dates are server-owned.
+Amounts are positive safe integers in credit minor units. References preserve
+exact case/spacing, have 1–200 characters and no surrounding whitespace/control
+characters. They must identify already verified incoming money.
+
+The selected owned document must be issued. The credit cap covers all unpaid
+draws through its month, including earlier unbilled draws, and no later-month
+debt. Only Cash to CreditLine is posted. A reference is globally unique across
+manual receipts, manual payment orders and monthly repayments, including other
+customers and staff actors. Reference conflicts return 409 without a payment, reference claim or
+actor mutation. All financial, event and actor-audit effects commit together.
+
+The response is immutable `{id, organizationId, statementId, amountMinor,
+reference, entryId, contentHash}`. Exact successful retries return those original
+values after full payment or archival, under current authority. A new archived
+write refuses. Changed intent conflicts; missing/foreign document pairs return
+404 before wallet initialization. No provider call or plan allocation occurs.

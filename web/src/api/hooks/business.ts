@@ -798,3 +798,17 @@ export function useMonthlyStatementAction(customer: string) {
     },
   });
 }
+
+export type MonthlyPaymentRequest = components["schemas"]["BusinessMonthlyPaymentRequest"];
+export type MonthlyPaymentResult = components["schemas"]["BusinessMonthlyPaymentResult"];
+export function useMonthlyPayment(customer: string, statement: string) {
+  const client = useQueryClient();
+  return useMutation({
+    mutationFn: (body: MonthlyPaymentRequest) => api<MonthlyPaymentResult>(`/business/customers/${customer}/monthly-statements/${statement}/payments`, { method: "POST", body }),
+    onSuccess: () => {
+      void client.invalidateQueries({ queryKey: ["biz-monthly-statements", customer] });
+      void client.invalidateQueries({ queryKey: ["biz-monthly-statement", customer] });
+      void client.invalidateQueries({ queryKey: ["biz-customer", customer] });
+    },
+  });
+}

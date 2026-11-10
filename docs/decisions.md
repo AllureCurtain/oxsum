@@ -3925,3 +3925,21 @@ paid statement. Staff reference/actor records remain a separate #1006 workflow.
 
 
 
+
+## 2026-11-11 — Share verified payment references across funding paths (#1015)
+
+Use a new immutable reference registry with backfill and AFTER INSERT claims
+for manual receipts, manual orders and staff monthly repayments. Retained old
+duplicates reserve their reference as historical conflicts without rewriting cash.
+A separate unique constraint on each source would permit double recording across
+workflows. Trigger-based
+claims also fence an older manual writer; a code-only preflight would not. AFTER
+INSERT preserves existing ON CONFLICT replay semantics without attempting a
+second claim for an insertion that never happened. Matching is exact; staff
+references reject ambiguous surrounding whitespace and control characters.
+
+Keep staff payment actor authority and immutable receipt separate from the old
+deployment endpoint's audit identity, while sharing borrowed period-cap, posting
+and reconciliation primitives. No extra deposit or top-up row is manufactured
+for credit-only monthly cash. The response identifies the original ledger entry
+and is stable after the document is paid; document reads carry current standing.

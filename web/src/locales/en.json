@@ -2481,5 +2481,23 @@
     "issuedSuccess": "Monthly statement issued.",
     "generatedSuccess": "Monthly draft is ready for review.",
     "emptyMonth": "No recorded usage for that month; no statement was created."
+  },
+  "monthlyPayment": {
+    "title": "Record a monthly repayment",
+    "hint": "Record money already received and verified. Repayment covers the oldest credit debt through this month, including earlier unbilled usage.",
+    "amount": "Repayment amount (credits)",
+    "amountHint": "Enter the verified amount in credits, with up to six decimals. The server checks current debt before posting.",
+    "invalidAmount": "Enter a positive exact amount with no more than six decimal places.",
+    "reference": "Verified payment reference",
+    "referenceHint": "Use the original bank or payment reference. A reference can be recorded only once, including manual top-ups.",
+    "retained": "The outcome is uncertain. Keep this form open and retry the same request; the amount, reference and reason are retained.",
+    "uncertain": "The response was interrupted. Retry the same request to recover the original receipt.",
+    "review": "Review repayment",
+    "confirm": "Confirm verified monthly repayment",
+    "confirmHint": "Confirm that this payment was received and verified. It repays credit only; it does not initiate a payment or add wallet funds.",
+    "customer": "Customer",
+    "success": "Monthly repayment recorded. Retain this original receipt.",
+    "entry": "Ledger entry",
+    "hash": "Entry content hash"
   }
 }

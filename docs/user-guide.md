@@ -1950,8 +1950,8 @@ bill displays overdue once its due date has passed.
 Use **Next page**, **First page** and **Refresh** to inspect a larger history.
 The list is ordered by immutable statement ID. Money reflects recorded payment
 bookkeeping; this read does not run reconciliation. Oversized detail refuses
-instead of silently omitting lines. This card does not issue invoices or record
-payments; those operations are tracked separately in #1006.
+instead of silently omitting lines. Owner/finance actions for issuance and
+verified repayment are described below.
 
 
 The Plans page shows quota reserved or consumed in the displayed period. A running request reserves quota; unused quota returns when it settles. Paid-plan quota is separate from wallet spending, and a new period starts its own counter.
@@ -1997,3 +1997,21 @@ invent a new key to work around it.
 
 
 
+
+### Record verified monthly repayment
+
+In **Business → Customers**, select the customer and open an issued monthly
+statement. Owner or finance can use **Record a monthly repayment**. Enter the
+verified amount in credits (at most six decimal places), original bank/payment
+reference and reason, then review the customer, month, amount and reference
+before confirming. This records money already received; it does not initiate a
+payment. Earlier credit debt is repaid first, even if that earlier month was not
+billed. The server refuses an amount exceeding unpaid debt through this month.
+
+Keep the original entry identifier and hash shown after success. If the response
+is interrupted, leave the form open and use **Retry the same request**. The
+amount, reference and reason remain locked until its outcome is recovered; do
+not invent a different reference to bypass a duplicate-reference error. The same
+reference cannot also be recorded as a manual top-up. Customer statements show
+the updated repayment and outstanding amount. Archived customers accept exact
+recovery of past successful requests but no new payment.

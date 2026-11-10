@@ -937,8 +937,8 @@ customer's separate Monthly statements card (#1011). Generation is a working
 copy for a closed UTC month. Issuance confirms the displayed usage, credit draw,
 lines and payment terms; changed data or UTC review day requires renewed review.
 The reason and actor are audited atomically with issuance. Exact retries retain
-their original result, including empty months. Monthly repayment remains a
-separate workflow under #1006; these actions do not record incoming money.
+their original result, including empty months. Verified monthly repayment uses
+the separate #1015 payment action; issuance does not record incoming money.
 
 
 ## Atomic recorded monthly repayments (#1013)
@@ -952,3 +952,19 @@ portal repayment and explicit bank-reference collection remain tracked by #1006.
 
 
 
+
+portal repayment and explicit bank-reference collection use the #1015 workflow.
+
+## Staff monthly repayment (#1015)
+
+Owner/finance can record verified incoming money from an issued customer's
+monthly statement. Confirmation shows the customer, month, exact credit amount,
+bank/payment reference and reason. This operation repays the oldest credit draws
+through that month; it never pays a sold-plan invoice or grants wallet funds.
+References share a global uniqueness domain with deployment manual receipts and
+staff manual payment orders, so one source cannot fund another workflow.
+
+A lost response retains the exact intent for retry. The original receipt remains
+recoverable after full repayment or archival with current funds authority.
+Customer statement reads reflect the updated FIFO standing; original usage
+lines, terms and proof anchor remain unchanged. No external collection is initiated.

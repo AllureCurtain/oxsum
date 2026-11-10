@@ -44,6 +44,8 @@ reviews; missing independent approval still prevents normal integration.
 
 Updated: 2026-11-10 (Asia/Shanghai). Owner: this task. Umbrella: [#725](https://github.com/AllureCurtain/oxsum/issues/725).
 
+Updated: 2026-11-11 (Asia/Shanghai). Owner: this task. Umbrella: [#725](https://github.com/AllureCurtain/oxsum/issues/725).
+
 Read this file on every resume, then reconcile actual main, worktrees, issues/PRs, CI and the persistent provider budget before proceeding. The [accepted contract](CONTRACT.md) preserves every N/R/J requirement; the [baseline evidence](evidence/baseline.md) distinguishes observed results from pending candidate acceptance.
 
 ### Historical state snapshots
@@ -78,6 +80,17 @@ Read this file on every resume, then reconcile actual main, worktrees, issues/PR
   with strict core/server Clippy and contract/format checks. Independent review,
   protected integration and #1006 staff reference/portal acceptance remain.
   [Evidence](evidence/monthly-payment-atomic.md).
+
+- #1015 completes the staff monthly payment implementation on prerequisites #1012
+  and #1014: shared verified references across all three manual receipt sources,
+  atomic credit-only cash/FIFO/audit, original paid replay and current authority.
+  2,284 full-workspace cases passed before the final manual-order extension; all
+  52 final affected cases and strict core/server Clippy passed afterward. Actual
+  Chinese/English desktop/mobile, lost-response exact retry, duplicate refusal,
+  Support boundary and customer paid/balance acceptance passed. Browser space
+  and local listener are closed. Independent review, protected integration and
+  final candidate remain; provider budget is unchanged.
+  [Evidence](evidence/monthly-staff-repayment/README.md).
 
 - #1007 implements bounded Business monthly statement inspection with separate
   bilingual customer UI, immutable rows, exact recorded money and fresh authority.
