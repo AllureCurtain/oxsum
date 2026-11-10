@@ -1097,3 +1097,18 @@ cannot append another anchor or event. Current authority still gates historical
 recovery. Bounded line decoding is shared with staff inspection; over-limit detail
 cannot be silently issued through this reviewed path. These actions do not alter
 monthly repayment or plan-statement policy.
+
+## Atomic monthly repayments (#1013)
+
+`monthly_payments.rs` owns deployment recorded payments. A global action-key
+advisory lock preserves the historical audit namespace, followed by organization
+admission/row-share, credit, ledger append and statement row locks. The selected
+period cap is read only under these locks; a borrowed credit-only append, FIFO
+standing/events and audit share the same transaction and pool connection. The
+ordinary reconciliation path also serializes its ledger snapshot and standing
+updates so a delayed reader cannot overwrite a newer paid result.
+
+Existing payment entries retain their original keys and bytes. Replays require
+the complete credit-only ledger shape and matching statement/amount/entry audit;
+missing or inconsistent source evidence fails closed without a new posting.
+The helper returns current standing beside the original receipt.

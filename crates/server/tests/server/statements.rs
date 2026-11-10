@@ -445,7 +445,7 @@ async fn a_statement_generates_finalizes_and_is_paid() {
     assert_eq!(status, StatusCode::CONFLICT, "{body}");
 
     // Clearing the remaining 9 settles the statement — and once it is paid a
-    // further payment has nothing to take.
+    // new payment has nothing to take; the exact successful retry still works.
     let (status, body) = call(
         &app,
         "POST",
@@ -461,6 +461,15 @@ async fn a_statement_generates_finalizes_and_is_paid() {
         "POST",
         &format!("/api/v1/admin/statements/{statement_id}/payments"),
         Some(json!({"amountMinor": 9_000_000, "idempotencyKey": "pay-2"})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["data"]["statement"]["paymentStatus"], "paid");
+    let (status, body) = call(
+        &app,
+        "POST",
+        &format!("/api/v1/admin/statements/{statement_id}/payments"),
+        Some(json!({"amountMinor": 1, "idempotencyKey": "pay-after-paid"})),
     )
     .await;
     assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");

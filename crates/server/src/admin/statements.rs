@@ -322,16 +322,7 @@ pub(crate) struct PaymentRes {
     amount_minor: i64,
 }
 
-/// Records a payment against a statement: books the amount into the
-/// organization's ledger — `debit Cash`, repaying the drawn credit line first —
-/// then reconciles the statement book, which applies repayments oldest-first.
-///
-/// The payment may not exceed the credit-line debt outstanding through the
-/// statement's period (`400` if it does), so money recorded here always lands
-/// on the line. The idempotency key names the ledger entry, which can never
-/// book twice: a retried payment while the statement is still open replays the
-/// receipt, and one that arrives after the statement paid is refused as
-/// `400` — there is nothing left to take.
+/// Record credit-only money and source-bound audit atomically, with paid replay.
 pub(crate) async fn record_payment(
     State(state): State<AppState>,
     Path(statement_id): Path<Uuid>,
@@ -347,60 +338,16 @@ pub(crate) async fn record_payment(
         .organization_by_id(existing.organization_id)
         .await?;
     let wallet = state.tenants.get(&organization.tenant_id).await?;
-    // Fresh figures first: a payment raced with a top-up could have repaid the
-    // statement since it was last read, and the caps below validate against the
-    // standing the ledger now shows.
-    state
+    let (statement, receipt) = state
         .db
-        .reconcile_statements(organization.id, &wallet, today())
+        .record_monthly_statement_payment(
+            &wallet,
+            statement_id,
+            &request.idempotency_key,
+            request.amount_minor,
+            today(),
+        )
         .await?;
-    let statement = state
-        .db
-        .statement_by_id(statement_id)
-        .await?
-        .ok_or_else(ApiError::not_found)?;
-    if statement.status == oxsum_core::StatementStatus::Draft {
-        return Err(ApiError::Validation(
-            "a draft statement is not issued yet; finalize it first".into(),
-        ));
-    }
-    if statement.payment_status == oxsum_core::PaymentStatus::Paid {
-        return Err(ApiError::Validation(
-            "the statement is paid; nothing is owed".into(),
-        ));
-    }
-    let owed = state
-        .db
-        .statement_debt_through(&wallet, &statement.period)
-        .await?;
-    if request.amount_minor > owed {
-        return Err(ApiError::Validation(
-            "the payment exceeds the billed debt outstanding through this statement".into(),
-        ));
-    }
-    let receipt = wallet
-        .top_up(&request.idempotency_key, request.amount_minor, today())
-        .await?;
-    state
-        .db
-        .reconcile_statements(organization.id, &wallet, today())
-        .await?;
-    let statement = state
-        .db
-        .statement_by_id(statement_id)
-        .await?
-        .ok_or_else(ApiError::not_found)?;
-    record(
-        &state,
-        audit_action::STATEMENT_PAYMENT,
-        Some(statement_id.to_string()),
-        serde_json::json!({
-            "amountMinor": request.amount_minor,
-            "entryId": receipt.entry_id,
-        }),
-        Some(&request.idempotency_key),
-    )
-    .await?;
     ok(PaymentRes {
         statement,
         entry_id: receipt.entry_id.to_string(),
