@@ -46,8 +46,11 @@ visible on the page after its confirmation dialog closes.
   upgrade fixture, which still expected a new automatic refund on an order without
   a provider route. #972 retains a pre-upgrade request/replay and explicitly checks
   new-request refusal, original order/fulfillment and unchanged purchased/promo
-  funds. All 12 focused upgrade/refund tests pass. The no-fail-fast full run is
-  in progress; no completed result is claimed yet.
+  funds. All 12 focused upgrade/refund tests pass. The no-fail-fast full run
+  completed on base `cf422dc8` plus the #972 fixture repair: **2,256 passed**,
+  zero failures, six existing opt-in tests skipped (2,313.809 seconds; run
+  `62b9dc44-9ece-45f4-afc7-57126499cde7`). This includes the integrated
+  jsonwebtoken 9 repair; newer dependency changes retain their own CI evidence.
 - Browser English/Chinese boundary text was observed using the rebuilt frontend
   on the original integrated backend. This checks UI behavior; the new backend
   refusal is demonstrated by the actual PostgreSQL/HTTP regression above.
