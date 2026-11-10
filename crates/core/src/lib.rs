@@ -54,6 +54,7 @@ mod integration_applications;
 mod integration_credentials;
 mod invitation_management;
 mod invitations;
+mod invoice_corrections;
 mod jobs;
 mod journals;
 mod keys;
@@ -249,6 +250,10 @@ pub use invitations::{
     CreatedInvitation, CustomerInvitationRequest, InvitationAcceptRequest, InvitationAcceptance,
     InvitationPreview, InvitationRevokeRequest, InvitationScope, StaffInvitationRequest,
     TeamInvitationRequest,
+};
+pub use invoice_corrections::{
+    InvoiceCorrectionAmounts, InvoiceCorrectionLineRequest, InvoiceCorrectionPreview,
+    InvoiceCorrectionPreviewLine, InvoiceCorrectionPreviewRequest,
 };
 pub use jobs::{
     CLAIM_LEASE_SECS, DEAD_RESCHEDULE, Job, JobOutcome, MAX_ATTEMPTS, Retention, RetentionReport,

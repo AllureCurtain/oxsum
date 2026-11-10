@@ -1,6 +1,6 @@
 //! Versioned plan accounting: immutable inputs and once-only service-day effects.
 
-mod schedule;
+pub(crate) mod schedule;
 #[cfg(test)]
 mod tests;
 

@@ -3923,9 +3923,6 @@ connection. This also removes stale reconciliation writes that could regress a
 paid statement. Staff reference/actor records remain a separate #1006 workflow.
 
 
-
-
-
 ## 2026-11-11 — Share verified payment references across funding paths (#1015)
 
 Use a new immutable reference registry with backfill and AFTER INSERT claims
@@ -3944,7 +3941,6 @@ and reconciliation primitives. No extra deposit or top-up row is manufactured
 for credit-only monthly cash. The response identifies the original ledger entry
 and is stable after the document is paid; document reads carry current standing.
 
-
 ## 2026-11-11 — Require exact original plan-dispute terms (#1028)
 
 Apply the existing exact order conversion rule to plan disputes as well as
@@ -3955,3 +3951,22 @@ identity before recording; unchanged notifications cannot repeat journal
 tracking. Inconsistent old cases remain review-required with their original
 entries intact. Independent comparison verifies the event-to-dispute amount
 separately from the ledger-to-dispute amount.
+
+## 2026-11-11 — Retain payment ownership across invoice generations (#1027)
+
+Invoice correction preserves original sold service, currency and accounting
+policy. Selected source charge lines may decrease, never exceed their proven
+amount; existing credits remain. A successor starts with its own unpaid
+receivable, while a predecessor's retained collection stays explicitly owned by
+its original refund-payable sources. Reissue does not move Cash or silently net
+that payable against another document. Confirmation must display both amounts.
+
+Keep the original daily accounting snapshot immutable and add a separate
+successor context for the same service interval. Recognition and reconciliation
+track journal generations, retaining the exact correction boundary and source
+hashes. This avoids manufacturing another period or reinterpreting historical
+payment/refund ownership. Apply must commit cancellation, successor, effects and
+audit together after a source-bound preview; unchanged retries return the
+original operation. The complete model and outstanding acceptance are in
+[invoice-corrections.md](invoice-corrections.md); this decision does not claim
+that the write path or customer workflow is already implemented.

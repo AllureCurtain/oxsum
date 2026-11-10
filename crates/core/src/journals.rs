@@ -84,7 +84,7 @@ impl JournalState {
 }
 
 /// What a journal line bills — the wire spelling is camelCase.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum JournalLineKind {
     /// The sold version's `price_minor` for the period.
