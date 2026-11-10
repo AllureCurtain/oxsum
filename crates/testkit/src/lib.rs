@@ -65,7 +65,7 @@ pub fn suite_db_url(slug: &str) -> Option<String> {
 
 /// Drops the suite's scratch database when the test binary exits. Best-effort:
 /// failures are reported to stderr but never fail the suite.
-#[ctor::dtor]
+#[dtor::dtor(unsafe)]
 fn teardown_suite_db() {
     let Some(db) = SUITE_DB.get().and_then(|opt| opt.as_ref()) else {
         return;
