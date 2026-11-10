@@ -22,3 +22,12 @@ The stored snapshot is semantically identical before/after: 15 sources, 20
 verified entries, six equal monetary totals and four open missing-cost exceptions.
 No comparison was re-executed and no financial data was edited for this diagnosis.
 This is local isolated development evidence, not PSP or final candidate acceptance.
+
+## Aggregate-test continuation
+
+Updated to main `2ee70601` after integration suites moved under `tests/core.rs`
+and `tests/server.rs`. All 12 financial-facts core/HTTP cases pass through the
+aggregate binaries; changed core/server strict Clippy and pinned formatting pass.
+The date implementation and retained browser artifacts are unchanged. Historical
+full regression and browser evidence remain reusable; independent approval and
+protected integration are still required.
