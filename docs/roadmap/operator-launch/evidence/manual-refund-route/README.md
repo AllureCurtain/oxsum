@@ -42,7 +42,12 @@ visible on the page after its confirmation dialog closes.
   inert target/claim/due-list, zero provider calls and foreign-customer 404.
 - Strict core/server all-target Clippy passed in 3m24s.
 - Contract/codegen, frontend build and pinned formatting passed.
-- Full workspace validation is in progress; no completed result is claimed yet.
+- The initial workspace run stopped after 794 passes at the old manual bundle
+  upgrade fixture, which still expected a new automatic refund on an order without
+  a provider route. #972 retains a pre-upgrade request/replay and explicitly checks
+  new-request refusal, original order/fulfillment and unchanged purchased/promo
+  funds. All 12 focused upgrade/refund tests pass. The no-fail-fast full run is
+  in progress; no completed result is claimed yet.
 - Browser English/Chinese boundary text was observed using the rebuilt frontend
   on the original integrated backend. This checks UI behavior; the new backend
   refusal is demonstrated by the actual PostgreSQL/HTTP regression above.
