@@ -27,7 +27,7 @@ Updated: 2026-11-11
 
 - [ ] [#978](https://github.com/AllureCurtain/oxsum/issues/978) — Expose explicit evidence-due/won/lost/closed dispute outcomes and preserve ambiguous retries through terminal refreshes. Actual loss, source-linked partial/full repayment and byte-identical lost-response retry passed, with contract/build/format checks. Review/integration pending. [Evidence](docs/roadmap/operator-launch/evidence/dispute-outcomes/README.md).
 
-- [ ] [#1013](https://github.com/AllureCurtain/oxsum/issues/1013) — Make monthly statement repayment checks, credit-only posting, FIFO standing and source-bound audit atomic; preserve exact retries after full payment. Implementation and regression coverage in progress; prerequisite to #1006 staff repayment.
+- [ ] [#1013](https://github.com/AllureCurtain/oxsum/issues/1013) — Make monthly statement repayment checks, credit-only posting, FIFO standing and source-bound audit atomic; preserve exact retries after full payment. Baseline paid-replay failure reproduced; 2,266 complete workspace cases, seven final regressions, strict core/server Clippy and contract/format checks passed. Independent review/integration pending; prerequisite to #1006 staff repayment.
 
 - [ ] [#1009](https://github.com/AllureCurtain/oxsum/issues/1009) — Atomic monthly anchor/document/lines/event and coherent source snapshot implemented; five base regressions reproduced, 15 monthly core and 13 HTTP checks passed. Core selection: 860 passed, one unchanged bundle-upgrade failure covered by #975. Strict core Clippy and formatting passed; independent review/integration pending. [Evidence](docs/roadmap/operator-launch/evidence/monthly-issuance-atomic.md).
 
