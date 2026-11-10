@@ -4,6 +4,8 @@ Updated: 2026-11-10
 
 ## In progress
 
+- [ ] [#963](https://github.com/AllureCurtain/oxsum/issues/963) — Preserve exact plan price/quota inputs; browser baseline silently published a sub-minor positive price as zero. Exact parsing, bilingual refusal and real browser correction passed, with focused money/contract/build/format checks. Review and integration pending. [Evidence](docs/roadmap/operator-launch/evidence/plan-money-input/README.md).
+
 - [ ] [#960](https://github.com/AllureCurtain/oxsum/issues/960) — Integrated browser customer readiness 2/5 → 3/5 → 5/5, zero-wallet refusal/free SSE call and offline WASM receipt verification passed; evidence prepared. [Evidence](docs/roadmap/operator-launch/evidence/first-call-browser/README.md).
 
 - [ ] [#947](https://github.com/AllureCurtain/oxsum/issues/947) — Repair staff invitation preview HTTP 500 and staff consent copy; baseline reproduced, 28 focused and 2,191 full checks passed, strict Clippy and actual finance/support browser registration/revocation passed. Review/integration pending.

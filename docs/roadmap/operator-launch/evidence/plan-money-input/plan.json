@@ -1,0 +1,27 @@
+{
+  "accountingPolicyVersion": 2,
+  "planVersionId": "01df142b-59d6-4f8f-ad66-e4914c021dd8",
+  "planId": "c4fb06fe-596b-42c6-af5c-46fa665a9773",
+  "businessId": "8f0757ac-bfd9-446e-843b-648f492bdf22",
+  "version": 1,
+  "name": "Exact precision acceptance",
+  "priceMinor": 1,
+  "currency": "USD",
+  "quotaMinor": 1000001,
+  "periodKind": "calendarMonth",
+  "overageEnabled": false,
+  "sortOrder": 0,
+  "publishedAt": "2026-11-10T04:47:19.6327Z",
+  "retiredAt": null,
+  "createdAt": [
+    2026,
+    314,
+    4,
+    47,
+    19,
+    632700000,
+    0,
+    0,
+    0
+  ]
+}

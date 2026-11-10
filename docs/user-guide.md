@@ -961,6 +961,12 @@ is provable, not just claimed.
 
 ## Paid plans (sold catalogue)
 
+In **Business → Plans**, enter price and quota as credit amounts with at most
+six decimal places. Zero is explicit; a blank quota means unmetered usage.
+Amounts above 9007199254.740991 credits, extra decimal places, negative values
+and exponent notation are refused without publishing or clearing the draft.
+The form never rounds an entered price or quota into another sold version.
+
 Purpose: buy the plan a business actually sells — a priced entitlement with a
 real lifecycle, not an operator-bound quota.
 
