@@ -86,6 +86,14 @@ Read this file on every resume, then reconcile actual main, worktrees, issues/PR
   bilingual detail/mobile and read-side-effect checks passed. [Evidence](evidence/monthly-statement-reads.md).
   Independent review/integration and #1006 monthly issuance/repayment remain.
 
+- #1013 repairs deployment monthly repayment before staff portal reuse: period
+  cap, credit-only cash, FIFO standing/events and source-bound audit are atomic;
+  exact paid retry retains its original entry. Baseline HTTP failure reproduced;
+  2,266 full workspace cases and seven final fault/concurrency regressions passed,
+  with strict core/server Clippy and contract/format checks. Independent review,
+  protected integration and #1006 staff reference/portal acceptance remain.
+  [Evidence](evidence/monthly-payment-atomic.md).
+
 - #960 records integrated `ac7bb191` customer browser readiness, explicit free
   terms, successful local SSE call and immediate offline WASM proof with
   wrong-hash rejection. [Evidence](evidence/first-call-browser/README.md). Paid
