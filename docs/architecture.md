@@ -12,6 +12,27 @@ the existing collection-terms validator. The frontend renders restricted/error
 states explicitly. Customer readiness remains separate because its key grants,
 funding and first-call proof have different authority and evidence.
 
+The personal-customer funding primitive (#912) is
+`Wallet::preview_gateway_funding` in `wallet/funding_preview.rs`. Its caller
+opens an existing ledger and supplies a server-resolved sale bound and explicit
+key/model; this core slice has no HTTP route or customer-price resolver. It
+uses one repeatable-read, read-only transaction and shares the actual
+admission key/member/team budget and concurrency checks through
+`authorize_key_snapshot_in`. The write path retains its advisory and row locks;
+the snapshot path takes neither. Customer/key/group/alias target authority and
+configured route existence are checked before funding. Recorded quota consumed
+includes pending draws; only the wallet remainder enters monetary caps and
+plan overage limits. Pool availability subtracts pending reservations.
+
+Readiness cannot close or renew a period. An unprocessed boundary, cancellation
+boundary, future quota window or due-but-unburned promotion returns an explicit
+transition reason instead of claiming readiness. Recorded uncancelled past-due
+quota retains the admission policy. Zero-priced turns need no quota transition
+or wallet balance but still obey account restrictions, existing excessive caps
+and concurrency. A passing result covers funding and these shared constraints
+at the snapshot only; rate windows, policy execution, provider availability and
+subsequent changes remain outside it. The actual admission is authoritative.
+
 Gateway admission (#849) joins the quota draw, current authority/budget check,
 wallet reservation, watch and operation binding in one core transaction through
 `Wallet::admit_gateway`. A new `open_holds.wallet_minor` distinguishes a proven
@@ -761,6 +782,71 @@ Historical bundle promo is retained and explicitly named in review reasons;
 the correction does not invoke the forward loss's promo cancellation writer.
 
 
+### Guardrail refund and request fees (#899)
+
+A whole-response guardrail refusal, including a cache hit, charges zero customer usage and zero fixed request fee and releases the entire wallet reservation and subscription draw. Streamed content already delivered remains billed; a successful zero-token answer still owes its configured request fee. A customer refund does not imply zero provider cost: retained provider usage remains on the actual attempt and prices operator cost; absent provider counts remain untracked. A refused cache hit makes no new provider attempt. Exact request replay retains the same receipt and does not repeat a charge or refund.
+## Scoped first-call receipt projection
+
+`customer_readiness` reads the partial indexed successful accounting projection,
+then validates each bounded candidate against the existing scoped receipt path
+and pure verifier. It checks canonical actor/request identity, recomputed charge
+and settled revenue postings for the wallet share after quota allocation before returning a navigation identity. Ledger
+opening uses `open_existing`, so a readiness read never bootstraps a ledger or
+runs lazy financial migrations. The public verification page only resolves a
+private entry after current personal customer authentication and record-scope
+filtering; its ordinary pasted-bundle mode remains public.
+## Statement debt source mapping
+
+Uncorrected historical `usage_overage` journals explicitly require source review:
+balanced AR does not authorize collecting a charge that an old binary may have
+duplicated from already-settled usage. The source-linked historical correction
+must establish the remaining receivable before a later quote can use it.
+
+`financial_reconciliation::debt_sources` (#917) captures one personal customer's
+bounded sources and canonical ledger in a read-only repeatable-read snapshot.
+It reuses the financial comparator before deriving exact per-journal debt slices
+from the selected statement's original charges and chargeback sources. A
+chargeback line follows its dispute → original paid order → authorized period →
+original journal, including a chargeback-only or mixed-policy document. Its
+amount must equal that exact verified entry's receivable debit. The sum displayed
+across all active statements must equal every original journal's unpaid amount.
+
+This is a core source proof prerequisite for #777, not a new payment purpose,
+quote, reservation or HTTP endpoint. Missing/mismatched/unsupported source
+history retains the displayed outstanding amount and returns review-required
+without slices. The existing limits apply: 10,000 source rows, 20,000 canonical
+entries and 16 MiB combined captured evidence. Exceeding a limit refuses rather
+than truncates. The stable revision includes the ordered original sources,
+canonical hashes and resulting slices; it excludes the read clock. Subsequent
+payment and reversal work must revalidate under its owner locks and handle new
+immutable allocation types before any checkout is enabled. No ledger bootstrap,
+financial mutation, independent witness claim or provider request occurs here.
+
+## Statement debt intents and original return ownership (#777)
+
+`statement_payments` separates read-only quotes, reservation fences, canonical
+cash evidence, atomic application, returns and financial-void ownership.
+Migration 0122 adds immutable order terms, retained reservation transitions,
+per-journal cash effects and per-original-effect void payable allocations.
+The bounded financial comparison captures those sources beside official ledger
+entries and reconstructs their Cash/AR/payable/suspense, document and schedule
+relationships; missing fulfilled effects and excess original-source returns
+require review. The snapshot's scope remains conservative across the customer.
+
+New intents and returns own subscription, sorted customer plans and the engine
+append lock before order/journal/statement mutation. Destructive debt actions
+check the same plan ownership and refuse live reservations. Successful payment
+commits Cash/Receivables, exact signed document lines, journal/statement counters,
+reservation consumption, fulfillment and outbox together. Unknown/released
+allocation becomes Cash/RefundPayable. Daily policy records collection-only
+effects without calculating earned revenue. Terminal dispute replay validates
+retained effects and audit; it never repairs missing cash implicitly.
+
+Refund/chargeback returns consume each original payment effect once. A journal
+void pins that effect's remaining receivable-funded portion to the canonical
+void entry and hash. Plan-order refunds and disputes exclude those shares.
+All confirmed external cash losses remain recorded, with unallocated excess in
+Adjustments suspense; neither wallet nor CreditLine is used for these returns.
 ### Scoped application entitlement projections (#898)
 
 `integration_applications::{reads,read_types}` authorizes an explicit

@@ -1674,6 +1674,54 @@ applying its unchanged revision. A refusal needs source investigation; another
 key, replacement order or changed terminal outcome does not repair history.
 
 
+### Guardrail refund and request fees (#899)
+
+A whole-response guardrail refusal, including a cache hit, charges zero customer usage and zero fixed request fee and releases the entire wallet reservation and subscription draw. Streamed content already delivered remains billed; a successful zero-token answer still owes its configured request fee. A customer refund does not imply zero provider cost: retained provider usage remains on the actual attempt and prices operator cost; absent provider counts remain untracked. A refused cache hit makes no new provider attempt. Exact request replay retains the same receipt and does not repeat a charge or refund.
+## Verify your first successful call
+
+On **Get started**, the request and bill steps become ready when a successful
+call in your current customer scope has consistent receipt evidence. Free and
+fully entitled calls count. Later failed requests do not hide an earlier success.
+Choose **Verify this receipt** to open its proof and content hash, then run the
+verification. The page explains that this freshly loaded hash comes from the
+same server; retain evidence and trusted heads for later independent comparison.
+
+No closed-day report or share link is needed for this step. Period reports are
+available separately after their UTC period ends. If evidence is incomplete or a
+read fails, the checklist shows a failed check and never a completed step;
+refresh to retry. Members see only their permitted history.
+### Pay a plan statement's debt
+
+Open **Billing**, choose the statement and review **Statement repayment**.
+The card shows outstanding debt, pending payments and the amount available to
+pay. Leave the amount blank for full payment, or enter a partial credit amount
+and choose **Update amount**. Review the exact credit amount and fiat price
+before continuing to checkout. No wallet credit or plan renewal is included.
+
+After a lost response, retry the unchanged request or resume the existing
+payment listed on the card. Refreshing the page preserves the server's pending
+order. A timeout or cancelled browser page does not release the reservation.
+The order page distinguishes applied debt from late funds retained for refund
+review. A source-review message keeps the debt visible and requires operator
+review; repeated payment attempts cannot repair inconsistent history.
+
+To request a refund, use the payment order's existing refund request control.
+Finance approval and confirmed provider success restore only that payment's
+original debt, or consume its own payable after a financial void. Repeated
+callbacks do not repeat cash or debt changes. Clearing overdue debt removes
+only the associated debt restriction; an independent manual suspension or
+cancelled plan remains unchanged.
+
+Finance opens **Payments**, expands a statement-repayment order and follows
+its statement and original-journal links without entering IDs. Those exact
+documents open independently of list pagination. The expanded order also shows
+each incoming payment, refund and dispute allocation with its original source,
+Cash/debt/payable/review amounts and canonical entry hash. Reconciliation snapshots
+retain per-allocation entries, hashes, original return links and review suspense.
+A source-exclusive journal and its chargeback follow-up documents can be voided
+together after all pending payment intents are resolved. A mixed-source void
+refuses and requires source-specific finance review instead of erasing another
+journal's charges.
 ### Application entitlement and customer sale reads (#898)
 
 An owner can explicitly grant application-only `entitlementsRead`. Existing

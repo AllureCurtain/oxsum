@@ -844,6 +844,61 @@ retains its standing result without another money leg. An exact earlier resoluti
 request also returns current standing; a new request for another outcome conflicts.
 
 
+### Guardrail refund and request fees (#899)
+
+A whole-response guardrail refusal, including a cache hit, charges zero customer usage and zero fixed request fee and releases the entire wallet reservation and subscription draw. Streamed content already delivered remains billed; a successful zero-token answer still owes its configured request fee. A customer refund does not imply zero provider cost: retained provider usage remains on the actual attempt and prices operator cost; absent provider counts remain untracked. A refused cache hit makes no new provider attempt. Exact request replay retains the same receipt and does not repeat a charge or refund.
+## Immediate customer receipt readiness
+
+`GET /api/v1/org/readiness/receipt` requires a personal customer session and
+applies the same member/key record scope as receipt proofs. It checks at most 32
+newest eligible accounting rows, independently of operational request logs.
+`ready` carries an exact request, entry, canonical hash, model, total priced usage and the separate wallet charge;
+zero-cost and fully quota-funded success qualify. `missing` means no eligible row was found;
+`incomplete` means available evidence did not establish readiness within the
+bound. Failed/refused calls and whole-response blocks do not qualify. Reads
+validate attribution, entry identity, charge arithmetic, posted revenue and log
+inclusion without writing accounting data or creating a ledger.
+
+`/verify?entry=<uuid>` prefills the existing verification form from a current
+personal session's scoped receipt. Foreign/invisible entries return 404,
+missing sessions return 401 and explicit machine headers return 403 rather than
+inheriting a cookie. Malformed entry IDs return 400. Plain `/verify` and its
+public sample remain available without authentication. The prefilled hash comes
+from this server and is labeled accordingly; retaining it and independent head
+trust are separate from internal inclusion/arithmetic checks.
+### Exact statement repayment (#777)
+
+`GET /api/v1/org/statements/{statementId}/payment-quote` requires a personal
+customer session. Optional positive `amountMinor` selects credit-minor debt;
+omitting it selects all unreserved debt. Foreign statements are 404. The
+response includes outstanding/reserved/available amounts, pending order IDs,
+exact journal/plan slices, pinned collection terms and a fingerprint. Review
+reasons preserve the displayed debt but omit payable terms. Old duplicated
+usage must be corrected before collection even when its recorded AR balances.
+
+Create `/api/v1/orders` with `purpose: statementRepayment`, `purposeRef` equal
+to that statement, `statementAmountMinor`, `expectedStatementQuote` and the
+exact fiat terms. `amountMinor`/`rate` remain invalid creation fields. Changed
+quotes/fiat or reused keys with different terms refuse before provider I/O;
+exact-key retries keep their original price and checkout after collection
+changes. The reservation and binding commit before provider execution. Browser
+return/cancellation and elapsed time never establish payment or release debt.
+
+The immutable `statementPayment` field exposes original source allocations on
+customer and business order reads. Fulfillment `purposePayload` names
+`repaidMinor`, `payableMinor`, `requiresReview` and source-linked entries.
+Refunds use existing customer request, personal finance approval and verified
+merchant-event paths; dispute resolution commits decision, cash and audit in
+one transaction. Canonical reconciliation evidence retains exact reversal
+entries and void-source allocations. The existing `invoiceRepayment` purpose
+remains Cash/CreditLine and its reference is not a plan-statement allocation.
+
+Finance uses `GET /api/v1/business/orders/{orderId}/statement-payment-evidence`
+under a current personal `ReportsRead` capability to read original payment and
+return allocations, canonical entry IDs/hashes and Cash/AR/payable/suspense.
+The read opens only an existing ledger and refuses damaged retained effects.
+Unknown, foreign-business or other-purpose orders are 404. It creates no payment,
+refund, finance decision or source repair.
 ### Application entitlement and customer sale reads (#898)
 
 An owner can explicitly grant application-only `entitlementsRead`. Existing
