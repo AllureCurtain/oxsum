@@ -114,9 +114,17 @@ async fn a_staff_invitation_grants_the_invited_role_to_a_registered_recipient() 
         // The grant is the nil organization: the seat is business-scoped.
         assert_eq!(created.organization_id, Uuid::nil());
         let secret = created.token.clone().unwrap();
+        let preview = db.invitation_preview(&secret).await.unwrap();
+        assert_eq!(preview.organization_id, Uuid::nil());
+        assert_eq!(preview.name, "Staff invitation business");
+        assert_eq!(preview.staff_role, Some(role));
         // The recipient accepts through their own session on the bound email.
         let accepted = db.accept_invitation(&session, &secret).await.unwrap();
         assert_eq!(accepted.staff_role, Some(role));
+        assert!(matches!(
+            db.invitation_preview(&secret).await,
+            Err(WalletError::NotFound(_))
+        ));
         // The seat is real staff authority — not a customer membership.
         assert!(matches!(
             db.switch_session_context(

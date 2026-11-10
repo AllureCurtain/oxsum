@@ -1298,6 +1298,15 @@ If the deployment administrator has invited you as the initial business owner, u
 
 ## Business staff API workflow (#630)
 
+For normal onboarding, the owner opens **Business → Staff → Invite staff by
+email**, selects the role and intended address, and shares the returned link or
+requests one email. Before consent, the recipient sees the business name and
+the invited staff role. A new recipient registers a staff-only identity; an
+existing user signs in and explicitly accepts. Neither path creates customer
+access, an API key or funds. After acceptance, open the Business console. The
+owner can revoke an unaccepted invitation or remove the accepted staff seat;
+replaying an accepted invitation does not restore a revoked role.
+
 After initial setup, sign in using the ordinary password/TOTP flow. Select business context with `POST /api/v1/session/context` and `{"idempotencyKey":"select-business-1","context":"business"}`. Read `/api/v1/business` to see your business role and capabilities. The staff console at `/app/business` (issue #615) drives these APIs from the browser — the sidebar shows the console's item once your session holds a business principal, the console itself switches your session into business context when it opens, and each section is gated on the capability your role carries.
 
 The owner can appoint an existing registered user with `POST /api/v1/business/staff`, passing `idempotencyKey`, `userId`, `role` (`admin`, `finance`, `support`, or `viewer`) and `reason`. Staff status is separate from customer team membership. Use `/business/staff/revoke` to remove staff access. Use `/business/ownership` with the successor's existing staff user ID to transfer ownership; your role then becomes admin. Transfer before deleting an owner account.

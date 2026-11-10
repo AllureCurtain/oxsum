@@ -4,6 +4,8 @@ Updated: 2026-11-10
 
 ## In progress
 
+- [ ] [#947](https://github.com/AllureCurtain/oxsum/issues/947) — Repair staff invitation preview HTTP 500 and staff consent copy; baseline reproduced, 28 focused and 2,191 full checks passed, strict Clippy and actual finance/support browser registration/revocation passed. Review/integration pending.
+
 - [ ] [#899](https://github.com/AllureCurtain/oxsum/issues/899) — Whole-response/cache refunds now waive flat fees and release quota while retaining provider cost evidence. Baseline reproduced; 17 guardrail and 122 related checks, formatting and server strict Clippy passed; review and integration pending.
 - [ ] [#901](https://github.com/AllureCurtain/oxsum/issues/901) — Personal key/model/customer-sale and sample funding readiness implemented with pending dependency PRs #910/#911/#913; 2,182 workspace and 26 focused core/HTTP checks passed, strict Clippy and frontend checks passed. Independent review/integration and browser completion remain; the prior browser task space disappeared.
 

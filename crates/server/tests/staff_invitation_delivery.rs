@@ -192,6 +192,20 @@ async fn a_staff_invitation_mails_once_and_enrolls_through_the_bound_session() {
     let mail = next_mail(&mut smtp).await;
     assert!(mail.to_lowercase().contains("to: new.staff@example.test"));
     assert!(mail.contains(&format!("http://oxsum.test/app/invite?token={secret}")));
+    // The browser requires a successful public preview before enabling consent.
+    let (status, preview) = call(
+        &app,
+        "POST",
+        "/api/v1/invitations/preview",
+        None,
+        json!({"token":secret}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{preview}");
+    assert_eq!(preview["data"]["organizationId"], Uuid::nil().to_string());
+    assert_eq!(preview["data"]["name"], "Staff invite business");
+    assert_eq!(preview["data"]["staffRole"], "finance");
+    assert!(!preview.to_string().contains(secret));
     // A replayed create returns the same invitation and never resends.
     let (_, replay) = call(&app, "POST", STAFF, Some(&owner), req).await;
     assert!(replay["data"]["token"].is_null());
@@ -224,6 +238,18 @@ async fn a_staff_invitation_mails_once_and_enrolls_through_the_bound_session() {
     assert_eq!(redeemed["data"]["kind"], "staff");
     assert!(redeemed["data"]["user"]["email"].is_string());
     assert!(redeemed["data"]["apiKey"].is_null());
+    assert_eq!(
+        call(
+            &app,
+            "POST",
+            "/api/v1/invitations/preview",
+            None,
+            json!({"token":secret})
+        )
+        .await
+        .0,
+        StatusCode::NOT_FOUND
+    );
 }
 
 #[tokio::test]
