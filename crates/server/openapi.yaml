@@ -6129,7 +6129,7 @@ paths:
     post:
       operationId: quoteApplicationCheckout
       summary: quoteApplicationCheckout
-      description: Application-only checkoutWrite. Read-only exact wallet top-up or published-bundle quote under current active customer authority. No provider call or payment reservation. Plan and debt checkout are not supported by this operation.
+      description: Application-only checkoutWrite. Read-only exact wallet top-up, published-bundle or assigned plan-period quote under current active customer authority. No provider call or payment reservation. Plans pin their sold fee and period and return zero wallet credit; existing live period intents must be recovered through authorized order history. Named statement debt is not supported by this operation.
       security: [{ integrationCredential: [] }]
       parameters:
         - { in: path, name: organizationId, required: true, schema: { type: string, format: uuid } }
@@ -16786,10 +16786,11 @@ components:
       additionalProperties: false
       required: [purpose, rail]
       properties:
-        purpose: { type: string, enum: [walletTopup, bundle] }
+        purpose: { type: string, enum: [walletTopup, bundle, planPeriod] }
         rail: { $ref: "#/components/schemas/MerchantRail" }
         displayAmountMinor: { type: [integer, "null"], minimum: 1, maximum: 9007199254740991, description: Required only for wallet top-up; bundle price is server-selected }
         bundleVersionId: { type: [string, "null"], format: uuid, description: Required only for a published bundle }
+        customerPlanId: { type: [string, "null"], format: uuid, description: Required only for an assigned plan period; no caller amount or bundle version. Existing live period orders must be resumed through application order history. }
     ApplicationCheckoutTerms:
       type: object
       additionalProperties: false
@@ -16804,8 +16805,9 @@ components:
         collectionRevision: { type: integer }
         displayCurrency: { type: string }
         displayAmountMinor: { type: integer }
-        purchasedMinor: { type: integer }
+        purchasedMinor: { type: integer, description: "Wallet or bundle purchased credits; zero for planPeriod, whose exact fee is in planPayment" }
         promoMinor: { type: integer }
+        planPayment: { $ref: "#/components/schemas/PlanPaymentTerms", description: Present only for planPeriod; exact sold fee and period boundaries, never a wallet grant }
     ApplicationCheckoutRequest:
       type: object
       additionalProperties: false

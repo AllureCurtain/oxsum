@@ -132,8 +132,10 @@ pub(crate) async fn quote_in(
             .version_id
             .ok_or_else(|| invalid("merchant version missing"))?,
     };
-    let (display, purchased, promo) = match selection.purpose {
-        PaymentOrderPurpose::WalletTopup if selection.bundle_version_id.is_none() => {
+    let (display, purchased, promo, plan_payment) = match selection.purpose {
+        PaymentOrderPurpose::WalletTopup
+            if selection.bundle_version_id.is_none() && selection.customer_plan_id.is_none() =>
+        {
             let amount = selection
                 .display_amount_minor
                 .filter(|v| (1..=MAX_EXACT_INTEGER).contains(v))
@@ -143,9 +145,11 @@ pub(crate) async fn quote_in(
                 .to_credit_minor(amount)
                 .filter(|v| (1..=MAX_EXACT_INTEGER).contains(v))
                 .ok_or_else(|| invalid("converted amount outside exact range"))?;
-            (amount, purchased, 0)
+            (amount, purchased, 0, None)
         }
-        PaymentOrderPurpose::Bundle if selection.display_amount_minor.is_none() => {
+        PaymentOrderPurpose::Bundle
+            if selection.display_amount_minor.is_none() && selection.customer_plan_id.is_none() =>
+        {
             let version = selection
                 .bundle_version_id
                 .ok_or_else(|| invalid("published bundle version required"))?;
@@ -159,11 +163,37 @@ pub(crate) async fn quote_in(
                 bundle.terms.display_amount_minor,
                 bundle.terms.purchased_minor,
                 bundle.terms.promo_minor,
+                None,
             )
+        }
+        PaymentOrderPurpose::PlanPeriod
+            if selection.display_amount_minor.is_none()
+                && selection.bundle_version_id.is_none() =>
+        {
+            let plan = selection
+                .customer_plan_id
+                .ok_or_else(|| invalid("assigned customer plan required"))?;
+            let quote =
+                crate::plan_payments::quote_in(tx, service.business_id, org, Some(plan)).await?;
+            if quote.existing_order_id.is_some() {
+                // A portal or another application may own the standing order.
+                // Recovery reads expose only this application's own orders.
+                return Err(WalletError::Conflict(
+                    "this period already has a payment; check authorized order history".into(),
+                ));
+            }
+            if quote.terms.collection_revision != terms.revision
+                || quote.terms.display_currency != currency.code
+            {
+                return Err(WalletError::Conflict(
+                    "plan collection terms changed".into(),
+                ));
+            }
+            (quote.terms.display_amount_minor, 0, 0, Some(quote.terms))
         }
         _ => {
             return Err(invalid(
-                "this application checkout supports wallet top-up or published bundle only",
+                "select exactly one wallet amount, published bundle or assigned plan period",
             ));
         }
     };
@@ -179,6 +209,7 @@ pub(crate) async fn quote_in(
         display_amount_minor: display,
         purchased_minor: purchased,
         promo_minor: promo,
+        plan_payment,
     })
 }
 
@@ -232,8 +263,14 @@ pub(crate) async fn record_in(
     order: &PaymentOrder,
     request: &ApplicationCheckoutRequest,
 ) -> Result<(), WalletError> {
-    if order.amount_minor != request.quote.purchased_minor
+    let amount = request
+        .quote
+        .plan_payment
+        .as_ref()
+        .map_or(request.quote.purchased_minor, |terms| terms.fee_minor);
+    if order.amount_minor != amount
         || order.promo_minor != request.quote.promo_minor
+        || order.plan_payment != request.quote.plan_payment
     {
         return Err(WalletError::Conflict(
             "order grant differs from the accepted application quote".into(),
@@ -266,6 +303,11 @@ impl Db {
         sqlx::query("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ")
             .execute(&mut *tx)
             .await?;
+        if selection.purpose == PaymentOrderPurpose::PlanPeriod {
+            // Match the existing order/plan quote lock order before quote_in's
+            // customer-plan row lock. This transaction makes no domain writes.
+            business_staff::lock_business(&mut tx).await?;
+        }
         let quote = quote_in(&mut tx, service, org, selection).await?;
         tx.commit().await?;
         Ok(quote)
@@ -289,14 +331,21 @@ impl Db {
         tx.commit().await?;
         let q = &request.quote;
         let new = NewPaymentOrder {
-            expected_plan_quote: None,
+            expected_plan_quote: q
+                .plan_payment
+                .as_ref()
+                .map(crate::PlanPaymentTerms::fingerprint)
+                .transpose()?,
             expected_collection_revision: Some(q.collection_revision),
             expected_statement_quote: None,
             statement_amount_minor: None,
             purpose: q.selection.purpose,
             display_amount_minor: q.display_amount_minor,
             display_currency: q.display_currency.clone(),
-            purpose_ref: q.selection.bundle_version_id,
+            purpose_ref: q
+                .selection
+                .customer_plan_id
+                .or(q.selection.bundle_version_id),
             idempotency_key: operation_key(app, &request.idempotency_key),
             promo_minor: 0,
         };

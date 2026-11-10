@@ -1773,3 +1773,10 @@ the exact quoted fiat/credit amounts. A provider timeout leaves a recoverable
 order rather than proof of failure. Revoking a credential stops later authorized
 requests; rotating it within the same application preserves order recovery. An
 archived account remains readable but cannot start or resume checkout.
+
+An external application with checkout permission can present payment for your
+already assigned plan (#931). Review its exact period, price and test/live
+merchant mode. Payment activates that plan's entitlement; it does not top up
+your wallet or repay an older bill. An incomplete payment should be resumed as
+the same order. A cancelled plan or a renewal before its boundary refuses a new
+payment, while a legitimate older payment remains recoverable.

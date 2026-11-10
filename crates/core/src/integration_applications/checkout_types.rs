@@ -1,13 +1,13 @@
 //! Exact application checkout inputs, server quote and immutable retry identity.
-use crate::{CheckoutChoice, MerchantMode, MerchantRail, PaymentOrderPurpose};
+use crate::{CheckoutChoice, MerchantMode, MerchantRail, PaymentOrderPurpose, PlanPaymentTerms};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-/// Select a wallet fiat amount or one already-published bundle version.
+/// Select wallet funding, a published bundle or one assigned payable plan.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ApplicationCheckoutSelection {
-    /// Only walletTopup and bundle are supported by this bounded surface.
+    /// Only walletTopup, bundle and planPeriod are supported by this bounded surface.
     pub purpose: PaymentOrderPurpose,
     /// Owner-selected collection rail.
     pub rail: MerchantRail,
@@ -15,6 +15,10 @@ pub struct ApplicationCheckoutSelection {
     pub display_amount_minor: Option<i64>,
     /// Published bundle version; absent for wallet top-up.
     pub bundle_version_id: Option<Uuid>,
+    /// Assigned customer plan; absent for wallet funding or bundles.
+    /// Omission on serialization preserves already-retained wallet/bundle requests.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub customer_plan_id: Option<Uuid>,
 }
 /// Server-derived immutable quote, checked again when the order is created.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -38,10 +42,13 @@ pub struct ApplicationCheckoutTerms {
     pub display_currency: String,
     /// Fiat amount collected by the provider.
     pub display_amount_minor: i64,
-    /// Exact purchased credits credited only on verified payment.
+    /// Purchased wallet credits; zero for plan payments, which grant entitlement.
     pub purchased_minor: i64,
     /// Published bundle promotion, never caller-supplied.
     pub promo_minor: i64,
+    /// Exact sold fee and period terms, present only for planPeriod.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub plan_payment: Option<PlanPaymentTerms>,
 }
 /// A checkout operation retaining its original return URLs and quote on retry.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

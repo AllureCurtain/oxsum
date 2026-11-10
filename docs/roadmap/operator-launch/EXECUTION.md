@@ -407,3 +407,14 @@ Strict core/server Clippy, pinned format, four contract and eight frontend check
 and production build passed. [Evidence](evidence/application-checkout.md).
 Plan-period checkout follows as #931; independent review/integration and
 browser/candidate/external gates remain pending.
+
+## Assigned application plan checkout (#931)
+
+Implemented on `feat/application-plan-checkout`, stacked on #932. Explicit
+application checkout reuses sold-plan quote/activation, exact fiat rounding and
+one intent per period. No new grant, assignment authority or wallet credit.
+16 core/HTTP checks, strict core/server all-target Clippy, pinned formatting,
+four contract checks, generated types and frontend build passed; unchanged #930
+workspace evidence is reused. [Evidence](evidence/application-plan-checkout.md).
+Independent review/integration and browser/candidate gates remain. Named statement repayment,
+notifications, evidence publication and full external app acceptance remain.

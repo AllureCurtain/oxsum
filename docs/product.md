@@ -782,8 +782,8 @@ quotes a fiat wallet top-up or published bundle for its own customer, shows the
 server's exact purchased/promo amount, merchant name and test/live mode, and
 creates the reviewed checkout. Money is credited only by verified payment and
 normal fulfillment. No staff, manual-receipt, refund-approval or merchant-secret
-authority accompanies the grant. Plan activation and statement debt checkout
-remain separate required N21 follow-ups.
+authority accompanies the grant. Assigned plan activation is described below;
+named statement debt checkout remains a separate required N21 follow-up.
 
 Every application order retains its original quote and return/cancel URLs in the
 order transaction. Identical retries and rotated credentials recover the same
@@ -791,3 +791,13 @@ order/provider identity. Application operation keys cannot collide with portal
 keys, and checkout reads include only that application's created orders. Archive
 blocks new/resumed checkout while retaining historical reads and valid late
 provider callbacks. Revocation/expiry and namespace are rechecked per operation.
+
+### Application plan-period checkout (#931)
+
+An explicitly granted application's `checkoutWrite` can purchase the customer's
+already assigned payable plan. It cannot assign a plan or change its price. The
+quote includes the exact sold fee, version and period; fiat rounding changes only
+the collected currency amount. Purchased/promotional wallet amounts are zero.
+Verified payment alone authorizes the existing plan activation path. Cancellation,
+scheduled changes, early renewal and complimentary or foreign plans refuse.
+One outstanding intent per period is shared with portal checkout.

@@ -977,5 +977,17 @@ quote/changed retry/archive 409 and unknown provider outcome 503. A 503 may leav
 durable created order: retry the same request or list and resume that exact order.
 Return `clientSecret` only to the corresponding application user; never treat
 checkout handles or browser return as payment confirmation. Archived accounts
-retain reads, while create/resume refuse. Plan/debt purposes are rejected by this
-surface; existing personal checkout semantics remain separate.
+retain reads, while create/resume refuse. Assigned plan payment is described
+below; named statement debt remains separate. Personal checkout keeps its own
+customer-session authority.
+
+### Assigned application plan payment (#931)
+
+The application checkout selection additionally accepts `purpose: planPeriod`
+and `customerPlanId`, with both `displayAmountMinor` and `bundleVersionId` absent.
+`planPayment` in the returned quote contains the exact sold fee and period terms;
+`purchasedMinor` and `promoMinor` are zero. Submit that complete quote unchanged
+through the existing application orders route. A foreign assignment is 404; a
+changed/nonpayable quote or already-standing period intent is 409. No standing
+portal order identifier is exposed; application order history returns only its
+own recoverable intents. This does not add named statement debt repayment.

@@ -894,3 +894,11 @@ already-authorized external operation. Unknown external outcomes retain the orde
 UUID for provider idempotency. Payment and fulfillment remain authenticated
 merchant/outbox operations, not application assertions. Historical reads do not
 bootstrap ledgers, resume providers or change account state.
+
+Application plan checkout extends the existing quote and payment writer (#931).
+The plan quote takes the business lock before the existing customer-plan row lock;
+current application authority remains checked within the order transaction. The
+immutable `planPayment` snapshot and its fingerprint feed the existing activation
+and refund engine. Absent new optional fields are omitted on serialization so
+retained wallet/bundle request equality and recovery survive the extension.
+No new migration, entitlement writer or provider path is introduced.

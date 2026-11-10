@@ -8360,7 +8360,7 @@ export interface paths {
         put?: never;
         /**
          * quoteApplicationCheckout
-         * @description Application-only checkoutWrite. Read-only exact wallet top-up or published-bundle quote under current active customer authority. No provider call or payment reservation. Plan and debt checkout are not supported by this operation.
+         * @description Application-only checkoutWrite. Read-only exact wallet top-up, published-bundle or assigned plan-period quote under current active customer authority. No provider call or payment reservation. Plans pin their sold fee and period and return zero wallet credit; existing live period intents must be recovered through authorized order history. Named statement debt is not supported by this operation.
          */
         post: operations["quoteApplicationCheckout"];
         delete?: never;
@@ -22118,7 +22118,7 @@ export interface components {
         };
         ApplicationCheckoutSelection: {
             /** @enum {string} */
-            purpose: "walletTopup" | "bundle";
+            purpose: "walletTopup" | "bundle" | "planPeriod";
             rail: components["schemas"]["MerchantRail"];
             /** @description Required only for wallet top-up; bundle price is server-selected */
             displayAmountMinor?: number | null;
@@ -22127,6 +22127,11 @@ export interface components {
              * @description Required only for a published bundle
              */
             bundleVersionId?: string | null;
+            /**
+             * Format: uuid
+             * @description Required only for an assigned plan period; no caller amount or bundle version. Existing live period orders must be resumed through application order history.
+             */
+            customerPlanId?: string | null;
         };
         ApplicationCheckoutTerms: {
             /** Format: uuid */
@@ -22140,8 +22145,11 @@ export interface components {
             collectionRevision: number;
             displayCurrency: string;
             displayAmountMinor: number;
+            /** @description Wallet or bundle purchased credits; zero for planPeriod, whose exact fee is in planPayment */
             purchasedMinor: number;
             promoMinor: number;
+            /** @description Present only for planPeriod; exact sold fee and period boundaries */
+            planPayment?: components["schemas"]["PlanPaymentTerms"];
         };
         ApplicationCheckoutRequest: {
             idempotencyKey: string;
