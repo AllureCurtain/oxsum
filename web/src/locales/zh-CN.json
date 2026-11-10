@@ -1414,7 +1414,6 @@
     "loadError": "无法读取套餐信息。",
     "none": "当前没有生效的套餐——请从下方目录中选择。",
     "unnamed": "套餐",
-    "pastDueNote": "此套餐已逾期——有未结账单超过了到期日。请从“账单”页支付以恢复良好状态。",
     "cancelAtPeriodEnd": "将在期末取消",
     "price": "价格",
     "quota": "每期额度",
@@ -2706,5 +2705,14 @@
     "overlap": "同一范围内的销售生效区间重叠",
     "staleRevision": "草稿修订已改变，请加载最新草稿",
     "alreadyPublished": "该草稿修订已发布"
+
+  "planStanding": {
+    "renewal": "已付费套餐周期已结束。完成手动续费后才会发放新额度；上一周期仍允许使用的剩余额度继续按原条款执行。",
+    "overdueDebt": "套餐未结欠款已超过到期日。请在账单中查看对账单；偿还欠款与套餐续费是两项独立操作。",
+    "reviewRenewal": "前往套餐查看续费",
+    "reviewDebt": "前往账单查看对账单",
+    "renewalDue": "待续费",
+    "debtDue": "欠款逾期",
+    "renewalAndDebt": "待续费 · 欠款逾期"
   }
 }
