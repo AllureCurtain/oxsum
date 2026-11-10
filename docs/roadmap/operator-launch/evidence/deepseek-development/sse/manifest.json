@@ -1,0 +1,14 @@
+{
+  "entryId": "4cd28ce5-c45f-5028-a1b6-182cb489d9bb",
+  "contentHash": "fa9b3de113523b4c25c49cc1e725cf6601350c9b3ae62c8265d394d2db7a423a",
+  "origin": "oxsum/ledgers/90799f1872314dc79f868a444c00503a",
+  "headSize": 5,
+  "headRoot": "85a62e892c5b463c548b09f4f283e8568a7df516e13fffc562b5352c8e895d9d",
+  "requestId": "79a0bc44-e137-4e61-b261-aaeac2a3d77f",
+  "chargedMinor": 10,
+  "sale": {
+    "bookId": "d4fb0702-2dab-4c5f-b259-ab50fc5f2f60",
+    "version": 1
+  },
+  "keyTrust": "Generated isolated operator identity retained before inference"
+}
