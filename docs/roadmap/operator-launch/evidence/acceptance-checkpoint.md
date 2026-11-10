@@ -31,7 +31,8 @@ completed [CI 42865423868](https://github.com/AllureCurtain/oxsum/actions/runs/4
 on `3e5b7d65`. This checkpoint revision will receive a new CI run. Entire reports missing
 independent reviewer approval. No self-approval or protection bypass is accepted.
 PR CI does not replace full integration, engine or candidate evidence.
-New #1020/#1021 fast CI passed; #1022 was still running at this checkpoint update.
+New #1020/#1021 fast CI passed; #1022 completed fast CI 42875606308
+on `6e9b4dd2`. No independent approval is recorded.
 
 | PR | Reviewed change should establish | Dependency / remaining acceptance |
 | --- | --- | --- |
