@@ -27,6 +27,15 @@ attempts, 16,896 CNY millionths reserved and 52 estimated usage. The complete
 candidate, actual PSP, reference soak and independent pilots remain unperformed.
 The checkpoint retains their requirements and the dependency-aware review queue.
 
+Provider rotation/repoint and pinned-stream evidence #1025 passed CI 42880623901.
+Five calls charged exactly 70 minor, and six original bills passed offline checks
+with 36 altered inputs rejected. The discovered request-status mismatch is fixed
+in #1026; 133 related and eight final focused checks, a real-listener 502 regression
+and CI 42882442481 passed. TaskSpace 8 and all acceptance listeners are closed.
+Invoice reissue remains actual implementation work (#1027); full embedded and
+monthly overdue/restoration acceptance remain. All 24 PRs have zero recorded
+reviews; missing independent approval still prevents normal integration.
+
 ## Historical execution log
 
 Updated: 2026-11-10 (Asia/Shanghai). Owner: this task. Umbrella: [#725](https://github.com/AllureCurtain/oxsum/issues/725).

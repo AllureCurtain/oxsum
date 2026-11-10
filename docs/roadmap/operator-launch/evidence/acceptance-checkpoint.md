@@ -25,7 +25,7 @@ implementation and targeted browser evidence in the pending PRs below.
 
 ## Pending integration
 
-GitHub read on November 11 found **22 open PRs**, all with zero recorded reviews.
+GitHub read on November 11 found **24 open PRs**, all with zero recorded reviews.
 The original 19 have all five fast required checks green on their recorded heads; #1016
 completed [CI 42865423868](https://github.com/AllureCurtain/oxsum/actions/runs/42865423868)
 on `3e5b7d65`. This checkpoint revision will receive a new CI run. Entire reports missing
@@ -58,6 +58,8 @@ on `6e9b4dd2`. No independent approval is recorded.
 | #1020 | Separate manual renewal from overdue-debt guidance | Four focused cases and English/Chinese browser passed |
 | #1021 | Readable mobile statement amounts | 390px local scroll and reachable detail verified |
 | #1022 | Policy-2 renewal/change/cancel/expiry browser evidence | Depends on #979/#1020/#1021; exact candidate remains |
+| #1025 | Provider rotation/repoint and pinned SSE evidence | Six offline proofs and 36 rejections passed; observed status defect retained as #1024 |
+| #1026 | Actual gateway status in request logs after admission | Repairs #1024; 133 related/eight final checks and real-listener regression passed |
 
 Full [CI 42853550892](https://github.com/AllureCurtain/oxsum/actions/runs/42853550892)
 on #1004 source `532d766c86a0f50ff001ceb4ff2c09eb38f034ee` passed 2,230 ordinary,
@@ -94,10 +96,28 @@ its original window. Zero-debt guidance and mobile amount wrapping were repaired
 in #1020/#1021. TaskSpace 7 and ports 18817/18818 are closed; no provider budget
 was consumed. These tests do not claim a real elapsed month or genuine PSP.
 
+#1025 (`b6f3b97b`) completed CI 42880623901. The owner exercised credential
+add/disable/remove/re-enable and connection replacement while an original SSE
+request remained active. Five calls charged 70 minor in total; a disabled-key
+failure produced a zero-charge settlement. Six offline proofs and 36 tampering
+checks passed. Admin denial left configuration unchanged. TaskSpace 8 and ports
+18821/18822 closed. The original HTTP-502/client versus HTTP-200/log mismatch
+remains preserved in the evidence rather than represented as accepted.
+
+#1026 (`8b60ba72`) repairs that mismatch by retaining the selected response status.
+133 affected gateway/cache/guardrail/request-log checks and eight final request-log
+checks passed, with strict server Clippy and contract/frontend/format validation.
+The same isolated fixture then returned and recorded 502 with no charge, upstream
+attempt or hold. CI 42882442481 passed. Entire still reports missing independent
+approval; no gate was bypassed and no merge occurred.
+
 ## Remaining execution
 
-- Complete provider edit/credential rotation, replacement/reissued invoice and
-  complete embedded application browser journeys. Renewal failure/expiry/success,
+- Implement source-linked invoice reissue under #1027: current source has link
+  fields and safe refusals, but no mutation/UI. This is a software gap, not only
+  browser acceptance. Complete the embedded application and monthly overdue/
+  restoration browser journeys. Provider rotation now has #1025 development
+  evidence and its observed status defect has repair #1026. Renewal failure/expiry/success,
   replay and boundary change/cancel/no-renewal expiry now have scoped policy-2
   development evidence in #1022; actual future-boundary/candidate acceptance remains. Tests support their own tested
   scope; existing local fixtures do not complete every advertised journey.

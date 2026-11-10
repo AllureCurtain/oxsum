@@ -4,6 +4,12 @@ Updated: 2026-11-11
 
 ## In progress
 
+- [ ] [#1027](https://github.com/AllureCurtain/oxsum/issues/1027) — Source audit confirms invoice reissue has link fields but no executable mutation/UI; complete source-linked correction, repayment/reconciliation integration and browser acceptance remain.
+
+- [ ] [#1024](https://github.com/AllureCurtain/oxsum/issues/1024) — Selected gateway response status repaired in PR #1026; 133 related/eight final checks, real-listener regression and CI 42882442481 passed. Protected integration pending.
+
+- [ ] [#1023](https://github.com/AllureCurtain/oxsum/issues/1023) — Provider rotation/pinned SSE evidence PR #1025 passed six offline proofs/36 rejections and CI 42880623901. Original status defect is retained and repaired in #1026; browser/listeners closed. Protected integration pending.
+
 - [ ] [#1017](https://github.com/AllureCurtain/oxsum/issues/1017) — Policy-2 browser renewal failure/expiry/success/replay and boundary change/cancel/expiry passed; original accounting, ledger conservation and bounded quota probe retained in PR #1022. Browser/listeners closed; protected integration and exact candidate remain.
 - [ ] [#1018](https://github.com/AllureCurtain/oxsum/issues/1018) — Separate renewal/debt guidance and labels in PR #1020; four focused and actual bilingual browser checks plus fast CI passed. Protected integration pending.
 - [ ] [#1019](https://github.com/AllureCurtain/oxsum/issues/1019) — Mobile Billing amounts/dates retained on one line with local scroll in PR #1021; 390px/desktop/detail-link browser and fast CI passed. Protected integration pending.
