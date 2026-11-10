@@ -69,6 +69,9 @@ Updated: 2026-11-11
 
 - [ ] [#1017](https://github.com/AllureCurtain/oxsum/issues/1017) — Accept policy-2 manual renewal and boundary change/cancel/expiry through the browser, using original controlled-clock service bounds and local signed payment fixtures.
 
+
+- [ ] [#1018](https://github.com/AllureCurtain/oxsum/issues/1018) — Distinguish ended paid periods from overdue statement debt in customer Plans and Billing guidance; preserve independent renewal and repayment actions.
+
 - [ ] [#969](https://github.com/AllureCurtain/oxsum/issues/969) — Actual browser bundle purchase/return and paid-plan activation, fee/payment statement, early-renewal refusal and cancellation service passed with local signed fixtures. Stale plan consumption display is #973; statement correction/dispute, embedded and candidate/external gates remain. [Evidence](docs/roadmap/operator-launch/evidence/commercial-browser/README.md).
 
 - [ ] [#973](https://github.com/AllureCurtain/oxsum/issues/973) — Read sold-plan consumption from its exact quota window; real browser baseline 0 now reads 80/100 minor. All 17 affected core/HTTP checks, strict core/server Clippy, contract/codegen/build and pinned formatting passed; review/integration pending. [Evidence](docs/roadmap/operator-launch/evidence/plan-consumption-read/README.md).
