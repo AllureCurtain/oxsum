@@ -45,3 +45,11 @@ test("customer key management is confined to application grants", () => {
   assert.deepEqual(request.customerIds, []);
   assert.deepEqual(request.scopes, ["customerKeysWrite"]);
 });
+
+test("frozen evidence requires an explicit application grant", () => {
+  assert.throws(() => credentialRequest({ ...draft, mode: "customers", scopes: ["evidenceRead"] }, "key", 0), /scopes/);
+  const request = credentialRequest({ ...draft, scopes: ["evidenceRead"] }, "key", 0);
+  assert.equal(request.applicationId, "app-a");
+  assert.deepEqual(request.customerIds, []);
+  assert.deepEqual(request.scopes, ["evidenceRead"]);
+});

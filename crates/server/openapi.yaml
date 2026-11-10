@@ -6122,6 +6122,47 @@ paths:
         "401": { $ref: "#/components/responses/Error" }
         "403": { $ref: "#/components/responses/Error" }
         "409": { $ref: "#/components/responses/Error" }
+  /api/v1/integration/customers/{organizationId}/evidence-bundles:
+    get:
+      summary: List retained evidence for this application's customer
+      description: Application-only evidenceRead. Lists retained descriptor metadata, including bundles a download may refuse as too large or not customer-safe. No evidence is minted, no wallet is opened and no share token is created. Archived accounts retain historical access. Every page checks current credential and namespace in the read transaction.
+      security: [{ integrationCredential: [] }]
+      parameters:
+        - { name: organizationId, in: path, required: true, schema: { type: string, format: uuid } }
+        - { name: after, in: query, schema: { type: string, format: uuid } }
+        - { name: limit, in: query, schema: { type: integer, minimum: 1, maximum: 50, default: 20 } }
+      responses:
+        "200":
+          description: Ascending bundle identifier page; descriptor metadata is not verification
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data: { $ref: "#/components/schemas/ApplicationEvidencePage" }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+  /api/v1/integration/customers/{organizationId}/evidence-bundles/{bundleId}:
+    get:
+      summary: Download original frozen customer-safe evidence bytes
+      description: Application-only evidenceRead for the exact namespace/customer. Returns the retained version-2 JSON bytes directly without an API data envelope. Checks descriptor identities, manifest and proof integrity and refuses upstream-cost-included or malformed evidence; never edits signed bytes. Maximum 16 MiB. Unsafe/oversized/inconsistent retained files return 409 for operator recovery. This integrity check does not replace a consumer's independently retained origin, key and digest. No mint, share, callback or money writes occur.
+      security: [{ integrationCredential: [] }]
+      parameters:
+        - { name: organizationId, in: path, required: true, schema: { type: string, format: uuid } }
+        - { name: bundleId, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        "200":
+          description: Original application/json attachment, private no-store; no data envelope
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/EvidenceBundle" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "409": { $ref: "#/components/responses/Error" }
   /api/v1/integration/customers/{organizationId}/link-invitations:
     post:
       summary: Offer verified personal ownership of this application's account
@@ -16604,6 +16645,14 @@ components:
       properties:
         applications: { type: array, items: { $ref: "#/components/schemas/IntegrationApplication" } }
         nextCursor: { type: [string, "null"], format: uuid }
+    ApplicationEvidencePage:
+      type: object
+      required: [applicationId, organizationId, bundles, nextCursor]
+      properties:
+        applicationId: { type: string, format: uuid }
+        organizationId: { type: string, format: uuid }
+        bundles: { type: array, maxItems: 50, items: { $ref: "#/components/schemas/EvidenceBundleSummary" } }
+        nextCursor: { type: [string, "null"], format: uuid }
     ApplicationLinkRequest:
       type: object
       additionalProperties: false
@@ -16734,7 +16783,7 @@ components:
         nextCursor: { type: [string, "null"] }
     IntegrationScope:
       type: string
-      enum: [customersRead, meteringWrite, customersProvision, billingRead, customersLifecycleWrite, customerKeysWrite, entitlementsRead, customerLinkWrite]
+      enum: [customersRead, meteringWrite, customersProvision, billingRead, customersLifecycleWrite, customerKeysWrite, entitlementsRead, customerLinkWrite, evidenceRead]
     ProvisionCustomerRequest:
       type: object
       additionalProperties: false
@@ -16756,7 +16805,7 @@ components:
         idempotencyKey: { type: string, minLength: 1, maxLength: 200 }
         name: { type: [string, "null"], maxLength: 80 }
         applicationId: { type: [string, "null"], format: uuid, description: "Owner-selected stable application; customerIds must be empty. Only that application’s provisioned accounts are accessible. Omit for existing explicit grants." }
-        scopes: { type: array, minItems: 1, maxItems: 8, uniqueItems: true, items: { $ref: "#/components/schemas/IntegrationScope" } }
+        scopes: { type: array, minItems: 1, maxItems: 9, uniqueItems: true, items: { $ref: "#/components/schemas/IntegrationScope" } }
         customerIds: { type: array, minItems: 0, maxItems: 1000, uniqueItems: true, items: { type: string, format: uuid }, description: "Existing customers the credential may read or meter. Must be empty for an application grant. Legacy grants may be empty only for customersProvision alone." }
         expiresAt: { type: string, format: date-time }
         reason: { type: string, minLength: 1, maxLength: 500 }

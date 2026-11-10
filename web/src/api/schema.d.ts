@@ -8346,6 +8346,102 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/integration/customers/{organizationId}/evidence-bundles": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List retained evidence for this application's customer
+         * @description Application-only evidenceRead. Lists retained descriptor metadata, including bundles a download may refuse as too large or not customer-safe. No evidence is minted, no wallet is opened and no share token is created. Archived accounts retain historical access. Every page checks current credential and namespace in the read transaction.
+         */
+        get: {
+            parameters: {
+                query?: {
+                    after?: string;
+                    limit?: number;
+                };
+                header?: never;
+                path: {
+                    organizationId: string;
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Ascending bundle identifier page; descriptor metadata is not verification */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            data: components["schemas"]["ApplicationEvidencePage"];
+                        };
+                    };
+                };
+                400: components["responses"]["Error"];
+                401: components["responses"]["Error"];
+                403: components["responses"]["Error"];
+                404: components["responses"]["Error"];
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/integration/customers/{organizationId}/evidence-bundles/{bundleId}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Download original frozen customer-safe evidence bytes
+         * @description Application-only evidenceRead for the exact namespace/customer. Returns the retained version-2 JSON bytes directly without an API data envelope. Checks descriptor identities, manifest and proof integrity and refuses upstream-cost-included or malformed evidence; never edits signed bytes. Maximum 16 MiB. Unsafe/oversized/inconsistent retained files return 409 for operator recovery. This integrity check does not replace a consumer's independently retained origin, key and digest. No mint, share, callback or money writes occur.
+         */
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    organizationId: string;
+                    bundleId: string;
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Original application/json attachment, private no-store; no data envelope */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["EvidenceBundle"];
+                    };
+                };
+                401: components["responses"]["Error"];
+                403: components["responses"]["Error"];
+                404: components["responses"]["Error"];
+                409: components["responses"]["Error"];
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/integration/customers/{organizationId}/link-invitations": {
         parameters: {
             query?: never;
@@ -21933,6 +22029,15 @@ export interface components {
             /** Format: uuid */
             nextCursor: string | null;
         };
+        ApplicationEvidencePage: {
+            /** Format: uuid */
+            applicationId: string;
+            /** Format: uuid */
+            organizationId: string;
+            bundles: components["schemas"]["EvidenceBundleSummary"][];
+            /** Format: uuid */
+            nextCursor: string | null;
+        };
         ApplicationLinkRequest: {
             idempotencyKey: string;
             /** Format: email */
@@ -22100,7 +22205,7 @@ export interface components {
             nextCursor: string | null;
         };
         /** @enum {string} */
-        IntegrationScope: "customersRead" | "meteringWrite" | "customersProvision" | "billingRead" | "customersLifecycleWrite" | "customerKeysWrite" | "entitlementsRead" | "customerLinkWrite";
+        IntegrationScope: "customersRead" | "meteringWrite" | "customersProvision" | "billingRead" | "customersLifecycleWrite" | "customerKeysWrite" | "entitlementsRead" | "customerLinkWrite" | "evidenceRead";
         ProvisionCustomerRequest: {
             idempotencyKey: string;
             /** @description Caller-chosen identifier within the application (integration route) or legacy business namespace (business route). */

@@ -373,3 +373,10 @@ Implementation is based on PR #910 and uses migration 0123 after reserved
 immutable terminal consent and English/Chinese UI are implemented. Development
 validation and remaining gates are recorded in [the consent evidence](evidence/application-consent.md).
 This does not complete N21 checkout/evidence, notifications or the external app.
+
+### Application frozen evidence reads (#924)
+
+Based on PR #922, explicit `evidenceRead` lists retained descriptors and downloads
+original customer-safe version-2 bytes with bounded size and live namespace
+authority. [Evidence and pending gates](evidence/application-evidence-reads.md).
+No evidence minting, share tokens, external calls or payment/model spend.

@@ -1,5 +1,16 @@
 # Technical decisions
 
+## 2026-11-10 — Read original evidence under an independent application grant (#924)
+
+`evidenceRead` is distinct from balance reads and may export only existing frozen
+version-2 evidence for the application's own customer accounts. The read retains
+credential authority on one database connection and never opens a wallet or
+publishes a marker. Downloads retain original bytes and refuse inconsistent,
+ambiguous JSON, supplier-cost-inclusive or over-16-MiB files. Internal verification
+uses the retained key only to reject corruption; it is not an independent trust
+root. Consumers still supply held trust inputs. Evidence minting and lifecycle
+notifications remain separate operations with their own authority.
+
 ## 2026-11-10 — Verified first ownership preserves application access (#920)
 
 Application account linking uses a separate explicit application scope and personal
