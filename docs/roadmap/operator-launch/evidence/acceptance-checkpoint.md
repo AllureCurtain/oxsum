@@ -25,7 +25,7 @@ implementation and targeted browser evidence in the pending PRs below.
 
 ## Pending integration
 
-GitHub read on November 11 found **24 open PRs**, all with zero recorded reviews.
+GitHub read on November 11 found **25 open PRs**, all with zero recorded reviews.
 The original 19 have all five fast required checks green on their recorded heads; #1016
 completed [CI 42865423868](https://github.com/AllureCurtain/oxsum/actions/runs/42865423868)
 on `3e5b7d65`. This checkpoint revision will receive a new CI run. Entire reports missing
@@ -60,6 +60,7 @@ on `6e9b4dd2`. No independent approval is recorded.
 | #1022 | Policy-2 renewal/change/cancel/expiry browser evidence | Depends on #979/#1020/#1021; exact candidate remains |
 | #1025 | Provider rotation/repoint and pinned SSE evidence | Six offline proofs and 36 rejections passed; observed status defect retained as #1024 |
 | #1026 | Actual gateway status in request logs after admission | Repairs #1024; 133 related/eight final checks and real-listener regression passed |
+| #1029 | Exact partial plan dispute amounts and authenticated-source comparison | Fixes #1028 found during #1027; real-ledger regressions passed, review/integration pending |
 
 Full [CI 42853550892](https://github.com/AllureCurtain/oxsum/actions/runs/42853550892)
 on #1004 source `532d766c86a0f50ff001ceb4ff2c09eb38f034ee` passed 2,230 ordinary,
@@ -113,7 +114,7 @@ approval; no gate was bypassed and no merge occurred.
 
 ## Remaining execution
 
-- Implement source-linked invoice reissue under #1027: current source has link
+- Complete source-linked invoice reissue under #1027: local branch now has a source-verified preview and integer allocation, with ten focused checks and one HTTP check passed. Atomic apply, successor payment/recognition/reconciliation, UI and browser acceptance remain. Main still has only link
   fields and safe refusals, but no mutation/UI. This is a software gap, not only
   browser acceptance. Complete the embedded application and monthly overdue/
   restoration browser journeys. Provider rotation now has #1025 development

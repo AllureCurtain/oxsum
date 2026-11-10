@@ -32,8 +32,12 @@ Five calls charged exactly 70 minor, and six original bills passed offline check
 with 36 altered inputs rejected. The discovered request-status mismatch is fixed
 in #1026; 133 related and eight final focused checks, a real-listener 502 regression
 and CI 42882442481 passed. TaskSpace 8 and all acceptance listeners are closed.
-Invoice reissue remains actual implementation work (#1027); full embedded and
-monthly overdue/restoration acceptance remain. All 24 PRs have zero recorded
+Invoice correction #1027 now has a local source-verified preview and integer
+allocation; ten focused checks and one HTTP check passed. It exposed a real
+partial plan-dispute defect, repaired in PR #1029 with 73 library, 100 related
+core and 18 HTTP checks plus final affected checks and strict Clippy. Atomic
+reissue apply and successor lifecycle/UI remain unimplemented. Full embedded and
+monthly overdue/restoration acceptance remain. All 25 PRs have zero recorded
 reviews; missing independent approval still prevents normal integration.
 
 ## Historical execution log

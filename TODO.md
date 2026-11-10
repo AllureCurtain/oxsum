@@ -4,7 +4,9 @@ Updated: 2026-11-11
 
 ## In progress
 
-- [ ] [#1027](https://github.com/AllureCurtain/oxsum/issues/1027) — Source audit confirms invoice reissue has link fields but no executable mutation/UI; complete source-linked correction, repayment/reconciliation integration and browser acceptance remain.
+- [ ] [#1028](https://github.com/AllureCurtain/oxsum/issues/1028) — Partial plan dispute amount defect reproduced while implementing #1027 and repaired in PR #1029; exact-event conversion, once-only case tracking and independent source comparison passed focused core/HTTP checks. Review/integration pending.
+
+- [ ] [#1027](https://github.com/AllureCurtain/oxsum/issues/1027) — Local source-verified invoice correction preview and integer allocation now pass ten focused and one HTTP check. Atomic apply, successor lifecycle, complete source-linked reconciliation and browser acceptance remain.
 
 - [ ] [#1024](https://github.com/AllureCurtain/oxsum/issues/1024) — Selected gateway response status repaired in PR #1026; 133 related/eight final checks, real-listener regression and CI 42882442481 passed. Protected integration pending.
 
