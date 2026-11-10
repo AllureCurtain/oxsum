@@ -1,5 +1,6 @@
 import { CustomerCreditCard } from "./customer-credit";
 import { CustomerMonthlyStatements } from "./monthly-statements";
+import { CustomerPlanBinding } from "./customer-plan-binding";
 import { CustomerInvitations } from "./customer-invitations";
 import { useState } from "react";
 import { useTranslation } from "react-i18next";
@@ -7,7 +8,6 @@ import { Users } from "lucide-react";
 import { ApiError } from "../../api/client";
 import {
   idem,
-  useBindCustomerPlan,
   useBusinessCustomer,
   useBusinessCustomers,
   useBusinessOrders,
@@ -31,7 +31,6 @@ import {
   Cr,
   EmptyRows,
   Field,
-  NativeSelect,
   Skeleton,
   TableShell,
   Td,
@@ -108,15 +107,10 @@ function CustomerPlanCard({ customer }: { customer: BusinessCustomer }) {
   const display = useDisplay();
   const plan = useCustomerPlan(customer.organizationId);
   const plans = useBusinessPlans(useCapability(useBusiness().data, "catalogWrite"));
-  const bind = useBindCustomerPlan(customer.organizationId);
   const cancel = useCancelCustomerPlan(customer.organizationId);
-  const [target, setTarget] = useState("");
-  const [grant, setGrant] = useState("");
 
   const binding = plan.data?.plan;
   const credit = plan.data?.credit;
-  const published = (plans.data ?? []).filter((p) => p.publishedAt != null && p.retiredAt == null);
-  const chosen = published.find((p) => p.planVersionId === target);
   const canWrite = useCapability(useBusiness().data, "commercialWrite");
 
   return (
@@ -170,39 +164,7 @@ function CustomerPlanCard({ customer }: { customer: BusinessCustomer }) {
       ) : (
         <p className="text-sm text-muted">{t("biz.customers.noPlan")}</p>
       )}
-      {canWrite && !binding ? (
-        <form
-          className="mt-4 flex flex-col gap-3 border-t border-line pt-4"
-          onSubmit={(e) => {
-            e.preventDefault();
-            if (!chosen) return;
-            bind.mutate({
-              planVersionId: chosen.planVersionId,
-              complimentaryGrant: chosen.priceMinor === 0 ? grant : null,
-            });
-          }}
-        >
-          <Field label={t("biz.customers.bindPlan")}>
-            <NativeSelect value={target} onChange={(e) => setTarget(e.target.value)} required>
-              <option value="">{t("biz.customers.pickPlan")}</option>
-              {published.map((p) => (
-                <option key={p.planVersionId} value={p.planVersionId}>
-                  {p.name} · v{p.version} · <Cr minor={p.priceMinor} currency={display} />
-                </option>
-              ))}
-            </NativeSelect>
-          </Field>
-          {chosen?.priceMinor === 0 ? (
-            <Field label={t("biz.customers.grant")} hint={t("biz.customers.grantHint")}>
-              <TextInput value={grant} onChange={(e) => setGrant(e.target.value)} required />
-            </Field>
-          ) : null}
-          {bind.error instanceof ApiError ? <Banner tone="error">{bind.error.message}</Banner> : null}
-          <Button type="submit" isLoading={bind.isPending} disabled={!chosen}>
-            {t("biz.customers.bindConfirm")}
-          </Button>
-        </form>
-      ) : null}
+      {canWrite ? <CustomerPlanBinding customer={customer} plans={plans.data ?? []} /> : null}
     </Card>
   );
 }
@@ -364,7 +326,7 @@ export function BusinessCustomers() {
     <div className="flex flex-col gap-6">
       <h2 className="text-xl font-bold">{t("biz.customers.title")}</h2>
       {picked ? (
-        <CustomerDetail customer={picked} onBack={() => setPicked(null)} />
+        <CustomerDetail key={picked.organizationId} customer={picked} onBack={() => setPicked(null)} />
       ) : (
         <><CustomerInvitations /><CustomerList onPick={setPicked} /></>
       )}
