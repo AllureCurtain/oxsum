@@ -471,6 +471,8 @@ async fn foreign_application_portal_orders_and_expiry_do_not_inherit_checkout_au
             &oxsum_core::NewPaymentOrder {
                 expected_plan_quote: None,
                 expected_collection_revision: Some(request.quote.collection_revision),
+                expected_statement_quote: None,
+                statement_amount_minor: None,
                 purpose: PaymentOrderPurpose::WalletTopup,
                 display_amount_minor: 250,
                 display_currency: "USD".into(),
@@ -765,6 +767,8 @@ async fn plan_checkout_refuses_foreign_free_and_portal_intents_without_disclosin
             &oxsum_core::NewPaymentOrder {
                 expected_collection_revision: Some(quote.terms.collection_revision),
                 expected_plan_quote: Some(quote.fingerprint),
+                expected_statement_quote: None,
+                statement_amount_minor: None,
                 purpose: PaymentOrderPurpose::PlanPeriod,
                 display_amount_minor: quote.terms.display_amount_minor,
                 display_currency: quote.terms.display_currency,
