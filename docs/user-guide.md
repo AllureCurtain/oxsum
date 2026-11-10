@@ -1959,6 +1959,7 @@ The Plans page shows quota reserved or consumed in the displayed period. A runni
 
 In Business → Disputes, choose Resolve and select the actual provider outcome. Evidence due keeps the case open; won and closed do not record cash loss; lost records the confirmed loss against original funding and any resulting debt or review amount. Enter the supporting reason. A failed request keeps the dialog and exact decision for retry; this action does not initiate a provider refund.
 
+
 ### Generate and issue a monthly statement
 
 In Business → Customers, open the customer and find **Monthly statements**.
@@ -1991,4 +1992,5 @@ payment cannot exceed remaining credit debt through the selected month; earlier
 unbilled debt is repaid first. The operation never turns excess into wallet funds.
 A source-audit conflict requires reconciliation of the original payment; do not
 invent a new key to work around it.
+
 

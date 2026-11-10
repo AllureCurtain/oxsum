@@ -931,6 +931,7 @@ Sold-plan period consumption reads the matching quota-engine window, including o
 
 The Business dispute resolution dialog requires an explicit provider outcome: evidence due, won, lost or closed. Each outcome explains its financial effect. The exact decision, reason and idempotency identity remain fixed across ambiguous retries; the dialog closes only after a successful response.
 
+
 Business owner/finance can generate and issue monthly credit statements from the
 customer's separate Monthly statements card (#1011). Generation is a working
 copy for a closed UTC month. Issuance confirms the displayed usage, credit draw,
@@ -947,4 +948,5 @@ or exceed unpaid credit draws through that month. Cash, credit restoration,
 statement standing, events and source-bound audit commit together. Exact retries
 remain valid after full payment; a changed amount or statement conflicts. Staff
 portal repayment and explicit bank-reference collection remain tracked by #1006.
+
 

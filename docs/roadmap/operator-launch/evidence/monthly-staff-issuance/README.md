@@ -2,6 +2,7 @@
 
 PR [#1012](https://github.com/AllureCurtain/oxsum/pull/1012).
 Implementation source: `163bd3e9`.
+
 Branch: `feat/monthly-staff-issuance`, created from main `2ee70601` and composed
 with monthly read PR #1008 (`39acc911`) and atomic writer PR #1010 (`1e58bae5`).
 Migration 0129 adds immutable action-result coordinates. This branch needs both
@@ -84,6 +85,16 @@ TaskSpace 3 and its only page were closed with `finish({keep: []})` after
 acceptance. Private credentials remain outside tracked evidence.
 
 ## Remaining gates
+
+## Remaining acceptance
+
+Browser UI acceptance did **not** run: resuming the established ego-browser
+TaskSpace 2 returned `task space not found: 2`. The browser skill forbids creating
+a replacement space to bypass an unexpected lost-space state without user input.
+The bilingual UI builds, but desktop/mobile/keyboard confirmation and retained
+form behavior still need actual browser execution. The local listener and fixture
+are retained at `/tmp/oxsum-monthly-staff-browser-1011`, port 18811. Private
+credentials remain outside tracked evidence.
 
 Independent review, prerequisite integration, protected merge and exact-candidate
 acceptance remain pending. This changes no monthly repayment or plan reissue
