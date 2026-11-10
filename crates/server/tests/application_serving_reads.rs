@@ -199,15 +199,19 @@ async fn entitlement_and_model_routes_refuse_other_principals_and_return_actual_
         .0,
         StatusCode::NOT_FOUND
     );
+    // Wholesale values must not appear anywhere in the response. The "900"
+    // sweep is scoped to the `terms` subtree because timestamps (`asOf`,
+    // `effectiveFrom`) can legitimately contain that digit run.
     let serialized = page.to_string();
     for value in [
         "hidden-provider-secret",
         "private-provider.example",
         "upstream",
-        "900",
     ] {
         assert!(!serialized.contains(value), "{value}");
     }
+    let terms = page["data"]["models"][0]["saleTerms"]["terms"].to_string();
+    assert!(!terms.contains("900"));
     let digests: i64 = sqlx::query_scalar(
         "SELECT count(*) FROM oxsum.sale_snapshot_digests WHERE organization_id=$1",
     )
