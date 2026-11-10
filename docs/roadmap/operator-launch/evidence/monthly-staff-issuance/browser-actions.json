@@ -1,0 +1,51 @@
+[
+  {
+    "body": "{\"action\":\"finalize\",\"statementId\":\"88d2778a-9aeb-4efa-9469-4490318b88c2\",\"reviewDigest\":\"7c8d2e52eff5ea54fe6c986679d78dd0efaadf507f44ce96edd8bd7c96835973\",\"idempotencyKey\":\"a8b94553-a769-4a86-be97-f7838819ac6f\",\"reason\":\"财务复核：按已显示明细出账\"}",
+    "response": {
+      "status": 409,
+      "value": {
+        "error": {
+          "code": "CONFLICT",
+          "details": [],
+          "message": "monthly statement changed since review; regenerate and review current figures and terms"
+        }
+      }
+    }
+  },
+  {
+    "body": "{\"action\":\"generate\",\"period\":\"2026-10\",\"idempotencyKey\":\"f44eb581-3fb5-4d1f-9826-02a265db63ab\",\"reason\":\"追加用量后刷新月结草稿\"}",
+    "response": {
+      "status": 200,
+      "value": {
+        "data": {
+          "id": "3dbf08e5-440e-4a2e-98ce-1b208b335654",
+          "statementId": "88d2778a-9aeb-4efa-9469-4490318b88c2"
+        }
+      }
+    }
+  },
+  {
+    "body": "{\"action\":\"finalize\",\"statementId\":\"88d2778a-9aeb-4efa-9469-4490318b88c2\",\"reviewDigest\":\"f42cd83e9e09037ed84650ad2b84056b9ad58153c1bd693e2e9dfef451e1be61\",\"idempotencyKey\":\"94dad9fa-6e3e-4af6-8b9f-3222ad9b4a8d\",\"reason\":\"Issue the refreshed 1.000003 credit statement\"}",
+    "response": {
+      "status": 200,
+      "value": {
+        "data": {
+          "id": "664ab4eb-5290-4f3b-99c7-6fcfbe8dc07b",
+          "statementId": "88d2778a-9aeb-4efa-9469-4490318b88c2"
+        }
+      }
+    }
+  },
+  {
+    "body": "{\"action\":\"finalize\",\"statementId\":\"88d2778a-9aeb-4efa-9469-4490318b88c2\",\"reviewDigest\":\"f42cd83e9e09037ed84650ad2b84056b9ad58153c1bd693e2e9dfef451e1be61\",\"idempotencyKey\":\"94dad9fa-6e3e-4af6-8b9f-3222ad9b4a8d\",\"reason\":\"Issue the refreshed 1.000003 credit statement\"}",
+    "response": {
+      "status": 200,
+      "value": {
+        "data": {
+          "id": "664ab4eb-5290-4f3b-99c7-6fcfbe8dc07b",
+          "statementId": "88d2778a-9aeb-4efa-9469-4490318b88c2"
+        }
+      }
+    }
+  }
+]

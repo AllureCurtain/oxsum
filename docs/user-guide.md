@@ -1975,3 +1975,8 @@ keep that form open and **Retry the same request**; the form retains the exact
 intent and reason while its outcome is unknown. Do not submit a second issuance
 with a new identity to guess whether the first worked. Archived customers reject
 new actions; current authority is still required to recover an earlier result.
+
+
+Monthly action feedback follows the selected language. Refreshing a draft after
+changed source figures clears the old review warning; successful issuance keeps
+its confirmation visible beside the issued document.

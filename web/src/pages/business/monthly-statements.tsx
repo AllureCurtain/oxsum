@@ -82,28 +82,29 @@ function MonthlyAction({ customer, detail, onDone }: { customer: string; detail?
   const [attempted, setAttempted] = useState(false);
   const [open, setOpen] = useState(false);
   const [saved, setSaved] = useState<string>();
-  const [stale, setStale] = useState(false);
+  const [staleDigest, setStaleDigest] = useState<string>();
+  const stale = staleDigest !== undefined && staleDigest === detail?.reviewDigest;
   const frozen = attempted && intent !== null;
   const finalizing = Boolean(detail);
-  if (detail?.statement.status === "finalized" && !intent) return null;
+  if (detail?.statement.status === "finalized" && !intent) return saved ? <Banner tone="success">{t(saved)}</Banner> : null;
   const submit = async () => {
     if (!intent) return;
     setAttempted(true);
     try {
       const result = await mutation.mutateAsync(intent);
       setIntent(null); setAttempted(false); setOpen(false); setReason("");
-      setSaved(result.statementId ? t(finalizing ? "monthlyStatements.issuedSuccess" : "monthlyStatements.generatedSuccess") : t("monthlyStatements.emptyMonth"));
+      setSaved(result.statementId ? finalizing ? "monthlyStatements.issuedSuccess" : "monthlyStatements.generatedSuccess" : "monthlyStatements.emptyMonth");
       onDone(result.statementId);
     } catch (error) {
       if (error instanceof ApiError && error.status === 400 && error.code === "VALIDATION_ERROR") {
         setAttempted(false);
       } else if (error instanceof ApiError && error.status === 409 && (error.message.startsWith("monthly statement changed since review") || error.message.startsWith("monthly statement is already finalized"))) {
-        setIntent(null); setAttempted(false); setOpen(false); setStale(true);
+        setIntent(null); setAttempted(false); setOpen(false); setStaleDigest(detail?.reviewDigest ?? undefined);
       }
     }
   };
   return <div className="my-4 border-t border-line pt-4">
-    {saved ? <Banner tone="success">{saved}</Banner> : null}
+    {saved ? <Banner tone="success">{t(saved)}</Banner> : null}
     {stale ? <Banner tone="warn">{t("monthlyStatements.stale")}</Banner> : null}
     <form className="flex flex-col gap-3" onSubmit={(event) => {
       event.preventDefault();
@@ -117,7 +118,7 @@ function MonthlyAction({ customer, detail, onDone }: { customer: string; detail?
           setIntent({ action: "generate", period, idempotencyKey: idem(), reason: reason.trim() });
         }
       }
-      setOpen(true); setSaved(undefined); setStale(false); mutation.reset();
+      setOpen(true); setSaved(undefined); setStaleDigest(undefined); mutation.reset();
     }}>
       {!finalizing ? <Field label={t("monthlyStatements.period")} hint={t("monthlyStatements.closedMonth")}><TextInput type="month" value={period} required disabled={frozen} onChange={(event) => { setPeriod(event.target.value); setIntent(null); }} /></Field> : null}
       <Field label={t("biz.reason")}><Textarea value={reason} maxLength={500} required disabled={frozen} onChange={(event) => { setReason(event.target.value); setIntent(null); }} /></Field>

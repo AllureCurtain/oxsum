@@ -633,3 +633,17 @@ Browser TaskSpace 2 is missing; actual UI acceptance requires restoring or
 user-authorizing a replacement space under the installed browser skill. Review,
 prerequisite protected integration and monthly repayment remain. Provider budget
 unchanged at 2/5 attempts; no candidate frozen or external gate claimed.
+
+
+### Monthly issuance browser completion — 2026-11-10 UTC / 2026-11-11 CST
+
+User authorized replacement browser TaskSpace 3 for PR #1012. Actual Finance
+Chinese desktop and English 390-pixel flows passed generate, stale-review
+refusal, refresh, issuance and exact retry after a committed response was lost.
+One anchor/mutation/audit was verified; Support cannot see monthly controls.
+Repaired and rechecked success-message localization, stale-warning removal after
+refresh and visible issuance success. Frontend build and seven contract checks
+pass; unchanged backend evidence retained. [Screenshots and evidence](evidence/monthly-staff-issuance/README.md).
+TaskSpace 3 and its sole page closed. Independent approval, prerequisite
+integration, repayment and candidate/external gates remain; provider budget
+unchanged.
