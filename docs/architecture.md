@@ -795,58 +795,6 @@ opening uses `open_existing`, so a readiness read never bootstraps a ledger or
 runs lazy financial migrations. The public verification page only resolves a
 private entry after current personal customer authentication and record-scope
 filtering; its ordinary pasted-bundle mode remains public.
-## Statement debt source mapping
-
-Uncorrected historical `usage_overage` journals explicitly require source review:
-balanced AR does not authorize collecting a charge that an old binary may have
-duplicated from already-settled usage. The source-linked historical correction
-must establish the remaining receivable before a later quote can use it.
-
-`financial_reconciliation::debt_sources` (#917) captures one personal customer's
-bounded sources and canonical ledger in a read-only repeatable-read snapshot.
-It reuses the financial comparator before deriving exact per-journal debt slices
-from the selected statement's original charges and chargeback sources. A
-chargeback line follows its dispute → original paid order → authorized period →
-original journal, including a chargeback-only or mixed-policy document. Its
-amount must equal that exact verified entry's receivable debit. The sum displayed
-across all active statements must equal every original journal's unpaid amount.
-
-This is a core source proof prerequisite for #777, not a new payment purpose,
-quote, reservation or HTTP endpoint. Missing/mismatched/unsupported source
-history retains the displayed outstanding amount and returns review-required
-without slices. The existing limits apply: 10,000 source rows, 20,000 canonical
-entries and 16 MiB combined captured evidence. Exceeding a limit refuses rather
-than truncates. The stable revision includes the ordered original sources,
-canonical hashes and resulting slices; it excludes the read clock. Subsequent
-payment and reversal work must revalidate under its owner locks and handle new
-immutable allocation types before any checkout is enabled. No ledger bootstrap,
-financial mutation, independent witness claim or provider request occurs here.
-
-## Statement debt intents and original return ownership (#777)
-
-`statement_payments` separates read-only quotes, reservation fences, canonical
-cash evidence, atomic application, returns and financial-void ownership.
-Migration 0122 adds immutable order terms, retained reservation transitions,
-per-journal cash effects and per-original-effect void payable allocations.
-The bounded financial comparison captures those sources beside official ledger
-entries and reconstructs their Cash/AR/payable/suspense, document and schedule
-relationships; missing fulfilled effects and excess original-source returns
-require review. The snapshot's scope remains conservative across the customer.
-
-New intents and returns own subscription, sorted customer plans and the engine
-append lock before order/journal/statement mutation. Destructive debt actions
-check the same plan ownership and refuse live reservations. Successful payment
-commits Cash/Receivables, exact signed document lines, journal/statement counters,
-reservation consumption, fulfillment and outbox together. Unknown/released
-allocation becomes Cash/RefundPayable. Daily policy records collection-only
-effects without calculating earned revenue. Terminal dispute replay validates
-retained effects and audit; it never repairs missing cash implicitly.
-
-Refund/chargeback returns consume each original payment effect once. A journal
-void pins that effect's remaining receivable-funded portion to the canonical
-void entry and hash. Plan-order refunds and disputes exclude those shares.
-All confirmed external cash losses remain recorded, with unallocated excess in
-Adjustments suspense; neither wallet nor CreditLine is used for these returns.
 ### Scoped application entitlement projections (#898)
 
 `integration_applications::{reads,read_types}` authorizes an explicit
