@@ -263,3 +263,107 @@ async fn monthly_actions_reject_machine_dates_and_ambiguous_shapes_and_replay_re
         StatusCode::BAD_REQUEST
     );
 }
+
+#[tokio::test]
+async fn monthly_payments_require_personal_authority_exact_intent_and_replay_paid_result() {
+    let Some(url) = oxsum_testkit::suite_db_url("monthly_statements_http") else {
+        return;
+    };
+    let db = Db::connect(&url, 8).await.unwrap();
+    db.migrate().await.unwrap();
+    let owner = setup::owner(&db).await;
+    let customer = db
+        .register(NewUser {
+            email: format!("{}@example.com", Uuid::new_v4()),
+            password: "monthly repayment HTTP".into(),
+            organization_name: None,
+        })
+        .await
+        .unwrap();
+    let token = db
+        .login(&customer.user.email, "monthly repayment HTTP")
+        .await
+        .unwrap()
+        .into_session()
+        .token;
+    let org = customer.organization.id;
+    let tenants = oxsum_core::Tenants::new(db.pool().clone());
+    let wallet = tenants.get(&customer.organization.tenant_id).await.unwrap();
+    let on = time::macros::date!(2026 - 09 - 15);
+    wallet
+        .set_credit_limit("facility", 1_000_001, on)
+        .await
+        .unwrap();
+    wallet.hold("usage", "", 1_000_001, on).await.unwrap();
+    wallet.settle("usage", "", 1_000_001, on).await.unwrap();
+    let id = Uuid::new_v4();
+    sqlx::query("INSERT INTO oxsum.statements(statement_id,organization_id,period,status,payment_status,total_minor,credit_drawn_minor,payment_terms_days,entry_count) VALUES($1,$2,'2026-09','finalized','pending',1000001,1000001,30,1)").bind(id).bind(org).execute(db.pool()).await.unwrap();
+    let app = oxsum_server::app(db.clone(), Config::new(Signup::Invite, None));
+    let path = format!("/api/v1/business/customers/{org}/monthly-statements/{id}/payments");
+    let request = json!({"amountMinor":1_000_001,"reference":Uuid::new_v4().to_string(),"reason":"verified payment","idempotencyKey":Uuid::new_v4().to_string()});
+    for (cookie, bearer, status) in [
+        (None, None, StatusCode::UNAUTHORIZED),
+        (Some(token.as_str()), None, StatusCode::FORBIDDEN),
+        (Some(owner.as_str()), Some(""), StatusCode::FORBIDDEN),
+        (
+            Some(owner.as_str()),
+            Some("oxs-int-fake"),
+            StatusCode::FORBIDDEN,
+        ),
+        (
+            Some(owner.as_str()),
+            Some(customer.api_key.secret.as_str()),
+            StatusCode::FORBIDDEN,
+        ),
+    ] {
+        assert_eq!(
+            post(&app, &path, cookie, bearer, request.clone()).await.0,
+            status
+        );
+    }
+    for (field, value) in [
+        ("on", json!("2026-01-01")),
+        ("amountMinor", json!(0.1)),
+        ("amountMinor", json!(0)),
+        ("amountMinor", json!(9_007_199_254_740_992_i64)),
+        ("reference", json!(" x ")),
+    ] {
+        let mut invalid = request.clone();
+        invalid[field] = value;
+        assert_eq!(
+            post(&app, &path, Some(&owner), None, invalid).await.0,
+            StatusCode::BAD_REQUEST
+        );
+    }
+    let (status, first) = post(&app, &path, Some(&owner), None, request.clone()).await;
+    assert_eq!(status, StatusCode::OK, "{first}");
+    let (status, again) = post(&app, &path, Some(&owner), None, request.clone()).await;
+    assert_eq!(status, StatusCode::OK, "{again}");
+    assert_eq!(first, again);
+    assert_eq!(first["data"]["statementId"], json!(id));
+    assert_eq!(first["data"]["amountMinor"], 1_000_001);
+    let (status, view) = get(
+        &app,
+        &format!("/api/v1/statements/{id}"),
+        Some(&token),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{view}");
+    assert_eq!(view["data"]["statement"]["paymentStatus"], "paid");
+    assert_eq!(wallet.credit_used().await.unwrap(), 0);
+    let mut changed = request.clone();
+    changed["reason"] = json!("different");
+    assert_eq!(
+        post(&app, &path, Some(&owner), None, changed).await.0,
+        StatusCode::CONFLICT
+    );
+    let foreign = format!(
+        "/api/v1/business/customers/{}/monthly-statements/{id}/payments",
+        Uuid::new_v4()
+    );
+    assert_eq!(
+        post(&app, &foreign, Some(&owner), None, request).await.0,
+        StatusCode::NOT_FOUND
+    );
+}
