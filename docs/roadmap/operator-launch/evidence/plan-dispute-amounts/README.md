@@ -43,3 +43,10 @@ helper now converts through the original order ratio and explicitly requires an
 accepted receipt. Historical generated test data is not a supported webhook
 format. These checks are development evidence, not genuine PSP, merged-main or
 candidate certification. Independent review and protected integration remain.
+
+
+The first PR fast-tier CI run `42892219258` exposed five new database tests
+that required PostgreSQL unconditionally. They now use the same absent-database
+skip convention as the surrounding existing library tests. All five ran against
+real PostgreSQL locally; a green fast tier without a database is not evidence of
+those scenarios. No application logic or database-enabled assertions changed.
