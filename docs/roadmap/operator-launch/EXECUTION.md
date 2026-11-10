@@ -586,3 +586,16 @@ signed protocol fixtures do not certify an SDK, real PSP or final candidate.
 The quota engine correctly consumed 80 minor while the Plans view showed zero;
 #973 tracks that read defect. Statement exception/debt and embedded browser
 journeys plus the unchanged external/candidate gates remain open.
+
+
+### Monthly issuance atomicity continuation — #1009
+
+From main `2ee70601`, `fix/monthly-issuance-atomic` repairs the monthly writer's
+split anchor/document transaction before ordinary staff issuance under #1006.
+Five new regression scenarios fail on the base; repaired monthly core 15/15 and
+HTTP/proof/PDF 13/13 pass. Complete core selection: 860 passed, one unchanged
+bundle-upgrade fixture failure tracked by PR #975. Strict core Clippy, pinned
+format and diff checks pass. [Evidence](evidence/monthly-issuance-atomic.md).
+Independent approval/protected integration and staff issuance/repayment remain.
+No candidate freeze, real PSP activity or new provider attempts. The shared
+provider budget remains 2/5 attempts, CNY0.016896 reserved and CNY0.000052 estimated.

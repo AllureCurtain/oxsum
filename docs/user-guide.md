@@ -874,6 +874,13 @@ subscribed webhook hears `org.suspended` at the moment it happens.
 
 Purpose: read the monthly bill for what the credit line carried.
 
+Issuing a monthly statement commits its original figures, proof anchor and
+notification together. If issuance fails, the draft remains available for retry.
+A retry after success returns the same issued document. A retained legacy proof
+anchor naming different source inputs refuses issuance and needs explicit
+operator recovery; editing the bill does not repair that historical proof.
+
+
 A platform that bills monthly issues one statement per UTC month that had usage:
 `GET /api/v1/statements` lists them newest first, and
 `GET /api/v1/statements/{statementId}` answers one with its `lines` — the month's
