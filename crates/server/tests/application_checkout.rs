@@ -1,5 +1,7 @@
 //! Actual loopback checkout and scoped machine HTTP recovery boundaries.
 #![allow(clippy::unwrap_used, clippy::expect_used)]
+#[path = "../../core/tests/support/plan_payment.rs"]
+mod payment;
 #[path = "../../core/tests/support/integration.rs"]
 mod setup;
 use axum::body::Body;
@@ -47,6 +49,29 @@ async fn credential(db: &Db, app: Uuid, scopes: Vec<IntegrationScope>) -> String
         .unwrap()
         .secret
         .unwrap()
+}
+async fn confirm_checkout(
+    db: &Db,
+    context: &oxsum_core::MerchantSigningContext,
+    order: &oxsum_core::PaymentOrder,
+) {
+    let event = oxsum_core::VerifiedMerchantEvent {
+        event_id: Uuid::new_v4().to_string(),
+        kind: oxsum_core::MerchantEventKind::Succeeded,
+        payment_id: Some(order.order_id),
+        provider_payment_id: order.provider_payment_id.clone(),
+        organization_id: Some(order.organization_id),
+        provider_account_id: Some(context.account_id.clone()),
+        mode: Some(oxsum_core::MerchantMode::Test),
+        amount_minor: Some(order.display_amount_minor),
+        currency: Some(order.display_currency.clone()),
+        refund_id: None,
+    };
+    let receipt = db
+        .receive_merchant_event(context, &event, &[71; 32])
+        .await
+        .unwrap();
+    db.apply_order_event(&receipt).await.unwrap();
 }
 #[tokio::test]
 async fn machine_checkout_recovers_unknown_provider_outcomes_without_owner_runtime() {
@@ -481,6 +506,177 @@ async fn machine_checkout_recovers_unknown_provider_outcomes_without_owner_runti
         assert_eq!(calls[5]["amount"], 101);
         assert_eq!(calls[5]["return_url"], "https://external.example/plan");
     }
+    // Verified original collection and subsequent loss create real named debt.
+    let context = db
+        .merchant_signing_context(merchant.merchant_id, merchant.version_id, &secret)
+        .await
+        .unwrap()
+        .unwrap();
+    let original = db
+        .payment_order(org, Uuid::parse_str(plan_order.as_str().unwrap()).unwrap())
+        .await
+        .unwrap()
+        .unwrap();
+    confirm_checkout(&db, &context, &original).await;
+    payment::fulfill(&db, &original).await;
+    let tenant: String =
+        sqlx::query_scalar("SELECT tenant_id FROM oxsum.organizations WHERE organization_id=$1")
+            .bind(org)
+            .fetch_one(db.pool())
+            .await
+            .unwrap();
+    let wallet = oxsum_core::Wallet::open_existing(db.pool().clone(), &tenant)
+        .await
+        .unwrap();
+    let reference = Uuid::new_v4().to_string();
+    let event = oxsum_core::VerifiedMerchantEvent {
+        event_id: Uuid::new_v4().to_string(),
+        kind: oxsum_core::MerchantEventKind::Dispute,
+        payment_id: Some(original.order_id),
+        provider_payment_id: original.provider_payment_id.clone(),
+        organization_id: Some(org),
+        provider_account_id: Some(context.account_id.clone()),
+        mode: Some(oxsum_core::MerchantMode::Test),
+        amount_minor: Some(original.display_amount_minor),
+        currency: Some(original.display_currency.clone()),
+        refund_id: Some(reference.clone()),
+    };
+    let receipt = db
+        .receive_merchant_event(&context, &event, &[84; 32])
+        .await
+        .unwrap();
+    db.record_order_dispute(&event, &receipt).await.unwrap();
+    let dispute: Uuid = sqlx::query_scalar(
+        "SELECT dispute_id FROM oxsum.disputes WHERE order_id=$1 AND provider_dispute_id=$2",
+    )
+    .bind(original.order_id)
+    .bind(reference)
+    .fetch_one(db.pool())
+    .await
+    .unwrap();
+    db.resolve_order_dispute(
+        &wallet,
+        &owner,
+        dispute,
+        oxsum_core::DisputeResolution::Lost,
+        Some("HTTP statement fixture"),
+        &Uuid::new_v4().to_string(),
+        time::OffsetDateTime::now_utc().date(),
+    )
+    .await
+    .unwrap();
+    let statement = db
+        .plan_statements(org, None, 50)
+        .await
+        .unwrap()
+        .statements
+        .into_iter()
+        .find(|s| {
+            s.total_minor > s.paid_minor
+                && matches!(
+                    s.state,
+                    oxsum_core::PlanStatementState::Issued
+                        | oxsum_core::PlanStatementState::PastDue
+                )
+        })
+        .unwrap()
+        .statement_id;
+    let selection =
+        json!({"purpose":"statementRepayment","rail":"hyperswitch","statementId":statement});
+    let (status, quote) = call(
+        &app,
+        "POST",
+        &format!("{root}/checkout-quote"),
+        selection.clone(),
+        Some(&rotated),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{quote}");
+    assert_eq!(quote["data"]["purchasedMinor"], 0);
+    assert_eq!(quote["data"]["statementPayment"]["amountMinor"], 1_000_001);
+    assert_eq!(quote["data"]["displayAmountMinor"], 101);
+    assert_eq!(
+        call(
+            &app,
+            "POST",
+            &format!("{root}/checkout-quote"),
+            selection.clone(),
+            Some(&narrow)
+        )
+        .await
+        .0,
+        StatusCode::FORBIDDEN
+    );
+    let request = json!({"idempotencyKey":"statement-debt","quote":quote["data"],"returnUrl":"https://external.example/statement","cancelUrl":"https://external.example/cancel"});
+    assert_eq!(
+        call(
+            &app,
+            "POST",
+            &format!("{root}/orders"),
+            request.clone(),
+            Some(&rotated)
+        )
+        .await
+        .0,
+        StatusCode::SERVICE_UNAVAILABLE
+    );
+    let (status, recovered) = call(
+        &app,
+        "POST",
+        &format!("{root}/orders"),
+        request.clone(),
+        Some(&rotated),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{recovered}");
+    assert_eq!(recovered["data"]["order"]["purpose"], "statementRepayment");
+    assert_eq!(recovered["data"]["order"]["amountMinor"], 1_000_001);
+    let debt_order =
+        Uuid::parse_str(recovered["data"]["order"]["orderId"].as_str().unwrap()).unwrap();
+    let periods =
+        serde_json::to_value(db.plan_periods(plan.customer_plan_id).await.unwrap()).unwrap();
+    let amount = wallet.available().await.unwrap();
+    let paid = db.payment_order(org, debt_order).await.unwrap().unwrap();
+    confirm_checkout(&db, &context, &paid).await;
+    payment::fulfill(&db, &paid).await;
+    assert_eq!(
+        call(
+            &app,
+            "POST",
+            &format!("{root}/orders"),
+            request,
+            Some(&rotated)
+        )
+        .await
+        .1["data"]["order"]["orderId"],
+        debt_order.to_string()
+    );
+    assert_eq!(wallet.available().await.unwrap(), amount);
+    assert_eq!(
+        serde_json::to_value(db.plan_periods(plan.customer_plan_id).await.unwrap()).unwrap(),
+        periods
+    );
+    let detail = db.plan_statement(org, statement).await.unwrap().unwrap();
+    assert_eq!(detail.statement.paid_minor, detail.statement.total_minor);
+    assert_eq!(
+        call(
+            &app,
+            "POST",
+            &format!("{root}/checkout-quote"),
+            selection,
+            Some(&rotated)
+        )
+        .await
+        .0,
+        StatusCode::CONFLICT
+    );
+    {
+        let calls = attempts.lock().unwrap();
+        assert_eq!(calls.len(), 8);
+        assert_eq!(calls[6]["payment_id"], calls[7]["payment_id"]);
+        assert_eq!(calls[7]["amount"], 101);
+        assert_eq!(calls[7]["return_url"], "https://external.example/statement");
+    }
     let lifecycle = credential(&db, appid, vec![IntegrationScope::CustomersLifecycleWrite]).await;
     let lifecycle = db.authenticate_service(&lifecycle).await.unwrap().unwrap();
     db.archive_application_customer(
@@ -517,6 +713,6 @@ async fn machine_checkout_recovers_unknown_provider_outcomes_without_owner_runti
         .0,
         StatusCode::OK
     );
-    assert_eq!(attempts.lock().unwrap().len(), 6);
+    assert_eq!(attempts.lock().unwrap().len(), 8);
     task.abort();
 }

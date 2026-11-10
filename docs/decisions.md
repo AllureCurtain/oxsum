@@ -3754,3 +3754,12 @@ Bound application spans, artifact/entry counts, serialized capture/final bytes
 and source transfer in PostgreSQL snapshots; reject overflow rather than claim
 completeness after truncation. Existing portal publication limits and proof scope
 remain unchanged. Publication is an evidence marker, never a financial grant.
+## 2026-11-10 Reuse source-verified debt checkout for applications (#935)
+
+Extend the existing explicit checkout grant with a distinct named statement
+selector and exact credit-minor amount; reuse immutable `StatementPaymentTerms`
+and existing reservation/cash/return logic. Quotes omit pending foreign/human
+order identities. Creation validates current application authority inside the
+order transaction and verifies the source fingerprint again under debt ownership
+locks. Optional absent fields remain unencoded for stable historical request
+replay. No new schema, entitlement mutation or wallet funding is required.

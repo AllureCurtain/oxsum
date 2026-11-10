@@ -813,3 +813,12 @@ blocks responses and future requests but cannot retract already accepted work.
 Supplier costs are excluded. Private or oversized existing captures refuse;
 original signed bytes and ledger markers are never rewritten. No share token or
 financial operation is granted.
+### Application payment of named debt (#935)
+
+An explicitly granted application can quote and pay an existing statement belonging
+to its own customer. It may select a partial exact debt amount or all unreserved
+verified debt, without assigning prices or altering original source allocations.
+This is the existing statement repayment purpose: it neither adds wallet credits
+nor activates/renews a plan. Paid/refund/lost outcomes keep the same journal and
+statement evidence, including mixed historical/daily policy sources. Checkout
+recovery and archive boundaries are identical to the application order lifecycle.

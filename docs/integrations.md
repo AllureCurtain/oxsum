@@ -367,8 +367,8 @@ Order status is server truth. `provider_pending` is not paid, and returning to
 your URL proves nothing; wait for verified paid/fulfilled status. Keep checkout
 client secrets scoped to the corresponding user. Ordinary runtime needs only
 the application credential and customer-scoped gateway keys. This slice supports
-wallet/bundle orders. Assigned plan checkout is described below; named debt checkout, signed lifecycle notifications and the
-complete independent application walkthrough remain N21 follow-ups.
+wallet/bundle orders. Assigned plan and named debt checkout are described below; signed lifecycle
+notifications and the complete independent application walkthrough remain N21 follow-ups.
 
 ### Pay an assigned application customer's plan (#931)
 
@@ -393,3 +393,28 @@ will not redact an existing signature or silently shorten an export. Retain your
 own verification origin/key/checkpoint: publication by the operator is not an
 independent trust source. Account archive blocks further publication requests,
 while existing historical evidence can still be read with a live read grant.
+### Pay a named application customer statement (#935)
+
+Use the same explicit `checkoutWrite` grant and persist your operation identity:
+
+```json
+{
+  "purpose": "statementRepayment",
+  "rail": "hyperswitch",
+  "statementId": "customer-statement-uuid",
+  "statementAmountMinor": 1000001
+}
+```
+
+This amount is exact credit-minor debt, not provider fiat. Omit it to select all
+verified unreserved debt. Display the returned merchant mode and fiat amount,
+then submit the complete unmodified quote. At USD 1 per credit, the example
+pays 1,000,001 minor credits while collecting 101 USD cents; rounding does not
+increase debt settled. There is no purchased balance or plan activation.
+
+An unresolved order reserves its original debt. Reuse the same key and fetch
+your application's order history after a lost response. Another pending order
+may make the statement unavailable, but this interface never discloses a portal
+or other application's order ID. A changed quote requires explicit fresh review;
+do not silently increase or redistribute what the customer authorized. Signed
+lifecycle notifications and the complete separate-store application remain N21.

@@ -6129,7 +6129,7 @@ paths:
     post:
       operationId: quoteApplicationCheckout
       summary: quoteApplicationCheckout
-      description: Application-only checkoutWrite. Read-only exact wallet top-up, published-bundle or assigned plan-period quote under current active customer authority. No provider call or payment reservation. Plans pin their sold fee and period and return zero wallet credit; existing live period intents must be recovered through authorized order history. Named statement debt is not supported by this operation.
+      description: Application-only checkoutWrite. Read-only exact wallet top-up, published-bundle or assigned plan-period quote under current active customer authority. No provider call or payment reservation. Plans pin their sold fee and period and return zero wallet credit; existing live period intents must be recovered through authorized order history. Named statementRepayment selects only verified unreserved customer debt; statementAmountMinor is exact credit-minor debt, omitted for the full available amount. It creates neither wallet funds nor entitlement and never exposes another application or portal order identity.
       security: [{ integrationCredential: [] }]
       parameters:
         - { in: path, name: organizationId, required: true, schema: { type: string, format: uuid } }
@@ -16815,11 +16815,13 @@ components:
       additionalProperties: false
       required: [purpose, rail]
       properties:
-        purpose: { type: string, enum: [walletTopup, bundle, planPeriod] }
+        purpose: { type: string, enum: [walletTopup, bundle, planPeriod, statementRepayment] }
         rail: { $ref: "#/components/schemas/MerchantRail" }
         displayAmountMinor: { type: [integer, "null"], minimum: 1, maximum: 9007199254740991, description: Required only for wallet top-up; bundle price is server-selected }
         bundleVersionId: { type: [string, "null"], format: uuid, description: Required only for a published bundle }
         customerPlanId: { type: [string, "null"], format: uuid, description: Required only for an assigned plan period; no caller amount or bundle version. Existing live period orders must be resumed through application order history. }
+        statementId: { type: [string, "null"], format: uuid, description: Required only for statementRepayment; exact owned issued statement }
+        statementAmountMinor: { type: [integer, "null"], minimum: 1, maximum: 9007199254740991, description: Optional exact credit-minor debt for statementRepayment; omission selects all verified unreserved debt. Never a fiat amount or wallet credit. }
     ApplicationCheckoutTerms:
       type: object
       additionalProperties: false
@@ -16834,9 +16836,10 @@ components:
         collectionRevision: { type: integer }
         displayCurrency: { type: string }
         displayAmountMinor: { type: integer }
-        purchasedMinor: { type: integer, description: "Wallet or bundle purchased credits; zero for planPeriod, whose exact fee is in planPayment" }
+        purchasedMinor: { type: integer, description: "Wallet or bundle purchased credits; zero for planPeriod and statementRepayment, whose exact fee or debt is in their payment terms" }
         promoMinor: { type: integer }
         planPayment: { $ref: "#/components/schemas/PlanPaymentTerms", description: Present only for planPeriod; exact sold fee and period boundaries, never a wallet grant }
+        statementPayment: { $ref: "#/components/schemas/StatementPaymentTerms", description: Present only for statementRepayment; immutable original receivable allocations, never wallet funding or plan renewal }
     ApplicationCheckoutRequest:
       type: object
       additionalProperties: false

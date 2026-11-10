@@ -110,6 +110,11 @@ pub(crate) async fn quote_in(
     selection: &ApplicationCheckoutSelection,
 ) -> Result<ApplicationCheckoutTerms, WalletError> {
     let app = authorize_in(tx, service, org, true).await?;
+    if selection.purpose != PaymentOrderPurpose::StatementRepayment
+        && (selection.statement_id.is_some() || selection.statement_amount_minor.is_some())
+    {
+        return Err(invalid("statement selection requires statementRepayment"));
+    }
     let terms = crate::collection_terms::terms_in(tx, service.business_id).await?;
     if !terms.ready {
         return Err(WalletError::Conflict(
@@ -132,6 +137,7 @@ pub(crate) async fn quote_in(
             .version_id
             .ok_or_else(|| invalid("merchant version missing"))?,
     };
+    let mut statement_payment = None;
     let (display, purchased, promo, plan_payment) = match selection.purpose {
         PaymentOrderPurpose::WalletTopup
             if selection.bundle_version_id.is_none() && selection.customer_plan_id.is_none() =>
@@ -191,9 +197,40 @@ pub(crate) async fn quote_in(
             }
             (quote.terms.display_amount_minor, 0, 0, Some(quote.terms))
         }
+        PaymentOrderPurpose::StatementRepayment
+            if selection.display_amount_minor.is_none()
+                && selection.bundle_version_id.is_none()
+                && selection.customer_plan_id.is_none() =>
+        {
+            let statement = selection
+                .statement_id
+                .ok_or_else(|| invalid("named customer statement required"))?;
+            let quote = crate::statement_payments::quote_in(
+                tx,
+                org,
+                statement,
+                selection.statement_amount_minor,
+            )
+            .await?;
+            // Pending human/foreign application order IDs are never part of this quote.
+            let debt = quote.terms.ok_or_else(|| WalletError::Conflict(
+                "statement has no payable verified unreserved debt; check authorized history or contact the operator".into(),
+            ))?;
+            if debt.business_id != service.business_id
+                || debt.collection_revision != terms.revision
+                || debt.display_currency != currency.code
+            {
+                return Err(WalletError::Conflict(
+                    "statement collection terms changed".into(),
+                ));
+            }
+            let amount = debt.display_amount_minor;
+            statement_payment = Some(debt);
+            (amount, 0, 0, None)
+        }
         _ => {
             return Err(invalid(
-                "select exactly one wallet amount, published bundle or assigned plan period",
+                "select exactly one wallet amount, bundle, assigned plan or named statement debt",
             ));
         }
     };
@@ -210,6 +247,7 @@ pub(crate) async fn quote_in(
         purchased_minor: purchased,
         promo_minor: promo,
         plan_payment,
+        statement_payment,
     })
 }
 
@@ -263,14 +301,19 @@ pub(crate) async fn record_in(
     order: &PaymentOrder,
     request: &ApplicationCheckoutRequest,
 ) -> Result<(), WalletError> {
-    let amount = request
-        .quote
-        .plan_payment
-        .as_ref()
-        .map_or(request.quote.purchased_minor, |terms| terms.fee_minor);
+    let amount = if let Some(terms) = &request.quote.statement_payment {
+        terms.amount_minor
+    } else {
+        request
+            .quote
+            .plan_payment
+            .as_ref()
+            .map_or(request.quote.purchased_minor, |terms| terms.fee_minor)
+    };
     if order.amount_minor != amount
         || order.promo_minor != request.quote.promo_minor
         || order.plan_payment != request.quote.plan_payment
+        || order.statement_payment != request.quote.statement_payment
     {
         return Err(WalletError::Conflict(
             "order grant differs from the accepted application quote".into(),
@@ -331,21 +374,26 @@ impl Db {
         tx.commit().await?;
         let q = &request.quote;
         let new = NewPaymentOrder {
+            expected_statement_quote: q
+                .statement_payment
+                .as_ref()
+                .map(crate::StatementPaymentTerms::fingerprint)
+                .transpose()?,
+            statement_amount_minor: q.statement_payment.as_ref().map(|t| t.amount_minor),
             expected_plan_quote: q
                 .plan_payment
                 .as_ref()
                 .map(crate::PlanPaymentTerms::fingerprint)
                 .transpose()?,
             expected_collection_revision: Some(q.collection_revision),
-            expected_statement_quote: None,
-            statement_amount_minor: None,
             purpose: q.selection.purpose,
             display_amount_minor: q.display_amount_minor,
             display_currency: q.display_currency.clone(),
             purpose_ref: q
                 .selection
                 .customer_plan_id
-                .or(q.selection.bundle_version_id),
+                .or(q.selection.bundle_version_id)
+                .or(q.selection.statement_id),
             idempotency_key: operation_key(app, &request.idempotency_key),
             promo_minor: 0,
         };

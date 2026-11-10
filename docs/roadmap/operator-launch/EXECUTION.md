@@ -428,3 +428,9 @@ focused core/HTTP checks passed; shared evidence regression and full workspace/
 strict Clippy validation are in progress. Browser, review, protected integration
 and candidate acceptance remain; named statement checkout, signed notifications
 and the complete external app remain N21 follow-ups.
+- #935 scoped application named-statement checkout joins prerequisites #929 and
+  #933. Exact source quotes, application-owned order provenance and original
+  statement payment/return logic are implemented; focused PostgreSQL/HTTP and
+  mixed-source cases passed. Joined-stack full regression passed 2,205 tests;
+  13 final core cases, strict Clippy, contract/codegen/build and formatting passed.
+  Review, protected integration, browser and candidate J18 remain.

@@ -915,3 +915,17 @@ cap at 256 rows. Variable usage/payment/fulfillment/refund/adjustment data is
 measured in PostgreSQL within the same snapshot before transfer. Limits refuse
 without truncating the declared evidence scope. The ordinary portal retains its
 existing larger export semantics; it does not inherit these application limits.
+### Application statement checkout joins existing debt ownership (#935)
+
+Application selectors and exact quote receipts carry optional statement terms;
+absent fields remain absent when serializing retained wallet/bundle/plan requests.
+The application guard runs inside the ordinary order transaction under business
+ownership; named statement creation then uses the established subscription,
+ordered plan-owner and ledger append locks and rechecks the exact source
+fingerprint. Reservation, payment binding, order and application association
+commit atomically. Quote reads use one repeatable-read snapshot and do not reserve.
+
+Fulfillment, release, refund, chargeback and source-void fencing use the existing
+statement payment implementation. No parallel application accounting or synthetic
+human principal is introduced. The provider driver retains original destinations
+and provider identity through unknown outcomes and credential rotation.
