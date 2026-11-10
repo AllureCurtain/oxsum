@@ -409,6 +409,12 @@ An organization on a credit limit settles monthly (issue #124, the second half o
 | Members | Members, roles, join dates; invite, remove, change role and transfer ownership | List readable by members; management by owner/admin | Invitation creation and explicit recipient consent replace direct addition. Existing account/key/ledger identities stay unchanged; link delivery is optional |
 | Transaction log | The organization's newest ledger entries with their content hashes | All members | Shipped, but not part of the original spec; the bills page is now the settled, exportable view of the same ledger |
 
+Request-log HTTP status records the gateway response selected for a turn, separate
+from its accounting outcome. Failures before a response carry the returned error
+status; an SSE response already started retains 200 even if the body later fails.
+Cancellation before a response status is selected leaves the field absent.
+Historical operational records and immutable ledger evidence are not rewritten.
+
 ### Platform admin
 
 The platform admin surface is the `/api/v1/admin` REST API under the operator token (`OXSUM_ADMIN_TOKEN`), and the React admin console at `/app/admin` drives it directly from the browser — the token is typed in once, kept in `localStorage` like the chat page's key and sent as `Authorization: Bearer` (docs/decisions.md). The console's sections are shipped, and so are the adjustments and signup bonus the first needs.

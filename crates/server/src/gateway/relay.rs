@@ -22,7 +22,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use axum::body::Bytes;
-use axum::http::{HeaderMap, HeaderValue};
+use axum::http::{HeaderMap, HeaderValue, StatusCode};
 use futures_core::Stream;
 use http_body::Frame;
 use oxsum_core::{
@@ -109,6 +109,8 @@ struct Plan {
     /// `Some` once upstream answered its first chunk, `None` on a whole-body
     /// read or a refusal that never reached upstream (issue #505).
     first_byte: Option<Instant>,
+    /// The selected gateway response status; absent if the handler was cancelled first.
+    response_status: Option<StatusCode>,
     /// The channel that served the request, and the price version it was priced by. Both go into the
     /// settlement, so a bill says which version priced it and not only at what price. A failover
     /// swaps them for the route that answered (`Turn::reroute`, issue #168).
@@ -371,6 +373,7 @@ impl Turn {
                 metrics,
                 started: Instant::now(),
                 first_byte: None,
+                response_status: None,
                 channel: serving.channel.clone(),
                 version: serving.version,
                 model: model.to_owned(),
@@ -401,6 +404,13 @@ impl Turn {
                 winning_attempt: None,
             }),
             heartbeat: None,
+        }
+    }
+
+    /// Retain the gateway status before settlement or handing off an SSE body.
+    pub fn note_response_status(&mut self, status: StatusCode) {
+        if let Some(plan) = self.plan.as_mut() {
+            plan.response_status = Some(status);
         }
     }
 
@@ -1354,7 +1364,9 @@ impl Plan {
                 } else {
                     Some(kind.as_str().to_owned())
                 },
-                http_status: Some(200),
+                http_status: self
+                    .response_status
+                    .map(|status| i64::from(status.as_u16())),
                 created_at: time::OffsetDateTime::now_utc(),
             };
             if let Err(error) = self.db.record_request_log(&log_row).await {

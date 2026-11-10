@@ -387,7 +387,11 @@ The dashboard is the React app under `web/` (issue #234): overview, top-up, orde
   page. A refused request is in the log too — `refused`, charge 0, with the
   reason — so the search is the place "which requests were turned away" gets an
   answer without reading bills one by one. Results page fifty at a time on the
-  **Older** button.
+  **Older** button. The request-log API records the gateway HTTP status: a
+  failure before streaming carries its error status; an already-started stream
+  keeps HTTP 200 even if its body later fails. Read the terminal status and
+  failure reason alongside it. A cancelled handler with no selected response
+  has no HTTP status. Historical records are not rewritten.
 - **Usage**: the organization's settled usage aggregated by day
   (`/app/usage`): a bar chart of what each of the last 30 days charged in
   credits — the day is the settlement's ledger booking date — a token-mix bar
