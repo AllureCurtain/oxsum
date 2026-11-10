@@ -1,9 +1,11 @@
 //! Shared helpers for integration tests: per-suite PostgreSQL isolation.
 //!
-//! Every integration-test binary (one per `tests/*.rs` file) gets its own
-//! scratch database, created on first use and dropped when the suite's process
-//! exits. Suites never share mutable database state, and repeated runs cannot
-//! accumulate residue in the shared `oxsum` database (issue #226).
+//! Every suite (a `tests/*.rs` submodule of the per-crate aggregate binary —
+//! issue #998) gets its own scratch database, created on first use and dropped
+//! when the suite's process exits. Suites never share mutable database state,
+//! and repeated runs cannot accumulate residue in the shared `oxsum` database
+//! (issue #226). The cache is per-slug so a single aggregate binary can host
+//! ~100 suites, each with its own scratch database.
 //!
 //! Usage in a test file:
 //!
@@ -23,7 +25,6 @@
 //! drops `oxsum_test_*`/`de_*` older than 24 h before `nextest` starts. The
 //! drop is the next run's job, never a test process's own (issue #271).
 
-use std::sync::OnceLock;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 /// How old an `oxsum_test_*` database must be before a later sweep drops it.
@@ -45,7 +46,13 @@ struct SuiteDb {
     name: String,
 }
 
-static SUITE_DB: OnceLock<Option<SuiteDb>> = OnceLock::new();
+/// Per-suite scratch databases keyed by slug. A single test process may host
+/// several suites at once — the aggregate `tests/server.rs`/`tests/core.rs`
+/// binaries each hold ~100 submodules that ask for their own slug (issue
+/// #998) — so the cache is per-slug rather than a single `OnceLock`, and the
+/// teardown drops every database the process created.
+static SUITE_DBS: std::sync::Mutex<Option<std::collections::HashMap<String, SuiteDb>>> =
+    std::sync::Mutex::new(None);
 
 /// Returns the `DATABASE_URL` for this suite's isolated scratch database,
 /// creating the database on first call. Returns `None` when `DATABASE_URL`
@@ -56,40 +63,58 @@ static SUITE_DB: OnceLock<Option<SuiteDb>> = OnceLock::new();
 /// database) and dropped when the suite's process exits. The drop is
 /// best-effort: a crashed run may leave a timestamped `oxsum_test_*`
 /// database behind, which is identifiable by name.
+#[allow(clippy::expect_used)]
 pub fn suite_db_url(slug: &str) -> Option<String> {
-    SUITE_DB
-        .get_or_init(|| create_suite_db(slug))
-        .as_ref()
-        .map(|db| db.url.clone())
+    // Per-slug cache: each suite in the process gets its own scratch database;
+    // `create_suite_db` returns `None` (skip) when DATABASE_URL is unset.
+    let mut guard = SUITE_DBS.lock().expect("suite-db map is not poisoned");
+    let map = guard.get_or_insert_with(std::collections::HashMap::new);
+    if let Some(db) = map.get(slug) {
+        return Some(db.url.clone());
+    }
+    let db = create_suite_db(slug)?;
+    let url = db.url.clone();
+    map.insert(slug.to_owned(), db);
+    Some(url)
 }
 
 /// Drops the suite's scratch database when the test binary exits. Best-effort:
 /// failures are reported to stderr but never fail the suite.
 #[dtor::dtor(unsafe)]
+#[allow(clippy::expect_used)]
 fn teardown_suite_db() {
-    let Some(db) = SUITE_DB.get().and_then(|opt| opt.as_ref()) else {
-        return;
+    let dbs: Vec<SuiteDb> = {
+        let mut guard = SUITE_DBS.lock().expect("suite-db map is not poisoned");
+        guard
+            .take()
+            .map(|m| m.into_values().collect())
+            .unwrap_or_default()
     };
-    // The test runtime is gone by now; run the drop on a fresh thread with
+    if dbs.is_empty() {
+        return;
+    }
+    // The test runtime is gone by now; run each drop on a fresh thread with
     // its own current-thread runtime.
-    let admin_url = db.admin_url.clone();
-    let name = db.name.clone();
-    let label = name.clone();
-    let dropped = std::thread::spawn(move || {
-        let rt = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .ok()?;
-        rt.block_on(drop_database(&admin_url, &name))
-    })
-    .join()
-    .ok()
-    .flatten()
-    .unwrap_or(false);
-    if dropped {
-        eprintln!("oxsum-testkit: dropped scratch database {label}");
-    } else {
-        eprintln!("oxsum-testkit: WARNING: could not drop scratch database {label}");
+    for db in dbs {
+        let admin_url = db.admin_url.clone();
+        let name = db.name.clone();
+        let label = name.clone();
+        let dropped = std::thread::spawn(move || {
+            let rt = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .ok()?;
+            rt.block_on(drop_database(&admin_url, &name))
+        })
+        .join()
+        .ok()
+        .flatten()
+        .unwrap_or(false);
+        if dropped {
+            eprintln!("oxsum-testkit: dropped scratch database {label}");
+        } else {
+            eprintln!("oxsum-testkit: WARNING: could not drop scratch database {label}");
+        }
     }
 }
 

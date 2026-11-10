@@ -1,0 +1,787 @@
+//! HTTP tests for the programmatic read surface (roadmap P5-3, issue #146):
+//! `GET /api/v1/usage`, `GET /api/v1/billing-records`, `POST /api/v1/estimate-price`
+//! and `GET /api/v1/pricing`.
+//!
+//! The tests seed organizations, prices and settled turns the way the gateway writes
+//! them, then read the four endpoints through the real router. Needs DATABASE_URL and
+//! skips without it, like the other server suites.
+
+use axum::Router;
+use axum::body::Body;
+use axum::http::{Request, StatusCode};
+use http_body_util::BodyExt;
+use oxsum_core::{
+    ActingKey, BillLine, Db, PriceBook, SecretKey, Settlement, SettlementKind, Tenants,
+    UsageRecord, UsageRow, entry_id_for, hold_description, settlement_key_for,
+};
+use oxsum_server::{Config, Signup};
+use serde_json::{Value, json};
+use tower::ServiceExt;
+use uuid::Uuid;
+
+/// An app over a real database with oxsum's tables migrated.
+async fn online_app(url: &str) -> (Router, Db) {
+    let pool = sqlx::postgres::PgPoolOptions::new()
+        .max_connections(5)
+        .connect(url)
+        .await
+        .expect("connects to PostgreSQL");
+    let db = Db::from_pool(pool.clone());
+    db.migrate().await.expect("migrates");
+    oxsum_testkit::set_registration_fixture(db.pool(), true).await;
+    (
+        crate::support::app(db.clone(), Config::new(Signup::Open, None)),
+        db,
+    )
+}
+
+/// The DATABASE_URL the tests need, or None to skip.
+fn url() -> Option<String> {
+    let _ = dotenvy::dotenv();
+    oxsum_testkit::suite_db_url("apis")
+}
+
+macro_rules! app_or_skip {
+    () => {
+        match url() {
+            Some(u) => online_app(&u).await,
+            None => {
+                eprintln!("DATABASE_URL not set, skipping");
+                return;
+            }
+        }
+    };
+}
+
+async fn call(
+    app: &Router,
+    method: &str,
+    path: &str,
+    body: Option<Value>,
+    key: Option<&str>,
+) -> (StatusCode, Value) {
+    let mut req = Request::builder().method(method).uri(path);
+    if body.is_some() {
+        req = req.header("content-type", "application/json");
+    }
+    if let Some(key) = key {
+        req = crate::support::credential(req, key);
+    }
+    let req = req
+        .body(body.map_or_else(Body::empty, |b| Body::from(b.to_string())))
+        .unwrap();
+    let res = app.clone().oneshot(req).await.unwrap();
+    let status = res.status();
+    let bytes = res.into_body().collect().await.unwrap().to_bytes();
+    (
+        status,
+        serde_json::from_slice(&bytes).unwrap_or(Value::Null),
+    )
+}
+
+/// A fresh organization: its tenant id for seeding and its first key's secret
+/// for calling the API.
+async fn register(app: &Router, name: &str) -> (String, String, Uuid, String) {
+    let email = format!(
+        "{name}_{}@example.com",
+        &Uuid::new_v4().simple().to_string()[..8]
+    );
+    let (status, body) = call(
+        app,
+        "POST",
+        "/api/v1/auth/register",
+        Some(json!({"email": email, "password": "correct horse battery"})),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "registration failed: {body}");
+    (
+        body["data"]["organization"]["tenantId"]
+            .as_str()
+            .unwrap()
+            .to_owned(),
+        body["data"]["apiKey"]["secret"]
+            .as_str()
+            .unwrap()
+            .to_owned(),
+        body["data"]["apiKey"]["id"]
+            .as_str()
+            .unwrap()
+            .parse()
+            .unwrap(),
+        crate::support::login(app, &email, "correct horse battery").await,
+    )
+}
+
+/// Tops the organization up under a random key, the way `POST /api/v1/topups` does.
+async fn top_up(app: &Router, key: &str, amount_minor: i64) {
+    let (status, body) = call(
+        app,
+        "POST",
+        "/__test/funding",
+        Some(json!({"idempotencyKey": Uuid::new_v4().to_string(), "amountMinor": amount_minor})),
+        Some(key),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "top-up failed: {body}");
+}
+
+fn today() -> time::Date {
+    time::OffsetDateTime::now_utc().date()
+}
+
+/// A model priced through a test channel, the way an operator's rows land.
+async fn price_model(db: &Db, channel: &str, model: &str, price: Value) {
+    // The same test key the core channel suite seals with: `check_sealed_keys` scans
+    // every channel in the shared database, so a different key would break that test.
+    let secret = SecretKey::from_bytes([7; 32]);
+    db.set_channel(
+        channel,
+        "http://unused",
+        "upstream-secret",
+        "openai",
+        &secret,
+    )
+    .await
+    .expect("the channel is written");
+    let book = PriceBook::from_json(channel, &json!({ model: price }).to_string())
+        .expect("the test's price parses");
+    for (model, price) in book.models() {
+        db.append_price(channel, model, price.clone(), 100)
+            .await
+            .expect("the price is written");
+    }
+}
+
+/// One settled turn written the way the gateway writes it: hold, settlement and
+/// the usage row `record_usage` rolls into the daily table.
+async fn settle_request(
+    db: &Db,
+    tenants: &Tenants,
+    tenant_id: &str,
+    key_id: Option<Uuid>,
+    request: &str,
+    model: &str,
+    charged: i64,
+) {
+    let wallet = tenants.get(tenant_id).await.expect("the wallet opens");
+    let hold_key = format!("req-{request}:hold");
+    let freeze = charged.max(1) * 2;
+    match key_id {
+        Some(key_id) => {
+            wallet
+                .hold_for_key(
+                    &ActingKey {
+                        key_id,
+                        spend_limit_minor: None,
+                        requests_per_minute: None,
+                        tokens_per_minute: None,
+                        tokens_per_minute_scopes: None,
+                        required_policies: None,
+                    },
+                    Some(model),
+                    &hold_key,
+                    &hold_description(request, model, freeze).expect("the hold serializes"),
+                    freeze,
+                    today(),
+                    None,
+                )
+                .await
+                .expect("the hold is taken");
+        }
+        None => {
+            wallet
+                .hold(&hold_key, "seed hold", freeze, today())
+                .await
+                .expect("the hold is taken");
+        }
+    }
+    let usage = UsageRecord::tokens(1_000, 500).expect("the seed counts");
+    let lines = [
+        BillLine {
+            item: "input".to_owned(),
+            units: usage.input_tokens,
+            price_per_m: 1_000,
+        },
+        BillLine {
+            item: "output".to_owned(),
+            units: usage.output_tokens,
+            price_per_m: 2_000,
+        },
+    ];
+    let record = Settlement {
+        request,
+        channel: "mock",
+        model,
+        requested_model: model,
+        served_model: model,
+        upstream_model: None,
+        price_version: 1,
+        kind: SettlementKind::Usage,
+        usage: &usage,
+        lines: &lines,
+        matched_rule: None,
+        discount_percent: None,
+        charged,
+        freeze,
+        upstream_attempts: 1,
+        mandate: None,
+        subscription: None,
+        cache: None,
+        guardrail: Vec::new(),
+        reason: None,
+        experiment: None,
+        sale: None,
+    };
+    wallet
+        .settle(
+            &hold_key,
+            &record.description().expect("the record serializes"),
+            charged,
+            today(),
+        )
+        .await
+        .expect("the settlement lands");
+    db.record_usage(&UsageRow {
+        // The usage table deduplicates on request_id globally, so a fixed id a
+        // previous run wrote would silently skip this insert.
+        request_id: format!("{request}-{}", Uuid::new_v4().simple()),
+        tenant_id: tenant_id.to_owned(),
+        key_id,
+        mandate_id: None,
+        model: model.to_owned(),
+        channel: "mock".to_owned(),
+        price_version: 1,
+        kind: SettlementKind::Usage,
+        entry_id: *entry_id_for(&settlement_key_for(&hold_key)).as_uuid(),
+        status: "settled".to_owned(),
+        failure_reason: None,
+        usage: usage.clone(),
+        counts: oxsum_core::CountsProvenance::Provider {
+            input: usage.input_tokens,
+            output: usage.output_tokens,
+        },
+        charged_minor: charged,
+        freeze_minor: freeze,
+        upstream_cost_minor: None,
+        cost_basis: oxsum_core::CostBasis::Missing,
+        upstream_attempts: 1,
+    })
+    .await
+    .expect("the usage row is written");
+}
+
+// ── /api/v1/usage ────────────────────────────────────────────────────────────
+
+/// The rollup the dashboard reads, answered as data — and nothing outside the
+/// credential's organization.
+#[tokio::test]
+async fn the_usage_api_answers_the_rollup() {
+    let (app, db) = app_or_skip!();
+    let tenants = Tenants::new(db.pool().clone());
+    let (tenant, key, key_id, _session) = register(&app, "usage-api").await;
+    let (other_tenant, other_key, other_key_id, _session) = register(&app, "usage-api-other").await;
+    top_up(&app, &key, 50_000_000).await;
+    top_up(&app, &other_key, 50_000_000).await;
+
+    settle_request(&db, &tenants, &tenant, Some(key_id), "use-a", "m1", 3_000).await;
+    settle_request(&db, &tenants, &tenant, Some(key_id), "use-b", "m1", 4_000).await;
+    settle_request(
+        &db,
+        &tenants,
+        &other_tenant,
+        Some(other_key_id),
+        "use-x",
+        "m1",
+        9_000,
+    )
+    .await;
+
+    let (status, body) = call(&app, "GET", "/api/v1/usage", None, Some(&key)).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let days = body["data"]["days"].as_array().expect("days is an array");
+    let mine: Vec<&Value> = days
+        .iter()
+        .filter(|row| row["channel"] == "mock" && row["model"] == "m1")
+        .collect();
+    // Both turns were attributed to the same key, channel and model: one bucket, two turns.
+    assert_eq!(mine.len(), 1, "{days:?}");
+    assert_eq!(mine[0]["turns"], 2);
+    assert_eq!(mine[0]["chargedMinor"], 7_000);
+    assert_eq!(mine[0]["inputTokens"], 2_000);
+    assert_eq!(mine[0]["keyId"].as_str().unwrap(), key_id.to_string());
+}
+
+/// The window's bounds: malformed dates, an inverted span and a span past the
+/// limit all answer VALIDATION, and no credential answers 401.
+#[tokio::test]
+async fn the_usage_window_is_validated() {
+    let (app, _db) = app_or_skip!();
+    let (_tenant, key, _key_id, _session) = register(&app, "usage-bounds").await;
+
+    for path in [
+        "/api/v1/usage?from=not-a-date",
+        "/api/v1/usage?to=2020-13-40",
+        "/api/v1/usage?from=2030-01-10&to=2030-01-01",
+        "/api/v1/usage?from=2020-01-01&to=2020-06-01",
+    ] {
+        let (status, body) = call(&app, "GET", path, None, Some(&key)).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{path}: {body}");
+        assert_eq!(body["error"]["code"], "VALIDATION_ERROR", "{path}: {body}");
+    }
+    let (status, _) = call(&app, "GET", "/api/v1/usage", None, None).await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+}
+
+// ── /api/v1/billing-records ──────────────────────────────────────────────────
+
+/// Settled turns newest-first under the `before` cursor, scoped to the
+/// `GET /api/v1/budget` answers every scope's limit/consumed/pct (issue #232):
+/// the key's windowed `spendLimitMinor`, the member seat (absent for a key's
+/// own call), the organization's credit line — and `committedMinor` is the
+/// figure the hold check itself reads, settled spend plus outstanding holds.
+#[tokio::test]
+async fn budget_snapshot_scopes() {
+    let (app, db) = app_or_skip!();
+    let tenants = Tenants::new(db.pool().clone());
+    let (tenant, key, key_id, session) = register(&app, "budget").await;
+    top_up(&app, &key, 50_000_000).await;
+
+    // A daily-limited second key with a third of its budget burned.
+    let (status, minted) = call(
+        &app,
+        "POST",
+        "/api/v1/org/keys",
+        Some(json!({"name": "burner", "spendLimitMinor": 30_000, "budgetDuration": "daily"})),
+        Some(&session),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{minted}");
+    let burner_id = Uuid::parse_str(minted["data"]["id"].as_str().unwrap()).expect("a uuid key id");
+    settle_request(
+        &db,
+        &tenants,
+        &tenant,
+        Some(burner_id),
+        "burn-1",
+        "m1",
+        10_000,
+    )
+    .await;
+
+    let (status, body) = call(&app, "GET", "/api/v1/budget", None, Some(&session)).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let data = &body["data"];
+    assert!(data["member"].is_null(), "a key names no member: {data}");
+    let org = &data["organization"];
+    assert_eq!(org["availableMinor"], 50_000_000 - 10_000, "{org}");
+    assert!(org["creditLimitMinor"].is_null(), "{org}");
+
+    let keys = data["keys"].as_array().expect("keys is an array");
+    let burner = keys
+        .iter()
+        .find(|row| row["keyId"] == burner_id.to_string())
+        .expect("the limited key is in scope");
+    assert_eq!(burner["spendLimitMinor"], 30_000, "{burner}");
+    assert_eq!(burner["budgetDuration"], "daily", "{burner}");
+    assert_eq!(burner["committedMinor"], 10_000, "{burner}");
+    assert_eq!(burner["consumedPercent"], 33, "{burner}");
+    assert!(burner["windowStart"].is_string(), "{burner}");
+
+    // The registration key carries no limit: committed without a percent.
+    let first = keys
+        .iter()
+        .find(|row| row["keyId"] == key_id.to_string())
+        .expect("the acting key is in scope");
+    assert!(first["spendLimitMinor"].is_null(), "{first}");
+    assert_eq!(first["committedMinor"], 0, "{first}");
+    assert!(first["consumedPercent"].is_null(), "{first}");
+}
+
+/// credential's organization.
+#[tokio::test]
+async fn billing_records_page_in_order() {
+    let (app, db) = app_or_skip!();
+    let tenants = Tenants::new(db.pool().clone());
+    let (tenant, key, key_id, _session) = register(&app, "records").await;
+    let (other_tenant, other, other_key_id, _session) = register(&app, "records-other").await;
+    top_up(&app, &key, 50_000_000).await;
+    top_up(&app, &other, 50_000_000).await;
+
+    for (name, charge) in [("rec-a", 1_000), ("rec-b", 2_000), ("rec-c", 3_000)] {
+        settle_request(&db, &tenants, &tenant, Some(key_id), name, "m1", charge).await;
+    }
+    settle_request(
+        &db,
+        &tenants,
+        &other_tenant,
+        Some(other_key_id),
+        "rec-x",
+        "m1",
+        9_000,
+    )
+    .await;
+
+    // First page of two, then the walk resumes above nextCursor.
+    let (status, first) = call(
+        &app,
+        "GET",
+        "/api/v1/billing-records?limit=2",
+        None,
+        Some(&key),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{first}");
+    let rows = first["data"]["rows"].as_array().expect("rows is an array");
+    assert_eq!(rows.len(), 2, "{first}");
+    assert_eq!(rows[0]["chargedMinor"], 3_000);
+    assert_eq!(rows[1]["chargedMinor"], 2_000);
+    assert_eq!(rows[0]["kind"], "usage");
+    // The settlement's own id rides the row (issue #236): the proof endpoint
+    // answers it directly, with no request-id derivation on the caller's side.
+    let entry_id = rows[0]["entryId"]
+        .as_str()
+        .expect("the record names its settlement entry");
+    let (status, proof) = call(
+        &app,
+        "GET",
+        &format!("/api/v1/entries/{entry_id}/proof"),
+        None,
+        Some(&key),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "the row's entryId resolves: {proof}"
+    );
+    assert!(
+        proof["data"]["bundle"].is_object() || proof["data"]["entry"].is_object(),
+        "a proof bundle answers: {proof}"
+    );
+    let cursor = first["data"]["nextCursor"]
+        .as_u64()
+        .expect("a second page remains");
+
+    let (status, second) = call(
+        &app,
+        "GET",
+        &format!("/api/v1/billing-records?limit=2&before={cursor}"),
+        None,
+        Some(&key),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{second}");
+    let rows = second["data"]["rows"].as_array().unwrap();
+    assert_eq!(rows.len(), 1, "{second}");
+    assert_eq!(rows[0]["chargedMinor"], 1_000);
+    // The walk reached the log's start: no cursor is answered.
+    assert!(second["data"]["nextCursor"].is_null());
+
+    // The other organization's turn never appears in this organization's records.
+    let (status, other) = call(&app, "GET", "/api/v1/billing-records", None, Some(&other)).await;
+    assert_eq!(status, StatusCode::OK);
+    let rows = other["data"]["rows"].as_array().unwrap();
+    assert!(
+        rows.iter().all(|row| row["chargedMinor"] == 9_000),
+        "{other}"
+    );
+}
+
+/// `limit` outside its bounds answers VALIDATION.
+#[tokio::test]
+async fn the_records_limit_is_bounded() {
+    let (app, _db) = app_or_skip!();
+    let (_tenant, key, _key_id, _session) = register(&app, "records-limit").await;
+    for path in [
+        "/api/v1/billing-records?limit=0",
+        "/api/v1/billing-records?limit=201",
+    ] {
+        let (status, body) = call(&app, "GET", path, None, Some(&key)).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{path}: {body}");
+        assert_eq!(body["error"]["code"], "VALIDATION_ERROR", "{path}: {body}");
+    }
+}
+
+// ── /api/v1/estimate-price ───────────────────────────────────────────────────
+
+/// The estimate runs the freeze arithmetic on the declared shape: dearest
+/// applicable set, output clamped to the model's ceiling, rounded up — the
+/// same number the gateway would freeze.
+#[tokio::test]
+async fn estimate_price_is_the_freeze() {
+    let (app, db) = app_or_skip!();
+    let suffix = Uuid::new_v4().simple().to_string()[..8].to_owned();
+    let channel = format!("cat-{suffix}");
+    let model = format!("priced-{suffix}");
+    // 1 minor per input token, 2 per output token, a 4k output ceiling — small
+    // enough that the estimate is easy to check by hand.
+    price_model(
+        &db,
+        &channel,
+        &model,
+        json!({"inputPricePerMillion": 1_000_000, "outputPricePerMillion": 2_000_000, "maxOutputTokens": 4_000}),
+    )
+    .await;
+    let (_tenant, key, _key_id, _session) = register(&app, "estimate").await;
+
+    let (status, body) = call(
+        &app,
+        "POST",
+        "/api/v1/estimate-price",
+        Some(json!({"model": model, "inputTokens": 1_000, "outputTokens": 500})),
+        Some(&key),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    // 1000 input at 1 minor/token + 500 output at 2 minor/token = 2000 minor units.
+    assert_eq!(body["data"]["estimateMinor"], 2_000, "{body}");
+    assert_eq!(body["data"]["version"], 1);
+    assert_eq!(body["data"]["model"], model);
+
+    // Beyond the ceiling clamps to it: the freeze never overestimates past
+    // what the model can produce.
+    let (status, body) = call(
+        &app,
+        "POST",
+        "/api/v1/estimate-price",
+        Some(json!({"model": model, "inputTokens": 0, "outputTokens": 100_000})),
+        Some(&key),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    // 4000 output at 2 minor/mtok.
+    assert_eq!(body["data"]["estimateMinor"], 8_000, "{body}");
+
+    // An unknown model and a negative input both answer VALIDATION, not a price of zero.
+    for body in [
+        json!({"model": format!("absent-{suffix}"), "inputTokens": 1}),
+        json!({"model": model, "inputTokens": -5}),
+        json!({"model": model, "outputTokens": 0}),
+    ] {
+        let (status, res) = call(
+            &app,
+            "POST",
+            "/api/v1/estimate-price",
+            Some(body),
+            Some(&key),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{res}");
+        assert_eq!(res["error"]["code"], "VALIDATION_ERROR", "{res}");
+    }
+}
+
+/// An estimate prices only the mode it names: an embeddings model has no
+/// `chat` routes to read, an `embeddings` estimate ignores the output shape,
+/// and a model whose routes all carry another mode answers the same
+/// `VALIDATION` as one that is not served at all (issue #170).
+#[tokio::test]
+async fn estimate_price_respects_the_billing_mode() {
+    let (app, db) = app_or_skip!();
+    let suffix = Uuid::new_v4().simple().to_string()[..8].to_owned();
+    let channel = format!("cat-{suffix}");
+    let model = format!("emb-{suffix}");
+    // 1 minor per input token, no output side — the mode is what makes that a
+    // price rather than a misconfiguration.
+    price_model(
+        &db,
+        &channel,
+        &model,
+        json!({"inputPricePerMillion": 1_000_000, "mode": "embeddings"}),
+    )
+    .await;
+    let (_tenant, key, _key_id, _session) = register(&app, "estimate-mode").await;
+
+    // The mode's own shape: input alone prices the turn, an `outputTokens` a
+    // caller sent anyway is simply not a dimension the mode prices.
+    let (status, body) = call(
+        &app,
+        "POST",
+        "/api/v1/estimate-price",
+        Some(json!({
+            "model": model,
+            "mode": "embeddings",
+            "inputTokens": 30,
+            "outputTokens": 500,
+        })),
+        Some(&key),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["data"]["estimateMinor"], 30, "{body}");
+
+    // Without the mode, the model is not a chat route: nothing to price with.
+    let (status, body) = call(
+        &app,
+        "POST",
+        "/api/v1/estimate-price",
+        Some(json!({"model": model, "inputTokens": 30, "outputTokens": 5})),
+        Some(&key),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    assert_eq!(body["error"]["code"], "VALIDATION_ERROR", "{body}");
+}
+
+// ── /api/v1/pricing ─────────────────────────────────────────────────────────
+
+/// The catalog lists every model's current version with its channel and
+/// protocol — and never a credential.
+#[tokio::test]
+async fn the_catalog_carries_no_credentials() {
+    let (app, db) = app_or_skip!();
+    let suffix = Uuid::new_v4().simple().to_string()[..8].to_owned();
+    let channel = format!("cat-{suffix}");
+    let model = format!("catalog-{suffix}");
+    price_model(
+        &db,
+        &channel,
+        &model,
+        json!({"inputPricePerMillion": 5, "outputPricePerMillion": 9, "maxOutputTokens": 2_000}),
+    )
+    .await;
+    let (_tenant, key, _key_id, _session) = register(&app, "catalog").await;
+
+    let (status, body) = call(&app, "GET", "/api/v1/pricing", None, Some(&key)).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let models = body["data"]["models"]
+        .as_array()
+        .expect("models is an array");
+    let row = models
+        .iter()
+        .find(|row| row["model"] == model)
+        .unwrap_or_else(|| panic!("{model} is in the catalog: {body}"));
+    assert_eq!(row["channel"], channel);
+    assert_eq!(row["protocol"], "openai");
+    assert_eq!(row["version"], 1);
+    assert_eq!(row["inputPricePerMillion"], 5);
+    // No credential-shaped key anywhere in the payload — other channels' model
+    // names may carry the words, so the check walks field names, not values.
+    fn credential_keys(value: &Value) -> Vec<String> {
+        let mut found = Vec::new();
+        let mut stack = vec![value];
+        while let Some(value) = stack.pop() {
+            match value {
+                Value::Object(map) => {
+                    for (key, inner) in map {
+                        let lower = key.to_lowercase();
+                        if lower.contains("apikey")
+                            || lower.contains("sealed")
+                            || lower.contains("credential")
+                            || lower.contains("baseurl")
+                        {
+                            found.push(key.clone());
+                        }
+                        stack.push(inner);
+                    }
+                }
+                Value::Array(items) => stack.extend(items),
+                _ => {}
+            }
+        }
+        found
+    }
+    assert_eq!(credential_keys(&body), Vec::<String>::new(), "{body}");
+
+    let (status, _) = call(&app, "GET", "/api/v1/pricing", None, None).await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+}
+
+// ── /api/v1/entries · /api/v1/bills · /api/v1/holds · /api/v1/org/members ───
+// The dashboard reads (issue #234): the log page, the bills table, the
+// in-flight holds and the members list, now on the API the SPA speaks.
+
+/// The entries page walks the ledger newest-first with its cursor, the bills
+/// page lists only money-moving rows, and an open hold appears in `holds`.
+#[tokio::test]
+async fn the_dashboard_reads_page_the_ledger() {
+    let (app, db) = app_or_skip!();
+    let tenants = Tenants::new(db.pool().clone());
+    let (tenant, key, key_id, session) = register(&app, "dash").await;
+    top_up(&app, &key, 50_000_000).await;
+    settle_request(&db, &tenants, &tenant, Some(key_id), "dash-1", "m1", 7_000).await;
+
+    let (status, entries) = call(
+        &app,
+        "GET",
+        "/api/v1/entries?limit=100",
+        None,
+        Some(&session),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{entries}");
+    let rows = entries["data"]["rows"].as_array().expect("rows");
+    assert!(
+        rows.len() >= 3,
+        "top-up, hold and settlement at least: {entries}"
+    );
+    assert!(rows[0]["index"].as_u64().unwrap() > rows[1]["index"].as_u64().unwrap());
+    assert!(
+        rows.iter()
+            .all(|row| row["id"].is_string() && row["contentHash"].is_string())
+    );
+
+    let (status, bills) = call(&app, "GET", "/api/v1/bills", None, Some(&session)).await;
+    assert_eq!(status, StatusCode::OK, "{bills}");
+    let rows = bills["data"]["rows"].as_array().expect("rows");
+    // The top-up and the settlement: the bare hold never bills.
+    assert_eq!(rows.len(), 2, "{bills}");
+    assert_eq!(rows[0]["kind"], "settlement", "{bills}");
+    assert_eq!(rows[0]["amountMinor"], -7_000, "{bills}");
+    assert_eq!(rows[1]["kind"], "topUp", "{bills}");
+    assert_eq!(rows[1]["amountMinor"], 50_000_000, "{bills}");
+    assert!(rows[0]["entryId"].is_string(), "{bills}");
+
+    let (status, holds) = call(&app, "GET", "/api/v1/holds", None, Some(&session)).await;
+    assert_eq!(status, StatusCode::OK, "{holds}");
+    assert_eq!(
+        holds["data"]["holds"].as_array().unwrap().len(),
+        0,
+        "{holds}"
+    );
+}
+
+/// The balance now carries the overview's frozen and month-spend figures.
+#[tokio::test]
+async fn the_balance_carries_reserved_and_month_spend() {
+    let (app, db) = app_or_skip!();
+    let tenants = Tenants::new(db.pool().clone());
+    let (tenant, key, key_id, session) = register(&app, "bal-dash").await;
+    top_up(&app, &key, 50_000_000).await;
+    settle_request(
+        &db,
+        &tenants,
+        &tenant,
+        Some(key_id),
+        "bal-dash-1",
+        "m1",
+        7_000,
+    )
+    .await;
+
+    let (status, body) = call(&app, "GET", "/api/v1/balance", None, Some(&session)).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let data = &body["data"];
+    assert_eq!(data["reservedMinor"], 0, "{data}");
+    assert_eq!(data["spentThisMonthMinor"], 7_000, "{data}");
+}
+
+/// The members list answers the organization's memberships; a member's own
+/// rows scope like the REST of the dashboard's surfaces.
+#[tokio::test]
+async fn the_members_list_reads() {
+    let (app, db) = app_or_skip!();
+    let tenants = Tenants::new(db.pool().clone());
+    let (_tenant, _key, _key_id, session) = register(&app, "members-list").await;
+    let _ = (db, tenants);
+
+    let (status, body) = call(&app, "GET", "/api/v1/org/members", None, Some(&session)).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let members = body["data"]["members"].as_array().expect("members");
+    assert_eq!(members.len(), 1, "{body}");
+    assert_eq!(members[0]["role"], "owner", "{body}");
+
+    let (status, _) = call(&app, "GET", "/api/v1/org/members", None, None).await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+}

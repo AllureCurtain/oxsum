@@ -52,6 +52,14 @@ cargo nextest run -p oxsum-server --test <suite>       # one test binary
 cargo nextest run -p oxsum-core --test <suite> --test <other>   # several, one selection
 ```
 
+Each crate's integration tests live in ONE aggregate binary —
+`tests/server.rs`, `tests/core.rs` — which `#[path]`-loads every former
+`tests/*.rs` file as a submodule (issue #998; a per-file binary each embedded
+~127 MB of `oxsum_server` and pushed `deps/` past 100 GB). New integration
+tests go inside an existing `tests/server/` / `tests/core/` submodule (or a new
+file there plus a `#[path] mod` line in the aggregate), never a new top-level
+`tests/*.rs`.
+
 `cargo nextest run --workspace` is **not** the iteration command — it compiles
 and runs every test binary (~7 minutes, dozens of `de_*`/`oxsum_test_*`
 scratch databases). Run it only for true cross-crate changes (for example core
@@ -251,6 +259,24 @@ True cross-crate changes use the single full run and reuse rules above.
 - Never commit `.env`. New environment variables are added to `.env.example` in the same change.
 - Read DESIGN.md before touching styles.
 - Read docs/decisions.md before making a technology choice or overturning an existing one.
+
+## Build artifacts & target directory
+
+- Every worktree points its cargo output at the single shared target dir
+  `<repo>/.worktrees/target`, set via `.worktrees/.cargo/config.toml`
+  (`[build] target-dir`, absolute path). Never aim a worktree at a target
+  outside the project, and never create a second shared target — each extra
+  target dir costs another ~100 GB.
+- Cargo keeps every fingerprinted artifact; nothing is auto-deleted, so
+  `deps/` grows ~127 MB per `tests/*.rs` per rebuild across all worktrees.
+  Reclaim by hand every day or two: `cargo clean` or
+  `rm -rf .worktrees/target/debug/deps`. We deliberately do **not** automate
+  this (no cargo-sweep/cron) — an automated sweep can delete in-flight
+  artifacts; `cargo clean` alone removes orphaned `.o` files.
+- Scratch test databases (`oxsum_test_*`, `de_*`) drop on suite exit and via
+  `scripts/drop-test-scratch.sql` (>24 h). A suite killed mid-run leaves its
+  DB; the next CI run's sweep reclaims it. That is the intended design — no
+  extra cleanup rule needed.
 
 ## Doc index
 
