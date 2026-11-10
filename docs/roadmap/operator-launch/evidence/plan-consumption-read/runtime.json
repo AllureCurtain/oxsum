@@ -1,0 +1,10 @@
+{
+  "base": "http://127.0.0.1:64298",
+  "version": {
+    "gitSha": "3b5b55be4b54cf4bf9ba35c87d6119bd4b108ff7",
+    "schemaVersion": "0128_application_notifications",
+    "version": "0.1.0"
+  },
+  "pid": 19996,
+  "binarySha256": "4f56cc7735524163b08fe2718ad03450609569c389c978e5dadd07a88bc4bef8"
+}
