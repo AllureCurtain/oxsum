@@ -246,6 +246,12 @@ async fn a_manual_run_records_and_lists() {
     let run_id = body["data"]["runId"].as_str().unwrap();
     assert_eq!(body["data"]["kind"].as_str().unwrap(), "manual");
     assert!(body["data"]["state"].is_string(), "{body}");
+    assert_eq!(body["data"]["periodStart"], day);
+    assert_eq!(body["data"]["periodEnd"], day);
+    let decoded: oxsum_core::ReconciliationRun =
+        serde_json::from_value(body["data"].clone()).unwrap();
+    assert_eq!(decoded.period_start, today);
+    assert_eq!(decoded.period_end, today);
 
     let snapshot_id = body["data"]["latestSnapshotId"].as_str().unwrap();
     assert_eq!(body["data"]["coverage"]["version"], 1);
@@ -303,10 +309,12 @@ async fn a_manual_run_records_and_lists() {
             .as_array()
             .unwrap()
             .iter()
-            .any(|run| run["runId"] == run_id),
+            .any(|run| run["runId"] == run_id
+                && run["periodStart"] == day
+                && run["periodEnd"] == day),
         "the run lists: {list}"
     );
-    let (status, _run) = call(
+    let (status, run) = call(
         &world.app,
         "GET",
         &format!("/api/v1/business/reconciliation-runs/{run_id}"),
@@ -315,6 +323,8 @@ async fn a_manual_run_records_and_lists() {
     )
     .await;
     assert_eq!(status, StatusCode::OK);
+    assert_eq!(run["data"]["periodStart"], day);
+    assert_eq!(run["data"]["periodEnd"], day);
     let (status, _exceptions) = call(
         &world.app,
         "GET",
