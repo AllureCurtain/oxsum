@@ -1859,3 +1859,15 @@ delivery ID and body. Disabling stops new and unclaimed sends, although an alrea
 claimed attempt can finish. Rotate by creating a replacement and disabling the
 old target. Applications need the corresponding current-read grants to process
 signals; notification status access alone does not disclose bills or keys.
+
+### Try an application integration locally
+
+The [external application example](../examples/embedded-application/README.md)
+walks through local signup, an owner-granted limited customer key, payment,
+a small AI turn, receipt/statement exports and closing the application account.
+Configure the application and grants once in the operator portal; its runtime
+uses no owner cookie. Keep the private store for exact retries. The local payment
+page never treats a browser return as proof of payment. Verification requires
+independently retained customer/origin/key inputs and runs offline against the
+original export. The automated walkthrough uses local stubs and does not certify
+an actual model provider or payment service.

@@ -8,6 +8,7 @@ import json
 import os
 import sqlite3
 import time
+import urllib.error
 import urllib.parse
 import urllib.request
 import uuid
@@ -58,7 +59,9 @@ class Receiver:
         self.db.executescript("""
           CREATE TABLE IF NOT EXISTS inbox (
             delivery_id TEXT PRIMARY KEY, body BLOB NOT NULL,
-            received_at INTEGER NOT NULL, processed_at INTEGER
+            received_at INTEGER NOT NULL, processed_at INTEGER,
+            attempts INTEGER NOT NULL DEFAULT 0,
+            retry_at INTEGER NOT NULL DEFAULT 0
           );
           CREATE TABLE IF NOT EXISTS snapshots (
             organization_id TEXT NOT NULL, resource TEXT NOT NULL,
@@ -66,6 +69,12 @@ class Receiver:
             PRIMARY KEY(organization_id,resource)
           );
         """)
+        # Upgrade retained inboxes in place; never discard pending signed bytes.
+        columns = {row[1] for row in self.db.execute("PRAGMA table_info(inbox)")}
+        with self.db:
+            for name in ("attempts", "retry_at"):
+                if name not in columns:
+                    self.db.execute(f"ALTER TABLE inbox ADD COLUMN {name} INTEGER NOT NULL DEFAULT 0")
         self.http = urllib.request.build_opener(urllib.request.ProxyHandler({}), NoRedirect)
 
     def accept(self, header, delivery, event, body, now=None):
@@ -90,21 +99,28 @@ class Receiver:
                 raise ValueError("delivery identity reused with different bytes")
             return
         with self.db:
-            self.db.execute("INSERT INTO inbox VALUES(?,?,?,NULL)", (delivery, body, now))
+            self.db.execute("INSERT INTO inbox(delivery_id,body,received_at) VALUES(?,?,?)", (delivery, body, now))
 
     def fetch(self, path):
         request = urllib.request.Request(self.base + "/api/v1" + path, headers={"Authorization": "Bearer " + self.credential})
-        with self.http.open(request, timeout=20) as response:
+        try:
+            response = self.http.open(request, timeout=20)
+        except urllib.error.HTTPError as error:
+            error.close()
+            raise OSError("current resource unavailable") from None
+        with response:
             raw = response.read(16 * 1024 * 1024 + 1)
         if len(raw) > 16 * 1024 * 1024:
             raise ValueError("current state exceeds bound")
         return json.loads(raw)
 
-    def reconcile(self, limit=20):
+    def reconcile(self, limit=20, now=None):
         # One worker serializes per-customer reads. Notification timestamps never
         # overwrite newer state: every queued signal fetches the server's current facts.
-        rows = self.db.execute("SELECT delivery_id,body FROM inbox WHERE processed_at IS NULL ORDER BY received_at,delivery_id LIMIT ?", (limit,)).fetchall()
-        for delivery, body in rows:
+        now = int(time.time()) if now is None else now
+        rows = self.db.execute("SELECT delivery_id,body,attempts FROM inbox WHERE processed_at IS NULL AND retry_at<=? ORDER BY retry_at,received_at,delivery_id LIMIT ?", (now, limit)).fetchall()
+        completed = 0
+        for delivery, body, attempts in rows:
             signal = json.loads(body)
             org = signal["organizationId"]
             root = "/integration/customers/" + org
@@ -114,6 +130,9 @@ class Receiver:
             elif kind == "order.changed":
                 resource = "order/" + signal["entityId"]
                 path = root + "/orders/" + signal["entityId"]
+            elif kind == "statement.changed":
+                resource = "statement/" + signal["entityId"]
+                path = root + "/statements/" + signal["entityId"]
             elif kind == "key.changed":
                 resource, path = "keys", root + "/keys?limit=50"
             elif kind == "evidence.published":
@@ -121,12 +140,20 @@ class Receiver:
                 path = root + "/evidence-bundles/" + signal["entityId"]
             else:
                 resource, path = "billing", "/business/customers/" + org + "/billing?limit=20"
-            document = self.fetch(path)
-            now = int(time.time())
+            try:
+                document = self.fetch(path)
+            except (ValueError, OSError):
+                # An open statement, revoked grant or unavailable server must not
+                # prevent unrelated later signals from reconciling. Retry reads
+                # with bounded backoff; never mark a failed read as processed.
+                with self.db:
+                    self.db.execute("UPDATE inbox SET attempts=attempts+1,retry_at=? WHERE delivery_id=?", (now + min(300, 5 * 2 ** min(attempts, 6)), delivery))
+                continue
             with self.db:
                 self.db.execute("INSERT INTO snapshots VALUES(?,?,?,?) ON CONFLICT(organization_id,resource) DO UPDATE SET document=excluded.document,fetched_at=excluded.fetched_at", (org, resource, json.dumps(document), now))
                 self.db.execute("UPDATE inbox SET processed_at=? WHERE delivery_id=?", (now, delivery))
-        return len(rows)
+            completed += 1
+        return completed
 
 
 def handler(receiver):

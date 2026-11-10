@@ -30,8 +30,9 @@ For the subscribed signal types, separately grant the matching current-state rea
 of those other scopes. A missing read grant keeps the inbox pending rather than
 pretending reconciliation succeeded. Select only events the runtime needs.
 
-The billing response contains a bounded ledger window; it is not a complete
-statement history. Key and evidence pages are bounded. Persist your own customer
+Balance signals read a bounded ledger window. Statement signals read the exact
+complete customer statement through the separately granted billingRead route;
+oversized or unavailable documents remain pending. Key and evidence pages are bounded. Persist your own customer
 mapping and make initial scoped reads before relying on signals; endpoint creation
 has no historical replay guarantee. Natural time boundaries (credential/key expiry,
 period end) also require a current read on use. No notification is a payment receipt,
@@ -54,3 +55,9 @@ no external service. Disable a target to stop new enqueue and unclaimed delivery
 a delivery already claimed by a worker may still finish. Delivery metadata is
 available from the application interface or the owner UI, and only the owner may
 start a fresh retry cycle for a failed delivery.
+
+Failed current-state reads remain durable with a five-second to five-minute
+exponential retry delay. One unreadable resource (including a not-yet-issued
+statement) does not block the rest of a selected batch or later customers.
+Retained legacy inboxes gain retry columns in place without discarding signed
+bytes. Run one receiver worker per local database.

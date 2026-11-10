@@ -984,3 +984,20 @@ serialized current reads. Acknowledgment means durable intake, not successful
 state reconciliation. Its snapshots cannot reactivate state from a stale signal
 because the signal itself has no state fields. Natural expiration/boundaries
 still need on-use reads. Source coverage and proof guarantees remain explicit.
+
+### Separate embedded-application example store (#942)
+
+The example's Python process owns SQLite customer mappings, immutable operation
+inputs, durable attempt counts, retained customer key/checkout responses and trust
+records. A store is fixed to one deployment/application; process-level POSIX locks
+serialize local write/retry attempts. Server credentials and namespace checks
+remain authoritative. The example persists before I/O and never infers funding,
+entitlement or payment from local state; successful cached responses are historical
+receipts. Unknown inference refuses beyond a conservative server-replay window.
+
+The signed receiver writes its exact inbox and current scoped snapshots in the
+same separate application database. Receipt/evidence export keeps original bytes,
+while a clean installed verifier consumes retained scope/key/hash offline. A
+loopback capability URL may expose the one customer's payment SDK handle; it
+never exposes the application credential. This example adds no server ledger or
+credential model and is not a replacement for a public application's own auth.

@@ -1581,3 +1581,20 @@ current-state reconciliation. The Rust application_notifications HTTP suite
 passes actual signed Rust bodies to Python as stdin, not secret-bearing command
 arguments. See [receiver setup](../examples/application-notifications/README.md)
 for the explicit loopback destination and example-only environment variables.
+
+### External application acceptance fixture
+
+Run `scripts/check-embedded-application.sh` for the separate Python/SQLite consumer
+against an actual isolated oxsum listener. It builds the verifier WASM/tarball,
+installs a clean consumer, runs Python durability/signature checks and the
+`embedded_application` server test with real offline export verification and nine
+negative trust/scope/tamper checks. This takes the shared heavy Cargo slot; serialize
+it with other worktrees. PostgreSQL, Python 3.11+, Node 20.16+, the wasm target and
+matching wasm-bindgen are required. No external payment/model call runs.
+
+The `OXSUM_EMBEDDED_VERIFIER` fixture variable points to that prepared consumer
+when executing the listener test directly. Without it the ordinary test still
+checks original evidence natively but explicitly skips the packed-JavaScript step.
+The application runtime uses `OXSUM_APPLICATION_CREDENTIAL` and the optional signed
+receiver `OXSUM_NOTIFICATION_SECRET`; neither is an owner login. See the example
+README for private-store lifecycle and the limited local checkout page.

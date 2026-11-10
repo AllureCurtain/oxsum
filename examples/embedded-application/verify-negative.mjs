@@ -1,0 +1,25 @@
+/** Reject tampered exports and independently mismatched trust with the real SDK. */
+import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
+import { inspect, scopedBill, scopedEvidence } from "./scope.mjs";
+import * as api from "verify-oxsum-bill";
+globalThis.fetch = () => { throw new Error("offline verification cannot fetch"); };
+const [receipt, evidence] = process.argv.slice(2);
+const read = (directory, name) => readFileSync(join(directory, name), "utf8");
+const raw = read(receipt, "settlement-bundle.json");
+const manifest = read(receipt, "manifest.json");
+const head = read(receipt, "signed-head.json");
+const key = read(receipt, "operator-key.json");
+await assert.rejects(() => scopedBill(raw, inspect(manifest).replace(["contentHash"], JSON.stringify("f".repeat(64))), head, key, api));
+await assert.rejects(() => scopedBill(raw, inspect(manifest).replace(["origin"], JSON.stringify("oxsum/ledgers/foreign")), head, key, api));
+await assert.rejects(() => scopedBill(inspect(raw).replace(["entry", "description"], JSON.stringify("altered receipt")), manifest, head, key, api));
+await assert.rejects(() => scopedBill(raw, manifest, head, "{}", api));
+const bundle = read(evidence, "evidence-bundle.json");
+const scope = read(evidence, "evidence-manifest.json");
+await assert.rejects(() => scopedEvidence(bundle, inspect(scope).replace(["organizationId"], JSON.stringify("00000000-0000-0000-0000-000000000001")), key, api));
+await assert.rejects(() => scopedEvidence(bundle, inspect(scope).replace(["manifestDigest"], JSON.stringify("f".repeat(64))), key, api));
+await assert.rejects(() => scopedEvidence(bundle, inspect(scope).replace(["origin"], JSON.stringify("oxsum/ledgers/foreign")), key, api));
+await assert.rejects(() => scopedEvidence(inspect(bundle).replace(["note"], JSON.stringify("altered signed note")), scope, key, api));
+await assert.rejects(() => scopedEvidence(bundle, scope, "{}", api));
+console.log("PASS: nine offline tamper, scope and missing-trust rejections");

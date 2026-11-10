@@ -1,0 +1,1 @@
+{"name":"oxsum-embedded-application-example","private":true,"type":"module","scripts":{"verify":"node verify.mjs"}}

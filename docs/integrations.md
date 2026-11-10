@@ -447,6 +447,31 @@ Use [the independent Python/SQLite receiver](../examples/application-notificatio
 for original-byte HMAC, durable deduplication and current-read reconciliation.
 Never apply a state transition or payment from the notification payload. Initial
 reads reconcile pre-existing state; time boundaries require reads even without
-a signal. Bill windows/key pages are bounded, and a statement signal does not
-claim a full statement export. The complete separate-store application remains
-a distinct N21 acceptance task.
+a signal. Bill windows/key pages are bounded; a statement signal fetches its
+exact issued document under billingRead and is not itself a signed export. Failed
+reads remain pending with backoff so unrelated signals can progress. The separate
+application below retains its own candidate acceptance gate.
+
+### Complete external application walkthrough (#942)
+
+[The Python/SQLite external application](../examples/embedded-application/README.md)
+runs with one owner-issued application credential and a separate private store.
+It provides local signup/mapping, bounded consumption keys, server-quoted checkout,
+whole gateway calls with durable exact replay, current statement/billing reads,
+original receipt/evidence exports, offline verification and archive. Runtime never
+holds owner cookies. The optional loopback payment page shows one retained order;
+only verified server payment/fulfillment state determines success.
+
+Commands bind the local customer and complete input before writes; POSIX file
+locking serializes processes, retries consume a three-attempt durable budget and
+unknown inference refuses after 23 hours. Preserve the store across restarts and
+credential rotation. The example's local customer selector assumes authenticated
+local control; a public application must bind it to its own authenticated user.
+The paired signed receiver shares the store for durable inbox/current facts and
+uses exact statement reads. Initial/on-use reads still reconcile time boundaries.
+
+`scripts/check-embedded-application.sh` exercises the actual local listener,
+owned model/merchant stubs and separate consumer processes with a clean installed
+verifier tarball. Local verified-event fixtures remain distinct from PSP/provider
+certification, browser acceptance and exact-candidate J18. No new runtime billing
+or owner authority is implied by the example.

@@ -478,3 +478,22 @@ candidate. No PSP, publication, external contact or existing-service upgrade.
   three Python and ten frontend checks passed. [Evidence](evidence/application-notifications.md).
   Browser, independent review, protected integration and candidate remain.
   No external receiver/provider/payment was contacted.
+
+
+## Independent-store application walkthrough (#942)
+
+`feat/embedded-application` joins #941 statement history/payment and #940 signed
+notifications/evidence publication in merge `407dcf8e`. The separate Python/SQLite
+runtime, local checkout page, signed receiver integration and clean packaged
+verifier are implemented. Forty-six joined application core/HTTP/migration cases
+passed; the actual listener fixture passes local checkout/funding, lost inference
+response with one 40-minor charge, real receipt and paid-plan statement exports,
+signed notification/current archive and revoked/foreign authority. Clean installed
+SDK verifies both actual exports and rejects nine tamper/scope/missing-trust cases.
+Seven Python durability/checkout/process-lock tests and six receiver tests pass,
+including durable backoff that prevents one unreadable signal from blocking others.
+One joined full workspace passed all 2,228 cases (six existing opt-ins skipped);
+strict core/server all-target Clippy, pinned formatting and the final packed
+listener rerun passed (1 case, 4.172s; both exports and nine negatives). Browser, independent
+review/protected integration, actual candidate J18 and external gates remain.
+No external provider/PSP/receiver contact or spend occurred.

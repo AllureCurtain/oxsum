@@ -1,5 +1,20 @@
 # Technical decisions
 
+## 2026-11-10 — Durable local application operations without owner runtime (#942)
+
+The external example reuses Python/Node and a separate SQLite store rather than
+adding a framework or server credential model. POSIX file locking serializes its
+processes; immutable deployment/application and operation/customer/request binding
+survive restarts. Unknown inference has a durable three-attempt budget and a
+23-hour fence within the server's 24-hour retention. Cached success is historical,
+not current permission. One-time key loss requires explicit revoke/replacement.
+
+Signed notification intake shares that application store but only records original
+signals and reads current scoped facts. Failed reads back off independently;
+no unreadable statement may block another customer. The loopback capability page
+exposes a selected checkout handle without the application credential. Public
+multiuser authentication and exact-candidate browser acceptance remain separate.
+
 ## 2026-11-10 — Read original evidence under an independent application grant (#924)
 
 `evidenceRead` is distinct from balance reads and may export only existing frozen
