@@ -1306,6 +1306,9 @@ existing user signs in and explicitly accepts. Neither path creates customer
 access, an API key or funds. After acceptance, open the Business console. The
 owner can revoke an unaccepted invitation or remove the accepted staff seat;
 replaying an accepted invitation does not restore a revoked role.
+Business section links such as `/app/business#business/customers` retain the
+selected section when reloaded or opened directly. Current role capabilities
+still determine which section is available.
 
 After initial setup, sign in using the ordinary password/TOTP flow. Select business context with `POST /api/v1/session/context` and `{"idempotencyKey":"select-business-1","context":"business"}`. Read `/api/v1/business` to see your business role and capabilities. The staff console at `/app/business` (issue #615) drives these APIs from the browser — the sidebar shows the console's item once your session holds a business principal, the console itself switches your session into business context when it opens, and each section is gated on the capability your role carries.
 

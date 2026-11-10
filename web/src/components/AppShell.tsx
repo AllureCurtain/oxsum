@@ -280,7 +280,7 @@ export function AppShell() {
   useEffect(() => {
     if (context.error instanceof ApiError && context.error.status === 401) {
       navigate("/login", { replace: true });
-    } else if (business && location.pathname !== "/app/business") {
+    } else if (business && location.pathname !== "/business") {
       navigate("/business", { replace: true });
     }
   }, [context.error, business, location.pathname, navigate]);
