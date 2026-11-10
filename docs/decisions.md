@@ -3871,6 +3871,7 @@ standing or open ledgers. Count expanded serialized line bytes so PostgreSQL TOA
 compression cannot bypass the detail bound. Issuance and payment remain separate
 minimal changes under #1006.
 
+
 ## 2026-11-10 — Commit monthly issuance and its proof together (#1009)
 
 The old monthly finalizer appended its marker before opening the statement
@@ -3919,4 +3920,5 @@ Serialize global audit identity before organization, credit and append locks;
 check period debt, post credit-only cash, reconcile FIFO and audit on one borrowed
 connection. This also removes stale reconciliation writes that could regress a
 paid statement. Staff reference/actor records remain a separate #1006 workflow.
+
 

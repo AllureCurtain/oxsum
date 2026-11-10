@@ -947,3 +947,4 @@ or exceed unpaid credit draws through that month. Cash, credit restoration,
 statement standing, events and source-bound audit commit together. Exact retries
 remain valid after full payment; a changed amount or statement conflicts. Staff
 portal repayment and explicit bank-reference collection remain tracked by #1006.
+

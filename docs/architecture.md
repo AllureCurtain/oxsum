@@ -1051,6 +1051,7 @@ staff revocation cannot hide behind old visibility. Existing statement row mappi
 is shared; elapsed due-date display is a pure projection. No read invokes global
 overdue updates, payment reconciliation, ledger bootstrap or proof generation.
 
+
 ## Atomic monthly statement issuance (#1009)
 
 Monthly generation and finalization use borrowed transaction helpers. The lock
@@ -1113,4 +1114,5 @@ Existing payment entries retain their original keys and bytes. Replays require
 the complete credit-only ledger shape and matching statement/amount/entry audit;
 missing or inconsistent source evidence fails closed without a new posting.
 The helper returns current standing beside the original receipt.
+
 
