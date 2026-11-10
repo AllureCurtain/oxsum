@@ -516,6 +516,7 @@ function RefundCard({ order }: { order: PaymentOrder }) {
   const refundable = refunds.data?.refundableMinor ?? null;
   const list = refunds.data?.refunds ?? [];
   const eligible =
+    order.source === "provider" &&
     (order.status === "paid" || order.status === "fulfilled") &&
     refundable !== null &&
     refundable > 0;
@@ -545,6 +546,7 @@ function RefundCard({ order }: { order: PaymentOrder }) {
       }
     >
       <div className="flex flex-col gap-4">
+        {order.source === "manual" ? <p className="text-sm text-muted">{t("orders.manualRefund")}</p> : null}
         {refundable !== null ? (
           <p className="text-sm text-muted">
             {t("orders.refundableRemainder")}{" "}

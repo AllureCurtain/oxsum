@@ -668,6 +668,7 @@
     "evidenceReference": "Reference",
     "evidenceReason": "Reason",
     "refunds": "Refunds",
+    "manualRefund": "This payment was recorded manually and has no online refund route. Contact the business to reconcile an out-of-band return. Any retained refund request is a review record, not confirmation that money was returned.",
     "requestRefund": "Request refund",
     "refundableRemainder": "Refundable remainder:",
     "noRefunds": "No refund requests on this order yet.",

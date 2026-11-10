@@ -40,6 +40,7 @@ function RefundRows() {
 
   return (
     <Card title={t("biz.refunds.listTitle")}>
+      {resolve.error instanceof Error ? <Banner tone="error">{resolve.error.message}</Banner> : null}
       {refunds.isError ? (
         <Banner tone="error">{t("biz.loadError")}</Banner>
       ) : (

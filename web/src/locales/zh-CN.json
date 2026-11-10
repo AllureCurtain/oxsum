@@ -668,6 +668,7 @@
     "evidenceReference": "参考号",
     "evidenceReason": "事由",
     "refunds": "退款",
+    "manualRefund": "这笔收款为人工登记，无法通过在线支付通道退款。请联系运营商核对线下退回款项。已有退款申请仅为审核记录，不代表资金已退回。",
     "requestRefund": "申请退款",
     "refundableRemainder": "可退余额:",
     "noRefunds": "此订单还没有退款申请。",

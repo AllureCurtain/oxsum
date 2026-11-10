@@ -52,6 +52,14 @@ changed terms conflicts.
 | Any write endpoint's `idempotencyKey` replayed with changed terms (order create, metering settle, integration-credential mint, manual receipt) | `409` | a key names one operation; identical terms return the original result, changed ones conflict — the original bytes win |
 | A settled metering hold settled again, or a hold that is not outstanding | `409` / `404` | the settlement is derived from the hold's key and lands at most once |
 
+## Manual receipt provider refunds — 409 `CONFLICT`
+
+An automated refund request or approval for a manual receipt, or an order
+without its pinned merchant/version/payment coordinates, returns `409` before
+new financial effects. Contact the business for out-of-band reconciliation.
+Old manual pending records are retained for review and never sent to a provider.
+This boundary does not imply a bank refund occurred or release historical money.
+
 ## Not routed — 404
 
 These paths do not exist in the router at all; a call falls through to the
