@@ -123,24 +123,24 @@ async fn correction_request(w: &World, amount: i64) -> crate::InvoiceCorrectionP
     }
 }
 
-async fn correction_world(legacy: bool) -> World {
-    let mut w = world(if legacy { 40 } else { 10 }, legacy)
-        .await
-        .expect("correction tests require PostgreSQL");
+async fn correction_world(legacy: bool) -> Option<World> {
+    let mut w = world(if legacy { 40 } else { 10 }, legacy).await?;
     if legacy {
         w.db.rollover_due_subscriptions().await.unwrap();
         w.journal = w.db.plan_journals(w.org, None, 50).await.unwrap().journals[0].journal_id;
     } else {
         recognize(&w, OffsetDateTime::now_utc()).await;
     }
-    w
+    Some(w)
 }
 
 #[tokio::test]
 async fn correction_preview_retains_refunds_and_has_no_financial_side_effects() {
     let _guard = TEST_LOCK.lock().await;
     for legacy in [false, true] {
-        let w = correction_world(legacy).await;
+        let Some(w) = correction_world(legacy).await else {
+            return;
+        };
         let request = correction_request(&w, 2_000_000).await;
         let before = facts(&w).await;
         let cash = net(&w, "Assets:Cash").await;
@@ -202,7 +202,9 @@ async fn correction_preview_retains_refunds_and_has_no_financial_side_effects() 
 async fn correction_preview_uses_remaining_void_payable_after_actual_returns() {
     let _guard = TEST_LOCK.lock().await;
     for legacy in [false, true] {
-        let w = correction_world(legacy).await;
+        let Some(w) = correction_world(legacy).await else {
+            return;
+        };
         let request = correction_request(&w, 2_000_000).await;
         w.db.void_invoice_journal(
             &w.owner,
@@ -239,7 +241,9 @@ async fn correction_preview_uses_remaining_void_payable_after_actual_returns() {
 async fn correction_preview_includes_void_chargeback_cash_and_refuses_unverified_sources() {
     let _guard = TEST_LOCK.lock().await;
     for legacy in [false, true] {
-        let w = correction_world(legacy).await;
+        let Some(w) = correction_world(legacy).await else {
+            return;
+        };
         let request = correction_request(&w, FEE).await;
         w.db.void_invoice_journal(
             &w.owner,
@@ -282,7 +286,9 @@ async fn correction_preview_includes_void_chargeback_cash_and_refuses_unverified
 #[tokio::test]
 async fn correction_preview_requires_current_funds_authority_and_exact_line_ownership() {
     let _guard = TEST_LOCK.lock().await;
-    let w = correction_world(false).await;
+    let Some(w) = correction_world(false).await else {
+        return;
+    };
     let request = correction_request(&w, 2_000_000).await;
     let person =
         w.db.register(NewUser {
@@ -338,7 +344,9 @@ async fn correction_preview_requires_current_funds_authority_and_exact_line_owne
             .await,
         Err(crate::WalletError::NotFound(_))
     ));
-    let foreign = correction_world(false).await;
+    let Some(foreign) = correction_world(false).await else {
+        return;
+    };
     let foreign_request = correction_request(&foreign, 2_000_000).await;
     assert!(matches!(
         w.db.preview_invoice_correction(&token, w.journal, &foreign_request)
@@ -377,7 +385,9 @@ async fn correction_preview_handles_unpaid_and_partial_debt_without_consuming_ol
     let _guard = TEST_LOCK.lock().await;
     for legacy in [false, true] {
         for lost_fiat in [100, 250] {
-            let w = correction_world(legacy).await;
+            let Some(w) = correction_world(legacy).await else {
+                return;
+            };
             lost_amount(&w, &w.order, lost_fiat).await;
             let request = correction_request(&w, 2_000_000).await;
             let preview =
