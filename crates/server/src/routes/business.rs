@@ -448,3 +448,20 @@ pub(crate) async fn monthly_statement(
         .business_monthly_statement(&personal_token(&headers)?, customer, statement)
         .await?)
 }
+
+pub(crate) async fn monthly_statement_action(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    axum::extract::Path(customer): axum::extract::Path<uuid::Uuid>,
+    ApiJson(request): ApiJson<oxsum_core::BusinessMonthlyStatementAction>,
+) -> ApiResult<oxsum_core::BusinessMonthlyStatementActionResult> {
+    ok(state
+        .db
+        .mutate_business_monthly_statement(
+            &personal_token(&headers)?,
+            &state.tenants,
+            customer,
+            &request,
+        )
+        .await?)
+}

@@ -7180,6 +7180,38 @@ paths:
         "401": { $ref: "#/components/responses/Error" }
         "403": { $ref: "#/components/responses/Error" }
         "404": { $ref: "#/components/responses/Error" }
+  /api/v1/business/customers/{organizationId}/monthly-statements/actions:
+    post:
+      operationId: mutateBusinessMonthlyStatement
+      summary: Generate or issue a reviewed monthly credit statement
+      description: Personal Business fundsWrite authority only. Generate one closed UTC month, or finalize one customer-bound draft using the reviewDigest returned by its latest detail. Changed totals, lines, terms or UTC review day refuse atomically with 409; regenerate and review again. A successful retry returns the original mutation and statement identifiers without repeating effects. New archived-customer writes refuse; historical retries still require current authority. The anchor, issued document, lines, event and immutable actor audit commit together. No client financial dates.
+      security: [{ sessionCookie: [] }]
+      x-consumption-key-access: denied
+      parameters:
+        - name: organizationId
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/BusinessMonthlyStatementAction" }
+      responses:
+        "200":
+          description: Original mutation receipt; statementId is null for an empty unbilled month
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data: { $ref: "#/components/schemas/BusinessMonthlyStatementActionResult" }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "409": { $ref: "#/components/responses/Error" }
   /api/v1/business/customers/{organizationId}/monthly-statements/{statementId}:
     get:
       operationId: getBusinessMonthlyStatement
@@ -16223,11 +16255,39 @@ components:
           maxItems: 100
           items: { $ref: "#/components/schemas/Statement" }
         nextCursor: { type: [string, "null"], format: uuid }
+    BusinessMonthlyStatementAction:
+      oneOf:
+        - type: object
+          additionalProperties: false
+          required: [action, period, idempotencyKey, reason]
+          properties:
+            action: { type: string, enum: [generate] }
+            period: { type: string, pattern: "^[0-9]{4}-[0-9]{2}$" }
+            idempotencyKey: { type: string, minLength: 1, maxLength: 200 }
+            reason: { type: string, minLength: 1, maxLength: 500 }
+        - type: object
+          additionalProperties: false
+          required: [action, statementId, reviewDigest, idempotencyKey, reason]
+          properties:
+            action: { type: string, enum: [finalize] }
+            statementId: { type: string, format: uuid }
+            reviewDigest: { type: string, pattern: "^[0-9a-f]{64}$" }
+            idempotencyKey: { type: string, minLength: 1, maxLength: 200 }
+            reason: { type: string, minLength: 1, maxLength: 500 }
+    BusinessMonthlyStatementActionResult:
+      type: object
+      required: [id, statementId]
+      properties:
+        id: { type: string, format: uuid, description: Immutable actor mutation receipt }
+        statementId: { type: [string, "null"], format: uuid }
     BusinessMonthlyStatementDetail:
       type: object
-      required: [statement, lines]
+      required: [statement, lines, reviewDigest]
       properties:
         statement: { $ref: "#/components/schemas/Statement" }
+        reviewDigest:
+          type: [string, "null"]
+          description: Draft-only review digest binding original id, customer, period, shown usage figures, itemization, terms and current UTC review day. Not independent source attestation. Finalization rejects changed reviewed figures atomically.
         lines:
           type: array
           maxItems: 1000

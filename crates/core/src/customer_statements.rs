@@ -28,6 +28,8 @@ pub struct BusinessMonthlyStatementDetail {
     pub statement: Statement,
     /// Stored itemization, never silently truncated.
     pub lines: Vec<StatementLine>,
+    /// Current-day commitment to the displayed draft; absent on issued documents.
+    pub review_digest: Option<String>,
 }
 
 async fn authorize(
@@ -124,13 +126,38 @@ impl Db {
         .await?
         .ok_or_else(|| WalletError::NotFound("monthly statement not found".into()))?;
         let document = display_standing(statements::statement_from_row(&row)?);
-        let bytes:i64=sqlx::query_scalar("SELECT COALESCE(SUM(octet_length(row_to_json(l)::text)),0)::bigint FROM (SELECT * FROM oxsum.statement_lines WHERE statement_id=$1 ORDER BY line_no LIMIT 1001) l").bind(statement).fetch_one(&mut *tx).await?;
+        let lines = self.monthly_lines_in(&mut tx, statement).await?;
+        let review_digest = if document.status == StatementStatus::Draft {
+            Some(crate::monthly_statement_actions::review_digest(
+                &document,
+                &lines,
+                OffsetDateTime::now_utc().date(),
+            )?)
+        } else {
+            None
+        };
+        tx.commit().await?;
+        let mut current = self.pool().begin().await?;
+        authorize(&mut current, token, customer).await?;
+        Ok(BusinessMonthlyStatementDetail {
+            statement: document,
+            lines,
+            review_digest,
+        })
+    }
+    /// Decode bounded original lines on the caller's snapshot or locked writer.
+    pub(crate) async fn monthly_lines_in(
+        &self,
+        tx: &mut Transaction<'_, Postgres>,
+        statement: Uuid,
+    ) -> Result<Vec<StatementLine>, WalletError> {
+        let bytes:i64=sqlx::query_scalar("SELECT COALESCE(SUM(octet_length(row_to_json(l)::text)),0)::bigint FROM (SELECT * FROM oxsum.statement_lines WHERE statement_id=$1 ORDER BY line_no LIMIT 1001) l").bind(statement).fetch_one(&mut **tx).await?;
         if bytes > 2 * 1024 * 1024 {
             return Err(WalletError::InvalidInput(
                 "monthly statement exceeds the 2 MiB detail limit".into(),
             ));
         }
-        let rows=sqlx::query("SELECT channel,model,turns,input_tokens,output_tokens,cached_tokens,reasoning_tokens,amount_minor FROM oxsum.statement_lines WHERE statement_id=$1 ORDER BY line_no LIMIT 1001").bind(statement).fetch_all(&mut *tx).await?;
+        let rows=sqlx::query("SELECT channel,model,turns,input_tokens,output_tokens,cached_tokens,reasoning_tokens,amount_minor FROM oxsum.statement_lines WHERE statement_id=$1 ORDER BY line_no LIMIT 1001").bind(statement).fetch_all(&mut **tx).await?;
         if rows.len() > 1000 {
             return Err(WalletError::InvalidInput(
                 "monthly statement exceeds the 1000-line detail limit".into(),
@@ -151,12 +178,6 @@ impl Db {
                 })
             })
             .collect::<Result<Vec<_>, sqlx::Error>>()?;
-        tx.commit().await?;
-        let mut current = self.pool().begin().await?;
-        authorize(&mut current, token, customer).await?;
-        Ok(BusinessMonthlyStatementDetail {
-            statement: document,
-            lines,
-        })
+        Ok(lines)
     }
 }

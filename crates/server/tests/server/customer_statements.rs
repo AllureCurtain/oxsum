@@ -147,3 +147,119 @@ async fn monthly_document_endpoints_are_bounded_scoped_and_read_only() {
         .unwrap();
     assert!(!exists);
 }
+
+async fn post(
+    app: &Router,
+    path: &str,
+    cookie: Option<&str>,
+    bearer: Option<&str>,
+    body: Value,
+) -> (StatusCode, Value) {
+    let mut req = Request::builder()
+        .method("POST")
+        .uri(path)
+        .header("content-type", "application/json");
+    if let Some(cookie) = cookie {
+        req = req.header("cookie", format!("oxsum_session={cookie}"));
+    }
+    if let Some(bearer) = bearer {
+        req = req.header("authorization", format!("Bearer {bearer}"));
+    }
+    let res = app
+        .clone()
+        .oneshot(req.body(Body::from(body.to_string())).unwrap())
+        .await
+        .unwrap();
+    let status = res.status();
+    (
+        status,
+        serde_json::from_slice(&res.into_body().collect().await.unwrap().to_bytes()).unwrap(),
+    )
+}
+#[tokio::test]
+async fn monthly_actions_reject_machine_dates_and_ambiguous_shapes_and_replay_receipts() {
+    let Some(url) = oxsum_testkit::suite_db_url("monthly_statements_http") else {
+        return;
+    };
+    let db = Db::connect(&url, 8).await.unwrap();
+    db.migrate().await.unwrap();
+    let owner = setup::owner(&db).await;
+    let customer = db
+        .register(NewUser {
+            email: format!("{}@example.com", Uuid::new_v4()),
+            password: "monthly mutation HTTP".into(),
+            organization_name: None,
+        })
+        .await
+        .unwrap();
+    let token = db
+        .login(&customer.user.email, "monthly mutation HTTP")
+        .await
+        .unwrap()
+        .into_session()
+        .token;
+    let org = customer.organization.id;
+    let app = oxsum_server::app(db.clone(), Config::new(Signup::Invite, None));
+    let path = format!("/api/v1/business/customers/{org}/monthly-statements/actions");
+    let request = json!({"action":"generate","period":"2026-09","idempotencyKey":"draft","reason":"monthly billing review"});
+    for (cookie, bearer, status) in [
+        (None, None, StatusCode::UNAUTHORIZED),
+        (Some(token.as_str()), None, StatusCode::FORBIDDEN),
+        (Some(owner.as_str()), Some(""), StatusCode::FORBIDDEN),
+        (
+            Some(owner.as_str()),
+            Some("oxs-int-fake"),
+            StatusCode::FORBIDDEN,
+        ),
+        (
+            Some(owner.as_str()),
+            Some(customer.api_key.secret.as_str()),
+            StatusCode::FORBIDDEN,
+        ),
+    ] {
+        assert_eq!(
+            post(&app, &path, cookie, bearer, request.clone()).await.0,
+            status
+        );
+    }
+    for extra in [
+        json!({"on":"2026-01-01"}),
+        json!({"statementId":Uuid::new_v4()}),
+        json!({"reviewDigest":"ab".repeat(32)}),
+    ] {
+        let mut invalid = request.clone();
+        invalid
+            .as_object_mut()
+            .unwrap()
+            .extend(extra.as_object().unwrap().clone());
+        assert_eq!(
+            post(&app, &path, Some(&owner), None, invalid).await.0,
+            StatusCode::BAD_REQUEST
+        );
+    }
+    let (status, first) = post(&app, &path, Some(&owner), None, request.clone()).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(first["data"]["statementId"].is_null());
+    let (status, repeated) = post(&app, &path, Some(&owner), None, request.clone()).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(first, repeated);
+    let mut invalid = request;
+    invalid["period"] = json!("2026-08");
+    assert_eq!(
+        post(&app, &path, Some(&owner), None, invalid).await.0,
+        StatusCode::CONFLICT
+    );
+    let request = json!({"action":"finalize","statementId":Uuid::new_v4(),"reviewDigest":"ab".repeat(32),"idempotencyKey":"finalize","reason":"review"});
+    assert_eq!(
+        post(&app, &path, Some(&owner), None, request.clone())
+            .await
+            .0,
+        StatusCode::NOT_FOUND
+    );
+    let mut invalid = request;
+    invalid.as_object_mut().unwrap().remove("reviewDigest");
+    assert_eq!(
+        post(&app, &path, Some(&owner), None, invalid).await.0,
+        StatusCode::BAD_REQUEST
+    );
+}

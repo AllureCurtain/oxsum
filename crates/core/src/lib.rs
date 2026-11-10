@@ -64,6 +64,7 @@ mod merchant_events;
 mod merchant_routes;
 mod merchants;
 mod metering;
+mod monthly_statement_actions;
 mod nonplan_chargebacks;
 mod nonplan_refunds;
 mod nonplan_returns;
@@ -401,3 +402,7 @@ pub use statement_payments::evidence::Effect as StatementCashEffect;
 pub use statement_payments::{StatementPaymentQuote, StatementPaymentSlice, StatementPaymentTerms};
 
 pub use customer_statements::{BusinessMonthlyStatementDetail, BusinessMonthlyStatementPage};
+
+pub use monthly_statement_actions::{
+    BusinessMonthlyStatementAction, BusinessMonthlyStatementActionResult,
+};

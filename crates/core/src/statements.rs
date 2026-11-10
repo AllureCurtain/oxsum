@@ -563,7 +563,7 @@ impl Db {
             .await
     }
 
-    async fn lock_monthly_statement_in(
+    pub(crate) async fn lock_monthly_statement_in(
         &self,
         tx: &mut Transaction<'_, Postgres>,
         organization: Uuid,
