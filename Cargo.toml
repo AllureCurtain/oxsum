@@ -24,7 +24,7 @@ doubleentry = { path = "crates/doubleentry", features = ["postgres", "serde", "w
 axum = "0.8"
 # Per-suite scratch databases for integration tests (issue #226): created on
 # first use, dropped when the suite's process exits.
-ctor = "0.2"
+dtor = "1.0"
 # Sealing channel credentials at rest: AES-256-GCM, and the base64 the stored record uses.
 aes-gcm = "0.11"
 base64 = "0.23"
