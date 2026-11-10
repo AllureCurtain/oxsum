@@ -9,6 +9,7 @@ mod evidence_json;
 mod keys;
 mod link_types;
 mod links;
+mod publication;
 mod read_types;
 mod reads;
 
@@ -32,3 +33,5 @@ pub use read_types::{
 pub use checkout_types::{
     ApplicationCheckoutRequest, ApplicationCheckoutSelection, ApplicationCheckoutTerms,
 };
+
+pub use publication::{ApplicationEvidencePublication, ApplicationEvidencePublishRequest};

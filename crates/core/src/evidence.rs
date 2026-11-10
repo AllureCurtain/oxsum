@@ -37,6 +37,9 @@
 #[path = "evidence/publication_tests.rs"]
 mod publication_tests;
 
+#[path = "evidence/application_publication.rs"]
+mod application_publication;
+
 use std::fmt::Write;
 
 use rand::Rng;
@@ -513,6 +516,15 @@ impl Db {
         from: time::Date,
         to: time::Date,
     ) -> Result<(), WalletError> {
+        let mut tx = self.pool().begin().await?;
+        sqlx::query("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY")
+            .execute(&mut *tx)
+            .await?;
+        if collector.bounded {
+            let sizes:Vec<i64>=sqlx::query_scalar(&format!("SELECT octet_length(to_jsonb(u)::text)::bigint FROM oxsum.usage_records u JOIN ledger_{tenant_id}.entries e ON e.entry_id=u.entry_id WHERE u.tenant_id=$1 AND e.booking_date >= $2 AND e.booking_date <= $3 AND u.status='settled' ORDER BY e.log_index LIMIT 1001"))
+                .bind(tenant_id).bind(from).bind(to).fetch_all(&mut *tx).await?;
+            application_publication::check_sizes(&sizes)?;
+        }
         let rows = sqlx::query(&format!(
             "SELECT u.request_id, u.entry_id, u.model, u.channel, u.price_version, u.kind, \
                     u.charged_minor, u.freeze_minor, u.input_tokens, u.output_tokens, \
@@ -522,13 +534,16 @@ impl Db {
              JOIN ledger_{tenant_id}.entries e ON e.entry_id = u.entry_id \
              WHERE u.tenant_id = $1 AND e.booking_date >= $2 AND e.booking_date <= $3 \
                AND u.status = 'settled' \
-             ORDER BY e.log_index"
+             ORDER BY e.log_index LIMIT $4"
         ))
         .bind(tenant_id)
         .bind(from)
         .bind(to)
-        .fetch_all(self.pool())
+        .bind(collector.row_limit())
+        .fetch_all(&mut *tx)
         .await?;
+        tx.commit().await?;
+        collector.check_rows(rows.len())?;
         for row in &rows {
             let entry_id: Uuid = row.try_get("entry_id")?;
             let settled_at: OffsetDateTime = row.try_get("settled_at")?;
@@ -567,7 +582,7 @@ impl Db {
                 artifact,
                 canonical,
                 vec![entry_id],
-            );
+            )?;
         }
         Ok(())
     }
@@ -579,6 +594,20 @@ impl Db {
         collector: &mut Collector,
         organization_id: Uuid,
     ) -> Result<(), WalletError> {
+        if collector.bounded {
+            let ids: Vec<Uuid> = sqlx::query_scalar(
+                "SELECT statement_id FROM oxsum.plan_statements WHERE organization_id=$1 AND state<>'open' ORDER BY created_at,statement_id LIMIT 1001",
+            )
+            .bind(organization_id)
+            .fetch_all(self.pool())
+            .await?;
+            collector.check_rows(ids.len())?;
+            for id in ids {
+                let detail = self.bounded_evidence_statement(organization_id, id).await?;
+                self.collect_one_statement(collector, &detail).await?;
+            }
+            return Ok(());
+        }
         let mut after = None;
         loop {
             let page = self.plan_statements(organization_id, after, 100).await?;
@@ -612,6 +641,14 @@ impl Db {
         sqlx::query("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY")
             .execute(&mut *tx)
             .await?;
+        if collector.bounded {
+            application_publication::check_statement(
+                &mut tx,
+                collector.organization_id,
+                detail.statement.statement_id,
+            )
+            .await?;
+        }
         let detail = crate::plan_statements::statement_snapshot_in(
             &mut tx,
             collector.organization_id,
@@ -691,7 +728,7 @@ impl Db {
             artifact.clone(),
             canonicalize(&artifact)?,
             entry_ids,
-        );
+        )?;
         Ok(())
     }
 
@@ -707,13 +744,11 @@ impl Db {
         if let Some(order_id) = detail.statement.paid_order_id {
             order_ids.push(order_id);
         }
-        if let Some(journal_id) = detail.statement.journal_id
-            && let Some(journal) = self
-                .plan_journal(collector.organization_id, journal_id)
-                .await?
-            && let Some(order_id) = journal.journal.paid_order_id
-        {
-            order_ids.push(order_id);
+        if let Some(journal_id) = detail.statement.journal_id {
+            let order:Option<Uuid>=sqlx::query_scalar("SELECT paid_order_id FROM oxsum.invoice_journals WHERE organization_id=$1 AND journal_id=$2 AND state<>'draft'").bind(collector.organization_id).bind(journal_id).fetch_optional(self.pool()).await?.flatten();
+            if let Some(order) = order {
+                order_ids.push(order);
+            }
         }
         order_ids.sort_unstable();
         order_ids.dedup();
@@ -732,25 +767,38 @@ impl Db {
     ) -> Result<(), WalletError> {
         let order_ids: Vec<Uuid> = sqlx::query_scalar(
             "SELECT order_id FROM oxsum.payment_orders \
-             WHERE organization_id = $1 ORDER BY created_at, order_id",
+             WHERE organization_id = $1 ORDER BY created_at, order_id LIMIT $2",
         )
         .bind(organization_id)
+        .bind(collector.row_limit())
         .fetch_all(self.pool())
         .await?;
+        collector.check_rows(order_ids.len())?;
         for order_id in order_ids {
             self.collect_one_order(collector, order_id).await?;
         }
         // Orderless adjustments: disputes join through their order, so the
         // orderless set is the org-scoped credit notes that name no order.
+        let mut tx = self.pool().begin().await?;
+        sqlx::query("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY")
+            .execute(&mut *tx)
+            .await?;
+        if collector.bounded {
+            let sizes:Vec<i64>=sqlx::query_scalar("SELECT octet_length(to_jsonb(r)::text)::bigint FROM oxsum.credit_notes r WHERE organization_id=$1 ORDER BY created_at,credit_note_id LIMIT 1001").bind(organization_id).fetch_all(&mut *tx).await?;
+            application_publication::check_sizes(&sizes)?;
+        }
         let notes: Vec<sqlx::postgres::PgRow> = sqlx::query(
             "SELECT credit_note_id, organization_id, order_id, refund_id, entry_id, \
                     amount_minor, reason, state, created_at \
              FROM oxsum.credit_notes \
-             WHERE organization_id = $1 ORDER BY created_at, credit_note_id",
+             WHERE organization_id = $1 ORDER BY created_at, credit_note_id LIMIT $2",
         )
         .bind(organization_id)
-        .fetch_all(self.pool())
+        .bind(collector.row_limit())
+        .fetch_all(&mut *tx)
         .await?;
+        tx.commit().await?;
+        collector.check_rows(notes.len())?;
         for row in &notes {
             self.collect_credit_note_row(collector, row)?;
         }
@@ -764,13 +812,28 @@ impl Db {
         collector: &mut Collector,
         order_id: Uuid,
     ) -> Result<(), WalletError> {
-        let Some(order) = self
-            .payment_order(collector.organization_id, order_id)
-            .await?
-        else {
-            return Ok(());
+        let (order, fulfillment, refunds) = if collector.bounded {
+            let Some(parts) = self
+                .bounded_evidence_order(collector.organization_id, order_id)
+                .await?
+            else {
+                return Ok(());
+            };
+            parts
+        } else {
+            let Some(order) = self
+                .payment_order(collector.organization_id, order_id)
+                .await?
+            else {
+                return Ok(());
+            };
+            (
+                order,
+                self.payment_fulfillment(order_id).await?,
+                self.order_refunds(collector.organization_id, order_id)
+                    .await?,
+            )
         };
-        let fulfillment = self.payment_fulfillment(order_id).await?;
         let artifact = serde_json::json!({
             "v": 1,
             "order": serde_json::to_value(&order).map_err(|e| invalid(&e.to_string()))?,
@@ -785,24 +848,32 @@ impl Db {
             artifact.clone(),
             canonicalize(&artifact)?,
             Vec::new(),
-        );
+        )?;
 
-        let refunds = self
-            .order_refunds(collector.organization_id, order_id)
-            .await?;
         for refund in &refunds {
             self.collect_refund(collector, refund).await?;
+        }
+        let mut tx = self.pool().begin().await?;
+        sqlx::query("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY")
+            .execute(&mut *tx)
+            .await?;
+        if collector.bounded {
+            let sizes:Vec<i64>=sqlx::query_scalar("SELECT octet_length(to_jsonb(r)::text)::bigint FROM oxsum.disputes r WHERE order_id=$1 AND organization_id=$2 ORDER BY created_at,dispute_id LIMIT 1001").bind(order_id).bind(collector.organization_id).fetch_all(&mut *tx).await?;
+            application_publication::check_sizes(&sizes)?;
         }
         let disputes: Vec<sqlx::postgres::PgRow> = sqlx::query(
             "SELECT dispute_id, order_id, organization_id, provider_dispute_id, \
                     amount_minor, currency, state, recharge_entry_id, created_at, updated_at \
              FROM oxsum.disputes \
-             WHERE order_id = $1 AND organization_id = $2 ORDER BY created_at, dispute_id",
+             WHERE order_id = $1 AND organization_id = $2 ORDER BY created_at, dispute_id LIMIT $3",
         )
         .bind(order_id)
         .bind(collector.organization_id)
-        .fetch_all(self.pool())
+        .bind(collector.row_limit())
+        .fetch_all(&mut *tx)
         .await?;
+        tx.commit().await?;
+        collector.check_rows(disputes.len())?;
         for row in &disputes {
             self.collect_dispute_row(collector, row)?;
         }
@@ -832,7 +903,7 @@ impl Db {
             artifact.clone(),
             canonicalize(&artifact)?,
             entry_ids,
-        );
+        )?;
         Ok(())
     }
 
@@ -877,7 +948,7 @@ impl Db {
             artifact.clone(),
             canonicalize(&artifact)?,
             recharge.into_iter().collect(),
-        );
+        )?;
         Ok(())
     }
 
@@ -911,7 +982,7 @@ impl Db {
             artifact.clone(),
             canonicalize(&artifact)?,
             entry_id.into_iter().collect(),
-        );
+        )?;
         Ok(())
     }
 
@@ -941,15 +1012,26 @@ impl Db {
         let map_root = Hash::from_bytes(map_root.as_slice().try_into().map_err(|_| {
             WalletError::InvalidInput("the anchor's map root is not 32 bytes".into())
         })?);
+        let mut tx = self.pool().begin().await?;
+        sqlx::query("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY")
+            .execute(&mut *tx)
+            .await?;
+        if collector.bounded {
+            let sizes:Vec<i64>=sqlx::query_scalar("SELECT octet_length(to_jsonb(r)::text)::bigint FROM oxsum.usage_day_log r WHERE tenant_id=$1 AND day >= $2 AND day <= $3 ORDER BY end_user,day LIMIT 1001").bind(tenant_id).bind(from).bind(to).fetch_all(&mut *tx).await?;
+            application_publication::check_sizes(&sizes)?;
+        }
         let leaves: Vec<(String, time::Date, Vec<u8>)> = sqlx::query_as(
             "SELECT end_user, day, leaf_hash FROM oxsum.usage_day_log \
-             WHERE tenant_id = $1 AND day >= $2 AND day <= $3 ORDER BY end_user, day",
+             WHERE tenant_id = $1 AND day >= $2 AND day <= $3 ORDER BY end_user, day LIMIT $4",
         )
         .bind(tenant_id)
         .bind(from)
         .bind(to)
-        .fetch_all(self.pool())
+        .bind(collector.row_limit())
+        .fetch_all(&mut *tx)
         .await?;
+        tx.commit().await?;
+        collector.check_rows(leaves.len())?;
         for (end_user, day, leaf) in leaves {
             let leaf = Hash::from_bytes(leaf.as_slice().try_into().map_err(|_| {
                 WalletError::InvalidInput("a stored day leaf is not 32 bytes".into())
@@ -968,7 +1050,7 @@ impl Db {
                 artifact.clone(),
                 canonicalize(&artifact)?,
                 vec![anchor_entry],
-            );
+            )?;
         }
         Ok(())
     }
@@ -1008,6 +1090,7 @@ impl Db {
         statement_id: Option<Uuid>,
         key: Option<&crate::HeadSigningKey>,
     ) -> Result<EvidenceBundleRow, WalletError> {
+        let bounded = collector.bounded;
         let organization_id = collector.organization_id;
         let scope_key = match kind {
             EvidenceKind::Period => format!(
@@ -1026,16 +1109,26 @@ impl Db {
         // Atomic insert chooses one immutable source snapshot. It commits
         // before any marker write; no pooled connection is held across Wallet
         // calls. Concurrent publishers therefore all anchor identical inputs.
+        if bounded {
+            application_publication::check_collector(&collector)?;
+        }
         sqlx::query("INSERT INTO oxsum.evidence_mint_inputs(scope_key,organization_id,collector) VALUES($1,$2,$3) ON CONFLICT(scope_key) DO NOTHING")
             .bind(&scope_key).bind(organization_id).bind(serde_json::to_value(&collector).map_err(|e|invalid(&e.to_string()))?)
             .execute(self.pool()).await?;
         if let Some(existing) = self.evidence_bundle(organization_id, bundle_id).await? {
             return Ok(existing);
         }
-        let frozen:serde_json::Value=sqlx::query_scalar("SELECT collector FROM oxsum.evidence_mint_inputs WHERE scope_key=$1 AND organization_id=$2")
-            .bind(&scope_key).bind(organization_id).fetch_one(self.pool()).await?;
+        let frozen:Option<serde_json::Value>=sqlx::query_scalar("SELECT CASE WHEN NOT $3 OR octet_length(collector::text)<=4194304 THEN collector END FROM oxsum.evidence_mint_inputs WHERE scope_key=$1 AND organization_id=$2")
+            .bind(&scope_key).bind(organization_id).bind(bounded).fetch_one(self.pool()).await?;
+        let frozen = frozen.ok_or_else(|| {
+            WalletError::Conflict("retained evidence capture exceeds application limits".into())
+        })?;
         let collector: Collector =
             serde_json::from_value(frozen).map_err(|e| invalid(&e.to_string()))?;
+        if bounded {
+            application_publication::check_collector(&collector)?;
+            application_publication::check_entries(self, wallet, &collector).await?;
+        }
         let include_upstream_cost = collector.include_upstream_cost;
         let (mut manifest_entries, artifacts, mut entry_ids) = collector.finish();
         manifest_entries.sort_by(|a, b| {
@@ -1110,6 +1203,11 @@ impl Db {
             key_hash,
         };
         let bundle_json = serde_json::to_vec(&bundle).map_err(|e| invalid(&e.to_string()))?;
+        if bounded && bundle_json.len() > 16 * 1024 * 1024 {
+            return Err(WalletError::Conflict(
+                "evidence exceeds the 16 MiB publication bound".into(),
+            ));
+        }
         let entry_count = bundle.entries.len() as i64;
 
         // A concurrent publisher can conflict on either the primary key or
@@ -1484,9 +1582,24 @@ struct Collector {
     manifest: Vec<ManifestEntry>,
     artifacts: serde_json::Map<String, serde_json::Value>,
     entry_ids: Vec<(Uuid, (String, String))>,
+    #[serde(default, skip_serializing)]
+    bounded: bool,
+    #[serde(default, skip_serializing)]
+    captured_bytes: usize,
 }
 
 impl Collector {
+    fn row_limit(&self) -> Option<i64> {
+        self.bounded.then_some(1001)
+    }
+    fn check_rows(&self, count: usize) -> Result<(), WalletError> {
+        if self.bounded && count > 1000 {
+            return Err(WalletError::Conflict(
+                "evidence source exceeds 1000 rows".into(),
+            ));
+        }
+        Ok(())
+    }
     fn new(organization_id: Uuid, include_upstream_cost: bool) -> Self {
         Self {
             organization_id,
@@ -1494,6 +1607,8 @@ impl Collector {
             manifest: Vec::new(),
             artifacts: serde_json::Map::new(),
             entry_ids: Vec::new(),
+            bounded: false,
+            captured_bytes: 0,
         }
     }
 
@@ -1507,7 +1622,17 @@ impl Collector {
         value: serde_json::Value,
         canonical: String,
         entry_ids: Vec<Uuid>,
-    ) {
+    ) -> Result<(), WalletError> {
+        self.captured_bytes = self.captured_bytes.saturating_add(canonical.len());
+        if self.bounded
+            && (self.manifest.len() >= 1000
+                || self.captured_bytes > 4 * 1024 * 1024
+                || self.entry_ids.len().saturating_add(entry_ids.len()) > 256)
+        {
+            return Err(WalletError::Conflict(
+                "evidence capture exceeds application limits".into(),
+            ));
+        }
         let digest = evidence_artifact_digest(kind, &canonical);
         self.manifest.push(ManifestEntry {
             kind: kind.to_owned(),
@@ -1531,6 +1656,7 @@ impl Collector {
             self.entry_ids
                 .push((entry_id, (kind.to_owned(), id.clone())));
         }
+        Ok(())
     }
 
     /// Answers the collected halves: manifest rows, the artifact map, and the

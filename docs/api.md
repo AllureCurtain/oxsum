@@ -991,3 +991,19 @@ through the existing application orders route. A foreign assignment is 404; a
 changed/nonpayable quote or already-standing period intent is 409. No standing
 portal order identifier is exposed; application order history returns only its
 own recoverable intents. This does not add named statement debt repayment.
+
+### Application evidence publication (#934)
+
+`POST /api/v1/integration/customers/{organizationId}/evidence-publications` uses
+explicit application-only `evidenceWrite`. Send `idempotencyKey`, `kind: period`
+with `from`/`to` (YYYY-MM-DD, up to 31 ended UTC days), or `kind: statement` with
+`statementId`. Mixed selections, open days and oversized spans refuse. Success
+returns `{requestId, status: "published", bundle}`; the descriptor has the normal
+evidence summary shape. `evidenceRead` separately downloads original bytes.
+
+Authorization is durable before publication. A failed response may leave an
+accepted request or completed marker; retry the identical operation instead of
+creating another scope. Changed payload/customer conflicts; missing scope is 403,
+foreign customer/statement 404, revoked/expired identity 401, archived initiation
+or private/oversized evidence 409. Accepted work may finish after revocation;
+response authority is rechecked. No share token, supplier cost or money mutation.

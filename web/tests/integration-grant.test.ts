@@ -57,3 +57,8 @@ test("frozen evidence requires an explicit application grant", () => {
 test("checkout grant requires an application namespace", () => {
   assert.throws(() => credentialRequest({ mode: "customers", applicationId: "", customerIds: ["customer"], scopes: ["checkoutWrite"], name: "", days: "7", reason: "checkout" }, "key", 0));
 });
+
+test("evidence publication is explicit and application-only", () => {
+  assert.throws(() => credentialRequest({ ...draft, mode: "customers", scopes: ["evidenceWrite"] }, "key", 0), /scopes/);
+  assert.deepEqual(credentialRequest({ ...draft, scopes: ["evidenceWrite"] }, "key", 0).scopes, ["evidenceWrite"]);
+});

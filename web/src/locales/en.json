@@ -2153,6 +2153,7 @@
         "entitlementsRead": "Read application entitlement, permitted models and customer sale terms",
         "customerLinkWrite": "Invite verified personal ownership of application accounts",
         "evidenceRead": "Read original frozen customer evidence",
+        "evidenceWrite": "Publish bounded application customer evidence",
         "checkoutWrite": "Initiate and recover application customer checkout"
       },
       "invalidApplication": "Enter a stable key, a name, a reason and an account limit from 1 to 10,000."

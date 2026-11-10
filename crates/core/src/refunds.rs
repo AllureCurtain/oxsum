@@ -234,7 +234,7 @@ pub struct OrderCreditNotePage {
 
 // The select list joins the refund's credit note (at most one — a resolution
 // issues exactly one) so every read carries `note_id` without a second query.
-const REFUND_SELECT: &str = "SELECT r.refund_id,r.order_id,r.organization_id,r.business_id,\
+pub(crate) const REFUND_SELECT: &str = "SELECT r.refund_id,r.order_id,r.organization_id,r.business_id,\
      r.amount_minor,r.display_amount_minor,r.display_currency,r.reason,r.state,\
      r.provider_refund_id,r.provider_payment_id,r.retry_count,r.next_retry_at,r.hyperswitch_body_id,\
      r.requested_by,r.resolved_by,r.audit_ref,r.request_key,r.created_at,r.updated_at,\
@@ -243,7 +243,7 @@ const REFUND_SELECT: &str = "SELECT r.refund_id,r.order_id,r.organization_id,r.b
      LEFT JOIN oxsum.credit_notes n ON n.refund_id = r.refund_id \
      LEFT JOIN oxsum.nonplan_refund_effects e ON e.refund_id=r.refund_id";
 
-fn refund_from_row(row: &PgRow) -> Result<OrderRefund, WalletError> {
+pub(crate) fn refund_from_row(row: &PgRow) -> Result<OrderRefund, WalletError> {
     Ok(OrderRefund {
         refund_id: row.try_get("refund_id")?,
         order_id: row.try_get("order_id")?,

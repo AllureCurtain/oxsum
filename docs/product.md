@@ -801,3 +801,15 @@ the collected currency amount. Purchased/promotional wallet amounts are zero.
 Verified payment alone authorizes the existing plan activation path. Cancellation,
 scheduled changes, early renewal and complimentary or foreign plans refuse.
 One outstanding intent per period is shared with portal checkout.
+
+### Application evidence publication (#934)
+
+The owner may explicitly grant application-only `evidenceWrite` to request one
+ended span (at most 31 days) or an owned issued statement. `evidenceRead` remains
+a separate download/list permission. An immutable publication request records
+current active-customer authority before evidence work; identical retries and
+rotated credentials recover the original deterministic scope. Later revocation
+blocks responses and future requests but cannot retract already accepted work.
+Supplier costs are excluded. Private or oversized existing captures refuse;
+original signed bytes and ledger markers are never rewritten. No share token or
+financial operation is granted.

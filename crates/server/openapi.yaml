@@ -6258,6 +6258,35 @@ paths:
         "404": { $ref: "#/components/responses/Error" }
         "409": { $ref: "#/components/responses/Error" }
         "503": { $ref: "#/components/responses/Error" }
+  /api/v1/integration/customers/{organizationId}/evidence-publications:
+    post:
+      operationId: publishApplicationEvidence
+      summary: publishApplicationEvidence
+      description: Explicit application-only evidenceWrite. Durably authorizes one exact ended span (at most 31 UTC days) or owned issued statement before publication; supplier costs always excluded. Current credential and active account required even on retry. A failed response can leave an accepted request; retry the identical key/selection. Later revocation cannot retract accepted work. Retains deterministic original scope bytes; private or oversized existing scope refuses without rewriting. No share token, payment or external request. evidenceRead is separately required to download.
+      security: [{ integrationCredential: [] }]
+      parameters:
+        - { in: path, name: organizationId, required: true, schema: { type: string, format: uuid } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ApplicationEvidencePublishRequest" }
+      responses:
+        "200":
+          description: Published original scope descriptor under current application authority
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data: { $ref: "#/components/schemas/ApplicationEvidencePublication" }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "409": { $ref: "#/components/responses/Error" }
+        "503": { $ref: "#/components/responses/Error" }
   /api/v1/integration/customers/{organizationId}/evidence-bundles:
     get:
       summary: List retained evidence for this application's customer
@@ -16827,6 +16856,23 @@ components:
         checkoutUrl: { type: [string, "null"] }
         publishableKey: { type: [string, "null"] }
         sdkUrl: { type: [string, "null"] }
+    ApplicationEvidencePublishRequest:
+      type: object
+      additionalProperties: false
+      required: [idempotencyKey, kind]
+      properties:
+        idempotencyKey: { type: string, minLength: 1, maxLength: 200 }
+        kind: { type: string, enum: [period, statement] }
+        from: { type: [string, "null"], format: date, description: Required only for period }
+        to: { type: [string, "null"], format: date, description: Required only for period; ended UTC day; at most 31 inclusive days }
+        statementId: { type: [string, "null"], format: uuid, description: Required only for statement }
+    ApplicationEvidencePublication:
+      type: object
+      required: [requestId, status, bundle]
+      properties:
+        requestId: { type: string, format: uuid }
+        status: { type: string, enum: [published] }
+        bundle: { $ref: "#/components/schemas/EvidenceBundleSummary" }
     ApplicationEvidencePage:
       type: object
       required: [applicationId, organizationId, bundles, nextCursor]
@@ -16965,7 +17011,7 @@ components:
         nextCursor: { type: [string, "null"] }
     IntegrationScope:
       type: string
-      enum: [customersRead, meteringWrite, customersProvision, billingRead, customersLifecycleWrite, customerKeysWrite, entitlementsRead, customerLinkWrite, evidenceRead, checkoutWrite]
+      enum: [customersRead, meteringWrite, customersProvision, billingRead, customersLifecycleWrite, customerKeysWrite, entitlementsRead, customerLinkWrite, evidenceRead, checkoutWrite, evidenceWrite]
     ProvisionCustomerRequest:
       type: object
       additionalProperties: false
@@ -16987,7 +17033,7 @@ components:
         idempotencyKey: { type: string, minLength: 1, maxLength: 200 }
         name: { type: [string, "null"], maxLength: 80 }
         applicationId: { type: [string, "null"], format: uuid, description: "Owner-selected stable application; customerIds must be empty. Only that application’s provisioned accounts are accessible. Omit for existing explicit grants." }
-        scopes: { type: array, minItems: 1, maxItems: 10, uniqueItems: true, items: { $ref: "#/components/schemas/IntegrationScope" } }
+        scopes: { type: array, minItems: 1, maxItems: 11, uniqueItems: true, items: { $ref: "#/components/schemas/IntegrationScope" } }
         customerIds: { type: array, minItems: 0, maxItems: 1000, uniqueItems: true, items: { type: string, format: uuid }, description: "Existing customers the credential may read or meter. Must be empty for an application grant. Legacy grants may be empty only for customersProvision alone." }
         expiresAt: { type: string, format: date-time }
         reason: { type: string, minLength: 1, maxLength: 500 }

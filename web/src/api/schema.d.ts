@@ -8433,6 +8433,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/integration/customers/{organizationId}/evidence-publications": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * publishApplicationEvidence
+         * @description Explicit application-only evidenceWrite. Durably authorizes one exact ended span (at most 31 UTC days) or owned issued statement before publication; supplier costs always excluded. Current credential and active account required even on retry. A failed response can leave an accepted request; retry the identical key/selection. Later revocation cannot retract accepted work. Retains deterministic original scope bytes; private or oversized existing scope refuses without rewriting. No share token, payment or external request. evidenceRead is separately required to download.
+         */
+        post: operations["publishApplicationEvidence"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/integration/customers/{organizationId}/evidence-bundles": {
         parameters: {
             query?: never;
@@ -22173,6 +22193,33 @@ export interface components {
             publishableKey: string | null;
             sdkUrl: string | null;
         };
+        ApplicationEvidencePublishRequest: {
+            idempotencyKey: string;
+            /** @enum {string} */
+            kind: "period" | "statement";
+            /**
+             * Format: date
+             * @description Required only for period
+             */
+            from?: string | null;
+            /**
+             * Format: date
+             * @description Required only for period; ended UTC day; at most 31 inclusive days
+             */
+            to?: string | null;
+            /**
+             * Format: uuid
+             * @description Required only for statement
+             */
+            statementId?: string | null;
+        };
+        ApplicationEvidencePublication: {
+            /** Format: uuid */
+            requestId: string;
+            /** @enum {string} */
+            status: "published";
+            bundle: components["schemas"]["EvidenceBundleSummary"];
+        };
         ApplicationEvidencePage: {
             /** Format: uuid */
             applicationId: string;
@@ -22349,7 +22396,7 @@ export interface components {
             nextCursor: string | null;
         };
         /** @enum {string} */
-        IntegrationScope: "customersRead" | "meteringWrite" | "customersProvision" | "billingRead" | "customersLifecycleWrite" | "customerKeysWrite" | "entitlementsRead" | "customerLinkWrite" | "evidenceRead" | "checkoutWrite";
+        IntegrationScope: "customersRead" | "meteringWrite" | "customersProvision" | "billingRead" | "customersLifecycleWrite" | "customerKeysWrite" | "entitlementsRead" | "customerLinkWrite" | "evidenceRead" | "checkoutWrite" | "evidenceWrite";
         ProvisionCustomerRequest: {
             idempotencyKey: string;
             /** @description Caller-chosen identifier within the application (integration route) or legacy business namespace (business route). */
@@ -23496,6 +23543,40 @@ export interface operations {
                 content: {
                     "application/json": {
                         data: components["schemas"]["ApplicationCheckoutResult"];
+                    };
+                };
+            };
+            400: components["responses"]["Error"];
+            401: components["responses"]["Error"];
+            403: components["responses"]["Error"];
+            404: components["responses"]["Error"];
+            409: components["responses"]["Error"];
+            503: components["responses"]["Error"];
+        };
+    };
+    publishApplicationEvidence: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                organizationId: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ApplicationEvidencePublishRequest"];
+            };
+        };
+        responses: {
+            /** @description Published original scope descriptor under current application authority */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: components["schemas"]["ApplicationEvidencePublication"];
                     };
                 };
             };
