@@ -93,7 +93,7 @@ jobs:
             --destination "ghcr.io/allurecurtain/oxsum:$IMAGE_TAG" \
             --receipt promotion-receipt.json
       - name: Retain immutable promotion receipt
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@v7
         with:
           name: image-promotion-receipt
           path: promotion-receipt.json

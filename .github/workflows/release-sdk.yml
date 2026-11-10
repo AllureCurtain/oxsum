@@ -80,7 +80,7 @@ jobs:
             --version "$PACKAGE_VERSION" --tag "$DISTRIBUTION_TAG" \
             --registry https://registry.npmjs.org/ --receipt sdk-publication-receipt.json
       - name: Retain exact-byte publication receipt
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@v7
         with:
           name: sdk-publication-receipt
           path: sdk-publication-receipt.json
