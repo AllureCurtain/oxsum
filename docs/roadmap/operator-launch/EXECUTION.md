@@ -619,7 +619,8 @@ This development handoff does not close exact-candidate J18 or external gates.
 
 ### Reviewed monthly staff issuance — #1011
 
-`feat/monthly-staff-issuance` joins #1008/#1010 from main `2ee70601`. Owner/finance
+Draft PR [#1012](https://github.com/AllureCurtain/oxsum/pull/1012),
+`feat/monthly-staff-issuance` at `163bd3e9`, joins #1008/#1010 from main `2ee70601`. Owner/finance
 can generate and issue customer-bound monthly statements with a current review
 digest, immutable actor receipt and atomic audit. 37 related and 10 final focused
 checks pass; the full 2,270-case run initially had 2 failures (migration inventory

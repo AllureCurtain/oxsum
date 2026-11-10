@@ -1,5 +1,7 @@
 # Reviewed Business monthly issuance (#1011)
 
+Draft PR [#1012](https://github.com/AllureCurtain/oxsum/pull/1012).
+Implementation source: `163bd3e9`.
 Branch: `feat/monthly-staff-issuance`, created from main `2ee70601` and composed
 with monthly read PR #1008 (`39acc911`) and atomic writer PR #1010 (`1e58bae5`).
 Migration 0129 adds immutable action-result coordinates. This branch needs both
