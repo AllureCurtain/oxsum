@@ -508,6 +508,7 @@ pub fn router(state: AppState) -> Router {
         )
         // Service-only customer billing read (billingRead, issue #788).
         .route("/business/customers/{organization_id}/monthly-statements", get(business::monthly_statements))
+        .route("/business/customers/{organization_id}/monthly-statements/{statement_id}/payments", post(business::monthly_payment))
         .route("/business/customers/{organization_id}/monthly-statements/actions", post(business::monthly_statement_action))
         .route("/business/customers/{organization_id}/monthly-statements/{statement_id}", get(business::monthly_statement))
         .route(

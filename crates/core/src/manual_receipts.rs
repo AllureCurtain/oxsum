@@ -33,6 +33,18 @@ pub struct ManualReceiptRequest {
     pub reason: String,
 }
 
+/// Map the shared reference constraint without disclosing another source.
+pub(crate) fn payment_reference_error(error: sqlx::Error) -> WalletError {
+    if error
+        .as_database_error()
+        .is_some_and(|db| db.constraint() == Some("payment_receipt_references_pkey"))
+    {
+        WalletError::Conflict("payment reference is already recorded".into())
+    } else {
+        error.into()
+    }
+}
+
 impl Db {
     /// Records a verified payment under trusted authority, preserving its terms
     /// across retries. A crash after authorization is recovered by the identical
@@ -75,7 +87,8 @@ impl Db {
         .bind(&request.reason)
         .bind(request.amount_minor)
         .execute(&mut *tx)
-        .await?;
+        .await
+        .map_err(payment_reference_error)?;
         let row = sqlx::query(
             "SELECT receipt_id, reference, reason, amount_minor FROM oxsum.manual_receipts \
              WHERE organization_id = $1 AND idempotency_key = $2",

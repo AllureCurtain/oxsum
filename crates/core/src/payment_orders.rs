@@ -866,9 +866,10 @@ impl Db {
     /// webhook-paid order takes, never a ledger bypass.
     ///
     /// `token` is the staff personal session; `FundsWrite` is required inside
-    /// the order's own transaction. `evidence.reference` is unique per business
-    /// among manual orders — a receipt already recorded is a `409`, never a
-    /// second grant — and the `(organization, idempotencyKey)` replay returns
+    /// the order's own transaction. `evidence.reference` shares one uniqueness
+    /// registry with deployment receipts and staff monthly payments — a receipt
+    /// already recorded is a `409`, never a second grant — and the
+    /// `(organization, idempotencyKey)` replay returns
     /// the standing order exactly like a provider order's create.
     ///
     /// The order carries no merchant and no expected-payment binding: nothing
@@ -992,7 +993,7 @@ impl Db {
                     "this receipt reference already funds a manual order".into(),
                 );
             }
-            WalletError::Storage(e.into())
+            crate::manual_receipts::payment_reference_error(e)
         })?;
         let created = order_in(&mut tx, order_id)
             .await?

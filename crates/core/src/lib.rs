@@ -65,6 +65,7 @@ mod merchant_routes;
 mod merchants;
 mod metering;
 mod monthly_payments;
+mod monthly_repayments;
 mod monthly_statement_actions;
 mod nonplan_chargebacks;
 mod nonplan_refunds;
@@ -407,3 +408,6 @@ pub use customer_statements::{BusinessMonthlyStatementDetail, BusinessMonthlySta
 pub use monthly_statement_actions::{
     BusinessMonthlyStatementAction, BusinessMonthlyStatementActionResult,
 };
+
+/// Verified staff monthly payment intent and immutable receipt.
+pub use monthly_repayments::{BusinessMonthlyPaymentRequest, BusinessMonthlyPaymentResult};

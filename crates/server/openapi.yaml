@@ -7212,6 +7212,36 @@ paths:
         "403": { $ref: "#/components/responses/Error" }
         "404": { $ref: "#/components/responses/Error" }
         "409": { $ref: "#/components/responses/Error" }
+  /api/v1/business/customers/{organizationId}/monthly-statements/{statementId}/payments:
+    post:
+      operationId: recordBusinessMonthlyPayment
+      summary: Record verified money toward monthly credit debt
+      description: Personal Business fundsWrite authority only. Confirm an exact positive credit amount, verified bank/payment reference and reason against this customer's issued monthly statement. The amount is capped at unpaid credit draws through this month, including older unbilled draws; only Cash to CreditLine is posted. Payment references are globally unique across monthly repayments and manual top-ups. Cash, FIFO standings/events, reference claim and immutable actor audit commit together. Exact successful retries return the original receipt even after full payment or customer archival, under current authority. New archived-customer writes, changed idempotency terms and reused payment references refuse. No PSP call, currency conversion, wallet excess or plan allocation occurs. No client financial dates.
+      security: [{ sessionCookie: [] }]
+      x-consumption-key-access: denied
+      parameters:
+        - { name: organizationId, in: path, required: true, schema: { type: string, format: uuid } }
+        - { name: statementId, in: path, required: true, schema: { type: string, format: uuid } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/BusinessMonthlyPaymentRequest" }
+      responses:
+        "200":
+          description: Original immutable payment receipt
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data: { $ref: "#/components/schemas/BusinessMonthlyPaymentResult" }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "409": { $ref: "#/components/responses/Error" }
   /api/v1/business/customers/{organizationId}/monthly-statements/{statementId}:
     get:
       operationId: getBusinessMonthlyStatement
@@ -16253,6 +16283,26 @@ components:
           maxItems: 100
           items: { $ref: "#/components/schemas/Statement" }
         nextCursor: { type: [string, "null"], format: uuid }
+    BusinessMonthlyPaymentRequest:
+      type: object
+      additionalProperties: false
+      required: [amountMinor, reference, reason, idempotencyKey]
+      properties:
+        amountMinor: { type: integer, format: int64, minimum: 1, maximum: 9007199254740991, description: Exact credit minor units; server caps against unpaid credit through the selected month }
+        reference: { type: string, minLength: 1, maxLength: 200, description: Verified payment reference; preserve exact case and spacing, with no leading/trailing whitespace }
+        reason: { type: string, minLength: 1, maxLength: 500 }
+        idempotencyKey: { type: string, minLength: 1, maxLength: 200 }
+    BusinessMonthlyPaymentResult:
+      type: object
+      required: [id, organizationId, statementId, amountMinor, reference, entryId, contentHash]
+      properties:
+        id: { type: string, format: uuid, description: Immutable actor mutation receipt }
+        organizationId: { type: string, format: uuid }
+        statementId: { type: string, format: uuid }
+        amountMinor: { type: integer, format: int64 }
+        reference: { type: string }
+        entryId: { type: string, format: uuid }
+        contentHash: { type: string, pattern: "^[0-9a-f]{64}$", description: Original repayment ledger entry hash }
     BusinessMonthlyStatementAction:
       oneOf:
         - type: object
