@@ -2,6 +2,12 @@
 
 ## Continuation: aggregate test execution (#1003)
 
+The combined repair source `532d766c` (including #975) passed full CI
+[42853550892](https://github.com/AllureCurtain/oxsum/actions/runs/42853550892):
+2,230 ordinary, 26 shared and 37 PostgreSQL engine tests, plus fast/build jobs.
+This is branch evidence; independent approval, main integration and final
+candidate gates remain outstanding.
+
 Main `2ee70601` retains the new single integration binary per core/server crate.
 CI `42819010276` failed all shards before execution because it selected removed
 binary names; its process-shared step found no old executables and ran no tests.

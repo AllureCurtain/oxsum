@@ -52,3 +52,22 @@ fixture: an old manually received payment no longer has a provider refund route.
 PR #975 repairs that assertion. The run is **failed**, with 481 planned shard-1
 cases not executed after fail-fast; it is not full green or release evidence.
 Independent approval and protected integration remain pending.
+
+## Complete green combination with the historical fixture repair
+
+PR #975's independently scoped fixture repair was merged into this branch without
+changing its production code. Manual [run 42853550892](https://github.com/AllureCurtain/oxsum/actions/runs/42853550892)
+executed exact source `532d766c86a0f50ff001ceb4ff2c09eb38f034ee` and completed
+**successfully**. All required jobs and their actual full-tier steps executed:
+
+- Ordinary shards: **749 + 745 + 736 = 2,230 passed**.
+- Separately selected shared suites: **3 + 2 + 12 + 9 = 26 passed**.
+- PostgreSQL engine conformance: **37 passed**.
+- Pinned format, strict Clippy, library/doc tests, frontend and WASM builds passed.
+
+The repaired bundle-upgrade case executed successfully in shard 1. Six existing
+opt-in workspace cases remain ignored; shard skip totals also include tests
+assigned to other shards and separately executed shared suites. This supersedes
+the failed run as combined development evidence. It does **not** certify main or
+a release candidate: normal independent approval, prerequisite #975 integration,
+this PR's integration and exact merged-candidate gates remain outstanding.

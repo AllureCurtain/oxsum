@@ -4,7 +4,7 @@ Updated: 2026-11-10
 
 ## In progress
 
-- [ ] [#1003](https://github.com/AllureCurtain/oxsum/issues/1003) — Restored aggregate-aware CI selection and fail-closed process-shared execution. Real inventory preserves 2,230 ordinary/26 shared tests; all 26 shared tests and six runner fixture groups passed. Review/integration pending.
+- [ ] [#1003](https://github.com/AllureCurtain/oxsum/issues/1003) — Restored aggregate-aware CI selection and fail-closed process-shared execution. Combined with prerequisite #975, full CI 42853550892 passed 2,230 ordinary, 26 shared and 37 PostgreSQL engine tests plus all fast/build jobs. Independent review and protected integration pending.
 
 - [ ] [#969](https://github.com/AllureCurtain/oxsum/issues/969) — Actual browser bundle purchase/return and paid-plan activation, fee/payment statement, early-renewal refusal and cancellation service passed with local signed fixtures. Stale plan consumption display is #973; statement correction/dispute, embedded and candidate/external gates remain. [Evidence](docs/roadmap/operator-launch/evidence/commercial-browser/README.md).
 
