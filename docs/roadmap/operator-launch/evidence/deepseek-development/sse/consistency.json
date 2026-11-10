@@ -1,0 +1,24 @@
+{
+  "note": "oxsum/ledgers/90799f1872314dc79f868a444c00503a\n5\nhaYuiSxbRjxUiwn08oPoVop99RbhP//FYrU1LI6JXZ0=\n\n\u2014 oxsum/tree-heads IA2z7nihEFsLnviqjHBFsoaVPZdM8iO4gTPAhUjvUl4luEijzkIKsj5MSp9IDrbh6z6DOUjt7mM8CzMjBhIZ9zSutwI=\n",
+  "keyName": "oxsum/tree-heads",
+  "publicKey": "BvyuYe72xBB/7ZdBQQXBP5WrB5vQbkTlGj+ETkPzDb0=",
+  "keyHash": "200db3ee",
+  "oldHead": {
+    "size": 3,
+    "root": "7e9252ad80005b5d0f5989856c00981b918598d97a6f0a7c0c3c32d1a0147775"
+  },
+  "head": {
+    "size": 5,
+    "root": "85a62e892c5b463c548b09f4f283e8568a7df516e13fffc562b5352c8e895d9d"
+  },
+  "proof": {
+    "oldSize": 3,
+    "newSize": 5,
+    "path": [
+      "8eb7233474561904fd0cd7f2b4ed3921ce60b6c762b9fb76296b982561478494",
+      "7bbb2b791d356958b7b978c004d9eb3a3e29a29976e64ad3ebd00fa4a4915b08",
+      "2484196c912278b29c806ea1fd0d23bf4d5060cceb94631aa5f49591367db1db",
+      "c456df15d50bc5dffa0ecefdd621633328cf036ce6e607ba7266b152115179f6"
+    ]
+  }
+}

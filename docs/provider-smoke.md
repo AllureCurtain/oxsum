@@ -103,3 +103,13 @@ final-candidate acceptance. Other protocols, live client cancellation, missing
 provider usage, external fallback and PSP certification require their own named
 scenario/access evidence. A successful unauthenticated TLS HEAD proves network
 reachability only, and uses no inference attempt.
+
+
+## Executed development checkpoint (2026-11-10)
+
+The [#944 development exercise](roadmap/operator-launch/evidence/deepseek-development.md)
+passed whole/SSE against source `1e3dc087` and independently verified both exact
+settlements offline. It consumed two of the original five attempts; the durable
+journal retains CNY0.016896 reservations and CNY0.000052 conservative peak-rate
+usage cost. Those completed scenarios are not repeatable automatically. This
+checkpoint does not satisfy final-candidate or unexercised protocol/scenario rows.

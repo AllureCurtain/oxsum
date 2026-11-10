@@ -1,6 +1,6 @@
 # Operator launch execution ledger
 
-Updated: 2026-11-09 (Asia/Shanghai). Owner: this task. Umbrella: [#725](https://github.com/AllureCurtain/oxsum/issues/725).
+Updated: 2026-11-10 (Asia/Shanghai). Owner: this task. Umbrella: [#725](https://github.com/AllureCurtain/oxsum/issues/725).
 
 Read this file on every resume, then reconcile actual main, worktrees, issues/PRs, CI and the persistent provider budget before proceeding. The [accepted contract](CONTRACT.md) preserves every N/R/J requirement; the [baseline evidence](evidence/baseline.md) distinguishes observed results from pending candidate acceptance.
 
@@ -33,7 +33,9 @@ Read this file on every resume, then reconcile actual main, worktrees, issues/PR
   #875 evidence budgeting remain before complete customer readiness. #894's
   focused-validation policy integrated in PR #895 (`397d07b0`).
 - #869 bounded provider tooling integrated in PR #871 (`2c2a739d`); actual
-  provider activity remains 0/5 attempts and CNY 0. #872 portal/embedded pilot
+  provider development exercise #944 passed whole/SSE with 2/5 attempts,
+  CNY0.016896 retained reservations and CNY0.000052 peak-rate usage estimate.
+  [Evidence](evidence/deepseek-development.md). #872 portal/embedded pilot
   kits integrated in PR #874 (`e36d4303`); actual independent participants and
   J17 results remain absent.
 
@@ -87,7 +89,7 @@ Read this file on every resume, then reconcile actual main, worktrees, issues/PR
 - The complete non-fail-fast local run on `c97e5f7` passed 1,871 tests, failed five and skipped nine existing opt-in/known-defect tests. Main [CI 42451016182](https://github.com/AllureCurtain/oxsum/actions/runs/42451016182) also failed integration shards. The original repaired paths passed; the remaining migration/inventory/refund-fixture/journal-order failures are repaired under [#805](https://github.com/AllureCurtain/oxsum/issues/805). PR [#807](https://github.com/AllureCurtain/oxsum/pull/807) integrated these repairs as `4c9f20e`. Its [evidence](evidence/integrated-regressions.md) records the repaired combined gate: **1,877 passed, zero failed, nine existing opt-in/known-defect skips** before submission. Main CI [42455448333](https://github.com/AllureCurtain/oxsum/actions/runs/42455448333) on `4c9f20e` and [42456337788](https://github.com/AllureCurtain/oxsum/actions/runs/42456337788) on `0b06184` subsequently completed successfully; this is not an assertion that conditional engine checks executed. No candidate acceptance follows from a fast PR or path-filtered run.
 - N00, N01, N02, N07 and N08 owner issues are closed; the other 17 unit issues remain open. Issue closure and merged implementation do not certify complete journeys. N07/N08 still need browser acceptance, and all new software needs final candidate validation.
 - Daily revenue recognition/reporting passed the complete #838 validation in PR #851; independent runtime reconciliation #848, explicit statement repayment, customer readiness, full embedded lifecycle and final candidate acceptance remain. Model/routing and merchant setup/selection software are integrated. Image promotion, digest deployment and original SDK publication tooling are integrated (#806/#813/#816), with local real-npm evidence; no public publication has been performed. H1–H6 repairs, historical compensation #809 and lifecycle locking #811 are integrated; their original checkpoints remain in the dated history below. [Forward-usage evidence](evidence/plan-usage-once.md).
-- No candidate for this stage has been frozen. The last observed successful candidate run is [42338752086](https://github.com/AllureCurtain/oxsum/actions/runs/42338752086) for historical SHA `813c788`; it does not validate these changes. Provider budget remains **0/5 attempts, CNY 0**.
+- No candidate for this stage has been frozen. The last observed successful candidate run is [42338752086](https://github.com/AllureCurtain/oxsum/actions/runs/42338752086) for historical SHA `813c788`; it does not validate these changes. Provider budget is **2/5 attempts, CNY0.016896 reserved, CNY0.000052 peak-rate usage estimate** after #944.
 - Continuation follows the user's November 8 instruction: repair the integrated regressions and stale records first, then finish one focused issue through checks, PR and normal protected merge before allowing a backlog to accumulate. Independent work may proceed in parallel; heavy Cargo jobs share one serialized build slot. Required protection and actual validation are never bypassed.
 Verified local/remote main is `5285fc0b3bc825b0707bba675ea5d1ff0efa903d`.
 [Integration status](evidence/integration-status-november-nine.md) records the
@@ -151,7 +153,7 @@ Status describes implementation: `planned`, `in_progress`, or `integrated`. `int
 | N11 [#737](https://github.com/AllureCurtain/oxsum/issues/737) — Daily revenue and reconciliation | N00; #779 integration | in_progress | [#783](https://github.com/AllureCurtain/oxsum/pull/783) / `2e11e9b`; [#784](https://github.com/AllureCurtain/oxsum/pull/784) / `65e8b07` | #838 implements immutable v2 paid-activation invoices, completed-day recognition, source-linked refund/void/dispute effects, financial clocks and captured evidence. PR #851 passed 1,995 complete workspace checks on `561bfb5` plus 25 new accounting/fault, 49 HTTP, 12 upgrade and 93 verifier checks, strict Clippy/wasm and independent review and is integrated. Historical compensation #809 and lifecycle locking #811 are integrated. #848 independent reconciliation integrated in PR #896 (`a60e14ca`) after 2,098 workspace checks and review; browser/candidate conservation acceptance remains. [Reconciliation evidence](evidence/independent-reconciliation.md). [Daily evidence](evidence/daily-plan-recognition.md); [retained refund evidence](evidence/plan-refund-conservation.md). |
 | N12 [#738](https://github.com/AllureCurtain/oxsum/issues/738) — Independent evidence delivery | N09–N11 | in_progress | #858 | Retained-head WASM verification integrated in PR #861 (`b67a2d3b`); period/statement portal #863 integrated in PR #865 (`cbabfafd`); complete discoverable retained trust/evidence flows and genuine candidate exports verified offline with rejection matrix. |
 | N13 [#739](https://github.com/AllureCurtain/oxsum/issues/739) — Artifact promotion and deployment | N00 | in_progress | [#753](https://github.com/AllureCurtain/oxsum/pull/753) / `1cc5e0a` | Byte/provenance gate and original config/layer promotion integrated (#806 / `0b06184`), with isolated registry transport checks passed. #810 explicit digest deployment/runtime evidence and compatible rollback are integrated in #813 (`941434a`); 16 focused tests passed. #814 original SDK publication integrated in #816 (`45a833e`), with 11 checks and real npm loopback-registry byte/lifecycle/conflict/redirect rehearsal passed. Actual candidate publication/runtime/rollback acceptance remains. [Gate](evidence/candidate-format.md); [promotion](evidence/candidate-image-promotion.md); [deployment](evidence/candidate-digest-deploy.md); [SDK publication](evidence/candidate-sdk-publication.md). |
-| N14 [#740](https://github.com/AllureCurtain/oxsum/issues/740) — Selected real-provider certification | N04,N05,N12 | in_progress | — | #869 bounded current-authority guard and isolated artifact runner passed boundary tests and local whole/SSE/offline rehearsal. Current pricing/public TLS verified; shared real-provider allowance remains 0/5, CNY 0. Tooling integrated in PR #871 (`2c2a739d`); actual two calls and final-candidate evidence remain. [Evidence](evidence/bounded-provider-smoke.md). |
+| N14 [#740](https://github.com/AllureCurtain/oxsum/issues/740) — Selected real-provider certification | N04,N05,N12 | in_progress | — | #869 bounded current-authority guard and isolated artifact runner passed boundary tests and local whole/SSE/offline rehearsal. Tooling integrated in PR #871 (`2c2a739d`); #944 executed whole/SSE on frozen development source `1e3dc087`, both HTTP 200 with exact settlement and offline proofs. Budget is 2/5 attempts; final-candidate and other matrix rows remain. [Evidence](evidence/deepseek-development.md). |
 | N15 [#741](https://github.com/AllureCurtain/oxsum/issues/741) — Primary PSP certification | N06,N10,N12 | planned | — | Complete connector/local fixture preparation. Genuine PSP sandbox credential is absent; sandbox and live verdicts remain separate and live payment is excluded. |
 | N16 [#742](https://github.com/AllureCurtain/oxsum/issues/742) — Capacity, fairness and soak | Stable N04–N12,N21 | in_progress | [#773](https://github.com/AllureCurtain/oxsum/pull/773) / `81c1500` | Job clock fixture is fixed; no new capacity/soak pass follows. Preserve D09 targets and eight-hour workload; run local diagnostics and obtain qualifying reference environment. |
 | N17 [#743](https://github.com/AllureCurtain/oxsum/issues/743) — Diagnostics, upgrade and restore | N13; final after N16 | in_progress | — | #819 diagnostic endpoint/collector integrated in #825 (`22e2ad7`), with final eight Rust and ten loopback CLI checks passed. #827 private backup/restore integrated in #832 (`8d18170`). #833 development-artifact upgrade/drain/separate restore/same-schema rollback and three offline old/new proof sets integrated in PR #839 (`8a51109c`). [Runtime evidence](evidence/artifact-recovery.md). Active-operation recovery, candidate upgrade, separate restore and compatible rollback rehearsals remain; retain keys/old proofs and measure results. [Diagnostic evidence](evidence/operator-diagnostics.md). |
@@ -211,7 +213,7 @@ These verdicts are final integrated requirement acceptance, not implementation s
 | J05 | N06/#732, N15/#741 | local switch fixture passed; browser/PSP pending | [Dummy-connector payment and locally signed event](evidence/hyperswitch-sandbox.md) passed. Complete merchant selection and automatic callback/browser flow; no genuine PSP verdict. |
 | J06 | N07/#733 | local SMTP/domain passed; browser pending | [Customer invitation](evidence/customer-invitations.md) tests cover consent, registration, delivery state and replay. Run the complete recipient/owner browser journey with local mail capture. |
 | J07 | N08/#734 | local SMTP/domain passed; browser pending | [Staff invitation](evidence/staff-invitations.md) tests cover role/email authority, revocation and mail-once. Run finance/support browser acceptance under their own sessions. |
-| J08 | N09/#735, N14/#740 | real provider unperformed; readiness software pending | Implement N09 and the bounded current-authority N14 harness; retain the shared 0/5 attempt budget until a priced reservation precedes a request. |
+| J08 | N09/#735, N14/#740 | real whole/SSE development calls passed; full journey pending | #944 passed exact settlement/offline proofs on frozen development artifacts. Finish readiness/browser and final-candidate acceptance; preserve the shared 2/5 consumed attempt journal. |
 | J09 | N10/#736, N15/#741 | local recovery fixtures passed; complete journey pending | [Order recovery](evidence/hyperswitch-recovery.md), [refund correlation](evidence/refund-correlation.md) and [legacy recovery](evidence/deposit-refund-recovery.md) have development evidence. Revalidate integrated recovery, full browser roles and actual PSP tier separately. |
 | J10 | N10/#736, N11/#737 | partial implementation; integrated regressions/finance pending | [Paid plan authority](evidence/plan-payment-authority.md) and [bundle offers](evidence/bundle-offers.md) integrated; #793/#795 and #802 repairs integrated; #803 integrated in #815; complete #809/#811, implement N11, and complete lifecycle/browser checks. |
 | J11 | N10/#736, N11/#737 | software pending | Implement #777 scoped partial/full statement repayment with exact allocation, outstanding-debt reservations, reason-specific restoration, refund/dispute recovery and browser flow. |
@@ -229,7 +231,7 @@ These verdicts are final integrated requirement acceptance, not implementation s
 | --- | --- | --- |
 | E0 local development | ready: toolchain, PostgreSQL 17, isolated worktrees | Serialize heavy Cargo work; preserve other projects/resources |
 | E1 browser/mail fixtures | original task space 4 is still absent on current inspection; only unrelated user-owned spaces 0/1 exist; local Mailpit capture ready | Browser skill requires explicit user direction before claiming another space or replacing the unavailable task space. Keep browser acceptance pending while independent software proceeds; source/build checks do not replace it |
-| E2 DeepSeek | credential privately available; no calls made | N14 verify current pricing, bound/reserve attempts, resolve DNS without weakening public-address policy |
+| E2 DeepSeek | #944 whole/SSE passed; two attempts consumed | Preserve completed scenario records; candidate/other scenarios remain separate and cannot automatically repeat this exercise |
 | E3 Hyperswitch | pinned task stack running; fresh keys/merchant/dummy connector persist | Prior public HTTPS tunnel attempts failed TLS; complete merchant UI/selection and callback topology; #760 retry safety has integrated and needs candidate revalidation |
 | Genuine PSP sandbox | external_pending: usable test credential absent | N15 needs Stripe test-account API credential in the fresh Hyperswitch test connector; fixture tests proceed |
 | E4 reference capacity | external_pending for qualifying host; local diagnostics pending | The last observed aarch64/4-GiB Docker environment is not native amd64/4-vCPU/8-GiB. Do not relabel emulation or lower D09 thresholds |
@@ -246,7 +248,7 @@ Durable machine record (outside worktrees, ignored): `local-notes/operator-launc
 
 | Attempts used / maximum | Reserved CNY | Reconciled CNY | Price verification | Result |
 | --- | --- | --- | --- | --- |
-| 0 / 5 | 0 | 0 | pending before first call | No live inference or credential authentication attempted |
+| 2 / 5 | 0.016896 | 0.000052 peak-rate usage estimate | Official model/price/thinking docs read 2026-11-10 | Whole and SSE HTTP 200, 9 input/1 output tokens each; exact settlement and offline proof passed (#944) |
 
 Use integer CNY millionths in the machine record (`100000` ceiling). Before sending, record provider/model/price source/date, serialized input bound, output cap, reserved cost and attempt identity. Afterward retain sanitized usage/result/cost evidence. Account for ambiguous outcomes conservatively; oxsum wallet freezes do not enforce the upstream cash budget.
 
@@ -454,3 +456,16 @@ three final core cases, strict changed-crate Clippy, five contract checks,
 codegen/build and formatting passed. [Evidence](evidence/application-statement-reads.md).
 Independent review and protected integration remain. The independent
 separate-store application, notification-stack integration and candidate J18 remain.
+## Bounded provider development exercise (#944)
+
+`test/provider-certification` starts at latest main `5285fc0b` with build-only
+prerequisite #926 (`1e3dc087`). Runtime production code is unchanged from main.
+Current official DeepSeek pricing was reread on 2026-11-10: deepseek-flash /
+DeepSeek-V4.1-Flash-1017, peak cache-miss input CNY2 and output CNY8 per million
+tokens. The existing fifteen budget/transport boundary checks pass. The same frozen
+binary/SDK passed the local fixture and both real calls. Each used nine input and
+one output token, settled ten credit minor, and verified offline after shutdown.
+Original shared allowance records 2/5 attempts, CNY0.016896 reserved and CNY0.000052
+conservative peak-rate usage cost; completed scenarios must not automatically repeat.
+This development artifact cannot certify the unmerged application stack or final
+candidate. No PSP, publication, external contact or existing-service upgrade.

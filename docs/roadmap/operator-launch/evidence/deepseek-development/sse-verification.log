@@ -1,0 +1,28 @@
+== Genuine exported evidence ==
+entry 4cd28ce5-c45f-5028-a1b6-182cb489d9bb
+content hash fa9b3de113523b4c25c49cc1e725cf6601350c9b3ae62c8265d394d2db7a423a
+ledger oxsum/ledgers/90799f1872314dc79f868a444c00503a
+
+[PASS] bill: hash, inclusion, charge, price, sale
+        The recorded charge itself recomputes from the usage and rates inside the entry. The price it names is bound to a checkpoint the operator signed. The customer sale terms it names are bound to a checkpoint the operator signed.
+[PASS] head: operator signature
+       the signed head verifies
+[PASS] consistency: the new head extends the archived head
+       the new head extends the held head and carries the operator's signature
+[SKIP] witnesses: no cosigned checkpoint — this deployment pins no witnesses
+       The bill and head checks above do not depend on this line.
+
+[SKIP] evidence bundle: no evidence-bundle.json fixture in this directory
+
+== Rejection checks (altered inputs) ==
+[PASS] tampered bundle content: rejected — fail
+[PASS] a changed price catalog row: rejected — the price row does not match the signed checkpoint
+[PASS] sale-priced bill remains verifiable without optional wholesale binding
+[PASS] a changed sale catalog row: rejected — the sale snapshot does not match the signed checkpoint
+[PASS] a missing required sale binding: rejected — Missing required sale binding
+[PASS] a changed recorded rate: rejected — fail
+[PASS] a different customer-held hash: rejected — fail
+[PASS] a different operator key: rejected — the signed head could not be parsed (the published key is not a valid Ed25519 key)
+[PASS] a different archived head: rejected — the consistency proof does not start from the archived head
+
+All checks behaved as expected. fetch was disabled and never called.

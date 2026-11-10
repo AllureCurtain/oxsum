@@ -1,0 +1,10 @@
+{
+  "prompt_tokens": 9,
+  "completion_tokens": 1,
+  "total_tokens": 10,
+  "prompt_tokens_details": {
+    "cached_tokens": 0
+  },
+  "prompt_cache_hit_tokens": 0,
+  "prompt_cache_miss_tokens": 9
+}
