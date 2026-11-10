@@ -672,6 +672,7 @@ A period close writes two documents in one transaction: the accounting journal a
 - `GET /api/v1/org/statements` — the caller's own statements, newest page by `after`/`limit` cursor; `GET /api/v1/org/statements/{statementId}` reads one plus its lines. Personal capability.
 - `GET /api/v1/business/statements` — the staff cross-organization list under `reportsRead`: `state` narrows the lifecycle (`pastDue` is the dunning work list), `organizationId` scopes to one customer. `GET /api/v1/business/statements/{statementId}` is the staff detail.
 - `POST /api/v1/business/statements/{statementId}/release-review` — the staff release-review under `fundsWrite` `{idempotencyKey, action, reason}`: `extendGrace` walks `pastDue → issued` and moves the selected due date to now plus net terms. Other debt past grace retains suspension. `void` atomically reverses the proven matching journal, ledger receivable and statement; Cash stays unchanged and collected funds become `RefundPayable`. Mixed chargeback, reissued or inconsistent sources return `CONFLICT` before effects. A retained historical document-only void can be reconciled by a new explicit request against its original posted journal. The `statement.release` audit records actor, reason, original journal and actual reversal entry (null when no entry exists). The same target/action/reason/key replays the standing result; changed terms return `CONFLICT`. A new explicit request against an already-financially-void journal audits and refreshes debt suspension without a ledger entry; an exact replay remains inert.
+- `POST /api/v1/business/statements/{statementId}/release-review` — the staff release-review under `fundsWrite` `{idempotencyKey, action, reason}`: `extendGrace` walks `pastDue → issued` and moves the selected due date to now plus net terms. Other debt past grace retains suspension. `void` atomically reverses the proven matching journal, ledger receivable and statement; Cash stays unchanged and collected funds become `RefundPayable`. Mixed statements require finance to select the original journal through the journal-void route. Live payment intents on affected documents and reissued or inconsistent sources return `CONFLICT` before effects. A retained historical document-only void can be reconciled by a new explicit request against its original posted journal. The `statement.release` audit records actor, reason, original journal and actual reversal entry (null when no entry exists). The same target/action/reason/key replays the standing result; changed terms return `CONFLICT`. A new explicit request against an already-financially-void journal audits and refreshes debt suspension without a ledger entry; an exact replay remains inert.
 
 Overdue handling: the `statement-past-due` job (leader-elected, minute cadence) flips `issued` statements whose `dueAt` passed to `pastDue`, and past the binding's `graceDays` (default 7) stamps `customer_plans.dunning_suspended_at` — the wallet-side admission gate the hold path reads (a suspended plan still serves subscription quota, which is already paid for; new wallet draws refuse). Payment, grace extension and journal/statement void recompute dunning from all positive debt past its effective grace; renewal, entitlement, manual suspension and archive are independent. `credit_limit_minor` on the binding caps the wallet-side overage a plan-bound turn may hold: `admit_subscription_draw` refuses when `outstanding + thisOverage > creditLimitMinor`, where `outstanding` is remaining statement debt, posted journals without live statements and current holds — `NULL` is unlimited and subscription-drawn quota never counts. `GET /api/v1/org/plan` answers `credit` — `{creditLimitMinor, outstandingMinor, nextDueAt}` — beside the binding. Its displayed `outstandingMinor` is remaining debt; admission additionally counts holds. A posted journal hidden by a retained document-only void remains debt using the latest retained due date (or posting time plus the original binding's current configured net terms if no statement exists), and its past-grace debt blocks wallet admission even before the worker stamps a flag.
 
@@ -905,3 +906,46 @@ customer. Unknown extra top-level fields, duplicate JSON keys, uncommitted
 artifact additions and upstream-cost figures fail closed. Consumers retain the
 file unchanged and verify it with their own held trust inputs and documented
 proof scope. A server-side consistency check does not establish independent trust.
+### Exact statement repayment (#777)
+
+`GET /api/v1/org/statements/{statementId}/payment-quote` requires a personal
+customer session. Optional positive `amountMinor` selects credit-minor debt;
+omitting it selects all unreserved debt. Foreign statements are 404. The
+response includes outstanding/reserved/available amounts, pending order IDs,
+exact journal/plan slices, pinned collection terms and a fingerprint. Review
+reasons preserve the displayed debt but omit payable terms. Old duplicated
+usage must be corrected before collection even when its recorded AR balances.
+
+Create `/api/v1/orders` with `purpose: statementRepayment`, `purposeRef` equal
+to that statement, `statementAmountMinor`, `expectedStatementQuote` and the
+exact fiat terms. `amountMinor`/`rate` remain invalid creation fields. Changed
+quotes/fiat or reused keys with different terms refuse before provider I/O;
+exact-key retries keep their original price and checkout after collection
+changes. The reservation and binding commit before provider execution. Browser
+return/cancellation and elapsed time never establish payment or release debt.
+
+The immutable `statementPayment` field exposes original source allocations on
+customer and business order reads. Fulfillment `purposePayload` names
+`repaidMinor`, `payableMinor`, `requiresReview` and source-linked entries.
+Refunds use existing customer request, personal finance approval and verified
+merchant-event paths; dispute resolution commits decision, cash and audit in
+one transaction. Canonical reconciliation evidence retains exact reversal
+entries and void-source allocations. The existing `invoiceRepayment` purpose
+remains Cash/CreditLine and its reference is not a plan-statement allocation.
+
+Finance uses `GET /api/v1/business/orders/{orderId}/statement-payment-evidence`
+under a current personal `ReportsRead` capability to read original payment and
+return allocations, canonical entry IDs/hashes and Cash/AR/payable/suspense.
+The read opens only an existing ledger and refuses damaged retained effects.
+Unknown, foreign-business or other-purpose orders are 404. It creates no payment,
+refund, finance decision or source repair.
+
+The existing journal void action now retains source-specific corrections for
+mixed documents (#927). A statement release-review `void` still refuses a mixed
+document and asks finance to select its original journal; it cannot silently
+interpret a whole-document cancellation as a partial source correction. Each reversing line's
+`sourceRef` names its original statement line. New frozen statement artifacts may
+include `sourceVoids` with the original/reversal IDs, journal ID and canonical
+void entry/hash. These are committed source assertions; independent runtime
+reconciliation checks their financial ownership. The generic offline verifier
+checks manifest inclusion/integrity, not this additional business interpretation.

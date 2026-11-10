@@ -138,6 +138,11 @@ pub(super) async fn capture(
             "effect_id",
             "EXISTS(SELECT 1 FROM oxsum.statement_payment_effects e WHERE e.effect_id=t.effect_id AND e.organization_id=$1)",
         ),
+        (
+            "statement_source_voids",
+            "original_line_id",
+            "EXISTS(SELECT 1 FROM oxsum.plan_statements s WHERE s.statement_id=t.statement_id AND s.organization_id=$1)",
+        ),
         ("plan_refund_effects", "refund_id", "t.organization_id=$1"),
         (
             "plan_accounting_periods",

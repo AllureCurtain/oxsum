@@ -205,6 +205,7 @@ pub(super) fn map_documents(
     sources: &Sources,
     ledger: &ledger::Ledger,
 ) -> Result<Option<BTreeMap<Uuid, Vec<StatementDebtSlice>>>, WalletError> {
+    let excluded = super::source_voids::excluded(sources, ledger)?;
     let mut result = BTreeMap::new();
     let mut displayed = BTreeMap::<Uuid, i64>::new();
     let mut seen_disputes = BTreeSet::new();
@@ -219,7 +220,10 @@ pub(super) fn map_documents(
         for line in sources
             .table("plan_statement_lines")
             .values()
-            .filter(|line| line.id("statement_id").ok() == Some(*id))
+            .filter(|line| {
+                line.id("statement_id").ok() == Some(*id)
+                    && !excluded.contains(&line.id("line_id").unwrap_or_default())
+            })
         {
             let amount = line.amount("amount_minor")?;
             match line.text("kind")?.as_str() {
@@ -332,6 +336,13 @@ pub(super) fn map_documents(
             let Some(journal) = effect.optional_id("journal_id")? else {
                 return Ok(None);
             };
+            if sources.table("plan_statement_lines").values().any(|line| {
+                line.optional_id("source_ref").ok()
+                    == Some(Some(effect.id("effect_id").unwrap_or_default()))
+                    && excluded.contains(&line.id("line_id").unwrap_or_default())
+            }) {
+                continue;
+            }
             let Some(part) = parts.get_mut(&journal) else {
                 return Ok(None);
             };
@@ -415,6 +426,61 @@ pub(crate) async fn verify_void_in(
         return Err(WalletError::Conflict(
             "journal void requires exact financial source review".into(),
         ));
+    }
+    Ok(())
+}
+
+/// Capture source ownership only after complete comparison passed under writer locks.
+pub(crate) async fn void_lines_in(
+    tx: &mut Transaction<'_, Postgres>,
+    organization: Uuid,
+    tenant: &str,
+    journal: Uuid,
+) -> Result<BTreeMap<Uuid, Vec<Uuid>>, WalletError> {
+    verify_void_in(tx, organization, tenant).await?;
+    let sources = sources::capture(tx, organization).await?;
+    let ledger = ledger::capture(tx, tenant).await?;
+    let excluded = super::source_voids::excluded(&sources, &ledger)?;
+    let mut selected = BTreeMap::<Uuid, Vec<Uuid>>::new();
+    for (id, line) in sources.table("plan_statement_lines") {
+        let statement = line.id("statement_id")?;
+        let header = sources
+            .get("plan_statements", statement)
+            .ok_or_else(|| crate::error::invalid("statement missing"))?;
+        if header.text("state")? == "void" || excluded.contains(id) {
+            continue;
+        }
+        if header.text("state")? == "open" || header.optional_id("replaces_statement_id")?.is_some()
+        {
+            return Err(WalletError::Conflict(
+                "unfinished or reissued statement requires financial review".into(),
+            ));
+        }
+        if super::source_voids::owner(&sources, line)? == journal {
+            selected.entry(statement).or_default().push(*id);
+        }
+    }
+    Ok(selected)
+}
+
+/// A whole-document void must not silently cancel only its wrapping journal.
+pub(crate) async fn require_exclusive_document_in(
+    tx: &mut Transaction<'_, Postgres>,
+    organization: Uuid,
+    tenant: &str,
+    statement: Uuid,
+    journal: Uuid,
+) -> Result<(), WalletError> {
+    let captured = sources::capture(tx, organization).await?;
+    let ledger = ledger::capture(tx, tenant).await?;
+    let excluded = super::source_voids::excluded(&captured, &ledger)?;
+    for (id, line) in captured.table("plan_statement_lines") {
+        if line.id("statement_id")? == statement
+            && !excluded.contains(id)
+            && super::source_voids::owner(&captured, line).ok() != Some(journal)
+        {
+            return Err(WalletError::Conflict("mixed statement requires selecting the original journal to void; whole-document void would affect unrelated debt".into()));
+        }
     }
     Ok(())
 }

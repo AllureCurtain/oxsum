@@ -1713,3 +1713,49 @@ download already published customer-safe evidence; it does not publish evidence
 or grant staff authority. Revoke the management credential to stop future reads.
 Files that include supplier costs or fail retention checks require operator
 recovery and are never silently changed for the application.
+### Pay a plan statement's debt
+
+Open **Billing**, choose the statement and review **Statement repayment**.
+The card shows outstanding debt, pending payments and the amount available to
+pay. Leave the amount blank for full payment, or enter a partial credit amount
+and choose **Update amount**. Review the exact credit amount and fiat price
+before continuing to checkout. No wallet credit or plan renewal is included.
+
+After a lost response, retry the unchanged request or resume the existing
+payment listed on the card. Refreshing the page preserves the server's pending
+order. A timeout or cancelled browser page does not release the reservation.
+The order page distinguishes applied debt from late funds retained for refund
+review. A source-review message keeps the debt visible and requires operator
+review; repeated payment attempts cannot repair inconsistent history.
+
+To request a refund, use the payment order's existing refund request control.
+Finance approval and confirmed provider success restore only that payment's
+original debt, or consume its own payable after a financial void. Repeated
+callbacks do not repeat cash or debt changes. Clearing overdue debt removes
+only the associated debt restriction; an independent manual suspension or
+cancelled plan remains unchanged.
+
+Finance opens **Payments**, expands a statement-repayment order and follows
+its statement and original-journal links without entering IDs. Those exact
+documents open independently of list pagination. The expanded order also shows
+each incoming payment, refund and dispute allocation with its original source,
+Cash/debt/payable/review amounts and canonical entry hash. Reconciliation snapshots
+retain per-allocation entries, hashes, original return links and review suspense.
+A source-exclusive journal and its chargeback follow-up documents can be voided
+together after all pending payment intents are resolved. For a mixed statement,
+select the original journal and use the source-specific correction described
+below; the whole-statement void action continues to refuse mixed sources.
+
+### Correct one source in a mixed statement
+
+In the finance journal view, open the original journal that should be cancelled
+and use its reasoned void action. The statement may contain chargebacks from
+several periods: the action cancels only the selected journal's lines and keeps
+other periods' debt and repayment history. A document with remaining sources
+stays visible and payable as appropriate. Resolve any pending checkout on that
+document first; a timeout or browser cancellation is not proof of nonpayment.
+
+Voiding records refund payable for collected money; use the existing refund
+workflow to return cash. The payment's original allocation determines which
+source is restored or refunded. A new bill is a separate operator decision; void
+does not issue another charge, renew a plan or remove manual account restrictions.

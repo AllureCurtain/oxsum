@@ -4752,9 +4752,12 @@ export interface paths {
          *     ledger entry posts the open receivable back off a `posted` journal, or
          *     unwinds the settlement to `Liabilities:RefundPayable` on a `paid` one,
          *     and a `finance_audit` row records the actor and reason. Its matching
-         *     statement is reversed in the same transaction; other debt past grace
-         *     retains dunning. Mixed chargeback, reissued or inconsistent sources
-         *     return 409 for explicit financial reconciliation. Cash stays unchanged.
+         *     statement sources are reversed in the same transaction; mixed documents
+         *     retain unrelated journal charges and payments. Immutable line-to-void
+         *     associations preserve recovery and refund ownership. Live repayment
+         *     intents on affected documents, reissued or inconsistent sources return
+         *     409 for explicit financial reconciliation. Other past-grace debt retains
+         *     dunning. Cash stays unchanged.
          *     `FundsWrite` capability; the same target/reason/key replays the standing
          *     voided journal, while reuse with different request terms returns 409.
          *     A new explicit request against an already-void journal audits and

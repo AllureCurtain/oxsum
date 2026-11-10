@@ -602,6 +602,7 @@ async fn migrating_twice_and_concurrently_is_safe() {
             "statement_lines".to_owned(),
             "statement_payment_effects".to_owned(),
             "statement_payment_reservations".to_owned(),
+            "statement_source_voids".to_owned(),
             "statement_void_allocations".to_owned(),
             "statements".to_owned(),
             "subscription_draws".to_owned(),

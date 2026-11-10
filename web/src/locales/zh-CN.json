@@ -1737,7 +1737,7 @@
       "colDisputed": "争议中",
       "void": "作废",
       "voidTitle": "作废此日记账?",
-      "voidExplain": "以冲正条目取消已过账应收——记入 finance_audit。",
+      "voidExplain": "仅冲正此日记账的费用和付款，包括混合账单中属于它的明细，保留其他来源。现金不变，已收款转为应退款。请先处理未完成的付款。",
       "empty": "暂无日记账。"
     },
     "receivables": {
