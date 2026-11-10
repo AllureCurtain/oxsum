@@ -929,3 +929,30 @@ Fulfillment, release, refund, chargeback and source-void fencing use the existin
 statement payment implementation. No parallel application accounting or synthetic
 human principal is introduced. The provider driver retains original destinations
 and provider identity through unknown outcomes and credential rotation.
+## Scoped first-call receipt projection
+
+`customer_readiness` reads the partial indexed successful accounting projection,
+then validates each bounded candidate against the existing scoped receipt path
+and pure verifier. It checks canonical actor/request identity, recomputed charge
+and settled revenue postings for the wallet share after quota allocation before returning a navigation identity. Ledger
+opening uses `open_existing`, so a readiness read never bootstraps a ledger or
+runs lazy financial migrations. The public verification page only resolves a
+private entry after current personal customer authentication and record-scope
+filtering; its ordinary pasted-bundle mode remains public.
+
+## Customer serving readiness
+
+`customer_serving_readiness` composes the personal key visibility predicate,
+`ServingAccess::public_models_filtered_in`, the shared read-only sale resolver
+and `Wallet::preview_gateway_funding_in` in one read-only repeatable-read
+transaction. The chat-mode route filter applies before the bounded selection;
+application model reads keep their existing all-mode projection. The wallet's
+immutable account registry opens before borrowing the snapshot connection;
+absence is explicit and never triggers bootstrap or lazy migration.
+
+The dashboard's `useGettingStarted` consumes this scoped response and the
+separate canonical receipt projection. It no longer reads the deployment admin
+token, aggregate available balance or raw key count. All sample amounts remain
+integer credit-minor; the conservative reservation intentionally retains the
+gateway's pre-discount behavior. Provider/rate/policy checks remain outside the
+funding snapshot.

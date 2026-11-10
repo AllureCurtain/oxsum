@@ -76,34 +76,31 @@
   },
   "gettingStarted": {
     "title": "Get started",
-    "intro": "Five steps take an empty deployment to a customer bill the recipient can verify. Each step links to the screen that does the work; the state below is read from this deployment on every load, not stored in this browser.",
+    "intro": "Check your personal customer access, a sample funding bound and an actual first-call receipt. Configuration and funding are snapshots; sending a call remains a separate action.",
     "progress": "{{done}} of {{total}} ready",
     "ready": "Ready",
-    "checking": "Checking this deployment…",
+    "checking": "Checking your customer account…",
     "unreachable": "Could not check this step. The rest of the page still works; reload to try again.",
     "role": {
       "platformAdmin": "Platform admin",
       "owner": "Organization owner",
-      "member": "Organization member"
+      "member": "Customer member"
     },
     "channel": {
-      "title": "Connect an upstream and price a model",
-      "done": "A channel has at least one priced model, so a key can route and be charged.",
-      "todoEmpty": "No channel exists yet. Create one under Admin → Channels, then add a price for a model.",
-      "todoUnpriced": "{{channels}} channel(s) exist but none has a price. Add a price for a model under Admin → Channels.",
-      "blocked": "Enter the operator token in Admin to check this step. The token stays in this browser.",
-      "action": "Open Admin → Channels"
+      "title": "Find a permitted model with sale terms",
+      "done": "A live visible key can reach a configured chat model with your effective customer sale terms.",
+      "todo": "No priced chat sample was established. Check your key permissions or ask the business operator to configure access and customer sale terms."
     },
     "credit": {
-      "title": "Make credit available",
-      "done": "The organization has spendable balance.",
-      "todo": "Available balance is zero. The owner can top up, or the platform admin can extend the organization's credit line under Admin → Organizations.",
-      "action": "Top up"
+      "title": "Check sample funding",
+      "done": "Current quota and wallet funding cover this sample under the checked constraints.",
+      "todo": "Funding for this sample is not confirmed. Review the reason below; adding funds only resolves an actual funding shortage.",
+      "action": "Review funding options"
     },
     "key": {
-      "title": "Create an API key",
-      "done": "The organization has at least one API key.",
-      "todo": "No API key exists yet. Create one and point an SDK's base_url at this deployment.",
+      "title": "Use a live permitted API key",
+      "done": "At least one current, unrevoked key is visible to you.",
+      "todo": "No live key is visible. Create your own key or ask your account administrator to restore access.",
       "action": "Open Keys"
     },
     "request": {
@@ -134,7 +131,36 @@
       "next": "Next: {{step}}.",
       "action": "Get started"
     },
-    "receiptRestricted": "Sign in with a personal customer session to check your visible receipts."
+    "receiptRestricted": "Sign in with a personal customer session to check your visible receipts.",
+    "servingRestricted": "Your current customer access is restricted. Sign in personally or ask your account administrator about the restriction.",
+    "sample": {
+      "title": "Illustrative chat funding check",
+      "shape": "Model {{model}} · one user message “Hello” · requested maximum output 32 tokens.",
+      "bound": "Reservation {{bound}} credit-minor · quota {{quota}} · wallet {{wallet}}.",
+      "key": "Selected key: {{key}}",
+      "note": "1 credit = 1,000,000 credit-minor. The conservative reservation includes flat fees and conditional rates before settlement discounts. No call is sent here. Rate limits, policy execution and provider availability are checked when you actually call.",
+      "limited": "The search checked at most 8 keys and 16 chat models per key. Other eligible choices may exist; review your keys and model access."
+    },
+    "reasons": {
+      "noLiveKey": "Create or restore a live personal key.",
+      "noPermittedChatModel": "No configured chat model is permitted for the keys checked. Ask the business operator about model access.",
+      "saleUnavailable": "A model is configured, but effective customer sale terms are missing. Ask the business operator to publish or assign terms.",
+      "saleModeMismatch": "The configured route and customer sale mode do not agree. Ask the business operator to review this model.",
+      "ledgerUninitialized": "This new account has no initialized ledger yet. The preview does not create one. Normal first use initializes it; funding readiness is not confirmed here.",
+      "insufficientFunds": "Recorded quota and available wallet pools do not cover the sample reservation. Review funding options.",
+      "quotaExhausted": "Recorded quota is exhausted and wallet overflow is disabled. Review your plan or contact the business.",
+      "quotaTransitionRequired": "The quota period needs a lifecycle transition. Refresh after processing or ask the business operator to review it.",
+      "promoExpiryPending": "A promotion expiry is pending. Refresh after processing before relying on this balance.",
+      "budgetExceeded": "A key, member or team budget cannot cover the wallet share. Review limits with your account administrator.",
+      "concurrencyExceeded": "The selected key has reached its concurrent-request limit. Retry after active calls finish.",
+      "planCreditExceeded": "Plan debt and pending reservations exceed the allowed overage limit. Review Billing.",
+      "restricted": "The account or plan currently restricts this call. Contact your account administrator.",
+      "keyInactive": "The key is no longer live. Refresh and choose a current key.",
+      "modelNotAllowed": "This key cannot use the model or its alias target. Review key and customer permissions.",
+      "modelUnavailable": "No permitted configured route is available for this model.",
+      "inconsistentFunding": "Funding records need operator review before readiness can be confirmed.",
+      "unknown": "This sample could not establish readiness. Refresh or contact the business operator."
+    }
   },
   "overview": {
     "title": "Overview",

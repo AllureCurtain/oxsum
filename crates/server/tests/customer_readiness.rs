@@ -184,3 +184,41 @@ async fn verify_entry_prefills_only_current_customer_scope_and_keeps_public_past
         .unwrap();
     assert_eq!(response.status(), StatusCode::OK);
 }
+
+#[tokio::test]
+async fn serving_read_requires_current_personal_session_and_never_bootstraps() {
+    let Some(f) = setup::fixture("customer_readiness_http").await else {
+        return;
+    };
+    let app = oxsum_server::app(f.db.clone(), Config::new(Signup::Invite, None));
+    let path = "/api/v1/org/readiness/serving";
+    assert_eq!(
+        read(&app, path, None, None).await.0,
+        StatusCode::UNAUTHORIZED
+    );
+    for cookie in [None, Some(f.cookie.as_str())] {
+        assert_eq!(
+            read(&app, path, cookie, Some(&f.registration.api_key.secret))
+                .await
+                .0,
+            StatusCode::FORBIDDEN
+        );
+    }
+    let (status, body) = read(&app, path, Some(&f.cookie), None).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["data"]["keyReady"], true);
+    assert_eq!(body["data"]["fundingReady"], false);
+    assert_eq!(body["data"]["sample"], Value::Null);
+    let exists: bool =
+        sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM pg_namespace WHERE nspname=$1)")
+            .bind(format!("ledger_{}", f.registration.organization.tenant_id))
+            .fetch_one(f.db.pool())
+            .await
+            .unwrap();
+    assert!(!exists);
+    f.db.logout(&f.cookie).await.unwrap();
+    assert_eq!(
+        read(&app, path, Some(&f.cookie), None).await.0,
+        StatusCode::UNAUTHORIZED
+    );
+}

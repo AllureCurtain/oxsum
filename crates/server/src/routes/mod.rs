@@ -79,6 +79,7 @@ pub fn router(state: AppState) -> Router {
         .route("/org", get(org::organization).patch(org::update_display))
         .route("/collection-terms", get(org::collection_terms))
         .route("/org/readiness/receipt", get(customer_readiness::receipt))
+        .route("/org/readiness/serving", get(customer_readiness::serving))
         .route(
             "/orgs",
             get(org::my_organizations).post(org::create_organization),

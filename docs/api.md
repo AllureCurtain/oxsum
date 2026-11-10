@@ -1045,3 +1045,46 @@ transfer: a list/detail is bounded to 4 MiB and detail to 1,000 lines. Oversize
 returns 409 for operator recovery; it never truncates a successful document.
 These live reads do not publish evidence or certify its proofs, reserve payment,
 open wallets or alter any financial fact. Export independent evidence separately.
+## Immediate customer receipt readiness
+
+`GET /api/v1/org/readiness/receipt` requires a personal customer session and
+applies the same member/key record scope as receipt proofs. It checks at most 32
+newest eligible accounting rows, independently of operational request logs.
+`ready` carries an exact request, entry, canonical hash, model, total priced usage and the separate wallet charge;
+zero-cost and fully quota-funded success qualify. `missing` means no eligible row was found;
+`incomplete` means available evidence did not establish readiness within the
+bound. Failed/refused calls and whole-response blocks do not qualify. Reads
+validate attribution, entry identity, charge arithmetic, posted revenue and log
+inclusion without writing accounting data or creating a ledger.
+
+`/verify?entry=<uuid>` prefills the existing verification form from a current
+personal session's scoped receipt. Foreign/invisible entries return 404,
+missing sessions return 401 and explicit machine headers return 403 rather than
+inheriting a cookie. Malformed entry IDs return 400. Plain `/verify` and its
+public sample remain available without authentication. The prefilled hash comes
+from this server and is labeled accordingly; retaining it and independent head
+trust are separate from internal inclusion/arithmetic checks.
+
+## Personal customer serving readiness
+
+`GET /api/v1/org/readiness/serving` accepts only a current personal customer
+session. Owners/admins see their account's live keys; members see their own.
+It checks at most eight live keys and sixteen permitted chat models per key,
+with customer, group and alias-target restrictions applied before paging.
+`scanLimited` explicitly preserves the possibility of another eligible choice.
+The selected sample is the first funded choice, otherwise the first priced
+choice; `reason` explains missing, restricted, transition or funding states.
+
+The sample is a single user message `Hello`, with `max_tokens: 32`, no tools,
+attachments, service tier or experiment. The gateway's conservative text-bound
+pricing includes conditional rates and flat fees. It uses exact effective
+customer sale terms, never supplier prices; the reservation is undiscounted,
+as in gateway admission, with the sale discount retained for final settlement.
+The response separates the total bound, recorded quota and wallet remainder.
+A missing ledger reports `ledgerUninitialized`; no read bootstraps accounts.
+
+Sale selection, authority, quota and funding share one read-only repeatable-read
+transaction. Registry identities are opened beforehand without writes, so a
+one-connection database pool works. No key secret, provider destination or
+provider cost is returned. This is not a reservation or an execution guarantee:
+rate windows, policies and provider availability remain actual-call checks.

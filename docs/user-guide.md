@@ -71,12 +71,13 @@ accounts use `/app` to obtain a permitted key and make a call against authorized
 funding or entitlement. A fully entitled request can be ready with zero purchased
 wallet balance; paid quota is not wallet cash.
 
-The current `/app/getting-started` checklist predates this separation. It still
-checks some operator facts through the legacy deployment-token surface and asks
-for positive credit and a report link. These are known gaps tracked in
-[#735](https://github.com/AllureCurtain/oxsum/issues/735), not requirements to give
-customers a deployment token or purchase funds their entitlement already covers.
-A completed checklist does not certify a provider or payment configuration.
+The `/app/getting-started` checklist uses your personal customer scope: a live
+visible key, a permitted chat model with effective customer sale terms, a
+clearly labeled sample funding snapshot, and actual first-call receipt evidence.
+It requires no deployment token or report share link. Free and fully entitled
+samples need no positive wallet balance. Missing or transition-dependent facts
+remain explicit, and a completed checklist does not certify a provider or
+payment configuration. See [the sample funding guide](#check-your-model-and-sample-funding).
 
 **Business → Setup** now has its own five checks (#843). The owner name from
 initialization satisfies the identity step; saving a logo or recruiting another
@@ -1805,3 +1806,38 @@ retain authorized history. Statement reads do not renew a plan or initiate payme
 those actions require a separate checkout grant and review of the current quote.
 A document over the export bounds returns an explicit recovery error rather than
 showing a partial statement as complete.
+## Verify your first successful call
+
+On **Get started**, the request and bill steps become ready when a successful
+call in your current customer scope has consistent receipt evidence. Free and
+fully entitled calls count. Later failed requests do not hide an earlier success.
+Choose **Verify this receipt** to open its proof and content hash, then run the
+verification. The page explains that this freshly loaded hash comes from the
+same server; retain evidence and trusted heads for later independent comparison.
+
+No closed-day report or share link is needed for this step. Period reports are
+available separately after their UTC period ends. If evidence is incomplete or a
+read fails, the checklist shows a failed check and never a completed step;
+refresh to retry. Members see only their permitted history.
+
+## Check your model and sample funding
+
+On **Get started**, use your personal customer session. The page selects a live
+key you may see, a permitted chat model and that model's current customer sale
+terms. The sample is one message, **Hello**, requesting up to 32 output tokens.
+It shows the selected key ID and the conservative reservation split between
+recorded quota and wallet funding. A zero wallet balance is fine for a free or
+fully entitled sample. The key secret is never displayed by this check.
+
+Read the reason before adding funds: a budget limit, exhausted no-overflow plan,
+manual restriction, missing sale terms or pending period transition needs its
+own action. Contact the business operator for model/pricing configuration and
+your account administrator for member/team limits. A new account without an
+initialized ledger is marked unconfirmed; this read does not create its ledger.
+Normal first use initializes it. Refresh after resolving a problem.
+
+The search is bounded to eight keys and sixteen chat models per key; a limit
+notice means other choices may exist. The snapshot does not send a call or
+certify provider, policy or rate-limit availability. Send a deliberate actual
+call through Chat or your SDK, then open its immediate receipt. Business setup
+remains in the separate Business console.

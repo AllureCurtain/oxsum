@@ -261,6 +261,7 @@ fn customer_route_capability(method: &str, path: &str) -> oxsum_core::CustomerCa
         (
             "GET",
             "/org/readiness/receipt"
+            | "/org/readiness/serving"
             | "/orgs"
             | "/org/groups"
             | "/org/members"
