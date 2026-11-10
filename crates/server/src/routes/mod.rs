@@ -29,6 +29,7 @@ mod business_prices;
 mod business_profile;
 mod business_providers;
 mod business_readiness;
+mod customer_readiness;
 mod device;
 mod evidence;
 mod experiments;
@@ -76,6 +77,7 @@ pub fn router(state: AppState) -> Router {
     let authenticated = Router::new()
         .route("/org", get(org::organization).patch(org::update_display))
         .route("/collection-terms", get(org::collection_terms))
+        .route("/org/readiness/receipt", get(customer_readiness::receipt))
         .route(
             "/orgs",
             get(org::my_organizations).post(org::create_organization),

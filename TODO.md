@@ -5,6 +5,7 @@ Updated: 2026-11-09
 ## In progress
 
 - [ ] [#899](https://github.com/AllureCurtain/oxsum/issues/899) — Whole-response/cache refunds now waive flat fees and release quota while retaining provider cost evidence. Baseline reproduced; 17 guardrail and 122 related checks, formatting and server strict Clippy passed; review and integration pending.
+- [ ] [#909](https://github.com/AllureCurtain/oxsum/issues/909) — Scoped immediate first-call receipt readiness and working private verification links implemented; 2,156 workspace and 59 final focused checks passed, strict Clippy/contract/frontend and real browser WASM checks passed. Independent review and protected integration pending. [Evidence](docs/roadmap/operator-launch/evidence/first-call-receipt.md).
 
 - [ ] [#866](https://github.com/AllureCurtain/oxsum/issues/866) — Bounded application-only customer key lifecycle; contract and implementation in progress, migration 0118 follows integrated 0117.
 

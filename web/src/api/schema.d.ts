@@ -2702,6 +2702,9 @@ export interface paths {
          * @description Removes the team; every membership it grouped keeps its seat with `teamId`
          *     nulled — the member layer stays, the team cap simply stops applying. An
          *     owner or an admin, and only a session.
+         *     Deletion serializes with request admission and member reassignment.
+         *     Already admitted reservations remain valid; an admission after deletion
+         *     observes the retained member without this team's cap.
          */
         delete: {
             parameters: {
@@ -8099,6 +8102,59 @@ export interface paths {
          * @description Requires a personal session explicitly selected into business context. Rechecks current staff role on each call.
          */
         get: operations["businessContext"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/org/readiness/receipt": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Find a visible successful call with immediate receipt evidence
+         * @description Personal customer session only. Searches up to 32 newest successful
+         *     accounting rows inside the same customer record scope as receipt proofs,
+         *     independent of request-log pagination and closed-period reports. Checks
+         *     canonical entry identity, attribution, inclusion and charge arithmetic.
+         *     Zero-cost and fully entitled calls count. Refusals, failed calls and
+         *     blocked whole responses do not. A ready result identifies one verified
+         *     receipt, not an audit of all history or an independently trusted head.
+         *     Missing means no eligible accounting row exists; incomplete means the
+         *     bounded search or missing/inconsistent evidence could not establish
+         *     readiness. No ledger, usage, report or reservation is written.
+         */
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Current scoped first-call evidence readiness */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            data: components["schemas"]["CustomerReceiptReadiness"];
+                        };
+                    };
+                };
+                401: components["responses"]["Error"];
+                403: components["responses"]["Error"];
+                500: components["responses"]["Error"];
+            };
+        };
         put?: never;
         post?: never;
         delete?: never;
@@ -16189,6 +16245,28 @@ export interface components {
              * @enum {string|null}
              */
             action: "profile" | "channels" | "prices" | "integrations" | "customers" | null;
+        };
+        CustomerReceiptReadiness: {
+            /** @enum {string} */
+            state: "ready" | "missing" | "incomplete";
+            receipt: components["schemas"]["CustomerReadyReceipt"] | null;
+        };
+        CustomerReadyReceipt: {
+            requestId: string;
+            /** Format: uuid */
+            entryId: string;
+            contentHash: string;
+            model: string;
+            /**
+             * Format: int64
+             * @description Total priced usage including subscription quota.
+             */
+            chargedMinor: number;
+            /**
+             * Format: int64
+             * @description Wallet amount after the recorded subscription allocation.
+             */
+            walletChargedMinor: number;
         };
         BusinessReadiness: {
             /** Format: date-time */

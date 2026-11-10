@@ -23,6 +23,7 @@
 use serde::Deserialize;
 use topcoat::Result;
 use topcoat::context::Cx;
+use topcoat::cookie::Cookies;
 use topcoat::router::content::{Css, Form, Js, Wasm};
 use topcoat::router::{RouterBuilder, page, parse_query_params, route};
 use topcoat::view::{View, view};
@@ -50,7 +51,8 @@ pub(crate) fn register(builder: RouterBuilder) -> RouterBuilder {
 /// It never looks up a customer by display name or reads a deployment ledger.
 #[page("/verify")]
 async fn verify_page(cx: &Cx) -> Result<impl View> {
-    let query = parse_query_params::<VerifyQuery>(cx).unwrap_or_default();
+    let query = parse_query_params::<VerifyQuery>(cx)
+        .map_err(|_| topcoat::router::error::bad_request("invalid verification query"))?;
     // `?sample` is a bare flag the page links, and a flag's presence — not its
     // value — is the signal; read it off the raw query string rather than
     // deserialize a value that may not parse the same way on every form of the
@@ -69,6 +71,15 @@ async fn verify_page(cx: &Cx) -> Result<impl View> {
                 "A public test fixture from the verifier example; this is not a bill from this deployment.",
             ),
         )
+    } else if let Some(entry) = query.entry {
+        let (bundle, hash) = customer_entry_bundle(cx, entry).await?;
+        (
+            bundle,
+            hash,
+            Some(
+                "Loaded from your current customer session. This hash comes from the same server; retain it for future comparison. Inclusion and arithmetic do not independently establish trust in the tree head.",
+            ),
+        )
     } else {
         (
             query.bundle.unwrap_or_default(),
@@ -76,7 +87,7 @@ async fn verify_page(cx: &Cx) -> Result<impl View> {
             None,
         )
     };
-    let entry = query.entry.unwrap_or_default();
+    let entry = query.entry.map(|id| id.to_string()).unwrap_or_default();
     Ok(view! {
         crate::views::plain(
             title: "Verify a bill",
@@ -108,6 +119,43 @@ async fn verify_page(cx: &Cx) -> Result<impl View> {
     })
 }
 
+/// Only a current personal customer session can prefill private ledger evidence.
+/// Machine headers never fall back to an ambient browser session.
+async fn customer_entry_bundle(cx: &Cx, entry: oxsum_core::EntryId) -> Result<(String, String)> {
+    let headers = topcoat::router::request::headers(cx);
+    if ["authorization", "x-api-key", "x-goog-api-key"]
+        .iter()
+        .any(|name| headers.contains_key(*name))
+    {
+        return Err(topcoat::router::error::forbidden().into());
+    }
+    let cookies = topcoat::cookie::cookies(cx);
+    let token = cookies
+        .get(oxsum_core::SESSION_COOKIE)
+        .ok_or_else(topcoat::router::error::unauthorized)?;
+    let db = crate::app_value::<oxsum_core::Db>(cx)?;
+    let session = db
+        .authenticate_session(token.value())
+        .await
+        .map_err(|_| topcoat::Error::msg("could not read customer session"))?
+        .ok_or_else(topcoat::router::error::unauthorized)?;
+    let principal = oxsum_core::Principal::Session(session);
+    let signing = crate::web_config(cx)?
+        .head_seed
+        .map(oxsum_core::signing_key)
+        .transpose()
+        .map_err(|_| topcoat::Error::msg("could not read signing configuration"))?;
+    let bundle = db
+        .customer_receipt_bundle(&principal, entry, signing.as_ref())
+        .await
+        .map_err(|_| topcoat::Error::msg("could not read receipt evidence"))?
+        .ok_or_else(topcoat::router::error::not_found)?;
+    let hash = bundle.entry.content_hash().to_hex();
+    let json = serde_json::to_string(&bundle)
+        .map_err(|_| topcoat::Error::msg("could not encode receipt evidence"))?;
+    Ok((json, hash))
+}
+
 /// A fixed public fixture, shared with the independent verifier consumer.
 /// Its expected hash comes from the fixture manifest, independently of the bundle.
 fn sample_bundle() -> Result<(String, String)> {
@@ -128,7 +176,7 @@ fn sample_bundle() -> Result<(String, String)> {
 struct VerifyQuery {
     bundle: Option<String>,
     hash: Option<String>,
-    entry: Option<String>,
+    entry: Option<oxsum_core::EntryId>,
 }
 
 #[derive(Deserialize)]

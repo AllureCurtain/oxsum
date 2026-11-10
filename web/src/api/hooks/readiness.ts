@@ -12,3 +12,12 @@ export function useBusinessReadiness() {
     retry: false,
   });
 }
+
+/** Scoped immediate evidence, including zero-cost successful calls. */
+export function useCustomerReceiptReadiness() {
+  return useQuery({
+    queryKey: ["customer", "readiness", "receipt"],
+    queryFn: () => api<components["schemas"]["CustomerReceiptReadiness"]>("/org/readiness/receipt"),
+    retry: false,
+  });
+}

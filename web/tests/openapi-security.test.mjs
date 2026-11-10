@@ -45,6 +45,7 @@ test("operations denying consumption access do not advertise a consumption crede
 test("commercial and financial operations retain their audited credential boundaries", () => {
   const scopedReads = ["/plans", "/plans/{planVersionId}", "/bundles", "/org/promo-lots"];
   const personal = [
+    ["get", "/org/readiness/receipt"],
     ["get", "/org/plan"],
     ["post", "/org/plan/cancel"],
     ["post", "/org/plan/change"],

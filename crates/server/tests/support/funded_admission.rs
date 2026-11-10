@@ -1742,3 +1742,43 @@ async fn an_inflight_personal_key_edit_cannot_deadlock_operation_insertion() {
     assert_eq!(remaining_draw(&world).await, 0);
     no_reservations(&world).await;
 }
+
+#[tokio::test]
+async fn real_free_and_quota_funded_calls_have_immediate_scoped_readiness() {
+    for free in [false, true] {
+        let world = world_or_skip!(0);
+        if free {
+            let route = world.db.routes(&world.model).await.unwrap().remove(0);
+            let mut price = route.price;
+            price.cost_per_request = Some(0);
+            world
+                .db
+                .append_price(&route.channel, &world.model, price, 100)
+                .await
+                .unwrap();
+        } else {
+            cover(&world).await;
+        }
+        let settled = complete(&world).await;
+        let principal = oxsum_core::Principal::Session(
+            world
+                .db
+                .authenticate_session(&world.session)
+                .await
+                .unwrap()
+                .unwrap(),
+        );
+        let ready = world
+            .db
+            .customer_receipt_readiness(&principal)
+            .await
+            .unwrap();
+        assert_eq!(ready.state, "ready", "{ready:?}; {settled}");
+        let receipt = ready.receipt.unwrap();
+        assert_eq!(receipt.request_id, settled["request"].as_str().unwrap());
+        assert_eq!(receipt.wallet_charged_minor, 0);
+        assert_eq!(receipt.charged_minor, if free { 0 } else { 40 });
+        assert_eq!(world.wallet().await.available().await.unwrap(), 0);
+        no_reservations(&world).await;
+    }
+}
