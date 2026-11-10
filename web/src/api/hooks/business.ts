@@ -785,3 +785,16 @@ export function useCustomerMonthlyStatement(customer: string, statement?: string
     queryFn: () => api<BusinessMonthlyStatementDetail>(`/business/customers/${customer}/monthly-statements/${statement}`),
   });
 }
+
+
+export type MonthlyStatementAction = components["schemas"]["BusinessMonthlyStatementAction"];
+export function useMonthlyStatementAction(customer: string) {
+  const client = useQueryClient();
+  return useMutation({
+    mutationFn: (body: MonthlyStatementAction) => api<components["schemas"]["BusinessMonthlyStatementActionResult"]>(`/business/customers/${customer}/monthly-statements/actions`, { method: "POST", body }),
+    onSuccess: () => {
+      void client.invalidateQueries({ queryKey: ["biz-monthly-statements", customer] });
+      void client.invalidateQueries({ queryKey: ["biz-monthly-statement", customer] });
+    },
+  });
+}
