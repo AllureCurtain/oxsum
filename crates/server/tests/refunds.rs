@@ -1445,3 +1445,71 @@ async fn disputed_case_identity_is_taken_from_the_signed_dispute_field() {
     assert_eq!(cases[0]["providerDisputeId"], "native-case");
     assert_eq!(cases[0]["amountMinor"], 750_000_000);
 }
+
+#[tokio::test]
+async fn manual_receipt_refund_is_conflict_without_reservation_or_provider_call() {
+    let Some((app, db, stub, _merchant, _version)) = world().await else {
+        return;
+    };
+    let owner = operator(&db, &app).await;
+    let customer = register(&app).await;
+    set_display(&db, customer.organization_id).await;
+    let (status, receipt) = call(
+        &app,
+        "POST",
+        "/api/v1/business/orders",
+        Some(json!({
+            "organizationId": customer.organization_id, "displayAmountMinor": 210,
+            "displayCurrency": "USD", "reference": Uuid::new_v4().to_string(),
+            "reason": "local receipt fixture", "idempotencyKey": Uuid::new_v4().to_string()
+        })),
+        Some(&owner),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{receipt}");
+    let order = receipt["data"]["order"]["orderId"].as_str().unwrap();
+    let (status, error) = call(
+        &app,
+        "POST",
+        &format!("/api/v1/orders/{order}/refund-request"),
+        Some(json!({"reason":"review", "idempotencyKey":Uuid::new_v4().to_string()})),
+        Some(&customer.cookie),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CONFLICT, "{error}");
+    assert!(
+        error["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("no provider refund route")
+    );
+    let (status, refunds) = call(
+        &app,
+        "GET",
+        &format!("/api/v1/orders/{order}/refunds"),
+        None,
+        Some(&customer.cookie),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{refunds}");
+    assert_eq!(refunds["data"]["refundableMinor"], Value::Null);
+    assert_eq!(refunds["data"]["refunds"], json!([]));
+    assert_eq!(*stub.refund_calls.lock().unwrap(), 0);
+    let notes: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM oxsum.credit_notes WHERE order_id=$1")
+            .bind(Uuid::parse_str(order).unwrap())
+            .fetch_one(db.pool())
+            .await
+            .unwrap();
+    assert_eq!(notes, 0);
+    let other = register(&app).await;
+    let (status, _) = call(
+        &app,
+        "POST",
+        &format!("/api/v1/orders/{order}/refund-request"),
+        Some(json!({"reason":"wrong customer", "idempotencyKey":Uuid::new_v4().to_string()})),
+        Some(&other.cookie),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+}

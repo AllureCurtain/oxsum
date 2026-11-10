@@ -282,6 +282,7 @@ struct RefundOrder {
     provider_payment_id: Option<String>,
     status: String,
     purpose: String,
+    provider_refund_route: bool,
 }
 
 fn refund_order(row: &PgRow) -> Result<RefundOrder, WalletError> {
@@ -294,11 +295,14 @@ fn refund_order(row: &PgRow) -> Result<RefundOrder, WalletError> {
         provider_payment_id: row.try_get("provider_payment_id")?,
         status: row.try_get("status")?,
         purpose: row.try_get("purpose")?,
+        provider_refund_route: row.try_get("provider_refund_route")?,
     })
 }
 
 const REFUND_ORDER_COLS: &str = "business_id,organization_id,amount_minor,\
-     display_amount_minor,display_currency,provider_payment_id,status,purpose";
+     display_amount_minor,display_currency,provider_payment_id,status,purpose,\
+     (source='provider' AND merchant_id IS NOT NULL AND merchant_version_id IS NOT NULL \
+      AND provider_payment_id IS NOT NULL) AS provider_refund_route";
 
 async fn refund_order_in(
     tx: &mut Transaction<'_, Postgres>,
@@ -411,7 +415,9 @@ impl Db {
     /// locked transaction: the amount may not exceed the order's funded
     /// `amount_minor` minus what live refunds already reserve or returned —
     /// the promo leg never counts, grant is never refundable cash — so no
-    /// wallet can be driven negative by refunding.
+    /// wallet can be driven negative by refunding. New requests require a
+    /// provider order with complete pinned refund coordinates; manual receipts
+    /// require out-of-band reconciliation. Existing requests remain readable.
     pub async fn request_order_refund(
         &self,
         organization: Uuid,
@@ -471,6 +477,11 @@ impl Db {
             // Another organization's order is a not-found, the same scoping
             // the order read uses.
             return Err(WalletError::NotFound("unknown payment order".into()));
+        }
+        if !order.provider_refund_route {
+            return Err(WalletError::Conflict(
+                "this order has no provider refund route; contact the business for out-of-band reconciliation".into(),
+            ));
         }
         if !crate::plan_usage_corrections::corrected_order_journals_in(&mut tx, order_id)
             .await?
@@ -541,7 +552,8 @@ impl Db {
 
     /// The order's refundable remainder in credit-minor — `amount_minor`
     /// minus what live refunds reserve or returned, the promo leg never
-    /// counted. The customer surface reads it before naming an amount.
+    /// counted. The customer surface reads it before naming an amount. A manual
+    /// receipt or missing provider route returns `None`, never a payout offer.
     pub async fn order_refundable_minor(
         &self,
         organization: Uuid,
@@ -550,6 +562,7 @@ impl Db {
         let row = sqlx::query(
             "SELECT amount_minor FROM oxsum.payment_orders \
              WHERE order_id=$1 AND organization_id=$2 AND status IN ('paid','fulfilled') \
+               AND source='provider' AND merchant_id IS NOT NULL AND merchant_version_id IS NOT NULL AND provider_payment_id IS NOT NULL \
                AND (purpose <> 'bundle' OR status='fulfilled') \
                AND (purpose='plan_period' OR NOT EXISTS(SELECT 1 FROM oxsum.disputes d WHERE d.order_id=payment_orders.order_id AND d.state='lost'))",
         )
@@ -696,6 +709,11 @@ impl Db {
                 let order = refund_order_in(&mut tx, existing.order_id)
                     .await?
                     .ok_or_else(|| invalid("the refund's order is gone"))?;
+                if !order.provider_refund_route {
+                    return Err(WalletError::Conflict(
+                        "this order has no provider refund route; contact the business for out-of-band reconciliation".into(),
+                    ));
+                }
                 if matches!(order.purpose.as_str(), "bundle" | "statement_repayment")
                     && order.status != "fulfilled"
                 {
@@ -1209,12 +1227,14 @@ impl Db {
     /// The retry sweep's work list: `provider_pending` refunds whose next
     /// attempt is due, in bounded pages. This read does not acquire a lease:
     /// callers must use [`Self::claim_refund_attempt`] before provider I/O.
+    /// Retained unrouteable/manual rows remain visible but cannot spend retries.
     pub async fn due_refund_retries(&self, limit: i64) -> Result<Vec<OrderRefund>, WalletError> {
         if !(1..=100).contains(&limit) {
             return Err(invalid("limit must be 1..100"));
         }
         let rows = sqlx::query(&format!(
             "{REFUND_SELECT} WHERE r.state='provider_pending' AND r.next_retry_at <= now() AND e.refund_id IS NULL \
+             AND EXISTS(SELECT 1 FROM oxsum.payment_orders p WHERE p.order_id=r.order_id AND p.source='provider' AND p.merchant_id IS NOT NULL AND p.merchant_version_id IS NOT NULL AND p.provider_payment_id IS NOT NULL) \
              ORDER BY r.next_retry_at LIMIT $1"
         ))
         .bind(limit)
@@ -1231,7 +1251,7 @@ impl Db {
         refund_id: Uuid,
     ) -> Result<Option<RefundRetryTarget>, WalletError> {
         let mut tx = self.pool().begin().await?;
-        let order: Option<(Uuid,String)> = sqlx::query_as("SELECT r.order_id,p.purpose FROM oxsum.refunds r JOIN oxsum.payment_orders p USING(order_id) WHERE refund_id=$1")
+        let order: Option<(Uuid,String)> = sqlx::query_as("SELECT r.order_id,p.purpose FROM oxsum.refunds r JOIN oxsum.payment_orders p USING(order_id) WHERE refund_id=$1 AND p.source='provider' AND p.merchant_id IS NOT NULL AND p.merchant_version_id IS NOT NULL AND p.provider_payment_id IS NOT NULL")
             .bind(refund_id).fetch_optional(&mut *tx).await?;
         let Some((order, purpose)) = order else {
             return Ok(None);
@@ -1292,14 +1312,16 @@ impl Db {
         let Some(refund) = row.as_ref().map(refund_from_row).transpose()? else {
             return Ok(None);
         };
-        let order = sqlx::query(
+        let Some(order) = sqlx::query(
             "SELECT merchant_id,merchant_version_id,provider_payment_id \
-             FROM oxsum.payment_orders WHERE order_id=$1",
+             FROM oxsum.payment_orders WHERE order_id=$1 AND source='provider' \
+               AND merchant_id IS NOT NULL AND merchant_version_id IS NOT NULL AND provider_payment_id IS NOT NULL",
         )
         .bind(refund.order_id)
         .fetch_optional(self.pool())
-        .await?
-        .ok_or_else(|| invalid("the refund's order is gone"))?;
+        .await? else {
+            return Ok(None);
+        };
         Ok(Some(RefundRetryTarget {
             refund,
             merchant_id: order.try_get("merchant_id")?,

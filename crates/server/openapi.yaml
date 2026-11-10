@@ -7891,7 +7891,7 @@ paths:
     post:
       summary: Request a refund review on an order
       description: |
-        The customer asks for review — it can never grant itself money. `amountMinor` names the credit amount asked back in ledger minor units; absent names the order's whole refundable remainder (`amountMinor` of the order minus what live refunds already reserve or returned — the promo leg of a bundle is never refundable cash). The amount is bounded by the refundable remainder, so no wallet is ever driven negative by refunding. The answer is a `requested` refund — the durable review record; a replayed `idempotencyKey` returns the standing request. Only `paid` or `fulfilled` orders may be asked on; bundles must finish fulfillment first. A confirmed partial or full bundle refund cancels its remaining promotion, including unused releases from in-flight holds, without cash reimbursement. Staff alone resolves it through `POST /api/v1/business/refunds/{refundId}/resolve`.
+        The customer asks for review — it can never grant itself money. `amountMinor` names the credit amount asked back in ledger minor units; absent names the order's whole refundable remainder (`amountMinor` of the order minus what live refunds already reserve or returned — the promo leg of a bundle is never refundable cash). The amount is bounded by the refundable remainder, so no wallet is ever driven negative by refunding. The answer is a `requested` refund — the durable review record; a replayed `idempotencyKey` returns the standing request. Only `paid` or `fulfilled` provider orders with a pinned merchant version and provider payment reference may be asked on; bundles must finish fulfillment first. Manual receipts have no provider refund route and return 409 before creating a request; contact the business for out-of-band reconciliation. A confirmed partial or full bundle refund cancels its remaining promotion, including unused releases from in-flight holds, without cash reimbursement. Staff alone resolves it through `POST /api/v1/business/refunds/{refundId}/resolve`.
       x-consumption-key-access: denied
       security: [{ sessionCookie: [] }]
       parameters:
@@ -7920,7 +7920,7 @@ paths:
   /api/v1/orders/{orderId}/refunds:
     get:
       summary: List refunds on one order
-      description: The caller's refunds on one order it owns plus the refundable remainder it may still ask back. Another organization's order is a not-found.
+      description: The caller's refunds on one order it owns plus the refundable remainder it may still ask back. Manual receipts and orders without a complete provider refund route return a null remainder; retained requests remain readable. Another organization's order is a not-found.
       x-consumption-key-access: denied
       security: [{ sessionCookie: [] }]
       parameters:
@@ -7988,6 +7988,7 @@ paths:
     post:
       summary: Approve or decline a refund request
       description: |
+        Approval requires a provider order with a pinned merchant version and provider payment reference. Manual or unrouteable requests return 409 before any state, note or audit mutation. A retained requested refund may still be declined; historical pending refunds remain visible for explicit financial review and are excluded from provider retries.
         Current business staff with refunds-write capability; a personal session, never a machine credential. `approve` commits the durable `providerPending` reservation and issues the order-linked credit note in one transaction with its finance audit — the PSP call goes out only after that commits, so a crash mid-call leaves a retryable reservation, never a lost refund — then issues the provider refund under the refund id as the provider's idempotency key. `decline` lands `declined` with the same audit. The answer is the refund's standing state — never a promise the provider refunded: the signed `refund_succeeded`/`refund_failed` webhook is the only terminal truth.
       security: [{ sessionCookie: [] }]
       parameters:

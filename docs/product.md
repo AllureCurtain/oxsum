@@ -904,3 +904,13 @@ notification receiver. It demonstrates exact operation recovery and separately
 retained trust; it is not a public multiuser authentication server. Genuine PSP
 certification, browser acceptance and deployment of an exact candidate remain
 separate from its isolated local acceptance fixture.
+
+## Manual receipt refund boundary
+
+A manually recorded payment never passed through a payment provider. Its order
+therefore offers no automated provider refund: contact the business to reconcile
+an out-of-band return. New requests and approvals without complete pinned
+provider coordinates return `409` before reserving a refund or issuing a note.
+Retained manual requests remain readable and may be declined while requested;
+old pending records stay unresolved for financial review, without provider retry
+calls. Their approval/note state does not confirm that cash was returned.

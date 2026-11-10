@@ -10,7 +10,7 @@ mod setup;
 use oxsum_core::{
     Db, DisputeResolution, MerchantCreateRequest, MerchantEventKind, MerchantMode,
     MerchantMutationResult, MerchantRail, MerchantSigningContext, MerchantStatusRequest,
-    MerchantVersionInput, NewPaymentOrder, NewRefundRequest, NewUser, PaymentOrder,
+    MerchantVersionInput, NewManualOrder, NewPaymentOrder, NewRefundRequest, NewUser, PaymentOrder,
     PaymentOrderPurpose, REFUND_MAX_ATTEMPTS, RefundDecision, SecretKey, VerifiedMerchantEvent,
     Wallet, WalletError,
 };
@@ -1060,4 +1060,114 @@ async fn refund_events_cannot_cross_orders_or_reprice_partial_refunds() {
             .await
             .is_err()
     );
+}
+
+#[tokio::test]
+async fn manual_refunds_never_enter_or_spend_provider_recovery() {
+    let Some((db, owner, org, _tenant)) = world().await else {
+        return;
+    };
+    let order = db
+        .create_manual_payment_order(
+            &owner,
+            &NewManualOrder {
+                expected_collection_revision: None,
+                organization: org,
+                purpose: PaymentOrderPurpose::WalletTopup,
+                display_amount_minor: 210,
+                display_currency: "USD".into(),
+                idempotency_key: Uuid::new_v4().to_string(),
+                reference: Uuid::new_v4().to_string(),
+                reason: "manual refund regression".into(),
+            },
+        )
+        .await
+        .unwrap();
+    let request = NewRefundRequest {
+        amount_minor: None,
+        reason: "return review".into(),
+        request_key: Uuid::new_v4().to_string(),
+        requested_by: None,
+    };
+    assert!(
+        matches!(db.request_order_refund(org, order.order_id, &request).await,
+        Err(WalletError::Conflict(message)) if message.contains("no provider refund route"))
+    );
+    assert_eq!(
+        db.order_refundable_minor(org, order.order_id)
+            .await
+            .unwrap(),
+        None
+    );
+    assert!(
+        db.order_refunds(org, order.order_id)
+            .await
+            .unwrap()
+            .is_empty()
+    );
+
+    // Retain the exact pre-repair state without inventing a merchant or cash event.
+    let refund = Uuid::new_v4();
+    sqlx::query("INSERT INTO oxsum.refunds(refund_id,order_id,organization_id,business_id,amount_minor,display_amount_minor,display_currency,reason,state,request_key) SELECT $1,order_id,organization_id,business_id,amount_minor,display_amount_minor,display_currency,'retained manual request','requested',$2 FROM oxsum.payment_orders WHERE order_id=$3")
+        .bind(refund).bind(&request.request_key).bind(order.order_id).execute(db.pool()).await.unwrap();
+    assert_eq!(
+        db.request_order_refund(org, order.order_id, &request)
+            .await
+            .unwrap()
+            .refund_id,
+        refund
+    );
+    assert!(
+        matches!(db.resolve_order_refund(&owner, refund, RefundDecision::Approve,
+        Some("review"), &Uuid::new_v4().to_string()).await,
+        Err(WalletError::Conflict(message)) if message.contains("no provider refund route"))
+    );
+    let notes: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM oxsum.credit_notes WHERE refund_id=$1")
+            .bind(refund)
+            .fetch_one(db.pool())
+            .await
+            .unwrap();
+    assert_eq!(notes, 0);
+    assert_eq!(
+        db.order_refunds(org, order.order_id).await.unwrap()[0].state,
+        "requested"
+    );
+    let (declined, send) = db
+        .resolve_order_refund(
+            &owner,
+            refund,
+            RefundDecision::Decline,
+            Some("reconcile out of band"),
+            &Uuid::new_v4().to_string(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(declined.state, "declined");
+    assert!(!send);
+
+    // Old pending rows remain review records; every public retry entry is inert.
+    let refund = Uuid::new_v4();
+    sqlx::query("INSERT INTO oxsum.refunds(refund_id,order_id,organization_id,business_id,amount_minor,display_amount_minor,display_currency,reason,state,request_key,next_retry_at) SELECT $1,order_id,organization_id,business_id,amount_minor,display_amount_minor,display_currency,'retained pending manual refund','provider_pending',$2,now()-interval '1 second' FROM oxsum.payment_orders WHERE order_id=$3")
+        .bind(refund).bind(Uuid::new_v4().to_string()).bind(order.order_id).execute(db.pool()).await.unwrap();
+    assert!(db.refund_retry_target(refund).await.unwrap().is_none());
+    assert!(db.claim_refund_attempt(refund).await.unwrap().is_none());
+    assert!(
+        !db.due_refund_retries(100)
+            .await
+            .unwrap()
+            .iter()
+            .any(|row| row.refund_id == refund)
+    );
+    let retained = db
+        .order_refunds(org, order.order_id)
+        .await
+        .unwrap()
+        .into_iter()
+        .find(|row| row.refund_id == refund)
+        .unwrap();
+    assert_eq!(retained.state, "provider_pending");
+    assert_eq!(retained.retry_count, 0);
+    assert_eq!(retained.provider_refund_id, None);
+    assert!(retained.cash_effect.is_none());
 }
