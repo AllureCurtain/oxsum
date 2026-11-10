@@ -2037,3 +2037,6 @@ Chat retains a browser key only for its exact customer organization and signed-i
 In Business → Statements, use Void on the original posted or paid invoice journal to record a source-specific correction. Review the retained payment/refund-payable effect and enter a reason. No external money is returned by this action. If the response is uncertain, retry the same retained correction; handle any original-source refund separately.
 
 Business customer plan binding asks for a confirmation naming the customer and sold plan. A free plan explicitly grants its initial period; its authorization identifier is generated internally. A priced plan waits for customer payment. After an uncertain result, keep the selected action and use **Check and retry binding**: the portal reads the recorded plan and free-period authorization before resending the same request. A conflicting authorization requires operator review.
+
+
+The Plans page shows quota reserved or consumed in the displayed period. A running request reserves quota; unused quota returns when it settles. Paid-plan quota is separate from wallet spending, and a new period starts its own counter.
