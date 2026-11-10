@@ -497,3 +497,7 @@ strict core/server all-target Clippy, pinned formatting and the final packed
 listener rerun passed (1 case, 4.172s; both exports and nine negatives). Browser, independent
 review/protected integration, actual candidate J18 and external gates remain.
 No external provider/PSP/receiver contact or spend occurred.
+
+- #942 submitted as draft PR #943 (`f9ed9593`); fast CI `42730958099` passed.
+  Full local evidence is recorded above. Independent approval and candidate
+  browser/runtime acceptance remain; no normal merge has occurred.

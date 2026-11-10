@@ -80,3 +80,11 @@ acceptance. Browser/J18 against the actual candidate image, independent review,
 protected integration and external provider/PSP/pilot/reference-capacity gates
 remain. A full passing development suite does not close N18 or certify N21's
 candidate acceptance.
+
+## Submission
+
+Submitted as draft PR #943 (`f9ed9593`) against #941, with #940 joined as
+documented above. Fast CI [42730958099](https://github.com/AllureCurtain/oxsum/actions/runs/42730958099)
+passed all executed jobs, including required fmt/clippy/lib-doc/wasm/frontend.
+Heavy integration jobs are deliberately skipped on PRs; the local full run above
+is separate evidence. Independent approval/protected integration remain pending.
