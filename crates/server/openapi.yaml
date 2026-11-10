@@ -7144,6 +7144,72 @@ paths:
         "403": { $ref: "#/components/responses/Error" }
         "404": { $ref: "#/components/responses/Error" }
         "409": { $ref: "#/components/responses/Error" }
+  /api/v1/business/customers/{organizationId}/monthly-statements:
+    get:
+      operationId: listBusinessMonthlyStatements
+      summary: List a customer's monthly wallet-credit statements
+      description: Personal Business reportsRead authority. Separate from sold-plan statements. Reads original recorded money and terms without ledger initialization or write-side reconciliation. Display payment standing may be overdue by today's UTC date without rewriting stored history. Current staff authority is checked before returning. Detail refuses more than 1000 lines or 2 MiB of line data.
+      security: [{ sessionCookie: [] }]
+      x-consumption-key-access: denied
+      parameters:
+        - name: organizationId
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+        - name: after
+          in: query
+          schema: { type: string, format: uuid }
+        - name: limit
+          in: query
+          schema: { type: integer, minimum: 1, maximum: 100, default: 20 }
+        - name: period
+          in: query
+          description: A fully ended UTC month, YYYY-MM.
+          schema: { type: string, pattern: "^[0-9]{4}-[0-9]{2}$" }
+      responses:
+        "200":
+          description: Scoped monthly statement page
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data: { $ref: "#/components/schemas/BusinessMonthlyStatementPage" }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+  /api/v1/business/customers/{organizationId}/monthly-statements/{statementId}:
+    get:
+      operationId: getBusinessMonthlyStatement
+      summary: Inspect one original monthly wallet-credit statement
+      description: Personal Business reportsRead authority. Separate from sold-plan statements. Reads original recorded money and terms without ledger initialization or write-side reconciliation. Display payment standing may be overdue by today's UTC date without rewriting stored history. Current staff authority is checked before returning. Detail refuses more than 1000 lines or 2 MiB of line data.
+      security: [{ sessionCookie: [] }]
+      x-consumption-key-access: denied
+      parameters:
+        - name: organizationId
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+        - name: statementId
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        "200":
+          description: Scoped monthly statement detail
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data: { $ref: "#/components/schemas/BusinessMonthlyStatementDetail" }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
   /api/v1/business/customers/{organizationId}/billing:
     get:
       x-integration-scope: billingRead
@@ -16147,6 +16213,24 @@ components:
         cachedTokens: { type: integer, format: int64, minimum: 0 }
         reasoningTokens: { type: integer, format: int64, minimum: 0 }
         amountMinor: { type: integer, format: int64, minimum: 0, description: what the line's usage was charged }
+    BusinessMonthlyStatementPage:
+      type: object
+      required: [statements, nextCursor]
+      properties:
+        statements:
+          type: array
+          maxItems: 100
+          items: { $ref: "#/components/schemas/Statement" }
+        nextCursor: { type: [string, "null"], format: uuid }
+    BusinessMonthlyStatementDetail:
+      type: object
+      required: [statement, lines]
+      properties:
+        statement: { $ref: "#/components/schemas/Statement" }
+        lines:
+          type: array
+          maxItems: 1000
+          items: { $ref: "#/components/schemas/StatementLine" }
     StatementDetail:
       type: object
       required: [statement, lines]

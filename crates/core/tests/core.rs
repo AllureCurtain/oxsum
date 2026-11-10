@@ -214,3 +214,6 @@ mod usage_daily;
 mod wallet;
 #[path = "core/webhooks.rs"]
 mod webhooks;
+
+#[path = "core/customer_statements.rs"]
+mod customer_statements;

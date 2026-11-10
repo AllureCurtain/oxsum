@@ -227,3 +227,6 @@ mod webhooks;
 mod witness;
 #[path = "server/x402.rs"]
 mod x402;
+
+#[path = "server/customer_statements.rs"]
+mod customer_statements;
