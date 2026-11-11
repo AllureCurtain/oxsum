@@ -3250,7 +3250,12 @@ async fn corrected_invoice_keeps_overdue_date_and_recovers_only_its_own_debt() {
                 .await
                 .unwrap();
         // Model an overdue retained document without changing its sold interval.
-        let overdue = due.min(OffsetDateTime::now_utc() - Duration::days(60));
+        // `now_utc()` carries nanosecond precision but `timestamptz` stores
+        // microseconds — truncate so the read-back value compares exactly.
+        let raw = due.min(OffsetDateTime::now_utc() - Duration::days(60));
+        let overdue = raw
+            .replace_nanosecond(raw.nanosecond() / 1_000 * 1_000)
+            .unwrap();
         sqlx::query("UPDATE oxsum.plan_statements SET due_at=$2 WHERE statement_id=$1")
             .bind(statement)
             .bind(overdue)
