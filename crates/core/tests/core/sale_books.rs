@@ -440,13 +440,15 @@ async fn concurrent_overlaps_cancel_and_replacement_rollback_are_deterministic()
         .await,
         Err(WalletError::Conflict(_))
     ));
+    // A start a few seconds back is the caller's own "now" inside the skew
+    // tolerance (#1053); a clearly backdated window is still refused.
     assert!(matches!(
         db.change_sale_terms(
             &owner,
             &request(assigned(
                 org,
                 book,
-                Some(OffsetDateTime::now_utc() - Duration::seconds(1)),
+                Some(OffsetDateTime::now_utc() - Duration::minutes(1)),
                 None,
                 None
             ))
