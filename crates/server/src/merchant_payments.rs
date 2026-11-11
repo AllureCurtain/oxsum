@@ -124,7 +124,7 @@ pub(crate) async fn apply_legacy_event(
         MerchantEventKind::RefundSucceeded | MerchantEventKind::RefundFailed => {
             // Airwallex shares the durable deposit-refund settlement; a signed
             // `refund.settled`/`refund.failed` event is the only terminal truth.
-            if matches!(rail.as_str(), "hyperswitch" | "airwallex")
+            if matches!(rail.as_str(), "hyperswitch" | "airwallex" | "stripe")
                 && let Some(event) = db.merchant_event_data(receipt.id).await?
             {
                 db.apply_deposit_refund_event(receipt, &event).await?;

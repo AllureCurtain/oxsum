@@ -191,11 +191,11 @@ pub(crate) async fn reverse_deposit(
         .await?;
     // The local reversal already queued its immutable external operation.
     // Recovery spends a durable lease before I/O; HTTP failures retain unknown.
-    // Hyperswitch and Airwallex both queue a refundable durable operation.
+    // Hyperswitch, Airwallex and Stripe all queue a refundable durable operation.
     let mut deposit = reversed;
     if matches!(
         deposit.rail.as_str(),
-        oxsum_core::RAIL_HYPERSWITCH | oxsum_core::RAIL_AIRWALLEX
+        oxsum_core::RAIL_HYPERSWITCH | oxsum_core::RAIL_AIRWALLEX | oxsum_core::RAIL_STRIPE
     ) && let Some(secret) = state.config.secret()
     {
         crate::deposit_refunds::recover_one(&state.db, secret, &state.provider_http, deposit_id)

@@ -23,7 +23,16 @@ pub(crate) async fn recover_one(
         return Ok(());
     };
     match deposit_refund::recover(&context, &target, http).await {
-        Ok(handle) => db.note_deposit_refund(deposit, &handle).await?,
+        Ok(recovered) => {
+            // The Stripe refund arm resolves the pinned `cs_…` session to the
+            // refund's `pi_…`; that intent id is what the settle event names,
+            // so it is recorded on the deposit's mutable meta (the durable
+            // refund row's own `provider_payment_id` stays its pinned session).
+            if let Some(intent) = recovered.provider_payment_id.as_deref() {
+                db.note_stripe_payment_intent(deposit, intent).await?;
+            }
+            db.note_deposit_refund(deposit, &recovered.handle).await?;
+        }
         Err(_) => tracing::warn!(%deposit,"deposit refund outcome remains unknown"),
     }
     Ok(())
