@@ -1,5 +1,48 @@
 # Technical decisions
 
+## 2026-11-11 — Stripe deposit-refund recovery arm (#1047)
+
+The #1041 work wired Airwallex's refund recovery and deliberately deferred
+Stripe — `deposit_refund::recover` answered `UnknownRefund` for
+`MerchantRail::Stripe`. Stripe is now the only deposit rail that captures real
+money on the live deployment (`evidence/stripe-sandbox.md`), so its refund leg
+was the real gap. This change gives `recover` a Stripe arm on the same shared
+lease/validate/record flow; only the wire adapter differs.
+
+- **Session-vs-intent anchor.** A Stripe deposit pins its *checkout session* id
+  (`cs_…`) as `provider_payment_id` (that is what `merchant_checkout` returns),
+  but Stripe refunds are scoped to `payment_intent` (`pi_…`) or `charge`, never
+  the session. `recover` resolves `cs_…`→`pi_…` via `GET
+  /v1/checkout/sessions/{id}` (a `pi_…` is already canonical); a session that
+  never paid has no `payment_intent` and stays `UnknownRefund` rather than
+  fabricating an anchor. The resolved `pi_…` is recorded on the deposit's
+  mutable `meta.stripePaymentIntent` (`note_stripe_payment_intent`) — the
+  `protect_deposit_refund` trigger makes `deposit_refunds.provider_payment_id`
+  immutable, so the resolved anchor lives on `oxsum.deposits.meta` and both
+  `merchant_events::classify` and `apply_deposit_refund_event` accept it as the
+  same payment (the pinned `cs_…` remains the fallback for a pre-change
+  deposit that never recorded an intent).
+- **Idempotency is a header, not a body field.** Stripe takes
+  `Idempotency-Key: <request_id>` on `POST /v1/refunds`; there is no
+  `request_id` echoed in the body (unlike Airwallex). The refund mints its own
+  `re_…` handle, recorded via `note_deposit_refund`. Amount is **integer minor
+  units** — Stripe is minor-native, unlike Airwallex's decimal-major wire.
+- **Settle event is `refund.updated`/`charge.refund.updated`** — its
+  `data.object` is the refund object (`re_…`) carrying `payment_intent` and our
+  `metadata`. There is no `refund.failed` event in Stripe's vocabulary (a
+  refund is pending→succeeded or fails synchronously at create). `refund.created`
+  is intermediate → `Unsupported`. `charge.refunded` is deliberately **not** a
+  settle anchor: its `data.object` is the charge (`ch_…`), carrying neither the
+  `re_…` nor our metadata.
+- **Surfaced latent bug (not fixed here).** The pre-existing
+  `merchant_checkout::create_refund` Stripe *order* arm passes
+  `provider_payment_id` as `payment_intent` — but for a Stripe order checkout
+  that field holds the session id (`cs_…`), which `POST /v1/refunds` would
+  reject (`payment_intent` expects `pi_…`). That order-refund arm is a separate
+  path from the deposit reversal this issue covers and was never exercised
+  against a real Stripe account; it is recorded here as a known defect for a
+  follow-up, not silently fixed inside this PR's scope.
+
 ## 2026-11-11 — Scope the Airwallex TLS-1.2 cap to the destination, not the rail (#1040)
 
 The original TLS-1.2 cap (#374) lived on the `Airwallex` rail's own
