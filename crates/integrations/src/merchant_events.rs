@@ -190,10 +190,20 @@ pub fn normalize(
             (text(&value["id"]), kind, &value["data"]["object"])
         }
         MerchantRail::Airwallex => {
+            // Verified Airwallex names (payments webhooks reference): a refund
+            // object's terminal event is `refund.settled` (there is no
+            // `refund.succeeded`), failure is `refund.failed`; `refund.received`
+            // and `refund.accepted` are intermediate, never terminal. A dispute
+            // needing action arrives as `payment_dispute.requires_response`;
+            // the other `payment_dispute.*` names are resolution outcomes this
+            // rail does not map.
             let kind = match value["name"].as_str() {
                 Some("payment_intent.succeeded") => Kind::Succeeded,
                 Some("payment_intent.cancelled" | "payment_intent.expired") => Kind::Expired,
                 Some("payment_intent.failed") => Kind::Failed,
+                Some("refund.settled") => Kind::RefundSucceeded,
+                Some("refund.failed") => Kind::RefundFailed,
+                Some("payment_dispute.requires_response") => Kind::Dispute,
                 _ => Kind::Unsupported,
             };
             (text(&value["id"]), kind, &value["data"]["object"])
@@ -214,10 +224,22 @@ pub fn normalize(
         .or_else(|| id(&metadata["deposit_id"]))
         .or_else(|| id(&object["client_reference_id"]))
         .or_else(|| id(&object["merchant_order_id"]));
-    let provider_payment_id = if context.rail == MerchantRail::Hyperswitch {
-        text(&object["payment_id"])
-    } else {
-        text(&object["id"])
+    // A refund object names itself `id` (`rfd_…`) and its parent payment
+    // `payment_intent_id`; a payment-intent object names itself `id` (`int_…`).
+    // Hyperswitch keeps `payment_id`. Reading the wrong field for a refund
+    // would hand `apply_deposit_refund_event` the refund id where it expects
+    // the intent.
+    let provider_payment_id = match context.rail {
+        MerchantRail::Hyperswitch => text(&object["payment_id"]),
+        MerchantRail::Airwallex
+            if matches!(
+                kind,
+                Kind::RefundSucceeded | Kind::RefundFailed | Kind::Dispute
+            ) =>
+        {
+            text(&object["payment_intent_id"]).or_else(|| text(&object["payment_id"]))
+        }
+        _ => text(&object["id"]),
     };
     let amount_minor = match context.rail {
         MerchantRail::Hyperswitch => object["amount"].as_i64(),
@@ -260,7 +282,19 @@ pub fn normalize(
         {
             return Err(MerchantEventError::Malformed);
         }
-        case.or(legacy)
+        // An Airwallex dispute object carries its own `id` (`dst_…`) rather than
+        // a `dispute_id`/`refund_id` field.
+        case.or(legacy).or_else(|| {
+            (context.rail == MerchantRail::Airwallex)
+                .then(|| text(&object["id"]))
+                .flatten()
+        })
+    } else if context.rail == MerchantRail::Airwallex
+        && matches!(kind, Kind::RefundSucceeded | Kind::RefundFailed)
+    {
+        // A refund object's own handle is `id` (`rfd_…`); there is no
+        // `refund_id` field on it.
+        text(&object["id"]).or_else(|| text(&object["refund_id"]))
     } else {
         text(&object["refund_id"])
     };

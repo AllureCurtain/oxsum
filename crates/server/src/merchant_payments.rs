@@ -122,7 +122,9 @@ pub(crate) async fn apply_legacy_event(
             db.mark_merchant_event_applied(receipt.id).await
         }
         MerchantEventKind::RefundSucceeded | MerchantEventKind::RefundFailed => {
-            if rail == "hyperswitch"
+            // Airwallex shares the durable deposit-refund settlement; a signed
+            // `refund.settled`/`refund.failed` event is the only terminal truth.
+            if matches!(rail.as_str(), "hyperswitch" | "airwallex")
                 && let Some(event) = db.merchant_event_data(receipt.id).await?
             {
                 db.apply_deposit_refund_event(receipt, &event).await?;
@@ -130,6 +132,10 @@ pub(crate) async fn apply_legacy_event(
             db.mark_merchant_event_applied(receipt.id).await
         }
         MerchantEventKind::Dispute => {
+            // `record_dispute` stamps `meta.disputedAt` only on a Hyperswitch
+            // deposit row, so the Airwallex `payment_dispute.requires_response`
+            // event is durably recorded in the inbox but still settles nothing
+            // on the deposit — the dispute-recording arm stays Hyperswitch-only.
             if rail == "hyperswitch" {
                 let dispute = db
                     .merchant_event_data(receipt.id)
