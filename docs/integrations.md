@@ -138,6 +138,12 @@ bytes the same way:
 - the versioned, merchant-scoped callback `POST /api/v1/webhooks/merchants/{merchantId}/versions/{versionId}` — path coordinates select the signing configuration, so the payload cannot pick a secret;
 - the environment callback `POST /api/v1/webhooks/{stripe|airwallex|hyperswitch}` — resolves the env-bootstrapped merchant and tries its retained versions (`crates/server/src/routes/merchant_events.rs`, `environment`).
 
+**Airwallex transport.** `api-demo.airwallex.com` returns TLS 1.3 records rustls
+cannot decrypt (issue #374), so `ProviderHttp` caps that destination hostname at
+TLS 1.2 (issue #1040). Both the env rail and merchant-scoped calls to the demo
+endpoint negotiate TLS 1.2; the production `api.airwallex.com` and every other
+provider keep TLS 1.3.
+
 The verified event lands in `oxsum.merchant_event_inbox`
 (`receive_merchant_event`, `crates/core/src/merchant_events.rs:302`):
 
