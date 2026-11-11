@@ -1,3 +1,4 @@
+import { CustomerCreditCard } from "./customer-credit";
 import { CustomerInvitations } from "./customer-invitations";
 import { useState } from "react";
 import { useTranslation } from "react-i18next";
@@ -302,6 +303,7 @@ function CustomerDetail({ customer, onBack }: { customer: BusinessCustomer; onBa
         </div>
       </Card>
 
+      {canReports ? <CustomerCreditCard key={c.organizationId} customer={c} /> : null}
       <CustomerPlanCard customer={c} />
 
       {canReports ? <>

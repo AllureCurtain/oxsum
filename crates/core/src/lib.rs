@@ -26,6 +26,7 @@ mod channels;
 mod collection_terms;
 mod credit_notes;
 mod customer_authority;
+mod customer_credit;
 mod customer_readiness;
 mod customer_serving_readiness;
 mod customers;
@@ -161,6 +162,7 @@ pub use channels::{
     price_row, route_order, route_order_stats,
 };
 pub use credit_notes::CreditNote;
+pub use customer_credit::{BusinessCustomerCreditTerms, BusinessCustomerCreditTermsRequest};
 pub use customers::{
     BusinessCustomer, BusinessCustomerLifecycle, BusinessCustomerPage, BusinessCustomerSuspension,
     BusinessCustomerUpdate, CustomerState,

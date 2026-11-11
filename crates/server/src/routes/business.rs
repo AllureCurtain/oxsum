@@ -152,6 +152,32 @@ pub(crate) async fn customer(
         .business_customer(&personal_token(&headers)?, id)
         .await?)
 }
+pub(crate) async fn customer_credit_terms(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    axum::extract::Path(id): axum::extract::Path<uuid::Uuid>,
+) -> ApiResult<oxsum_core::BusinessCustomerCreditTerms> {
+    ok(state
+        .db
+        .business_customer_credit_terms(&personal_token(&headers)?, id)
+        .await?)
+}
+pub(crate) async fn set_customer_credit_terms(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    axum::extract::Path(id): axum::extract::Path<uuid::Uuid>,
+    ApiJson(request): ApiJson<oxsum_core::BusinessCustomerCreditTermsRequest>,
+) -> ApiResult<oxsum_core::BusinessMutationResult> {
+    ok(state
+        .db
+        .set_business_customer_credit_terms(
+            &personal_token(&headers)?,
+            &state.tenants,
+            id,
+            &request,
+        )
+        .await?)
+}
 pub(crate) async fn provision_customer(
     State(state): State<AppState>,
     headers: HeaderMap,

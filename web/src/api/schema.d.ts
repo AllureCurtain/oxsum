@@ -9305,6 +9305,30 @@ export interface paths {
         patch: operations["updateBusinessCustomer"];
         trace?: never;
     };
+    "/api/v1/business/customers/{organizationId}/credit-terms": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Read a customer's monthly credit facility
+         * @description Personal Business session with reportsRead. Returns monthly wallet credit and payment terms separately from sold-plan receivable limits. Does not create a ledger or change suspension.
+         */
+        get: operations["getBusinessCustomerCreditTerms"];
+        /**
+         * Approve a customer's monthly credit terms
+         * @description Personal Business session with commercialWrite (owner or finance). Atomically records the exact total credit facility, future invoice payment terms, current dunning grace, immutable mutation receipt and actor audit. A limit below drawn or reserved credit refuses without changing terms. Exact replays recover the original mutation without restoring old values after later edits. No payment, plan activation or suspension removal occurs. Foreign customers are not found; archived customers refuse new mutations.
+         */
+        put: operations["setBusinessCustomerCreditTerms"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/business/customers/{organizationId}/billing": {
         parameters: {
             query?: never;
@@ -17106,6 +17130,40 @@ export interface components {
             /** Format: uuid */
             nextCursor: string | null;
         };
+        BusinessCustomerCreditTerms: {
+            /** Format: uuid */
+            organizationId: string;
+            /**
+             * Format: int64
+             * @description Total monthly credit facility; not the sold-plan receivable cap.
+             */
+            creditLimitMinor: number;
+            /**
+             * Format: int64
+             * @description Settled credit draws plus current credit reservations.
+             */
+            creditUsedMinor: number;
+            /**
+             * Format: int32
+             * @description Snapshotted by future monthly invoice finalization.
+             */
+            paymentTermsDays: number;
+            /**
+             * Format: int32
+             * @description Current monthly dunning grace; null disables automatic monthly dunning. Existing independent suspension reasons remain.
+             */
+            dunningGraceDays: number | null;
+        };
+        BusinessCustomerCreditTermsRequest: {
+            idempotencyKey: string;
+            /** Format: int64 */
+            creditLimitMinor: number;
+            /** Format: int32 */
+            paymentTermsDays: number;
+            /** Format: int32 */
+            dunningGraceDays: number | null;
+            reason: string;
+        };
         BusinessCustomerUpdate: {
             idempotencyKey: string;
             name: string;
@@ -24458,6 +24516,67 @@ export interface operations {
         };
         responses: {
             /** @description Success */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: components["schemas"]["BusinessMutationResult"];
+                    };
+                };
+            };
+            400: components["responses"]["Error"];
+            401: components["responses"]["Error"];
+            403: components["responses"]["Error"];
+            404: components["responses"]["Error"];
+            409: components["responses"]["Error"];
+        };
+    };
+    getBusinessCustomerCreditTerms: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                organizationId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Current monthly credit terms */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: components["schemas"]["BusinessCustomerCreditTerms"];
+                    };
+                };
+            };
+            400: components["responses"]["Error"];
+            401: components["responses"]["Error"];
+            403: components["responses"]["Error"];
+            404: components["responses"]["Error"];
+        };
+    };
+    setBusinessCustomerCreditTerms: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                organizationId: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["BusinessCustomerCreditTermsRequest"];
+            };
+        };
+        responses: {
+            /** @description Immutable mutation identity, including exact replay */
             200: {
                 headers: {
                     [name: string]: unknown;

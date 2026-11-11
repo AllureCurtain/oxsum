@@ -1139,3 +1139,11 @@ HMAC-SHA256 of ASCII timestamp, dot, original UTF-8 body. Verify within a bounde
 time window before parsing; persist delivery IDs and reject changed byte replay.
 The timestamp is not a state version. Reconcile using separately granted current
 reads, and independently verify any downloaded evidence.
+
+## Business monthly credit terms
+
+`GET /api/v1/business/customers/{organizationId}/credit-terms` requires a personal Business session with `reportsRead`. It returns `organizationId`, `creditLimitMinor`, `creditUsedMinor` (drawn plus reserved), `paymentTermsDays` and nullable `dunningGraceDays`. Reading an unopened wallet does not create a ledger.
+
+`PUT` on the same path requires `commercialWrite` (owner/finance) and `{idempotencyKey, creditLimitMinor, paymentTermsDays, dunningGraceDays, reason}`. Every field is required; explicit `null` disables monthly dunning. Credit is an integer from 0 through 9007199254740991; terms/grace are whole days from 0 through 3650. The total credit facility, terms, actor audit and immutable mutation receipt commit atomically. A limit below drawn/reserved usage is `400 VALIDATION_ERROR`; a reused key with different content or a new decision for an archived customer is `409 CONFLICT`. An exact successful historical request returns the original mutation ID without reapplying its terms, including a no-op credit change. Foreign customer IDs are `404`.
+
+These operations reject explicit machine credentials even alongside an owner cookie; consumption/application/deployment credentials are not substitutes for staff authority. The monthly facility remains separate from sold-plan credit, and changing it does not rewrite issued documents or clear manual/archive restrictions. See the OpenAPI schemas `BusinessCustomerCreditTerms` and `BusinessCustomerCreditTermsRequest`.

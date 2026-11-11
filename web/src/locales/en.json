@@ -2395,5 +2395,23 @@
     "entry": "Ledger entry and hash",
     "original": "Original payment effect",
     "awaiting": "No payment has been applied yet."
+  },
+  "creditTerms": {
+    "title": "Monthly credit terms",
+    "description": "This wallet credit facility is separate from the plan receivable limit. It permits approved borrowing; it is not a payment or a plan grant.",
+    "limit": "Total credit limit (credits)",
+    "used": "Drawn and reserved credit",
+    "terms": "Payment terms (days)",
+    "grace": "Dunning grace (days)",
+    "graceHint": "Leave blank to disable automatic monthly dunning. Enter 0 for no extra grace.",
+    "off": "Disabled",
+    "invalid": "Use an exact nonnegative amount with at most six decimal places, and whole days from 0 to 3650.",
+    "review": "Review credit terms",
+    "retry": "Retry the same decision",
+    "retained": "The outcome is not confirmed. Your exact decision is retained for retry; fields stay locked until confirmation.",
+    "confirm": "Approve monthly credit for {{name}}",
+    "explain": "Changes the total borrowing limit, future invoice payment terms and current monthly dunning grace. Existing invoices, plan terms and manual or archive restrictions remain. This does not collect money or immediately remove a suspension.",
+    "saved": "Credit decision confirmed. Current terms are shown above.",
+    "uncertain": "The server outcome could not be confirmed. Retry this same decision to recover its result."
   }
 }

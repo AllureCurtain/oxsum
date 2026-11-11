@@ -88,3 +88,14 @@ test("application statement history requires explicit scoped billing authority",
     assert.ok(operation.responses["409"]);
   }
 });
+
+
+test("monthly credit terms require personal Business authority", () => {
+  const path = api.paths["/api/v1/business/customers/{organizationId}/credit-terms"];
+  for (const method of ["get", "put"]) {
+    assert.deepEqual(path[method].security, [{ sessionCookie: [] }]);
+    assert.equal(path[method]["x-consumption-key-access"], "denied");
+    assert.ok(path[method].responses["403"]);
+    assert.ok(path[method].responses["404"]);
+  }
+});
