@@ -1,0 +1,36 @@
+{
+  "statements": [
+    {
+      "id": "20122616-beb7-41b6-8c27-56b6be5a388a",
+      "period": "2026-08",
+      "status": "finalized",
+      "totalMinor": 1000003,
+      "creditDrawnMinor": 1000003,
+      "anchorEntryId": "30f1f711-57c6-5a91-b6e9-1d709f70bd48",
+      "dueDate": "2026-12-10"
+    },
+    {
+      "id": "c9380514-d09f-45b7-9da8-918b845ccd74",
+      "period": "2026-09",
+      "status": "finalized",
+      "totalMinor": 1000001,
+      "creditDrawnMinor": 1000001,
+      "anchorEntryId": "d4d5299e-db9f-5ece-af9c-5c2c2a269df7",
+      "dueDate": "2026-12-10"
+    },
+    {
+      "id": "88d2778a-9aeb-4efa-9469-4490318b88c2",
+      "period": "2026-10",
+      "status": "finalized",
+      "totalMinor": 1000003,
+      "creditDrawnMinor": 1000003,
+      "anchorEntryId": "22329221-ce56-5516-a808-2413dc645812",
+      "dueDate": "2026-12-10"
+    }
+  ],
+  "retryMutationCount": 1,
+  "retryAuditCount": 1,
+  "octoberAnchorCount": 1,
+  "exactRetryBody": true,
+  "browserClosed": true
+}

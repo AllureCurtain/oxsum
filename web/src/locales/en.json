@@ -2465,6 +2465,20 @@
     "paid": "Paid",
     "overdue": "Overdue",
     "suspended": "Suspended",
-    "channel": "Channel"
+    "channel": "Channel",
+    "closedMonth": "Choose a fully ended UTC month.",
+    "generate": "Generate or refresh draft",
+    "reviewIssue": "Review and issue",
+    "confirmGenerate": "Generate monthly draft",
+    "confirmIssue": "Issue this monthly statement?",
+    "generateHint": "Build the working copy from recorded usage. An already issued statement remains unchanged.",
+    "issueHint": "Issue the reviewed usage and credit figures with these payment terms from today UTC. Repayments still follow the oldest credit draws first. Changed figures or terms require a fresh review.",
+    "retained": "The outcome is not confirmed. Retry the same request before starting another action.",
+    "retry": "Retry the same request",
+    "uncertain": "The outcome could not be confirmed. Retry this exact request.",
+    "stale": "This review is out of date. Generate or refresh the draft above, reopen its detail and review the current figures before issuing.",
+    "issuedSuccess": "Monthly statement issued.",
+    "generatedSuccess": "Monthly draft is ready for review.",
+    "emptyMonth": "No recorded usage for that month; no statement was created."
   }
 }

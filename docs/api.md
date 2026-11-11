@@ -1169,3 +1169,28 @@ pending statement has unpaid credit after its UTC due date; stored timestamps
 and rows remain unchanged. Payment figures are the recorded projection, not a
 new ledger reconciliation. The read neither initializes a wallet nor mints a
 proof or authorizes generation, finalization or repayment.
+
+
+## Reviewed monthly staff actions (#1011)
+
+`POST /api/v1/business/customers/{organizationId}/monthly-statements/actions`
+requires a personal session in Business context with `fundsWrite`. Owner and
+finance can generate one closed UTC month or finalize one customer-bound draft;
+customer sessions and explicit machine credentials refuse. Both intents require
+an exact `idempotencyKey` and `reason`. Financial dates are server-owned.
+
+Generation returns `{id, statementId}`; an empty unbilled month returns null for
+`statementId`. The immutable outcome remains the same even if usage arrives or
+the statement later advances. Detail adds nullable `reviewDigest`: drafts bind
+the displayed usage totals, credit draw, itemization, terms, original identity
+and current UTC review day; issued documents return null. Finalize supplies that
+digest. Changed review content refuses with 409 and rolls back all effects; the
+client regenerates, rereads and reviews with a new intent. This is a review
+binding, not independent source attestation or proof of usage completeness.
+
+Authority and customer ownership are rechecked inside the Business-locked write.
+Archived customers refuse new writes while exact historical receipts still need
+current authority. Anchor, document, lines, event, mutation receipt and actor
+audit commit together. A retry after a lost response returns the original receipt
+without rerunning finalization. Changed action/target/reason/digest under an old
+key conflicts. Existing monthly customer proof/PDF routes remain unchanged.

@@ -2465,6 +2465,20 @@
     "paid": "已付",
     "overdue": "逾期",
     "suspended": "已暂停",
-    "channel": "渠道"
+    "channel": "渠道",
+    "closedMonth": "请选择已结束的 UTC 自然月。",
+    "generate": "生成或刷新草稿",
+    "reviewIssue": "复核并出账",
+    "confirmGenerate": "生成月结账单草稿",
+    "confirmIssue": "确认签发这份月结账单？",
+    "generateHint": "根据已记录用量生成工作草稿。已签发账单保持原样。",
+    "issueHint": "按复核的用量、借款金额和账期，从今天 UTC 日期签发。还款仍按最早借款优先抵扣；金额或条件变化后须重新复核。",
+    "retained": "尚未确认操作结果。请先重试同一请求，再开始其他操作。",
+    "retry": "重试同一请求",
+    "uncertain": "无法确认操作结果。请重试这份完全相同的请求。",
+    "stale": "复核内容已过期。请在上方生成或刷新草稿，重新打开详情，复核当前金额后再出账。",
+    "issuedSuccess": "月结账单已签发。",
+    "generatedSuccess": "月结草稿已生成，可开始复核。",
+    "emptyMonth": "该月份没有已记录用量，未创建账单。"
   }
 }

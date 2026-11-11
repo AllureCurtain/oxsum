@@ -1,0 +1,105 @@
+{
+  "binarySha256": "8b431ebfe43a18bd4e5f75682d7db3262abe7f3c38673d34decf6f43e3a43aff",
+  "generated": {
+    "data": {
+      "id": "eadd4337-acaf-440a-9902-7553484ee7c5",
+      "statementId": "c9380514-d09f-45b7-9da8-918b845ccd74"
+    }
+  },
+  "draft": {
+    "data": {
+      "statement": {
+        "id": "c9380514-d09f-45b7-9da8-918b845ccd74",
+        "organizationId": "f05256e2-6b54-44de-a27f-b0df3060bdf0",
+        "period": "2026-09",
+        "status": "draft",
+        "paymentStatus": "pending",
+        "totalMinor": 1000001,
+        "creditDrawnMinor": 1000001,
+        "paidMinor": 0,
+        "outstandingMinor": 1000001,
+        "paymentTermsDays": 30,
+        "dueDate": null,
+        "logFromIndex": null,
+        "logToIndex": null,
+        "entryCount": 1,
+        "finalizedAt": null,
+        "paidAt": null,
+        "overdueAt": null,
+        "suspendedAt": null,
+        "anchorEntryId": null,
+        "anchorLogIndex": null,
+        "windowHash": null,
+        "rollupHash": null,
+        "createdAt": "2026-11-10T15:28:15.01663Z"
+      },
+      "lines": [
+        {
+          "channel": "local-fixture",
+          "model": "local-monthly",
+          "turns": 1,
+          "inputTokens": 7,
+          "outputTokens": 3,
+          "cachedTokens": 0,
+          "reasoningTokens": 0,
+          "amountMinor": 1000001
+        }
+      ],
+      "reviewDigest": "3155a450d3949b4d6c4d84a2b389492d829e1f26cbf8efaeeffd44c1c40c2d27"
+    }
+  },
+  "retry": {
+    "data": {
+      "id": "b06f6b96-4d46-48ac-81e3-0ce5d7034027",
+      "statementId": "c9380514-d09f-45b7-9da8-918b845ccd74"
+    }
+  },
+  "issued": {
+    "data": {
+      "statement": {
+        "id": "c9380514-d09f-45b7-9da8-918b845ccd74",
+        "organizationId": "f05256e2-6b54-44de-a27f-b0df3060bdf0",
+        "period": "2026-09",
+        "status": "finalized",
+        "paymentStatus": "pending",
+        "totalMinor": 1000001,
+        "creditDrawnMinor": 1000001,
+        "paidMinor": 0,
+        "outstandingMinor": 1000001,
+        "paymentTermsDays": 30,
+        "dueDate": "2026-12-10",
+        "logFromIndex": 2,
+        "logToIndex": 2,
+        "entryCount": 1,
+        "finalizedAt": "2026-11-10T15:28:15.078636Z",
+        "paidAt": null,
+        "overdueAt": null,
+        "suspendedAt": null,
+        "anchorEntryId": "d4d5299e-db9f-5ece-af9c-5c2c2a269df7",
+        "anchorLogIndex": 3,
+        "windowHash": "fc4eff4085d0653ceb50c0d65728122f5271c83a0a3cb6f99af3c0f83dc796bf",
+        "rollupHash": "ed4d4d63f59c9cb9d5d613bc6b835116d11d4d8aca563390f2bac9c77bb4d6be",
+        "createdAt": "2026-11-10T15:28:15.01663Z"
+      },
+      "lines": [
+        {
+          "channel": "local-fixture",
+          "model": "local-monthly",
+          "turns": 1,
+          "inputTokens": 7,
+          "outputTokens": 3,
+          "cachedTokens": 0,
+          "reasoningTokens": 0,
+          "amountMinor": 1000001
+        }
+      ],
+      "reviewDigest": null
+    }
+  },
+  "counts": {
+    "anchors": 1,
+    "mutations": 1,
+    "audits": 1
+  },
+  "scope": "Actual local HTTP listener; response body discarded after commit. Browser UI not exercised; original browser task space missing."
+}

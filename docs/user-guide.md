@@ -1957,3 +1957,26 @@ The Plans page shows quota reserved or consumed in the displayed period. A runni
 
 
 In Business → Disputes, choose Resolve and select the actual provider outcome. Evidence due keeps the case open; won and closed do not record cash loss; lost records the confirmed loss against original funding and any resulting debt or review amount. Enter the supporting reason. A failed request keeps the dialog and exact decision for retry; this action does not initiate a provider refund.
+
+### Generate and issue a monthly statement
+
+In Business → Customers, open the customer and find **Monthly statements**.
+An owner or finance staff member can select a fully ended UTC month, enter a
+reason and confirm **Generate or refresh draft**. An empty month creates no bill.
+Open the resulting draft, review the usage total, credit draw, itemized models
+and payment-term days, enter an issuance reason, then confirm **Review and issue**.
+The due date starts from the current UTC issuance date. Existing repayments
+continue to cover the oldest credit draws first.
+
+If usage or payment terms changed after review, no issuance is committed. Generate
+or refresh the draft again and review the current detail. Once issued, original
+lines, terms and proof identifiers remain unchanged. If the response is uncertain,
+keep that form open and **Retry the same request**; the form retains the exact
+intent and reason while its outcome is unknown. Do not submit a second issuance
+with a new identity to guess whether the first worked. Archived customers reject
+new actions; current authority is still required to recover an earlier result.
+
+
+Monthly action feedback follows the selected language. Refreshing a draft after
+changed source figures clears the old review warning; successful issuance keeps
+its confirmation visible beside the issued document.

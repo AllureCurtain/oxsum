@@ -106,3 +106,19 @@ test("monthly statement inspection only advertises personal staff authority", ()
     assert.equal(operation["x-consumption-key-access"], "denied");
   }
 });
+
+
+test("monthly issuance is personal-only and requires reviewed exact intent", () => {
+  const route = api.paths["/api/v1/business/customers/{organizationId}/monthly-statements/actions"].post;
+  assert.deepEqual(route.security, [{ sessionCookie: [] }]);
+  assert.equal(route["x-consumption-key-access"], "denied");
+  const schema = api.components.schemas.BusinessMonthlyStatementAction;
+  assert.equal(schema.oneOf.length, 2);
+  for (const action of schema.oneOf) {
+    assert.equal(action.additionalProperties, false);
+    assert.ok(action.required.includes("idempotencyKey"));
+    assert.ok(action.required.includes("reason"));
+  }
+  assert.ok(schema.oneOf[1].required.includes("reviewDigest"));
+  assert.ok(api.components.schemas.BusinessMonthlyStatementDetail.required.includes("reviewDigest"));
+});

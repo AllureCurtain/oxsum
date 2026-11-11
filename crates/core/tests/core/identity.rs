@@ -554,6 +554,7 @@ async fn migrating_twice_and_concurrently_is_safe() {
             "metering_authorizations".to_owned(),
             "model_aliases".to_owned(),
             "model_fallbacks".to_owned(),
+            "monthly_statement_actions".to_owned(),
             "nonplan_chargeback_corrections".to_owned(),
             "nonplan_refund_effects".to_owned(),
             "oauth_accounts".to_owned(),

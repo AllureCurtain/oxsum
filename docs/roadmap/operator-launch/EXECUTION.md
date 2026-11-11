@@ -64,6 +64,13 @@ Read this file on every resume, then reconcile actual main, worktrees, issues/PR
   bilingual detail/mobile and read-side-effect checks passed. [Evidence](evidence/monthly-statement-reads.md).
   Independent review/integration and #1006 monthly issuance/repayment remain.
 
+- #1007 implements bounded Business monthly statement inspection with separate
+  bilingual customer UI, immutable rows, exact recorded money and fresh authority.
+  27 related + five final focused tests and 2,260 workspace cases passed; the known
+  #975 bundle-upgrade fixture is the sole baseline failure. Browser 20+2 pagination,
+  bilingual detail/mobile and read-side-effect checks passed. [Evidence](evidence/monthly-statement-reads.md).
+  Independent review/integration and #1006 monthly issuance/repayment remain.
+
 - #960 records integrated `ac7bb191` customer browser readiness, explicit free
   terms, successful local SSE call and immediate offline WASM proof with
   wrong-hash rejection. [Evidence](evidence/first-call-browser/README.md). Paid
@@ -609,3 +616,34 @@ archive event, synchronized current state and deduplicated two local replays;
 invalid signature refused. The initially wrong receiver path, its three 404s and
 reasoned endpoint replacement remain in [evidence](evidence/embedded-browser/README.md).
 This development handoff does not close exact-candidate J18 or external gates.
+
+### Reviewed monthly staff issuance — #1011
+
+Draft PR [#1012](https://github.com/AllureCurtain/oxsum/pull/1012),
+`feat/monthly-staff-issuance` at `163bd3e9`, joins #1008/#1010 from main `2ee70601`. Owner/finance
+can generate and issue customer-bound monthly statements with a current review
+digest, immutable actor receipt and atomic audit. 37 related and 10 final focused
+checks pass; the full 2,270-case run initially had 2 failures (migration inventory
+fixed and retested; unchanged #975 bundle fixture remains), with 6 opt-ins skipped.
+Strict core/server Clippy, contract/codegen/build and pinned formatting pass.
+Actual HTTP generation and discarded-response retry retain one anchor/receipt/audit.
+[Evidence and artifacts](evidence/monthly-staff-issuance/README.md).
+
+Browser TaskSpace 2 is missing; actual UI acceptance requires restoring or
+user-authorizing a replacement space under the installed browser skill. Review,
+prerequisite protected integration and monthly repayment remain. Provider budget
+unchanged at 2/5 attempts; no candidate frozen or external gate claimed.
+
+
+### Monthly issuance browser completion — 2026-11-10 UTC / 2026-11-11 CST
+
+User authorized replacement browser TaskSpace 3 for PR #1012. Actual Finance
+Chinese desktop and English 390-pixel flows passed generate, stale-review
+refusal, refresh, issuance and exact retry after a committed response was lost.
+One anchor/mutation/audit was verified; Support cannot see monthly controls.
+Repaired and rechecked success-message localization, stale-warning removal after
+refresh and visible issuance success. Frontend build and seven contract checks
+pass; unchanged backend evidence retained. [Screenshots and evidence](evidence/monthly-staff-issuance/README.md).
+TaskSpace 3 and its sole page closed. Independent approval, prerequisite
+integration, repayment and candidate/external gates remain; provider budget
+unchanged.

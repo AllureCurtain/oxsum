@@ -306,7 +306,7 @@ function CustomerDetail({ customer, onBack }: { customer: BusinessCustomer; onBa
 
       {canReports ? <CustomerCreditCard key={c.organizationId} customer={c} /> : null}
       <CustomerPlanCard customer={c} />
-      {canReports ? <CustomerMonthlyStatements key={c.organizationId} customer={c.organizationId} /> : null}
+      {canReports ? <CustomerMonthlyStatements key={c.organizationId} customer={c.organizationId} active={c.state === "active"} /> : null}
 
       {canReports ? <>
       {/* statements */}

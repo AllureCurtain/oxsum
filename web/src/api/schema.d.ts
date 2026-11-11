@@ -9349,6 +9349,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/business/customers/{organizationId}/monthly-statements/actions": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Generate or issue a reviewed monthly credit statement
+         * @description Personal Business fundsWrite authority only. Generate one closed UTC month, or finalize one customer-bound draft using the reviewDigest returned by its latest detail. Changed totals, lines, terms or UTC review day refuse atomically with 409; regenerate and review again. A successful retry returns the original mutation and statement identifiers without repeating effects. New archived-customer writes refuse; historical retries still require current authority. The anchor, issued document, lines, event and immutable actor audit commit together. No client financial dates.
+         */
+        post: operations["mutateBusinessMonthlyStatement"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/business/customers/{organizationId}/monthly-statements/{statementId}": {
         parameters: {
             query?: never;
@@ -21185,8 +21205,34 @@ export interface components {
             /** Format: uuid */
             nextCursor: string | null;
         };
+        BusinessMonthlyStatementAction: {
+            /** @enum {string} */
+            action: "generate";
+            period: string;
+            idempotencyKey: string;
+            reason: string;
+        } | {
+            /** @enum {string} */
+            action: "finalize";
+            /** Format: uuid */
+            statementId: string;
+            reviewDigest: string;
+            idempotencyKey: string;
+            reason: string;
+        };
+        BusinessMonthlyStatementActionResult: {
+            /**
+             * Format: uuid
+             * @description Immutable actor mutation receipt
+             */
+            id: string;
+            /** Format: uuid */
+            statementId: string | null;
+        };
         BusinessMonthlyStatementDetail: {
             statement: components["schemas"]["Statement"];
+            /** @description Draft-only review digest binding original id, customer, period, shown usage figures, itemization, terms and current UTC review day. Not independent source attestation. Finalization rejects changed reviewed figures atomically. */
+            reviewDigest: string | null;
             lines: components["schemas"]["StatementLine"][];
         };
         StatementDetail: {
@@ -24677,6 +24723,39 @@ export interface operations {
             401: components["responses"]["Error"];
             403: components["responses"]["Error"];
             404: components["responses"]["Error"];
+        };
+    };
+    mutateBusinessMonthlyStatement: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                organizationId: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["BusinessMonthlyStatementAction"];
+            };
+        };
+        responses: {
+            /** @description Original mutation receipt; statementId is null for an empty unbilled month */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: components["schemas"]["BusinessMonthlyStatementActionResult"];
+                    };
+                };
+            };
+            400: components["responses"]["Error"];
+            401: components["responses"]["Error"];
+            403: components["responses"]["Error"];
+            404: components["responses"]["Error"];
+            409: components["responses"]["Error"];
         };
     };
     getBusinessMonthlyStatement: {
