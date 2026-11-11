@@ -1,7 +1,8 @@
 # Source-linked invoice correction and reissue
 
 Implementation specification for [#1027](https://github.com/AllureCurtain/oxsum/issues/1027).
-This workflow is under implementation; the existing journal void is not a reissue.
+Implementation and focused validation are present on the task branch. Integrated
+release and real-browser acceptance remain pending; journal void alone is not a reissue.
 
 ## Commercial meaning
 
@@ -43,7 +44,8 @@ original-source return and successor payment workflows. The UI must not describe
 this as a net charge, a refund execution or an automatic credit transfer.
 
 Original returns continue against their original void/payable allocations.
-Successor payments use named-statement repayment and its existing payment,
+The successor retains the original statement due date; correction does not reset
+credit terms or suspend overdue enforcement. Successor payments use named-statement repayment and its existing payment,
 reservation, return and dispute identities. A successor return reopens only its
 own proven receivable; excess authenticated cash loss stays explicit review
 suspense. No mutation may infer payment ownership from a current account balance.

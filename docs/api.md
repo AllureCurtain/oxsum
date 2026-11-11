@@ -1220,3 +1220,17 @@ reference, entryId, contentHash}`. Exact successful retries return those origina
 values after full payment or archival, under current authority. A new archived
 write refuses. Changed intent conflicts; missing/foreign document pairs return
 404 before wallet initialization. No provider call or plan allocation occurs.
+### Invoice correction and recovery (#1027)
+
+Personal Business FundsWrite sessions use
+`POST /api/v1/business/journals/{journalId}/correction-preview` with original
+line IDs and exact nonnegative minor amounts. The response binds a source
+revision, unchanged service terms, all line changes, original payable and
+successor debt/recognition separately. Preview creates no reservation.
+
+`POST /api/v1/business/journals/{journalId}/correct` requires those selections,
+`sourceRevision`, `reason` and `idempotencyKey`. Stale sources or altered replay
+conflict. Exact retries return the original correction and successor IDs after
+later activity; current authority still applies. A client with an unknown
+response retains the exact request/key for recovery. Optional
+`successorJournalId`/`successorStatementId` detail fields navigate replacements.

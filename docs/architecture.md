@@ -1157,3 +1157,26 @@ before comparing official cash entries. Its independent arithmetic does not reus
 the writer's conversion helper. Thus a wrong dispute amount and an equally wrong
 ledger posting cannot certify each other. Missing historical source evidence is
 reported as incomplete comparison, never guessed from the order's full price.
+
+### Invoice accounting generations (#1027)
+
+Migration 0131 retains immutable correction requests/results, original/new
+document IDs, line references, and accounting generations. An original
+`plan_accounting_periods` snapshot is never rewritten. A successor references
+that source and stores its own net fee and completed recognition boundary;
+nullable `plan_accounting_effects.journal_id` leaves original effects unchanged.
+The generation view and unique indexes distinguish recognition days per invoice.
+
+`invoice_corrections` owns preview/apply. Apply checks personal FundsWrite, locks
+Business and customer ownership, verifies the bounded original sources/entries,
+and commits original void, successor accrual/documents, effects, receipt and
+audit together. Exact replay precedes reinspection of later financial activity.
+Dispute intake takes the same Business fence before order/journal mutation.
+
+The independent comparator traces every generation to sold terms and predecessor
+lines, checks the completed UTC boundary and canonical entry/hash, reconstructs
+old payable at the recorded append boundary, and excludes later returns from
+the immutable receipt. Reports trace copied credits back through original line
+links so a cash refund is never relabeled as a noncash discount. Evidence
+captures a bounded immediate predecessor and actual void/accrual entries,
+including gross legacy void entries whose net amount is zero.

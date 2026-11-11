@@ -119,3 +119,13 @@ The generic evidence verifier checks committed bytes and included ledger proofs;
 it does not independently re-run the mixed-source allocation policy. The runtime
 financial comparison additionally checks original line ownership and exact
 reversal-to-void identity before accepting the remaining customer debt.
+
+Invoice correction exports (#1027) retain the immediate predecessor, exact line
+links, accounting generation and sanitized correction receipt. The verifier
+requires included official entries for the referenced correction accrual and
+predecessor void. A zero net legacy invoice can still reference a gross void
+entry. Earlier frozen bundles retain their original bytes. This proves retained
+artifact integrity and entry inclusion within the stated scope; it does not
+prove actual service delivery, every earlier generation, subsequent payments or
+independent compliance with an accounting policy. The runtime source comparator
+performs those supported accounting/source checks separately.
