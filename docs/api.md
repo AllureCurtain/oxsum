@@ -1147,3 +1147,23 @@ reads, and independently verify any downloaded evidence.
 `PUT` on the same path requires `commercialWrite` (owner/finance) and `{idempotencyKey, creditLimitMinor, paymentTermsDays, dunningGraceDays, reason}`. Every field is required; explicit `null` disables monthly dunning. Credit is an integer from 0 through 9007199254740991; terms/grace are whole days from 0 through 3650. The total credit facility, terms, actor audit and immutable mutation receipt commit atomically. A limit below drawn/reserved usage is `400 VALIDATION_ERROR`; a reused key with different content or a new decision for an archived customer is `409 CONFLICT`. An exact successful historical request returns the original mutation ID without reapplying its terms, including a no-op credit change. Foreign customer IDs are `404`.
 
 These operations reject explicit machine credentials even alongside an owner cookie; consumption/application/deployment credentials are not substitutes for staff authority. The monthly facility remains separate from sold-plan credit, and changing it does not rewrite issued documents or clear manual/archive restrictions. See the OpenAPI schemas `BusinessCustomerCreditTerms` and `BusinessCustomerCreditTermsRequest`.
+
+## Business monthly statement inspection
+
+`GET /api/v1/business/customers/{organizationId}/monthly-statements` and
+`GET …/monthly-statements/{statementId}` require a personal Business session
+with `reportsRead` (#1007). Explicit machine credentials are denied even alongside
+an owner cookie. Unknown customer IDs and cross-customer statement pairs return
+404. These are monthly wallet-credit documents, separate from the existing
+sold-plan `/business/statements` endpoints.
+
+The list accepts `limit` (1–100, default 20), exclusive UUID `after`, and optional
+fully ended UTC `period` (`YYYY-MM`). It returns `{statements, nextCursor}` in
+ascending immutable-ID order. Detail returns `{statement, lines}` and refuses
+more than 1,000 lines or 2 MiB of expanded serialized line data rather than
+truncating. The statement carries original terms, money and stored proof-window
+identifiers. Display-only `paymentStatus` becomes `overdue` when a finalized
+pending statement has unpaid credit after its UTC due date; stored timestamps
+and rows remain unchanged. Payment figures are the recorded projection, not a
+new ledger reconciliation. The read neither initializes a wallet nor mints a
+proof or authorizes generation, finalization or repayment.

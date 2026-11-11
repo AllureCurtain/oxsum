@@ -9329,6 +9329,46 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/business/customers/{organizationId}/monthly-statements": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List a customer's monthly wallet-credit statements
+         * @description Personal Business reportsRead authority. Separate from sold-plan statements. Reads original recorded money and terms without ledger initialization or write-side reconciliation. Display payment standing may be overdue by today's UTC date without rewriting stored history. Current staff authority is checked before returning. Detail refuses more than 1000 lines or 2 MiB of line data.
+         */
+        get: operations["listBusinessMonthlyStatements"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/business/customers/{organizationId}/monthly-statements/{statementId}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Inspect one original monthly wallet-credit statement
+         * @description Personal Business reportsRead authority. Separate from sold-plan statements. Reads original recorded money and terms without ledger initialization or write-side reconciliation. Display payment standing may be overdue by today's UTC date without rewriting stored history. Current staff authority is checked before returning. Detail refuses more than 1000 lines or 2 MiB of line data.
+         */
+        get: operations["getBusinessMonthlyStatement"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/business/customers/{organizationId}/billing": {
         parameters: {
             query?: never;
@@ -21137,6 +21177,15 @@ export interface components {
              */
             amountMinor: number;
         };
+        BusinessMonthlyStatementPage: {
+            statements: components["schemas"]["Statement"][];
+            /** Format: uuid */
+            nextCursor: string | null;
+        };
+        BusinessMonthlyStatementDetail: {
+            statement: components["schemas"]["Statement"];
+            lines: components["schemas"]["StatementLine"][];
+        };
         StatementDetail: {
             statement: components["schemas"]["Statement"];
             lines: components["schemas"]["StatementLine"][];
@@ -24592,6 +24641,68 @@ export interface operations {
             403: components["responses"]["Error"];
             404: components["responses"]["Error"];
             409: components["responses"]["Error"];
+        };
+    };
+    listBusinessMonthlyStatements: {
+        parameters: {
+            query?: {
+                after?: string;
+                limit?: number;
+                /** @description A fully ended UTC month, YYYY-MM. */
+                period?: string;
+            };
+            header?: never;
+            path: {
+                organizationId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Scoped monthly statement page */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: components["schemas"]["BusinessMonthlyStatementPage"];
+                    };
+                };
+            };
+            400: components["responses"]["Error"];
+            401: components["responses"]["Error"];
+            403: components["responses"]["Error"];
+            404: components["responses"]["Error"];
+        };
+    };
+    getBusinessMonthlyStatement: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                organizationId: string;
+                statementId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Scoped monthly statement detail */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: components["schemas"]["BusinessMonthlyStatementDetail"];
+                    };
+                };
+            };
+            400: components["responses"]["Error"];
+            401: components["responses"]["Error"];
+            403: components["responses"]["Error"];
+            404: components["responses"]["Error"];
         };
     };
     getBusinessCustomerBilling: {

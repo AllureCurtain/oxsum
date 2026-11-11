@@ -29,6 +29,7 @@ mod customer_authority;
 mod customer_credit;
 mod customer_readiness;
 mod customer_serving_readiness;
+mod customer_statements;
 mod customers;
 mod db;
 mod deposit_refunds;
@@ -398,3 +399,5 @@ pub use integration_applications::{
 };
 pub use statement_payments::evidence::Effect as StatementCashEffect;
 pub use statement_payments::{StatementPaymentQuote, StatementPaymentSlice, StatementPaymentTerms};
+
+pub use customer_statements::{BusinessMonthlyStatementDetail, BusinessMonthlyStatementPage};

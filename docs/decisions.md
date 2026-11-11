@@ -3859,3 +3859,13 @@ oxsum-server` and `-p oxsum-core` each pass fully under one binary.
 ## 2026-11-10 — Atomic staff-authorized monthly credit terms (#997)
 
 Ordinary monthly credit approval uses the personal Business capability boundary, separately from sold-plan receivable caps. Reuse the existing ledger credit facility and term columns instead of introducing a second balance or a migration. Borrow the Business transaction for credit resizing so the ledger, threshold reset, terms, immutable mutation receipt and audit commit or roll back together. Record no-op approvals as Business mutations so old retries cannot restore superseded terms. Wallet bootstrap remains outside the transaction to avoid nested pool acquisition; authority/archive checks run before initialization and again before any financial write. Read-only inspection never initializes a wallet and reads absence/terms or existing facility/terms from one snapshot.
+
+## 2026-11-10 — Read-only Business monthly statements (#1007)
+
+Keep monthly wallet-credit documents separate from sold-plan statements. Reuse
+the original statement mapping and recorded payment projection, with pure overdue
+display, bounded staff-scoped list/detail and a fresh authority recheck after the
+coherent snapshot. Do not reuse legacy administration reads that globally flip
+standing or open ledgers. Count expanded serialized line bytes so PostgreSQL TOAST
+compression cannot bypass the detail bound. Issuance and payment remain separate
+minimal changes under #1006.

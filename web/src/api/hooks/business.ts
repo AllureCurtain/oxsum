@@ -767,3 +767,21 @@ export function useStatementPaymentEvidence(orderId: string) {
     queryFn: () => api<components["schemas"]["StatementCashEffect"][]>(`/business/orders/${orderId}/statement-payment-evidence`),
   });
 }
+
+export type BusinessMonthlyStatementPage = components["schemas"]["BusinessMonthlyStatementPage"];
+export type BusinessMonthlyStatementDetail = components["schemas"]["BusinessMonthlyStatementDetail"];
+
+export function useCustomerMonthlyStatements(customer: string, after?: string) {
+  return useQuery({
+    queryKey: ["biz-monthly-statements", customer, after],
+    queryFn: () => api<BusinessMonthlyStatementPage>(`/business/customers/${customer}/monthly-statements?limit=20${after ? `&after=${after}` : ""}`),
+  });
+}
+
+export function useCustomerMonthlyStatement(customer: string, statement?: string) {
+  return useQuery({
+    enabled: Boolean(statement),
+    queryKey: ["biz-monthly-statement", customer, statement],
+    queryFn: () => api<BusinessMonthlyStatementDetail>(`/business/customers/${customer}/monthly-statements/${statement}`),
+  });
+}

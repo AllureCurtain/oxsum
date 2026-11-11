@@ -411,3 +411,40 @@ pub(crate) async fn set_collection_terms(
         .set_collection_terms(&personal_token(&headers)?, &request)
         .await?)
 }
+
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(crate) struct MonthlyStatementQuery {
+    period: Option<String>,
+    after: Option<uuid::Uuid>,
+    limit: Option<i64>,
+}
+
+pub(crate) async fn monthly_statements(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    axum::extract::Path(customer): axum::extract::Path<uuid::Uuid>,
+    crate::error::ApiQuery(query): crate::error::ApiQuery<MonthlyStatementQuery>,
+) -> ApiResult<oxsum_core::BusinessMonthlyStatementPage> {
+    ok(state
+        .db
+        .business_monthly_statements(
+            &personal_token(&headers)?,
+            customer,
+            query.period.as_deref(),
+            query.after,
+            query.limit.unwrap_or(20),
+        )
+        .await?)
+}
+
+pub(crate) async fn monthly_statement(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    axum::extract::Path((customer, statement)): axum::extract::Path<(uuid::Uuid, uuid::Uuid)>,
+) -> ApiResult<oxsum_core::BusinessMonthlyStatementDetail> {
+    ok(state
+        .db
+        .business_monthly_statement(&personal_token(&headers)?, customer, statement)
+        .await?)
+}

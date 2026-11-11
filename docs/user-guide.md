@@ -1923,3 +1923,24 @@ In **Business → Customers**, open a customer and locate **Monthly credit terms
 A blank grace value disables automatic monthly dunning; zero gives no additional grace. Both day counts accept 0–3650. Payment terms apply when future monthly statements are finalized. Issued documents, sold-plan terms and manual/archive restrictions retain their own history. Increasing credit does not receive a payment or immediately remove suspension.
 
 A total below already drawn or reserved credit is refused and leaves every term unchanged; close the error dialog to correct the input. If the connection fails or the outcome is uncertain, the form retains the original request and offers an exact retry, even after closing and reopening its dialog. Complete that retry before making another decision. A historical retry returns its original receipt and cannot overwrite a later approval. Archived customers can be inspected but cannot receive new credit decisions. Monthly statement issue/payment management remains separate from this approval card.
+
+## Inspect monthly wallet-credit statements
+
+Open **Business → Customers**, select a customer, and find **Monthly wallet-credit
+statements** (#1007). This list is separate from the customer's sold-plan
+statements. Owner, admin, finance and viewer roles with reports access can read
+it; support and ordinary customer sessions cannot use this staff surface.
+
+Open a month to see usage charges, the portion funded by credit, recorded
+repayment and outstanding credit debt. The detail includes original payment
+terms, UTC due/issue dates and itemized model/channel charges. **Recorded proof
+window** exposes the stored anchor and hashes; displaying those fields does not
+independently verify the bill. Drafts have not been issued and may lack proof
+identifiers. A paid or suspended standing is preserved; a pending unpaid issued
+bill displays overdue once its due date has passed.
+
+Use **Next page**, **First page** and **Refresh** to inspect a larger history.
+The list is ordered by immutable statement ID. Money reflects recorded payment
+bookkeeping; this read does not run reconciliation. Oversized detail refuses
+instead of silently omitting lines. This card does not issue invoices or record
+payments; those operations are tracked separately in #1006.

@@ -264,7 +264,7 @@ pub fn statement_period(period: &str) -> Result<StatementPeriod, WalletError> {
 }
 
 /// One `statements` row out of the shared `SELECT` the statement reads run.
-fn statement_from_row(row: &sqlx::postgres::PgRow) -> Result<Statement, WalletError> {
+pub(crate) fn statement_from_row(row: &sqlx::postgres::PgRow) -> Result<Statement, WalletError> {
     let credit_drawn: i64 = row.try_get("credit_drawn_minor")?;
     let paid: i64 = row.try_get("paid_minor")?;
     Ok(Statement {
@@ -294,7 +294,7 @@ fn statement_from_row(row: &sqlx::postgres::PgRow) -> Result<Statement, WalletEr
     })
 }
 
-const STATEMENT_COLS: &str = "statement_id, organization_id, period, status, \
+pub(crate) const STATEMENT_COLS: &str = "statement_id, organization_id, period, status, \
      payment_status, total_minor, credit_drawn_minor, paid_minor, payment_terms_days, \
      due_date, log_from_index, log_to_index, entry_count, finalized_at, paid_at, \
      overdue_at, suspended_at, anchor_entry_id, anchor_log_index, window_hash, \

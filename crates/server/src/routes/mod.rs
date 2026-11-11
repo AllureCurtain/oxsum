@@ -507,6 +507,8 @@ pub fn router(state: AppState) -> Router {
             get(business::customer).patch(business::update_customer),
         )
         // Service-only customer billing read (billingRead, issue #788).
+        .route("/business/customers/{organization_id}/monthly-statements", get(business::monthly_statements))
+        .route("/business/customers/{organization_id}/monthly-statements/{statement_id}", get(business::monthly_statement))
         .route(
             "/business/customers/{organization_id}/credit-terms",
             get(business::customer_credit_terms).put(business::set_customer_credit_terms),
