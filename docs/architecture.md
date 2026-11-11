@@ -1049,3 +1049,30 @@ Wallet, and rechecks current authority after releasing the snapshot so a complet
 staff revocation cannot hide behind old visibility. Existing statement row mapping
 is shared; elapsed due-date display is a pure projection. No read invokes global
 overdue updates, payment reconciliation, ledger bootstrap or proof generation.
+
+## Atomic monthly statement issuance (#1009)
+
+Monthly generation and finalization use borrowed transaction helpers. The lock
+order is organization admission, organization share, ledger append, then the
+monthly document row. The supplied wallet must belong to that organization.
+Existing issued documents return without rebuilding their source, terms, lines
+or proof window. Draft generation reads current terms rather than a caller's
+possibly stale organization object.
+
+One materialized SQL source query computes usage totals, grouped lines and the
+ordered window hashes from one READ COMMITTED statement snapshot. The append
+lock stabilizes ledger-only credit draws and repayments through commit. This
+also covers the legacy usage writer, which can insert a usage row after the
+settlement transaction and does not own the append lock. A later usage row does
+not partially enter the commitment. This is snapshot consistency, not a claim
+that no more historical usage can arrive or that an independent provider
+attested the counts.
+
+The anchor, issued document, replacement lines and `statement.finalized` enqueue
+commit or roll back together on one connection. Repeated or concurrent issuance
+returns one standing document and produces one anchor/event. Retained anchors
+from the old split-transaction path are accepted only if the raw key, descriptor,
+document binding and exact metadata-only marker shape agree; otherwise issuance
+refuses with an explicit recovery conflict. Existing ledger bytes and canonical
+hash formats are unchanged. Staff authority/audit and repayment operations are
+separate follow-ups under #1006.

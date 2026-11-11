@@ -28,8 +28,8 @@
 use std::collections::BTreeSet;
 
 use doubleentry::Hash;
-use serde::Serialize;
-use sqlx::Row;
+use serde::{Deserialize, Serialize};
+use sqlx::{Postgres, Row, Transaction};
 use time::{Date, Duration, Month, OffsetDateTime};
 use uuid::Uuid;
 
@@ -120,7 +120,7 @@ impl PaymentStatus {
 
 /// One line of a statement: the period's settled usage aggregated per channel and
 /// model — what the line's requests were charged and the token totals behind it.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct StatementLine {
     /// Provider channel the usage ran on.
@@ -354,69 +354,62 @@ impl Db {
     ///
     /// An organization whose period has no usage answers a draft of zeros and no
     /// lines; the caller decides whether an empty statement is worth issuing.
-    async fn draft_of(
+    async fn draft_of_in(
         &self,
+        tx: &mut Transaction<'_, Postgres>,
         tenant_id: &str,
         wallet: &Wallet,
         period: &StatementPeriod,
     ) -> Result<DraftStatement, WalletError> {
-        let totals_sql = format!(
-            "SELECT count(*)::bigint AS entry_count, \
-             COALESCE(sum(u.charged_minor), 0)::bigint AS total_minor, \
-             min(e.log_index)::bigint AS log_from, max(e.log_index)::bigint AS log_to \
-             {}",
+        // One SQL snapshot for every usage-derived figure. Legacy record_usage
+        // callers may insert a late row without the wallet append lock, so
+        // separate READ COMMITTED queries cannot safely build one commitment.
+        let source_sql = format!(
+            "WITH covered AS MATERIALIZED (SELECT u.channel,u.model,u.input_tokens, \
+             u.output_tokens,u.cached_tokens,u.reasoning_tokens,u.charged_minor, \
+             e.log_index,e.content_hash {}), \
+             lines AS (SELECT channel,model,count(*)::bigint AS turns, \
+             COALESCE(sum(input_tokens),0)::bigint AS \"inputTokens\", \
+             COALESCE(sum(output_tokens),0)::bigint AS \"outputTokens\", \
+             COALESCE(sum(cached_tokens),0)::bigint AS \"cachedTokens\", \
+             COALESCE(sum(reasoning_tokens),0)::bigint AS \"reasoningTokens\", \
+             COALESCE(sum(charged_minor),0)::bigint AS \"amountMinor\" \
+             FROM covered GROUP BY channel,model) \
+             SELECT count(*)::bigint AS entry_count, \
+             COALESCE(sum(charged_minor),0)::bigint AS total_minor, \
+             min(log_index)::bigint AS log_from,max(log_index)::bigint AS log_to, \
+             COALESCE(array_agg(content_hash ORDER BY log_index),ARRAY[]::bytea[]) AS hashes, \
+             (SELECT COALESCE(jsonb_agg(to_jsonb(lines) ORDER BY channel,model),'[]'::jsonb) \
+              FROM lines) AS lines FROM covered",
             period_join(tenant_id)
         );
-        let totals = sqlx::query(&totals_sql)
+        let source = sqlx::query(&source_sql)
             .bind(period.first)
             .bind(period.last)
             .bind(tenant_id)
-            .fetch_one(self.pool())
+            .fetch_one(&mut **tx)
             .await?;
-        let lines_sql = format!(
-            "SELECT u.channel, u.model, \
-             count(*)::bigint AS turns, \
-             COALESCE(sum(u.input_tokens), 0)::bigint AS input_tokens, \
-             COALESCE(sum(u.output_tokens), 0)::bigint AS output_tokens, \
-             COALESCE(sum(u.cached_tokens), 0)::bigint AS cached_tokens, \
-             COALESCE(sum(u.reasoning_tokens), 0)::bigint AS reasoning_tokens, \
-             COALESCE(sum(u.charged_minor), 0)::bigint AS amount_minor \
-             {} \
-             GROUP BY u.channel, u.model ORDER BY u.channel, u.model",
-            period_join(tenant_id)
-        );
-        let line_rows = sqlx::query(&lines_sql)
-            .bind(period.first)
-            .bind(period.last)
-            .bind(tenant_id)
-            .fetch_all(self.pool())
+        let lines = source
+            .try_get::<sqlx::types::Json<Vec<StatementLine>>, _>("lines")?
+            .0;
+        let entry_count: i64 = source.try_get("entry_count")?;
+        let total_minor: i64 = source.try_get("total_minor")?;
+        // The append lock keeps these ledger-only reads stable until commit.
+        let credit_drawn_minor = wallet
+            .credit_flow_in(tx, "D", Some(period.first), Some(period.last))
             .await?;
-        let lines = line_rows
-            .iter()
-            .map(|row| {
-                Ok(StatementLine {
-                    channel: row.try_get("channel")?,
-                    model: row.try_get("model")?,
-                    turns: row.try_get("turns")?,
-                    input_tokens: row.try_get("input_tokens")?,
-                    output_tokens: row.try_get("output_tokens")?,
-                    cached_tokens: row.try_get("cached_tokens")?,
-                    reasoning_tokens: row.try_get("reasoning_tokens")?,
-                    amount_minor: row.try_get("amount_minor")?,
-                })
+        let log_from_index = source.try_get("log_from")?;
+        let log_to_index = source.try_get("log_to")?;
+        let hashes = source
+            .try_get::<Vec<Vec<u8>>, _>("hashes")?
+            .into_iter()
+            .map(|bytes| {
+                let raw: [u8; 32] = bytes.try_into().map_err(|_| {
+                    WalletError::InvalidInput("a covered entry's content hash is malformed".into())
+                })?;
+                Ok(Hash::from_bytes(raw))
             })
             .collect::<Result<Vec<_>, WalletError>>()?;
-        let entry_count: i64 = totals.try_get("entry_count")?;
-        let total_minor: i64 = totals.try_get("total_minor")?;
-        let credit_drawn_minor = wallet
-            .credit_drawn_between(period.first, period.last)
-            .await?;
-        let log_from_index = totals.try_get("log_from")?;
-        let log_to_index = totals.try_get("log_to")?;
-        // The window fold: every covered entry's content hash in log order, the
-        // order the digest pins (issue #221). `log_index IS NOT NULL` is implied —
-        // a usage row only exists for a settlement whose entry sequenced.
-        let hashes = self.statement_window_hashes(tenant_id, period).await?;
         let window_hash = statement_window_hash(&hashes);
         // The rollup: the statement's own figures and lines in the canonical form
         // the verifier re-serializes — the document the rollup digest commits.
@@ -476,15 +469,40 @@ impl Db {
         wallet: &Wallet,
         period: &StatementPeriod,
     ) -> Result<Option<Statement>, WalletError> {
-        let draft = self
-            .draft_of(&organization.tenant_id, wallet, period)
-            .await?;
-        if draft.entry_count == 0 {
-            // Nothing billed that month — but a standing row still answers: a
-            // draft rebuilds to empty, a finalized one is returned untouched.
-            return self.statement_at(organization.id, &period.label()).await;
-        }
         let mut tx = self.pool().begin().await?;
+        let result = self
+            .generate_statement_in(&mut tx, organization.id, wallet, period)
+            .await?;
+        tx.commit().await?;
+        Ok(result)
+    }
+
+    /// Generate draft lines and totals in the caller's audited transaction.
+    pub(crate) async fn generate_statement_in(
+        &self,
+        tx: &mut Transaction<'_, Postgres>,
+        organization_id: Uuid,
+        wallet: &Wallet,
+        period: &StatementPeriod,
+    ) -> Result<Option<Statement>, WalletError> {
+        let terms = self
+            .lock_monthly_statement_in(tx, organization_id, wallet)
+            .await?;
+        let existing = self
+            .statement_at_in(tx, organization_id, &period.label())
+            .await?;
+        if existing
+            .as_ref()
+            .is_some_and(|row| row.status == StatementStatus::Finalized)
+        {
+            return Ok(existing);
+        }
+        let draft = self
+            .draft_of_in(tx, wallet.tenant_id(), wallet, period)
+            .await?;
+        if draft.entry_count == 0 && existing.is_none() {
+            return Ok(None);
+        }
         // Draft-only upsert: an existing finalized row fails the WHERE, the RETURNING
         // comes back empty, and the standing document is fetched and answered instead.
         let row = sqlx::query(
@@ -502,23 +520,24 @@ impl Db {
              RETURNING statement_id, status",
         )
         .bind(Uuid::new_v4())
-        .bind(organization.id)
+        .bind(organization_id)
         .bind(period.label())
         .bind(draft.total_minor)
         .bind(draft.credit_drawn_minor)
-        .bind(organization.payment_terms_days)
+        .bind(terms)
         .bind(draft.entry_count)
-        .fetch_optional(&mut *tx)
+        .fetch_optional(&mut **tx)
         .await?;
         let Some(row) = row else {
-            tx.commit().await?;
-            return self.statement_at(organization.id, &period.label()).await;
+            return self
+                .statement_at_in(tx, organization_id, &period.label())
+                .await;
         };
         let statement_id: Uuid = row.try_get("statement_id")?;
         // The lines are the draft's working copy: rebuilt whole each generation.
         sqlx::query("DELETE FROM oxsum.statement_lines WHERE statement_id = $1")
             .bind(statement_id)
-            .execute(&mut *tx)
+            .execute(&mut **tx)
             .await?;
         for (line_no, line) in draft.lines.iter().enumerate() {
             sqlx::query(
@@ -537,11 +556,54 @@ impl Db {
             .bind(line.cached_tokens)
             .bind(line.reasoning_tokens)
             .bind(line.amount_minor)
-            .execute(&mut *tx)
+            .execute(&mut **tx)
             .await?;
         }
-        tx.commit().await?;
-        self.statement_by_id(statement_id).await
+        self.statement_at_in(tx, organization_id, &period.label())
+            .await
+    }
+
+    async fn lock_monthly_statement_in(
+        &self,
+        tx: &mut Transaction<'_, Postgres>,
+        organization: Uuid,
+        wallet: &Wallet,
+    ) -> Result<i32, WalletError> {
+        sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1 || $2,0))")
+            .bind(ORG_ADMISSION_LOCK)
+            .bind(organization.to_string())
+            .execute(&mut **tx)
+            .await?;
+        let row = sqlx::query(
+            "SELECT tenant_id,payment_terms_days FROM oxsum.organizations WHERE organization_id=$1 FOR SHARE",
+        )
+        .bind(organization)
+        .fetch_optional(&mut **tx)
+        .await?
+        .ok_or_else(|| WalletError::NotFound("organization not found".into()))?;
+        if row.try_get::<String, _>("tenant_id")? != wallet.tenant_id() {
+            return Err(WalletError::InvalidInput(
+                "statement wallet does not match its organization".into(),
+            ));
+        }
+        wallet.lock_append_in(tx).await?;
+        Ok(row.try_get("payment_terms_days")?)
+    }
+
+    async fn statement_at_in(
+        &self,
+        tx: &mut Transaction<'_, Postgres>,
+        organization: Uuid,
+        period: &str,
+    ) -> Result<Option<Statement>, WalletError> {
+        let row = sqlx::query(&format!(
+            "SELECT {STATEMENT_COLS} FROM oxsum.statements WHERE organization_id=$1 AND period=$2"
+        ))
+        .bind(organization)
+        .bind(period)
+        .fetch_optional(&mut **tx)
+        .await?;
+        row.as_ref().map(statement_from_row).transpose()
     }
 
     /// One statement by id, whichever standing it is in — `None` when the id is
@@ -555,24 +617,6 @@ impl Db {
             "SELECT {STATEMENT_COLS} FROM oxsum.statements WHERE statement_id = $1"
         ))
         .bind(id)
-        .fetch_optional(self.pool())
-        .await?;
-        row.as_ref().map(statement_from_row).transpose()
-    }
-
-    /// The organization's statement for the period, `None` when it was never
-    /// generated.
-    async fn statement_at(
-        &self,
-        organization_id: Uuid,
-        period: &str,
-    ) -> Result<Option<Statement>, WalletError> {
-        let row = sqlx::query(&format!(
-            "SELECT {STATEMENT_COLS} FROM oxsum.statements \
-             WHERE organization_id = $1 AND period = $2"
-        ))
-        .bind(organization_id)
-        .bind(period)
         .fetch_optional(self.pool())
         .await?;
         row.as_ref().map(statement_from_row).transpose()
@@ -626,6 +670,17 @@ impl Db {
         tenant_id: &str,
         period: &StatementPeriod,
     ) -> Result<Vec<Hash>, WalletError> {
+        let mut conn = self.pool().acquire().await?;
+        self.statement_window_hashes_in(&mut conn, tenant_id, period)
+            .await
+    }
+
+    async fn statement_window_hashes_in(
+        &self,
+        conn: &mut sqlx::PgConnection,
+        tenant_id: &str,
+        period: &StatementPeriod,
+    ) -> Result<Vec<Hash>, WalletError> {
         let hashes_sql = format!(
             "SELECT e.content_hash {} ORDER BY e.log_index",
             period_join(tenant_id)
@@ -634,7 +689,7 @@ impl Db {
             .bind(period.first)
             .bind(period.last)
             .bind(tenant_id)
-            .fetch_all(self.pool())
+            .fetch_all(conn)
             .await?;
         let mut hashes = Vec::with_capacity(hash_rows.len());
         for row in &hash_rows {
@@ -713,31 +768,60 @@ impl Db {
         wallet: &Wallet,
         on: Date,
     ) -> Result<Statement, WalletError> {
-        let existing = self
-            .statement_by_id(statement_id)
-            .await?
-            .ok_or_else(|| WalletError::NotFound("the statement is not known".into()))?;
+        let mut tx = self.pool().begin().await?;
+        let result = self
+            .finalize_statement_in(&mut tx, statement_id, wallet, on)
+            .await?;
+        tx.commit().await?;
+        Ok(result)
+    }
+
+    /// Issue a monthly statement, its anchor and event in the caller's transaction.
+    pub(crate) async fn finalize_statement_in(
+        &self,
+        tx: &mut Transaction<'_, Postgres>,
+        statement_id: Uuid,
+        wallet: &Wallet,
+        on: Date,
+    ) -> Result<Statement, WalletError> {
+        let organization: Uuid = sqlx::query_scalar(
+            "SELECT organization_id FROM oxsum.statements WHERE statement_id=$1",
+        )
+        .bind(statement_id)
+        .fetch_optional(&mut **tx)
+        .await?
+        .ok_or_else(|| WalletError::NotFound("the statement is not known".into()))?;
+        let terms = self
+            .lock_monthly_statement_in(tx, organization, wallet)
+            .await?;
+        let row = sqlx::query(&format!(
+            "SELECT {STATEMENT_COLS} FROM oxsum.statements WHERE statement_id=$1 FOR UPDATE"
+        ))
+        .bind(statement_id)
+        .fetch_one(&mut **tx)
+        .await?;
+        let existing = statement_from_row(&row)?;
         if existing.status == StatementStatus::Finalized {
             return Ok(existing);
         }
-        let organization = self.organization_by_id(existing.organization_id).await?;
         // The period a draft covers is closed by construction, so this parse cannot
         // fail the ended check; it exists for the date bounds.
         let period = period_bounds(&existing.period)?;
         let draft = self
-            .draft_of(&organization.tenant_id, wallet, &period)
+            .draft_of_in(tx, wallet.tenant_id(), wallet, &period)
             .await?;
-        let due_date = on + Duration::days(i64::from(organization.payment_terms_days));
+        let due_date = on + Duration::days(i64::from(terms));
         // The line may already have been repaid while the statement stood in draft:
         // the same derivation reconcile runs, evaluated at issue.
-        let repaid = wallet.credit_repaid().await?;
-        let prior_draws =
-            wallet.credit_drawn_through(period.last).await? - draft.credit_drawn_minor;
+        let repaid = wallet.credit_flow_in(tx, "C", None, None).await?;
+        let prior_draws = wallet
+            .credit_flow_in(tx, "D", None, Some(period.last))
+            .await?
+            - draft.credit_drawn_minor;
         let paid_minor = (repaid - prior_draws).clamp(0, draft.credit_drawn_minor);
         // The anchor: one marker entry appended to the tenant ledger, committing
-        // the window and rollup digests (issue #221). It precedes the draft-only
-        // update so a losing finalize never records an anchor it didn't issue —
-        // the idempotency key makes the append itself replay-safe.
+        // the window and rollup digests (issue #221). The anchor, document,
+        // lines and event share this transaction; any failure rolls them back.
         let description = serde_json::json!({
             "v": 1,
             "period": existing.period,
@@ -751,11 +835,9 @@ impl Db {
         })
         .to_string();
         let (anchor_entry_id, anchor_log_index) = wallet
-            .anchor_statement(statement_id, &description, draft.window_hash)
+            .anchor_statement_in(tx, statement_id, &description, draft.window_hash)
             .await?;
-        let mut tx = self.pool().begin().await?;
-        // Draft-only update: a racing finalize loses the WHERE and re-reads the
-        // standing document below — the same idempotent answer a repeat gives.
+        // The locked draft is the only document this transaction can issue.
         let updated = sqlx::query(
             "UPDATE oxsum.statements SET status = 'finalized', \
                  total_minor = $2, credit_drawn_minor = $3, paid_minor = $4, \
@@ -773,7 +855,7 @@ impl Db {
         .bind(draft.total_minor)
         .bind(draft.credit_drawn_minor)
         .bind(paid_minor)
-        .bind(organization.payment_terms_days)
+        .bind(terms)
         .bind(due_date)
         .bind(draft.log_from_index)
         .bind(draft.log_to_index)
@@ -782,12 +864,12 @@ impl Db {
         .bind(anchor_log_index as i64)
         .bind(draft.window_hash.to_hex())
         .bind(draft.rollup_hash.to_hex())
-        .fetch_optional(&mut *tx)
+        .fetch_optional(&mut **tx)
         .await?;
         if updated.is_some() {
             sqlx::query("DELETE FROM oxsum.statement_lines WHERE statement_id = $1")
                 .bind(statement_id)
-                .execute(&mut *tx)
+                .execute(&mut **tx)
                 .await?;
             for (line_no, line) in draft.lines.iter().enumerate() {
                 sqlx::query(
@@ -806,13 +888,13 @@ impl Db {
                 .bind(line.cached_tokens)
                 .bind(line.reasoning_tokens)
                 .bind(line.amount_minor)
-                .execute(&mut *tx)
+                .execute(&mut **tx)
                 .await?;
             }
             // The statement issued: subscribers hear `statement.finalized` in the
             // transaction that locked the document (issue #200).
             Self::enqueue_event(
-                &mut tx,
+                tx,
                 existing.organization_id,
                 STATEMENT_FINALIZED,
                 serde_json::json!({
@@ -825,8 +907,7 @@ impl Db {
             )
             .await?;
         }
-        tx.commit().await?;
-        self.statement_by_id(statement_id)
+        self.statement_at_in(tx, organization, &existing.period)
             .await?
             .ok_or_else(|| WalletError::NotFound("the statement is not known".into()))
     }

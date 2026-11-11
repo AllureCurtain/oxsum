@@ -3869,3 +3869,25 @@ coherent snapshot. Do not reuse legacy administration reads that globally flip
 standing or open ledgers. Count expanded serialized line bytes so PostgreSQL TOAST
 compression cannot bypass the detail bound. Issuance and payment remain separate
 minimal changes under #1006.
+
+## 2026-11-10 — Commit monthly issuance and its proof together (#1009)
+
+The old monthly finalizer appended its marker before opening the statement
+transaction, and its fallback accepted any retained entry with the derived ID.
+A failed document write could leave an orphan marker; later usage could then
+cause different totals/lines to adopt it. Separate pooled source reads also
+allowed a late legacy usage row to enter only part of a commitment.
+
+Use borrowed transaction helpers, organization admission/share and ledger append
+locks, and one materialized query snapshot for usage-derived figures. Keep the
+ordinary READ COMMITTED policy so a future staff writer can recheck current
+authority in its existing transaction; a transaction-wide historical snapshot
+would not substitute for that recheck. Ledger-only draw/repayment reads are stable
+under the append lock. Commit anchor, document, lines and event together.
+
+Keep the historical anchor key and hash formats. Replay a legacy retained marker
+only when the descriptor, document reference and balanced metadata-only shape
+match exactly; fail incompatible recovery explicitly. Do not rewrite ledger
+history or regenerate an already-issued statement. A bounded one-connection
+pool must support the whole write without a nested checkout. This does not add
+new staff endpoints, repayment allocation or historical-usage completeness.
