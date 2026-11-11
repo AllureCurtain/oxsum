@@ -393,7 +393,7 @@ pub use customer_readiness::{CustomerReadyReceipt, CustomerReceiptReadiness};
 pub use customer_serving_readiness::{CustomerServingReadiness, CustomerServingSample};
 
 pub use sale_books::{
-    SaleBook, SaleBookHistory, SaleBookPage, SaleChange, SaleChangeRequest, SaleDraft,
+    SaleBook, SaleBookHistory, SaleBookPage, SaleChange, SaleChangeRequest, SaleDraft, SaleGate,
     SaleModelMap, SaleMutationResult, SalePreviewRequest, SalePreviewSource, SalePreviewUsage,
     SalePrice, SalePricePreview, SalePriceSnapshot, SaleSchedule, SaleTerms, SaleVersion,
 };

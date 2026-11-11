@@ -1,4 +1,6 @@
 //! A06/A08: HTTP catalogs and estimates expose only admitted customer routes.
+#[path = "../../../core/tests/support/integration.rs"]
+mod setup;
 use axum::Router;
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
@@ -253,5 +255,112 @@ async fn catalog_estimate_and_alias_follow_customer_key_and_group_grants() {
     assert_eq!(
         call(&app, "/v1/models", None, &key.secret, false).await.0,
         StatusCode::UNAUTHORIZED
+    );
+}
+
+/// The catalog must not advertise a model whose sale terms have not opened
+/// yet (issue #1052): a channel price makes the route exist, but without an
+/// active schedule the turn would settle wholesale — a catalog read should say
+/// "not yet sellable" by leaving the model out.
+#[tokio::test]
+async fn the_catalog_omits_a_model_whose_sale_terms_are_not_yet_active() {
+    let Some(url) = oxsum_testkit::suite_db_url("serving_catalog_sale") else {
+        return;
+    };
+    let db = Db::connect(&url, 8).await.unwrap();
+    db.migrate().await.unwrap();
+    let owner = setup::owner(&db).await;
+    let customer = db
+        .register(NewUser {
+            email: format!("{}@example.com", Uuid::new_v4()),
+            password: "catalog sale fixture password".into(),
+            organization_name: None,
+        })
+        .await
+        .unwrap();
+    let secret = SecretKey::from_bytes([7; 32]);
+    let price =
+        PriceBook::from_json("a", r#"{"pending":{"inputPricePerMillion":1000000,"outputPricePerMillion":2000000,"maxOutputTokens":20},"live":{"inputPricePerMillion":1000000,"outputPricePerMillion":2000000,"maxOutputTokens":20}}"#).unwrap();
+    db.set_channel(
+        "relay",
+        "https://provider.example/v1",
+        "provider-fixture-secret",
+        "openai",
+        &secret,
+    )
+    .await
+    .unwrap();
+    for (model, price) in price.models() {
+        db.append_price("relay", model, price.clone(), 100)
+            .await
+            .unwrap();
+    }
+    let app = crate::support::app(
+        db.clone(),
+        Config::new(Signup::Invite, None).with_secret(secret),
+    );
+    // Before any schedule exists the deployment is wholesale: both priced
+    // models list.
+    let (status, list) = call(&app, "/v1/models", None, &customer.api_key.secret, false).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(list["data"].as_array().unwrap().len(), 2);
+
+    // Publish a sale book covering only `live`, effective immediately — now
+    // the business has schedules and `pending` resolves nothing.
+    let mutate = |change: Value| {
+        let app = app.clone();
+        let owner = owner.clone();
+        async move {
+            let body = json!({"idempotencyKey":Uuid::new_v4().to_string(),"reason":"catalog sale fixture","change":change});
+            let (status, result) = call(
+                &app,
+                "/api/v1/business/sale-books/changes",
+                Some(body),
+                &owner,
+                true,
+            )
+            .await;
+            assert_eq!(status, StatusCode::OK, "{result}");
+            result["data"].clone()
+        }
+    };
+    let book =
+        mutate(json!({"operation":"createBook","name":"catalog sale book"})).await["resourceId"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+    let sale = json!({"price":{"inputPricePerMillion":1_000_000,"outputPricePerMillion":1_000_000,"maxOutputTokens":20}});
+    mutate(
+        json!({"operation":"saveDraft","bookId":book,"expectedRevision":0,"models":{"live":sale}}),
+    )
+    .await;
+    mutate(json!({"operation":"publishDraft","bookId":book,"draftRevision":1})).await;
+    mutate(json!({"operation":"scheduleDefault","bookId":book,"version":1})).await;
+
+    let (_, list) = call(&app, "/v1/models", None, &customer.api_key.secret, false).await;
+    assert_eq!(
+        list["data"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|r| r["id"].as_str().unwrap())
+            .collect::<Vec<_>>(),
+        vec!["live"],
+        "the schedule-covered model lists; the uncovered wholesale model does not"
+    );
+
+    // A schedule that opens later still does not make `pending` sellable.
+    let later = (time::OffsetDateTime::now_utc() + time::Duration::hours(1))
+        .format(&time::format_description::well_known::Rfc3339)
+        .unwrap();
+    mutate(
+        json!({"operation":"overrideModel","organizationId":customer.organization.id,"model":"pending","terms":{"price":{"inputPricePerMillion":1_000_000,"maxOutputTokens":20}},"effectiveFrom":later}),
+    )
+    .await;
+    let (_, list) = call(&app, "/v1/models", None, &customer.api_key.secret, false).await;
+    assert_eq!(
+        list["data"].as_array().unwrap().len(),
+        1,
+        "a future-dated override does not open the model"
     );
 }

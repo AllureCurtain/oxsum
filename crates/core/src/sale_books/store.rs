@@ -624,6 +624,46 @@ impl Db {
         Ok(result)
     }
 
+    /// The admission gate a model must pass before it may be called at all.
+    ///
+    /// Like [`resolve_sale_price`] but distinguishes "no sale schedule exists"
+    /// (wholesale deployment — the turn prices off the channel catalog) from
+    /// "schedules exist but none covers this pair" (the model is priced on
+    /// channels but not sellable to this caller, so the call must not reach
+    /// upstream; issue #1052). Digest publication is identical: only a
+    /// `Priced` resolution records one.
+    pub async fn resolve_sale_gate(
+        &self,
+        business: Uuid,
+        org: Uuid,
+        model: &str,
+        at: OffsetDateTime,
+    ) -> Result<crate::SaleGate, WalletError> {
+        let mut tx = self.pool().begin().await?;
+        if authority::lock_business(&mut tx).await? != business {
+            return Err(super::missing());
+        }
+        customer(&mut tx, business, org).await?;
+        super::model_name(model)?;
+        let any: bool = sqlx::query_scalar(
+            "SELECT EXISTS(SELECT 1 FROM oxsum.sale_schedules WHERE business_id=$1)",
+        )
+        .bind(business)
+        .fetch_one(&mut *tx)
+        .await?;
+        let gate = if !any {
+            crate::SaleGate::Wholesale
+        } else {
+            match resolve(&mut tx, business, org, model, super::instant(at)?).await {
+                Ok(snapshot) => crate::SaleGate::Priced(Box::new(snapshot)),
+                Err(WalletError::NotFound(_)) => crate::SaleGate::NotCovered,
+                Err(error) => return Err(error),
+            }
+        };
+        tx.commit().await?;
+        Ok(gate)
+    }
+
     /// Reads the canonical snapshot bytes a committed digest names, plus the
     /// business whose catalog signed it (issue #600).
     ///
@@ -728,6 +768,53 @@ impl Db {
         let signed =
             crate::sign_sale_head(key, &snapshot, &canonical).map_err(crate::error::invalid)?;
         Ok(Some((signed, canonical)))
+    }
+
+    /// The candidate models an active sale price covers for this customer at
+    /// `at`, or `None` when the business runs no sale schedule at all.
+    ///
+    /// `None` is the wholesale signal: every priced channel model is billable,
+    /// so a catalog must not filter on sale coverage. `Some` — even an empty
+    /// set — means the business has schedules and only the returned names
+    /// resolve customer terms; a priced-but-uncovered model would settle
+    /// wholesale, which the catalog must not advertise (issue #1052).
+    ///
+    /// The check shares `read_effective_in` with admission: same precedence,
+    /// same window semantics, but no digest write — a listing is a read.
+    pub async fn sale_priced_models(
+        &self,
+        business: Uuid,
+        org: Uuid,
+        models: &[String],
+        at: OffsetDateTime,
+    ) -> Result<Option<std::collections::BTreeSet<String>>, WalletError> {
+        let mut tx = self.pool().begin().await?;
+        if authority::lock_business(&mut tx).await? != business {
+            return Err(super::missing());
+        }
+        customer(&mut tx, business, org).await?;
+        let any: bool = sqlx::query_scalar(
+            "SELECT EXISTS(SELECT 1 FROM oxsum.sale_schedules WHERE business_id=$1)",
+        )
+        .bind(business)
+        .fetch_one(&mut *tx)
+        .await?;
+        if !any {
+            tx.commit().await?;
+            return Ok(None);
+        }
+        let mut covered = std::collections::BTreeSet::new();
+        for model in models {
+            super::model_name(model)?;
+            if read_effective_in(&mut tx, business, org, model, at)
+                .await?
+                .is_some()
+            {
+                covered.insert(model.clone());
+            }
+        }
+        tx.commit().await?;
+        Ok(Some(covered))
     }
 }
 async fn resolve(

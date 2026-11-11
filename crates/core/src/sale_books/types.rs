@@ -468,6 +468,24 @@ pub struct SalePriceSnapshot {
     /// The resolved sale terms.
     pub terms: SaleTerms,
 }
+/// Whether an admitted model is billable under the caller's sale terms.
+///
+/// The gateway resolves this once per request beside the route pick (issue
+/// #1052): the catalog lists only `Priced` names, and an admitted turn under
+/// `NotCovered` is refused rather than billed wholesale over a schedule's gap.
+#[derive(Debug)]
+pub enum SaleGate {
+    /// Active published terms cover this customer and model — the snapshot to
+    /// price the turn under.
+    Priced(Box<SalePriceSnapshot>),
+    /// The business runs schedules but none resolves terms for this pair:
+    /// the model is priced on channels but not sellable to this caller.
+    NotCovered,
+    /// No schedule exists at all — a wholesale deployment where every
+    /// channel-priced model is billable as before.
+    Wholesale,
+}
+
 /// The exact result of rating one usage record against pinned sale terms.
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
