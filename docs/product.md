@@ -993,3 +993,15 @@ The Business journal list permits FundsWrite staff to correct posted or paid jou
 Business staff explicitly confirms an initial complimentary plan grant without entering internal identifiers (#988). The portal retains the selected authorization and reconciles an uncertain response with the recorded customer plan and original period before retrying. Paid plan binding remains pending payment.
 
 Sold-plan period consumption reads the matching quota-engine window, including outstanding reservations and released unused amounts. Closed windows retain their own consumption; new periods do not replace historical counters. The read does not post money or rewrite authorization history.
+
+### Exact plan dispute cash (#1028)
+
+A plan-payment dispute records the authenticated contested amount using the
+original order's fiat-to-credit conversion, including partial cases. It never
+substitutes the whole order amount. Missing case IDs, missing or mismatched
+currency, out-of-range amounts and fractions of a credit minor unit require
+review. Repeated case notifications do not increase the contested balance again;
+changed case terms cannot overwrite the original. A lost case affects only its
+recorded cash amount through the existing original-source accounting policy.
+Historical incorrect cases remain visible for explicit review; no stored
+financial history is rewritten by this fix.

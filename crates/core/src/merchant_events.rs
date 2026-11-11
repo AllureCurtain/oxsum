@@ -318,9 +318,7 @@ async fn classify(
     {
         let order=sqlx::query("SELECT purpose,amount_minor,display_amount_minor,display_currency FROM oxsum.payment_orders WHERE order_id=$1")
             .bind(id).fetch_optional(&mut **tx).await?;
-        if let Some(order) = order
-            && order.try_get::<String, _>("purpose")? != "plan_period"
-        {
+        if let Some(order) = order {
             let amount = match crate::nonplan_returns::disputed_minor(
                 order.try_get("amount_minor")?,
                 order.try_get("display_amount_minor")?,

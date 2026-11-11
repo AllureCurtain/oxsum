@@ -978,6 +978,10 @@ async fn a_locked_first_candidate_does_not_starve_an_independent_period() {
 }
 
 async fn lost(w: &World, order: &crate::PaymentOrder) -> Uuid {
+    lost_amount(w, order, order.display_amount_minor).await
+}
+
+async fn lost_amount(w: &World, order: &crate::PaymentOrder, display_amount: i64) -> Uuid {
     let reference = format!("dispute_{}", Uuid::new_v4());
     let event = VerifiedMerchantEvent {
         event_id: Uuid::new_v4().to_string(),
@@ -987,7 +991,7 @@ async fn lost(w: &World, order: &crate::PaymentOrder) -> Uuid {
         organization_id: Some(w.org),
         provider_account_id: Some(w.context.account_id.clone()),
         mode: Some(MerchantMode::Test),
-        amount_minor: Some(order.display_amount_minor),
+        amount_minor: Some(display_amount),
         currency: Some(order.display_currency.clone()),
         refund_id: Some(reference.clone()),
     };
@@ -1471,4 +1475,198 @@ async fn tiny_month_end_fees_keep_exact_final_remainder_in_real_entries() {
         let sum:i64=sqlx::query_scalar(&format!("SELECT COALESCE(SUM(p.amount_minor),0)::bigint FROM ledger_{}.postings p JOIN ledger_{}.accounts a USING(account_index) WHERE a.path='Income:PlanFees' AND p.direction='C' AND p.layer='settled'",user.organization.tenant_id,user.organization.tenant_id)).fetch_one(w.db.pool()).await.unwrap();
         assert_eq!(sum, fee);
     }
+}
+
+#[tokio::test]
+async fn partial_plan_dispute_retains_exact_source_cash_under_both_policies() {
+    let _guard = TEST_LOCK.lock().await;
+    for legacy in [false, true] {
+        let Some(mut w) = world(if legacy { 40 } else { 10 }, legacy).await else {
+            return;
+        };
+        if legacy {
+            w.db.rollover_due_subscriptions().await.unwrap();
+            w.journal = w.db.plan_journals(w.org, None, 50).await.unwrap().journals[0].journal_id;
+        } else {
+            recognize(&w, OffsetDateTime::now_utc()).await;
+        }
+        let dispute = lost_amount(&w, &w.order, 100).await;
+        let amount: i64 =
+            sqlx::query_scalar("SELECT amount_minor FROM oxsum.disputes WHERE dispute_id=$1")
+                .bind(dispute)
+                .fetch_one(w.db.pool())
+                .await
+                .unwrap();
+        assert_eq!(
+            amount, 1_000_000,
+            "USD 1 of a USD 2.50 plan must not become a full loss"
+        );
+        assert_eq!(net(&w, "Assets:Cash").await, -(FEE - 1_000_000));
+        assert_eq!(net(&w, "Assets:Receivables").await, -1_000_000);
+        let journal =
+            w.db.plan_journal(w.org, w.journal)
+                .await
+                .unwrap()
+                .unwrap()
+                .journal;
+        assert_eq!(journal.settled_minor, FEE - 1_000_000);
+        assert_eq!(journal.total_minor, FEE);
+        assert_eq!(journal.state, JournalState::Posted);
+    }
+}
+
+#[tokio::test]
+async fn plan_dispute_rejects_bad_event_terms_and_tracks_a_repeated_case_once() {
+    let _guard = TEST_LOCK.lock().await;
+    let Some(w) = world(0, false).await else {
+        return;
+    };
+    let good = VerifiedMerchantEvent {
+        event_id: Uuid::new_v4().to_string(),
+        kind: MerchantEventKind::Dispute,
+        payment_id: Some(w.order.order_id),
+        provider_payment_id: Some(format!("pay_{}", w.order.order_id)),
+        organization_id: Some(w.org),
+        provider_account_id: Some(w.context.account_id.clone()),
+        mode: Some(MerchantMode::Test),
+        amount_minor: Some(100),
+        currency: Some("USD".into()),
+        refund_id: Some(format!("case_{}", Uuid::new_v4())),
+    };
+    for (kind, expected) in [
+        (0, "missingDisputeAmount"),
+        (1, "disputeCurrencyMismatch"),
+        (2, "disputeAmountMismatch"),
+        (3, "missingDisputeId"),
+        (4, "disputeAmountMismatch"),
+    ] {
+        let mut bad = good.clone();
+        bad.event_id = Uuid::new_v4().to_string();
+        match kind {
+            0 => bad.amount_minor = None,
+            1 => bad.currency = Some("EUR".into()),
+            2 => bad.amount_minor = Some(251),
+            3 => bad.refund_id = None,
+            _ => bad.amount_minor = Some(0),
+        }
+        let receipt =
+            w.db.receive_merchant_event(&w.context, &bad, &[97; 32])
+                .await
+                .unwrap();
+        assert_eq!(receipt.state, "rejected");
+        assert_eq!(receipt.reason.as_deref(), Some(expected));
+        assert!(w.db.record_order_dispute(&bad, &receipt).await.is_err());
+    }
+    let a =
+        w.db.receive_merchant_event(&w.context, &good, &[98; 32])
+            .await
+            .unwrap();
+    let mut duplicate = good.clone();
+    duplicate.event_id = Uuid::new_v4().to_string();
+    let b =
+        w.db.receive_merchant_event(&w.context, &duplicate, &[99; 32])
+            .await
+            .unwrap();
+    assert_eq!(a.state, "accepted");
+    assert_eq!(b.state, "accepted");
+    let (first, second) = tokio::join!(
+        w.db.record_order_dispute(&good, &a),
+        w.db.record_order_dispute(&duplicate, &b)
+    );
+    for result in [first, second] {
+        assert!(result.is_ok() || matches!(result, Err(crate::WalletError::PoolBusy)));
+    }
+    for _ in 0..2 {
+        w.db.record_order_dispute(&good, &a).await.unwrap();
+        w.db.record_order_dispute(&duplicate, &b).await.unwrap();
+    }
+    let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM oxsum.disputes WHERE order_id=$1")
+        .bind(w.order.order_id)
+        .fetch_one(w.db.pool())
+        .await
+        .unwrap();
+    assert_eq!(count, 1);
+    let journal =
+        w.db.plan_journal(w.org, w.journal)
+            .await
+            .unwrap()
+            .unwrap()
+            .journal;
+    assert_eq!(journal.disputed_minor, 1_000_000);
+    assert_eq!(journal.settled_minor, FEE);
+    let mut forged = good.clone();
+    forged.amount_minor = Some(250);
+    assert!(w.db.record_order_dispute(&forged, &a).await.is_err());
+    forged.event_id = Uuid::new_v4().to_string();
+    let rejected =
+        w.db.receive_merchant_event(&w.context, &forged, &[100; 32])
+            .await
+            .unwrap();
+    assert_eq!(rejected.state, "rejected");
+    assert_eq!(rejected.reason.as_deref(), Some("disputeTermsMismatch"));
+    assert_eq!(net(&w, "Assets:Cash").await, -FEE);
+}
+
+#[tokio::test]
+async fn legacy_plan_dispute_with_wrong_full_amount_refuses_resolution_without_rewriting_it() {
+    let _guard = TEST_LOCK.lock().await;
+    let Some(w) = world(0, false).await else {
+        return;
+    };
+    let event = VerifiedMerchantEvent {
+        event_id: Uuid::new_v4().to_string(),
+        kind: MerchantEventKind::Dispute,
+        payment_id: Some(w.order.order_id),
+        provider_payment_id: Some(format!("pay_{}", w.order.order_id)),
+        organization_id: Some(w.org),
+        provider_account_id: Some(w.context.account_id.clone()),
+        mode: Some(MerchantMode::Test),
+        amount_minor: Some(100),
+        currency: Some("USD".into()),
+        refund_id: Some(format!("case_{}", Uuid::new_v4())),
+    };
+    let receipt =
+        w.db.receive_merchant_event(&w.context, &event, &[102; 32])
+            .await
+            .unwrap();
+    w.db.record_order_dispute(&event, &receipt).await.unwrap();
+    let dispute: Uuid =
+        sqlx::query_scalar("SELECT dispute_id FROM oxsum.disputes WHERE inbox_receipt_id=$1")
+            .bind(receipt.id)
+            .fetch_one(w.db.pool())
+            .await
+            .unwrap();
+    let mut tx = w.db.pool().begin().await.unwrap();
+    sqlx::query("SET LOCAL session_replication_role=replica")
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+    sqlx::query("UPDATE oxsum.disputes SET amount_minor=$2 WHERE dispute_id=$1")
+        .bind(dispute)
+        .bind(FEE)
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+    let result =
+        w.db.resolve_order_dispute(
+            &w.wallet,
+            &w.owner,
+            dispute,
+            crate::DisputeResolution::Lost,
+            Some("review old incorrect case"),
+            &Uuid::new_v4().to_string(),
+            OffsetDateTime::now_utc().date(),
+        )
+        .await;
+    assert!(matches!(result, Err(crate::WalletError::Conflict(_))));
+    let retained: (String, i64, Option<Uuid>) = sqlx::query_as(
+        "SELECT state,amount_minor,recharge_entry_id FROM oxsum.disputes WHERE dispute_id=$1",
+    )
+    .bind(dispute)
+    .fetch_one(w.db.pool())
+    .await
+    .unwrap();
+    assert_eq!(retained, ("opened".into(), FEE, None));
+    assert_eq!(net(&w, "Assets:Cash").await, -FEE);
 }

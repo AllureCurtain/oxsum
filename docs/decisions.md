@@ -3943,3 +3943,15 @@ deployment endpoint's audit identity, while sharing borrowed period-cap, posting
 and reconciliation primitives. No extra deposit or top-up row is manufactured
 for credit-only monthly cash. The response identifies the original ledger entry
 and is stable after the document is paid; document reads carry current standing.
+
+
+## 2026-11-11 — Require exact original plan-dispute terms (#1028)
+
+Apply the existing exact order conversion rule to plan disputes as well as
+non-plan disputes. The previous plan fallback discarded a partial event amount
+and recorded the full order, overcharging both Cash loss and customer debt.
+Retain the original authenticated receipt as the authority and serialize case
+identity before recording; unchanged notifications cannot repeat journal
+tracking. Inconsistent old cases remain review-required with their original
+entries intact. Independent comparison verifies the event-to-dispute amount
+separately from the ledger-to-dispute amount.

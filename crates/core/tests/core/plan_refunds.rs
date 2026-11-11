@@ -769,7 +769,13 @@ async fn disputed(w: &World, amount: i64) -> Uuid {
         organization_id: Some(w.org),
         provider_account_id: Some(w.context.account_id.clone()),
         mode: Some(MerchantMode::Test),
-        amount_minor: Some(amount),
+        amount_minor: Some(
+            i64::try_from(
+                i128::from(amount) * i128::from(w.order.display_amount_minor)
+                    / i128::from(w.order.amount_minor),
+            )
+            .unwrap(),
+        ),
         currency: Some("USD".into()),
         refund_id: Some(format!("case_{}", Uuid::new_v4())),
     };
@@ -777,6 +783,7 @@ async fn disputed(w: &World, amount: i64) -> Uuid {
         w.db.receive_merchant_event(&w.context, &ev, &[83; 32])
             .await
             .unwrap();
+    assert_eq!(receipt.state, "accepted", "{:?}", receipt.reason);
     apply(w, &receipt).await;
     sqlx::query_scalar("SELECT dispute_id FROM oxsum.disputes WHERE order_id=$1")
         .bind(w.order.order_id)
@@ -802,7 +809,7 @@ async fn refunds_before_chargebacks_record_full_cash_and_only_remaining_customer
     for refund in [1_000_000, FEE] {
         let Some(w) = world(true).await else { return };
         close(&w).await;
-        // Dispute amounts are ledger minor in this recorded finance source.
+        // The helper converts exact ledger minor to the provider's pinned fiat units.
         let d = disputed(&w, FEE).await;
         refunded(&w, refund).await;
         lose(&w, d).await;
