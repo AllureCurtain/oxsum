@@ -1,0 +1,598 @@
+{
+  "renewal": {
+    "plan": [
+      {
+        "customer_plan_id": "fe304030-0e90-4a09-bcf1-69b8ac1268e5",
+        "organization_id": "1650c0a8-41ec-4fa2-94b5-e9b47b537e5c",
+        "plan_version_id": "486a5b5b-75b2-4fb5-bee7-96b0597b7a1b",
+        "subscription_id": "f9ab6735-21a0-4615-be01-6afb339f9061",
+        "state": "active",
+        "activated_at": "2026-10-10T00:00:00+00:00",
+        "cancel_at_period_end": false,
+        "scheduled_change": null,
+        "created_at": "2026-11-10T18:07:12.438955+00:00",
+        "updated_at": "2026-11-10T18:07:12.465816+00:00",
+        "net_terms_days": 14,
+        "grace_days": 7,
+        "credit_limit_minor": null,
+        "dunning_suspended_at": null
+      }
+    ],
+    "periods": [
+      {
+        "plan_period_id": "5cd26a92-9b5d-4bed-8232-30bfa636d179",
+        "customer_plan_id": "fe304030-0e90-4a09-bcf1-69b8ac1268e5",
+        "period_index": 0,
+        "period_start": "2026-10-10T00:00:00+00:00",
+        "period_end": "2026-11-10T00:00:00+00:00",
+        "quota_minor": 7000000,
+        "consumed_minor": 0,
+        "authorization_kind": "payment_order",
+        "authorization_ref": "79566f0f-278d-472b-9c2f-e07317435c9e",
+        "state": "active",
+        "created_at": "2026-11-10T18:07:12.465816+00:00"
+      }
+    ],
+    "accounting": [
+      {
+        "plan_period_id": "5cd26a92-9b5d-4bed-8232-30bfa636d179",
+        "journal_id": "9e371529-e3c1-47fb-a4e4-ee0e9c67c35e",
+        "customer_plan_id": "fe304030-0e90-4a09-bcf1-69b8ac1268e5",
+        "organization_id": "1650c0a8-41ec-4fa2-94b5-e9b47b537e5c",
+        "business_id": "04beb410-58e8-4fcd-bdc5-253891d1655f",
+        "plan_version_id": "486a5b5b-75b2-4fb5-bee7-96b0597b7a1b",
+        "accounting_policy_version": 2,
+        "fee_minor": 1000001,
+        "service_start": "2026-10-10T00:00:00+00:00",
+        "service_end": "2026-11-10T00:00:00+00:00",
+        "authorization_kind": "payment_order",
+        "authorization_ref": "79566f0f-278d-472b-9c2f-e07317435c9e",
+        "payment_on": "2026-11-10",
+        "created_at": "2026-11-10T18:07:12.465816+00:00"
+      }
+    ],
+    "effects": [
+      {
+        "effect_id": "a5cd54e6-16ea-4c96-8bbc-88e04d60ec96",
+        "plan_period_id": "5cd26a92-9b5d-4bed-8232-30bfa636d179",
+        "kind": "activation",
+        "source_ref": "79566f0f-278d-472b-9c2f-e07317435c9e",
+        "service_day": "2026-10-10",
+        "booked_on": "2026-10-10",
+        "payment_on": "2026-11-10",
+        "billed_minor": 1000001,
+        "earned_minor": 0,
+        "deferred_minor": 1000001,
+        "collected_minor": 1000001,
+        "receivable_minor": 0,
+        "payable_minor": 0,
+        "cash_minor": 1000001,
+        "entry_id": "bd24e4c7-36ce-57e2-bfb2-63b1fc8004bf",
+        "created_at": "2026-11-10T18:07:12.465816+00:00"
+      }
+    ],
+    "subscription": [
+      {
+        "subscription_id": "f9ab6735-21a0-4615-be01-6afb339f9061",
+        "organization_id": "1650c0a8-41ec-4fa2-94b5-e9b47b537e5c",
+        "plan_id": "2e05d875-88c1-47f3-8678-7d9e774efcc6",
+        "state": "active",
+        "current_period_start": "2026-10-10T00:00:00+00:00",
+        "current_period_end": "2026-11-10T00:00:00+00:00",
+        "consumed_minor": 0,
+        "quota_minor": 7000000,
+        "allow_wallet_overflow": false,
+        "source": "plan",
+        "stripe_subscription_id": null,
+        "created_at": "2026-11-10T18:07:12.465816+00:00",
+        "updated_at": "2026-11-10T18:07:12.465816+00:00"
+      }
+    ],
+    "orders": [
+      {
+        "order_id": "79566f0f-278d-472b-9c2f-e07317435c9e",
+        "purpose": "plan_period",
+        "status": "fulfilled",
+        "amount_minor": 1000001,
+        "display_amount_minor": 101,
+        "display_currency": "USD",
+        "provider_payment_id": "pay_79566f0f-278d-472b-9c2f-e07317435c9e",
+        "plan_payment": {
+          "feeMinor": 1000001,
+          "periodEnd": null,
+          "rateScale": 0,
+          "periodIndex": 0,
+          "periodStart": null,
+          "rateMantissa": "1",
+          "planVersionId": "486a5b5b-75b2-4fb5-bee7-96b0597b7a1b",
+          "customerPlanId": "fe304030-0e90-4a09-bcf1-69b8ac1268e5",
+          "displayCurrency": "USD",
+          "collectionRevision": 1,
+          "displayAmountMinor": 101
+        },
+        "paid_at": "2026-11-10T18:07:12.460381+00:00"
+      }
+    ],
+    "books": [
+      {
+        "path": "Assets:Cash",
+        "net_credit": -1000001
+      },
+      {
+        "path": "Liabilities:UnearnedPlanFees",
+        "net_credit": 1000001
+      }
+    ],
+    "journals": [
+      {
+        "journal_id": "9e371529-e3c1-47fb-a4e4-ee0e9c67c35e",
+        "customer_plan_id": "fe304030-0e90-4a09-bcf1-69b8ac1268e5",
+        "organization_id": "1650c0a8-41ec-4fa2-94b5-e9b47b537e5c",
+        "business_id": "04beb410-58e8-4fcd-bdc5-253891d1655f",
+        "plan_period_id": "5cd26a92-9b5d-4bed-8232-30bfa636d179",
+        "period_index": 0,
+        "state": "paid",
+        "total_minor": 1000001,
+        "settled_minor": 1000001,
+        "currency": "USD",
+        "paid_order_id": "79566f0f-278d-472b-9c2f-e07317435c9e",
+        "disputed_minor": 0,
+        "replaces_journal_id": null,
+        "void_reason": null,
+        "posted_at": "2026-11-10T18:07:12.465816+00:00",
+        "paid_at": "2026-11-10T18:07:12.465816+00:00",
+        "voided_at": null,
+        "created_at": "2026-11-10T18:07:12.465816+00:00",
+        "updated_at": "2026-11-10T18:07:12.465816+00:00",
+        "accounting_policy_version": 2
+      }
+    ]
+  },
+  "change": {
+    "plan": [
+      {
+        "customer_plan_id": "3b4c6909-5b30-4320-9d4d-5540f518cc1c",
+        "organization_id": "3446bff6-0331-4e8b-aab0-92e7ebad100e",
+        "plan_version_id": "486a5b5b-75b2-4fb5-bee7-96b0597b7a1b",
+        "subscription_id": "a7cb088f-7488-40e2-83bd-ffa549369eef",
+        "state": "active",
+        "activated_at": "2026-10-10T00:00:00+00:00",
+        "cancel_at_period_end": false,
+        "scheduled_change": null,
+        "created_at": "2026-11-10T18:07:12.740029+00:00",
+        "updated_at": "2026-11-10T18:07:12.761772+00:00",
+        "net_terms_days": 14,
+        "grace_days": 7,
+        "credit_limit_minor": null,
+        "dunning_suspended_at": null
+      }
+    ],
+    "periods": [
+      {
+        "plan_period_id": "6f682dca-4cfd-49f7-8bee-0ae5d0713db3",
+        "customer_plan_id": "3b4c6909-5b30-4320-9d4d-5540f518cc1c",
+        "period_index": 0,
+        "period_start": "2026-10-10T00:00:00+00:00",
+        "period_end": "2026-11-10T00:00:00+00:00",
+        "quota_minor": 7000000,
+        "consumed_minor": 0,
+        "authorization_kind": "payment_order",
+        "authorization_ref": "e4361055-0164-4fcd-be87-27927725c853",
+        "state": "active",
+        "created_at": "2026-11-10T18:07:12.761772+00:00"
+      }
+    ],
+    "accounting": [
+      {
+        "plan_period_id": "6f682dca-4cfd-49f7-8bee-0ae5d0713db3",
+        "journal_id": "ef697418-3b3c-4bfd-b60b-321c99cd6e03",
+        "customer_plan_id": "3b4c6909-5b30-4320-9d4d-5540f518cc1c",
+        "organization_id": "3446bff6-0331-4e8b-aab0-92e7ebad100e",
+        "business_id": "04beb410-58e8-4fcd-bdc5-253891d1655f",
+        "plan_version_id": "486a5b5b-75b2-4fb5-bee7-96b0597b7a1b",
+        "accounting_policy_version": 2,
+        "fee_minor": 1000001,
+        "service_start": "2026-10-10T00:00:00+00:00",
+        "service_end": "2026-11-10T00:00:00+00:00",
+        "authorization_kind": "payment_order",
+        "authorization_ref": "e4361055-0164-4fcd-be87-27927725c853",
+        "payment_on": "2026-11-10",
+        "created_at": "2026-11-10T18:07:12.761772+00:00"
+      }
+    ],
+    "effects": [
+      {
+        "effect_id": "48a53b7c-0997-448c-8f3c-14089476f2e1",
+        "plan_period_id": "6f682dca-4cfd-49f7-8bee-0ae5d0713db3",
+        "kind": "activation",
+        "source_ref": "e4361055-0164-4fcd-be87-27927725c853",
+        "service_day": "2026-10-10",
+        "booked_on": "2026-10-10",
+        "payment_on": "2026-11-10",
+        "billed_minor": 1000001,
+        "earned_minor": 0,
+        "deferred_minor": 1000001,
+        "collected_minor": 1000001,
+        "receivable_minor": 0,
+        "payable_minor": 0,
+        "cash_minor": 1000001,
+        "entry_id": "69301525-6c33-5047-a18e-e5949e15d192",
+        "created_at": "2026-11-10T18:07:12.761772+00:00"
+      }
+    ],
+    "subscription": [
+      {
+        "subscription_id": "a7cb088f-7488-40e2-83bd-ffa549369eef",
+        "organization_id": "3446bff6-0331-4e8b-aab0-92e7ebad100e",
+        "plan_id": "2e05d875-88c1-47f3-8678-7d9e774efcc6",
+        "state": "active",
+        "current_period_start": "2026-10-10T00:00:00+00:00",
+        "current_period_end": "2026-11-10T00:00:00+00:00",
+        "consumed_minor": 0,
+        "quota_minor": 7000000,
+        "allow_wallet_overflow": false,
+        "source": "plan",
+        "stripe_subscription_id": null,
+        "created_at": "2026-11-10T18:07:12.761772+00:00",
+        "updated_at": "2026-11-10T18:07:12.761772+00:00"
+      }
+    ],
+    "orders": [
+      {
+        "order_id": "e4361055-0164-4fcd-be87-27927725c853",
+        "purpose": "plan_period",
+        "status": "fulfilled",
+        "amount_minor": 1000001,
+        "display_amount_minor": 101,
+        "display_currency": "USD",
+        "provider_payment_id": "pay_e4361055-0164-4fcd-be87-27927725c853",
+        "plan_payment": {
+          "feeMinor": 1000001,
+          "periodEnd": null,
+          "rateScale": 0,
+          "periodIndex": 0,
+          "periodStart": null,
+          "rateMantissa": "1",
+          "planVersionId": "486a5b5b-75b2-4fb5-bee7-96b0597b7a1b",
+          "customerPlanId": "3b4c6909-5b30-4320-9d4d-5540f518cc1c",
+          "displayCurrency": "USD",
+          "collectionRevision": 1,
+          "displayAmountMinor": 101
+        },
+        "paid_at": "2026-11-10T18:07:12.757678+00:00"
+      }
+    ],
+    "books": [
+      {
+        "path": "Assets:Cash",
+        "net_credit": -1000001
+      },
+      {
+        "path": "Liabilities:UnearnedPlanFees",
+        "net_credit": 1000001
+      }
+    ],
+    "journals": [
+      {
+        "journal_id": "ef697418-3b3c-4bfd-b60b-321c99cd6e03",
+        "customer_plan_id": "3b4c6909-5b30-4320-9d4d-5540f518cc1c",
+        "organization_id": "3446bff6-0331-4e8b-aab0-92e7ebad100e",
+        "business_id": "04beb410-58e8-4fcd-bdc5-253891d1655f",
+        "plan_period_id": "6f682dca-4cfd-49f7-8bee-0ae5d0713db3",
+        "period_index": 0,
+        "state": "paid",
+        "total_minor": 1000001,
+        "settled_minor": 1000001,
+        "currency": "USD",
+        "paid_order_id": "e4361055-0164-4fcd-be87-27927725c853",
+        "disputed_minor": 0,
+        "replaces_journal_id": null,
+        "void_reason": null,
+        "posted_at": "2026-11-10T18:07:12.761772+00:00",
+        "paid_at": "2026-11-10T18:07:12.761772+00:00",
+        "voided_at": null,
+        "created_at": "2026-11-10T18:07:12.761772+00:00",
+        "updated_at": "2026-11-10T18:07:12.761772+00:00",
+        "accounting_policy_version": 2
+      }
+    ]
+  },
+  "cancel": {
+    "plan": [
+      {
+        "customer_plan_id": "fd1e92e0-4af6-4280-9246-6691c723b716",
+        "organization_id": "64db4ccf-6ba1-46bc-95e8-ccd130155b56",
+        "plan_version_id": "486a5b5b-75b2-4fb5-bee7-96b0597b7a1b",
+        "subscription_id": "ca38408f-8c8f-4111-885a-028a5a1c9442",
+        "state": "active",
+        "activated_at": "2026-10-10T00:00:00+00:00",
+        "cancel_at_period_end": false,
+        "scheduled_change": null,
+        "created_at": "2026-11-10T18:07:13.002399+00:00",
+        "updated_at": "2026-11-10T18:07:13.018852+00:00",
+        "net_terms_days": 14,
+        "grace_days": 7,
+        "credit_limit_minor": null,
+        "dunning_suspended_at": null
+      }
+    ],
+    "periods": [
+      {
+        "plan_period_id": "42c9a011-7842-4803-8f88-90cabc5eec2b",
+        "customer_plan_id": "fd1e92e0-4af6-4280-9246-6691c723b716",
+        "period_index": 0,
+        "period_start": "2026-10-10T00:00:00+00:00",
+        "period_end": "2026-11-10T00:00:00+00:00",
+        "quota_minor": 7000000,
+        "consumed_minor": 0,
+        "authorization_kind": "payment_order",
+        "authorization_ref": "8c5380b8-9f4e-4abe-84ac-1296f9841303",
+        "state": "active",
+        "created_at": "2026-11-10T18:07:13.018852+00:00"
+      }
+    ],
+    "accounting": [
+      {
+        "plan_period_id": "42c9a011-7842-4803-8f88-90cabc5eec2b",
+        "journal_id": "c16af8c3-e07b-46c9-b3f6-12c2dd2f0ccf",
+        "customer_plan_id": "fd1e92e0-4af6-4280-9246-6691c723b716",
+        "organization_id": "64db4ccf-6ba1-46bc-95e8-ccd130155b56",
+        "business_id": "04beb410-58e8-4fcd-bdc5-253891d1655f",
+        "plan_version_id": "486a5b5b-75b2-4fb5-bee7-96b0597b7a1b",
+        "accounting_policy_version": 2,
+        "fee_minor": 1000001,
+        "service_start": "2026-10-10T00:00:00+00:00",
+        "service_end": "2026-11-10T00:00:00+00:00",
+        "authorization_kind": "payment_order",
+        "authorization_ref": "8c5380b8-9f4e-4abe-84ac-1296f9841303",
+        "payment_on": "2026-11-10",
+        "created_at": "2026-11-10T18:07:13.018852+00:00"
+      }
+    ],
+    "effects": [
+      {
+        "effect_id": "cfd50cb0-e4c0-4f47-a4e8-01a145d47811",
+        "plan_period_id": "42c9a011-7842-4803-8f88-90cabc5eec2b",
+        "kind": "activation",
+        "source_ref": "8c5380b8-9f4e-4abe-84ac-1296f9841303",
+        "service_day": "2026-10-10",
+        "booked_on": "2026-10-10",
+        "payment_on": "2026-11-10",
+        "billed_minor": 1000001,
+        "earned_minor": 0,
+        "deferred_minor": 1000001,
+        "collected_minor": 1000001,
+        "receivable_minor": 0,
+        "payable_minor": 0,
+        "cash_minor": 1000001,
+        "entry_id": "408d831a-6be1-5fae-8cdd-0a44d99000b7",
+        "created_at": "2026-11-10T18:07:13.018852+00:00"
+      }
+    ],
+    "subscription": [
+      {
+        "subscription_id": "ca38408f-8c8f-4111-885a-028a5a1c9442",
+        "organization_id": "64db4ccf-6ba1-46bc-95e8-ccd130155b56",
+        "plan_id": "2e05d875-88c1-47f3-8678-7d9e774efcc6",
+        "state": "active",
+        "current_period_start": "2026-10-10T00:00:00+00:00",
+        "current_period_end": "2026-11-10T00:00:00+00:00",
+        "consumed_minor": 0,
+        "quota_minor": 7000000,
+        "allow_wallet_overflow": false,
+        "source": "plan",
+        "stripe_subscription_id": null,
+        "created_at": "2026-11-10T18:07:13.018852+00:00",
+        "updated_at": "2026-11-10T18:07:13.018852+00:00"
+      }
+    ],
+    "orders": [
+      {
+        "order_id": "8c5380b8-9f4e-4abe-84ac-1296f9841303",
+        "purpose": "plan_period",
+        "status": "fulfilled",
+        "amount_minor": 1000001,
+        "display_amount_minor": 101,
+        "display_currency": "USD",
+        "provider_payment_id": "pay_8c5380b8-9f4e-4abe-84ac-1296f9841303",
+        "plan_payment": {
+          "feeMinor": 1000001,
+          "periodEnd": null,
+          "rateScale": 0,
+          "periodIndex": 0,
+          "periodStart": null,
+          "rateMantissa": "1",
+          "planVersionId": "486a5b5b-75b2-4fb5-bee7-96b0597b7a1b",
+          "customerPlanId": "fd1e92e0-4af6-4280-9246-6691c723b716",
+          "displayCurrency": "USD",
+          "collectionRevision": 1,
+          "displayAmountMinor": 101
+        },
+        "paid_at": "2026-11-10T18:07:13.015203+00:00"
+      }
+    ],
+    "books": [
+      {
+        "path": "Assets:Cash",
+        "net_credit": -1000001
+      },
+      {
+        "path": "Liabilities:UnearnedPlanFees",
+        "net_credit": 1000001
+      }
+    ],
+    "journals": [
+      {
+        "journal_id": "c16af8c3-e07b-46c9-b3f6-12c2dd2f0ccf",
+        "customer_plan_id": "fd1e92e0-4af6-4280-9246-6691c723b716",
+        "organization_id": "64db4ccf-6ba1-46bc-95e8-ccd130155b56",
+        "business_id": "04beb410-58e8-4fcd-bdc5-253891d1655f",
+        "plan_period_id": "42c9a011-7842-4803-8f88-90cabc5eec2b",
+        "period_index": 0,
+        "state": "paid",
+        "total_minor": 1000001,
+        "settled_minor": 1000001,
+        "currency": "USD",
+        "paid_order_id": "8c5380b8-9f4e-4abe-84ac-1296f9841303",
+        "disputed_minor": 0,
+        "replaces_journal_id": null,
+        "void_reason": null,
+        "posted_at": "2026-11-10T18:07:13.018852+00:00",
+        "paid_at": "2026-11-10T18:07:13.018852+00:00",
+        "voided_at": null,
+        "created_at": "2026-11-10T18:07:13.018852+00:00",
+        "updated_at": "2026-11-10T18:07:13.018852+00:00",
+        "accounting_policy_version": 2
+      }
+    ]
+  },
+  "expiry": {
+    "plan": [
+      {
+        "customer_plan_id": "6afe556b-fad2-4a7d-b041-89aca677d557",
+        "organization_id": "1e69e2c5-c282-4f23-a803-811d885e55e4",
+        "plan_version_id": "486a5b5b-75b2-4fb5-bee7-96b0597b7a1b",
+        "subscription_id": "8c03e2a7-d4c8-4c20-a642-7dd14b7fcb4f",
+        "state": "active",
+        "activated_at": "2026-10-10T00:00:00+00:00",
+        "cancel_at_period_end": false,
+        "scheduled_change": null,
+        "created_at": "2026-11-10T18:07:13.261249+00:00",
+        "updated_at": "2026-11-10T18:07:13.281694+00:00",
+        "net_terms_days": 14,
+        "grace_days": 7,
+        "credit_limit_minor": null,
+        "dunning_suspended_at": null
+      }
+    ],
+    "periods": [
+      {
+        "plan_period_id": "67aa3909-5687-4757-b5f1-6e9c8a74a360",
+        "customer_plan_id": "6afe556b-fad2-4a7d-b041-89aca677d557",
+        "period_index": 0,
+        "period_start": "2026-10-10T00:00:00+00:00",
+        "period_end": "2026-11-10T00:00:00+00:00",
+        "quota_minor": 7000000,
+        "consumed_minor": 0,
+        "authorization_kind": "payment_order",
+        "authorization_ref": "99ea0b42-b132-4897-a7c4-bb04b11e1be0",
+        "state": "active",
+        "created_at": "2026-11-10T18:07:13.281694+00:00"
+      }
+    ],
+    "accounting": [
+      {
+        "plan_period_id": "67aa3909-5687-4757-b5f1-6e9c8a74a360",
+        "journal_id": "4c977ee3-a252-47c2-af67-08ab7e2fc5d0",
+        "customer_plan_id": "6afe556b-fad2-4a7d-b041-89aca677d557",
+        "organization_id": "1e69e2c5-c282-4f23-a803-811d885e55e4",
+        "business_id": "04beb410-58e8-4fcd-bdc5-253891d1655f",
+        "plan_version_id": "486a5b5b-75b2-4fb5-bee7-96b0597b7a1b",
+        "accounting_policy_version": 2,
+        "fee_minor": 1000001,
+        "service_start": "2026-10-10T00:00:00+00:00",
+        "service_end": "2026-11-10T00:00:00+00:00",
+        "authorization_kind": "payment_order",
+        "authorization_ref": "99ea0b42-b132-4897-a7c4-bb04b11e1be0",
+        "payment_on": "2026-11-10",
+        "created_at": "2026-11-10T18:07:13.281694+00:00"
+      }
+    ],
+    "effects": [
+      {
+        "effect_id": "5d100055-82e5-4912-8560-d5ffff87dd16",
+        "plan_period_id": "67aa3909-5687-4757-b5f1-6e9c8a74a360",
+        "kind": "activation",
+        "source_ref": "99ea0b42-b132-4897-a7c4-bb04b11e1be0",
+        "service_day": "2026-10-10",
+        "booked_on": "2026-10-10",
+        "payment_on": "2026-11-10",
+        "billed_minor": 1000001,
+        "earned_minor": 0,
+        "deferred_minor": 1000001,
+        "collected_minor": 1000001,
+        "receivable_minor": 0,
+        "payable_minor": 0,
+        "cash_minor": 1000001,
+        "entry_id": "b45a147b-0a49-5340-a0d9-dde954842a9d",
+        "created_at": "2026-11-10T18:07:13.281694+00:00"
+      }
+    ],
+    "subscription": [
+      {
+        "subscription_id": "8c03e2a7-d4c8-4c20-a642-7dd14b7fcb4f",
+        "organization_id": "1e69e2c5-c282-4f23-a803-811d885e55e4",
+        "plan_id": "2e05d875-88c1-47f3-8678-7d9e774efcc6",
+        "state": "active",
+        "current_period_start": "2026-10-10T00:00:00+00:00",
+        "current_period_end": "2026-11-10T00:00:00+00:00",
+        "consumed_minor": 0,
+        "quota_minor": 7000000,
+        "allow_wallet_overflow": false,
+        "source": "plan",
+        "stripe_subscription_id": null,
+        "created_at": "2026-11-10T18:07:13.281694+00:00",
+        "updated_at": "2026-11-10T18:07:13.281694+00:00"
+      }
+    ],
+    "orders": [
+      {
+        "order_id": "99ea0b42-b132-4897-a7c4-bb04b11e1be0",
+        "purpose": "plan_period",
+        "status": "fulfilled",
+        "amount_minor": 1000001,
+        "display_amount_minor": 101,
+        "display_currency": "USD",
+        "provider_payment_id": "pay_99ea0b42-b132-4897-a7c4-bb04b11e1be0",
+        "plan_payment": {
+          "feeMinor": 1000001,
+          "periodEnd": null,
+          "rateScale": 0,
+          "periodIndex": 0,
+          "periodStart": null,
+          "rateMantissa": "1",
+          "planVersionId": "486a5b5b-75b2-4fb5-bee7-96b0597b7a1b",
+          "customerPlanId": "6afe556b-fad2-4a7d-b041-89aca677d557",
+          "displayCurrency": "USD",
+          "collectionRevision": 1,
+          "displayAmountMinor": 101
+        },
+        "paid_at": "2026-11-10T18:07:13.278079+00:00"
+      }
+    ],
+    "books": [
+      {
+        "path": "Assets:Cash",
+        "net_credit": -1000001
+      },
+      {
+        "path": "Liabilities:UnearnedPlanFees",
+        "net_credit": 1000001
+      }
+    ],
+    "journals": [
+      {
+        "journal_id": "4c977ee3-a252-47c2-af67-08ab7e2fc5d0",
+        "customer_plan_id": "6afe556b-fad2-4a7d-b041-89aca677d557",
+        "organization_id": "1e69e2c5-c282-4f23-a803-811d885e55e4",
+        "business_id": "04beb410-58e8-4fcd-bdc5-253891d1655f",
+        "plan_period_id": "67aa3909-5687-4757-b5f1-6e9c8a74a360",
+        "period_index": 0,
+        "state": "paid",
+        "total_minor": 1000001,
+        "settled_minor": 1000001,
+        "currency": "USD",
+        "paid_order_id": "99ea0b42-b132-4897-a7c4-bb04b11e1be0",
+        "disputed_minor": 0,
+        "replaces_journal_id": null,
+        "void_reason": null,
+        "posted_at": "2026-11-10T18:07:13.281694+00:00",
+        "paid_at": "2026-11-10T18:07:13.281694+00:00",
+        "voided_at": null,
+        "created_at": "2026-11-10T18:07:13.281694+00:00",
+        "updated_at": "2026-11-10T18:07:13.281694+00:00",
+        "accounting_policy_version": 2
+      }
+    ]
+  }
+}

@@ -985,3 +985,5 @@ Chat retains a browser key only for its exact customer organization and signed-i
 The Business journal list permits FundsWrite staff to correct posted or paid journals. Paid corrections retain original payment ownership as refund payable; they do not move Cash or initiate a provider refund. The confirmation retains the exact journal, reason and idempotency identity through an uncertain response and row refresh.
 
 Business staff explicitly confirms an initial complimentary plan grant without entering internal identifiers (#988). The portal retains the selected authorization and reconciles an uncertain response with the recorded customer plan and original period before retrying. Paid plan binding remains pending payment.
+
+Sold-plan period consumption reads the matching quota-engine window, including outstanding reservations and released unused amounts. Closed windows retain their own consumption; new periods do not replace historical counters. The read does not post money or rewrite authorization history.
