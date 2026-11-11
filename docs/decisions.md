@@ -1,5 +1,36 @@
 # Technical decisions
 
+## 2026-11-11 — Direct Stripe is the active primary rail; Hyperswitch deferred
+
+`docs/product.md` and `docs/roadmap/operator-launch/CONTRACT.md` originally
+named "Hyperswitch using the Stripe connector" the primary payment rail. That
+was a design assumption, not a validated path: the only evidence Hyperswitch
+has ever produced is the local-switch *fixture* (#757, `paypal_test` dummy
+connector), because a genuine PSP connector credential for it is absent — and
+the only way to attach a real PSP to Hyperswitch is a **self-hosted
+six-service switch** (router + SDK web + control-center + its own Postgres 17
++ Redis + Mailpit). The hosted `sandbox.hyperswitch.io` can only ever run its
+built-in dummy connector, so it cannot certify the `switch → real PSP` half.
+
+Meanwhile the direct Stripe rail is the only rail that has been live-verified
+end-to-end on the deployment (`evidence/stripe-sandbox.md`: real Checkout
+session → signed `checkout.session.completed` → credited ledger entry), and
+#1047 closed its refund leg. Stripe already collects and refunds with no extra
+service and no extra memory.
+
+Hyperswitch's only distinct value is **multi-PSP orchestration** — one
+integration in front of several processors — which a single-processor operator
+does not need. So it is deferred until a second PSP is actually required, not
+installed speculatively. Deployment reality reinforces this: on the `82.*`
+host the disk fits after cleanup, but the host is 4 vCPU / 3.6 GiB (not 8 GiB),
+and the switch stack's footprint would OOM the existing oxsum/postgres/witness
+services (recorded in #1048). The rail stays env-gated — unset
+`OXSUM_HYPERSWITCH_*` answers cleanly 503/404 — and "primary payment rail" in
+product/contract wording now reads as the active direct-Stripe route. Choosing
+a different primary route later still requires its equivalent capture/refund
+lifecycle and environment; nothing here grants a silent switch after
+credentials fail.
+
 ## 2026-11-11 — Stripe deposit-refund recovery arm (#1047)
 
 The #1041 work wired Airwallex's refund recovery and deliberately deferred
