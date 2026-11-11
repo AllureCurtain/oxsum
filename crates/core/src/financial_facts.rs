@@ -1097,8 +1097,10 @@ pub struct ReconciliationRun {
     /// `daily` | `period_close` | `manual`.
     pub kind: String,
     /// First day covered by the run, inclusive.
+    #[serde(with = "reconciliation_day")]
     pub period_start: Date,
     /// Last day covered by the run, inclusive.
+    #[serde(with = "reconciliation_day")]
     pub period_end: Date,
     /// `running` | `matched` | `exceptions` | `failed`.
     pub state: String,
@@ -1125,6 +1127,8 @@ pub struct ReconciliationRun {
     /// Failure detail when the run ended `failed`.
     pub last_error: Option<String>,
 }
+
+time::serde::format_description!(reconciliation_day, Date, "[year]-[month]-[day]");
 
 /// One exception a run opened — a disagreed fact, never silent.
 #[derive(Debug, Clone, Serialize)]

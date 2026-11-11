@@ -770,6 +770,8 @@ journey tracked by #747.
 
 ### Independent financial comparison (#848)
 
+Reconciliation run `periodStart` and `periodEnd` are inclusive calendar dates serialized as `YYYY-MM-DD`, including manual creation, history lists and detail responses. They are not year/ordinal tuples. Retained comparison snapshots and original financial evidence are unchanged.
+
 `POST /api/v1/business/reconciliation-runs` accepts `periodStart`, `periodEnd`,
 `idempotencyKey` and optional `timeBasis` (`booking`, `service`, `payment`; default
 `booking`). It requires a current personal `FundsWrite` session. One successful

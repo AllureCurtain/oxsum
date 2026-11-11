@@ -15,6 +15,10 @@ Updated: 2026-11-11
 
 - [ ] [#976](https://github.com/AllureCurtain/oxsum/issues/976) — Owner application/credential/notification configuration and verified customer consent passed in the real browser; independent SQLite receiver accepted one signed archive signal, rejected a bad signature and deduplicated replays. Evidence prepared; complete candidate J18 remains. [Evidence](docs/roadmap/operator-launch/evidence/embedded-browser/README.md).
 
+- [ ] [#983](https://github.com/AllureCurtain/oxsum/issues/983) — Serialize reconciliation period dates as the contract-defined YYYY-MM-DD. Twelve focused core/HTTP checks, strict core/server Clippy and pinned formatting passed; actual browser recheck pending.
+
+- [ ] [#983](https://github.com/AllureCurtain/oxsum/issues/983) — Serialize reconciliation period dates as the contract-defined YYYY-MM-DD. Twelve focused core/HTTP checks, strict core/server Clippy and pinned formatting passed; actual bilingual/keyboard/mobile browser recheck passed with the original retained snapshot unchanged. [Evidence](docs/roadmap/operator-launch/evidence/reconciliation-dates/README.md). Review/integration pending.
+
 - [ ] [#969](https://github.com/AllureCurtain/oxsum/issues/969) — Actual browser bundle purchase/return and paid-plan activation, fee/payment statement, early-renewal refusal and cancellation service passed with local signed fixtures. Stale plan consumption display is #973; statement correction/dispute, embedded and candidate/external gates remain. [Evidence](docs/roadmap/operator-launch/evidence/commercial-browser/README.md).
 
 - [ ] [#973](https://github.com/AllureCurtain/oxsum/issues/973) — Read sold-plan consumption from its exact quota window; real browser baseline 0 now reads 80/100 minor. All 17 affected core/HTTP checks, strict core/server Clippy, contract/codegen/build and pinned formatting passed; review/integration pending. [Evidence](docs/roadmap/operator-launch/evidence/plan-consumption-read/README.md).
