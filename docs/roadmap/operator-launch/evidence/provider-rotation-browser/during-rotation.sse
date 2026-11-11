@@ -1,0 +1,6 @@
+data: {"id": "local-rotation", "object": "chat.completion.chunk", "model": "rotation-chat", "choices": [{"index": 0, "delta": {"role": "assistant", "content": "Local "}, "finish_reason": null}]}
+
+data: {"id": "local-rotation", "object": "chat.completion.chunk", "model": "rotation-chat", "choices": [{"index": 0, "delta": {"content": "rotation accepted."}, "finish_reason": "stop"}], "usage": {"prompt_tokens": 10, "completion_tokens": 2, "total_tokens": 12}}
+
+data: [DONE]
+

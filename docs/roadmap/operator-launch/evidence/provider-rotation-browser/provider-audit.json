@@ -1,0 +1,133 @@
+[
+  {
+    "action": "business.provider.connection",
+    "actor": "user:9ddfa257-1e0b-49e3-ac2e-0d2a0a20abc6",
+    "target": "e83f2df7-d4f5-48a1-a75e-5b80c27ee8ed",
+    "detail": {
+      "reason": "Approve owned loopback provider for rotation acceptance",
+      "target": "rotation-local",
+      "fingerprint": "hdFRPqknBq5BL00jiyf2OesYGwHUBeHjAU2KalmcIZQ="
+    },
+    "recorded_at": "2026-11-10T18:40:53.960567+00:00"
+  },
+  {
+    "action": "business.provider.price",
+    "actor": "user:9ddfa257-1e0b-49e3-ac2e-0d2a0a20abc6",
+    "target": "e83f2df7-d4f5-48a1-a75e-5b80c27ee8ed",
+    "detail": {
+      "reason": "Publish local rotation model with exact rates",
+      "target": "rotation-local",
+      "fingerprint": "1XDJshnjfa8jv1psr+jdxjA/qkxxidiZcTszO9BmxMc="
+    },
+    "recorded_at": "2026-11-10T18:41:18.558304+00:00"
+  },
+  {
+    "action": "business.provider.connection_check",
+    "actor": "user:9ddfa257-1e0b-49e3-ac2e-0d2a0a20abc6",
+    "target": "e83f2df7-d4f5-48a1-a75e-5b80c27ee8ed",
+    "detail": {
+      "reason": "Verify local reachability without inference",
+      "channel": "rotation-local"
+    },
+    "recorded_at": "2026-11-10T18:41:43.057286+00:00"
+  },
+  {
+    "action": "business.provider.billing_credential",
+    "actor": "user:9ddfa257-1e0b-49e3-ac2e-0d2a0a20abc6",
+    "target": "e83f2df7-d4f5-48a1-a75e-5b80c27ee8ed",
+    "detail": {
+      "reason": "Set isolated billing secret without readback",
+      "target": "rotation-local",
+      "fingerprint": "rqt/TV3qIpsLg7SqOUWmUAOJ3Jmp7NF7kDjhtryMFYI="
+    },
+    "recorded_at": "2026-11-10T18:42:03.241662+00:00"
+  },
+  {
+    "action": "business.provider.credential.add",
+    "actor": "user:9ddfa257-1e0b-49e3-ac2e-0d2a0a20abc6",
+    "target": "e83f2df7-d4f5-48a1-a75e-5b80c27ee8ed",
+    "detail": {
+      "reason": "Add replacement while original stream is admitted",
+      "target": "rotation-local",
+      "fingerprint": "ZvqMeUggIuZE7XeK173R9X9mt4dIaMv+SIyaM3J2wRw="
+    },
+    "recorded_at": "2026-11-10T18:42:44.040932+00:00"
+  },
+  {
+    "action": "business.provider.credential.status",
+    "actor": "user:9ddfa257-1e0b-49e3-ac2e-0d2a0a20abc6",
+    "target": "e83f2df7-d4f5-48a1-a75e-5b80c27ee8ed",
+    "detail": {
+      "reason": "Disable original after replacement was added",
+      "target": "rotation-local",
+      "fingerprint": "Cpjy11sYSu+W8cX03VYNOG4v2bYBSHzPmw8FYkz6lYY="
+    },
+    "recorded_at": "2026-11-10T18:43:10.65755+00:00"
+  },
+  {
+    "action": "business.provider.credential.remove",
+    "actor": "user:9ddfa257-1e0b-49e3-ac2e-0d2a0a20abc6",
+    "target": "e83f2df7-d4f5-48a1-a75e-5b80c27ee8ed",
+    "detail": {
+      "reason": "Remove disabled original while its stream remains admitted",
+      "target": "rotation-local",
+      "fingerprint": "MYLI3vREw6lLu31JRvx4AyK4wDU48S1tjDaZf/0yQNs="
+    },
+    "recorded_at": "2026-11-10T18:43:21.52438+00:00"
+  },
+  {
+    "action": "business.provider.connection",
+    "actor": "user:9ddfa257-1e0b-49e3-ac2e-0d2a0a20abc6",
+    "target": "e83f2df7-d4f5-48a1-a75e-5b80c27ee8ed",
+    "detail": {
+      "reason": "Repoint isolated endpoint while old stream is still active",
+      "target": "rotation-local",
+      "fingerprint": "3HdrzoSUXFBofdXxEm1z2/QNgUukE8jS2ymhmXs19Sk="
+    },
+    "recorded_at": "2026-11-10T18:43:45.2883+00:00"
+  },
+  {
+    "action": "business.provider.billing_credential",
+    "actor": "user:9ddfa257-1e0b-49e3-ac2e-0d2a0a20abc6",
+    "target": "e83f2df7-d4f5-48a1-a75e-5b80c27ee8ed",
+    "detail": {
+      "reason": "Set billing credential to verify explicit removal",
+      "target": "rotation-local",
+      "fingerprint": "OUziNhJFmCn7bWbXdth3uJKlxnOjOkiItYjXZSs8R/k="
+    },
+    "recorded_at": "2026-11-10T18:44:11.808168+00:00"
+  },
+  {
+    "action": "business.provider.billing_credential",
+    "actor": "user:9ddfa257-1e0b-49e3-ac2e-0d2a0a20abc6",
+    "target": "e83f2df7-d4f5-48a1-a75e-5b80c27ee8ed",
+    "detail": {
+      "reason": "Explicitly clear obsolete billing credential",
+      "target": "rotation-local",
+      "fingerprint": "JpxeTqmupCUZSxLzCaB5gAQGZ0TC8oVsRPO7hztHv/k="
+    },
+    "recorded_at": "2026-11-10T18:44:13.013631+00:00"
+  },
+  {
+    "action": "business.provider.credential.status",
+    "actor": "user:9ddfa257-1e0b-49e3-ac2e-0d2a0a20abc6",
+    "target": "e83f2df7-d4f5-48a1-a75e-5b80c27ee8ed",
+    "detail": {
+      "reason": "Explicitly stop new local provider requests",
+      "target": "rotation-local",
+      "fingerprint": "mHAd1lBMBAU3wY4Est84NDBXMO5P4NPN6VPRVoztQkg="
+    },
+    "recorded_at": "2026-11-10T18:44:14.195384+00:00"
+  },
+  {
+    "action": "business.provider.credential.status",
+    "actor": "user:9ddfa257-1e0b-49e3-ac2e-0d2a0a20abc6",
+    "target": "e83f2df7-d4f5-48a1-a75e-5b80c27ee8ed",
+    "detail": {
+      "reason": "Restore new local provider credential",
+      "target": "rotation-local",
+      "fingerprint": "osQm9tkdDDVsW9yWq+B8l7sMsB41b/AyeTfRSo3KH2w="
+    },
+    "recorded_at": "2026-11-10T18:44:30.74256+00:00"
+  }
+]

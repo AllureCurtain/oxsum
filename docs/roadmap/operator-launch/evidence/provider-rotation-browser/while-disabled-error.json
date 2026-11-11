@@ -1,0 +1,1 @@
+{"status": 502, "body": "{\"error\":{\"code\":\"UPSTREAM_ERROR\",\"message\":\"every upstream credential is cooling or disabled\",\"param\":null,\"type\":\"api_error\"}}"}
