@@ -17,6 +17,14 @@ OUTPUT_RATE = 8
 RESERVATION = INPUT_BOUND * INPUT_RATE + OUTPUT_BOUND * OUTPUT_RATE
 PRICE_URL = 'https://api-docs.deepseek.com/zh-cn/quick_start/pricing'
 
+# A scenario is one of the two protocols, optionally tagged for a distinct
+# artifact under test — `whole`/`sse` for the development run, `whole-candidate`/
+# `sse-candidate` (or another `-suffix`) to re-certify a different frozen binary
+# without re-opening an already-completed scenario. Each named scenario still
+# claims and reserves exactly once; the suffix does not reset the allowance.
+import re as _re
+SCENARIO = _re.compile(r'^(whole|sse)(-[a-z0-9]+)?$')
+
 
 def require(condition, message):
     if not condition:
@@ -99,7 +107,7 @@ class Budget:
                 'Pricing verification is absent, future or older than 24 hours')
 
     def claim(self, scenario, run_id):
-        require(scenario in ('whole', 'sse'), 'Unknown scenario')
+        require(SCENARIO.fullmatch(scenario), 'Unknown scenario')
         with self.locked() as state:
             self.check_pricing(state)
             scenarios = state.setdefault('scenarios', {})

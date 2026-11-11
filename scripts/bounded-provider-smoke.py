@@ -109,15 +109,15 @@ def retain_turn(base, state, scenario, evidence, cumulative):
     held = recovery.api(base, '/api/v1/log/head', session=session)
     key = recovery.api(base, '/api/v1/log/key', session=session)
     raw, headers = recovery.request(base, '/v1/chat/completions', token=state['registration']['apiKey']['secret'],
-        body=payload(scenario == 'sse'), headers={'idempotency-key': 'provider-smoke-'+secrets.token_hex(16)})
+        body=payload(scenario.startswith('sse')), headers={'idempotency-key': 'provider-smoke-'+secrets.token_hex(16)})
     request_id = next((v for k,v in headers.items() if k.lower() == 'x-oxsum-request-id'), None)
     require(bool(request_id), 'Missing gateway request identity')
-    usage = usage_from(raw, scenario == 'sse')
+    usage = usage_from(raw, scenario.startswith('sse'))
     require(isinstance(usage, dict), 'Provider omitted usage')
     prompt, completion = usage.get('prompt_tokens'), usage.get('completion_tokens')
     require(type(prompt) is int and 0 < prompt <= INPUT_BOUND and type(completion) is int and 0 < completion <= 32,
             'Provider usage exceeds the fixed bound')
-    if scenario == 'sse':
+    if scenario.startswith('sse'):
         require(b'data: [DONE]' in raw, 'Provider stream did not terminate')
     else:
         require(json.loads(raw).get('object') == 'chat.completion', 'Invalid provider completion')
@@ -165,7 +165,10 @@ def main():
     parser.add_argument('--database-url', required=True, help='Local provisioning PostgreSQL URL; creates its own random database')
     parser.add_argument('--credential-file', type=Path, help='Existing private root .env; only the named provider field is read')
     parser.add_argument('--fixture', action='store_true', help='No external call; requires a new separate fixture allowance')
+    parser.add_argument('--scenario-suffix', default='', help="Distinct '-suffix' tag for this artifact's scenarios (e.g. -candidate); re-certifies a different frozen binary without reopening completed scenarios")
     args = parser.parse_args()
+    require(re.fullmatch(r'(-[a-z0-9]+)?', args.scenario_suffix), 'scenario suffix must be empty or -lowercase')
+    scenarios = [scenario + args.scenario_suffix for scenario in ('whole', 'sse')]
     parsed_database = urlparse(args.database_url)
     require(parsed_database.scheme in ('postgres', 'postgresql') and parsed_database.hostname in ('127.0.0.1', 'localhost')
             and not parsed_database.query and not parsed_database.fragment, 'Only explicit local database provisioning is supported')
@@ -192,7 +195,8 @@ def main():
     with budget.locked() as journal:
         budget.check_pricing(journal)
         require(args.fixture == (journal.get('fixture_only') is True), 'Fixture/live allowance mismatch')
-        require(not journal.get('scenarios'), 'An earlier run has claimed a scenario; do not repeat it automatically')
+        require(not any(scenario in journal.get('scenarios', {}) for scenario in scenarios),
+                'An earlier run has claimed this artifact\'s scenarios; do not repeat it automatically')
     if args.fixture:
         provider_key, transport, dns = 'local-no-provider-credential', FixtureTransport, {'fixture_only': True}
     else:
@@ -230,7 +234,7 @@ def main():
                         cwd=directory, log=directory/'provision.log')
                     state = json.loads(state_path.read_text())
                     cumulative = 0
-                    for scenario in ('whole', 'sse'):
+                    for scenario in scenarios:
                         budget.claim(scenario, run_id)
                         relay.active_scenario = scenario
                         charged = retain_turn(runtime.base, state, scenario, output/scenario, cumulative)
@@ -258,7 +262,7 @@ def main():
         shutil.copyfile(REPO/'examples/verify-consumer/scope.mjs', consumer/'scope.mjs')
         recovery.run(['npm', 'install', '--ignore-scripts', '--no-audit', '--no-fund', str(output/'verify-oxsum-bill.tgz')],
                      env=environment, cwd=consumer, log=output/'package.log')
-        for scenario in ('whole', 'sse'):
+        for scenario in scenarios:
             recovery.run(['node', 'verify.mjs', '--dir', str(output/scenario)], env=environment, cwd=consumer,
                          log=output/(scenario+'-verification.log'))
             report['scenarios'][scenario]['offlineVerified'] = True
