@@ -2507,6 +2507,7 @@
     "success": "Monthly repayment recorded. Retain this original receipt.",
     "entry": "Ledger entry",
     "hash": "Entry content hash"
+  },
 
   "sale": {
     "title": "Customer sale books",
@@ -2705,7 +2706,7 @@
     "overlap": "overlapping sale windows in the same scope",
     "staleRevision": "draft revision changed",
     "alreadyPublished": "draft revision is already published"
-
+  },
 
   "planStanding": {
     "renewal": "The paid plan period has ended. No new quota is granted until manual renewal is paid. Any permitted remainder of the previous period keeps its original terms.",
