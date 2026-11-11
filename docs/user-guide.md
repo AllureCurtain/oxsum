@@ -1931,6 +1931,7 @@ A blank grace value disables automatic monthly dunning; zero gives no additional
 
 A total below already drawn or reserved credit is refused and leaves every term unchanged; close the error dialog to correct the input. If the connection fails or the outcome is uncertain, the form retains the original request and offers an exact retry, even after closing and reopening its dialog. Complete that retry before making another decision. A historical retry returns its original receipt and cannot overwrite a later approval. Archived customers can be inspected but cannot receive new credit decisions. Monthly statement issue/payment management remains separate from this approval card.
 
+
 ## Inspect monthly wallet-credit statements
 
 Open **Business → Customers**, select a customer, and find **Monthly wallet-credit
@@ -1949,14 +1950,15 @@ bill displays overdue once its due date has passed.
 Use **Next page**, **First page** and **Refresh** to inspect a larger history.
 The list is ordered by immutable statement ID. Money reflects recorded payment
 bookkeeping; this read does not run reconciliation. Oversized detail refuses
-instead of silently omitting lines. This card does not issue invoices or record
-payments; those operations are tracked separately in #1006.
+instead of silently omitting lines. Owner/finance actions for issuance and
+verified repayment are described below.
 
 
 The Plans page shows quota reserved or consumed in the displayed period. A running request reserves quota; unused quota returns when it settles. Paid-plan quota is separate from wallet spending, and a new period starts its own counter.
 
 
 In Business → Disputes, choose Resolve and select the actual provider outcome. Evidence due keeps the case open; won and closed do not record cash loss; lost records the confirmed loss against original funding and any resulting debt or review amount. Enter the supporting reason. A failed request keeps the dialog and exact decision for retry; this action does not initiate a provider refund.
+
 
 ### Generate and issue a monthly statement
 
@@ -1981,6 +1983,7 @@ Monthly action feedback follows the selected language. Refreshing a draft after
 changed source figures clears the old review warning; successful issuance keeps
 its confirmation visible beside the issued document.
 
+
 ## Retry a recorded monthly payment
 
 After a deployment administrator records a verified monthly payment, retain the
@@ -1990,3 +1993,25 @@ payment cannot exceed remaining credit debt through the selected month; earlier
 unbilled debt is repaid first. The operation never turns excess into wallet funds.
 A source-audit conflict requires reconciliation of the original payment; do not
 invent a new key to work around it.
+
+
+
+
+
+### Record verified monthly repayment
+
+In **Business → Customers**, select the customer and open an issued monthly
+statement. Owner or finance can use **Record a monthly repayment**. Enter the
+verified amount in credits (at most six decimal places), original bank/payment
+reference and reason, then review the customer, month, amount and reference
+before confirming. This records money already received; it does not initiate a
+payment. Earlier credit debt is repaid first, even if that earlier month was not
+billed. The server refuses an amount exceeding unpaid debt through this month.
+
+Keep the original entry identifier and hash shown after success. If the response
+is interrupted, leave the form open and use **Retry the same request**. The
+amount, reference and reason remain locked until its outcome is recovered; do
+not invent a different reference to bypass a duplicate-reference error. The same
+reference cannot also be recorded as a manual top-up. Customer statements show
+the updated repayment and outstanding amount. Archived customers accept exact
+recovery of past successful requests but no new payment.

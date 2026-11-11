@@ -1040,6 +1040,7 @@ credential model and is not a replacement for a public application's own auth.
 
 `customer_credit.rs` authorizes monthly facility reads/decisions under current personal Business capabilities. Reads check ledger absence and terms in one repeatable-read snapshot; existing wallets use a read-only facade and an authority-checked snapshot. A fresh read-committed authority check runs after releasing the snapshot so a concurrent completed staff revocation cannot be hidden by repeatable-read visibility. The facade opens outside the transaction to avoid a second checkout from a one-connection pool. Writes preflight authority/replay/archive state before wallet initialization, then recheck inside the Business lock, acquire the organization admission lock and reuse the credit lock. `Wallet::set_credit_limit_in` borrows that transaction so its ledger append and threshold reset commit with organization terms, `business_mutations` and `admin_audit`. The receipt stores no-op decisions too, preventing a historical retry from overwriting later terms. Initial empty ledger bootstrap remains outside the financial transaction; no facility or terms commit until final authority succeeds. Existing statement issuance and dunning continue consuming the same term columns.
 
+
 ### Staff monthly statement inspection
 
 `customer_statements.rs` reads monthly `statements`/`statement_lines` under
@@ -1049,6 +1050,7 @@ Wallet, and rechecks current authority after releasing the snapshot so a complet
 staff revocation cannot hide behind old visibility. Existing statement row mapping
 is shared; elapsed due-date display is a pure projection. No read invokes global
 overdue updates, payment reconciliation, ledger bootstrap or proof generation.
+
 
 ## Atomic monthly statement issuance (#1009)
 
@@ -1098,6 +1100,7 @@ recovery. Bounded line decoding is shared with staff inspection; over-limit deta
 cannot be silently issued through this reviewed path. These actions do not alter
 monthly repayment or plan-statement policy.
 
+
 ## Atomic monthly repayments (#1013)
 
 `monthly_payments.rs` owns deployment recorded payments. A global action-key
@@ -1112,3 +1115,29 @@ Existing payment entries retain their original keys and bytes. Replays require
 the complete credit-only ledger shape and matching statement/amount/entry audit;
 missing or inconsistent source evidence fails closed without a new posting.
 The helper returns current standing beside the original receipt.
+
+
+
+
+
+## Staff payment reference ownership (#1015)
+
+Migration 0130 backfills `payment_receipt_references` from existing immutable
+manual receipts and manual orders without rewriting them. Existing duplicate
+references retain a historical-conflict reservation without selecting a winner.
+Source table write locks span backfill and trigger installation so an older
+writer cannot insert an unclaimed reference during upgrade. AFTER INSERT triggers
+claim one exact reference for a manual receipt, manual order or monthly repayment;
+this protects old manual writers too. Source identity and claims are immutable. The constraint is shared
+across customers, keys and actors; manual ON CONFLICT retries still skip insertion
+and retain the original source. A duplicate claim aborts the source transaction.
+
+`monthly_repayments` performs current Business funds authority/source preflight,
+releases its connection before wallet initialization, then checks again inside
+the financial transaction. The existing Business mutation/audit assigns a stable
+actor receipt, whose UUID derives the credit-only ledger key. The monthly payment
+helper locks organization admission/share, credit, append and document; it checks
+period debt and updates FIFO standing/events on the borrowed connection. The
+reference/result row commits last, so a claim or event failure rolls back cash,
+mutation, audit and standing. Exact retry returns immutable result coordinates
+after current authorization; it never repeats a financial write.

@@ -3860,6 +3860,7 @@ oxsum-server` and `-p oxsum-core` each pass fully under one binary.
 
 Ordinary monthly credit approval uses the personal Business capability boundary, separately from sold-plan receivable caps. Reuse the existing ledger credit facility and term columns instead of introducing a second balance or a migration. Borrow the Business transaction for credit resizing so the ledger, threshold reset, terms, immutable mutation receipt and audit commit or roll back together. Record no-op approvals as Business mutations so old retries cannot restore superseded terms. Wallet bootstrap remains outside the transaction to avoid nested pool acquisition; authority/archive checks run before initialization and again before any financial write. Read-only inspection never initializes a wallet and reads absence/terms or existing facility/terms from one snapshot.
 
+
 ## 2026-11-10 — Read-only Business monthly statements (#1007)
 
 Keep monthly wallet-credit documents separate from sold-plan statements. Reuse
@@ -3869,6 +3870,7 @@ coherent snapshot. Do not reuse legacy administration reads that globally flip
 standing or open ledgers. Count expanded serialized line bytes so PostgreSQL TOAST
 compression cannot bypass the detail bound. Issuance and payment remain separate
 minimal changes under #1006.
+
 
 ## 2026-11-10 — Commit monthly issuance and its proof together (#1009)
 
@@ -3908,6 +3910,7 @@ Release preflight connections before opening a wallet, then recheck authority
 under the Business lock in the actual financial transaction. No new payment,
 provider-usage attestation or independent proof scope is implied.
 
+
 ## 2026-11-11 — Atomic source-bound monthly repayments (#1013)
 
 Reuse the immutable admin audit as the source binding for the existing deployment
@@ -3918,3 +3921,25 @@ Serialize global audit identity before organization, credit and append locks;
 check period debt, post credit-only cash, reconcile FIFO and audit on one borrowed
 connection. This also removes stale reconciliation writes that could regress a
 paid statement. Staff reference/actor records remain a separate #1006 workflow.
+
+
+
+
+
+## 2026-11-11 — Share verified payment references across funding paths (#1015)
+
+Use a new immutable reference registry with backfill and AFTER INSERT claims
+for manual receipts, manual orders and staff monthly repayments. Retained old
+duplicates reserve their reference as historical conflicts without rewriting cash.
+A separate unique constraint on each source would permit double recording across
+workflows. Trigger-based
+claims also fence an older manual writer; a code-only preflight would not. AFTER
+INSERT preserves existing ON CONFLICT replay semantics without attempting a
+second claim for an insertion that never happened. Matching is exact; staff
+references reject ambiguous surrounding whitespace and control characters.
+
+Keep staff payment actor authority and immutable receipt separate from the old
+deployment endpoint's audit identity, while sharing borrowed period-cap, posting
+and reconciliation primitives. No extra deposit or top-up row is manufactured
+for credit-only monthly cash. The response identifies the original ledger entry
+and is stable after the document is paid; document reads carry current standing.

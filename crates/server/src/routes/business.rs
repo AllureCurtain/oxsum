@@ -465,3 +465,22 @@ pub(crate) async fn monthly_statement_action(
         )
         .await?)
 }
+
+/// Record verified money through current personal staff authority.
+pub(crate) async fn monthly_payment(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    axum::extract::Path((customer, statement)): axum::extract::Path<(uuid::Uuid, uuid::Uuid)>,
+    ApiJson(request): ApiJson<oxsum_core::BusinessMonthlyPaymentRequest>,
+) -> ApiResult<oxsum_core::BusinessMonthlyPaymentResult> {
+    ok(state
+        .db
+        .record_business_monthly_payment(
+            &personal_token(&headers)?,
+            &state.tenants,
+            customer,
+            statement,
+            &request,
+        )
+        .await?)
+}

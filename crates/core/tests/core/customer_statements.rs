@@ -702,3 +702,516 @@ async fn monthly_writes_require_live_finance_context_and_refuse_foreign_document
     .unwrap();
     assert_eq!(count, 0);
 }
+
+async fn repay_document(
+    db: &Db,
+    owner: &str,
+    customer: &oxsum_core::Registration,
+    tenants: &oxsum_core::Tenants,
+) -> Uuid {
+    let wallet = tenants.get(&customer.organization.tenant_id).await.unwrap();
+    wallet
+        .set_credit_limit("facility", 5_000_000, time::macros::date!(2026 - 08 - 01))
+        .await
+        .unwrap();
+    monthly_usage(db, customer, &wallet, "first", 1_000_001).await;
+    let id = db
+        .mutate_business_monthly_statement(
+            owner,
+            tenants,
+            customer.organization.id,
+            &generate("2026-09", &Uuid::new_v4().to_string()),
+        )
+        .await
+        .unwrap()
+        .statement_id
+        .unwrap();
+    let request = review(
+        db,
+        owner,
+        customer.organization.id,
+        id,
+        &Uuid::new_v4().to_string(),
+    )
+    .await;
+    db.mutate_business_monthly_statement(owner, tenants, customer.organization.id, &request)
+        .await
+        .unwrap();
+    id
+}
+fn repayment(amount: i64) -> oxsum_core::BusinessMonthlyPaymentRequest {
+    oxsum_core::BusinessMonthlyPaymentRequest {
+        amount_minor: amount,
+        reference: Uuid::new_v4().to_string(),
+        reason: "verified bank receipt".into(),
+        idempotency_key: Uuid::new_v4().to_string(),
+    }
+}
+#[tokio::test]
+async fn monthly_payment_staff_exact_once_paid_archived_and_single_connection() {
+    let Some((db, owner, customer)) = fixture().await else {
+        return;
+    };
+    let tenants = oxsum_core::Tenants::new(db.pool().clone());
+    let org = customer.organization.id;
+    let id = repay_document(&db, &owner, &customer, &tenants).await;
+    let before = db
+        .business_monthly_statement(&owner, org, id)
+        .await
+        .unwrap();
+    let request = repayment(1_000_001);
+    let options = db.pool().connect_options();
+    let one = Db::from_pool(
+        sqlx::postgres::PgPoolOptions::new()
+            .max_connections(1)
+            .acquire_timeout(std::time::Duration::from_secs(2))
+            .connect_with((*options).clone())
+            .await
+            .unwrap(),
+    );
+    let one_tenants = oxsum_core::Tenants::new(one.pool().clone());
+    let (a, b) = tokio::join!(
+        one.record_business_monthly_payment(&owner, &one_tenants, org, id, &request),
+        one.record_business_monthly_payment(&owner, &one_tenants, org, id, &request)
+    );
+    let a = a.unwrap();
+    let b = b.unwrap();
+    assert_eq!(
+        serde_json::to_value(&a).unwrap(),
+        serde_json::to_value(&b).unwrap()
+    );
+    let after = db
+        .business_monthly_statement(&owner, org, id)
+        .await
+        .unwrap();
+    assert_eq!(after.statement.payment_status, PaymentStatus::Paid);
+    assert_eq!(after.statement.paid_minor, 1_000_001);
+    assert_eq!(
+        after.statement.anchor_entry_id,
+        before.statement.anchor_entry_id
+    );
+    assert_eq!(after.statement.rollup_hash, before.statement.rollup_hash);
+    assert_eq!(
+        serde_json::to_value(after.lines).unwrap(),
+        serde_json::to_value(before.lines).unwrap()
+    );
+    let wallet = tenants.get(&customer.organization.tenant_id).await.unwrap();
+    assert_eq!(wallet.credit_repaid().await.unwrap(), 1_000_001);
+    assert_eq!(wallet.available().await.unwrap(), 5_000_000);
+    let count: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM oxsum.admin_audit WHERE idempotency_key=$1")
+            .bind(format!("security:{}", a.id))
+            .fetch_one(db.pool())
+            .await
+            .unwrap();
+    assert_eq!(count, 1);
+    sqlx::query("UPDATE oxsum.customer_profiles SET state='archived',archived_at=now() WHERE organization_id=$1").bind(org).execute(db.pool()).await.unwrap();
+    assert_eq!(
+        db.record_business_monthly_payment(&owner, &tenants, org, id, &request)
+            .await
+            .unwrap()
+            .id,
+        a.id
+    );
+    assert!(matches!(
+        db.record_business_monthly_payment(&owner, &tenants, org, id, &repayment(1))
+            .await,
+        Err(WalletError::Conflict(_))
+    ));
+    assert!(
+        sqlx::query("DELETE FROM oxsum.monthly_repayments WHERE mutation_id=$1")
+            .bind(a.id)
+            .execute(db.pool())
+            .await
+            .is_err()
+    );
+    assert!(
+        sqlx::query("DELETE FROM oxsum.payment_receipt_references WHERE source_id=$1")
+            .bind(a.id)
+            .execute(db.pool())
+            .await
+            .is_err()
+    );
+}
+#[tokio::test]
+async fn monthly_payment_reference_is_shared_with_manual_receipts_and_rolls_back_conflicts() {
+    let Some((db, owner, customer)) = fixture().await else {
+        return;
+    };
+    let tenants = oxsum_core::Tenants::new(db.pool().clone());
+    let org = customer.organization.id;
+    let id = repay_document(&db, &owner, &customer, &tenants).await;
+    let request = repayment(100);
+    let a = db
+        .record_business_monthly_payment(&owner, &tenants, org, id, &request)
+        .await
+        .unwrap();
+    let manual = oxsum_core::ManualReceiptRequest {
+        idempotency_key: Uuid::new_v4().to_string(),
+        reference: request.reference.clone(),
+        amount_minor: 100,
+        reason: "bank receipt".into(),
+    };
+    assert!(matches!(
+        db.manual_receipt(
+            oxsum_core::FundingAuthority::Deployment,
+            &tenants,
+            org,
+            &manual
+        )
+        .await,
+        Err(WalletError::Conflict(_))
+    ));
+    let mut different = repayment(100);
+    different.reference = request.reference.clone();
+    assert!(matches!(
+        db.record_business_monthly_payment(&owner, &tenants, org, id, &different)
+            .await,
+        Err(WalletError::Conflict(_))
+    ));
+    let mutations: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM oxsum.business_mutations WHERE idempotency_key=$1",
+    )
+    .bind(&different.idempotency_key)
+    .fetch_one(db.pool())
+    .await
+    .unwrap();
+    assert_eq!(mutations, 0);
+    let manual = oxsum_core::ManualReceiptRequest {
+        reference: Uuid::new_v4().to_string(),
+        ..manual
+    };
+    let original = db
+        .manual_receipt(
+            oxsum_core::FundingAuthority::Deployment,
+            &tenants,
+            org,
+            &manual,
+        )
+        .await
+        .unwrap();
+    let again = db
+        .manual_receipt(
+            oxsum_core::FundingAuthority::Deployment,
+            &tenants,
+            org,
+            &manual,
+        )
+        .await
+        .unwrap();
+    assert_eq!(original.entry_id, again.entry_id);
+    different.reference = manual.reference.clone();
+    assert!(matches!(
+        db.record_business_monthly_payment(&owner, &tenants, org, id, &different)
+            .await,
+        Err(WalletError::Conflict(_))
+    ));
+    let wallet = tenants.get(&customer.organization.tenant_id).await.unwrap();
+    assert_eq!(wallet.credit_repaid().await.unwrap(), 200);
+    let mut changed = request;
+    changed.amount_minor = 99;
+    assert!(matches!(
+        db.record_business_monthly_payment(&owner, &tenants, org, id, &changed)
+            .await,
+        Err(WalletError::Conflict(_))
+    ));
+    // The Business manual-order path shares this registry as well.
+    db.set_collection_terms(
+        &owner,
+        &oxsum_core::CollectionTermsRequest {
+            idempotency_key: Uuid::new_v4().to_string(),
+            reason: "manual receipt test".into(),
+            expected_revision: 0,
+            currency: oxsum_core::CollectionCurrency {
+                code: "USD".into(),
+                rate_per_credit: "1".into(),
+            },
+        },
+    )
+    .await
+    .unwrap();
+    let mut order = oxsum_core::NewManualOrder {
+        expected_collection_revision: Some(1),
+        organization: org,
+        purpose: oxsum_core::PaymentOrderPurpose::WalletTopup,
+        display_amount_minor: 1,
+        display_currency: "USD".into(),
+        idempotency_key: Uuid::new_v4().to_string(),
+        reference: changed.reference.clone(),
+        reason: "verified bank order".into(),
+    };
+    assert!(matches!(
+        db.create_manual_payment_order(&owner, &order).await,
+        Err(WalletError::Conflict(_))
+    ));
+    order.reference = Uuid::new_v4().to_string();
+    let standing = db
+        .create_manual_payment_order(&owner, &order)
+        .await
+        .unwrap();
+    assert_eq!(
+        db.create_manual_payment_order(&owner, &order)
+            .await
+            .unwrap()
+            .order_id,
+        standing.order_id
+    );
+    different.reference = order.reference.clone();
+    assert!(matches!(
+        db.record_business_monthly_payment(&owner, &tenants, org, id, &different)
+            .await,
+        Err(WalletError::Conflict(_))
+    ));
+    // Another customer and an old-style direct INSERT share the same constraint.
+    let other = db
+        .register(NewUser {
+            email: format!("{}@example.com", Uuid::new_v4()),
+            password: "monthly document fixture".into(),
+            organization_name: None,
+        })
+        .await
+        .unwrap();
+    let other_id = repay_document(&db, &owner, &other, &tenants).await;
+    different.reference = changed.reference;
+    assert!(matches!(
+        db.record_business_monthly_payment(
+            &owner,
+            &tenants,
+            other.organization.id,
+            other_id,
+            &different
+        )
+        .await,
+        Err(WalletError::Conflict(_))
+    ));
+    let old_insert=sqlx::query("INSERT INTO oxsum.manual_receipts(receipt_id,organization_id,idempotency_key,reference,reason,amount_minor) VALUES($1,$2,$3,$4,'old writer',100) ON CONFLICT DO NOTHING")
+        .bind(Uuid::new_v4()).bind(other.organization.id).bind(Uuid::new_v4().to_string()).bind(&different.reference).execute(db.pool()).await;
+    assert!(old_insert.is_err());
+    assert_eq!(
+        db.record_business_monthly_payment(&owner, &tenants, org, id, &repayment(1))
+            .await
+            .unwrap()
+            .amount_minor,
+        1
+    );
+    assert_eq!(a.amount_minor, 100);
+}
+#[tokio::test]
+async fn monthly_payment_reference_race_and_failure_preserve_money() {
+    let Some((db, owner, customer)) = fixture().await else {
+        return;
+    };
+    let tenants = oxsum_core::Tenants::new(db.pool().clone());
+    let org = customer.organization.id;
+    let id = repay_document(&db, &owner, &customer, &tenants).await;
+    let request = repayment(100);
+    let manual = oxsum_core::ManualReceiptRequest {
+        idempotency_key: Uuid::new_v4().to_string(),
+        amount_minor: 100,
+        reference: request.reference.clone(),
+        reason: "verified cash".into(),
+    };
+    let (a, b) = tokio::join!(
+        db.record_business_monthly_payment(&owner, &tenants, org, id, &request),
+        db.manual_receipt(
+            oxsum_core::FundingAuthority::Deployment,
+            &tenants,
+            org,
+            &manual
+        )
+    );
+    assert_eq!(usize::from(a.is_ok()) + usize::from(b.is_ok()), 1);
+    let wallet = tenants.get(&customer.organization.tenant_id).await.unwrap();
+    assert_eq!(wallet.credit_repaid().await.unwrap(), 100);
+    let request = repayment(100);
+    let trigger = format!("fail_repay_{}", Uuid::new_v4().simple());
+    sqlx::raw_sql(&format!("CREATE FUNCTION oxsum.{trigger}() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN IF NEW.reference='{}' THEN RAISE EXCEPTION 'injected receipt failure'; END IF; RETURN NEW; END $$; CREATE TRIGGER {trigger} BEFORE INSERT ON oxsum.monthly_repayments FOR EACH ROW EXECUTE FUNCTION oxsum.{trigger}()",request.reference)).execute(db.pool()).await.unwrap();
+    let size = wallet.log_size().await.unwrap();
+    assert!(
+        db.record_business_monthly_payment(&owner, &tenants, org, id, &request)
+            .await
+            .is_err()
+    );
+    assert_eq!(wallet.log_size().await.unwrap(), size);
+    assert_eq!(wallet.credit_repaid().await.unwrap(), 100);
+    let claims: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM oxsum.payment_receipt_references WHERE reference=$1",
+    )
+    .bind(&request.reference)
+    .fetch_one(db.pool())
+    .await
+    .unwrap();
+    assert_eq!(claims, 0);
+    sqlx::raw_sql(&format!(
+        "DROP TRIGGER {trigger} ON oxsum.monthly_repayments; DROP FUNCTION oxsum.{trigger}()"
+    ))
+    .execute(db.pool())
+    .await
+    .unwrap();
+    db.record_business_monthly_payment(&owner, &tenants, org, id, &request)
+        .await
+        .unwrap();
+    assert_eq!(wallet.credit_repaid().await.unwrap(), 200);
+}
+#[tokio::test]
+async fn monthly_payment_requires_live_finance_authority_and_valid_exact_intent() {
+    let Some((db, owner, customer)) = fixture().await else {
+        return;
+    };
+    let tenants = oxsum_core::Tenants::new(db.pool().clone());
+    let org = customer.organization.id;
+    let id = repay_document(&db, &owner, &customer, &tenants).await;
+    let token = db
+        .login(&customer.user.email, "monthly document fixture")
+        .await
+        .unwrap()
+        .into_session()
+        .token;
+    let request = repayment(100);
+    assert!(matches!(
+        db.record_business_monthly_payment(&token, &tenants, org, id, &request)
+            .await,
+        Err(WalletError::Forbidden(_))
+    ));
+    for (role, allowed) in [
+        (BusinessRole::Admin, false),
+        (BusinessRole::Viewer, false),
+        (BusinessRole::Support, false),
+        (BusinessRole::Finance, true),
+    ] {
+        db.set_business_staff(
+            &owner,
+            &BusinessStaffRequest {
+                user_id: customer.user.id,
+                role,
+                idempotency_key: Uuid::new_v4().to_string(),
+                reason: "test role".into(),
+            },
+        )
+        .await
+        .unwrap();
+        db.switch_session_context(
+            &token,
+            &SessionContextRequest {
+                idempotency_key: Uuid::new_v4().to_string(),
+                context: SessionContext::Business,
+                organization_id: None,
+            },
+        )
+        .await
+        .unwrap();
+        let result = db
+            .record_business_monthly_payment(&token, &tenants, org, id, &request)
+            .await;
+        if allowed {
+            result.unwrap();
+        } else {
+            assert!(matches!(result, Err(WalletError::Forbidden(_))));
+        }
+    }
+    // Revocation gates an already successful payment's replay too.
+    sqlx::query("DELETE FROM oxsum.business_staff WHERE user_id=$1")
+        .bind(customer.user.id)
+        .execute(db.pool())
+        .await
+        .unwrap();
+    assert!(matches!(
+        db.record_business_monthly_payment(&token, &tenants, org, id, &request)
+            .await,
+        Err(WalletError::Forbidden(_))
+    ));
+    assert!(matches!(
+        db.record_business_monthly_payment(&owner, &tenants, org, Uuid::new_v4(), &request)
+            .await,
+        Err(WalletError::NotFound(_))
+    ));
+    for minor in [0, -1, 9_007_199_254_740_992] {
+        assert!(matches!(
+            db.record_business_monthly_payment(&owner, &tenants, org, id, &repayment(minor))
+                .await,
+            Err(WalletError::InvalidInput(_))
+        ));
+    }
+    for reference in ["", " ref", "ref ", "ref\n"] {
+        let mut r = repayment(1);
+        r.reference = reference.into();
+        assert!(matches!(
+            db.record_business_monthly_payment(&owner, &tenants, org, id, &r)
+                .await,
+            Err(WalletError::InvalidInput(_))
+        ));
+    }
+}
+
+#[tokio::test]
+async fn monthly_payment_waiting_behind_revocation_never_claims_cash_reference() {
+    let Some((db, owner, customer)) = fixture().await else {
+        return;
+    };
+    let tenants = oxsum_core::Tenants::new(db.pool().clone());
+    let org = customer.organization.id;
+    let id = repay_document(&db, &owner, &customer, &tenants).await;
+    let token = db
+        .login(&customer.user.email, "monthly document fixture")
+        .await
+        .unwrap()
+        .into_session()
+        .token;
+    db.set_business_staff(
+        &owner,
+        &BusinessStaffRequest {
+            user_id: customer.user.id,
+            role: BusinessRole::Finance,
+            idempotency_key: Uuid::new_v4().to_string(),
+            reason: "payment fixture".into(),
+        },
+    )
+    .await
+    .unwrap();
+    db.switch_session_context(
+        &token,
+        &SessionContextRequest {
+            idempotency_key: Uuid::new_v4().to_string(),
+            context: SessionContext::Business,
+            organization_id: None,
+        },
+    )
+    .await
+    .unwrap();
+    let request = repayment(100);
+    let reference = request.reference.clone();
+    let mut revoke = db.pool().begin().await.unwrap();
+    sqlx::query("SELECT business_id FROM oxsum.businesses WHERE singleton FOR UPDATE")
+        .execute(&mut *revoke)
+        .await
+        .unwrap();
+    let pid: i32 = sqlx::query_scalar("SELECT pg_backend_pid()")
+        .fetch_one(&mut *revoke)
+        .await
+        .unwrap();
+    let worker_db = db.clone();
+    let worker = tokio::spawn(async move {
+        worker_db
+            .record_business_monthly_payment(&token, &tenants, org, id, &request)
+            .await
+    });
+    tokio::time::timeout(std::time::Duration::from_secs(5),async{loop{let waiting:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM pg_stat_activity WHERE datname=current_database() AND $1=ANY(pg_blocking_pids(pid)))").bind(pid).fetch_one(db.pool()).await.unwrap();if waiting{break;}tokio::time::sleep(std::time::Duration::from_millis(10)).await;}}).await.unwrap();
+    sqlx::query("DELETE FROM oxsum.business_staff WHERE user_id=$1")
+        .bind(customer.user.id)
+        .execute(&mut *revoke)
+        .await
+        .unwrap();
+    revoke.commit().await.unwrap();
+    assert!(matches!(
+        worker.await.unwrap(),
+        Err(WalletError::Forbidden(_))
+    ));
+    let count: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM oxsum.payment_receipt_references WHERE reference=$1",
+    )
+    .bind(reference)
+    .fetch_one(db.pool())
+    .await
+    .unwrap();
+    assert_eq!(count, 0);
+}

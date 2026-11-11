@@ -9369,6 +9369,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/business/customers/{organizationId}/monthly-statements/{statementId}/payments": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Record verified money toward monthly credit debt
+         * @description Personal Business fundsWrite authority only. Confirm an exact positive credit amount, verified bank/payment reference and reason against this customer's issued monthly statement. The amount is capped at unpaid credit draws through this month, including older unbilled draws; only Cash to CreditLine is posted. Payment references are globally unique across monthly repayments and manual top-ups. Cash, FIFO standings/events, reference claim and immutable actor audit commit together. Exact successful retries return the original receipt even after full payment or customer archival, under current authority. New archived-customer writes, changed idempotency terms and reused payment references refuse. No PSP call, currency conversion, wallet excess or plan allocation occurs. No client financial dates.
+         */
+        post: operations["recordBusinessMonthlyPayment"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/business/customers/{organizationId}/monthly-statements/{statementId}": {
         parameters: {
             query?: never;
@@ -21203,6 +21223,35 @@ export interface components {
             /** Format: uuid */
             nextCursor: string | null;
         };
+        BusinessMonthlyPaymentRequest: {
+            /**
+             * Format: int64
+             * @description Exact credit minor units; server caps against unpaid credit through the selected month
+             */
+            amountMinor: number;
+            /** @description Verified payment reference; preserve exact case and spacing */
+            reference: string;
+            reason: string;
+            idempotencyKey: string;
+        };
+        BusinessMonthlyPaymentResult: {
+            /**
+             * Format: uuid
+             * @description Immutable actor mutation receipt
+             */
+            id: string;
+            /** Format: uuid */
+            organizationId: string;
+            /** Format: uuid */
+            statementId: string;
+            /** Format: int64 */
+            amountMinor: number;
+            reference: string;
+            /** Format: uuid */
+            entryId: string;
+            /** @description Original repayment ledger entry hash */
+            contentHash: string;
+        };
         BusinessMonthlyStatementAction: {
             /** @enum {string} */
             action: "generate";
@@ -24746,6 +24795,40 @@ export interface operations {
                 content: {
                     "application/json": {
                         data: components["schemas"]["BusinessMonthlyStatementActionResult"];
+                    };
+                };
+            };
+            400: components["responses"]["Error"];
+            401: components["responses"]["Error"];
+            403: components["responses"]["Error"];
+            404: components["responses"]["Error"];
+            409: components["responses"]["Error"];
+        };
+    };
+    recordBusinessMonthlyPayment: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                organizationId: string;
+                statementId: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["BusinessMonthlyPaymentRequest"];
+            };
+        };
+        responses: {
+            /** @description Original immutable payment receipt */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: components["schemas"]["BusinessMonthlyPaymentResult"];
                     };
                 };
             };

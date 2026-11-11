@@ -99,6 +99,7 @@ test("monthly credit terms require personal Business authority", () => {
   }
 });
 
+
 test("monthly statement inspection only advertises personal staff authority", () => {
   for (const suffix of ["", "/{statementId}"]) {
     const operation = api.paths[`/api/v1/business/customers/{organizationId}/monthly-statements${suffix}`].get;
@@ -121,4 +122,15 @@ test("monthly issuance is personal-only and requires reviewed exact intent", () 
   }
   assert.ok(schema.oneOf[1].required.includes("reviewDigest"));
   assert.ok(api.components.schemas.BusinessMonthlyStatementDetail.required.includes("reviewDigest"));
+});
+
+
+test("monthly repayments require personal staff and exact verified references", () => {
+  const route = api.paths["/api/v1/business/customers/{organizationId}/monthly-statements/{statementId}/payments"].post;
+  assert.deepEqual(route.security, [{ sessionCookie: [] }]);
+  assert.equal(route["x-consumption-key-access"], "denied");
+  const schema = api.components.schemas.BusinessMonthlyPaymentRequest;
+  assert.equal(schema.additionalProperties, false);
+  assert.deepEqual(schema.required, ["amountMinor", "reference", "reason", "idempotencyKey"]);
+  assert.equal(schema.properties.amountMinor.maximum, Number.MAX_SAFE_INTEGER);
 });

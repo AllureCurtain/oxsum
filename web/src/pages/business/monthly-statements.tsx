@@ -1,3 +1,4 @@
+import { MonthlyPayment } from "./monthly-payment";
 import { useState } from "react";
 import { useTranslation } from "react-i18next";
 import { ApiError } from "../../api/client";
@@ -5,12 +6,13 @@ import { idem, useBusiness, useCapability, useCustomerMonthlyStatement, useCusto
 import { AlertDialog, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle, Banner, Button, Card, Cr, EmptyRows, Field, TableShell, Td, Textarea, TextInput } from "../../components/ui";
 import { DetailGrid, Field2 } from "./biz";
 
-function MonthlyDetail({ customer, id, canWrite }: { customer: string; id: string; canWrite: boolean }) {
+function MonthlyDetail({ customer, name, id, canWrite, active }: { customer: string; name: string; id: string; canWrite: boolean; active: boolean }) {
   const { t } = useTranslation();
   const query = useCustomerMonthlyStatement(customer, id);
   const detail = query.data;
   return <Card title={t("monthlyStatements.detail")} actions={<Button tone="ghost" disabled={query.isFetching} onClick={() => void query.refetch()}>{t("monthlyStatements.refresh")}</Button>}>
-    {query.isError ? <Banner tone="error">{t("biz.loadError")}</Banner> : query.isLoading ? <p>{t("common.loading")}</p> : detail ? <div className="flex flex-col gap-4">
+    {query.isError ? <Banner tone="error">{t("biz.loadError")}</Banner> : null}
+    {query.isLoading ? <p>{t("common.loading")}</p> : detail ? <div className="flex flex-col gap-4">
       <DetailGrid>
         <Field2 label={t("monthlyStatements.id")}><span className="break-all font-mono text-xs">{detail.statement.id}</span></Field2>
         <Field2 label={t("monthlyStatements.period")}>{detail.statement.period}</Field2>
@@ -24,7 +26,8 @@ function MonthlyDetail({ customer, id, canWrite }: { customer: string; id: strin
         <Field2 label={t("monthlyStatements.due")}>{detail.statement.dueDate ?? "—"}</Field2>
         <Field2 label={t("monthlyStatements.issued")}>{detail.statement.finalizedAt ? <><span className="whitespace-nowrap">{detail.statement.finalizedAt.slice(0, 10)}</span>{" "}<span className="whitespace-nowrap">{detail.statement.finalizedAt.slice(11)}</span></> : "—"}</Field2>
       </DetailGrid>
-      {canWrite ? <MonthlyAction customer={customer} detail={detail} onDone={() => void query.refetch()} /> : null}
+      {canWrite && active ? <MonthlyAction customer={customer} detail={detail} onDone={() => void query.refetch()} /> : null}
+      {canWrite ? <MonthlyPayment customer={customer} name={name} detail={detail} active={active} /> : null}
       <TableShell className="[&_table]:min-w-[480px]" head={[t("monthlyStatements.channel"), t("common.model"), t("common.turns"), { label: t("common.amount"), align: "right" }]}>
         {detail.lines.map((line, index) => <tr key={index}><td>{line.channel}</td><td>{line.model}</td><Td mono>{line.turns}</Td><Td mono align="right" className="whitespace-nowrap"><Cr minor={line.amountMinor} /></Td></tr>)}
         {detail.lines.length === 0 ? <EmptyRows colSpan={4}>{t("monthlyStatements.noLines")}</EmptyRows> : null}
@@ -43,17 +46,17 @@ function MonthlyDetail({ customer, id, canWrite }: { customer: string; id: strin
   </Card>;
 }
 
-export function CustomerMonthlyStatements({ customer, active }: { customer: string; active: boolean }) {
+export function CustomerMonthlyStatements({ customer, name, active }: { customer: string; name: string; active: boolean }) {
   const { t } = useTranslation();
   const [after, setAfter] = useState<string>();
   const [selected, setSelected] = useState<string>();
   const query = useCustomerMonthlyStatements(customer, after);
-  const canWrite = useCapability(useBusiness().data, "fundsWrite") && active;
+  const canWrite = useCapability(useBusiness().data, "fundsWrite");
   return <div className="flex flex-col gap-4">
     <Card title={t("monthlyStatements.title")}>
       <p className="mb-4 text-sm text-muted">{t("monthlyStatements.description")}</p>
       <p className="mb-4 text-sm text-muted">{t("monthlyStatements.recorded")}</p>
-      {canWrite ? <MonthlyAction customer={customer} onDone={(id) => { setAfter(undefined); if (id) setSelected(id); }} /> : null}
+      {canWrite && active ? <MonthlyAction customer={customer} onDone={(id) => { setAfter(undefined); if (id) setSelected(id); }} /> : null}
       {query.isError ? <Banner tone="error">{t("biz.loadError")}</Banner> : <TableShell className="[&_table]:min-w-[640px]" head={[t("monthlyStatements.period"), t("monthlyStatements.document"), t("monthlyStatements.payment"), { label: t("monthlyStatements.owed"), align: "right" }, t("monthlyStatements.due"), ""]} loading={query.isLoading ? 3 : 0}>
         {query.data?.statements.map(statement => <tr key={statement.id}>
           <Td mono>{statement.period}</Td><td>{t(`monthlyStatements.${statement.status}`)}</td><td>{t(`monthlyStatements.${statement.paymentStatus}`)}</td><Td mono align="right" className="whitespace-nowrap"><Cr minor={statement.outstandingMinor} /></Td><Td mono>{statement.dueDate ?? "—"}</Td>
@@ -67,7 +70,7 @@ export function CustomerMonthlyStatements({ customer, active }: { customer: stri
         {query.data?.nextCursor ? <Button tone="ghost" onClick={() => { setAfter(query.data!.nextCursor!); setSelected(undefined); }}>{t("monthlyStatements.next")}</Button> : null}
       </div>
     </Card>
-    {selected ? <MonthlyDetail key={selected} customer={customer} id={selected} canWrite={canWrite} /> : null}
+    {selected ? <MonthlyDetail key={selected} customer={customer} name={name} id={selected} canWrite={canWrite} active={active} /> : null}
   </div>;
 }
 

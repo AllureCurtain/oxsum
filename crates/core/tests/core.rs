@@ -217,3 +217,6 @@ mod webhooks;
 
 #[path = "core/customer_statements.rs"]
 mod customer_statements;
+
+#[path = "core/monthly_repayment_upgrade.rs"]
+mod monthly_repayment_upgrade;

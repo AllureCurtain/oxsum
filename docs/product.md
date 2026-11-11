@@ -384,6 +384,7 @@ A signed `dispute_opened` event opens a contested record on `oxsum.disputes`, en
 
 Business staff inspect monthly wallet credit in the customer detail's **Monthly credit terms** card (#997). `reportsRead` permits inspection; `commercialWrite` (owner/finance) permits an explicit, reasoned approval of the total facility, future invoice payment terms and current optional monthly dunning grace. This facility is separate from sold-plan receivable caps. Credit, terms, immutable mutation receipt and actor audit commit together; a refused shrink below drawn/reserved credit changes none of them. Exact retries, including no-op limit changes, return their historical receipt without restoring old terms. Archived accounts reject new decisions. Terms changes do not rewrite issued documents, collect money or clear manual/archive restrictions; the existing dunning job evaluates grace separately.
 
+
 Business reports readers can inspect a customer's monthly wallet-credit statements in a separately labeled customer-detail card (#1007). Each document distinguishes all usage charges from credit-funded charges, recorded repayment and remaining credit debt. Its original issue terms, dates, lines and proof-window identifiers remain visible. The page displays elapsed unpaid due dates as overdue without changing stored history. Reads use the recorded payment projection; monthly generation/finalization/repayment through Business authority remains tracked by #1006, separately from sold-plan statements.
 
 An organization on a credit limit settles monthly (issue #124, the second half of roadmap P3-2). The platform issues one statement per organization and UTC `YYYY-MM` period — the month's settled usage itemized by channel and model, with how much of it the credit line carried — and a statement exists only for a month with usage. A daily `statements` job (issue #166) closes the month that just ended on every billable organization's ledger and generates its draft — doubling as the late-usage pickup, since both calls are idempotent — while issuing the document stays the operator's call.
@@ -930,13 +931,15 @@ Sold-plan period consumption reads the matching quota-engine window, including o
 
 The Business dispute resolution dialog requires an explicit provider outcome: evidence due, won, lost or closed. Each outcome explains its financial effect. The exact decision, reason and idempotency identity remain fixed across ambiguous retries; the dialog closes only after a successful response.
 
+
 Business owner/finance can generate and issue monthly credit statements from the
 customer's separate Monthly statements card (#1011). Generation is a working
 copy for a closed UTC month. Issuance confirms the displayed usage, credit draw,
 lines and payment terms; changed data or UTC review day requires renewed review.
 The reason and actor are audited atomically with issuance. Exact retries retain
-their original result, including empty months. Monthly repayment remains a
-separate workflow under #1006; these actions do not record incoming money.
+their original result, including empty months. Verified monthly repayment uses
+the separate #1015 payment action; issuance does not record incoming money.
+
 
 ## Atomic recorded monthly repayments (#1013)
 
@@ -946,3 +949,22 @@ or exceed unpaid credit draws through that month. Cash, credit restoration,
 statement standing, events and source-bound audit commit together. Exact retries
 remain valid after full payment; a changed amount or statement conflicts. Staff
 portal repayment and explicit bank-reference collection remain tracked by #1006.
+
+
+
+
+portal repayment and explicit bank-reference collection use the #1015 workflow.
+
+## Staff monthly repayment (#1015)
+
+Owner/finance can record verified incoming money from an issued customer's
+monthly statement. Confirmation shows the customer, month, exact credit amount,
+bank/payment reference and reason. This operation repays the oldest credit draws
+through that month; it never pays a sold-plan invoice or grants wallet funds.
+References share a global uniqueness domain with deployment manual receipts and
+staff manual payment orders, so one source cannot fund another workflow.
+
+A lost response retains the exact intent for retry. The original receipt remains
+recoverable after full repayment or archival with current funds authority.
+Customer statement reads reflect the updated FIFO standing; original usage
+lines, terms and proof anchor remain unchanged. No external collection is initiated.
