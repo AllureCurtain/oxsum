@@ -4011,3 +4011,35 @@ audit together after a source-bound preview; unchanged retries return the
 original operation. The complete model and outstanding acceptance are in
 [invoice-corrections.md](invoice-corrections.md); this decision does not claim
 that the write path or customer workflow is already implemented.
+
+## 2026-11-11 — Airwallex deposit-refund recovery; Stripe deferred (#1041)
+
+The durable `oxsum.deposit_refunds` machinery is rail-agnostic; the rail gate
+lived in three places (queue SQL, `refundStatus` projection, reverse-route and
+webhook-apply arms) and is widened from `hyperswitch` to
+`hyperswitch`/`airwallex` together. `deposit_refund::recover` keeps one
+lease/validate/record flow and dispatches only the wire adapter: the Airwallex
+arm exchanges `x-client-id`/`x-api-key` for a bearer token, retrieves
+`pa/refunds/{id}`, and creates through `pa/refunds/create` with `request_id`
+(the body identity and idempotency key), `payment_intent_id`, decimal
+major-unit `amount` and the same deposit/payment/organization metadata. The
+returned object is validated against pinned terms and yields its own `id`
+(`rfd_…`) as the recorded handle — Airwallex mints it, unlike Hyperswitch which
+uses our request id as the refund id. A create/retrieve answer only records a
+handle; `unknown → pending → succeeded|failed` still moves solely on an
+authenticated `refund.settled`/`refund.failed` event (`refund.succeeded` does
+not exist in Airwallex's vocabulary; `refund.received`/`refund.accepted` are
+intermediate and map to unsupported). Refund objects carry their own id in
+`data.object.id` and the parent intent in `payment_intent_id`, so
+normalization distinguishes refund/dispute objects from payment-intent objects
+rather than reusing the generic `provider_payment_id = object.id` arm.
+`payment_dispute.requires_response` normalizes to the dispute kind and is
+retained in the inbox, but `disputedAt` stamping stays Hyperswitch-only —
+`record_dispute` is rail-bound and the Airwallex dispute lifecycle is not yet
+decided.
+
+Stripe deposit-refund recovery is explicitly deferred: the Stripe arm returns
+`UnknownRefund` like before, and reversed Stripe deposits still answer
+`refundStatus: null`-equivalent (no queued operation). The Stripe refund API
+differs in identity (`re_…` ids, charge-scoped) and has no queued demand; the
+adapter shape now makes it a single new arm when needed.
