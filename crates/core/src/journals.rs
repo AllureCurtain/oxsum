@@ -205,6 +205,9 @@ pub struct InvoiceJournalDetail {
     pub journal: InvoiceJournal,
     /// The journal's lines by creation time, with line-ID tie breaking.
     pub lines: Vec<InvoiceJournalLine>,
+    /// Immediate committed successor, independent of list pagination.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub successor_journal_id: Option<Uuid>,
 }
 
 /// A cursor-paginated page of invoice journals.
@@ -348,6 +351,8 @@ impl Db {
             return Ok(None);
         }
         Ok(Some(InvoiceJournalDetail {
+            successor_journal_id: sqlx::query_scalar("SELECT journal_id FROM oxsum.invoice_corrections WHERE predecessor_journal_id=$1 AND organization_id=$2")
+                .bind(journal_id).bind(organization_id).fetch_optional(self.pool()).await?,
             lines: self.journal_lines(journal_id).await?,
             journal,
         }))
@@ -474,8 +479,13 @@ impl Db {
             return Ok(None);
         }
         let lines = lines_in(&mut tx, journal_id).await?;
+        let successor_journal_id = successor_in(&mut tx, journal_id).await?;
         tx.commit().await?;
-        Ok(Some(InvoiceJournalDetail { journal, lines }))
+        Ok(Some(InvoiceJournalDetail {
+            journal,
+            lines,
+            successor_journal_id,
+        }))
     }
 
     /// The staff void: appends reversing lines so the journal nets to zero,
@@ -545,8 +555,9 @@ impl Db {
                 return Err(WalletError::Conflict("journal void key names different request terms".into()));
             }
             let lines=lines_in(&mut tx,journal_id).await?;
+            let successor_journal_id = successor_in(&mut tx, journal_id).await?;
             tx.commit().await?;
-            return Ok(InvoiceJournalDetail{journal,lines});
+            return Ok(InvoiceJournalDetail{journal,lines,successor_journal_id});
         }
         let reversal_entry = self
             .void_journal_financial_in(&mut tx, wallet, &journal, reason, on)
@@ -583,6 +594,7 @@ impl Db {
             }
             WalletError::Storage(e.into())
         })?;
+        let successor_journal_id = successor_in(&mut tx, journal_id).await?;
         let voided = journal_in(&mut tx, journal_id)
             .await?
             .ok_or_else(|| invalid("the journal did not land"))?;
@@ -591,6 +603,7 @@ impl Db {
         Ok(InvoiceJournalDetail {
             journal: voided,
             lines,
+            successor_journal_id,
         })
     }
 
@@ -611,10 +624,18 @@ impl Db {
             crate::plan_debt::refresh_in(tx, journal.customer_plan_id).await?;
             return Ok(None);
         }
-        if journal.state == JournalState::Draft || journal.replaces_journal_id.is_some() {
+        if journal.state == JournalState::Draft {
             return Err(WalletError::Conflict(
-                "draft or reissued journal requires explicit financial reconciliation".into(),
+                "draft journal requires explicit financial reconciliation".into(),
             ));
+        }
+        if journal.replaces_journal_id.is_some() {
+            crate::financial_reconciliation::debt_sources::verify_void_in(
+                tx,
+                journal.organization_id,
+                wallet.tenant_id(),
+            )
+            .await?;
         }
         crate::statement_payments::guard_journal_in(tx, journal_id).await?;
         wallet.lock_append_in(tx).await?;
@@ -650,6 +671,23 @@ impl Db {
         }
         let entry = if journal.accounting_policy_version == 2 {
             self.void_daily_plan_in(tx, wallet, journal, on).await?
+        } else if journal.replaces_journal_id.is_some() {
+            // A corrected accrual posted net consideration. Reverse that net
+            // position rather than inventing historical discount/promo legs.
+            wallet
+                .plan_daily_void_in(
+                    tx,
+                    journal_id,
+                    journal.total_minor,
+                    0,
+                    journal
+                        .total_minor
+                        .checked_sub(journal.settled_minor)
+                        .ok_or_else(|| invalid("corrected receivable overflows"))?,
+                    journal.settled_minor,
+                    on,
+                )
+                .await?
         } else {
             wallet
                 .plan_journal_void_in(
@@ -710,6 +748,7 @@ pub(crate) async fn journal_snapshot_in(
     Ok(Some(InvoiceJournalDetail {
         journal: journal_from_row(&row)?,
         lines: lines_in(tx, journal).await?,
+        successor_journal_id: successor_in(tx, journal).await?,
     }))
 }
 
@@ -909,8 +948,17 @@ impl Db {
             let now: OffsetDateTime = sqlx::query_scalar("SELECT clock_timestamp()")
                 .fetch_one(&mut **tx)
                 .await?;
-            self.recognize_plan_period_in(tx, wallet, journal, now, on)
+            let live: Option<Uuid> = sqlx::query_scalar("SELECT g.journal_id FROM oxsum.plan_recognition_generations g JOIN oxsum.invoice_journals j USING(journal_id) WHERE g.plan_period_id=$1 AND j.state<>'void'")
+                .bind(period.plan_period_id).fetch_optional(&mut **tx).await?;
+            self.recognize_plan_period_in(tx, wallet, live.unwrap_or(journal), now, on)
                 .await?;
+            return Ok(None);
+        }
+        // A correction retains the original fee authorization even when every
+        // successor has subsequently been voided. Closing cannot bill it again.
+        let corrected: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM oxsum.invoice_accounting_generations WHERE plan_period_id=$1)")
+            .bind(period.plan_period_id).fetch_one(&mut **tx).await?;
+        if corrected {
             return Ok(None);
         }
         let existing: Option<Uuid> = sqlx::query_scalar(
@@ -1503,4 +1551,17 @@ pub(crate) async fn closing_period_in(
         authorization_kind: row.try_get("authorization_kind")?,
         authorization_ref: row.try_get("authorization_ref")?,
     }))
+}
+
+/// Read only the immediate committed correction link inside the caller's scope.
+async fn successor_in(
+    tx: &mut Transaction<'_, Postgres>,
+    journal: Uuid,
+) -> Result<Option<Uuid>, WalletError> {
+    Ok(sqlx::query_scalar(
+        "SELECT journal_id FROM oxsum.invoice_corrections WHERE predecessor_journal_id=$1",
+    )
+    .bind(journal)
+    .fetch_optional(&mut **tx)
+    .await?)
 }

@@ -1578,6 +1578,41 @@ impl Wallet {
             .map(|r| Some(*r.entry_id.as_uuid()))
     }
 
+    /// Open a corrected fee's receivable without consuming predecessor cash.
+    pub(crate) async fn invoice_correction_accrual_in(
+        &self,
+        tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+        journal: Uuid,
+        earned: i64,
+        deferred: i64,
+        on: Date,
+    ) -> Result<Option<Uuid>, WalletError> {
+        let total = earned
+            .checked_add(deferred)
+            .filter(|_| earned >= 0 && deferred >= 0)
+            .ok_or_else(|| invalid("corrected invoice accrual overflows"))?;
+        if total == 0 {
+            return Ok(None);
+        }
+        let key = format!("invoice-correction/{journal}/accrual");
+        let mut entry = Entry::<Draft, SCALE>::new(entry_id_for(&key), idem(&key)?, on)
+            .with_description(description_of(
+                "Source-linked corrected fee; original service and cash ownership retained",
+            )?)
+            .debit(self.receivables, Credits::from_minor(total), currency());
+        for (account, amount) in [
+            (self.plan_fees, earned),
+            (self.unearned_plan_fees, deferred),
+        ] {
+            if amount > 0 {
+                entry = entry.credit(account, Credits::from_minor(amount), currency());
+            }
+        }
+        self.append_in(tx, entry)
+            .await
+            .map(|r| Some(*r.entry_id.as_uuid()))
+    }
+
     /// Reverse exact v2 net earned/deferred amounts without moving Cash.
     #[allow(clippy::too_many_arguments)]
     pub(crate) async fn plan_daily_void_in(

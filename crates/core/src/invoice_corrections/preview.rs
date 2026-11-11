@@ -60,9 +60,14 @@ pub(super) async fn inspect_in(
         .await?
         .ok_or_else(|| WalletError::NotFound("unknown invoice correction source".into()))?;
     let j = &detail.journal;
-    if j.replaces_journal_id.is_some() {
+    let generation =
+        sqlx::query("SELECT * FROM oxsum.invoice_accounting_generations WHERE journal_id=$1")
+            .bind(journal)
+            .fetch_optional(&mut **tx)
+            .await?;
+    if j.replaces_journal_id.is_some() != generation.is_some() {
         return Err(WalletError::Conflict(
-            "successor accounting context requires source review".into(),
+            "successor accounting context is missing or inconsistent".into(),
         ));
     }
     let has_successor: bool = sqlx::query_scalar(
@@ -76,8 +81,11 @@ pub(super) async fn inspect_in(
             "invoice already has a successor".into(),
         ));
     }
-    let period = j
-        .plan_period_id
+    let period = generation
+        .as_ref()
+        .map(|g| g.try_get::<Uuid, _>("plan_period_id"))
+        .transpose()?
+        .or(j.plan_period_id)
         .ok_or_else(|| WalletError::Conflict("original service period is missing".into()))?;
     let p = sqlx::query("SELECT * FROM oxsum.plan_periods WHERE plan_period_id=$1 AND customer_plan_id=$2 AND period_index=$3")
         .bind(period).bind(j.customer_plan_id).bind(j.period_index).fetch_optional(&mut **tx).await?
@@ -109,14 +117,21 @@ pub(super) async fn inspect_in(
     }
     let originals = original_lines(&detail)?;
     let mut base = 0i128;
+    let mut historical_usage = 0i128;
+    let mut has_historical_usage = false;
     for line in &originals {
         match line.kind {
             JournalLineKind::BaseFee
-                if line.amount_minor >= 0 && line.source_ref == Some(period) =>
+                if line.amount_minor >= 0
+                    && (generation.is_some() || line.source_ref == Some(period)) =>
             {
                 base += i128::from(line.amount_minor);
             }
             JournalLineKind::Discount | JournalLineKind::PromoCredit if line.amount_minor <= 0 => {}
+            JournalLineKind::UsageOverage => {
+                historical_usage += i128::from(line.amount_minor);
+                has_historical_usage = true;
+            }
             _ => {
                 return Err(WalletError::Conflict(
                     "invoice charges require their original source correction before reissue"
@@ -125,9 +140,37 @@ pub(super) async fn inspect_in(
             }
         }
     }
+    if has_historical_usage {
+        let original = generation
+            .as_ref()
+            .map(|g| g.try_get::<Uuid, _>("original_journal_id"))
+            .transpose()?
+            .unwrap_or(journal);
+        let repaired: bool = sqlx::query_scalar(
+            "SELECT EXISTS(SELECT 1 FROM oxsum.plan_usage_corrections WHERE journal_id=$1)",
+        )
+        .bind(original)
+        .fetch_one(&mut **tx)
+        .await?;
+        if !repaired || historical_usage != 0 {
+            return Err(WalletError::Conflict(
+                "historical usage requires its exact source correction before reissue".into(),
+            ));
+        }
+    }
     let start: OffsetDateTime = p.try_get("period_start")?;
     let end: OffsetDateTime = p.try_get("period_end")?;
-    let version = if j.accounting_policy_version == 2 {
+    let version = if let Some(generation) = &generation {
+        if generation.try_get::<OffsetDateTime, _>("service_start")? != start
+            || generation.try_get::<OffsetDateTime, _>("service_end")? != end
+            || generation.try_get::<i64, _>("fee_minor")? < j.total_minor
+        {
+            return Err(WalletError::Conflict(
+                "successor differs from its retained consideration".into(),
+            ));
+        }
+        generation.try_get::<Uuid, _>("plan_version_id")?
+    } else if j.accounting_policy_version == 2 {
         let a = sqlx::query(
             "SELECT * FROM oxsum.plan_accounting_periods WHERE plan_period_id=$1 AND journal_id=$2",
         )
@@ -168,7 +211,7 @@ pub(super) async fn inspect_in(
     };
     let sold = sqlx::query("SELECT price_minor,currency,accounting_policy_version FROM oxsum.sold_plans WHERE plan_version_id=$1 AND business_id=$2")
         .bind(version).bind(j.business_id).fetch_one(&mut **tx).await?;
-    if i128::from(sold.try_get::<i64, _>("price_minor")?) != base
+    if (generation.is_none() && i128::from(sold.try_get::<i64, _>("price_minor")?) != base)
         || sold.try_get::<String, _>("currency")? != j.currency
         || sold.try_get::<i16, _>("accounting_policy_version")? != j.accounting_policy_version
     {

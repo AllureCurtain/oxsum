@@ -4,10 +4,12 @@
 //! and original-source refund payable never become an implicit successor payment.
 
 mod amounts;
+mod apply;
 mod preview;
 mod types;
 
 pub use types::{
     InvoiceCorrectionAmounts, InvoiceCorrectionLineRequest, InvoiceCorrectionPreview,
-    InvoiceCorrectionPreviewLine, InvoiceCorrectionPreviewRequest,
+    InvoiceCorrectionPreviewLine, InvoiceCorrectionPreviewRequest, InvoiceCorrectionRequest,
+    InvoiceCorrectionResult,
 };

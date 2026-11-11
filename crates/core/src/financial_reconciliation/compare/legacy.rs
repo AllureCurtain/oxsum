@@ -20,6 +20,10 @@ pub(super) fn compare(customer: &mut Customer<'_>) -> Result<(), WalletError> {
         if header.policy()? != 1 || header.text("state")? == "draft" {
             continue;
         }
+        let generation = customer
+            .sources
+            .get("invoice_accounting_generations", journal)
+            .cloned();
         let owner = format!("journal/{journal}");
         let mut ids = BTreeSet::new();
         let mut valid = true;
@@ -89,8 +93,11 @@ pub(super) fn compare(customer: &mut Customer<'_>) -> Result<(), WalletError> {
                 }
             }
         }
-        let period = header
-            .optional_id("plan_period_id")?
+        let period = generation
+            .as_ref()
+            .map(|g| g.id("plan_period_id"))
+            .transpose()?
+            .or(header.optional_id("plan_period_id")?)
             .and_then(|id| customer.sources.get("plan_periods", id))
             .cloned();
         if let Some(period) = period.as_ref() {
@@ -114,6 +121,7 @@ pub(super) fn compare(customer: &mut Customer<'_>) -> Result<(), WalletError> {
         }
         let original_order = period
             .as_ref()
+            .filter(|_| generation.is_none())
             .filter(|period| {
                 period.text("authorization_kind").ok().as_deref() == Some("payment_order")
             })
@@ -238,7 +246,14 @@ pub(super) fn compare(customer: &mut Customer<'_>) -> Result<(), WalletError> {
                 charged |= amount > 0;
             }
         }
-        if charged {
+        if let Some(generation) = &generation {
+            if generation.amount("fee_minor")? > 0 {
+                let key = format!("invoice-correction/{journal}/accrual");
+                let entry = *crate::entry_id_for(&key).as_uuid();
+                valid &= customer.require_entry("invoice_journals", journal, entry, &key, &owner);
+                ids.insert(entry);
+            }
+        } else if charged {
             let accrual =
                 *crate::entry_id_for(&format!("plan-journal/{journal}/accrual")).as_uuid();
             valid &= customer.require_entry(

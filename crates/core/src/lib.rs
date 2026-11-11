@@ -253,7 +253,8 @@ pub use invitations::{
 };
 pub use invoice_corrections::{
     InvoiceCorrectionAmounts, InvoiceCorrectionLineRequest, InvoiceCorrectionPreview,
-    InvoiceCorrectionPreviewLine, InvoiceCorrectionPreviewRequest,
+    InvoiceCorrectionPreviewLine, InvoiceCorrectionPreviewRequest, InvoiceCorrectionRequest,
+    InvoiceCorrectionResult,
 };
 pub use jobs::{
     CLAIM_LEASE_SECS, DEAD_RESCHEDULE, Job, JobOutcome, MAX_ATTEMPTS, Retention, RetentionReport,

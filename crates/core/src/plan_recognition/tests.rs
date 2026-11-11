@@ -339,6 +339,12 @@ async fn correction_preview_requires_current_funds_authority_and_exact_line_owne
             .await
             .unwrap();
     assert_eq!(owner.source_revision, finance.source_revision);
+    let intent = crate::InvoiceCorrectionRequest {
+        lines: request.lines.clone(),
+        source_revision: finance.source_revision.clone(),
+        reason: "Current Finance authority at commit".into(),
+        idempotency_key: Uuid::new_v4().to_string(),
+    };
     assert!(matches!(
         w.db.preview_invoice_correction(&token, Uuid::new_v4(), &request)
             .await,
@@ -367,6 +373,10 @@ async fn correction_preview_requires_current_funds_authority_and_exact_line_owne
     assert!(matches!(
         w.db.preview_invoice_correction(&token, w.journal, &request)
             .await,
+        Err(crate::WalletError::Forbidden(_))
+    ));
+    assert!(matches!(
+        w.db.correct_invoice(&token, w.journal, &intent).await,
         Err(crate::WalletError::Forbidden(_))
     ));
     assert_eq!(net(&w, "Assets:Cash").await, -FEE);
@@ -417,6 +427,238 @@ async fn correction_preview_handles_unpaid_and_partial_debt_without_consuming_ol
         }
     }
 }
+async fn correction_intent(w: &World, amount: i64) -> crate::InvoiceCorrectionRequest {
+    let selections = correction_request(w, amount).await;
+    let preview =
+        w.db.preview_invoice_correction(&w.owner, w.journal, &selections)
+            .await
+            .unwrap();
+    crate::InvoiceCorrectionRequest {
+        lines: selections.lines,
+        source_revision: preview.source_revision,
+        reason: "Correct proven service fee".into(),
+        idempotency_key: Uuid::new_v4().to_string(),
+    }
+}
+
+#[tokio::test]
+async fn correction_apply_preserves_original_cash_and_opens_exact_successor_debt() {
+    let _guard = TEST_LOCK.lock().await;
+    for legacy in [false, true] {
+        for lost_fiat in [0, 100, 250] {
+            let Some(w) = correction_world(legacy).await else {
+                return;
+            };
+            if lost_fiat > 0 {
+                lost_amount(&w, &w.order, lost_fiat).await;
+            }
+            let request = correction_intent(&w, 2_000_000).await;
+            let cash = net(&w, "Assets:Cash").await;
+            let result =
+                w.db.correct_invoice(&w.owner, w.journal, &request)
+                    .await
+                    .unwrap();
+            let old = w.db.plan_journal(w.org, w.journal).await.unwrap().unwrap();
+            let new =
+                w.db.plan_journal(w.org, result.journal_id)
+                    .await
+                    .unwrap()
+                    .unwrap();
+            assert_eq!(old.journal.state, JournalState::Void);
+            assert_eq!(
+                old.lines.iter().map(|line| line.amount_minor).sum::<i64>(),
+                0
+            );
+            assert_eq!(new.journal.total_minor, 2_000_000);
+            assert_eq!(new.journal.settled_minor, 0);
+            assert_eq!(new.journal.replaces_journal_id, Some(w.journal));
+            assert_eq!(new.journal.plan_period_id, None);
+            assert_eq!(net(&w, "Assets:Cash").await, cash);
+            assert_eq!(
+                net(&w, "Liabilities:RefundPayable").await,
+                FEE - lost_fiat * 10_000
+            );
+            assert_eq!(net(&w, "Assets:Receivables").await, -2_000_000);
+            assert_eq!(
+                net(&w, "Income:PlanFees").await + net(&w, "Income:Discounts").await,
+                result.preview.amounts.successor_earned_minor
+            );
+            assert_eq!(
+                net(&w, "Liabilities:UnearnedPlanFees").await,
+                result.preview.amounts.successor_deferred_minor
+            );
+            assert_eq!(w.db.plan_periods(w.plan).await.unwrap().len(), 1);
+            assert_eq!(
+                w.db.plan_periods(w.plan).await.unwrap()[0].quota_minor,
+                w.period.quota_minor
+            );
+            let replay =
+                w.db.correct_invoice(&w.owner, w.journal, &request)
+                    .await
+                    .unwrap();
+            assert_eq!(
+                serde_json::to_value(result).unwrap(),
+                serde_json::to_value(replay).unwrap()
+            );
+            let mut altered = request.clone();
+            altered.reason.push('!');
+            assert!(
+                w.db.correct_invoice(&w.owner, w.journal, &altered)
+                    .await
+                    .is_err()
+            );
+            let receipts: i64 = sqlx::query_scalar(
+                "SELECT count(*) FROM oxsum.invoice_corrections WHERE organization_id=$1",
+            )
+            .bind(w.org)
+            .fetch_one(w.db.pool())
+            .await
+            .unwrap();
+            assert_eq!(receipts, 1);
+        }
+    }
+}
+
+#[tokio::test]
+async fn correction_apply_stale_preview_and_late_insert_failure_leave_no_partial_effects() {
+    use sqlx::Executor;
+    let _guard = TEST_LOCK.lock().await;
+    let Some(w) = correction_world(false).await else {
+        return;
+    };
+    let stale = correction_intent(&w, 2_000_000).await;
+    refund(&w, 100_000).await;
+    assert!(
+        w.db.correct_invoice(&w.owner, w.journal, &stale)
+            .await
+            .is_err()
+    );
+    let request = correction_intent(&w, 2_000_000).await;
+    let cash = net(&w, "Assets:Cash").await;
+    let ar = net(&w, "Assets:Receivables").await;
+    let payable = net(&w, "Liabilities:RefundPayable").await;
+    w.db.pool().execute("CREATE FUNCTION oxsum.test_fail_correction() RETURNS trigger LANGUAGE plpgsql AS $$BEGIN IF NEW.action='business.invoice.correct' THEN RAISE EXCEPTION 'controlled correction audit fault'; END IF; RETURN NEW; END;$$; CREATE TRIGGER test_fail_correction BEFORE INSERT ON oxsum.admin_audit FOR EACH ROW EXECUTE FUNCTION oxsum.test_fail_correction()").await.unwrap();
+    let failed = w.db.correct_invoice(&w.owner, w.journal, &request).await;
+    w.db.pool().execute("DROP TRIGGER test_fail_correction ON oxsum.admin_audit; DROP FUNCTION oxsum.test_fail_correction()").await.unwrap();
+    assert!(failed.is_err());
+    assert_eq!(net(&w, "Assets:Cash").await, cash);
+    assert_eq!(net(&w, "Assets:Receivables").await, ar);
+    assert_eq!(net(&w, "Liabilities:RefundPayable").await, payable);
+    assert_eq!(
+        w.db.plan_journal(w.org, w.journal)
+            .await
+            .unwrap()
+            .unwrap()
+            .journal
+            .state,
+        JournalState::Paid
+    );
+    assert_eq!(
+        w.db.plan_journals(w.org, None, 50)
+            .await
+            .unwrap()
+            .journals
+            .len(),
+        1
+    );
+    let n: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM oxsum.invoice_corrections WHERE organization_id=$1",
+    )
+    .bind(w.org)
+    .fetch_one(w.db.pool())
+    .await
+    .unwrap();
+    assert_eq!(n, 0);
+    let answer =
+        w.db.correct_invoice(&w.owner, w.journal, &request)
+            .await
+            .unwrap();
+    assert_eq!(answer.preview.amounts.corrected_total_minor, 1_900_000);
+}
+
+#[tokio::test]
+async fn correction_apply_daily_successor_recognizes_only_remaining_service() {
+    let _guard = TEST_LOCK.lock().await;
+    let Some(w) = correction_world(false).await else {
+        return;
+    };
+    let request = correction_intent(&w, 1).await;
+    let answer =
+        w.db.correct_invoice(&w.owner, w.journal, &request)
+            .await
+            .unwrap();
+    let mut tx = w.db.pool().begin().await.unwrap();
+    sqlx::query(
+        "SELECT customer_plan_id FROM oxsum.customer_plans WHERE customer_plan_id=$1 FOR UPDATE",
+    )
+    .bind(w.plan)
+    .fetch_one(&mut *tx)
+    .await
+    .unwrap();
+    let before =
+        w.db.recognize_plan_period_in(
+            &mut tx,
+            &w.wallet,
+            answer.journal_id,
+            answer.preview.recognition_boundary,
+            OffsetDateTime::now_utc().date(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(before, 0);
+    let count =
+        w.db.recognize_plan_period_in(
+            &mut tx,
+            &w.wallet,
+            answer.journal_id,
+            w.period.period_end,
+            w.period.period_end.date(),
+        )
+        .await
+        .unwrap();
+    assert!(count > 0);
+    assert_eq!(
+        w.db.recognize_plan_period_in(
+            &mut tx,
+            &w.wallet,
+            answer.journal_id,
+            w.period.period_end,
+            w.period.period_end.date()
+        )
+        .await
+        .unwrap(),
+        0
+    );
+    let period = super::period_in(&mut tx, answer.journal_id)
+        .await
+        .unwrap()
+        .unwrap();
+    let totals = super::totals_in(&mut tx, &period).await.unwrap();
+    assert_eq!(
+        (
+            totals.billed,
+            totals.earned,
+            totals.deferred,
+            totals.receivable
+        ),
+        (1, 1, 0, 1)
+    );
+    let original = super::period_in(&mut tx, w.journal).await.unwrap().unwrap();
+    let totals = super::totals_in(&mut tx, &original).await.unwrap();
+    assert_eq!(
+        (
+            totals.billed,
+            totals.earned,
+            totals.deferred,
+            totals.receivable
+        ),
+        (0, 0, 0, 0)
+    );
+    tx.commit().await.unwrap();
+    assert_eq!(net(&w, "Assets:Cash").await, -FEE);
+    assert_eq!(net(&w, "Assets:Receivables").await, -1);
+}
+
 async fn net(w: &World, path: &str) -> i64 {
     sqlx::query_scalar(&format!("SELECT COALESCE(SUM(CASE WHEN p.direction='C' THEN p.amount_minor ELSE -p.amount_minor END),0)::bigint FROM ledger_{}.postings p JOIN ledger_{}.accounts a USING(account_index) JOIN ledger_{}.entries e USING(entry_id) WHERE a.path=$1 AND p.layer='settled' AND e.log_index IS NOT NULL",w.tenant,w.tenant,w.tenant)).bind(path).fetch_one(w.db.pool()).await.unwrap()
 }
@@ -1777,9 +2019,11 @@ async fn tiny_month_end_fees_keep_exact_final_remainder_in_real_entries() {
         )
         .await
         .unwrap();
-        let totals = super::totals_in(&mut tx, period.plan_period_id)
+        let accounting = super::period_in(&mut tx, journal.journal_id)
             .await
+            .unwrap()
             .unwrap();
+        let totals = super::totals_in(&mut tx, &accounting).await.unwrap();
         assert_eq!((totals.earned, totals.deferred), (fee, 0));
         tx.commit().await.unwrap();
         let sum:i64=sqlx::query_scalar(&format!("SELECT COALESCE(SUM(p.amount_minor),0)::bigint FROM ledger_{}.postings p JOIN ledger_{}.accounts a USING(account_index) WHERE a.path='Income:PlanFees' AND p.direction='C' AND p.layer='settled'",user.organization.tenant_id,user.organization.tenant_id)).fetch_one(w.db.pool()).await.unwrap();

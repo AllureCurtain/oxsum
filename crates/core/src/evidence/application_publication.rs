@@ -188,10 +188,10 @@ pub(super) async fn check_statement(
     for query in [
         "SELECT octet_length(to_jsonb(r)::text)::bigint FROM oxsum.plan_statements r WHERE r.organization_id=$1 AND r.statement_id=$2",
         "SELECT octet_length(to_jsonb(r)::text)::bigint FROM oxsum.invoice_journals r JOIN oxsum.plan_statements s USING(journal_id) WHERE s.organization_id=$1 AND s.statement_id=$2",
-        "SELECT octet_length(to_jsonb(r)::text)::bigint FROM oxsum.plan_accounting_periods r JOIN oxsum.plan_statements s USING(journal_id) WHERE s.organization_id=$1 AND s.statement_id=$2",
+        "SELECT octet_length(to_jsonb(r)::text)::bigint FROM oxsum.plan_accounting_periods r JOIN oxsum.plan_recognition_generations g USING(plan_period_id) JOIN oxsum.plan_statements s ON s.journal_id=g.journal_id WHERE s.organization_id=$1 AND s.statement_id=$2",
         "SELECT octet_length(to_jsonb(r)::text)::bigint AS bytes FROM oxsum.plan_statement_lines r JOIN oxsum.plan_statements s USING(statement_id) WHERE s.organization_id=$1 AND s.statement_id=$2 LIMIT 1001",
         "SELECT octet_length(to_jsonb(r)::text)::bigint AS bytes FROM oxsum.invoice_journal_lines r JOIN oxsum.plan_statements s USING(journal_id) WHERE s.organization_id=$1 AND s.statement_id=$2 LIMIT 1001",
-        "SELECT octet_length(to_jsonb(r)::text)::bigint AS bytes FROM oxsum.plan_accounting_effects r JOIN oxsum.plan_accounting_periods a USING(plan_period_id) JOIN oxsum.plan_statements s ON s.journal_id=a.journal_id WHERE s.organization_id=$1 AND s.statement_id=$2 LIMIT 257",
+        "SELECT octet_length(to_jsonb(r)::text)::bigint AS bytes FROM oxsum.plan_accounting_effects r JOIN oxsum.plan_recognition_generations a ON a.plan_period_id=r.plan_period_id AND r.journal_id IS NOT DISTINCT FROM a.effect_journal_id JOIN oxsum.plan_statements s ON s.journal_id=a.journal_id WHERE s.organization_id=$1 AND s.statement_id=$2 LIMIT 257",
     ] {
         let sizes: Vec<i64> = sqlx::query_scalar(query)
             .bind(org)

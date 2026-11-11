@@ -88,6 +88,21 @@ pub(super) async fn capture(
     for (table, identity, ownership) in [
         ("invoice_journals", "journal_id", "t.organization_id=$1"),
         (
+            "invoice_corrections",
+            "correction_id",
+            "t.organization_id=$1",
+        ),
+        (
+            "invoice_accounting_generations",
+            "journal_id",
+            "t.organization_id=$1",
+        ),
+        (
+            "invoice_correction_lines",
+            "line_id",
+            "EXISTS(SELECT 1 FROM oxsum.invoice_corrections c WHERE c.correction_id=t.correction_id AND c.organization_id=$1)",
+        ),
+        (
             "invoice_journal_lines",
             "line_id",
             "EXISTS(SELECT 1 FROM oxsum.invoice_journals j WHERE j.journal_id=t.journal_id AND j.organization_id=$1)",
@@ -107,7 +122,7 @@ pub(super) async fn capture(
         (
             "sold_plans",
             "plan_version_id",
-            "(EXISTS(SELECT 1 FROM oxsum.customer_plans p WHERE p.plan_version_id=t.plan_version_id AND p.organization_id=$1) OR EXISTS(SELECT 1 FROM oxsum.plan_accounting_periods a WHERE a.plan_version_id=t.plan_version_id AND a.organization_id=$1))",
+            "(EXISTS(SELECT 1 FROM oxsum.customer_plans p WHERE p.plan_version_id=t.plan_version_id AND p.organization_id=$1) OR EXISTS(SELECT 1 FROM oxsum.plan_accounting_periods a WHERE a.plan_version_id=t.plan_version_id AND a.organization_id=$1) OR EXISTS(SELECT 1 FROM oxsum.invoice_accounting_generations g WHERE g.plan_version_id=t.plan_version_id AND g.organization_id=$1) OR EXISTS(SELECT 1 FROM oxsum.payment_orders o WHERE o.organization_id=$1 AND o.plan_payment->>'planVersionId'=t.plan_version_id::text))",
         ),
         ("payment_orders", "order_id", "t.organization_id=$1"),
         (
@@ -187,6 +202,14 @@ pub(super) async fn capture(
             let raw: serde_json::Value = row.try_get("evidence_row")?;
             let allowed = [
                 "journal_id",
+                "predecessor_journal_id",
+                "predecessor_statement_id",
+                "original_journal_id",
+                "source_line_id",
+                "original_minor",
+                "corrected_minor",
+                "recognition_from",
+                "ledger_boundary",
                 "line_id",
                 "statement_id",
                 "customer_plan_id",
@@ -248,6 +271,7 @@ pub(super) async fn capture(
                 "booked_on",
                 "payment_on",
                 "issued_at",
+                "due_at",
                 "posted_at",
                 "paid_at",
                 "created_at",
@@ -285,6 +309,17 @@ pub(super) async fn capture(
                     .filter_map(|name| raw.get(name).map(|value| (name.to_owned(), value.clone())))
                     .collect(),
             );
+            if table == "invoice_corrections" {
+                for field in [
+                    "request",
+                    "result",
+                    "reason",
+                    "idempotency_key",
+                    "actor_user_id",
+                ] {
+                    evidence[field] = raw.get(field).cloned().unwrap_or(serde_json::Value::Null);
+                }
+            }
             if table == "merchant_event_inbox" {
                 // Normalized receipt identities and amounts are comparison inputs;
                 // original signed bodies and merchant credentials are never included.

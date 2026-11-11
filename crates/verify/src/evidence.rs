@@ -409,6 +409,27 @@ pub fn verify_evidence_bundle(
         .and_then(serde_json::Value::as_object)
     {
         for artifact in statements.values() {
+            if let Some(correction) = artifact.get("correction") {
+                for id in [
+                    correction.pointer("/receipt/entry_id"),
+                    correction.get("voidEntryId"),
+                ]
+                .into_iter()
+                .flatten()
+                .filter_map(serde_json::Value::as_str)
+                {
+                    if !wire
+                        .entries
+                        .iter()
+                        .skip(1)
+                        .any(|row| row.entry.id().to_string() == id)
+                    {
+                        return Err(EvidenceError::Malformed(format!(
+                            "invoice correction ledger entry {id} missing"
+                        )));
+                    }
+                }
+            }
             let Some(accounting) = artifact.get("accounting") else {
                 continue;
             };

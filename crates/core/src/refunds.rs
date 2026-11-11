@@ -1145,6 +1145,10 @@ impl Db {
             return Ok(());
         };
         let mut tx = self.pool().begin().await?;
+        // Correction and historical repair capture all source events while
+        // holding Business ownership. Intake must precede that snapshot or wait
+        // until its atomic replacement has committed, before locking the order.
+        authority::lock_business(&mut tx).await?;
         let stored = sqlx::query("SELECT merchant_id,version_id,event_id,state FROM oxsum.merchant_event_inbox WHERE receipt_id=$1")
             .bind(receipt.id).fetch_optional(&mut *tx).await?
             .ok_or_else(|| invalid("missing stored dispute receipt"))?;

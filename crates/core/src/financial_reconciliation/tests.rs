@@ -2759,3 +2759,659 @@ async fn mixed_source_void_racing_a_different_slice_reservation_has_one_winner()
     );
     clean(&capture(&w, TimeBasis::Booking).await);
 }
+
+#[tokio::test]
+async fn corrected_invoice_independently_matches_original_lines_and_official_accrual() {
+    let _guard = TEST_LOCK.lock().await;
+    for legacy in [false, true] {
+        let Some(w) = world(if legacy { 40 } else { 10 }, legacy).await else {
+            return;
+        };
+        let detail = w.db.plan_journal(w.org, w.journal).await.unwrap().unwrap();
+        let base = detail
+            .lines
+            .iter()
+            .find(|l| l.kind == crate::JournalLineKind::BaseFee)
+            .unwrap();
+        let selected = crate::InvoiceCorrectionPreviewRequest {
+            lines: vec![crate::InvoiceCorrectionLineRequest {
+                source_line_id: base.line_id,
+                amount_minor: 2_000_000,
+            }],
+        };
+        let preview =
+            w.db.preview_invoice_correction(&w.owner, w.journal, &selected)
+                .await
+                .unwrap();
+        let result =
+            w.db.correct_invoice(
+                &w.owner,
+                w.journal,
+                &crate::InvoiceCorrectionRequest {
+                    lines: selected.lines,
+                    source_revision: preview.source_revision,
+                    reason: "Source-linked correction".into(),
+                    idempotency_key: Uuid::new_v4().to_string(),
+                },
+            )
+            .await
+            .unwrap();
+        let comparison = capture(&w, TimeBasis::Booking).await;
+        clean(&comparison);
+        assert_eq!(comparison.actual.billed_minor, 2_000_000);
+        assert_eq!(comparison.actual.receivable_minor, 2_000_000);
+        let mut tx = w.db.pool().begin().await.unwrap();
+        let debt = super::debt_sources::inspect_in(&mut tx, w.org, &w.tenant, result.statement_id)
+            .await
+            .unwrap();
+        assert!(debt.verified, "{:?}", debt.reason);
+        assert_eq!(debt.slices.len(), 1);
+        assert_eq!(debt.slices[0].journal_id, result.journal_id);
+        assert_eq!(debt.slices[0].remaining_minor, 2_000_000);
+        tx.rollback().await.unwrap();
+    }
+}
+
+async fn correct_invoice_for(
+    w: &World,
+    journal: Uuid,
+    amount: i64,
+) -> (
+    crate::InvoiceCorrectionRequest,
+    crate::InvoiceCorrectionResult,
+) {
+    let detail = w.db.plan_journal(w.org, journal).await.unwrap().unwrap();
+    let base = detail
+        .lines
+        .iter()
+        .find(|l| l.kind == crate::JournalLineKind::BaseFee && l.amount_minor >= 0)
+        .unwrap();
+    let selected = crate::InvoiceCorrectionPreviewRequest {
+        lines: vec![crate::InvoiceCorrectionLineRequest {
+            source_line_id: base.line_id,
+            amount_minor: amount,
+        }],
+    };
+    let preview =
+        w.db.preview_invoice_correction(&w.owner, journal, &selected)
+            .await
+            .unwrap();
+    let request = crate::InvoiceCorrectionRequest {
+        lines: selected.lines,
+        source_revision: preview.source_revision,
+        reason: "Source-linked fee reduction".into(),
+        idempotency_key: Uuid::new_v4().to_string(),
+    };
+    let result =
+        w.db.correct_invoice(&w.owner, journal, &request)
+            .await
+            .unwrap();
+    (request, result)
+}
+
+#[tokio::test]
+async fn corrected_invoice_chain_preserves_repayment_and_original_return_ownership() {
+    let _guard = TEST_LOCK.lock().await;
+    for legacy in [false, true] {
+        let Some(w) = world(if legacy { 40 } else { 10 }, legacy).await else {
+            return;
+        };
+        let (first_request, first) = correct_invoice_for(&w, w.journal, 2_000_000).await;
+        let order = statement_order(&w, first.statement_id, Some(700_000)).await;
+        payment::mark_paid(&w.db, &w.context, &order).await;
+        payment::fulfill(&w.db, &order).await;
+        clean(&capture(&w, TimeBasis::Booking).await);
+        let (_, second) = correct_invoice_for(&w, first.journal_id, 1_500_000).await;
+        assert_eq!(second.preview.amounts.original_payable_minor, 700_000);
+        assert_eq!(second.preview.amounts.successor_receivable_minor, 1_500_000);
+        assert_eq!(second.preview.plan_period_id, w.period.plan_period_id);
+        clean(&capture(&w, TimeBasis::Booking).await);
+        let replay =
+            w.db.correct_invoice(&w.owner, w.journal, &first_request)
+                .await
+                .unwrap();
+        assert_eq!(
+            serde_json::to_value(first).unwrap(),
+            serde_json::to_value(replay).unwrap()
+        );
+        refund_order_on(&w, &order, 700_000, OffsetDateTime::now_utc().date()).await;
+        refund_order_on(&w, &w.order, FEE, OffsetDateTime::now_utc().date()).await;
+        clean(&capture(&w, TimeBasis::Booking).await);
+        let order = statement_order(&w, second.statement_id, None).await;
+        payment::mark_paid(&w.db, &w.context, &order).await;
+        payment::fulfill(&w.db, &order).await;
+        clean(&capture(&w, TimeBasis::Booking).await);
+        let current =
+            w.db.plan_journal(w.org, second.journal_id)
+                .await
+                .unwrap()
+                .unwrap();
+        assert_eq!(current.journal.settled_minor, 1_500_000);
+        let (_, zero) = correct_invoice_for(&w, second.journal_id, 0).await;
+        assert_eq!(zero.preview.amounts.original_payable_minor, 1_500_000);
+        let comparison = capture(&w, TimeBasis::Booking).await;
+        clean(&comparison);
+        assert_eq!(comparison.actual.billed_minor, 0);
+        assert_eq!(comparison.actual.receivable_minor, 0);
+        let detail =
+            w.db.plan_journal(w.org, zero.journal_id)
+                .await
+                .unwrap()
+                .unwrap();
+        assert_eq!(detail.journal.state, crate::JournalState::Paid);
+        let invalid = crate::InvoiceCorrectionPreviewRequest {
+            lines: vec![crate::InvoiceCorrectionLineRequest {
+                source_line_id: detail.lines[0].line_id,
+                amount_minor: 1,
+            }],
+        };
+        assert!(
+            w.db.preview_invoice_correction(&w.owner, zero.journal_id, &invalid)
+                .await
+                .is_err()
+        );
+    }
+}
+
+#[tokio::test]
+async fn corrected_invoice_exports_generation_sources_and_keeps_old_bytes() {
+    let _guard = TEST_LOCK.lock().await;
+    for legacy in [false, true] {
+        let Some(w) = world(if legacy { 40 } else { 10 }, legacy).await else {
+            return;
+        };
+        let original_statement: Uuid = sqlx::query_scalar(
+            "SELECT statement_id FROM oxsum.plan_statements WHERE journal_id=$1",
+        )
+        .bind(w.journal)
+        .fetch_one(w.db.pool())
+        .await
+        .unwrap();
+        let before = w
+            .db
+            .mint_statement_evidence(&w.wallet, w.org, &w.tenant, original_statement, false, None)
+            .await
+            .unwrap();
+        let original =
+            w.db.evidence_bundle_json(before.bundle_id)
+                .await
+                .unwrap()
+                .unwrap();
+        let (_, result) = correct_invoice_for(&w, w.journal, 2_000_000).await;
+        let bundle =
+            w.db.mint_statement_evidence(
+                &w.wallet,
+                w.org,
+                &w.tenant,
+                result.statement_id,
+                false,
+                None,
+            )
+            .await
+            .unwrap();
+        let bytes =
+            w.db.evidence_bundle_json(bundle.bundle_id)
+                .await
+                .unwrap()
+                .unwrap();
+        let wire: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        oxsum_verify::verify_evidence_bundle(
+            std::str::from_utf8(&bytes).unwrap(),
+            &format!("tenant-{}", w.tenant),
+            &w.org.to_string(),
+            None,
+        )
+        .unwrap();
+        let artifact = &wire["artifacts"]["planStatement"][result.statement_id.to_string()];
+        assert_eq!(
+            artifact["correction"]["receipt"]["predecessor_journal_id"],
+            serde_json::json!(w.journal)
+        );
+        assert_eq!(artifact["correction"]["generation"]["fee_minor"], 2_000_000);
+        for id in [
+            artifact["correction"]["receipt"]["entry_id"]
+                .as_str()
+                .unwrap(),
+            artifact["correction"]["voidEntryId"].as_str().unwrap(),
+        ] {
+            let mut omitted = wire.clone();
+            omitted["entries"]
+                .as_array_mut()
+                .unwrap()
+                .retain(|e| e["entry"]["id"] != id);
+            assert!(
+                oxsum_verify::verify_evidence_bundle(
+                    &omitted.to_string(),
+                    &format!("tenant-{}", w.tenant),
+                    &w.org.to_string(),
+                    None
+                )
+                .is_err()
+            );
+        }
+        assert_eq!(
+            w.db.evidence_bundle_json(before.bundle_id)
+                .await
+                .unwrap()
+                .unwrap(),
+            original
+        );
+    }
+}
+
+#[tokio::test]
+async fn corrected_invoice_rejects_corrupted_source_line_even_when_current_books_agree() {
+    let _guard = TEST_LOCK.lock().await;
+    let Some(w) = world(10, false).await else {
+        return;
+    };
+    let (_, result) = correct_invoice_for(&w, w.journal, 2_000_000).await;
+    clean(&capture(&w, TimeBasis::Booking).await);
+    corrupt(&w,&format!("UPDATE oxsum.invoice_correction_lines SET original_minor=original_minor+1 WHERE correction_id='{}'",result.correction_id)).await;
+    let report = capture(&w, TimeBasis::Booking).await;
+    assert!(!report.coverage.complete);
+    let quote =
+        w.db.statement_payment_quote(&debt_principal(&w).await, result.statement_id, None)
+            .await
+            .unwrap();
+    assert!(quote.terms.is_none());
+}
+
+#[tokio::test]
+async fn corrected_invoice_refund_credits_survive_chain_and_no_cash_is_transferred() {
+    let _guard = TEST_LOCK.lock().await;
+    for legacy in [false, true] {
+        let Some(w) = world(if legacy { 40 } else { 10 }, legacy).await else {
+            return;
+        };
+        refund(&w, 500_000).await;
+        let (_, first) = correct_invoice_for(&w, w.journal, 2_000_000).await;
+        assert_eq!(first.preview.amounts.corrected_total_minor, 1_500_000);
+        clean(&capture(&w, TimeBasis::Booking).await);
+        let (_, second) = correct_invoice_for(&w, first.journal_id, 1_000_000).await;
+        assert_eq!(second.preview.amounts.corrected_total_minor, 500_000);
+        let report = capture(&w, TimeBasis::Booking).await;
+        clean(&report);
+        assert_eq!(report.actual.billed_minor, 500_000);
+        assert_eq!(report.actual.receivable_minor, 500_000);
+        let facts =
+            w.db.financial_facts(&crate::FactFilter {
+                organization_id: Some(w.org),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        assert_eq!(
+            facts.discount_minor, 0,
+            "copied cash refunds remain cash refunds"
+        );
+        let detail =
+            w.db.plan_journal(w.org, second.journal_id)
+                .await
+                .unwrap()
+                .unwrap();
+        assert_eq!(
+            detail
+                .lines
+                .iter()
+                .filter(|l| l.kind == crate::JournalLineKind::Discount)
+                .map(|l| l.amount_minor)
+                .sum::<i64>(),
+            -500_000
+        );
+        w.db.void_invoice_journal(
+            &w.owner,
+            &w.wallet,
+            second.journal_id,
+            "Cancel successor",
+            &Uuid::new_v4().to_string(),
+            OffsetDateTime::now_utc().date(),
+        )
+        .await
+        .unwrap();
+        clean(&capture(&w, TimeBasis::Booking).await);
+    }
+}
+
+#[tokio::test]
+async fn corrected_invoice_concurrent_same_and_competing_intents_have_one_receipt() {
+    let _guard = TEST_LOCK.lock().await;
+    for same in [false, true] {
+        let Some(w) = world(10, false).await else {
+            return;
+        };
+        let detail = w.db.plan_journal(w.org, w.journal).await.unwrap().unwrap();
+        let selected = crate::InvoiceCorrectionPreviewRequest {
+            lines: vec![crate::InvoiceCorrectionLineRequest {
+                source_line_id: detail.lines[0].line_id,
+                amount_minor: 2_000_000,
+            }],
+        };
+        let preview =
+            w.db.preview_invoice_correction(&w.owner, w.journal, &selected)
+                .await
+                .unwrap();
+        let request = crate::InvoiceCorrectionRequest {
+            lines: selected.lines,
+            source_revision: preview.source_revision,
+            reason: "Concurrent correction".into(),
+            idempotency_key: Uuid::new_v4().to_string(),
+        };
+        let mut other = request.clone();
+        if !same {
+            other.idempotency_key = Uuid::new_v4().to_string();
+        }
+        let (a, b) = tokio::join!(
+            w.db.correct_invoice(&w.owner, w.journal, &request),
+            w.db.correct_invoice(&w.owner, w.journal, &other)
+        );
+        if same {
+            assert_eq!(a.unwrap().correction_id, b.unwrap().correction_id);
+        } else {
+            assert_ne!(a.is_ok(), b.is_ok());
+        }
+        clean(&capture(&w, TimeBasis::Booking).await);
+        let count: i64 = sqlx::query_scalar(
+            "SELECT count(*) FROM oxsum.invoice_corrections WHERE organization_id=$1",
+        )
+        .bind(w.org)
+        .fetch_one(w.db.pool())
+        .await
+        .unwrap();
+        assert_eq!(count, 1);
+    }
+}
+
+#[tokio::test]
+async fn corrected_invoice_apply_with_single_connection_finishes_without_nested_acquisition() {
+    let _guard = TEST_LOCK.lock().await;
+    let Some(w) = world(10, false).await else {
+        return;
+    };
+    let detail = w.db.plan_journal(w.org, w.journal).await.unwrap().unwrap();
+    let selected = crate::InvoiceCorrectionPreviewRequest {
+        lines: vec![crate::InvoiceCorrectionLineRequest {
+            source_line_id: detail.lines[0].line_id,
+            amount_minor: 2_000_000,
+        }],
+    };
+    let preview =
+        w.db.preview_invoice_correction(&w.owner, w.journal, &selected)
+            .await
+            .unwrap();
+    let request = crate::InvoiceCorrectionRequest {
+        lines: selected.lines,
+        source_revision: preview.source_revision,
+        reason: "Single connection apply".into(),
+        idempotency_key: Uuid::new_v4().to_string(),
+    };
+    let db = Db::connect(
+        &oxsum_testkit::suite_db_url("independent_reconciliation").unwrap(),
+        1,
+    )
+    .await
+    .unwrap();
+    tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        db.correct_invoice(&w.owner, w.journal, &request),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    clean(&capture(&w, TimeBasis::Booking).await);
+}
+
+#[tokio::test]
+async fn corrected_invoice_carries_repaired_historical_usage_without_billing_it_again() {
+    let _guard = TEST_LOCK.lock().await;
+    let Some(w) = world_with_history(40, true, FEE, Some(100_000)).await else {
+        return;
+    };
+    // The historical repair requires the actual settled usage, not only an old
+    // duplicated invoice line. Retain the original request and engine entry.
+    let usage = 100_000;
+    let key = format!("historical-{}", Uuid::new_v4());
+    let on = OffsetDateTime::now_utc().date();
+    w.wallet
+        .top_up(&format!("fund-{key}"), usage, on)
+        .await
+        .unwrap();
+    w.wallet
+        .hold(&key, "Historical usage", usage, on)
+        .await
+        .unwrap();
+    let description = serde_json::json!({"v":3,"request":key,"channel":"fixture","model":"fixture","priceVersion":1,"kind":"usage","usage":{"inputTokens":1,"outputTokens":1},"lines":[["input",1,100000000000i64],["output",1,0]],"charged":usage,"freeze":usage}).to_string();
+    let settled = w
+        .wallet
+        .settle(&key, &description, usage, on)
+        .await
+        .unwrap();
+    sqlx::query("INSERT INTO oxsum.usage_records(request_id,tenant_id,model,channel,price_version,kind,entry_id,input_tokens,output_tokens,charged_minor,freeze_minor,settled_at) VALUES($1,$2,'fixture','fixture',1,'usage',$3,1,1,$4,$4,$5)")
+        .bind(&key).bind(&w.tenant).bind(settled.entry_id.as_uuid()).bind(usage)
+        .bind(w.period.period_start + Duration::hours(1)).execute(w.db.pool()).await.unwrap();
+    let detail = w.db.plan_journal(w.org, w.journal).await.unwrap().unwrap();
+    let base = detail
+        .lines
+        .iter()
+        .find(|l| l.kind == crate::JournalLineKind::BaseFee)
+        .unwrap();
+    let selected = crate::InvoiceCorrectionPreviewRequest {
+        lines: vec![crate::InvoiceCorrectionLineRequest {
+            source_line_id: base.line_id,
+            amount_minor: 2_000_000,
+        }],
+    };
+    assert!(
+        w.db.preview_invoice_correction(&w.owner, w.journal, &selected)
+            .await
+            .is_err()
+    );
+    let report =
+        w.db.correct_legacy_plan_usage(
+            &w.owner,
+            &w.wallet,
+            &crate::PlanUsageCorrectionRequest {
+                journal_id: w.journal,
+                reason: "Remove proven duplicate usage".into(),
+                idempotency_key: Uuid::new_v4().to_string(),
+            },
+            true,
+            OffsetDateTime::now_utc().date(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(report.status, "applied", "{:?}", report.refusal);
+    let (_, result) = correct_invoice_for(&w, w.journal, 2_000_000).await;
+    assert_eq!(result.preview.amounts.corrected_total_minor, 2_000_000);
+    clean(&capture(&w, TimeBasis::Booking).await);
+    let (_, next) = correct_invoice_for(&w, result.journal_id, 1_000_000).await;
+    assert_eq!(next.preview.amounts.corrected_total_minor, 1_000_000);
+    clean(&capture(&w, TimeBasis::Booking).await);
+}
+
+#[tokio::test]
+async fn corrected_invoice_keeps_overdue_date_and_recovers_only_its_own_debt() {
+    let _guard = TEST_LOCK.lock().await;
+    for legacy in [false, true] {
+        let Some(w) = world(if legacy { 40 } else { 10 }, legacy).await else {
+            return;
+        };
+        let statement: Uuid = sqlx::query_scalar(
+            "SELECT statement_id FROM oxsum.plan_statements WHERE journal_id=$1",
+        )
+        .bind(w.journal)
+        .fetch_one(w.db.pool())
+        .await
+        .unwrap();
+        let due: OffsetDateTime =
+            sqlx::query_scalar("SELECT due_at FROM oxsum.plan_statements WHERE statement_id=$1")
+                .bind(statement)
+                .fetch_one(w.db.pool())
+                .await
+                .unwrap();
+        // Model an overdue retained document without changing its sold interval.
+        let overdue = due.min(OffsetDateTime::now_utc() - Duration::days(60));
+        sqlx::query("UPDATE oxsum.plan_statements SET due_at=$2 WHERE statement_id=$1")
+            .bind(statement)
+            .bind(overdue)
+            .execute(w.db.pool())
+            .await
+            .unwrap();
+        let (_, result) = correct_invoice_for(&w, w.journal, 2_000_000).await;
+        let next =
+            w.db.plan_statement(w.org, result.statement_id)
+                .await
+                .unwrap()
+                .unwrap()
+                .statement;
+        assert_eq!(next.due_at, Some(overdue));
+        let suspended: bool = sqlx::query_scalar("SELECT dunning_suspended_at IS NOT NULL FROM oxsum.customer_plans WHERE customer_plan_id=$1")
+            .bind(w.plan).fetch_one(w.db.pool()).await.unwrap();
+        assert!(suspended, "correction must not restart the debt clock");
+        let order = statement_order(&w, result.statement_id, None).await;
+        payment::mark_paid(&w.db, &w.context, &order).await;
+        payment::fulfill(&w.db, &order).await;
+        let suspended: bool = sqlx::query_scalar("SELECT dunning_suspended_at IS NOT NULL FROM oxsum.customer_plans WHERE customer_plan_id=$1")
+            .bind(w.plan).fetch_one(w.db.pool()).await.unwrap();
+        assert!(!suspended);
+        refund_order_on(&w, &order, 500_000, OffsetDateTime::now_utc().date()).await;
+        let (outstanding, _) =
+            crate::plan_debt::standing_in(&mut w.db.pool().acquire().await.unwrap(), w.plan)
+                .await
+                .unwrap();
+        assert_eq!(outstanding, 500_000);
+        lost_amount(&w, &order, 50).await;
+        let (outstanding, _) =
+            crate::plan_debt::standing_in(&mut w.db.pool().acquire().await.unwrap(), w.plan)
+                .await
+                .unwrap();
+        assert_eq!(outstanding, 1_000_000);
+        let facts =
+            w.db.financial_facts(&crate::FactFilter {
+                organization_id: Some(w.org),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        assert_eq!(facts.receivable_minor, outstanding);
+        clean(&capture(&w, TimeBasis::Booking).await);
+    }
+}
+
+#[tokio::test]
+async fn corrected_invoice_after_void_and_return_uses_remaining_source_payable() {
+    let _guard = TEST_LOCK.lock().await;
+    for legacy in [false, true] {
+        let Some(w) = world(if legacy { 40 } else { 10 }, legacy).await else {
+            return;
+        };
+        w.db.void_invoice_journal(
+            &w.owner,
+            &w.wallet,
+            w.journal,
+            "Cancel original",
+            &Uuid::new_v4().to_string(),
+            OffsetDateTime::now_utc().date(),
+        )
+        .await
+        .unwrap();
+        refund_order_on(&w, &w.order, 500_000, OffsetDateTime::now_utc().date()).await;
+        let cash = source_void_cash(&w).await;
+        let (_, result) = correct_invoice_for(&w, w.journal, 2_000_000).await;
+        assert_eq!(result.preview.amounts.original_payable_minor, 2_000_000);
+        assert_eq!(source_void_cash(&w).await, cash);
+        clean(&capture(&w, TimeBasis::Booking).await);
+        // Later returns must not retroactively alter the accepted receipt.
+        refund_order_on(&w, &w.order, 1_000_000, OffsetDateTime::now_utc().date()).await;
+        clean(&capture(&w, TimeBasis::Booking).await);
+    }
+}
+
+#[tokio::test]
+async fn corrected_invoice_refuses_live_payment_and_serializes_dispute_intake() {
+    let _guard = TEST_LOCK.lock().await;
+    let Some(w) = world(10, false).await else {
+        return;
+    };
+    let (_, first) = correct_invoice_for(&w, w.journal, 2_000_000).await;
+    let detail =
+        w.db.plan_journal(w.org, first.journal_id)
+            .await
+            .unwrap()
+            .unwrap();
+    let selection = crate::InvoiceCorrectionPreviewRequest {
+        lines: vec![crate::InvoiceCorrectionLineRequest {
+            source_line_id: detail.lines[0].line_id,
+            amount_minor: 1_500_000,
+        }],
+    };
+    let preview =
+        w.db.preview_invoice_correction(&w.owner, first.journal_id, &selection)
+            .await
+            .unwrap();
+    let request = crate::InvoiceCorrectionRequest {
+        lines: selection.lines,
+        source_revision: preview.source_revision,
+        reason: "Competing debt payment".into(),
+        idempotency_key: Uuid::new_v4().to_string(),
+    };
+    let order = statement_order(&w, first.statement_id, Some(500_000)).await;
+    assert!(
+        w.db.correct_invoice(&w.owner, first.journal_id, &request)
+            .await
+            .is_err()
+    );
+    payment::mark_paid(&w.db, &w.context, &order).await;
+    payment::fulfill(&w.db, &order).await;
+    clean(&capture(&w, TimeBasis::Booking).await);
+    let event = crate::VerifiedMerchantEvent {
+        event_id: Uuid::new_v4().to_string(),
+        kind: crate::MerchantEventKind::Dispute,
+        payment_id: Some(w.order.order_id),
+        provider_payment_id: Some(format!("pay_{}", w.order.order_id)),
+        organization_id: Some(w.org),
+        provider_account_id: Some(w.context.account_id.clone()),
+        mode: Some(crate::MerchantMode::Test),
+        amount_minor: Some(50),
+        currency: Some("USD".into()),
+        refund_id: Some(format!("correction-race-{}", Uuid::new_v4())),
+    };
+    let receipt =
+        w.db.receive_merchant_event(&w.context, &event, &[84; 32])
+            .await
+            .unwrap();
+    let mut fence = w.db.pool().begin().await.unwrap();
+    crate::business_staff::lock_business(&mut fence)
+        .await
+        .unwrap();
+    // Intake must wait at the same source fence instead of changing a journal
+    // underneath correction's captured sources and ordered owner locks.
+    assert!(
+        tokio::time::timeout(
+            std::time::Duration::from_millis(150),
+            w.db.record_order_dispute(&event, &receipt)
+        )
+        .await
+        .is_err()
+    );
+    fence.rollback().await.unwrap();
+    tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        w.db.record_order_dispute(&event, &receipt),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    assert!(
+        w.db.preview_invoice_correction(
+            &w.owner,
+            first.journal_id,
+            &crate::InvoiceCorrectionPreviewRequest {
+                lines: request.lines
+            }
+        )
+        .await
+        .is_err()
+    );
+    clean(&capture(&w, TimeBasis::Booking).await);
+}

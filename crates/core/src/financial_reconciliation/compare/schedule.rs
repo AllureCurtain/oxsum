@@ -13,17 +13,39 @@ pub(super) fn compare(customer: &mut Customer<'_>) -> Result<(), WalletError> {
     let periods: Vec<_> = customer
         .sources
         .table("plan_accounting_periods")
-        .iter()
-        .map(|(id, source)| (*id, source.clone()))
+        .values()
+        .chain(
+            customer
+                .sources
+                .table("invoice_accounting_generations")
+                .values()
+                .filter(|g| g.policy().ok() == Some(2)),
+        )
+        .cloned()
         .collect();
-    for (period_id, period) in periods {
+    for period in periods {
+        let period_id = period.id("plan_period_id")?;
+        let generation = period
+            .optional_id("predecessor_journal_id")
+            .ok()
+            .flatten()
+            .map(|_| period.id("journal_id"))
+            .transpose()?;
         let start = period.instant("service_start")?;
         let end = period.instant("service_end")?;
+        let recognition_from = if generation.is_some() {
+            period.instant("recognition_from")?
+        } else {
+            start
+        };
         let mut effects: Vec<_> = customer
             .sources
             .table("plan_accounting_effects")
             .iter()
-            .filter(|(_, effect)| effect.id("plan_period_id").ok() == Some(period_id))
+            .filter(|(_, effect)| {
+                effect.id("plan_period_id").ok() == Some(period_id)
+                    && effect.optional_id("journal_id").ok() == Some(generation)
+            })
             .map(|(id, source)| (*id, source.clone()))
             .collect();
         // Nonzero movements follow verified official positions. A zero day has
@@ -117,7 +139,10 @@ pub(super) fn compare(customer: &mut Customer<'_>) -> Result<(), WalletError> {
         }
         effects.sort_by_key(|(id, source)| {
             let position = positions.get(id).copied().unwrap_or_else(|| {
-                if source.text("kind").ok().as_deref() == Some("activation") {
+                if matches!(
+                    source.text("kind").ok().as_deref(),
+                    Some("activation" | "correction")
+                ) {
                     0
                 } else {
                     anchors.get(id).copied().unwrap_or(u64::MAX)
@@ -134,7 +159,7 @@ pub(super) fn compare(customer: &mut Customer<'_>) -> Result<(), WalletError> {
         let mut position = Amounts::default();
         let mut recognized = BTreeSet::new();
         let mut voided = None;
-        let mut last_boundary = start;
+        let mut last_boundary = recognition_from;
         for (id, effect) in effects {
             let kind = effect.text("kind")?;
             let day = effect.date("service_day")?;
@@ -146,6 +171,17 @@ pub(super) fn compare(customer: &mut Customer<'_>) -> Result<(), WalletError> {
                     collected_minor: period.amount("fee_minor")?,
                     ..Amounts::default()
                 },
+                "correction" => {
+                    let fee = period.amount("fee_minor")?;
+                    let earned = earned(fee, start, end, recognition_from)?;
+                    Amounts {
+                        billed_minor: fee,
+                        earned_minor: earned,
+                        deferred_minor: fee - earned,
+                        receivable_minor: fee,
+                        ..Amounts::default()
+                    }
+                }
                 "recognition" => {
                     let boundary = day
                         .next_day()
@@ -154,7 +190,7 @@ pub(super) fn compare(customer: &mut Customer<'_>) -> Result<(), WalletError> {
                         .assume_utc()
                         .min(end);
                     if !recognized.insert(day)
-                        || boundary <= start
+                        || boundary <= recognition_from
                         || boundary > customer.captured_at
                         || voided.is_some()
                     {
@@ -299,8 +335,8 @@ pub(super) fn compare(customer: &mut Customer<'_>) -> Result<(), WalletError> {
             position.add(&expected)?;
         }
         let cutoff = voided.unwrap_or(customer.captured_at);
-        let mut day = start.date();
-        while day <= end.date() {
+        let mut day = recognition_from.date();
+        while recognition_from < end && day <= end.date() {
             let boundary = day
                 .next_day()
                 .ok_or_else(|| error::invalid("recognition day overflows"))?
@@ -332,7 +368,7 @@ pub(super) fn compare(customer: &mut Customer<'_>) -> Result<(), WalletError> {
 
 fn rank(source: &Source) -> u8 {
     match source.text("kind").ok().as_deref() {
-        Some("activation") => 0,
+        Some("activation" | "correction") => 0,
         Some("recognition") => 1,
         Some("refund" | "dispute") => 2,
         _ => 3,

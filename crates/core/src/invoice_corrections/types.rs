@@ -99,3 +99,35 @@ pub struct InvoiceCorrectionPreview {
     #[serde(flatten)]
     pub amounts: InvoiceCorrectionAmounts,
 }
+
+/// Exact accepted preview and reason retained for atomic apply and recovery.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct InvoiceCorrectionRequest {
+    /// Explicit original line reductions, canonically ordered before recording.
+    pub lines: Vec<InvoiceCorrectionLineRequest>,
+    /// Exact preview source digest; any intervening source change refuses.
+    pub source_revision: String,
+    /// Human commercial reason for the correction.
+    pub reason: String,
+    /// Stable recovery identity, also retained after an unknown response.
+    pub idempotency_key: String,
+}
+
+/// Immutable correction result, independent of later payments and corrections.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct InvoiceCorrectionResult {
+    /// Durable operation receipt.
+    pub correction_id: Uuid,
+    /// Retained predecessor invoice.
+    pub original_journal_id: Uuid,
+    /// Retained predecessor customer document.
+    pub original_statement_id: Uuid,
+    /// Newly issued invoice with zero initial collection.
+    pub journal_id: Uuid,
+    /// Newly issued customer document for explicit repayment.
+    pub statement_id: Uuid,
+    /// Exact source and financial consequences accepted by the operator.
+    pub preview: InvoiceCorrectionPreview,
+}

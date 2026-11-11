@@ -39,6 +39,7 @@ mod publication_tests;
 
 #[path = "evidence/application_publication.rs"]
 mod application_publication;
+mod corrections;
 
 use std::fmt::Write;
 
@@ -665,16 +666,27 @@ impl Db {
         };
         let mut accounting = None;
         let mut entry_ids = Vec::new();
+        let correction = if let Some(journal) = &journal {
+            corrections::capture_in(
+                &mut tx,
+                journal.journal.journal_id,
+                collector.bounded,
+                &mut entry_ids,
+            )
+            .await?
+        } else {
+            None
+        };
         if let Some(journal) = &journal
             && journal.journal.accounting_policy_version == 2
         {
             let period: serde_json::Value = sqlx::query_scalar(
-                "SELECT to_jsonb(a) FROM oxsum.plan_accounting_periods a WHERE journal_id=$1",
+                "SELECT to_jsonb(a) FROM oxsum.plan_accounting_periods a JOIN oxsum.plan_recognition_generations g USING(plan_period_id) WHERE g.journal_id=$1",
             )
             .bind(journal.journal.journal_id)
             .fetch_one(&mut *tx)
             .await?;
-            let effects:Vec<serde_json::Value>=sqlx::query_scalar("SELECT to_jsonb(e) FROM oxsum.plan_accounting_effects e JOIN oxsum.plan_accounting_periods a USING(plan_period_id) WHERE a.journal_id=$1 ORDER BY e.created_at,e.effect_id").bind(journal.journal.journal_id).fetch_all(&mut *tx).await?;
+            let effects:Vec<serde_json::Value>=sqlx::query_scalar("SELECT to_jsonb(e) FROM oxsum.plan_accounting_effects e JOIN oxsum.plan_recognition_generations a ON e.plan_period_id=a.plan_period_id AND e.journal_id IS NOT DISTINCT FROM a.effect_journal_id WHERE a.journal_id=$1 ORDER BY e.created_at,e.effect_id").bind(journal.journal.journal_id).fetch_all(&mut *tx).await?;
             for effect in &effects {
                 if let Some(entry) = effect["entry_id"].as_str() {
                     entry_ids.push(Uuid::parse_str(entry).map_err(|e| invalid(&e.to_string()))?);
@@ -718,6 +730,9 @@ impl Db {
         });
         if let Some(accounting) = accounting {
             artifact["accounting"] = accounting;
+        }
+        if let Some(correction) = correction {
+            artifact["correction"] = correction;
         }
         if !source_voids.is_empty() {
             artifact["sourceVoids"] = serde_json::json!(source_voids);
