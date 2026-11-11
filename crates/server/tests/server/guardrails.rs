@@ -1066,6 +1066,13 @@ async fn flat_fee_refunds_preserve_provider_cost_and_release_wallet_or_quota() {
             let body = response.into_body().collect().await.unwrap().to_bytes();
             let description = settled(&world, &request).await;
             assert_eq!(description["charged"], charged, "{description}");
+            let recorded_status: Option<i32> =
+                sqlx::query_scalar("SELECT http_status FROM oxsum.request_log WHERE request_id=$1")
+                    .bind(&request)
+                    .fetch_one(world.db.pool())
+                    .await
+                    .unwrap();
+            assert_eq!(recorded_status, Some(i32::from(status.as_u16())));
             assert_eq!(description["upstreamAttempts"], i64::from(index != 1));
             let (usage_charge, provider_cost, basis): (i64, Option<i64>, String) = sqlx::query_as(
                 "SELECT charged_minor, upstream_cost_minor, cost_basis FROM oxsum.usage_records WHERE request_id=$1",

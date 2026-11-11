@@ -19834,7 +19834,7 @@ export interface components {
             upstreamAttempts?: number;
             /** @description the settlement kind or failure reason on a non-settled turn — the terminal cause */
             errorKind?: string;
-            /** @description the gateway's own answer status when it served one */
+            /** @description The gateway response status, not the upstream status. Pre-response failures carry their returned error status; an SSE response already started remains 200 even if its body later fails. Absent when no response status was selected. */
             httpStatus?: number;
             /**
              * Format: date-time

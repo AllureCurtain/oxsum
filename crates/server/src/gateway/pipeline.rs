@@ -1728,6 +1728,7 @@ async fn run(
     let response = match upstream {
         Err((error, kind)) => {
             // Nothing was received, so nothing is charged and the whole freeze goes back.
+            turn.note_response_status(error.http_status());
             let charged = turn.settle(kind, Charge::Nothing, error.reason()).await;
             // The answer is upstream's refusal shape with the cost head on it — returned as
             // a response rather than the error so the head can be stamped here, where the
@@ -1742,6 +1743,7 @@ async fn run(
             if request.stream {
                 // StreamBody rather than from_stream: the items are Frames, so the turn's
                 // settled charge can ride the end of the stream as an HTTP trailer.
+                turn.note_response_status(StatusCode::OK);
                 let mut response = sse(Body::new(StreamBody::new(relay::stream(turn, response))));
                 cost.stamp(&mut response);
                 response
@@ -1753,6 +1755,7 @@ async fn run(
                         // received: nothing is charged and the whole freeze
                         // goes back, the same settlement the refusal arm
                         // above performs.
+                        turn.note_response_status(error.http_status());
                         let charged = turn
                             .settle(
                                 SettlementKind::UpstreamError,
@@ -1839,6 +1842,7 @@ async fn run(
                                 // rule acted and that nothing was charged.
                                 let message =
                                     format!("guardrail {policy} refused the response: {reason}");
+                                turn.note_response_status(StatusCode::FORBIDDEN);
                                 let charged = turn
                                     .settle(SettlementKind::Usage, Charge::Nothing, Some(&message))
                                     .await;
@@ -1861,6 +1865,7 @@ async fn run(
                             Charge::Usage(usage) => Some((**usage).clone()),
                             _ => None,
                         };
+                        turn.note_response_status(StatusCode::OK);
                         let charged = turn.settle(kind, charge, None).await;
                         // The write is keyed under the primary route — the
                         // channel a later lookup will resolve — so a failovered
@@ -1904,6 +1909,7 @@ async fn run(
                         // A 200 that is not JSON is upstream breaking its own contract: price
                         // what came back rather than handing the caller a charge of nothing.
                         turn.note_text(&text);
+                        turn.note_response_status(StatusCode::BAD_GATEWAY);
                         let charged = turn
                             .settle(
                                 SettlementKind::Estimated,
@@ -2094,6 +2100,7 @@ async fn serve_cache_hit(
         }
         if let Some((policy, reason)) = blocked {
             let message = format!("guardrail {policy} refused the response: {reason}");
+            turn.note_response_status(StatusCode::FORBIDDEN);
             let charged = turn
                 .settle(SettlementKind::Usage, Charge::Nothing, Some(&message))
                 .await;
@@ -2112,6 +2119,7 @@ async fn serve_cache_hit(
             tracing::warn!(%error, "counting a served cache hit failed");
         }
     });
+    turn.note_response_status(StatusCode::OK);
     let charged = turn
         .settle(
             SettlementKind::Usage,

@@ -8,7 +8,7 @@
 
 use std::time::Duration;
 
-use axum::body::Body;
+use axum::body::{Body, Bytes};
 use axum::extract::State;
 use axum::http::{Request, StatusCode};
 use axum::response::{IntoResponse, Response};
@@ -46,8 +46,30 @@ const OPERATOR_TOKEN: &str = "operator-token-request-log";
 
 /// The scripted upstream — one completion reporting a usage shape the
 /// request-log row can name.
-async fn upstream(State(seen): State<Arc<Mutex<Vec<Value>>>>) -> Response {
+async fn upstream(State(seen): State<Arc<Mutex<Vec<Value>>>>, Json(body): Json<Value>) -> Response {
     seen.lock().unwrap().push(json!({"served": true}));
+    match body["messages"][0]["content"].as_str() {
+        Some("rejected") => return (StatusCode::IM_A_TEAPOT, "upstream refused").into_response(),
+        Some("invalid-json") => return "this is not JSON".into_response(),
+        Some("waiting") => {
+            std::future::pending::<()>().await;
+            unreachable!("the client cancels this request");
+        }
+        Some("broken-body" | "broken-stream") => {
+            let frames = async_stream::stream! {
+                yield Ok::<Bytes, std::io::Error>(Bytes::from_static(
+                    b"data: {\"choices\":[{\"delta\":{\"content\":\"partial\"}}]}\n\n"));
+                tokio::time::sleep(Duration::from_millis(20)).await;
+                yield Err(std::io::Error::other("scripted body failure"));
+            };
+            return (
+                [("content-type", "text/event-stream")],
+                Body::from_stream(frames),
+            )
+                .into_response();
+        }
+        _ => {}
+    }
     Json(json!({
         "id": "chatcmpl-test",
         "object": "chat.completion",
@@ -63,17 +85,17 @@ async fn upstream(State(seen): State<Arc<Mutex<Vec<Value>>>>) -> Response {
     .into_response()
 }
 
-async fn start_upstream() -> String {
+async fn start_upstream() -> (String, Arc<Mutex<Vec<Value>>>) {
     let seen: Arc<Mutex<Vec<Value>>> = Arc::new(Mutex::new(vec![]));
     let app = Router::new()
         .route("/v1/chat/completions", post(upstream))
-        .with_state(seen);
+        .with_state(seen.clone());
     let listener = TcpListener::bind("127.0.0.1:0")
         .await
         .expect("the upstream binds");
     let address = format!("http://{}/v1", listener.local_addr().unwrap());
     tokio::spawn(async move { axum::serve(listener, app).await });
-    address
+    (address, seen)
 }
 
 /// An app over a real database: one funded organization, one priced channel on
@@ -85,6 +107,8 @@ struct World {
     model: String,
     channel: String,
     organization_id: String,
+    tenant_id: String,
+    seen: Arc<Mutex<Vec<Value>>>,
 }
 
 async fn world(database_url: &str) -> World {
@@ -101,7 +125,7 @@ async fn world(database_url: &str) -> World {
     let channel = format!("reqlog-{suffix}");
     let model = format!("ok-{suffix}");
     let secret = SecretKey::from_bytes([7; 32]);
-    let base_url = start_upstream().await;
+    let (base_url, seen) = start_upstream().await;
     db.set_channel_pool_policy(
         &channel,
         &base_url,
@@ -159,6 +183,10 @@ async fn world(database_url: &str) -> World {
         .as_str()
         .expect("registration returns a key")
         .to_owned();
+    let tenant_id = body["data"]["organization"]["tenantId"]
+        .as_str()
+        .unwrap()
+        .to_owned();
     let organization_id = body["data"]["organization"]["id"]
         .as_str()
         .expect("registration names the org")
@@ -181,6 +209,8 @@ async fn world(database_url: &str) -> World {
         model,
         channel,
         organization_id,
+        tenant_id,
+        seen,
     }
 }
 
@@ -300,6 +330,7 @@ async fn a_settled_turn_writes_a_request_log_row() {
     assert_eq!(row["channel"], world.channel);
     assert_eq!(row["admissionOutcome"], "admitted");
     assert_eq!(row["status"], "settled");
+    assert_eq!(row["httpStatus"], 200);
     assert_eq!(row["inputTokens"], 2);
     assert_eq!(row["outputTokens"], 3);
     assert!(row["chargeMinor"].as_i64().unwrap() > 0);
@@ -525,4 +556,133 @@ async fn the_cursor_walks_the_log_without_repeating_a_row() {
     // A malformed cursor is a validation failure, not an empty page.
     let (status, _body) = requests(&world, "?cursor=not-a-cursor").await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
+}
+
+/// Disabled credentials fail after a hold, before any SSE response starts.
+#[tokio::test]
+async fn disabled_credentials_record_the_returned_status_and_release_the_hold() {
+    let world = world_or_skip!();
+    let db = Db::from_pool(world.pool.clone());
+    let credentials = db
+        .channel_credentials(&world.channel)
+        .await
+        .unwrap()
+        .unwrap();
+    db.set_credential_status(&world.channel, credentials[0].credential_id, "disabled")
+        .await
+        .unwrap();
+    for stream in [false, true] {
+        let (status, body, _) = call(
+            &world.app,
+            "POST",
+            "/v1/chat/completions",
+            Some(json!({"model":world.model,"stream":stream,"max_tokens":32,
+                "messages":[{"role":"user","content":"hi"}]})),
+            Some(&world.key),
+            &[],
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_GATEWAY, "{body}");
+        let (_, records) = requests(&world, "?status=errored").await;
+        let row = &records["data"]["rows"][0];
+        assert_eq!(row["httpStatus"], u64::from(status.as_u16()));
+        assert_eq!(row["admissionOutcome"], "admitted");
+        assert_eq!(row["chargeMinor"], 0);
+        assert_eq!(row["upstreamAttempts"], 0);
+        let wallet = oxsum_core::Tenants::new(world.pool.clone())
+            .get(&world.tenant_id)
+            .await
+            .unwrap();
+        assert_eq!(wallet.available().await.unwrap(), 100_000_000);
+        assert_eq!(wallet.reserved().await.unwrap(), 0);
+        assert!(
+            db.open_holds_for_tenant(&world.tenant_id)
+                .await
+                .unwrap()
+                .is_empty()
+        );
+    }
+}
+
+/// Headers selected before settlement stay distinct from later stream errors.
+#[tokio::test]
+async fn response_status_tracks_upstream_refusal_invalid_json_and_body_failure() {
+    for (text, stream, expected) in [
+        ("rejected", false, StatusCode::BAD_GATEWAY),
+        ("invalid-json", false, StatusCode::BAD_GATEWAY),
+        ("broken-body", false, StatusCode::BAD_GATEWAY),
+        ("broken-stream", true, StatusCode::OK),
+    ] {
+        let world = world_or_skip!();
+        let (status, _, _) = call(
+            &world.app,
+            "POST",
+            "/v1/chat/completions",
+            Some(json!({"model":world.model,"stream":stream,"max_tokens":32,
+                "messages":[{"role":"user","content":text}]})),
+            Some(&world.key),
+            &[],
+        )
+        .await;
+        assert_eq!(status, expected, "{text}");
+        let (_, records) = requests(&world, "").await;
+        let rows = records["data"]["rows"].as_array().unwrap();
+        assert_eq!(rows.len(), 1, "{text}: {records}");
+        assert_eq!(rows[0]["httpStatus"], u64::from(status.as_u16()), "{text}");
+        assert_eq!(rows[0]["upstreamAttempts"], 1);
+        let wallet = oxsum_core::Tenants::new(world.pool.clone())
+            .get(&world.tenant_id)
+            .await
+            .unwrap();
+        assert_eq!(wallet.reserved().await.unwrap(), 0);
+    }
+}
+
+/// Cancellation before selecting headers must not fabricate a success status.
+#[tokio::test]
+async fn cancellation_before_response_selection_omits_http_status() {
+    let world = world_or_skip!();
+    let app = world.app.clone();
+    let key = world.key.clone();
+    let model = world.model.clone();
+    let task = tokio::spawn(async move {
+        call(
+            &app,
+            "POST",
+            "/v1/chat/completions",
+            Some(json!({
+                "model":model,"messages":[{"role":"user","content":"waiting"}]
+            })),
+            Some(&key),
+            &[],
+        )
+        .await
+    });
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while world.seen.lock().unwrap().is_empty() {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .unwrap();
+    task.abort();
+    assert!(task.await.unwrap_err().is_cancelled());
+    let records = tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            let (_, records) = requests(&world, "").await;
+            if !records["data"]["rows"].as_array().unwrap().is_empty() {
+                break records;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .unwrap();
+    let row = &records["data"]["rows"][0];
+    assert!(row.get("httpStatus").is_none(), "{row}");
+    let wallet = oxsum_core::Tenants::new(world.pool.clone())
+        .get(&world.tenant_id)
+        .await
+        .unwrap();
+    assert_eq!(wallet.reserved().await.unwrap(), 0);
 }

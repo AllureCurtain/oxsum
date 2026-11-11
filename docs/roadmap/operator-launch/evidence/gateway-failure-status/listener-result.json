@@ -1,0 +1,44 @@
+{
+  "baseSha": "2ee706019a02f24b4b8ed4b949b8c5254b27a178",
+  "sourcePatchSha256": "86d2b1a26453fc9d2d43dc7ecdd11e0ffdcca19cca296d671a1ef24a1a3b88cc",
+  "binarySha256": "a569f9444febf9b181fcc72a2f06894666ecdb7b049654ba54b27f85ead154b4",
+  "status": 502,
+  "response": {
+    "error": {
+      "code": "UPSTREAM_ERROR",
+      "message": "every upstream credential is cooling or disabled",
+      "param": null,
+      "type": "api_error"
+    }
+  },
+  "requestRecord": {
+    "requestId": "f83542ba-4245-4486-aecc-1f921f64514f",
+    "entryId": "5cc3d94c-fa0e-5191-9020-d5b7202b6d7d",
+    "keyId": "bf845fe8-0e40-4471-8435-32de4323e3c1",
+    "modelRequested": "rotation-chat",
+    "modelServed": "rotation-chat",
+    "channel": "rotation-local",
+    "admissionOutcome": "admitted",
+    "status": "errored",
+    "totalMs": 17,
+    "inputTokens": 0,
+    "outputTokens": 0,
+    "cachedTokens": 0,
+    "chargeMinor": 0,
+    "upstreamAttempts": 0,
+    "errorKind": "upstream_error",
+    "httpStatus": 502,
+    "createdAt": "2026-11-10T19:08:36.382855Z"
+  },
+  "balance": {
+    "availableMinor": 9999930,
+    "creditLimitMinor": 0,
+    "creditUsedMinor": 0,
+    "reservedMinor": 0,
+    "spentThisMonthMinor": 70
+  },
+  "holds": {
+    "holds": []
+  },
+  "noModelListener": true
+}
