@@ -20540,7 +20540,10 @@ export interface components {
             periodEnd: string;
             /** Format: int64 */
             quotaMinor: number | null;
-            /** Format: int64 */
+            /**
+             * Format: int64
+             * @description Quota reserved or consumed in this exact subscription window, net of released reservations. Retained closed windows keep their own counter; this is not wallet spending.
+             */
             consumedMinor: number;
             /**
              * @description what authorized the period — a paid `paymentOrders` row, or a free plan's grant

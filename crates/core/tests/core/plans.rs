@@ -491,6 +491,20 @@ async fn a_past_due_plan_renews_on_a_fulfilled_order() {
         )
         .await
         .unwrap();
+    world
+        .db
+        .admit_subscription_draw(world.organization_id, "renewal-old", 4 * ONE)
+        .await
+        .unwrap();
+    world
+        .db
+        .settle_subscription_draw("renewal-old", 3 * ONE)
+        .await
+        .unwrap();
+    assert_eq!(
+        world.db.plan_periods(plan.customer_plan_id).await.unwrap()[0].consumed_minor,
+        3 * ONE
+    );
     end_period_ago(&world.pool, world.organization_id, 60).await;
     world.db.rollover_due_subscriptions().await.unwrap();
     assert_eq!(
@@ -516,6 +530,25 @@ async fn a_past_due_plan_renews_on_a_fulfilled_order() {
     assert_eq!(renewed.state, oxsum_core::CustomerPlanState::Active);
     let periods = world.db.plan_periods(plan.customer_plan_id).await.unwrap();
     assert_eq!(periods.len(), 2);
+    assert_eq!(periods[0].consumed_minor, 3 * ONE);
+    assert_eq!(periods[1].consumed_minor, 0);
+    world
+        .db
+        .admit_subscription_draw(world.organization_id, "renewal-new", 2 * ONE)
+        .await
+        .unwrap();
+    world
+        .db
+        .settle_subscription_draw("renewal-new", ONE)
+        .await
+        .unwrap();
+    let metered = world.db.plan_periods(plan.customer_plan_id).await.unwrap();
+    assert_eq!(
+        metered[0].consumed_minor,
+        3 * ONE,
+        "new quota never replaces old consumption"
+    );
+    assert_eq!(metered[1].consumed_minor, ONE);
     assert_eq!(periods[1].period_index, 1);
     assert_eq!(periods[1].authorization_ref, renewal_order);
     assert_eq!(periods[1].state, oxsum_core::PlanPeriodState::Active);
@@ -725,6 +758,10 @@ async fn lazy_boundary_cancellation_never_spends_the_ended_quota() {
             .unwrap();
         assert_eq!(periods[0].outcome, "cancelled");
         assert_eq!(periods[0].consumed_minor, 2 * ONE);
+        assert_eq!(
+            world.db.plan_periods(plan.customer_plan_id).await.unwrap()[0].consumed_minor,
+            2 * ONE
+        );
         world.db.rollover_due_subscriptions().await.unwrap();
         assert_eq!(
             world
@@ -964,6 +1001,10 @@ async fn a_stale_draw_still_settles_against_a_plan() {
         .admit_subscription_draw(world.organization_id, "req-stale:hold", 4 * ONE)
         .await
         .unwrap();
+    assert_eq!(
+        world.db.plan_periods(plan.customer_plan_id).await.unwrap()[0].consumed_minor,
+        4 * ONE
+    );
     end_period_ago(&world.pool, world.organization_id, 60).await;
     world.db.rollover_due_subscriptions().await.unwrap();
 
@@ -982,6 +1023,9 @@ async fn a_stale_draw_still_settles_against_a_plan() {
         .unwrap()
         .unwrap();
     assert_eq!(sub.consumed_minor, 3 * ONE);
+    let periods = world.db.plan_periods(plan.customer_plan_id).await.unwrap();
+    assert_eq!(periods[0].consumed_minor, 3 * ONE);
+    assert_eq!(periods[0].state, oxsum_core::PlanPeriodState::Expired);
 }
 
 #[tokio::test]

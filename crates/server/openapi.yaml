@@ -15672,6 +15672,7 @@ components:
           nullable: true
           minimum: 1
         consumedMinor:
+          description: Quota reserved or consumed in this exact subscription window, net of released reservations. Retained closed windows keep their own counter; this is not wallet spending.
           type: integer
           format: int64
           minimum: 0

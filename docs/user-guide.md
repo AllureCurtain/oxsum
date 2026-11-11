@@ -1951,3 +1951,6 @@ The list is ordered by immutable statement ID. Money reflects recorded payment
 bookkeeping; this read does not run reconciliation. Oversized detail refuses
 instead of silently omitting lines. This card does not issue invoices or record
 payments; those operations are tracked separately in #1006.
+
+
+The Plans page shows quota reserved or consumed in the displayed period. A running request reserves quota; unused quota returns when it settles. Paid-plan quota is separate from wallet spending, and a new period starts its own counter.
