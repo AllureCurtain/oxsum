@@ -20,9 +20,10 @@ pub(super) fn compare(customer: &mut Customer<'_>) -> Result<(), WalletError> {
     let mut totals = BTreeMap::<Uuid, (Amounts, Amounts)>::new();
     for (id, effect) in effects {
         let period_id = effect.id("plan_period_id")?;
-        let Some(period) = customer
-            .sources
-            .get("plan_accounting_periods", period_id)
+        let generation = effect.optional_id("journal_id")?;
+        let Some(period) = generation
+            .and_then(|id| customer.sources.get("invoice_accounting_generations", id))
+            .or_else(|| customer.sources.get("plan_accounting_periods", period_id))
             .cloned()
         else {
             customer.unsupported(
@@ -37,13 +38,24 @@ pub(super) fn compare(customer: &mut Customer<'_>) -> Result<(), WalletError> {
         let source = effect.id("source_ref")?;
         let journal = period.id("journal_id")?;
         let expected = amounts(&effect)?;
-        let mut valid = period_source(customer, &period)?;
+        let mut valid = if generation.is_some() {
+            period.policy()? == 2 && period.id("plan_period_id")? == period_id
+        } else {
+            period_source(customer, &period)?
+        };
         let key = match kind.as_str() {
             "activation" => format!("payment-order/{source}/prepay"),
-            "recognition" => format!(
-                "plan-recognition/{period_id}/{}",
-                effect.date("service_day")?
-            ),
+            "recognition" => match generation {
+                Some(journal) => format!(
+                    "plan-recognition/{period_id}/journal/{journal}/{}",
+                    effect.date("service_day")?
+                ),
+                None => format!(
+                    "plan-recognition/{period_id}/{}",
+                    effect.date("service_day")?
+                ),
+            },
+            "correction" => format!("invoice-correction/{journal}/accrual"),
             "refund" => format!("plan-refund-cash/{source}"),
             "dispute" => format!("dispute-recharge/{source}"),
             "void" => format!("plan-journal/{journal}/void"),
@@ -117,6 +129,7 @@ pub(super) fn compare(customer: &mut Customer<'_>) -> Result<(), WalletError> {
         }
         let allowed: &[&str] = match kind.as_str() {
             "activation" => &[ledger::CASH, ledger::DEFERRED],
+            "correction" => &[ledger::RECEIVABLE, ledger::REVENUE, ledger::DEFERRED],
             "recognition" => &[ledger::DEFERRED, ledger::REVENUE],
             "refund" => &[
                 ledger::CASH,
@@ -181,6 +194,7 @@ pub(super) fn compare(customer: &mut Customer<'_>) -> Result<(), WalletError> {
         };
         let service_day = match kind.as_str() {
             "activation" => period.instant("service_start")?.date(),
+            "correction" => period.instant("recognition_from")?.date(),
             "recognition" => effect.date("service_day")?, // exact day is also bound by the verified entry key
             "refund" | "dispute" | "statement_payment" | "statement_return" => {
                 observed_day.unwrap_or(effect.date("booked_on")?)
@@ -198,6 +212,7 @@ pub(super) fn compare(customer: &mut Customer<'_>) -> Result<(), WalletError> {
                     .values()
                     .filter(|e| {
                         e.id("plan_period_id").ok() == Some(period_id)
+                            && e.optional_id("journal_id").ok() == Some(generation)
                             && e.text("kind").ok().as_deref() == Some("recognition")
                     })
                     .filter(|e| {
@@ -220,7 +235,13 @@ pub(super) fn compare(customer: &mut Customer<'_>) -> Result<(), WalletError> {
                         .assume_utc()
                         .min(period.instant("service_end")?)
                         .date(),
-                    None => period.instant("service_start")?.date(),
+                    None => {
+                        if generation.is_some() {
+                            period.instant("recognition_from")?.date()
+                        } else {
+                            period.instant("service_start")?.date()
+                        }
+                    }
                 }
             }
             _ => expected_day,
@@ -261,10 +282,24 @@ pub(super) fn compare(customer: &mut Customer<'_>) -> Result<(), WalletError> {
     let periods: Vec<_> = customer
         .sources
         .table("plan_accounting_periods")
-        .iter()
-        .map(|(id, p)| (*id, p.clone()))
+        .values()
+        .chain(
+            customer
+                .sources
+                .table("invoice_accounting_generations")
+                .values()
+                .filter(|g| g.policy().ok() == Some(2)),
+        )
+        .cloned()
         .collect();
-    for (period_id, period) in periods {
+    for period in periods {
+        let period_id = period.id("plan_period_id")?;
+        let generation = period
+            .optional_id("predecessor_journal_id")
+            .ok()
+            .flatten()
+            .map(|_| period.id("journal_id"))
+            .transpose()?;
         let journal = period.id("journal_id")?;
         let count = customer
             .sources
@@ -272,7 +307,13 @@ pub(super) fn compare(customer: &mut Customer<'_>) -> Result<(), WalletError> {
             .values()
             .filter(|effect| {
                 effect.id("plan_period_id").ok() == Some(period_id)
-                    && effect.text("kind").ok().as_deref() == Some("activation")
+                    && effect.optional_id("journal_id").ok() == Some(generation)
+                    && effect.text("kind").ok().as_deref()
+                        == Some(if generation.is_some() {
+                            "correction"
+                        } else {
+                            "activation"
+                        })
             })
             .count();
         if count != 1 {
@@ -303,7 +344,12 @@ pub(super) fn compare(customer: &mut Customer<'_>) -> Result<(), WalletError> {
                 line_total,
             );
             if header.policy()? != 2
-                || header.optional_id("plan_period_id")? != Some(period_id)
+                || header.optional_id("plan_period_id")?
+                    != if generation.is_some() {
+                        None
+                    } else {
+                        Some(period_id)
+                    }
                 || header.id("customer_plan_id")? != period.id("customer_plan_id")?
                 || header.id("business_id")? != period.id("business_id")?
             {
@@ -349,6 +395,13 @@ pub(super) fn compare(customer: &mut Customer<'_>) -> Result<(), WalletError> {
         .filter(|(_, journal)| {
             journal.policy().ok() == Some(2)
                 && journal.text("state").ok().as_deref() != Some("draft")
+                && customer
+                    .sources
+                    .get(
+                        "invoice_accounting_generations",
+                        journal.id("journal_id").unwrap_or_default(),
+                    )
+                    .is_none()
                 && !customer
                     .sources
                     .table("plan_accounting_periods")
@@ -469,6 +522,15 @@ fn effect_source(
             } else {
                 valid &= period.amount("fee_minor")? == 0;
             }
+        }
+        "correction" => {
+            valid &= source == period.id("correction_id")?
+                && effect.date("service_day")? == period.instant("recognition_from")?.date()
+                && expected.billed_minor == period.amount("fee_minor")?
+                && expected.collected_minor == 0
+                && expected.receivable_minor == expected.billed_minor
+                && effect.amount("cash_minor")? == 0
+                && effect.amount("payable_minor")? == 0;
         }
         "recognition" => {
             let day = effect.date("service_day")?;

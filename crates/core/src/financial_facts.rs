@@ -733,7 +733,7 @@ impl Db {
         let mut w = Where::new();
         let mut binds = Vec::new();
         let mut sql = String::from(
-            "SELECT -COALESCE(SUM(l.amount_minor),0)::bigint FROM oxsum.invoice_journal_lines l JOIN oxsum.invoice_journals j USING(journal_id) WHERE j.state<>'void' AND l.kind IN ('discount','promo_credit') AND NOT EXISTS(SELECT 1 FROM oxsum.credit_notes n WHERE n.credit_note_id=l.source_ref AND n.refund_id IS NOT NULL)",
+            "WITH RECURSIVE credit_origins(line_id,origin_id,source_ref) AS (SELECT line_id,line_id,source_ref FROM oxsum.invoice_journal_lines WHERE kind IN ('discount','promo_credit') UNION SELECT o.line_id,l.line_id,l.source_ref FROM credit_origins o JOIN oxsum.invoice_correction_lines c ON c.line_id=o.origin_id JOIN oxsum.invoice_journal_lines l ON l.line_id=c.source_line_id) SELECT -COALESCE(SUM(l.amount_minor),0)::bigint FROM oxsum.invoice_journal_lines l JOIN oxsum.invoice_journals j USING(journal_id) WHERE j.state<>'void' AND l.kind IN ('discount','promo_credit') AND NOT EXISTS(SELECT 1 FROM credit_origins o JOIN oxsum.credit_notes n ON n.credit_note_id=o.source_ref WHERE o.line_id=l.line_id AND n.refund_id IS NOT NULL)",
         );
         if let Some(org) = filter.organization_id {
             sql.push_str(&w.clause(" AND j.organization_id=?"));

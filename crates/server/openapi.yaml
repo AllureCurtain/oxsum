@@ -3711,6 +3711,81 @@ paths:
         "403": { $ref: "#/components/responses/Error" }
         "404": { $ref: "#/components/responses/Error" }
         "500": { $ref: "#/components/responses/Error" }
+  /api/v1/business/journals/{journalId}/correction-preview:
+    post:
+      summary: Preview source-linked invoice correction consequences
+      description: |
+        Current personal Business FundsWrite authority is required. A bounded
+        repeatable snapshot compares original financial sources and official
+        entries before showing any proposed correction. Select distinct original
+        base-fee lines with nonnegative amounts no greater than their original
+        values; existing refund and promotional credits remain unchanged. A
+        negative resulting net fee, live repayment or pending return, unsupported
+        legacy source or an existing successor refuses. No journal, statement,
+        audit, provider or ledger write occurs. Original-source refund payable
+        and successor receivable are separate amounts; no cash is transferred.
+        The source revision is a precondition, never a payment or reservation.
+      x-consumption-key-access: denied
+      security: [{ sessionCookie: [] }]
+      parameters:
+        - { name: journalId, in: path, required: true, schema: { type: string, format: uuid } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/InvoiceCorrectionPreviewRequest" }
+      responses:
+        "200":
+          description: Verified source revision and separate original-payable and successor-debt amounts
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data: { $ref: "#/components/schemas/InvoiceCorrectionPreview" }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "409": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
+  /api/v1/business/journals/{journalId}/correct:
+    post:
+      summary: Atomically void and reissue a source-verified invoice
+      description: |
+        Requires current personal Business FundsWrite authority. The exact preview
+        revision, selected lines and reason bind one idempotent operation. The
+        predecessor is financially voided and one unpaid successor is issued for
+        the same sold service. Original-source payable remains separate; no cash,
+        quota, service period or implicit payment transfer occurs. Exact retries
+        return the retained receipt even after subsequent financial activity.
+        Changed retries, stale sources and competing successors return conflict.
+      x-consumption-key-access: denied
+      security: [{ sessionCookie: [] }]
+      parameters:
+        - { name: journalId, in: path, required: true, schema: { type: string, format: uuid } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/InvoiceCorrectionRequest" }
+      responses:
+        "200":
+          description: Retained atomic correction receipt
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data: { $ref: "#/components/schemas/InvoiceCorrectionResult" }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "409": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
   /api/v1/business/journals/{journalId}/void:
     post:
       summary: Void a journal
@@ -15875,6 +15950,11 @@ components:
         - type: object
           required: [lines]
           properties:
+            successorJournalId:
+              type: string
+              format: uuid
+              nullable: true
+              description: Immediate committed correction successor, independent of list pagination.
             lines:
               type: array
               items: { $ref: "#/components/schemas/InvoiceJournalLine" }
@@ -15889,6 +15969,90 @@ components:
           type: string
           format: uuid
           nullable: true
+    InvoiceCorrectionLineRequest:
+      type: object
+      additionalProperties: false
+      required: [sourceLineId, amountMinor]
+      properties:
+        sourceLineId: { type: string, format: uuid }
+        amountMinor:
+          type: integer
+          format: int64
+          minimum: 0
+          description: Corrected charge for the exact original line, bounded above by its proven charge. Existing credits are retained unchanged.
+    InvoiceCorrectionPreviewRequest:
+      type: object
+      additionalProperties: false
+      required: [lines]
+      properties:
+        lines:
+          type: array
+          minItems: 1
+          maxItems: 100
+          items: { $ref: "#/components/schemas/InvoiceCorrectionLineRequest" }
+    InvoiceCorrectionPreviewLine:
+      type: object
+      required: [sourceLineId, kind, description, originalMinor, correctedMinor]
+      properties:
+        sourceLineId: { type: string, format: uuid }
+        kind: { type: string, enum: [baseFee, usageOverage, discount, promoCredit, tax] }
+        description: { type: string }
+        originalMinor: { type: integer, format: int64 }
+        correctedMinor: { type: integer, format: int64 }
+    InvoiceCorrectionPreview:
+      type: object
+      required: [journalId, statementId, organizationId, customerPlanId, planPeriodId, planVersionId, currency, accountingPolicyVersion, serviceStart, serviceEnd, recognitionBoundary, sourceRevision, lines, originalTotalMinor, correctedTotalMinor, successorCollectedMinor, successorReceivableMinor, successorEarnedMinor, successorDeferredMinor, originalPayableMinor, cashMovementMinor]
+      properties:
+        journalId: { type: string, format: uuid }
+        statementId: { type: string, format: uuid }
+        organizationId: { type: string, format: uuid }
+        customerPlanId: { type: string, format: uuid }
+        planPeriodId: { type: string, format: uuid }
+        planVersionId: { type: string, format: uuid }
+        currency: { type: string }
+        accountingPolicyVersion: { type: integer, enum: [1, 2] }
+        serviceStart: { type: string, format: date-time }
+        serviceEnd: { type: string, format: date-time }
+        recognitionBoundary: { type: string, format: date-time }
+        sourceRevision: { type: string, pattern: '^[0-9a-f]{64}$' }
+        lines:
+          type: array
+          items: { $ref: "#/components/schemas/InvoiceCorrectionPreviewLine" }
+        originalTotalMinor: { type: integer, format: int64, minimum: 0 }
+        correctedTotalMinor: { type: integer, format: int64, minimum: 0 }
+        successorCollectedMinor: { type: integer, format: int64, enum: [0] }
+        successorReceivableMinor: { type: integer, format: int64, minimum: 0 }
+        successorEarnedMinor: { type: integer, format: int64, minimum: 0 }
+        successorDeferredMinor: { type: integer, format: int64, minimum: 0 }
+        originalPayableMinor:
+          type: integer
+          format: int64
+          minimum: 0
+          description: Source-owned payable after cancellation, including still-retained payable if already void. This is not applied to the successor and no cash refund is executed.
+        cashMovementMinor: { type: integer, format: int64, enum: [0] }
+    InvoiceCorrectionRequest:
+      type: object
+      additionalProperties: false
+      required: [lines, sourceRevision, reason, idempotencyKey]
+      properties:
+        lines:
+          type: array
+          minItems: 1
+          maxItems: 100
+          items: { $ref: "#/components/schemas/InvoiceCorrectionLineRequest" }
+        sourceRevision: { type: string, pattern: '^[0-9a-f]{64}$' }
+        reason: { type: string, minLength: 1, maxLength: 500 }
+        idempotencyKey: { type: string, minLength: 1, maxLength: 200 }
+    InvoiceCorrectionResult:
+      type: object
+      required: [correctionId, originalJournalId, originalStatementId, journalId, statementId, preview]
+      properties:
+        correctionId: { type: string, format: uuid }
+        originalJournalId: { type: string, format: uuid }
+        originalStatementId: { type: string, format: uuid }
+        journalId: { type: string, format: uuid }
+        statementId: { type: string, format: uuid }
+        preview: { $ref: "#/components/schemas/InvoiceCorrectionPreview" }
     VoidJournalRequest:
       type: object
       required: [idempotencyKey, reason]
@@ -15995,6 +16159,11 @@ components:
         - type: object
           required: [lines]
           properties:
+            successorStatementId:
+              type: string
+              format: uuid
+              nullable: true
+              description: Immediate committed correction successor, independent of list pagination.
             lines:
               type: array
               items: { $ref: "#/components/schemas/PlanStatementLine" }

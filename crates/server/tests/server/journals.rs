@@ -169,6 +169,191 @@ async fn bound_and_active(world: &World, version: Uuid) -> Uuid {
     customer_plan_id
 }
 
+#[tokio::test]
+async fn correction_preview_checks_authority_source_and_exact_amounts_over_http() {
+    let Some(w) = world().await else {
+        return;
+    };
+    let sold =
+        w.db.publish_sold_plan(
+            w.db.default_business().await.unwrap(),
+            &oxsum_core::NewSoldPlan {
+                plan_id: None,
+                name: format!("preview-{}", Uuid::new_v4()),
+                price_minor: 2_500_000,
+                currency: "USD".into(),
+                quota_minor: Some(10_000_000),
+                period_kind: oxsum_core::PeriodKind::Anniversary,
+                overage_enabled: true,
+                sort_order: 0,
+            },
+        )
+        .await
+        .unwrap();
+    bound_and_active(&w, sold.plan_version_id).await;
+    let journal =
+        w.db.plan_journals(w.customer_org, None, 50)
+            .await
+            .unwrap()
+            .journals
+            .remove(0);
+    let detail =
+        w.db.plan_journal(w.customer_org, journal.journal_id)
+            .await
+            .unwrap()
+            .unwrap();
+    let base = detail
+        .lines
+        .iter()
+        .find(|line| line.kind == oxsum_core::JournalLineKind::BaseFee)
+        .unwrap();
+    let path = format!(
+        "/api/v1/business/journals/{}/correction-preview",
+        journal.journal_id
+    );
+    let request = json!({"lines": [{"sourceLineId": base.line_id, "amountMinor": 2_000_001}]});
+    for (token, expected) in [
+        (None, StatusCode::UNAUTHORIZED),
+        (Some(w.customer.as_str()), StatusCode::FORBIDDEN),
+    ] {
+        let (status, body) = call(&w.app, "POST", &path, request.clone(), token).await;
+        assert_eq!(status, expected, "{body}");
+    }
+    let (status, first) = call(&w.app, "POST", &path, request.clone(), Some(&w.owner)).await;
+    assert_eq!(status, StatusCode::OK, "{first}");
+    let (_, second) = call(&w.app, "POST", &path, request, Some(&w.owner)).await;
+    assert_eq!(
+        first, second,
+        "preview is stable until source or completed service changes"
+    );
+    assert_eq!(first["data"]["correctedTotalMinor"], 2_000_001);
+    assert_eq!(first["data"]["successorReceivableMinor"], 2_000_001);
+    assert_eq!(first["data"]["originalPayableMinor"], 2_500_000);
+    assert_eq!(first["data"]["successorCollectedMinor"], 0);
+    assert_eq!(first["data"]["cashMovementMinor"], 0);
+    assert_eq!(
+        first["data"]["planVersionId"],
+        sold.plan_version_id.to_string()
+    );
+    for invalid in [
+        json!({"lines": [{"sourceLineId": base.line_id, "amountMinor": 2_500_001}]}),
+        json!({"lines": [{"sourceLineId": Uuid::new_v4(), "amountMinor": 1}]}),
+        json!({"lines": [{"sourceLineId": base.line_id, "amountMinor": 1.5}]}),
+        json!({"lines": [], "force": true}),
+    ] {
+        let (status, body) = call(&w.app, "POST", &path, invalid, Some(&w.owner)).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    }
+    let after =
+        w.db.plan_journal(w.customer_org, journal.journal_id)
+            .await
+            .unwrap()
+            .unwrap();
+    assert_eq!(
+        serde_json::to_value(detail).unwrap(),
+        serde_json::to_value(after).unwrap()
+    );
+    assert_eq!(
+        w.db.plan_journals(w.customer_org, None, 50)
+            .await
+            .unwrap()
+            .journals
+            .len(),
+        1
+    );
+}
+
+#[tokio::test]
+async fn correction_apply_http_retains_exact_response_and_current_authority() {
+    let Some(w) = world().await else {
+        return;
+    };
+    let sold =
+        w.db.publish_sold_plan(
+            w.db.default_business().await.unwrap(),
+            &oxsum_core::NewSoldPlan {
+                plan_id: None,
+                name: format!("correct-{}", Uuid::new_v4()),
+                price_minor: 2_500_000,
+                currency: "USD".into(),
+                quota_minor: Some(10_000_000),
+                period_kind: oxsum_core::PeriodKind::Anniversary,
+                overage_enabled: true,
+                sort_order: 0,
+            },
+        )
+        .await
+        .unwrap();
+    bound_and_active(&w, sold.plan_version_id).await;
+    let journal =
+        w.db.plan_journals(w.customer_org, None, 50)
+            .await
+            .unwrap()
+            .journals
+            .remove(0);
+    let detail =
+        w.db.plan_journal(w.customer_org, journal.journal_id)
+            .await
+            .unwrap()
+            .unwrap();
+    let path = format!("/api/v1/business/journals/{}/correct", journal.journal_id);
+    let preview_path = format!(
+        "/api/v1/business/journals/{}/correction-preview",
+        journal.journal_id
+    );
+    let lines = json!([{"sourceLineId": detail.lines[0].line_id, "amountMinor": 2_000_001}]);
+    let (status, preview) = call(
+        &w.app,
+        "POST",
+        &preview_path,
+        json!({"lines":lines}),
+        Some(&w.owner),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{preview}");
+    let request = json!({"lines":lines,"sourceRevision":preview["data"]["sourceRevision"],"reason":"Correct original service fee","idempotencyKey":Uuid::new_v4()});
+    for (token, expected) in [
+        (None, StatusCode::UNAUTHORIZED),
+        (Some(w.customer.as_str()), StatusCode::FORBIDDEN),
+    ] {
+        let (status, body) = call(&w.app, "POST", &path, request.clone(), token).await;
+        assert_eq!(status, expected, "{body}");
+    }
+    let mut bad = request.clone();
+    bad["force"] = json!(true);
+    assert_eq!(
+        call(&w.app, "POST", &path, bad, Some(&w.owner)).await.0,
+        StatusCode::BAD_REQUEST
+    );
+    let (status, first) = call(&w.app, "POST", &path, request.clone(), Some(&w.owner)).await;
+    assert_eq!(status, StatusCode::OK, "{first}");
+    let (status, retry) = call(&w.app, "POST", &path, request.clone(), Some(&w.owner)).await;
+    assert_eq!(status, StatusCode::OK, "{retry}");
+    assert_eq!(first, retry);
+    assert_eq!(first["data"]["preview"]["correctedTotalMinor"], 2_000_001);
+    assert_eq!(first["data"]["preview"]["originalPayableMinor"], 2_500_000);
+    let new = first["data"]["journalId"].as_str().unwrap();
+    let (status, customer) = call(
+        &w.app,
+        "GET",
+        &format!("/api/v1/org/plan/journals/{new}"),
+        Value::Null,
+        Some(&w.customer),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{customer}");
+    assert_eq!(
+        customer["data"]["replacesJournalId"],
+        json!(journal.journal_id)
+    );
+    let mut changed = request;
+    changed["reason"] = json!("Different intent");
+    assert_eq!(
+        call(&w.app, "POST", &path, changed, Some(&w.owner)).await.0,
+        StatusCode::CONFLICT
+    );
+}
+
 /// Forces the customer's open period past its boundary and runs the rollover
 /// — the close that writes the period's journal.
 async fn close_period(world: &World) {

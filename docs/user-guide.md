@@ -2056,3 +2056,24 @@ with the original currency, or cannot convert to a whole credit minor unit,
 inspect the rejected event before resolving it. A lost resolution uses the
 recorded amount; previously recorded cases that disagree with their retained
 provider event require source review rather than another resolution attempt.
+
+### Correct and reissue an invoice
+
+Owner and Finance can open **Correct invoice** from Business statements or an
+invoice detail. Enter each corrected original base fee in exact credits (up to
+six decimals), preview the retained service interval and line changes, then
+confirm with a reason. Existing credits remain; the net fee cannot increase.
+Unproven historical usage must complete its source-linked repair first.
+
+The preview separates the old source's remaining refund payable from the new
+invoice's unpaid receivable. Correcting a paid 100-credit fee to 80 credits owes
+100 back on the old payment and creates an 80-credit bill. Confirmation moves no
+cash and applies no old payable automatically. Use the original payment's refund
+workflow and the successor statement's explicit payment workflow separately.
+The service interval, quota, sold version and due date stay unchanged.
+
+After a lost response, **Recover correction** replays the exact saved request
+and key. Closing the dialog or reloading the same browser tab retains that
+intent. A definitive refusal requires a fresh preview. Personal Finance authority
+is checked again on recovery; a revoked role cannot execute or recover a write.
+Original and successor documents link in both directions.

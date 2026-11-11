@@ -1005,3 +1005,19 @@ changed case terms cannot overwrite the original. A lost case affects only its
 recorded cash amount through the existing original-source accounting policy.
 Historical incorrect cases remain visible for explicit review; no stored
 financial history is rewritten by this fix.
+
+### Source-linked invoice correction (#1027)
+
+A personal Owner/Finance session can preview and atomically replace a proven
+plan invoice with reduced or equal original base-fee lines. Existing credits,
+sold version, service interval, currency and original due date are retained;
+no new entitlement or payment is created. The immediate predecessor caps each
+correction, and each invoice has at most one successor. Old collected funds stay
+owned by their original refund-payable sources; the successor starts unpaid
+(or paid at zero). Refund and collection are explicit separate operations.
+
+Pending source payments, refunds/disputes, stale previews or unproven history
+refuse. Exact actor-scoped retries return the accepted immutable result even
+after subsequent payments or another correction. The portal retains unknown
+outcomes across dialog closure/reload and links both document generations.
+See [the specification](invoice-corrections.md) for supported accounting scope.

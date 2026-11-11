@@ -230,6 +230,9 @@ pub struct PlanStatementDetail {
     pub statement: PlanStatement,
     /// The statement's lines in write order.
     pub lines: Vec<PlanStatementLine>,
+    /// Immediate committed correction successor, independent of pagination.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub successor_statement_id: Option<Uuid>,
 }
 
 /// A cursor-paginated page of plan statements.
@@ -291,7 +294,7 @@ fn line_from_row(row: &PgRow) -> Result<PlanStatementLine, WalletError> {
 }
 
 /// The journal's `kind` in the statement's customer vocabulary.
-fn statement_kind(line: &InvoiceJournalLine) -> StatementLineKind {
+pub(crate) fn statement_kind(line: &InvoiceJournalLine) -> StatementLineKind {
     match line.kind {
         JournalLineKind::BaseFee | JournalLineKind::Tax => StatementLineKind::PlanFee,
         JournalLineKind::UsageOverage => StatementLineKind::Usage,
@@ -568,7 +571,6 @@ impl Db {
                 || statement.organization_id != journal.organization_id
                 || statement.business_id != journal.business_id
                 || statement.period_index != Some(journal.period_index)
-                || statement.replaces_statement_id.is_some()
                 || statement.state == PlanStatementState::Open
             {
                 return Err(WalletError::Conflict("statement does not identify the original journal period; financial reconciliation required".into()));
@@ -898,6 +900,8 @@ impl Db {
             return Ok(None);
         }
         Ok(Some(PlanStatementDetail {
+            successor_statement_id: sqlx::query_scalar("SELECT statement_id FROM oxsum.invoice_corrections WHERE predecessor_statement_id=$1 AND organization_id=$2")
+                .bind(statement_id).bind(organization_id).fetch_optional(self.pool()).await?,
             lines: self.plan_statement_lines(statement_id).await?,
             statement,
         }))
@@ -1003,8 +1007,13 @@ impl Db {
             return Ok(None);
         }
         let lines = lines_in(&mut tx, statement_id).await?;
+        let successor_statement_id = successor_in(&mut tx, statement_id).await?;
         tx.commit().await?;
-        Ok(Some(PlanStatementDetail { statement, lines }))
+        Ok(Some(PlanStatementDetail {
+            statement,
+            lines,
+            successor_statement_id,
+        }))
     }
 
     /// The staff release-review: `extend_grace` walks `past_due → issued`
@@ -1056,8 +1065,9 @@ impl Db {
             }
             let statement=statement_in(&mut tx,statement_id).await?.ok_or_else(||invalid("audited statement disappeared"))?;
             let lines=lines_in(&mut tx,statement_id).await?;
+            let successor_statement_id=successor_in(&mut tx,statement_id).await?;
             tx.commit().await?;
-            return Ok(PlanStatementDetail{statement,lines});
+            return Ok(PlanStatementDetail{statement,lines,successor_statement_id});
         }
         // Resolve immutable identity, then take owner, journal, ledger and
         // statement in that order. Extend-grace needs only owner/statement.
@@ -1204,6 +1214,7 @@ impl Db {
             }
             WalletError::Storage(e.into())
         })?;
+        let successor_statement_id = successor_in(&mut tx, statement_id).await?;
         let updated = statement_in(&mut tx, statement_id)
             .await?
             .ok_or_else(|| invalid("the statement did not land"))?;
@@ -1212,6 +1223,7 @@ impl Db {
         Ok(PlanStatementDetail {
             statement: updated,
             lines,
+            successor_statement_id,
         })
     }
 
@@ -1288,6 +1300,7 @@ pub(crate) async fn statement_snapshot_in(
     Ok(Some(PlanStatementDetail {
         statement: statement_from_row(&row)?,
         lines: lines_in(tx, statement).await?,
+        successor_statement_id: successor_in(tx, statement).await?,
     }))
 }
 
@@ -1516,4 +1529,17 @@ pub struct PastDueReport {
     pub flipped: i64,
     /// Plans the grace lapse suspended.
     pub suspended: i64,
+}
+
+/// Read only the immediate committed correction link inside the caller's scope.
+async fn successor_in(
+    tx: &mut Transaction<'_, Postgres>,
+    statement: Uuid,
+) -> Result<Option<Uuid>, WalletError> {
+    Ok(sqlx::query_scalar(
+        "SELECT statement_id FROM oxsum.invoice_corrections WHERE predecessor_statement_id=$1",
+    )
+    .bind(statement)
+    .fetch_optional(&mut **tx)
+    .await?)
 }

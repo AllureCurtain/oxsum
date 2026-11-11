@@ -1,6 +1,6 @@
 //! Versioned plan accounting: immutable inputs and once-only service-day effects.
 
-mod schedule;
+pub(crate) mod schedule;
 #[cfg(test)]
 mod tests;
 
@@ -12,6 +12,8 @@ use crate::{Db, InvoiceJournal, Wallet, WalletError, error};
 
 pub(crate) struct AccountingPeriod {
     pub id: Uuid,
+    pub effect_journal: Option<Uuid>,
+    pub recognition_from: OffsetDateTime,
     pub organization: Uuid,
     pub fee: i64,
     pub start: OffsetDateTime,
@@ -34,13 +36,15 @@ pub(crate) async fn period_in(
     tx: &mut Transaction<'_, Postgres>,
     journal: Uuid,
 ) -> Result<Option<AccountingPeriod>, WalletError> {
-    let row = sqlx::query("SELECT * FROM oxsum.plan_accounting_periods WHERE journal_id=$1")
+    let row = sqlx::query("SELECT * FROM oxsum.plan_recognition_generations WHERE journal_id=$1")
         .bind(journal)
         .fetch_optional(&mut **tx)
         .await?;
     row.map(|r| {
         Ok(AccountingPeriod {
             id: r.try_get("plan_period_id")?,
+            effect_journal: r.try_get("effect_journal_id")?,
+            recognition_from: r.try_get("recognition_from")?,
             organization: r.try_get("organization_id")?,
             fee: r.try_get("fee_minor")?,
             start: r.try_get("service_start")?,
@@ -53,10 +57,10 @@ pub(crate) async fn period_in(
 
 pub(crate) async fn totals_in(
     tx: &mut Transaction<'_, Postgres>,
-    period: Uuid,
+    period: &AccountingPeriod,
 ) -> Result<Effect, WalletError> {
-    let row=sqlx::query("SELECT COALESCE(SUM(billed_minor),0)::bigint AS billed,COALESCE(SUM(earned_minor),0)::bigint AS earned,COALESCE(SUM(deferred_minor),0)::bigint AS deferred,COALESCE(SUM(collected_minor),0)::bigint AS collected,COALESCE(SUM(receivable_minor),0)::bigint AS receivable,COALESCE(SUM(payable_minor),0)::bigint AS payable,COALESCE(SUM(cash_minor),0)::bigint AS cash FROM oxsum.plan_accounting_effects WHERE plan_period_id=$1")
-        .bind(period).fetch_one(&mut **tx).await?;
+    let row=sqlx::query("SELECT COALESCE(SUM(billed_minor),0)::bigint AS billed,COALESCE(SUM(earned_minor),0)::bigint AS earned,COALESCE(SUM(deferred_minor),0)::bigint AS deferred,COALESCE(SUM(collected_minor),0)::bigint AS collected,COALESCE(SUM(receivable_minor),0)::bigint AS receivable,COALESCE(SUM(payable_minor),0)::bigint AS payable,COALESCE(SUM(cash_minor),0)::bigint AS cash FROM oxsum.plan_accounting_effects WHERE plan_period_id=$1 AND journal_id IS NOT DISTINCT FROM $2")
+        .bind(period.id).bind(period.effect_journal).fetch_one(&mut **tx).await?;
     Ok(Effect {
         billed: row.try_get("billed")?,
         earned: row.try_get("earned")?,
@@ -79,9 +83,9 @@ pub(crate) async fn effect_in(
     entry: Option<Uuid>,
     effect: &Effect,
 ) -> Result<(), WalletError> {
-    sqlx::query("INSERT INTO oxsum.plan_accounting_effects(effect_id,plan_period_id,kind,source_ref,service_day,booked_on,payment_on,billed_minor,earned_minor,deferred_minor,collected_minor,receivable_minor,payable_minor,cash_minor,entry_id) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)")
+    sqlx::query("INSERT INTO oxsum.plan_accounting_effects(effect_id,plan_period_id,kind,source_ref,service_day,booked_on,payment_on,billed_minor,earned_minor,deferred_minor,collected_minor,receivable_minor,payable_minor,cash_minor,entry_id,journal_id) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)")
         .bind(Uuid::new_v4()).bind(period.id).bind(kind).bind(source).bind(service_day).bind(booked_on).bind(if matches!(kind, "refund" | "dispute" | "statement_payment" | "statement_return") { booked_on } else { period.payment_on })
-        .bind(effect.billed).bind(effect.earned).bind(effect.deferred).bind(effect.collected).bind(effect.receivable).bind(effect.payable).bind(effect.cash).bind(entry)
+        .bind(effect.billed).bind(effect.earned).bind(effect.deferred).bind(effect.collected).bind(effect.receivable).bind(effect.payable).bind(effect.cash).bind(entry).bind(period.effect_journal)
         .execute(&mut **tx).await?;
     Ok(())
 }
@@ -151,7 +155,7 @@ impl Db {
             return Ok(0);
         }
         wallet.lock_append_in(tx).await?;
-        let mut totals = totals_in(tx, period.id).await?;
+        let mut totals = totals_in(tx, &period).await?;
         if totals.billed < 0
             || totals.billed > period.fee
             || totals.earned < 0
@@ -164,12 +168,15 @@ impl Db {
                 "daily recognition source differs from its original invoice".into(),
             ));
         }
-        let last:Option<Date>=sqlx::query_scalar("SELECT MAX(service_day) FROM oxsum.plan_accounting_effects WHERE plan_period_id=$1 AND kind='recognition'").bind(period.id).fetch_one(&mut **tx).await?;
+        if period.recognition_from == period.end {
+            return Ok(0);
+        }
+        let last:Option<Date>=sqlx::query_scalar("SELECT MAX(service_day) FROM oxsum.plan_accounting_effects WHERE plan_period_id=$1 AND journal_id IS NOT DISTINCT FROM $2 AND kind='recognition'").bind(period.id).bind(period.effect_journal).fetch_one(&mut **tx).await?;
         let mut day = match last {
             Some(last) => last
                 .next_day()
                 .ok_or_else(|| error::invalid("recognition day overflows"))?,
-            None => period.start.date(),
+            None => period.recognition_from.date(),
         };
         let mut count = 0;
         while day <= period.end.date() {
@@ -187,7 +194,10 @@ impl Db {
                     "recognition exceeds original deferred fee".into(),
                 ));
             }
-            let key = format!("plan-recognition/{}/{day}", period.id);
+            let key = match period.effect_journal {
+                Some(journal) => format!("plan-recognition/{}/journal/{journal}/{day}", period.id),
+                None => format!("plan-recognition/{}/{day}", period.id),
+            };
             let entry = wallet
                 .plan_daily_recognition_in(tx, &key, amount, booked_on)
                 .await?;
@@ -235,13 +245,13 @@ impl Db {
             // Lock ownership before LIMIT: a busy prefix cannot starve later
             // customers. One candidate per transaction bounds each pass to
             // limit attempts and at most 32 completed day effects per period.
-            let row=sqlx::query("SELECT a.plan_period_id,a.journal_id FROM oxsum.plan_accounting_periods a JOIN oxsum.invoice_journals j USING(journal_id) JOIN oxsum.customer_plans cp ON cp.customer_plan_id=a.customer_plan_id CROSS JOIN LATERAL (SELECT CASE WHEN a.service_end<=now() THEN a.service_end ELSE date_trunc('day',now() AT TIME ZONE 'UTC') AT TIME ZONE 'UTC' END AS cutoff) c WHERE a.plan_period_id>$1 AND j.state<>'void' AND c.cutoff>a.service_start AND NOT EXISTS(SELECT 1 FROM oxsum.plan_accounting_effects e WHERE e.plan_period_id=a.plan_period_id AND e.kind='recognition' AND e.service_day=((c.cutoff-interval '1 microsecond') AT TIME ZONE 'UTC')::date) ORDER BY a.plan_period_id LIMIT 1 FOR UPDATE OF cp SKIP LOCKED")
+            let row=sqlx::query("SELECT a.plan_period_id,a.journal_id FROM oxsum.plan_recognition_generations a JOIN oxsum.invoice_journals j USING(journal_id) JOIN oxsum.customer_plans cp ON cp.customer_plan_id=a.customer_plan_id CROSS JOIN LATERAL (SELECT CASE WHEN a.service_end<=now() THEN a.service_end ELSE date_trunc('day',now() AT TIME ZONE 'UTC') AT TIME ZONE 'UTC' END AS cutoff) c WHERE a.journal_id>$1 AND j.state<>'void' AND c.cutoff>a.recognition_from AND NOT EXISTS(SELECT 1 FROM oxsum.plan_accounting_effects e WHERE e.plan_period_id=a.plan_period_id AND e.journal_id IS NOT DISTINCT FROM a.effect_journal_id AND e.kind='recognition' AND e.service_day=((c.cutoff-interval '1 microsecond') AT TIME ZONE 'UTC')::date) ORDER BY a.journal_id LIMIT 1 FOR UPDATE OF cp SKIP LOCKED")
                 .bind(cursor).fetch_optional(&mut *tx).await?;
             let Some(row) = row else {
                 tx.rollback().await?;
                 break;
             };
-            cursor = row.try_get("plan_period_id")?;
+            cursor = row.try_get("journal_id")?;
             let journal: Uuid = row.try_get("journal_id")?;
             let period = period_in(&mut tx, journal)
                 .await?
@@ -281,7 +291,7 @@ impl Db {
         let period = period_in(tx, journal.journal_id)
             .await?
             .ok_or_else(|| error::invalid("daily void lacks accounting inputs"))?;
-        let totals = totals_in(tx, period.id).await?;
+        let totals = totals_in(tx, &period).await?;
         if totals.billed != journal.total_minor
             || totals.collected != journal.settled_minor
             || totals.receivable != journal.total_minor - journal.settled_minor
@@ -339,7 +349,7 @@ impl Db {
             .await?;
         self.recognize_plan_period_in(tx, wallet, journal, now, on)
             .await?;
-        let totals = totals_in(tx, period.id).await?;
+        let totals = totals_in(tx, &period).await?;
         let net = totals
             .billed
             .checked_sub(amount)

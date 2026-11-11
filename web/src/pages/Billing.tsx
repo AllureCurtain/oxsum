@@ -237,6 +237,10 @@ export function BillingStatement() {
           </div>
           {s.state === "pastDue" ? <Banner tone="warn">{t("billing.pastDueNote")}</Banner> : null}
           <Link to={`/evidence?statement=${s.statementId}`} className="text-sm text-primary">{t("evidence.statementLink")}</Link>
+          {s.replacesStatementId || s.successorStatementId ? <div className="flex flex-wrap gap-3">
+            {s.replacesStatementId ? <Link className="text-primary" to={`/billing/${s.replacesStatementId}`}>{t("invoiceCorrection.predecessor")}</Link> : null}
+            {s.successorStatementId ? <Link className="text-primary" to={`/billing/${s.successorStatementId}`}>{t("invoiceCorrection.successor")}</Link> : null}
+          </div> : null}
           <StatementPayment key={s.statementId} statementId={s.statementId} />
           <Card title={t("billing.lines")}>
             <TableShell

@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { useSearchParams } from "react-router-dom";
+import { Link, useSearchParams } from "react-router-dom";
 import { useTranslation } from "react-i18next";
 import { FileText, Receipt } from "lucide-react";
 import {
@@ -22,6 +22,7 @@ import {
   TableShell,
   Td,
 } from "../../components/ui";
+import { InvoiceCorrection } from "./invoice-correction";
 import { AuditAction, DetailGrid, Field2, stateBadge } from "./biz";
 import { JournalVoid } from "./journal-void";
 
@@ -156,13 +157,14 @@ function JournalRows() {
           {!journals.isLoading &&
             (journals.data?.journals ?? []).map((j) => (
               <tr key={j.journalId}>
-                <Td mono truncate>{j.journalId.slice(0, 8)}</Td>
+                <Td mono truncate><Link className="text-primary" to={`/business?journal=${j.journalId}#business/statements`}>{j.journalId.slice(0, 8)}</Link></Td>
                 <Td mono truncate>{j.organizationId.slice(0, 8)}</Td>
                 <td>{stateBadge(j.state)}</td>
                 <Td mono align="right"><Cr minor={j.totalMinor} currency={display} /></Td>
                 <Td mono align="right"><Cr minor={j.settledMinor} currency={display} /></Td>
                 <Td mono align="right"><Cr minor={j.disputedMinor} currency={display} /></Td>
                 <td className="text-right">
+                  {canWrite ? <InvoiceCorrection journalId={j.journalId} /> : null}
                   {canWrite ? <JournalVoid journal={j} /> : null}
                 </td>
               </tr>
@@ -283,6 +285,14 @@ export function StatementPaymentSources() {
           <Field2 label={t("common.total")}><Cr minor={document.totalMinor} /></Field2>
           <Field2 label={t("biz.statements.colOrg")}><span className="font-mono text-xs">{document.organizationId}</span></Field2>
         </DetailGrid>
+        {params.has("journal") && journal.data ? <div className="flex flex-wrap gap-3">
+          {journal.data.replacesJournalId ? <Link className="text-primary" to={`/business?journal=${journal.data.replacesJournalId}#business/statements`}>{t("invoiceCorrection.predecessor")}</Link> : null}
+          {journal.data.successorJournalId ? <Link className="text-primary" to={`/business?journal=${journal.data.successorJournalId}#business/statements`}>{t("invoiceCorrection.successor")}</Link> : null}
+          <InvoiceCorrection key={journal.data.journalId} journalId={journal.data.journalId} />
+        </div> : statement.data ? <div className="flex flex-wrap gap-3">
+          {statement.data.replacesStatementId ? <Link className="text-primary" to={`/business?statement=${statement.data.replacesStatementId}#business/statements`}>{t("invoiceCorrection.predecessor")}</Link> : null}
+          {statement.data.successorStatementId ? <Link className="text-primary" to={`/business?statement=${statement.data.successorStatementId}#business/statements`}>{t("invoiceCorrection.successor")}</Link> : null}
+        </div> : null}
         <TableShell head={[t("billing.colKind"), t("billing.colDescription"), { label: t("common.amount"), align: "right" }, t("biz.payments.reference")]}>
           {document.lines.map((line) => <tr key={line.lineId}>
             <td>{line.kind}</td><td>{line.description}</td><Td mono align="right"><Cr minor={line.amountMinor} /></Td><Td mono>{line.sourceRef ?? "—"}</Td>

@@ -544,6 +544,14 @@ pub fn router(state: AppState) -> Router {
             get(journals::business_journal),
         )
         .route(
+            "/business/journals/{journal_id}/correction-preview",
+            post(journals::correction_preview),
+        )
+        .route(
+            "/business/journals/{journal_id}/correct",
+            post(journals::correct_invoice),
+        )
+        .route(
             "/business/journals/{journal_id}/void",
             post(journals::void_journal),
         )

@@ -4736,6 +4736,127 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/business/journals/{journalId}/correction-preview": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Preview source-linked invoice correction consequences
+         * @description Current personal Business FundsWrite authority is required. A bounded
+         *     repeatable snapshot compares original financial sources and official
+         *     entries before showing any proposed correction. Select distinct original
+         *     base-fee lines with nonnegative amounts no greater than their original
+         *     values; existing refund and promotional credits remain unchanged. A
+         *     negative resulting net fee, live repayment or pending return, unsupported
+         *     legacy source or an existing successor refuses. No journal, statement,
+         *     audit, provider or ledger write occurs. Original-source refund payable
+         *     and successor receivable are separate amounts; no cash is transferred.
+         *     The source revision is a precondition, never a payment or reservation.
+         */
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    journalId: string;
+                };
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": components["schemas"]["InvoiceCorrectionPreviewRequest"];
+                };
+            };
+            responses: {
+                /** @description Verified source revision and separate original-payable and successor-debt amounts */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            data: components["schemas"]["InvoiceCorrectionPreview"];
+                        };
+                    };
+                };
+                400: components["responses"]["Error"];
+                401: components["responses"]["Error"];
+                403: components["responses"]["Error"];
+                404: components["responses"]["Error"];
+                409: components["responses"]["Error"];
+                500: components["responses"]["Error"];
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/business/journals/{journalId}/correct": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Atomically void and reissue a source-verified invoice
+         * @description Requires current personal Business FundsWrite authority. The exact preview
+         *     revision, selected lines and reason bind one idempotent operation. The
+         *     predecessor is financially voided and one unpaid successor is issued for
+         *     the same sold service. Original-source payable remains separate; no cash,
+         *     quota, service period or implicit payment transfer occurs. Exact retries
+         *     return the retained receipt even after subsequent financial activity.
+         *     Changed retries, stale sources and competing successors return conflict.
+         */
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    journalId: string;
+                };
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": components["schemas"]["InvoiceCorrectionRequest"];
+                };
+            };
+            responses: {
+                /** @description Retained atomic correction receipt */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            data: components["schemas"]["InvoiceCorrectionResult"];
+                        };
+                    };
+                };
+                400: components["responses"]["Error"];
+                401: components["responses"]["Error"];
+                403: components["responses"]["Error"];
+                404: components["responses"]["Error"];
+                409: components["responses"]["Error"];
+                500: components["responses"]["Error"];
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/business/journals/{journalId}/void": {
         parameters: {
             query?: never;
@@ -20707,12 +20828,109 @@ export interface components {
             createdAt: string;
         };
         InvoiceJournalDetail: components["schemas"]["InvoiceJournal"] & {
+            /**
+             * Format: uuid
+             * @description Immediate committed correction successor, independent of list pagination.
+             */
+            successorJournalId?: string | null;
             lines: components["schemas"]["InvoiceJournalLine"][];
         };
         InvoiceJournalPage: {
             journals: components["schemas"]["InvoiceJournal"][];
             /** Format: uuid */
             nextCursor: string | null;
+        };
+        InvoiceCorrectionLineRequest: {
+            /** Format: uuid */
+            sourceLineId: string;
+            /**
+             * Format: int64
+             * @description Corrected charge for the exact original line, bounded above by its proven charge. Existing credits are retained unchanged.
+             */
+            amountMinor: number;
+        };
+        InvoiceCorrectionPreviewRequest: {
+            lines: components["schemas"]["InvoiceCorrectionLineRequest"][];
+        };
+        InvoiceCorrectionPreviewLine: {
+            /** Format: uuid */
+            sourceLineId: string;
+            /** @enum {string} */
+            kind: "baseFee" | "usageOverage" | "discount" | "promoCredit" | "tax";
+            description: string;
+            /** Format: int64 */
+            originalMinor: number;
+            /** Format: int64 */
+            correctedMinor: number;
+        };
+        InvoiceCorrectionPreview: {
+            /** Format: uuid */
+            journalId: string;
+            /** Format: uuid */
+            statementId: string;
+            /** Format: uuid */
+            organizationId: string;
+            /** Format: uuid */
+            customerPlanId: string;
+            /** Format: uuid */
+            planPeriodId: string;
+            /** Format: uuid */
+            planVersionId: string;
+            currency: string;
+            /** @enum {integer} */
+            accountingPolicyVersion: 1 | 2;
+            /** Format: date-time */
+            serviceStart: string;
+            /** Format: date-time */
+            serviceEnd: string;
+            /** Format: date-time */
+            recognitionBoundary: string;
+            sourceRevision: string;
+            lines: components["schemas"]["InvoiceCorrectionPreviewLine"][];
+            /** Format: int64 */
+            originalTotalMinor: number;
+            /** Format: int64 */
+            correctedTotalMinor: number;
+            /**
+             * Format: int64
+             * @enum {integer}
+             */
+            successorCollectedMinor: 0;
+            /** Format: int64 */
+            successorReceivableMinor: number;
+            /** Format: int64 */
+            successorEarnedMinor: number;
+            /** Format: int64 */
+            successorDeferredMinor: number;
+            /**
+             * Format: int64
+             * @description Source-owned payable after cancellation, including still-retained payable if already void. This is not applied to the successor and no cash refund is executed.
+             */
+            originalPayableMinor: number;
+            /**
+             * Format: int64
+             * @enum {integer}
+             */
+            cashMovementMinor: 0;
+        };
+        InvoiceCorrectionRequest: {
+            lines: components["schemas"]["InvoiceCorrectionLineRequest"][];
+            sourceRevision: string;
+            reason: string;
+            idempotencyKey: string;
+        };
+        InvoiceCorrectionResult: {
+            /** Format: uuid */
+            correctionId: string;
+            /** Format: uuid */
+            originalJournalId: string;
+            /** Format: uuid */
+            originalStatementId: string;
+            /** Format: uuid */
+            journalId: string;
+            /** Format: uuid */
+            statementId: string;
+            preview: components["schemas"]["InvoiceCorrectionPreview"];
         };
         VoidJournalRequest: {
             idempotencyKey: string;
@@ -20806,6 +21024,11 @@ export interface components {
             createdAt: string;
         };
         PlanStatementDetail: components["schemas"]["PlanStatement"] & {
+            /**
+             * Format: uuid
+             * @description Immediate committed correction successor, independent of list pagination.
+             */
+            successorStatementId?: string | null;
             lines: components["schemas"]["PlanStatementLine"][];
         };
         PlanStatementPage: {

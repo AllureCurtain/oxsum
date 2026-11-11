@@ -450,10 +450,9 @@ pub(crate) async fn void_lines_in(
         if header.text("state")? == "void" || excluded.contains(id) {
             continue;
         }
-        if header.text("state")? == "open" || header.optional_id("replaces_statement_id")?.is_some()
-        {
+        if header.text("state")? == "open" {
             return Err(WalletError::Conflict(
-                "unfinished or reissued statement requires financial review".into(),
+                "unfinished statement requires financial review".into(),
             ));
         }
         if super::source_voids::owner(&sources, line)? == journal {

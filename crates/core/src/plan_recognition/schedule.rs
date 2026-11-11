@@ -17,7 +17,7 @@ pub(super) fn day_end(
 
 /// Cumulative minor units at an exact completed boundary. Microsecond duration
 /// matches PostgreSQL timestamptz precision; intermediate products use i128.
-pub(super) fn earned_at(
+pub(crate) fn earned_at(
     net_fee: i64,
     start: OffsetDateTime,
     end: OffsetDateTime,
@@ -42,7 +42,7 @@ pub(super) fn earned_at(
 
 /// The last service boundary completed at cutoff, rather than the current open
 /// day's partial passage. An ended period includes its exact final endpoint.
-pub(super) fn completed_boundary(
+pub(crate) fn completed_boundary(
     start: OffsetDateTime,
     end: OffsetDateTime,
     cutoff: OffsetDateTime,
