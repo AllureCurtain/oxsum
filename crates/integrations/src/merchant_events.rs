@@ -177,6 +177,14 @@ pub fn normalize(
             (text(&value["event_id"]), kind, &value["content"]["object"])
         }
         MerchantRail::Stripe => {
+            // Verified Stripe names (stripe.com/docs/api/events/types): a
+            // deposit's terminal refund event is `refund.updated` (the
+            // equivalent `charge.refund.updated` carries the same refund
+            // object); `refund.created` is intermediate, never terminal. There
+            // is no `refund.failed` — a Stripe refund is pending→succeeded or
+            // fails synchronously at create. `charge.refunded`'s object is the
+            // charge (`ch_…`), not the refund — it is deliberately not a settle
+            // anchor.
             let kind = match value["type"].as_str() {
                 Some("checkout.session.completed")
                     if value["data"]["object"]["payment_status"].as_str() == Some("paid")
@@ -185,6 +193,8 @@ pub fn normalize(
                     Kind::Succeeded
                 }
                 Some("checkout.session.expired") => Kind::Expired,
+                Some("refund.updated" | "charge.refund.updated") => Kind::RefundSucceeded,
+                Some("refund.created") => Kind::Unsupported,
                 _ => Kind::Unsupported,
             };
             (text(&value["id"]), kind, &value["data"]["object"])
@@ -224,11 +234,11 @@ pub fn normalize(
         .or_else(|| id(&metadata["deposit_id"]))
         .or_else(|| id(&object["client_reference_id"]))
         .or_else(|| id(&object["merchant_order_id"]));
-    // A refund object names itself `id` (`rfd_…`) and its parent payment
-    // `payment_intent_id`; a payment-intent object names itself `id` (`int_…`).
-    // Hyperswitch keeps `payment_id`. Reading the wrong field for a refund
-    // would hand `apply_deposit_refund_event` the refund id where it expects
-    // the intent.
+    // A refund object names itself `id` (`rfd_…`/`re_…`) and its parent payment
+    // `payment_intent_id`/`payment_intent`; a payment-intent or session object
+    // names itself `id` (`int_…`/`pi_…`/`cs_…`). Hyperswitch keeps `payment_id`.
+    // Reading the wrong field for a refund would hand
+    // `apply_deposit_refund_event` the refund id where it expects the intent.
     let provider_payment_id = match context.rail {
         MerchantRail::Hyperswitch => text(&object["payment_id"]),
         MerchantRail::Airwallex
@@ -239,11 +249,20 @@ pub fn normalize(
         {
             text(&object["payment_intent_id"]).or_else(|| text(&object["payment_id"]))
         }
+        MerchantRail::Stripe if matches!(kind, Kind::RefundSucceeded | Kind::RefundFailed) => {
+            text(&object["payment_intent"])
+        }
         _ => text(&object["id"]),
     };
     let amount_minor = match context.rail {
         MerchantRail::Hyperswitch => object["amount"].as_i64(),
-        MerchantRail::Stripe => object["amount_total"].as_i64(),
+        MerchantRail::Stripe => {
+            // A session reports `amount_total`; a refund object reports
+            // `amount` (both integer minor units).
+            object["amount_total"]
+                .as_i64()
+                .or_else(|| object["amount"].as_i64())
+        }
         MerchantRail::Airwallex => airwallex_minor(body),
     };
     let account = match context.rail {
@@ -289,10 +308,10 @@ pub fn normalize(
                 .then(|| text(&object["id"]))
                 .flatten()
         })
-    } else if context.rail == MerchantRail::Airwallex
+    } else if matches!(context.rail, MerchantRail::Airwallex | MerchantRail::Stripe)
         && matches!(kind, Kind::RefundSucceeded | Kind::RefundFailed)
     {
-        // A refund object's own handle is `id` (`rfd_…`); there is no
+        // A refund object's own handle is `id` (`rfd_…`/`re_…`); there is no
         // `refund_id` field on it.
         text(&object["id"]).or_else(|| text(&object["refund_id"]))
     } else {

@@ -299,10 +299,27 @@ async fn classify(
     let Some(provider_id) = event.provider_payment_id.as_deref() else {
         return Ok(("rejected", Some("missingProviderPayment")));
     };
+    // A Stripe deposit's payment reference is its checkout session (`cs_…`),
+    // but a refund event names the payment intent (`pi_…`) — the resolved
+    // intent the recovery pass recorded on the deposit's
+    // `meta.stripePaymentIntent`. Either representation names the same Stripe
+    // payment, so a Stripe deposit accepts its resolved intent in place of the
+    // pinned session reference.
+    let stripe_intent_match = sqlx::query_scalar::<_, Option<String>>(
+        "SELECT meta->>'stripePaymentIntent' FROM oxsum.deposits WHERE deposit_id=$1 AND rail=$2",
+    )
+    .bind(id)
+    .bind(crate::RAIL_STRIPE)
+    .fetch_optional(&mut **tx)
+    .await?
+    .flatten()
+    .as_deref()
+        == Some(provider_id);
     if payment
         .provider_payment_id
         .as_deref()
         .is_some_and(|p| p != provider_id)
+        && !stripe_intent_match
     {
         return Ok(("rejected", Some("providerPaymentMismatch")));
     }

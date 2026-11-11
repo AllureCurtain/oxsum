@@ -3,9 +3,10 @@
 //! The lease/validate/record flow is rail-agnostic: only the wire adapter
 //! differs. Hyperswitch authenticates with an `api-key` header and reads
 //! `refunds/{id}`; Airwallex exchanges `x-client-id`/`x-api-key` for a bearer
-//! token, then reads `pa/refunds/{id}`. A successful HTTP answer never
-//! establishes a terminal refund outcome — only an exact authenticated event
-//! moves the durable row.
+//! token, then reads `pa/refunds/{id}`; Stripe Bearer-auths and resolves the
+//! pinned `cs_…` session to the `pi_…` a `v1/refunds` call names. A successful
+//! HTTP answer never establishes a terminal refund outcome — only an exact
+//! authenticated event moves the durable row.
 use crate::provider_http::ProviderHttp;
 use oxsum_core::{DepositRefund, MerchantRail, MerchantSigningContext};
 use reqwest::{Method, StatusCode};
@@ -32,8 +33,7 @@ async fn read(
     match context.rail {
         MerchantRail::Hyperswitch => hyperswitch_read(context, http, id).await,
         MerchantRail::Airwallex => airwallex_read(context, http, id).await,
-        // Stripe refund recovery is deliberately deferred (see decisions.md).
-        MerchantRail::Stripe => Err(UnknownRefund),
+        MerchantRail::Stripe => stripe_read(context, http, id).await,
     }
 }
 
@@ -49,22 +49,49 @@ async fn create(
     match context.rail {
         MerchantRail::Hyperswitch => hyperswitch_create(context, target, http, id).await,
         MerchantRail::Airwallex => airwallex_create(context, target, http, id).await,
-        MerchantRail::Stripe => Err(UnknownRefund),
+        MerchantRail::Stripe => stripe_create(context, target, http, id).await,
     }
 }
 
 /// Checks a provider body against the pinned reversal; a contradiction is
-/// `Err(UnknownRefund)`, never a claimed outcome.
+/// `Err(UnknownRefund)`, never a claimed outcome. Returns the recorded provider
+/// refund handle plus, for the rail that resolved a fresh payment anchor, the
+/// canonical provider payment id the durable row should carry.
 fn validated(
     context: &MerchantSigningContext,
     target: &DepositRefund,
     id: &str,
     body: &Value,
-) -> Result<String, UnknownRefund> {
+) -> Result<ValidatedRefund, UnknownRefund> {
     match context.rail {
-        MerchantRail::Hyperswitch => hyperswitch_validated(context, target, id, body),
-        MerchantRail::Airwallex => airwallex_validated(target, id, body),
-        MerchantRail::Stripe => Err(UnknownRefund),
+        MerchantRail::Hyperswitch => {
+            hyperswitch_validated(context, target, id, body).map(ValidatedRefund::handle)
+        }
+        MerchantRail::Airwallex => {
+            airwallex_validated(target, id, body).map(ValidatedRefund::handle)
+        }
+        MerchantRail::Stripe => stripe_validated(target, body),
+    }
+}
+
+/// A validated provider answer: the refund handle to record plus the canonical
+/// provider payment anchor when the rail resolved a fresh one (Stripe resolves
+/// the durable `cs_…` to the refund's `pi_…`; the other rails keep their
+/// original anchor so `provider_payment_id` stays `None`).
+pub struct ValidatedRefund {
+    /// The provider refund handle (`re_…`/`rfd_…`/request id).
+    pub handle: String,
+    /// The canonical provider payment id the durable row should carry, when
+    /// the arm resolved a different anchor than the one it was seeded with.
+    pub provider_payment_id: Option<String>,
+}
+impl ValidatedRefund {
+    /// Wraps a rail that keeps its seeded anchor — only the handle is new.
+    fn handle(handle: String) -> Self {
+        Self {
+            handle,
+            provider_payment_id: None,
+        }
     }
 }
 
@@ -323,6 +350,171 @@ fn airwallex_validated(
     handle.map(str::to_owned).ok_or(UnknownRefund)
 }
 
+/// Stripe authenticates every call with `Authorization: Bearer <sk_…>` — the
+/// `api_key` the merchant version holds. Refunds are charge/intent-scoped, not
+/// session-scoped, so a `cs_…` payment reference must resolve to its
+/// `payment_intent` (`pi_…`) before a refund can name it.
+async fn stripe_read(
+    context: &MerchantSigningContext,
+    http: &ProviderHttp,
+    id: &str,
+) -> Result<Option<Value>, UnknownRefund> {
+    let response = http
+        .request(
+            Method::GET,
+            &context.version.api_url,
+            &context.version.destination_policy,
+            &["v1", "refunds", id],
+        )
+        .await
+        .map_err(|_| UnknownRefund)?
+        .bearer_auth(context.api_key())
+        .timeout(TIMEOUT)
+        .send()
+        .await
+        .map_err(|_| UnknownRefund)?;
+    let status = response.status();
+    let body: Value = response.json().await.map_err(|_| UnknownRefund)?;
+    if status == StatusCode::NOT_FOUND {
+        return Ok(None);
+    }
+    if !status.is_success() {
+        return Err(UnknownRefund);
+    }
+    Ok(Some(body))
+}
+
+/// Resolves the durable provider payment reference to the `payment_intent`
+/// (`pi_…`) a Stripe refund names. A `pi_…` is already canonical and needs no
+/// lookup; a `cs_…` resolves through `GET /v1/checkout/sessions/{id}` — a
+/// session that never paid has no `payment_intent`, so it stays `UnknownRefund`
+/// rather than fabricating an anchor.
+async fn stripe_payment_intent(
+    context: &MerchantSigningContext,
+    provider_payment_id: &str,
+    http: &ProviderHttp,
+) -> Result<String, UnknownRefund> {
+    if provider_payment_id.starts_with("pi_") {
+        return Ok(provider_payment_id.to_owned());
+    }
+    let response = http
+        .request(
+            Method::GET,
+            &context.version.api_url,
+            &context.version.destination_policy,
+            &["v1", "checkout", "sessions", provider_payment_id],
+        )
+        .await
+        .map_err(|_| UnknownRefund)?
+        .bearer_auth(context.api_key())
+        .timeout(TIMEOUT)
+        .send()
+        .await
+        .map_err(|_| UnknownRefund)?;
+    if !response.status().is_success() {
+        return Err(UnknownRefund);
+    }
+    let body: Value = response.json().await.map_err(|_| UnknownRefund)?;
+    body["payment_intent"]
+        .as_str()
+        .filter(|s| s.starts_with("pi_"))
+        .map(str::to_owned)
+        .ok_or(UnknownRefund)
+}
+
+/// `POST /v1/refunds` with the durable request identity in the
+/// `Idempotency-Key` header (Stripe idempotency is a header, not a body field).
+/// The refund names its parent by `payment_intent` — the `cs_…` the deposit
+/// pinned is resolved first. Amount is integer minor units; Stripe is
+/// minor-native, unlike Airwallex's decimal-major wire.
+async fn stripe_create(
+    context: &MerchantSigningContext,
+    target: &DepositRefund,
+    http: &ProviderHttp,
+    id: &str,
+) -> Result<Value, UnknownRefund> {
+    let payment_intent = stripe_payment_intent(
+        context,
+        target.provider_payment_id.as_deref().ok_or(UnknownRefund)?,
+        http,
+    )
+    .await?;
+    let response = http
+        .request(
+            Method::POST,
+            &context.version.api_url,
+            &context.version.destination_policy,
+            &["v1", "refunds"],
+        )
+        .await
+        .map_err(|_| UnknownRefund)?
+        .bearer_auth(context.api_key())
+        .header("idempotency-key", id)
+        .form(&[
+            ("payment_intent", payment_intent),
+            ("amount", target.amount_minor.to_string()),
+            ("metadata[deposit_id]", target.deposit_id.to_string()),
+            ("metadata[payment_id]", target.deposit_id.to_string()),
+            (
+                "metadata[organization_id]",
+                target.organization_id.to_string(),
+            ),
+        ])
+        .timeout(TIMEOUT)
+        .send()
+        .await
+        .map_err(|_| UnknownRefund)?;
+    if !response.status().is_success() {
+        return Err(UnknownRefund);
+    }
+    response.json().await.map_err(|_| UnknownRefund)
+}
+
+/// A Stripe refund object names itself `id` (`re_…`) and its parent intent
+/// `payment_intent` (`pi_…`). The provider handle returned is `body["id"]` —
+/// Stripe mints it, like Airwallex, unlike Hyperswitch's request-id reuse.
+/// `payment_intent` is returned as the canonical anchor: the durable row's
+/// `cs_…` is rewritten to it so the settle event's `pi_…` comparison matches.
+fn stripe_validated(
+    target: &DepositRefund,
+    body: &Value,
+) -> Result<ValidatedRefund, UnknownRefund> {
+    let handle = body["id"]
+        .as_str()
+        .filter(|s| s.starts_with("re_"))
+        .map(str::to_owned);
+    let payment_intent = body["payment_intent"]
+        .as_str()
+        .filter(|s| s.starts_with("pi_"))
+        .map(str::to_owned);
+    let (Some(handle), Some(payment_intent)) = (handle, payment_intent) else {
+        return Err(UnknownRefund);
+    };
+    // Stripe answers lowercase ISO-4217 (`usd`); the durable currency is the
+    // uppercase form the binding pinned.
+    let currency_ok = body["currency"]
+        .as_str()
+        .is_some_and(|c| c.eq_ignore_ascii_case(&target.currency));
+    if body["amount"].as_i64() != Some(target.amount_minor) || !currency_ok {
+        return Err(UnknownRefund);
+    }
+    for (name, expected) in [
+        ("deposit_id", target.deposit_id),
+        ("payment_id", target.deposit_id),
+        ("organization_id", target.organization_id),
+    ] {
+        if (target.body_identity || !body["metadata"][name].is_null())
+            && body["metadata"][name] != expected.to_string()
+        {
+            return Err(UnknownRefund);
+        }
+    }
+    Ok(ValidatedRefund {
+        handle,
+        provider_payment_id: Some(payment_intent),
+    })
+}
+
 /// Reads a known operation, or creates a new body-identified refund only after
 /// an exact not-found response. Every response is checked against pinned terms;
 /// a successful HTTP answer never establishes a terminal refund outcome.
@@ -330,12 +522,11 @@ pub async fn recover(
     context: &MerchantSigningContext,
     target: &DepositRefund,
     http: &ProviderHttp,
-) -> Result<String, UnknownRefund> {
+) -> Result<ValidatedRefund, UnknownRefund> {
     if target.amount_minor <= 0
         || target.merchant_id != Some(context.merchant_id)
         || target.version_id != Some(context.version.id)
         || target.provider_payment_id.is_none()
-        || context.rail == MerchantRail::Stripe
     {
         return Err(UnknownRefund);
     }

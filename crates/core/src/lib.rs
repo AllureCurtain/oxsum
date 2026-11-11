@@ -175,7 +175,7 @@ pub use customers::{
 pub use db::{Db, SCHEMA};
 pub use deposit_refunds::DepositRefund;
 pub use deposits::{
-    AdminDeposit, CodeBatch, MAX_BATCH, RAIL_AIRWALLEX, RAIL_HYPERSWITCH, Redemption,
+    AdminDeposit, CodeBatch, MAX_BATCH, RAIL_AIRWALLEX, RAIL_HYPERSWITCH, RAIL_STRIPE, Redemption,
 };
 pub use device::{DeviceGrant, DevicePoll, DeviceRequest, POLL_INTERVAL, PollError};
 pub use diagnostics::{DiagnosticCounts, DiagnosticSnapshot};
