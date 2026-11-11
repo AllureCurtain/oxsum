@@ -9,6 +9,23 @@ use std::pin::Pin;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+/// Provider destinations whose TLS 1.3 answers rustls cannot decrypt — the
+/// client is capped at TLS 1.2 for them alone (issue #374). Every other
+/// destination keeps the default, so a merchant-scoped Airwallex call to
+/// `api-demo.airwallex.com` is capped while `api.airwallex.com` and every
+/// non-Airwallex provider keep TLS 1.3.
+const TLS12_DESTINATIONS: &[&str] = &["api-demo.airwallex.com"];
+
+/// The TLS ceiling a destination's client is built with: 1.2 for the known
+/// broken endpoints, the workspace default everywhere else. Matching on the
+/// hostname is deliberate — the cap must survive the destination's IP
+/// addresses changing under it (the cache holds a client per DNS answer set).
+fn tls_cap(host: &str) -> Option<reqwest::tls::Version> {
+    TLS12_DESTINATIONS
+        .contains(&host)
+        .then_some(reqwest::tls::Version::TLS_1_2)
+}
+
 /// Error categories contain no provider URL, credential, DNS answer or body.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ProviderHttpError {
@@ -149,20 +166,29 @@ impl ProviderHttp {
         if let Some((_, client)) = clients.iter().find(|(d, _)| *d == destination) {
             return Ok(client.clone());
         }
-        let client = Client::builder()
-            .no_proxy()
-            .redirect(reqwest::redirect::Policy::none())
-            .referer(false)
-            .connect_timeout(Duration::from_secs(10))
-            .dns_resolver(Arc::new(NoUnvalidatedDns))
-            .resolve_to_addrs(&destination.host, &destination.addresses)
-            .build()
-            .map_err(|_| ProviderHttpError::Blocked)?;
+        let client = Self::build(&destination)?;
         if clients.len() >= 128 {
             clients.pop_front();
         }
         clients.push_back((destination, client.clone()));
         Ok(client)
+    }
+
+    /// One client per destination: no proxy, no redirects, the validated DNS
+    /// answer set pinned, and the destination's TLS ceiling applied. The cap
+    /// is per-destination so a broken endpoint never downgrades the rest.
+    fn build(destination: &Destination) -> Result<Client, ProviderHttpError> {
+        let mut builder = Client::builder()
+            .no_proxy()
+            .redirect(reqwest::redirect::Policy::none())
+            .referer(false)
+            .connect_timeout(Duration::from_secs(10))
+            .dns_resolver(Arc::new(NoUnvalidatedDns))
+            .resolve_to_addrs(&destination.host, &destination.addresses);
+        if let Some(version) = tls_cap(&destination.host) {
+            builder = builder.max_tls_version(version);
+        }
+        builder.build().map_err(|_| ProviderHttpError::Blocked)
     }
 }
 
@@ -306,5 +332,42 @@ mod tests {
                 Err(ProviderHttpError::Blocked)
             ));
         }
+    }
+
+    /// The TLS-1.2 ceiling is keyed on the destination hostname, so the broken
+    /// Airwallex demo endpoint is capped while its production sibling and every
+    /// other provider keep the default (TLS 1.3). A merchant-scoped Airwallex
+    /// call resolves to the same `api-demo.airwallex.com` destination the env
+    /// rail targets — the cap follows the host, not the rail that asked.
+    #[tokio::test]
+    async fn tls_12_cap_is_scoped_to_the_broken_destination() {
+        // The demo endpoint is the only capped destination.
+        assert_eq!(
+            tls_cap("api-demo.airwallex.com"),
+            Some(reqwest::tls::Version::TLS_1_2)
+        );
+        for host in [
+            "api.airwallex.com",
+            "api.stripe.com",
+            "api.hyperswitch.io",
+            "provider.test",
+        ] {
+            assert_eq!(tls_cap(host), None, "{host} must keep TLS 1.3");
+        }
+        // A merchant-scoped request to api-demo builds its client under the
+        // same pinned-destination seam the env rail's tests exercise — the cap
+        // is a transport property of the destination, proven at the one place
+        // the client is constructed.
+        let destination = Destination {
+            host: "api-demo.airwallex.com".to_owned(),
+            addresses: vec![std::net::SocketAddr::new(
+                std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST),
+                443,
+            )],
+        };
+        assert!(
+            ProviderHttp::build(&destination).is_ok(),
+            "the capped destination still produces a client"
+        );
     }
 }

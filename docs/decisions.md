@@ -1,5 +1,46 @@
 # Technical decisions
 
+## 2026-11-11 — Scope the Airwallex TLS-1.2 cap to the destination, not the rail (#1040)
+
+The original TLS-1.2 cap (#374) lived on the `Airwallex` rail's own
+`reqwest::Client`, which `airwallex_of()` builds. That covered only the
+environment rail — a merchant-scoped Airwallex call goes through
+`ProviderHttp`, the policy-enforcing transport every credential-bearing
+merchant call must keep (checked DNS, no redirect, no proxy), and it had no
+cap. The N15 sandbox rehearsal proved it: an env-rail intent to
+`api-demo.airwallex.com` worked, a merchant-scoped one failed TLS 1.3
+`CloseNotify` until relayed.
+
+**Decision:** `ProviderHttp` caps TLS at 1.2 *per destination hostname* —
+`api-demo.airwallex.com` is the only member of `TLS12_DESTINATIONS`. The cap
+is applied where the per-destination client is already built, keyed by the
+pinned host (not the resolved addresses), so it survives the answer set
+changing under the cached client.
+
+- **Destination-scoped, not rail-scoped and not workspace-scoped.** The defect
+  is a property of the endpoint, not of who asked. `api.airwallex.com` and
+  every other provider keep TLS 1.3; the env rail's dedicated client and the
+  merchant transport now agree on the demo endpoint because both resolve to the
+  same broken host.
+- **Keying on hostname, not address.** A DNS re-resolution that returns a new
+  answer set produces a fresh `Destination` and a fresh client — matching on
+  the host keeps the cap attached no matter which IPs come back, while leaving
+  the answer-set equality that drives cache reuse unchanged.
+- **Stays inside `ProviderHttp`.** Replacing the merchant transport with a raw
+  capped `reqwest::Client` would drop checked DNS, redirect and proxy
+  enforcement for the one call that most needs them — a credential-bearing
+  merchant call. The cap is a transport property, so it belongs in the
+  transport.
+
+**Rejected.** *Reusing the `Airwallex` rail's client for merchant calls*: the
+merchant signing context carries per-merchant `api_url`/credentials, not the
+env rail's fixed endpoint — a shared client would conflate two destinations
+and lose the policy check. *Capping whenever `api_url` contains `demo`*: a URL
+substring test gives prod and demo different code paths and breaks the moment
+the URL is overridden, the same mistake the #374 entry already refused.
+*Workspace-wide TLS 1.2*: reverses the modern floor for every provider to fix
+one endpoint.
+
 ## 2026-11-10 — Durable local application operations without owner runtime (#942)
 
 The external example reuses Python/Node and a separate SQLite store rather than
