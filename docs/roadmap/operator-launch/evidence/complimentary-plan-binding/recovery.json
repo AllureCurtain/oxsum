@@ -1,0 +1,17 @@
+{
+  "writes": [
+    {
+      "body": "{\"planVersionId\":\"9ba7173b-69dc-4697-8931-0e0a8da5b3c4\",\"complimentaryGrant\":\"5cc23a52-9703-471d-9ab6-10dae0a8731d\"}",
+      "status": 200
+    }
+  ],
+  "reads": [
+    {
+      "blocked": true
+    },
+    {
+      "blocked": true
+    }
+  ],
+  "blockRead": false
+}

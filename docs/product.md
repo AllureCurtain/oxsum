@@ -972,3 +972,5 @@ lines, terms and proof anchor remain unchanged. No external collection is initia
 Chat retains a browser key only for its exact customer organization and signed-in user. The portal checks its live key identity and credential organization before reuse, ignores the legacy unscoped browser key, and isolates pending initialization across account switches. A changed session requires reloading Chat before sending.
 
 The Business journal list permits FundsWrite staff to correct posted or paid journals. Paid corrections retain original payment ownership as refund payable; they do not move Cash or initiate a provider refund. The confirmation retains the exact journal, reason and idempotency identity through an uncertain response and row refresh.
+
+Business staff explicitly confirms an initial complimentary plan grant without entering internal identifiers (#988). The portal retains the selected authorization and reconciles an uncertain response with the recorded customer plan and original period before retrying. Paid plan binding remains pending payment.
