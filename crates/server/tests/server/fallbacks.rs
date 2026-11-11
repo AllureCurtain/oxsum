@@ -490,6 +490,79 @@ async fn a_failed_model_falls_back_to_the_next() {
     );
 }
 
+/// A model whose own channel answers `404 model_not_found` falls to its
+/// configured fallback: upstream says the model name does not exist, so the
+/// turn walks the chain instead of failing fast (issue #500). The settlement
+/// records the served name and every tried route.
+#[tokio::test]
+async fn a_model_not_found_falls_back_to_the_next() {
+    let world = world!(10_000_000);
+    let requested = world.model("req");
+    let fallback = world.model("fall-a");
+    // Upstream refuses the requested name in OpenAI's model_not_found shape —
+    // the exact refusal a fallback exists to react to.
+    world.answers(
+        "req",
+        Answer::Refuse {
+            status: 404,
+            body: json!({"error": {"message": "The model 'req-xxx' does not exist", "type": "invalid_request_error", "code": "model_not_found"}}),
+        },
+    );
+    world.answers(
+        "fall-a",
+        Answer::Completion {
+            usage: Some((5, 3)),
+        },
+    );
+    assert_eq!(
+        set_fallbacks(&world, &requested, &[&fallback]).await,
+        StatusCode::OK,
+        "the chain is written"
+    );
+
+    let response = chat(&world.app, &world.key, None, simple(&requested)).await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let id = request_id(&response);
+    let _ = response.into_body().collect().await.unwrap().to_bytes();
+
+    // The requested model was tried, then the fallback answered.
+    assert_eq!(
+        world.script.seen(),
+        vec![requested.clone(), fallback.clone()],
+        "the chain walked in order"
+    );
+    let record = world.settlement_within(&id).await;
+    assert_eq!(record["requestedModel"], requested);
+    assert_eq!(record["servedModel"], fallback);
+    assert!(
+        record["upstreamAttempts"].as_i64().unwrap() >= 2,
+        "every try counted: {record}"
+    );
+}
+
+/// A model whose own channel answers `404 model_not_found` with no fallback
+/// configured still fails fast: the 404 advance only fires when there is a
+/// next attempt to take.
+#[tokio::test]
+async fn a_model_not_found_without_a_fallback_still_fails() {
+    let world = world!(10_000_000);
+    let requested = world.model("req");
+    world.answers(
+        "req",
+        Answer::Refuse {
+            status: 404,
+            body: json!({"error": {"message": "The model 'req-xxx' does not exist", "type": "invalid_request_error", "code": "model_not_found"}}),
+        },
+    );
+
+    let response = chat(&world.app, &world.key, None, simple(&requested)).await;
+    assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
+    let id = request_id(&response);
+    let _ = response.into_body().collect().await.unwrap().to_bytes();
+    let record = world.settlement_within(&id).await;
+    assert_eq!(record["kind"], "upstream_error");
+}
+
 /// A mandate whose `models` names only the requested model keeps the fallback
 /// out of reach: the fallback is skipped, not served, and the turn refuses
 /// with the requested model's own upstream error.
