@@ -503,6 +503,11 @@ Model lists and prices reflect the customer's actual tier and the consumption ke
 
 ## Customer sale terms (#599)
 
+The Business Prices workflow uses the selected English or Simplified Chinese
+console locale, including validation, schedule states and preview dimensions.
+Translations change display text only; protocol values and exact amount parsing
+remain identical.
+
 Business staff can prepare reusable sale books, save immutable draft revisions, publish exact versions and schedule default or customer terms through the Business Prices editor or API. The reusable book is the commercial price group; an existing consumption request group still only restricts channels. A customer has at most one active book assignment. Each model resolves by customer override, assigned book, then default book, with missing models falling through and explicit zero prices retained. Supplier acquisition costs never appear in a sale term.
 
 Publishing alone does not activate a version. Assignments/defaults pin published versions with nonoverlapping UTC `[from, to)` windows. A replacement ends the old schedule and starts the new one atomically; historical rows and previously resolved snapshots remain intact. One selected percentage discount applies to the full integer price numerator before a single upward rounding to minor units. Staff previews reject unknown/unpriced dimensions rather than promising a partial price. Owner/admin manage book contents/defaults; owner/finance manage individual customer terms. All mutations require a reason and an idempotency key with atomic audit.

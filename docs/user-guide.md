@@ -1372,6 +1372,13 @@ Your model list and price catalog show routes allowed by your customer tier. A c
 
 ### Prepare customer sale books
 
+The console language switch applies to the sale-book editor, price fields,
+publication and activation confirmations, customer previews and exact-input
+validation. Visible validation and save/publication/activation messages also
+follow a language switch without resubmitting the operation. Customer/model
+names, IDs and UTC timestamps keep their original
+values in both English and Simplified Chinese.
+
 Open **Business → Prices** in business context, or use the [sale-book API](api.md#customer-sale-books-apiv1businesssale-books-599). Owner/admin creates a named book, saves its full model map with `expectedRevision: 0` for the first draft, and publishes that exact draft revision. Later edits save a new revision; the previous publication is unchanged. Each model has customer rates and one optional percentage discount. Provider costs belong to provider configuration and are refused here.
 
 Schedule a published version as the business default, or have owner/finance assign a version to one customer. Owner/finance may override an individual customer model. Previews use the override, then the assigned book, then the default for a missing model. Supply normalized usage to see line items, the matched conditional rule, the selected terms and the final integer charge. A draft preview can compare a proposed change before publishing.
