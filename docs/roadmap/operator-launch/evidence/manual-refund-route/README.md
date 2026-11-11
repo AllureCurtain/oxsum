@@ -42,7 +42,15 @@ visible on the page after its confirmation dialog closes.
   inert target/claim/due-list, zero provider calls and foreign-customer 404.
 - Strict core/server all-target Clippy passed in 3m24s.
 - Contract/codegen, frontend build and pinned formatting passed.
-- Full workspace validation is in progress; no completed result is claimed yet.
+- The initial workspace run stopped after 794 passes at the old manual bundle
+  upgrade fixture, which still expected a new automatic refund on an order without
+  a provider route. #972 retains a pre-upgrade request/replay and explicitly checks
+  new-request refusal, original order/fulfillment and unchanged purchased/promo
+  funds. All 12 focused upgrade/refund tests pass. The no-fail-fast full run
+  completed on base `cf422dc8` plus the #972 fixture repair: **2,256 passed**,
+  zero failures, six existing opt-in tests skipped (2,313.809 seconds; run
+  `62b9dc44-9ece-45f4-afc7-57126499cde7`). This includes the integrated
+  jsonwebtoken 9 repair; newer dependency changes retain their own CI evidence.
 - Browser English/Chinese boundary text was observed using the rebuilt frontend
   on the original integrated backend. This checks UI behavior; the new backend
   refusal is demonstrated by the actual PostgreSQL/HTTP regression above.
@@ -51,3 +59,12 @@ Baseline backend source `ac7bb191ee7a2b52af4a23f2ce54cd9c6f9d82e5`, binary
 SHA-256 `941e9f1776e64ed5559074c637bf73d67de7380a382dc12f56e1b149ca610c53`.
 Frontend base `879e6e6f` plus this repair, byte inventory attached. These are
 local development facts, not candidate, genuine PSP or money-out certification.
+
+## Aggregate test layout continuation
+
+After main `2ee70601` consolidated integration binaries, the unchanged repair
+was merged onto that layout. The exact `bundle_upgrade::` PostgreSQL regression
+passed (1/1), core all-target strict Clippy and pinned formatting passed. The
+original 2,256-pass evidence remains scoped to its recorded development tree;
+it is not relabeled as a new main/candidate run. Main's duplicate issue #1002
+is the same failure. The independent obsolete CI-selector regression is #1003.

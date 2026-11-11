@@ -83,6 +83,9 @@ async fn upgrade_retains_fulfilled_history_and_fences_pending_bundles_and_old_wr
             .fetch_one(db.pool())
             .await
             .unwrap();
+    let historical_refund = Uuid::new_v4();
+    sqlx::query("INSERT INTO oxsum.refunds(refund_id,order_id,organization_id,business_id,amount_minor,display_amount_minor,display_currency,reason,state,request_key) SELECT $1,order_id,organization_id,business_id,2000000,200,display_currency,'historical manual review','requested','legacy-refund' FROM oxsum.payment_orders WHERE order_id=$2")
+        .bind(historical_refund).bind(fulfilled).execute(db.pool()).await.unwrap();
     db.migrate().await.unwrap();
     db.migrate().await.unwrap();
     let mut after: serde_json::Value =
@@ -126,22 +129,50 @@ async fn upgrade_retains_fulfilled_history_and_fences_pending_bundles_and_old_wr
         "legacy fenced intents cannot starve the automatic recovery queue"
     );
     assert_eq!(wallet.available().await.unwrap(), 6_000_000);
-    assert_eq!(
+    // A historical request is still replayable, without inventing a provider
+    // route for the original manual receipt or authorizing a new automatic return.
+    let replay = db
+        .request_order_refund(
+            customer.organization.id,
+            fulfilled,
+            &NewRefundRequest {
+                amount_minor: Some(2_000_000),
+                reason: "historical manual review".into(),
+                request_key: "legacy-refund".into(),
+                requested_by: None,
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(replay.refund_id, historical_refund);
+    assert_eq!(replay.amount_minor, 2_000_000);
+    assert_eq!(replay.state, "requested");
+    assert!(matches!(
         db.request_order_refund(
             customer.organization.id,
             fulfilled,
             &NewRefundRequest {
-                amount_minor: None,
-                reason: "retain historical refund eligibility".into(),
-                request_key: "legacy-refund".into(),
-                requested_by: None
-            }
-        )
+                amount_minor: Some(1_000_000),
+                reason: "new automatic request".into(),
+                request_key: "new-refund".into(),
+                requested_by: None,
+            },
+        ).await,
+        Err(WalletError::Conflict(message)) if message.contains("no provider refund route")
+    ));
+    let refunds = db
+        .order_refunds(customer.organization.id, fulfilled)
         .await
-        .unwrap()
-        .amount_minor,
-        5_000_000
+        .unwrap();
+    assert_eq!(refunds.len(), 1);
+    assert_eq!(refunds[0].refund_id, historical_refund);
+    assert_eq!(
+        db.order_refundable_minor(customer.organization.id, fulfilled)
+            .await
+            .unwrap(),
+        None
     );
+    assert_eq!(wallet.available().await.unwrap(), 6_000_000);
     assert!(
         sqlx::query(insert)
             .bind(Uuid::new_v4())

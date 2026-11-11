@@ -6,6 +6,8 @@ Updated: 2026-11-10
 
 - [ ] [#969](https://github.com/AllureCurtain/oxsum/issues/969) — Actual browser bundle purchase/return and paid-plan activation, fee/payment statement, early-renewal refusal and cancellation service passed with local signed fixtures. Stale plan consumption display is #973; statement correction/dispute, embedded and candidate/external gates remain. [Evidence](docs/roadmap/operator-launch/evidence/commercial-browser/README.md).
 
+- [ ] [#972](https://github.com/AllureCurtain/oxsum/issues/972) — Retain pre-upgrade manual bundle refund history while refusing new automatic provider requests; repair the obsolete upgrade assertion exposed by #966 full regression. Twelve focused upgrade/refund tests, pinned formatting and complete no-fail-fast regression passed: 2,256 passed, six existing opt-ins skipped. Review/integration pending.
+
 - [ ] [#966](https://github.com/AllureCurtain/oxsum/issues/966) — Refuse unrouteable manual receipt refunds before mutation, retain historical review records and exclude them from PSP retry work. Browser baseline and bilingual repair UI verified; 22 core/HTTP refund checks, strict Clippy and contract/frontend checks passed. Full workspace validation in progress. [Evidence](docs/roadmap/operator-launch/evidence/manual-refund-route/README.md).
 
 - [ ] [#963](https://github.com/AllureCurtain/oxsum/issues/963) — Preserve exact plan price/quota inputs; browser baseline silently published a sub-minor positive price as zero. Exact parsing, bilingual refusal and real browser correction passed, with focused money/contract/build/format checks. Review and integration pending. [Evidence](docs/roadmap/operator-launch/evidence/plan-money-input/README.md).
