@@ -32,12 +32,69 @@ fn sealing_key() -> SecretKey {
 }
 
 /// The Stripe API stub: `POST /v1/checkout/sessions` answers a fixed session,
-/// recording the `client_reference_id` the caller sent.
+/// recording the `client_reference_id` the caller sent. `GET
+/// /v1/checkout/sessions/{id}` resolves the session's `payment_intent` for the
+/// refund path; `POST /v1/refunds` records the refund it was asked to issue and
+/// answers a `re_…` handle; `GET /v1/refunds/{id}` reads it back.
 #[derive(Clone, Default)]
 struct StripeStub {
     calls: Arc<Mutex<Vec<String>>>,
     answer_url: Arc<Mutex<String>>,
     answer_id: Arc<Mutex<String>>,
+    /// The `payment_intent` every session resolves to.
+    payment_intent: Arc<Mutex<String>>,
+    /// Refund create bodies the recovery path sent, in order.
+    refund_creates: Arc<Mutex<Vec<Value>>>,
+    /// `Idempotency-Key` headers the refund creates carried, in order.
+    refund_idempotency: Arc<Mutex<Vec<String>>>,
+    /// Refund objects the stub issued, keyed by `re_…` id.
+    stored_refunds: Arc<Mutex<std::collections::HashMap<String, Value>>>,
+    /// Armed refusal for the next refund create (status + error envelope).
+    refund_refusal: Arc<Mutex<Option<(StatusCode, Value)>>>,
+}
+
+/// Reads one form-encoded field out of an `application/x-www-form-urlencoded`
+/// body — Stripe's wire shape. Keys arrive percent-encoded (`metadata[a]` is
+/// `metadata%5Ba%5D`), so the name is encoded before comparing.
+fn form_field(body: &str, name: &str) -> Option<String> {
+    body.split('&').find_map(|pair| {
+        let mut kv = pair.splitn(2, '=');
+        let (Some(k), Some(v)) = (kv.next(), kv.next()) else {
+            return None;
+        };
+        (decode_form(k) == name).then(|| decode_form(v))
+    })
+}
+
+/// Percent-decodes a `application/x-www-form-urlencoded` token — enough of the
+/// spec to read Stripe's `metadata[…]` keys and UUID values back.
+fn decode_form(value: &str) -> String {
+    let mut out = String::with_capacity(value.len());
+    let bytes = value.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'%' if i + 2 < bytes.len() => {
+                let hex = std::str::from_utf8(&bytes[i + 1..i + 3]).unwrap_or("");
+                if let Ok(b) = u8::from_str_radix(hex, 16) {
+                    out.push(b as char);
+                    i += 3;
+                } else {
+                    out.push('%');
+                    i += 1;
+                }
+            }
+            b'+' => {
+                out.push(' ');
+                i += 1;
+            }
+            c => {
+                out.push(c as char);
+                i += 1;
+            }
+        }
+    }
+    out
 }
 
 async fn stub_stripe() -> (String, StripeStub) {
@@ -46,24 +103,89 @@ async fn stub_stripe() -> (String, StripeStub) {
         .route(
             "/v1/checkout/sessions",
             post(|State(stub): State<StripeStub>, body: String| async move {
-                // The form-encoded body carries client_reference_id as
-                // `client_reference_id=<uuid>` — read it back out.
-                let ref_id = body
-                    .split('&')
-                    .find_map(|pair| {
-                        let mut kv = pair.splitn(2, '=');
-                        match (kv.next(), kv.next()) {
-                            (Some("client_reference_id"), Some(v)) => Some(v.to_owned()),
-                            _ => None,
-                        }
-                    })
-                    .unwrap_or_default();
+                let ref_id = form_field(&body, "client_reference_id").unwrap_or_default();
                 stub.calls.lock().unwrap().push(ref_id);
                 axum::Json(json!({
                     "id": *stub.answer_id.lock().unwrap(),
                     "url": *stub.answer_url.lock().unwrap(),
                 }))
             }),
+        )
+        .route(
+            "/v1/checkout/sessions/{id}",
+            axum::routing::get(
+                |State(stub): State<StripeStub>,
+                 axum::extract::Path(id): axum::extract::Path<String>| async move {
+                    axum::Json(json!({
+                        "id": id,
+                        "payment_intent": *stub.payment_intent.lock().unwrap(),
+                        "payment_status": "paid",
+                    }))
+                },
+            ),
+        )
+        .route(
+            "/v1/refunds",
+            post(
+                |State(stub): State<StripeStub>,
+                 headers: HeaderMap,
+                 body: String| async move {
+                    let parsed = json!({
+                        "payment_intent": form_field(&body, "payment_intent"),
+                        "amount": form_field(&body, "amount").and_then(|a| a.parse::<i64>().ok()),
+                        "metadata": {
+                            "deposit_id": form_field(&body, "metadata[deposit_id]"),
+                            "payment_id": form_field(&body, "metadata[payment_id]"),
+                            "organization_id": form_field(&body, "metadata[organization_id]"),
+                        },
+                    });
+                    stub.refund_creates.lock().unwrap().push(parsed.clone());
+                    stub.refund_idempotency.lock().unwrap().push(
+                        headers
+                            .get("idempotency-key")
+                            .and_then(|v| v.to_str().ok())
+                            .unwrap_or_default()
+                            .to_owned(),
+                    );
+                    if let Some((status, refusal)) = stub.refund_refusal.lock().unwrap().clone() {
+                        return (status, axum::Json(refusal));
+                    }
+                    let refund_id = format!(
+                        "re_{}",
+                        parsed["payment_intent"].as_str().unwrap_or_default().replace("pi_", "")
+                    );
+                    let value = json!({
+                        "id": refund_id,
+                        "object": "refund",
+                        "amount": parsed["amount"],
+                        "charge": "ch_stub",
+                        "payment_intent": parsed["payment_intent"],
+                        "status": "succeeded",
+                        "currency": "usd",
+                        "metadata": parsed["metadata"],
+                    });
+                    stub.stored_refunds
+                        .lock()
+                        .unwrap()
+                        .insert(refund_id, value.clone());
+                    (StatusCode::OK, axum::Json(value))
+                },
+            ),
+        )
+        .route(
+            "/v1/refunds/{id}",
+            axum::routing::get(
+                |State(stub): State<StripeStub>,
+                 axum::extract::Path(id): axum::extract::Path<String>| async move {
+                    stub.stored_refunds.lock().unwrap().get(&id).cloned().map_or(
+                        (
+                            StatusCode::NOT_FOUND,
+                            axum::Json(json!({"error":{"code":"resource_missing","message":"No such refund"}})),
+                        ),
+                        |value| (StatusCode::OK, axum::Json(value)),
+                    )
+                },
+            ),
         )
         .with_state(stub.clone());
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -87,6 +209,7 @@ async fn world() -> Option<(Router, Db, StripeStub)> {
     let (api_url, stub) = stub_stripe().await;
     *stub.answer_id.lock().unwrap() = "cs_test_123".to_owned();
     *stub.answer_url.lock().unwrap() = "https://checkout.stripe.com/pay/cs_test_123".to_owned();
+    *stub.payment_intent.lock().unwrap() = "pi_test_123".to_owned();
     let rail = oxsum_server::stripe::Stripe::new(
         "sk_test_123".to_owned(),
         WEBHOOK_SECRET.to_owned(),
@@ -469,4 +592,232 @@ async fn an_expired_session_credits_nothing() {
 
     let after = balance(&app, &key).await;
     assert_eq!(after, before);
+}
+
+const ADMIN_TOKEN: &str = "operator-token-stripe-refund";
+
+/// A world with the admin surface configured too — the reversal path the
+/// deposit-refund recovery tests exercise lives on `/api/v1/admin`.
+async fn admin_world() -> Option<(Router, Db, StripeStub)> {
+    let u = url()?;
+    let pool: PgPool = sqlx::postgres::PgPoolOptions::new()
+        .max_connections(5)
+        .connect(&u)
+        .await
+        .expect("connects to PostgreSQL");
+    let db = Db::from_pool(pool);
+    db.migrate().await.expect("migrates");
+    oxsum_testkit::set_registration_fixture(db.pool(), true).await;
+    let (api_url, stub) = stub_stripe().await;
+    *stub.answer_id.lock().unwrap() = "cs_test_123".to_owned();
+    *stub.answer_url.lock().unwrap() = "https://checkout.stripe.com/pay/cs_test_123".to_owned();
+    *stub.payment_intent.lock().unwrap() = "pi_test_123".to_owned();
+    let rail = oxsum_server::stripe::Stripe::new(
+        "sk_test_123".to_owned(),
+        WEBHOOK_SECRET.to_owned(),
+        api_url,
+        "http://localhost:3000".to_owned(),
+    );
+    let config = Config::new(Signup::Open, None)
+        .with_secret(sealing_key())
+        .with_admin_token(ADMIN_TOKEN)
+        .with_public_url("http://localhost:3000")
+        .with_merchant_bootstrap(rail.merchant_bootstrap(
+            "acct_stripe_test".to_owned(),
+            oxsum_core::MerchantMode::Test,
+            oxsum_core::ProviderDestinationPolicy {
+                network: oxsum_core::ProviderNetwork::Internal,
+                allowed_ips: vec![std::net::Ipv4Addr::LOCALHOST.into()],
+            },
+        ))
+        .with_stripe(rail);
+    oxsum_server::prepare(&db, &config)
+        .await
+        .expect("the deployment is prepared");
+    let (app, _events, _metrics) = oxsum_server::app_with_billing(db.clone(), config);
+    Some((app, db, stub))
+}
+
+/// Posts a signed Stripe webhook body to the open intake.
+async fn post_webhook(app: &Router, event: &Value) -> StatusCode {
+    let (headers, body_str) = signed_webhook(WEBHOOK_SECRET, &event.to_string());
+    let req = Request::builder()
+        .method("POST")
+        .uri("/api/v1/webhooks/stripe")
+        .body(Body::from(body_str))
+        .unwrap();
+    let mut req = req;
+    *req.headers_mut() = headers;
+    app.clone().oneshot(req).await.unwrap().status()
+}
+
+/// Opens a merchant-bound Stripe deposit, credits it under a signed
+/// `checkout.session.completed`, then reverses it through the admin surface.
+/// Returns the deposit id and the session's resolved `payment_intent`.
+async fn credited_reversed_deposit(
+    app: &Router,
+    stub: &StripeStub,
+    key: &str,
+    amount_minor: i64,
+) -> (Uuid, String) {
+    let (status, body) = call(
+        app,
+        "POST",
+        "/api/v1/topups/stripe",
+        Some(json!({"idempotencyKey": format!("dep-{}", Uuid::new_v4()), "amountMinor": amount_minor})),
+        Some(key),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let deposit_id = Uuid::parse_str(body["data"]["depositId"].as_str().unwrap()).unwrap();
+    let session_id = "cs_test_123";
+    let payment_intent = stub.payment_intent.lock().unwrap().clone();
+    // A signed success credits the wallet under the session id.
+    let event = json!({
+        "id": format!("evt_paid_{deposit_id}"),
+        "type": "checkout.session.completed",
+        "data": { "object": {
+            "id": session_id,
+            "client_reference_id": deposit_id.to_string(),
+            "amount_total": amount_minor,
+            "payment_status": "paid",
+            "currency": "usd",
+        } }
+    });
+    assert_eq!(post_webhook(app, &event).await, StatusCode::OK);
+    // Reverse it — the operator call queues the durable refund and recovers it.
+    let (status, body) = call(
+        app,
+        "POST",
+        &format!("/api/v1/admin/deposits/{deposit_id}/reverse"),
+        Some(json!({"reason": "customer asked"})),
+        Some(ADMIN_TOKEN),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["data"]["status"].as_str().unwrap(), "reversed");
+    (deposit_id, payment_intent)
+}
+
+/// A reversed Stripe deposit resolves `cs_…`→`pi_…`, creates the provider
+/// refund once under the `Idempotency-Key` header, records the `re_…` handle,
+/// and a signed `refund.updated` event settles the row.
+#[tokio::test]
+async fn a_reversed_stripe_deposit_recovers_and_settles() {
+    let Some((app, db, stub)) = admin_world().await else {
+        return;
+    };
+    let key = register_session(&app).await;
+    let (deposit_id, payment_intent) = credited_reversed_deposit(&app, &stub, &key, 4000).await;
+
+    // Recovery ran: exactly one refund create, payment_intent-scoped, integer
+    // minor units, under the durable request id in the Idempotency-Key header.
+    let creates = stub.refund_creates.lock().unwrap().clone();
+    assert_eq!(creates.len(), 1);
+    assert_eq!(
+        creates[0]["payment_intent"].as_str().unwrap(),
+        payment_intent
+    );
+    assert_eq!(creates[0]["amount"], json!(4000));
+    let idempotency = stub.refund_idempotency.lock().unwrap().clone();
+    assert_eq!(idempotency.len(), 1);
+    assert!(!idempotency[0].is_empty());
+
+    // The durable row is pending with the `re_…` handle recorded, and the
+    // deposit's mutable meta carries the resolved `pi_…` (the refund row's own
+    // `provider_payment_id` stays its pinned `cs_…` session — that column is
+    // immutable under `protect_deposit_refund`).
+    let target = db.deposit_refund(deposit_id).await.unwrap().unwrap();
+    assert_eq!(target.state, "pending");
+    assert_eq!(target.provider_payment_id.as_deref(), Some("cs_test_123"));
+    let provider_refund_id = target.provider_refund_id.clone().unwrap();
+    assert!(provider_refund_id.starts_with("re_"));
+    let intent: Option<String> = sqlx::query_scalar(
+        "SELECT meta->>'stripePaymentIntent' FROM oxsum.deposits WHERE deposit_id=$1",
+    )
+    .bind(deposit_id)
+    .fetch_one(db.pool())
+    .await
+    .unwrap();
+    assert_eq!(intent.as_deref(), Some(payment_intent.as_str()));
+
+    // An unsigned/wrong-signature `refund.updated` event does NOT settle.
+    let wrong = json!({
+        "id": "evt_wrong_sig",
+        "type": "refund.updated",
+        "data": { "object": {
+            "id": provider_refund_id,
+            "payment_intent": payment_intent,
+            "amount": 4000,
+            "currency": "usd",
+            "metadata": { "deposit_id": deposit_id, "payment_id": deposit_id, "organization_id": target.organization_id },
+        } }
+    });
+    let (headers, body_str) = signed_webhook("wrong-secret", &wrong.to_string());
+    let req = Request::builder()
+        .method("POST")
+        .uri("/api/v1/webhooks/stripe")
+        .body(Body::from(body_str))
+        .unwrap();
+    let mut req = req;
+    *req.headers_mut() = headers;
+    assert_eq!(
+        app.clone().oneshot(req).await.unwrap().status(),
+        StatusCode::UNAUTHORIZED
+    );
+    assert_eq!(
+        db.deposit_refund(deposit_id).await.unwrap().unwrap().state,
+        "pending"
+    );
+
+    // A signed `refund.updated` carrying the refund id + resolved intent settles.
+    let event = json!({
+        "id": format!("evt_settled_{deposit_id}"),
+        "type": "refund.updated",
+        "data": { "object": {
+            "id": provider_refund_id,
+            "object": "refund",
+            "payment_intent": payment_intent,
+            "amount": 4000,
+            "currency": "usd",
+            "status": "succeeded",
+            "metadata": { "deposit_id": deposit_id, "payment_id": deposit_id, "organization_id": target.organization_id },
+        } }
+    });
+    assert_eq!(post_webhook(&app, &event).await, StatusCode::OK);
+    let final_state = db.deposit_refund(deposit_id).await.unwrap().unwrap();
+    assert_eq!(final_state.state, "succeeded");
+    assert!(final_state.next_attempt_at.is_none());
+}
+
+/// A `charge.refunded` event names the charge object, not the refund — it is
+/// deliberately not a settle anchor, so it never settles the durable row.
+#[tokio::test]
+async fn a_charge_refunded_event_never_settles() {
+    let Some((app, db, stub)) = admin_world().await else {
+        return;
+    };
+    let key = register_session(&app).await;
+    let (deposit_id, payment_intent) = credited_reversed_deposit(&app, &stub, &key, 2000).await;
+    let target = db.deposit_refund(deposit_id).await.unwrap().unwrap();
+    assert_eq!(target.state, "pending");
+
+    // A signed `charge.refunded` whose object is the charge — it carries no
+    // refund `re_…` and must not be normalized to a settle.
+    let event = json!({
+        "id": format!("evt_charge_refunded_{deposit_id}"),
+        "type": "charge.refunded",
+        "data": { "object": {
+            "id": "ch_stub",
+            "object": "charge",
+            "payment_intent": payment_intent,
+            "amount_refunded": 2000,
+            "currency": "usd",
+        } }
+    });
+    assert_eq!(post_webhook(&app, &event).await, StatusCode::OK);
+    assert_eq!(
+        db.deposit_refund(deposit_id).await.unwrap().unwrap().state,
+        "pending"
+    );
 }
