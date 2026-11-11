@@ -3907,3 +3907,14 @@ may already have been issued. Current authority remains mandatory for replay.
 Release preflight connections before opening a wallet, then recheck authority
 under the Business lock in the actual financial transaction. No new payment,
 provider-usage attestation or independent proof scope is implied.
+
+## 2026-11-11 — Atomic source-bound monthly repayments (#1013)
+
+Reuse the immutable admin audit as the source binding for the existing deployment
+payment endpoint. Keeping historical raw ledger keys allows old fully audited
+credit-only payments to replay without new money. Refuse unaudited or mismatched
+legacy entries because their document attribution cannot be reconstructed safely.
+Serialize global audit identity before organization, credit and append locks;
+check period debt, post credit-only cash, reconcile FIFO and audit on one borrowed
+connection. This also removes stale reconciliation writes that could regress a
+paid statement. Staff reference/actor records remain a separate #1006 workflow.

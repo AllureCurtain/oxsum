@@ -945,3 +945,362 @@ async fn issuance_reads_repayment_that_committed_before_its_append_lock() {
     assert_eq!(issued.paid_minor, ONE);
     assert_eq!(issued.outstanding_minor, 2 * ONE);
 }
+
+async fn issued_credit_fixture(url: &str, name: &str) -> (Fixture, Uuid) {
+    let f = fixture(url, name).await;
+    f.wallet
+        .set_credit_limit("credit", 1_000, AUG)
+        .await
+        .unwrap();
+    turn(&f, "aug", "mock", "model", 30, 30, AUG).await;
+    turn(&f, "sept", "mock", "model", 70, 70, SEPT).await;
+    let draft =
+        f.db.generate_statement(&f.org, &f.wallet, &statement_period("2026-09").unwrap())
+            .await
+            .unwrap()
+            .unwrap();
+    f.db.finalize_statement(draft.id, &f.wallet, today())
+        .await
+        .unwrap();
+    (f, draft.id)
+}
+
+#[tokio::test]
+async fn monthly_payment_paid_replay_binds_source_and_preserves_fifo() {
+    let url = db_or_skip!();
+    let (f, id) = issued_credit_fixture(&url, "payment_replay").await;
+    let key = fresh("repay");
+    let (partial, first) =
+        f.db.record_monthly_statement_payment(&f.wallet, id, &key, 30, today())
+            .await
+            .unwrap();
+    assert!(first.is_new);
+    assert_eq!(
+        partial.paid_minor, 0,
+        "earlier unbilled draws take their share"
+    );
+    let final_key = fresh("final");
+    let (paid, receipt) =
+        f.db.record_monthly_statement_payment(&f.wallet, id, &final_key, 70, today())
+            .await
+            .unwrap();
+    assert_eq!(paid.payment_status, PaymentStatus::Paid);
+    let (again, replay) =
+        f.db.record_monthly_statement_payment(&f.wallet, id, &final_key, 70, today())
+            .await
+            .unwrap();
+    assert!(!replay.is_new);
+    assert_eq!(receipt.entry_id, replay.entry_id);
+    assert_eq!(again.paid_minor, 70);
+    assert!(matches!(
+        f.db.record_monthly_statement_payment(&f.wallet, id, &final_key, 69, today())
+            .await,
+        Err(WalletError::Conflict(_))
+    ));
+    assert!(matches!(
+        f.db.record_monthly_statement_payment(&f.wallet, id, &fresh("new"), 1, today())
+            .await,
+        Err(WalletError::InvalidInput(_))
+    ));
+    let aug =
+        f.db.generate_statement(&f.org, &f.wallet, &statement_period("2026-08").unwrap())
+            .await
+            .unwrap()
+            .unwrap();
+    f.db.finalize_statement(aug.id, &f.wallet, today())
+        .await
+        .unwrap();
+    assert!(matches!(
+        f.db.record_monthly_statement_payment(&f.wallet, aug.id, &final_key, 70, today())
+            .await,
+        Err(WalletError::Conflict(_))
+    ));
+    let count: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM oxsum.admin_audit WHERE action='statement.payment' AND target=$1",
+    )
+    .bind(id.to_string())
+    .fetch_one(f.db.pool())
+    .await
+    .unwrap();
+    assert_eq!(count, 2);
+    assert_eq!(f.wallet.credit_repaid().await.unwrap(), 100);
+    assert_eq!(f.wallet.credit_used().await.unwrap(), 0);
+}
+
+#[tokio::test]
+async fn monthly_payment_concurrent_repayments_and_topup_never_grant_excess() {
+    let url = db_or_skip!();
+    let (f, id) = issued_credit_fixture(&url, "payment_race").await;
+    let one = fresh("one");
+    let two = fresh("two");
+    let (a, b) = tokio::join!(
+        f.db.record_monthly_statement_payment(&f.wallet, id, &one, 100, today()),
+        f.db.record_monthly_statement_payment(&f.wallet, id, &two, 100, today()),
+    );
+    assert_eq!(usize::from(a.is_ok()) + usize::from(b.is_ok()), 1);
+    assert_eq!(f.wallet.credit_repaid().await.unwrap(), 100);
+    assert_eq!(f.wallet.available().await.unwrap(), 1_000);
+
+    let (f, id) = issued_credit_fixture(&url, "payment_topup_race").await;
+    let one = fresh("payment");
+    let (a, b) = tokio::join!(
+        f.db.record_monthly_statement_payment(&f.wallet, id, &one, 100, today()),
+        f.wallet.top_up("topup", 40, today()),
+    );
+    b.unwrap();
+    if a.is_ok() {
+        assert_eq!(f.wallet.credit_repaid().await.unwrap(), 100);
+        assert_eq!(
+            f.wallet.available().await.unwrap(),
+            1_040,
+            "only the independent topup may fund wallet"
+        );
+    } else {
+        assert!(matches!(a, Err(WalletError::InvalidInput(_))));
+        assert_eq!(f.wallet.credit_repaid().await.unwrap(), 40);
+        assert_eq!(f.wallet.available().await.unwrap(), 940);
+        let count: i64 = sqlx::query_scalar("SELECT count(*) FROM oxsum.admin_audit WHERE action='statement.payment' AND idempotency_key=$1")
+            .bind(&one).fetch_one(f.db.pool()).await.unwrap();
+        assert_eq!(count, 0);
+    }
+}
+
+#[tokio::test]
+async fn monthly_payment_single_connection_and_legacy_audit_replay() {
+    let url = db_or_skip!();
+    let (f, id) = issued_credit_fixture(&url, "payment_single").await;
+    let key = fresh("legacy");
+    let original = f.wallet.top_up(&key, 100, today()).await.unwrap();
+    assert!(
+        matches!(
+            f.db.record_monthly_statement_payment(&f.wallet, id, &key, 100, today())
+                .await,
+            Err(WalletError::Conflict(_))
+        ),
+        "unaudited legacy cash cannot claim a document"
+    );
+    f.db.record_audit(
+        oxsum_core::audit_action::STATEMENT_PAYMENT,
+        Some(&id.to_string()),
+        json!({"amountMinor":100,"entryId":original.entry_id}),
+        Some(&key),
+    )
+    .await
+    .unwrap();
+    let db = Db::connect(&url, 1).await.unwrap();
+    let wallet = Wallet::open(db.pool().clone(), &f.org.tenant_id)
+        .await
+        .unwrap();
+    let (statement, receipt) = tokio::time::timeout(
+        std::time::Duration::from_secs(3),
+        db.record_monthly_statement_payment(&wallet, id, &key, 100, today()),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    assert_eq!(statement.payment_status, PaymentStatus::Paid);
+    assert_eq!(receipt.entry_id, original.entry_id);
+    assert!(!receipt.is_new);
+    // A fresh posting (not merely a replay) also fits one pool connection.
+    turn(
+        &f,
+        "late-credit",
+        "mock",
+        "model",
+        1,
+        1,
+        date!(2026 - 10 - 15),
+    )
+    .await;
+    let draft = db
+        .generate_statement(&f.org, &wallet, &statement_period("2026-10").unwrap())
+        .await
+        .unwrap()
+        .unwrap();
+    db.finalize_statement(draft.id, &wallet, today())
+        .await
+        .unwrap();
+    let (_, fresh) = tokio::time::timeout(
+        std::time::Duration::from_secs(3),
+        db.record_monthly_statement_payment(&wallet, draft.id, &fresh("single-new"), 1, today()),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    assert!(fresh.is_new);
+    db.pool().close().await;
+}
+
+#[tokio::test]
+async fn monthly_payment_audit_failure_rolls_back_cash_standing_and_key() {
+    let url = db_or_skip!();
+    let (f, id) = issued_credit_fixture(&url, "payment_rollback").await;
+    let key = fresh("fail_audit");
+    let function = fresh("fail_monthly_audit");
+    sqlx::raw_sql(&format!("CREATE FUNCTION oxsum.{function}() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN IF NEW.idempotency_key = '{key}' THEN RAISE EXCEPTION 'injected monthly audit failure'; END IF; RETURN NEW; END $$; CREATE TRIGGER {function} BEFORE INSERT ON oxsum.admin_audit FOR EACH ROW EXECUTE FUNCTION oxsum.{function}()"))
+        .execute(f.db.pool()).await.unwrap();
+    assert!(
+        f.db.record_monthly_statement_payment(&f.wallet, id, &key, 100, today())
+            .await
+            .is_err()
+    );
+    assert_eq!(f.wallet.credit_repaid().await.unwrap(), 0);
+    assert_eq!(
+        f.db.statement_by_id(id).await.unwrap().unwrap().paid_minor,
+        0
+    );
+    sqlx::raw_sql(&format!(
+        "DROP TRIGGER {function} ON oxsum.admin_audit; DROP FUNCTION oxsum.{function}()"
+    ))
+    .execute(f.db.pool())
+    .await
+    .unwrap();
+    let (statement, receipt) =
+        f.db.record_monthly_statement_payment(&f.wallet, id, &key, 100, today())
+            .await
+            .unwrap();
+    assert!(receipt.is_new);
+    assert_eq!(statement.payment_status, PaymentStatus::Paid);
+}
+
+#[tokio::test]
+async fn monthly_payment_caps_selected_period_and_refuses_foreign_identity() {
+    let url = db_or_skip!();
+    let (f, id) = issued_credit_fixture(&url, "payment_caps").await;
+    // Later debt cannot justify exceeding this statement's closed-period cap.
+    turn(&f, "oct", "mock", "model", 50, 50, date!(2026 - 10 - 15)).await;
+    let key = fresh("bounded");
+    assert!(matches!(
+        f.db.record_monthly_statement_payment(&f.wallet, id, &key, 101, today())
+            .await,
+        Err(WalletError::InvalidInput(_))
+    ));
+    let (a, b) = tokio::join!(
+        f.db.record_monthly_statement_payment(&f.wallet, id, &key, 100, today()),
+        f.db.record_monthly_statement_payment(&f.wallet, id, &key, 100, today()),
+    );
+    let (_, a) = a.unwrap();
+    let (_, b) = b.unwrap();
+    assert_eq!(a.entry_id, b.entry_id);
+    assert_ne!(a.is_new, b.is_new);
+    assert_eq!(f.wallet.credit_used().await.unwrap(), 50);
+    let (other, other_id) = issued_credit_fixture(&url, "payment_other").await;
+    assert!(matches!(
+        f.db.record_monthly_statement_payment(&other.wallet, id, &fresh("foreign"), 1, today())
+            .await,
+        Err(WalletError::InvalidInput(_))
+    ));
+    assert!(matches!(
+        other
+            .db
+            .record_monthly_statement_payment(&other.wallet, other_id, &key, 100, today())
+            .await,
+        Err(WalletError::Conflict(_))
+    ));
+    assert_eq!(other.wallet.credit_used().await.unwrap(), 100);
+}
+
+#[tokio::test]
+async fn monthly_payment_delivery_failure_rolls_back_audit_and_cash() {
+    let url = db_or_skip!();
+    let (f, id) = issued_credit_fixture(&url, "payment_event_failure").await;
+    f.db.create_webhook(
+        f.org.id,
+        "https://receiver.example/hook",
+        &["statement.payment_status_updated".into()],
+        &SecretKey::from_bytes([8; 32]),
+    )
+    .await
+    .unwrap();
+    let key = fresh("event_payment");
+    let function = fresh("fail_payment_event");
+    sqlx::raw_sql(&format!("CREATE FUNCTION oxsum.{function}() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN IF NEW.organization_id = '{}' THEN RAISE EXCEPTION 'injected monthly event failure'; END IF; RETURN NEW; END $$; CREATE TRIGGER {function} BEFORE INSERT ON oxsum.webhook_deliveries FOR EACH ROW EXECUTE FUNCTION oxsum.{function}()", f.org.id))
+        .execute(f.db.pool()).await.unwrap();
+    assert!(
+        f.db.record_monthly_statement_payment(&f.wallet, id, &key, 100, today())
+            .await
+            .is_err()
+    );
+    sqlx::raw_sql(&format!(
+        "DROP TRIGGER {function} ON oxsum.webhook_deliveries; DROP FUNCTION oxsum.{function}()"
+    ))
+    .execute(f.db.pool())
+    .await
+    .unwrap();
+    assert_eq!(f.wallet.credit_repaid().await.unwrap(), 0);
+    let count: i64 = sqlx::query_scalar("SELECT count(*) FROM oxsum.admin_audit WHERE action='statement.payment' AND idempotency_key=$1")
+        .bind(&key).fetch_one(f.db.pool()).await.unwrap();
+    assert_eq!(
+        count, 0,
+        "audit inserted before the failed enqueue rolls back too"
+    );
+    let (paid, receipt) =
+        f.db.record_monthly_statement_payment(&f.wallet, id, &key, 100, today())
+            .await
+            .unwrap();
+    assert_eq!(paid.payment_status, PaymentStatus::Paid);
+    assert!(receipt.is_new);
+    f.db.record_monthly_statement_payment(&f.wallet, id, &key, 100, today())
+        .await
+        .unwrap();
+    let events: i64 = sqlx::query_scalar("SELECT count(*) FROM oxsum.webhook_deliveries WHERE organization_id=$1 AND event_type='statement.payment_status_updated'")
+        .bind(f.org.id).fetch_one(f.db.pool()).await.unwrap();
+    assert_eq!(events, 1);
+}
+
+#[tokio::test]
+async fn monthly_payment_rechecks_cap_after_waiting_for_a_queued_topup() {
+    use sha2::{Digest, Sha256};
+
+    let url = db_or_skip!();
+    let (f, id) = issued_credit_fixture(&url, "payment_queued_topup").await;
+    let f = std::sync::Arc::new(f);
+    let mut hasher = Sha256::new();
+    hasher.update(b"oxsum/credit-limit/v1\0");
+    hasher.update(f.org.tenant_id.as_bytes());
+    let bytes = hasher.finalize();
+    let lock = i64::from_le_bytes(bytes[..8].try_into().unwrap());
+    let mut blocker = f.db.pool().begin().await.unwrap();
+    sqlx::query("SELECT pg_advisory_xact_lock($1)")
+        .bind(lock)
+        .execute(&mut *blocker)
+        .await
+        .unwrap();
+    let pid: i32 = sqlx::query_scalar("SELECT pg_backend_pid()")
+        .fetch_one(&mut *blocker)
+        .await
+        .unwrap();
+    let topup_fixture = f.clone();
+    let topup = tokio::spawn(async move {
+        topup_fixture
+            .wallet
+            .top_up("queued-topup", 40, today())
+            .await
+    });
+    wait_for_blocked(f.db.pool(), pid).await;
+    let payment_fixture = f.clone();
+    let key = fresh("queued-payment");
+    let payment = tokio::spawn(async move {
+        payment_fixture
+            .db
+            .record_monthly_statement_payment(&payment_fixture.wallet, id, &key, 100, today())
+            .await
+    });
+    tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        loop {
+            let waiters: i64 = sqlx::query_scalar("SELECT count(*) FROM pg_stat_activity WHERE datname=current_database() AND $1=ANY(pg_blocking_pids(pid))")
+                .bind(pid).fetch_one(f.db.pool()).await.unwrap();
+            if waiters >= 2 { break; }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    }).await.expect("both repayment paths are queued behind the held credit lock");
+    blocker.commit().await.unwrap();
+    topup.await.unwrap().unwrap();
+    assert!(matches!(
+        payment.await.unwrap(),
+        Err(WalletError::InvalidInput(_))
+    ));
+    assert_eq!(f.wallet.credit_repaid().await.unwrap(), 40);
+    assert_eq!(f.wallet.credit_used().await.unwrap(), 60);
+    assert_eq!(f.wallet.available().await.unwrap(), 940);
+}

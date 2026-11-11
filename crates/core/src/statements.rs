@@ -569,6 +569,20 @@ impl Db {
         organization: Uuid,
         wallet: &Wallet,
     ) -> Result<i32, WalletError> {
+        let terms = self
+            .lock_monthly_organization_in(tx, organization, wallet)
+            .await?;
+        wallet.lock_append_in(tx).await?;
+        Ok(terms)
+    }
+
+    /// Lock the organization before credit and append locks, in the shared order.
+    pub(crate) async fn lock_monthly_organization_in(
+        &self,
+        tx: &mut Transaction<'_, Postgres>,
+        organization: Uuid,
+        wallet: &Wallet,
+    ) -> Result<i32, WalletError> {
         sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1 || $2,0))")
             .bind(ORG_ADMISSION_LOCK)
             .bind(organization.to_string())
@@ -586,7 +600,6 @@ impl Db {
                 "statement wallet does not match its organization".into(),
             ));
         }
-        wallet.lock_append_in(tx).await?;
         Ok(row.try_get("payment_terms_days")?)
     }
 
@@ -1002,24 +1015,41 @@ impl Db {
         wallet: &Wallet,
         today: Date,
     ) -> Result<(), WalletError> {
+        let mut tx = self.pool().begin().await?;
+        self.reconcile_statements_in(&mut tx, organization_id, wallet, today)
+            .await?;
+        tx.commit().await?;
+        Ok(())
+    }
+
+    /// Refresh FIFO standings and events under the caller's append lock.
+    pub(crate) async fn reconcile_statements_in(
+        &self,
+        tx: &mut Transaction<'_, Postgres>,
+        organization_id: Uuid,
+        wallet: &Wallet,
+        today: Date,
+    ) -> Result<(), WalletError> {
+        self.lock_monthly_statement_in(tx, organization_id, wallet)
+            .await?;
         let open = sqlx::query(&format!(
             "SELECT {STATEMENT_COLS} FROM oxsum.statements \
              WHERE organization_id = $1 AND status = 'finalized' \
                AND payment_status <> 'paid' \
-             ORDER BY period"
+             ORDER BY period FOR UPDATE"
         ))
         .bind(organization_id)
-        .fetch_all(self.pool())
+        .fetch_all(&mut **tx)
         .await?;
         if open.is_empty() {
             return Ok(());
         }
-        let repaid = wallet.credit_repaid().await?;
+        let repaid = wallet.credit_flow_in(tx, "C", None, None).await?;
         for row in &open {
             let statement = statement_from_row(row)?;
             let last = period_bounds(&statement.period)?.last;
-            let prior_draws =
-                wallet.credit_drawn_through(last).await? - statement.credit_drawn_minor;
+            let prior_draws = wallet.credit_flow_in(tx, "D", None, Some(last)).await?
+                - statement.credit_drawn_minor;
             let paid = (repaid - prior_draws).clamp(0, statement.credit_drawn_minor);
             // Standing after the new figure: paid once covered, suspended holds,
             // otherwise the due date decides pending from overdue.
@@ -1036,7 +1066,6 @@ impl Db {
             // statement that flips `overdue` or `paid` enqueues the event that
             // names the new standing, and a reconcile that changes nothing
             // enqueues nothing (issue #200).
-            let mut tx = self.pool().begin().await?;
             sqlx::query(
                 "UPDATE oxsum.statements SET paid_minor = $2, payment_status = $3, \
                      paid_at = CASE WHEN $3 = 'paid' THEN COALESCE(paid_at, now()) ELSE paid_at END, \
@@ -1048,7 +1077,7 @@ impl Db {
             .bind(statement.id)
             .bind(paid)
             .bind(status)
-            .execute(&mut *tx)
+            .execute(&mut **tx)
             .await?;
             let standing_changed = status != statement.payment_status.as_str();
             if standing_changed {
@@ -1057,7 +1086,7 @@ impl Db {
                 // transition (to `paid`, back off `overdue`).
                 if status == "overdue" {
                     Self::enqueue_event(
-                        &mut tx,
+                        tx,
                         organization_id,
                         STATEMENT_OVERDUE,
                         serde_json::json!({
@@ -1071,7 +1100,7 @@ impl Db {
                     .await?;
                 }
                 Self::enqueue_event(
-                    &mut tx,
+                    tx,
                     organization_id,
                     STATEMENT_STATUS_UPDATED,
                     serde_json::json!({
@@ -1082,7 +1111,6 @@ impl Db {
                 )
                 .await?;
             }
-            tx.commit().await?;
         }
         Ok(())
     }

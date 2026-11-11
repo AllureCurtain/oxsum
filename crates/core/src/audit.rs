@@ -4,7 +4,8 @@
 //! dotted name, what it acted on, the request's detail with credentials
 //! redacted, and the idempotency key it carried. The route layer writes the
 //! row *after* the mutation commits — the log may omit on a crash, but it
-//! never describes a change that did not happen.
+//! never describes a change that did not happen. Monthly recorded payments
+//! instead commit their source-bound audit in the ledger transaction (#1013).
 //!
 //! The ledger remains the proof for the money an adjustment or statement
 //! moved; this table is the operator's index over every admin write,

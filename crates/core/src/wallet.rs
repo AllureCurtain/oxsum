@@ -837,52 +837,61 @@ impl Wallet {
         minor: i64,
         on: Date,
     ) -> Result<Receipt, WalletError> {
-        let amt = positive(minor)?;
-        let entry_id = entry_id_for(key);
-        if let Some(stored) = self.store.get(entry_id).await? {
-            return self.repay_replay(&stored, minor, key);
-        }
         let mut tx = self.store.pool().begin().await?;
+        let receipt = self.repay_credit_in(&mut tx, key, minor, on).await?;
+        tx.commit().await?;
+        Ok(receipt)
+    }
+
+    /// Serialize repayments and limit changes before acquiring the append lock.
+    pub(crate) async fn lock_credit_in(
+        &self,
+        tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    ) -> Result<(), WalletError> {
         sqlx::query("SELECT pg_advisory_xact_lock($1)")
             .bind(credit_lock_key(&self.tenant_id))
-            .execute(&mut *tx)
+            .execute(&mut **tx)
             .await?;
-        // Re-read under the lock, and re-check the entry id: a same-key
-        // repayment may have committed while this one waited on it.
-        if let Some(stored) = self.entry_in(&mut tx, entry_id).await? {
-            tx.rollback().await?;
-            return self.repay_replay(&stored, minor, key);
+        self.lock_append_in(tx).await
+    }
+
+    /// Verify the original repayment and raw key on the caller's connection.
+    pub(crate) async fn repayment_receipt_in(
+        &self,
+        connection: &mut sqlx::PgConnection,
+        key: &str,
+        minor: i64,
+    ) -> Result<Option<Receipt>, WalletError> {
+        self.entry_in(connection, entry_id_for(key))
+            .await?
+            .as_ref()
+            .map(|stored| self.repay_replay(stored, minor, key))
+            .transpose()
+    }
+
+    /// Credit-only repayment in the caller's audited transaction.
+    pub(crate) async fn repay_credit_in(
+        &self,
+        tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+        key: &str,
+        minor: i64,
+        on: Date,
+    ) -> Result<Receipt, WalletError> {
+        let amt = positive(minor)?;
+        let identity = idem(key)?;
+        self.lock_credit_in(tx).await?;
+        if let Some(receipt) = self.repayment_receipt_in(tx, key, minor).await? {
+            return Ok(receipt);
         }
-        let drawn = self.credit_drawn_in(&mut tx).await?;
-        if minor > drawn {
-            tx.rollback().await?;
+        if minor > self.credit_drawn_in(tx).await? {
             return Err(WalletError::InvalidInput(
                 "a repayment cannot exceed the outstanding credit debt".into(),
             ));
         }
-        let draft = Entry::<Draft, SCALE>::new(entry_id, idem(key)?, on)
+        let draft = Entry::<Draft, SCALE>::new(entry_id_for(key), identity, on)
             .debit(self.cash, amt, currency())
             .credit(self.credit_line, amt, currency());
-        let receipt = self.append_in(&mut tx, draft).await;
-        match receipt {
-            Ok(receipt) => {
-                tx.commit().await?;
-                Ok(receipt)
-            }
-            Err(WalletError::Conflict(_)) => {
-                tx.rollback().await?;
-                match self.store.get(entry_id).await? {
-                    Some(stored) => self.repay_replay(&stored, minor, key),
-                    None => Err(WalletError::Conflict(format!(
-                        "idempotency key {key:?} is already taken"
-                    ))),
-                }
-            }
-            Err(error) => {
-                tx.rollback().await?;
-                Err(error)
-            }
-        }
+        self.append_in(tx, draft).await
     }
 
     /// Answers for a key that already has a committed repayment entry: the
@@ -896,31 +905,23 @@ impl Wallet {
         minor: i64,
         key: &str,
     ) -> Result<Receipt, WalletError> {
-        let cash: i64 = stored
-            .entry
-            .postings()
-            .iter()
-            .filter(|p| p.account == self.cash && p.direction == Direction::Debit)
-            .map(|p| p.amount.to_minor())
-            .sum();
-        let repaid: i64 = stored
-            .entry
-            .postings()
-            .iter()
-            .filter(|p| p.account == self.credit_line && p.direction == Direction::Credit)
-            .map(|p| p.amount.to_minor())
-            .sum();
-        let pooled: i64 = stored
-            .entry
-            .postings()
-            .iter()
-            .filter(|p| {
-                (p.account == self.wallet || p.account == self.bonus)
-                    && p.direction == Direction::Credit
+        let postings = stored.entry.postings();
+        let matches = stored.entry.idempotency_key() == &idem(key)?
+            && stored.entry.reverses().is_none()
+            && stored.index.is_some()
+            && postings.len() == 2
+            && postings.iter().all(|p| {
+                p.layer == Layer::Settled
+                    && p.currency == currency()
+                    && p.amount.to_minor() == minor
             })
-            .map(|p| p.amount.to_minor())
-            .sum();
-        if cash == minor && repaid == minor && pooled == 0 {
+            && postings
+                .iter()
+                .any(|p| p.account == self.cash && p.direction == Direction::Debit)
+            && postings
+                .iter()
+                .any(|p| p.account == self.credit_line && p.direction == Direction::Credit);
+        if matches {
             Ok(stored_receipt(stored))
         } else {
             Err(WalletError::Conflict(format!(

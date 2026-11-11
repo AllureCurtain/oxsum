@@ -64,6 +64,7 @@ mod merchant_events;
 mod merchant_routes;
 mod merchants;
 mod metering;
+mod monthly_payments;
 mod monthly_statement_actions;
 mod nonplan_chargebacks;
 mod nonplan_refunds;

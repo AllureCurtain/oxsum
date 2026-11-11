@@ -11147,19 +11147,17 @@ paths:
     post:
       summary: Record a payment against a statement
       description: |
-        Books the payment into the organization's ledger — `debit Cash`,
-        repaying the drawn credit line first, the remainder into the wallet —
-        and applies it to the statement: `paidMinor` grows, and the statement
-        turns `paid` once the payments cover `creditDrawnMinor`. Repayments
-        settle the line's draws oldest-first, so the amount may be as large as
-        the credit-line debt outstanding through the statement's period —
-        earlier draws take their share even when their period was never
-        billed — and never larger (`400`). A statement with nothing owed
-        refuses a payment the same way. The idempotency key names the ledger
-        entry, which can never book twice: a retried payment on a still-open
-        statement replays the receipt; one that arrives after the statement
-        paid is refused as `400`, and the same key under a different amount is
-        `409`.
+        Records verified money as `debit Cash / credit CreditLine` only; no
+        remainder funds a wallet or grants quota. The debt check, ledger entry,
+        FIFO statement standings/events and source-bound audit commit together.
+        The amount cannot exceed outstanding credit draws through this issued
+        statement's period, including earlier unbilled draws (`400`). Concurrent
+        top-ups and repayments serialize before the cap is checked.
+        An identical idempotency key, statement and amount replays its original
+        entry even after full payment. Reusing the key for another statement or
+        amount is `409`. Existing recorded payments replay only when their audit
+        and original ledger entry agree; ambiguous legacy entries are refused
+        without posting again. The response contains current statement standing.
       security:
         - adminToken: []
       parameters:
@@ -16205,7 +16203,7 @@ components:
       type: object
       required: [amountMinor, idempotencyKey]
       properties:
-        amountMinor: { type: integer, format: int64, minimum: 1, description: the payment's amount — may not exceed what the statement still owes }
+        amountMinor: { type: integer, format: int64, minimum: 1, description: positive credit minor units; cannot exceed unpaid credit draws through the selected issued month }
         idempotencyKey: { type: string, minLength: 1, maxLength: 200, description: names the ledger repayment entry; a retry replays it, a different amount under it conflicts }
     Statement:
       type: object
