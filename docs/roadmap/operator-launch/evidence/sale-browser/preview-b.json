@@ -1,0 +1,7 @@
+[
+  {
+    "url": "/api/v1/business/sale-price-preview",
+    "status": 200,
+    "body": "{\"data\":{\"snapshot\":{\"businessId\":\"8f0757ac-bfd9-446e-843b-648f492bdf22\",\"organizationId\":\"c3dc85ec-011f-486f-87f1-e2150d2a5955\",\"model\":\"browser-chat\",\"at\":\"2026-11-10T09:50:50.376388Z\",\"source\":\"override\",\"scheduleId\":\"66369376-a670-4816-8c29-98467c23f1e6\",\"bookId\":null,\"version\":null,\"draftRevision\":null,\"legacyChannel\":null,\"effectiveFrom\":\"2026-11-10T09:50:11.586407Z\",\"effectiveUntil\":null,\"terms\":{\"price\":{\"inputPricePerMillion\":1000000,\"outputPricePerMillion\":1000000,\"maxOutputTokens\":32,\"mode\":\"chat\"},\"discountPercent\":0}},\"lines\":[[\"input\",9,1000000],[\"output\",3,1000000]],\"matchedRule\":null,\"undiscountedMinor\":12,\"chargeMinor\":12}}"
+  }
+]
