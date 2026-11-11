@@ -1240,7 +1240,7 @@ impl Db {
             "SELECT d.deposit_id, d.organization_id, o.name AS organization, d.rail, \
                     d.payment_ref, d.amount_minor, d.received_minor, d.status, \
                     d.entry_id, d.reversal_entry_id, d.reversed_at, d.created_at, \
-                    CASE WHEN d.rail IN ('hyperswitch','airwallex') AND d.status='reversed' THEN COALESCE((SELECT f.state FROM oxsum.deposit_refunds f WHERE f.deposit_id=d.deposit_id), 'unknown') ELSE d.meta->>'refundStatus' END AS refund_status, \
+                    CASE WHEN d.rail IN ('hyperswitch','airwallex','stripe') AND d.status='reversed' THEN COALESCE((SELECT f.state FROM oxsum.deposit_refunds f WHERE f.deposit_id=d.deposit_id), 'unknown') ELSE d.meta->>'refundStatus' END AS refund_status, \
                     (d.meta->>'disputedAt')::timestamptz AS disputed_at \
              FROM oxsum.deposits d \
              JOIN oxsum.organizations o ON o.organization_id = d.organization_id \
@@ -1406,7 +1406,7 @@ impl Db {
             "SELECT d.deposit_id, d.organization_id, o.name AS organization, d.rail, \
                     d.payment_ref, d.amount_minor, d.received_minor, d.status, \
                     d.entry_id, d.reversal_entry_id, d.reversed_at, d.created_at, \
-                    CASE WHEN d.rail IN ('hyperswitch','airwallex') AND d.status='reversed' THEN COALESCE((SELECT f.state FROM oxsum.deposit_refunds f WHERE f.deposit_id=d.deposit_id), 'unknown') ELSE d.meta->>'refundStatus' END AS refund_status, \
+                    CASE WHEN d.rail IN ('hyperswitch','airwallex','stripe') AND d.status='reversed' THEN COALESCE((SELECT f.state FROM oxsum.deposit_refunds f WHERE f.deposit_id=d.deposit_id), 'unknown') ELSE d.meta->>'refundStatus' END AS refund_status, \
                     (d.meta->>'disputedAt')::timestamptz AS disputed_at \
              FROM oxsum.deposits d \
              JOIN oxsum.organizations o ON o.organization_id = d.organization_id \

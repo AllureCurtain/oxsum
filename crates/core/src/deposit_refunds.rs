@@ -76,7 +76,7 @@ impl Db {
             CASE WHEN b.payment_id IS NOT NULL AND r.provider_payment_id IS NOT NULL AND b.amount_minor=COALESCE(d.received_minor,d.amount_minor) AND b.amount_minor>0 AND b.organization_id=d.organization_id AND ($4 OR NULLIF(COALESCE(d.meta->>'hyperswitchRefundId',d.meta->>'airwallexRefundId'),'') IS NOT NULL) THEN now() ELSE NULL END \
             FROM oxsum.deposits d LEFT JOIN oxsum.merchant_payment_bindings b ON b.payment_id=d.deposit_id AND b.purpose='legacyDeposit' \
             LEFT JOIN oxsum.merchant_payment_refs r ON r.payment_id=d.deposit_id \
-            WHERE d.deposit_id=$1 AND d.rail IN ('hyperswitch','airwallex') AND d.status='reversed' ON CONFLICT(deposit_id) DO NOTHING")
+            WHERE d.deposit_id=$1 AND d.rail IN ('hyperswitch','airwallex','stripe') AND d.status='reversed' ON CONFLICT(deposit_id) DO NOTHING")
             .bind(deposit).bind(Uuid::new_v4()).bind(reason).bind(new).execute(&mut **tx).await?;
         Ok(())
     }
@@ -130,6 +130,33 @@ impl Db {
         }
         Ok(())
     }
+    /// Records the `payment_intent` (`pi_…`) a Stripe refund resolved its
+    /// `cs_…` checkout session to, on the deposit's mutable `meta` — the refund
+    /// row's own `provider_payment_id` stays the pinned session id (the
+    /// `protect_deposit_refund` guard makes that column immutable), while this
+    /// is the anchor a `refund.updated` event names.
+    pub async fn note_stripe_payment_intent(
+        &self,
+        deposit: Uuid,
+        payment_intent: &str,
+    ) -> Result<(), WalletError> {
+        if payment_intent.is_empty()
+            || payment_intent.len() > 200
+            || payment_intent.chars().any(char::is_control)
+        {
+            return Err(WalletError::InvalidInput("invalid payment intent".into()));
+        }
+        sqlx::query(
+            "UPDATE oxsum.deposits SET meta = meta || jsonb_build_object('stripePaymentIntent',$1::text),updated_at=now() \
+             WHERE deposit_id=$2 AND rail=$3",
+        )
+        .bind(payment_intent)
+        .bind(deposit)
+        .bind(crate::RAIL_STRIPE)
+        .execute(self.pool())
+        .await?;
+        Ok(())
+    }
     /// Applies exact signed evidence within the payment's original merchant
     /// version. Unknown or mismatched IDs cannot select another refund.
     pub async fn apply_deposit_refund_event(
@@ -163,12 +190,27 @@ impl Db {
             .provider_refund_id
             .clone()
             .or_else(|| target.body_identity.then(|| target.request_id.to_string()));
+        // The pinned provider-payment anchor the refund event must name. Most
+        // rails pin the payment id itself; a Stripe deposit pins its checkout
+        // session (`cs_…`, immutable) while a refund names its payment intent
+        // (`pi_…`) — the resolved intent the recovery pass recorded on the
+        // deposit's mutable `meta.stripePaymentIntent`.
+        let expected_payment: Option<String> = sqlx::query_scalar(
+            "SELECT COALESCE(d.meta->>'stripePaymentIntent', r.provider_payment_id) \
+             FROM oxsum.deposits d \
+             LEFT JOIN oxsum.merchant_payment_refs r ON r.payment_id = d.deposit_id \
+             WHERE d.deposit_id = $1",
+        )
+        .bind(deposit)
+        .fetch_optional(&mut *tx)
+        .await?
+        .flatten();
         if expected.as_deref() != Some(id)
             || target.merchant_id != Some(receipt.merchant_id)
             || target.version_id != Some(receipt.version_id)
             || event.payment_id != Some(deposit)
             || event.organization_id != Some(target.organization_id)
-            || event.provider_payment_id != target.provider_payment_id
+            || event.provider_payment_id != expected_payment
             || event.amount_minor != Some(target.amount_minor)
             || event.currency.as_deref() != Some(target.currency.as_str())
         {
