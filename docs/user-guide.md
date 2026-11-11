@@ -1029,6 +1029,10 @@ must pass the usual wallet admission checks. A request already admitted before
 the boundary still settles against its original period. `POST /api/v1/org/plan/change` books a swap to
 another version at the next boundary; there is no mid-period pro-rating.
 
+Customer Billing statement tables scroll horizontally on narrow screens. Exact
+amounts and due dates stay on one line; scroll within the table to reach its
+detail links.
+
 Each period leaves an invoice journal (v2 at paid activation, legacy v1 at close) — the bill for what that period
 cost (issue #611). `GET /api/v1/org/plan/journals` lists yours newest first
 and `GET /api/v1/org/plan/journals/{journalId}` reads one with its lines:
