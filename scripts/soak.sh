@@ -18,4 +18,5 @@ elif [ "$#" -gt 0 ]; then
     exit 2
 fi
 # nextest streams the report with --no-capture; a missing DB fails the test.
-cargo nextest run -p oxsum-server --test capacity --run-ignored only --no-capture
+# The capacity test lives in the aggregate `server` test binary (issue #998).
+cargo nextest run -p oxsum-server --test server --run-ignored only -E 'test(/^capacity::gateway_capacity_and_accounting$/)' --no-capture
