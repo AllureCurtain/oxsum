@@ -18,3 +18,7 @@ infra/hyperswitch/.repo/
 
 # macOS Finder metadata
 .DS_Store
+
+# Python bytecode — scripts/ runs ad-hoc; compiled caches are never source.
+__pycache__/
+*.py[cod]
