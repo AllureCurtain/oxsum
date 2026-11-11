@@ -358,3 +358,107 @@ async fn sale_endpoints_enforce_current_personal_authority_and_contract() {
         StatusCode::NOT_FOUND
     );
 }
+
+/// `effectiveFrom` a few seconds behind the server's clock is the caller's own
+/// "now" — the write's intent is immediate activation, and clock skew would
+/// make a strict comparison refuse it (issue #1053). A genuinely past start is
+/// still a backdated window and refused.
+#[tokio::test]
+async fn a_sale_window_accepts_an_effective_from_at_the_current_instant() {
+    let Some(url) = oxsum_testkit::suite_db_url("sale_effective_now") else {
+        return;
+    };
+    let db = Db::connect(&url, 8).await.unwrap();
+    db.migrate().await.unwrap();
+    let owner = setup::owner(&db).await;
+    let user = db
+        .register(NewUser {
+            email: format!("{}@example.com", Uuid::new_v4()),
+            password: "effective-from fixture".into(),
+            organization_name: None,
+        })
+        .await
+        .unwrap();
+    let org = user.organization.id;
+    let app = oxsum_server::app(db.clone(), Config::new(Signup::Invite, None));
+
+    let book = mutate(
+        &app,
+        &owner,
+        json!({"operation":"createBook","name":"effective-now book"}),
+    )
+    .await["resourceId"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let sale = json!({"price":{"inputPricePerMillion":1_000_000,"maxOutputTokens":10}});
+    mutate(
+        &app,
+        &owner,
+        json!({"operation":"saveDraft","bookId":book,"expectedRevision":0,"models":{"model":sale}}),
+    )
+    .await;
+    mutate(
+        &app,
+        &owner,
+        json!({"operation":"publishDraft","bookId":book,"draftRevision":1}),
+    )
+    .await;
+
+    // "Now" — a timestamp milliseconds behind the server's own clock — must
+    // land as immediate activation.
+    let now = OffsetDateTime::now_utc().format(&Rfc3339).unwrap();
+    mutate(
+        &app,
+        &owner,
+        json!({"operation":"assignBook","organizationId":org,"bookId":book,"version":1,"effectiveFrom":now}),
+    )
+    .await;
+
+    // A start genuinely in the past is still refused.
+    let past = (OffsetDateTime::now_utc() - Duration::days(1))
+        .format(&Rfc3339)
+        .unwrap();
+    let (status, result) = call(
+        &app,
+        "POST",
+        "/api/v1/business/sale-books/changes",
+        request(
+            json!({"operation":"overrideModel","organizationId":org,"model":"model","terms":{"price":{"inputPricePerMillion":1_000_000,"maxOutputTokens":10}},"effectiveFrom":past}),
+        ),
+        Some(&owner),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{result}");
+
+    // A second book with no effectiveFrom at all activates immediately — the
+    // documented spelling for "now".
+    let book2 = mutate(
+        &app,
+        &owner,
+        json!({"operation":"createBook","name":"effective-now book two"}),
+    )
+    .await["resourceId"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    mutate(
+        &app,
+        &owner,
+        json!({"operation":"saveDraft","bookId":book2,"expectedRevision":0,"models":{"model":sale}}),
+    )
+    .await;
+    mutate(
+        &app,
+        &owner,
+        json!({"operation":"publishDraft","bookId":book2,"draftRevision":1}),
+    )
+    .await;
+    mutate(
+        &app,
+        &owner,
+        json!({"operation":"scheduleDefault","bookId":book2,"version":1}),
+    )
+    .await;
+}

@@ -132,13 +132,19 @@ async fn add_schedule(
     replaces: Option<Uuid>,
     now: OffsetDateTime,
 ) -> Result<Uuid, WalletError> {
-    if next.effective_from < now
+    // A start up to a few seconds in the past is the caller's own "now": the
+    // write's intent is immediate activation, and clock skew between caller and
+    // server would make a strict comparison refuse it (issue #1053). A start
+    // further back is a backdated window, which the check exists to refuse.
+    const SKEW: time::Duration = time::Duration::seconds(5);
+    if next.effective_from < now - SKEW
         || next
             .effective_until
             .is_some_and(|until| until <= next.effective_from)
     {
         return Err(super::invalid(
-            "sale windows must start now or later and end strictly after their start",
+            "sale windows must start now or later and end strictly after their start; \
+             pass effectiveFrom null for immediate activation",
         ));
     }
     if let Some(org) = next.organization_id {
