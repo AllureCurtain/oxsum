@@ -272,7 +272,7 @@ Status describes implementation: `planned`, `in_progress`, or `integrated`. `int
 | N13 [#739](https://github.com/AllureCurtain/oxsum/issues/739) — Artifact promotion and deployment | N00 | in_progress | [#753](https://github.com/AllureCurtain/oxsum/pull/753) / `1cc5e0a` | Byte/provenance gate and original config/layer promotion integrated (#806 / `0b06184`), with isolated registry transport checks passed. #810 explicit digest deployment/runtime evidence and compatible rollback are integrated in #813 (`941434a`); 16 focused tests passed. #814 original SDK publication integrated in #816 (`45a833e`), with 11 checks and real npm loopback-registry byte/lifecycle/conflict/redirect rehearsal passed. Actual candidate publication/runtime/rollback acceptance remains; an isolated digest-deploy/rollback rehearsal against the frozen `cc16bb8f` candidate image passed 2026-11-11 — the loaded archive's `org.opencontainers.image.revision` matched the source SHA, `--check-config`/`--migrate-only`/`--detach` landed `/readyz ready (0131_invoice_corrections)` and `/api/v1/version` `{gitSha cc16bb8f, version 0.1.0, schemaVersion 0131_invoice_corrections}` exactly as the manifest records, a local-registry push supplied a real `sha256:` digest and a deploy-by-digest + same-schema rollback returned to the retained `cc16bb8f` artifact with the same three version fields. This ran the real candidate image under `linux/amd64` emulation on the operator host; it is not a verified-candidate `deployment_plan` (that still needs authorized GHCR provenance) and not live service authority. [Gate](evidence/candidate-format.md); [promotion](evidence/candidate-image-promotion.md); [deployment](evidence/candidate-digest-deploy.md); [SDK publication](evidence/candidate-sdk-publication.md). |
 | N14 [#740](https://github.com/AllureCurtain/oxsum/issues/740) — Selected real-provider certification | N04,N05,N12 | in_progress | — | #869 bounded current-authority guard and isolated artifact runner passed boundary tests and local whole/SSE/offline rehearsal. Tooling integrated in PR #871 (`2c2a739d`); #944 executed whole/SSE on frozen development source `1e3dc087`, both HTTP 200 with exact settlement and offline proofs. Budget is 2/5 attempts; final-candidate and other matrix rows remain. [Evidence](evidence/deepseek-development.md). |
 | N15 [#741](https://github.com/AllureCurtain/oxsum/issues/741) — Primary PSP certification | N06,N10,N12 | planned | — | Complete connector/local fixture preparation. Genuine PSP sandbox credential is absent; sandbox and live verdicts remain separate and live payment is excluded. |
-| N16 [#742](https://github.com/AllureCurtain/oxsum/issues/742) — Capacity, fairness and soak | Stable N04–N12,N21 | in_progress | [#773](https://github.com/AllureCurtain/oxsum/pull/773) / `81c1500` | Job clock fixture is fixed; no new capacity/soak pass follows. Preserve D09 targets and eight-hour workload; run local diagnostics and obtain qualifying reference environment. |
+| N16 [#742](https://github.com/AllureCurtain/oxsum/issues/742) — Capacity, fairness and soak | Stable N04–N12,N21 | in_progress | [#773](https://github.com/AllureCurtain/oxsum/pull/773) / `81c1500` | Local capacity/soak rehearsal 2026-11-11 (darwin arm64, 12-core/24-GiB host — NOT the declared 4-vCPU/8-GiB environment). `soak.sh` harness retargeted to the aggregate `server` test binary. Default dev workload passed: 100 req, 0 failures, 0 drift, 0 open holds, conservation exact. `--d09` workload passed on this host: 1000 accounts / 10,000 keys / 1000 ledger schemas / 100 concurrent streams / 300 s; 5923 requests, 0 failures, admitted 19.74/s, completed 19.42/s; TTFT p50 22 ms / p95 67 ms / p99 227 ms, overhead-upper-bound p95 90 ms; accounting conservation exact — 5923 ops all `succeeded`, charged 41461 = expected, **0 open holds, 0 reserved minor, 0 balance drift**. D09's ≥20/s and <100 ms p95 targets are approached locally but remain **uncertified off the declared hardware**; the eight-hour soak requires the declared environment and is out of scope here. Preserve D09 thresholds. |
 | N17 [#743](https://github.com/AllureCurtain/oxsum/issues/743) — Diagnostics, upgrade and restore | N13; final after N16 | in_progress | — | #819 diagnostic endpoint/collector integrated in #825 (`22e2ad7`), with final eight Rust and ten loopback CLI checks passed. #827 private backup/restore integrated in #832 (`8d18170`). #833 development-artifact upgrade/drain/separate restore/same-schema rollback and three offline old/new proof sets integrated in PR #839 (`8a51109c`). [Runtime evidence](evidence/artifact-recovery.md). Active-operation recovery, candidate upgrade, separate restore and compatible rollback rehearsals remain; retain keys/old proofs and measure results. [Diagnostic evidence](evidence/operator-diagnostics.md). |
 | N18 [#744](https://github.com/AllureCurtain/oxsum/issues/744) — Final integrated candidate | N01–N17,N21 | in_progress | candidate run [42953183423](https://github.com/AllureCurtain/oxsum/actions/runs/42953183423) / `cc16bb8f` | Candidate `cc16bb8f` frozen 2026-11-11: full-tier CI [42951039071](https://github.com/AllureCurtain/oxsum/actions/runs/42951039071) green incl. engine/process-shared, all nine manifest gates passed, v2 bundle emitted (image `sha256:7c8938ce…`, `verify-oxsum-bill@0.1.0`). J01–J16/J18 portal/embedded/offline/deploy/restore acceptance against the built image remains. |
 | N19 [#745](https://github.com/AllureCurtain/oxsum/issues/745) — Two independent operator pilots | N18 + participants | planned | — | #872 portal/embedded kits, exact-candidate intake and participant result template integrated in PR #874 (`e36d4303`). Actual two outsiders are absent; no contact or pilot run has occurred. Internal agents cannot supply J17 evidence. [Kits](pilots/README.md). |
@@ -689,5 +689,25 @@ TaskSpace 3 and its sole page closed. Independent approval, prerequisite
 integration, repayment and candidate/external gates remain; provider budget
 unchanged.
 
+
+
+
+
+### N16 capacity/soak + N17 recovery rehearsals — 2026-11-11
+
+Two acceptance rehearsals executed on the operator host (darwin arm64,
+12-core/24-GiB — not the declared 4-vCPU/8-GiB D09 environment). `soak.sh`
+was retargeted to the aggregate `server` test binary (capacity test
+consolidated under issue #998) before any measurement.
+
+N16: default dev workload passed (100 req, 0 failures, exact conservation,
+0 open holds). `--d09` workload (1000 accounts / 10,000 keys / 1000 ledger
+schemas / 100 concurrent streams / 20 admissions·s / 300 s) passed on this
+host — 5923 requests, 0 failures, admitted 19.74/s, completed 19.42/s,
+TTFT p50 22 ms / p95 67 ms / p99 227 ms, overhead-upper-bound p95 90 ms;
+conservation exact: 5923 ops all `succeeded`, charged 41461 = expected,
+0 open holds / 0 reserved / 0 balance drift. D09 ≥20/s and <100 ms p95
+remain uncertified off the declared hardware; the eight-hour soak is out
+of scope here.
 
 
