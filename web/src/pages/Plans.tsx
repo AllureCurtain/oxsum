@@ -1,3 +1,4 @@
+import { PlanPastDueLabel, PlanStandingNotices } from "../components/plan-standing-notices";
 import { CheckoutChoice, useCheckoutChoice } from "../components/checkout-choice";
 import { useRef, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
@@ -158,14 +159,12 @@ function CurrentPlan() {
         {sold ? <p className="text-sm text-muted">{t("plans.recognitionPolicy")}: {t(sold.accountingPolicyVersion === 2 ? "plans.policyV2" : "plans.policyV1")}</p> : null}
         <div className="flex flex-wrap items-center gap-2">
           <p className="text-lg font-semibold text-ink">{sold?.name ?? t("plans.unnamed")}</p>
-          {planStateBadge(plan.state)}
+          {plan.state === "pastDue" ? <Badge tone="danger"><PlanPastDueLabel view={view} /></Badge> : planStateBadge(plan.state)}
           {plan.cancelAtPeriodEnd ? (
             <Badge tone="secondary">{t("plans.cancelAtPeriodEnd")}</Badge>
           ) : null}
         </div>
-        {plan.state === "pastDue" ? (
-          <Banner tone="warn">{t("plans.pastDueNote")}</Banner>
-        ) : null}
+        <PlanStandingNotices view={view} page="plans" />
         <dl className="grid grid-cols-2 gap-3 text-sm sm:grid-cols-4">
           <div>
             <dt className="text-xs font-medium text-muted">{t("plans.price")}</dt>

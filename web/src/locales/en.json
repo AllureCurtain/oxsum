@@ -1414,7 +1414,6 @@
     "loadError": "The plan could not be read.",
     "none": "No live plan — pick one from the catalogue below.",
     "unnamed": "Plan",
-    "pastDueNote": "This plan is past due — an open statement has passed its due date. Pay it from Billing to restore good standing.",
     "cancelAtPeriodEnd": "cancels at period end",
     "price": "Price",
     "quota": "Quota / period",
@@ -2706,5 +2705,14 @@
     "overlap": "overlapping sale windows in the same scope",
     "staleRevision": "draft revision changed",
     "alreadyPublished": "draft revision is already published"
+
+  "planStanding": {
+    "renewal": "The paid plan period has ended. No new quota is granted until manual renewal is paid. Any permitted remainder of the previous period keeps its original terms.",
+    "overdueDebt": "Outstanding plan debt has passed its due date. Review the statements in Billing; repayment settles that debt separately from plan renewal.",
+    "reviewRenewal": "Review renewal in Plans",
+    "reviewDebt": "Review statements in Billing",
+    "renewalDue": "Renewal due",
+    "debtDue": "Debt overdue",
+    "renewalAndDebt": "Renewal due · debt overdue"
   }
 }

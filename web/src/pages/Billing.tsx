@@ -1,3 +1,4 @@
+import { PlanPastDueLabel, PlanStandingNotices } from "../components/plan-standing-notices";
 import { useState } from "react";
 import { Link, useParams } from "react-router-dom";
 import { useTranslation } from "react-i18next";
@@ -78,10 +79,8 @@ function PlanStanding() {
   return (
     <Card title={t("billing.plan")}>
       <div className="flex flex-col gap-4">
-        <p className="text-sm text-ink-secondary">{t("statementPayment.selectStatement")}</p>
-        {plan.state === "pastDue" ? (
-          <Banner tone="warn">{t("billing.pastDueNote")}</Banner>
-        ) : null}
+        {credit && credit.outstandingMinor > 0 ? <p className="text-sm text-ink-secondary">{t("statementPayment.selectStatement")}</p> : null}
+        <PlanStandingNotices view={orgPlan.data} page="billing" />
         {plan.cancelAtPeriodEnd ? (
           <Banner tone="info">{t("billing.cancelAtPeriodEnd")}</Banner>
         ) : null}
@@ -110,7 +109,7 @@ function PlanStanding() {
           <Kpi
             label={t("billing.state")}
             icon={<Receipt />}
-            value={plan.state === "pastDue" ? t("billing.pastDue") : plan.state}
+            value={plan.state === "pastDue" ? <PlanPastDueLabel view={orgPlan.data} /> : plan.state}
           />
         </div>
 

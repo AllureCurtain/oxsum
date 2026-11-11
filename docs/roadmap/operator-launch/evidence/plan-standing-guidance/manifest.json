@@ -1,0 +1,19 @@
+{
+  "backendSource": "d3a09475675f69761c1ad1fa193268ade88d9f2b",
+  "frontendSource": "fe506c158f57d87358f3928faf598e7e4c9308b5",
+  "binarySha256": "2e7866b627d8e230f73537b4f6594d1c22e902d872759c5a36d0d35503dc35a5",
+  "viewport": {
+    "mobile": [
+      390,
+      844
+    ]
+  },
+  "artifacts": {
+    "guidance-plans-zh-mobile.png": "0464b44bf004b61e096e6255aef6c2791817fbc27e3afea669cbc0c3aafc40b0",
+    "expiry-no-renewal.png": "2d4f84017f4205d32fcdb4db7f0b0564e473645410e8b6a1347f8c078dc296b7",
+    "guidance-plans-en.png": "db075410ce1d6cf8528c46e6006b5fb8da282e35aff620d47c6b5e516f2077e8",
+    "guidance-billing-zh-mobile.png": "16c9ad59da32c3e70adf22d5de1a1cc50a422ddd3074d9bec5cd21e827ddc1a4",
+    "guidance-plans-en-mobile.png": "adef33feb5943e63912709c2046b967844a157506eff35fd02d187147997bb3f"
+  },
+  "scope": "Local protocol fixture, original test-clock v2 periods; no genuine PSP or candidate assertion. Debug backend serves this frontend from disk."
+}

@@ -501,6 +501,12 @@ Provider destinations default to public HTTPS; only the owner can approve exact 
 Model lists and prices reflect the customer's actual tier and the consumption key's model/channel grants. Public aliases must also have permission for their resolved targets. Experiments and fallback chains can choose only authorized paths and keep the original requested name in billing evidence. Catalog reads need no provider decryption. Existing task history remains bound to its submitting customer/key after a later grant change; new tasks apply the current customer/key/group snapshot. Generic task aliases and signed mandates remain unsupported until T13 completes their price and operation binding, and are explicitly refused before send. T07.b completes cache request context.
 
 
+### Customer plan standing guidance
+
+Customer plan guidance distinguishes an ended paid period from overdue debt
+using the authorized period bounds and credit standing. Plans and Billing may
+show both notices: manual renewal and statement repayment remain separate.
+
 ## Customer sale terms (#599)
 
 The Business Prices workflow uses the selected English or Simplified Chinese

@@ -1012,6 +1012,11 @@ A period only ever exists because its authorization does — the rollover timer
 can never open an unpaid one. Manual renewal becomes payable only at the
 current UTC boundary; paying cannot cut an active period short. An unresolved
 period payment must finish before cancelling or changing the assignment.
+The Plans and Billing pages show separate notices for an ended paid period and
+for outstanding debt whose due date has passed. Renewal opens the next period;
+statement repayment settles existing debt. Both notices may apply, and a
+`pastDue` plan alone does not mean that a statement is overdue.
+
 When the boundary passes without a paid
 renewal the plan goes `pastDue`: the ended period's unspent remainder still
 serves your requests, but no new quota issues until a renewal order
