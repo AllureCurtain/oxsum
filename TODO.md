@@ -21,6 +21,10 @@ Updated: 2026-11-11
 
 - [ ] [#992](https://github.com/AllureCurtain/oxsum/issues/992) — Owner-portal default/override previews, in-flight v1 → v2 sale conservation and five offline proofs passed; provider edit was interrupted by the unavailable browser space. Locale defect #994 and complete J03/J04 remain. [Evidence](docs/roadmap/operator-launch/evidence/sale-browser/README.md).
 
+- [ ] [#978](https://github.com/AllureCurtain/oxsum/issues/978) — Expose explicit evidence-due/won/lost/closed dispute outcomes with retained retry identity and visible errors; browser found the old dialog always closed cases. Validation in progress.
+
+- [ ] [#978](https://github.com/AllureCurtain/oxsum/issues/978) — Expose explicit evidence-due/won/lost/closed dispute outcomes and preserve ambiguous retries through terminal refreshes. Actual loss, source-linked partial/full repayment and byte-identical lost-response retry passed, with contract/build/format checks. Review/integration pending. [Evidence](docs/roadmap/operator-launch/evidence/dispute-outcomes/README.md).
+
 - [ ] [#969](https://github.com/AllureCurtain/oxsum/issues/969) — Actual browser bundle purchase/return and paid-plan activation, fee/payment statement, early-renewal refusal and cancellation service passed with local signed fixtures. Stale plan consumption display is #973; statement correction/dispute, embedded and candidate/external gates remain. [Evidence](docs/roadmap/operator-launch/evidence/commercial-browser/README.md).
 
 - [ ] [#973](https://github.com/AllureCurtain/oxsum/issues/973) — Read sold-plan consumption from its exact quota window; real browser baseline 0 now reads 80/100 minor. All 17 affected core/HTTP checks, strict core/server Clippy, contract/codegen/build and pinned formatting passed; review/integration pending. [Evidence](docs/roadmap/operator-launch/evidence/plan-consumption-read/README.md).

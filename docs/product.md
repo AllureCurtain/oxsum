@@ -927,3 +927,5 @@ statement. A retained legacy anchor that disagrees with current source inputs
 requires explicit recovery and cannot silently become a different bill.
 
 Sold-plan period consumption reads the matching quota-engine window, including outstanding reservations and released unused amounts. Closed windows retain their own consumption; new periods do not replace historical counters. The read does not post money or rewrite authorization history.
+
+The Business dispute resolution dialog requires an explicit provider outcome: evidence due, won, lost or closed. Each outcome explains its financial effect. The exact decision, reason and idempotency identity remain fixed across ambiguous retries; the dialog closes only after a successful response.

@@ -1,0 +1,10 @@
+[
+  {
+    "url": "/api/v1/business/disputes/ff7cbe63-7ea3-444c-9614-4a5afa25f923/resolve",
+    "body": "{\"idempotencyKey\":\"0255b354-295a-4e66-914b-94332f83a87a\",\"resolution\":\"won\",\"reason\":\"Local fixture: retain exact decision through a lost response and terminal-state refresh.\"}"
+  },
+  {
+    "url": "/api/v1/business/disputes/ff7cbe63-7ea3-444c-9614-4a5afa25f923/resolve",
+    "body": "{\"idempotencyKey\":\"0255b354-295a-4e66-914b-94332f83a87a\",\"resolution\":\"won\",\"reason\":\"Local fixture: retain exact decision through a lost response and terminal-state refresh.\"}"
+  }
+]

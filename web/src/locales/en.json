@@ -1734,11 +1734,27 @@
       "colOpened": "Opened",
       "resolve": "Resolve",
       "resolveTitle": "Resolve this dispute?",
-      "resolveExplain": "This action closes the case without moving money. Lost outcomes retain the complete cash loss against proven funding or an explicit amount requiring review.",
+      "resolveExplain": "Select the actual provider outcome and record the supporting reason. A local decision is not proof of an external payment.",
       "collectionCurrency": "Original collection currency",
       "recharge": "Chargeback entry",
       "updated": "Updated",
-      "empty": "No disputes."
+      "empty": "No disputes.",
+      "outcome": "Recorded provider outcome",
+      "chooseOutcome": "Select an outcome",
+      "outcomes": {
+        "evidenceDue": "Evidence due",
+        "won": "Won",
+        "lost": "Lost",
+        "closed": "Closed without loss"
+      },
+      "effects": {
+        "evidenceDue": "Keep the dispute open while evidence is required. This decision does not move money.",
+        "won": "Record that the business won this dispute. This decision does not move money.",
+        "lost": "Record the confirmed cash loss. Original funding and any resulting customer debt or review amount are accounted for exactly once. This does not initiate a provider refund.",
+        "closed": "Close the case without recording a cash loss. This decision does not move money."
+      },
+      "frozenResolution": "This decision is fixed for safe retry. Retrying keeps the same outcome, reason and operation identity.",
+      "retryResolution": "Retry the same decision"
     },
     "statements": {
       "title": "Statements",

@@ -1954,3 +1954,6 @@ payments; those operations are tracked separately in #1006.
 
 
 The Plans page shows quota reserved or consumed in the displayed period. A running request reserves quota; unused quota returns when it settles. Paid-plan quota is separate from wallet spending, and a new period starts its own counter.
+
+
+In Business → Disputes, choose Resolve and select the actual provider outcome. Evidence due keeps the case open; won and closed do not record cash loss; lost records the confirmed loss against original funding and any resulting debt or review amount. Enter the supporting reason. A failed request keeps the dialog and exact decision for retry; this action does not initiate a provider refund.
