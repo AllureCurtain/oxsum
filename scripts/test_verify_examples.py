@@ -65,12 +65,23 @@ class Isolation(unittest.TestCase):
                     pass
         self.assertFalse(evidence["databaseRemoved"])
 
-    def test_skips_and_zero_assertions_fail_except_declared_absent_witness(self):
-        for text in ["[PASS] x\n[FAIL] y", "[PASS] x\n[SKIP] metering", "done"]:
+    def test_skips_and_zero_assertions_fail_except_declared_conditional_bounds(self):
+        for text in ["[PASS] x\n[FAIL] y", "[PASS] x\n[SKIP] metering", "done",
+                     # A skipped evidence-bundle block is essential, not a
+                     # declared coverage bound, and must still fail.
+                     "[PASS] x\n[SKIP] evidence bundle: no evidence-bundle.json fixture in this directory"]:
             with self.assertRaises(RuntimeError):
                 runner.assertions(text)
-        result = runner.assertions("[PASS] entry\n" + runner.OPTIONAL_WITNESS, optional_witness=True)
-        self.assertEqual(result, {"passed": 1, "optionalWitnessAbsent": 1})
+        for bound in [
+            "[SKIP] witnesses: no cosigned checkpoint — this deployment pins no witnesses",
+            "[SKIP] sale mutation: no such binding in this legacy bill",
+            "[SKIP] price mutation: no such binding in this legacy bill",
+            "[SKIP] artifact tamper: the exported scope has no committed artifact",
+            "[SKIP] missing committed row: the exported scope is empty",
+            "[SKIP] recorded rate mutation: this record has no rated lines",
+        ]:
+            result = runner.assertions("[PASS] entry\n" + bound, optional_witness=True)
+            self.assertEqual(result, {"passed": 1, "optionalWitnessAbsent": 1})
         with self.assertRaises(RuntimeError):
             runner.exported_credentials("OXSUM_CUSTOMER_ID=x")
 

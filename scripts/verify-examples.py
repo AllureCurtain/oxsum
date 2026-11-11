@@ -23,7 +23,19 @@ from urllib.parse import parse_qsl, urlsplit, urlunsplit
 import urllib.request
 
 ROOT = Path(__file__).resolve().parent.parent
-OPTIONAL_WITNESS = "[SKIP] witnesses: no cosigned checkpoint — this deployment pins no witnesses"
+# Lines verify.mjs may emit when the committed fixture's shape does not offer a
+# check any target: a missing price/sale binding, an empty exported artifact
+# scope or a record without rated lines. Each is a declared coverage bound, not
+# an essential assertion left unrun. A skipped evidence-bundle block is NOT in
+# this set — the v2 fixture is required (asserted present below) and its absence
+# would hide the core check. Anything else that is skipped still fails the gate.
+CONDITIONAL_SKIPS = (
+    re.compile(r"^\[SKIP\] witnesses: no cosigned checkpoint — this deployment pins no witnesses$"),
+    re.compile(r"^\[SKIP\] (price|sale) mutation: no such binding in this legacy bill$"),
+    re.compile(r"^\[SKIP\] artifact tamper: the exported scope has no committed artifact$"),
+    re.compile(r"^\[SKIP\] missing committed row: the exported scope is empty$"),
+    re.compile(r"^\[SKIP\] recorded rate mutation: this record has no rated lines$"),
+)
 EXPORTS = ("OXSUM_CUSTOMER_ID", "OXSUM_CUSTOMER_KEY", "OXSUM_OWNER_EMAIL", "OXSUM_OWNER_PASSWORD")
 
 
@@ -79,7 +91,8 @@ def assertions(text: str, *, optional_witness: bool = False) -> dict[str, int]:
     lines = text.splitlines()
     require(not any("[FAIL]" in line for line in lines), "An example reported a failed assertion")
     skipped = [line for line in lines if "[SKIP]" in line]
-    require(all(optional_witness and line == OPTIONAL_WITNESS for line in skipped),
+    require(all(optional_witness and any(pattern.match(line) for pattern in CONDITIONAL_SKIPS)
+                for line in skipped),
             "An essential example assertion was skipped")
     count = sum(line.startswith("[PASS]") for line in lines)
     require(count > 0, "The example produced no passing assertions")
