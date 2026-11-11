@@ -1566,7 +1566,17 @@ async fn run(
                     Some(attempt_started.elapsed().as_secs_f64() * 1_000.0),
                     true,
                 );
-                let retriable = status == StatusCode::TOO_MANY_REQUESTS || status.is_server_error();
+                let mut retriable =
+                    status == StatusCode::TOO_MANY_REQUESTS || status.is_server_error();
+                // A 4xx is route-level fail-fast *unless* the upstream's
+                // refusal is `404` — that is the model-not-found signature a
+                // fallback chain exists to react to (issue #500). 400/422
+                // stay fail-fast: they name a malformed request, not a
+                // missing model, so another route would reject it the same.
+                if !retriable && status == StatusCode::NOT_FOUND && index + 1 < attempts_list.len()
+                {
+                    retriable = true;
+                }
                 // A refused attempt completes its row (issue #601): the
                 // failover audit records the refusal and the error's preview
                 // before the loop moves to the next route.
