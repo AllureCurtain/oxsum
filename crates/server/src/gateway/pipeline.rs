@@ -898,13 +898,14 @@ async fn run(
     // resolved `SalePriceSnapshot` *replaces* the wholesale channel catalog —
     // the customer charge itemizes its `terms.price`, its `discount_percent`
     // is the customer's whole deal, and its digest is what the settlement's
-    // `sale` block commits. `resolve_sale_price` is deliberately
-    // `NotFound`-tolerant: most deployments run wholesale only, and a
-    // business without a schedule for this pair resolves nothing, which is
-    // the wholesale path itself rather than an error.
+    // `sale` block commits. `resolve_sale_gate` (issue #1052) draws the line
+    // `resolve_sale_price` blurred: a business that runs schedules sells only
+    // what they cover — a priced-but-uncovered model is refused here rather
+    // than billed wholesale — while a deployment with no schedule at all is
+    // wholesale-only and every priced model serves.
     let sale = match state
         .db
-        .resolve_sale_price(
+        .resolve_sale_gate(
             access.business_id,
             organization.id,
             &request.model,
@@ -912,7 +913,7 @@ async fn run(
         )
         .await
     {
-        Ok(snapshot) => {
+        Ok(oxsum_core::SaleGate::Priced(snapshot)) => {
             let canonical = oxsum_core::canonical_sale_snapshot(&snapshot).map_err(|error| {
                 tracing::error!(%error, "canonicalizing the resolved sale snapshot failed");
                 GatewayError::upstream(
@@ -928,7 +929,10 @@ async fn run(
                 digest,
             })
         }
-        Err(WalletError::NotFound(_)) => None,
+        Ok(oxsum_core::SaleGate::NotCovered) => {
+            return Err(GatewayError::model_not_served(&request.model));
+        }
+        Ok(oxsum_core::SaleGate::Wholesale) => None,
         Err(error) => return Err(error.into()),
     };
     // A sale-priced turn may not fall back across models: the snapshot binds
