@@ -65,14 +65,18 @@ impl Db {
         reason: &str,
         new: bool,
     ) -> Result<(), WalletError> {
+        // The queue is rail-agnostic across the refundable legacy rails; the
+        // provider handle an old reversal already recorded stays a read-only
+        // seed. Airwallex rows carry `airwallexRefundId` the way Hyperswitch
+        // rows carry `hyperswitchRefundId`.
         sqlx::query("INSERT INTO oxsum.deposit_refunds(deposit_id,request_id,organization_id,merchant_id,version_id,provider_payment_id,amount_minor,currency,body_identity,provider_refund_id,reason,next_attempt_at) \
             SELECT d.deposit_id,$2,d.organization_id,b.merchant_id,b.version_id,r.provider_payment_id,COALESCE(d.received_minor,d.amount_minor),COALESCE(b.currency,'USD'), \
             ($4 AND b.payment_id IS NOT NULL AND r.provider_payment_id IS NOT NULL AND b.amount_minor=COALESCE(d.received_minor,d.amount_minor) AND b.amount_minor>0 AND b.organization_id=d.organization_id), \
-            NULLIF(d.meta->>'hyperswitchRefundId',''),$3, \
-            CASE WHEN b.payment_id IS NOT NULL AND r.provider_payment_id IS NOT NULL AND b.amount_minor=COALESCE(d.received_minor,d.amount_minor) AND b.amount_minor>0 AND b.organization_id=d.organization_id AND ($4 OR NULLIF(d.meta->>'hyperswitchRefundId','') IS NOT NULL) THEN now() ELSE NULL END \
+            NULLIF(COALESCE(d.meta->>'hyperswitchRefundId',d.meta->>'airwallexRefundId'),''),$3, \
+            CASE WHEN b.payment_id IS NOT NULL AND r.provider_payment_id IS NOT NULL AND b.amount_minor=COALESCE(d.received_minor,d.amount_minor) AND b.amount_minor>0 AND b.organization_id=d.organization_id AND ($4 OR NULLIF(COALESCE(d.meta->>'hyperswitchRefundId',d.meta->>'airwallexRefundId'),'') IS NOT NULL) THEN now() ELSE NULL END \
             FROM oxsum.deposits d LEFT JOIN oxsum.merchant_payment_bindings b ON b.payment_id=d.deposit_id AND b.purpose='legacyDeposit' \
             LEFT JOIN oxsum.merchant_payment_refs r ON r.payment_id=d.deposit_id \
-            WHERE d.deposit_id=$1 AND d.rail='hyperswitch' AND d.status='reversed' ON CONFLICT(deposit_id) DO NOTHING")
+            WHERE d.deposit_id=$1 AND d.rail IN ('hyperswitch','airwallex') AND d.status='reversed' ON CONFLICT(deposit_id) DO NOTHING")
             .bind(deposit).bind(Uuid::new_v4()).bind(reason).bind(new).execute(&mut **tx).await?;
         Ok(())
     }

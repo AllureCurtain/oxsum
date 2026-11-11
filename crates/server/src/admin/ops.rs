@@ -166,8 +166,9 @@ pub(crate) struct ReverseDepositReq {
 /// posting twice. The wallet's own no-overdraft rule refuses what the
 /// purchased pool cannot carry — `402 INSUFFICIENT_FUNDS` — and a deposit
 /// that is not `credited` is `409`, an unknown one `404`. No payment provider
-/// is called inside the ledger transaction. Hyperswitch recovery follows the
-/// durable queued refund; only a signed matching event confirms money returned.
+/// is called inside the ledger transaction. Hyperswitch and Airwallex recovery
+/// follow the durable queued refund; only a signed matching event confirms
+/// money returned.
 pub(crate) async fn reverse_deposit(
     State(state): State<AppState>,
     Path(deposit_id): Path<Uuid>,
@@ -190,9 +191,12 @@ pub(crate) async fn reverse_deposit(
         .await?;
     // The local reversal already queued its immutable external operation.
     // Recovery spends a durable lease before I/O; HTTP failures retain unknown.
+    // Hyperswitch and Airwallex both queue a refundable durable operation.
     let mut deposit = reversed;
-    if deposit.rail == oxsum_core::RAIL_HYPERSWITCH
-        && let Some(secret) = state.config.secret()
+    if matches!(
+        deposit.rail.as_str(),
+        oxsum_core::RAIL_HYPERSWITCH | oxsum_core::RAIL_AIRWALLEX
+    ) && let Some(secret) = state.config.secret()
     {
         crate::deposit_refunds::recover_one(&state.db, secret, &state.provider_http, deposit_id)
             .await?;
