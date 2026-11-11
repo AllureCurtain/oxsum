@@ -188,7 +188,23 @@ adding an integration test, put it in an existing submodule under
 `#[path] mod` line in the aggregate) — do not add a new top-level `tests/*.rs`
 file, which would restore the per-file binary.
 
-Each integration-test suite (`crates/server/tests/*.rs`, `crates/core/tests/*.rs`)
+Select a module with its anchored test prefix, for example
+`cargo nextest run -p oxsum-core --test core -E 'test(/^bundle_upgrade::/)'`
+or `cargo nextest run -p oxsum-server --test server -E 'test(/^(plans|refunds)::/)'`.
+The former per-file `--test <suite>` and `binary(<suite>)` selectors no longer
+exist. For one test use its complete module-qualified name.
+
+The process-shared modules use the ordinary test harness:
+`cargo test -p oxsum-core --test core generative:: -- --test-threads=4`
+(and separately `seed::` and `jobs::`), plus
+`cargo test -p oxsum-server --test server jobs:: -- --test-threads=4`.
+CI runs the same modules from extracted aggregates with
+`python3 scripts/run-shared-suites.py <extracted-deps-directory>`.
+The runner requires DATABASE_URL, exactly one aggregate executable per crate,
+nonempty module inventories and successful execution of every discovered test.
+`--check-only` validates the inventory without running database tests.
+
+Each integration-test suite (`crates/server/tests/server/*.rs`, `crates/core/tests/core/*.rs`)
 gets its own scratch PostgreSQL database, so suites never share mutable state
 and repeated runs cannot accumulate residue (issue #226). The helper lives in
 `crates/testkit`: a test file's `url()` calls
@@ -961,10 +977,11 @@ so the formatter matches the one the local scripts run:
   tests — an interrupted run's residue cannot bleed into the next shard's
   timing (issue #271).
 - `test-extras` (pushes to `main`, the nightly, manual dispatch): downloads the same artifact, extracts both archives, and runs
-  the suites that cannot live under nextest — `generative`, `seed`, `jobs`
-  coordinate through process-global state — by invoking the binaries straight
-  from `target/debug/deps`, the same one-binary-per-process model `cargo test`
-  gives them. It also runs the ledger-gated doubleentry Postgres conformance
+  the core `generative::`, `seed::`, `jobs::` and server `jobs::` modules
+  through `scripts/run-shared-suites.py`. Each module runs in one aggregate
+  process with four test threads, preserving its process-local coordination.
+  Missing/ambiguous executables, empty module inventories and incomplete runs
+  fail instead of silently passing. It also runs the ledger-gated doubleentry Postgres conformance
   suite off the second archive (the vendored crate almost never changes, so
   the gate keys on `crates/doubleentry/`, `crates/core/migrations/`,
   `Cargo.lock`, or `ci.yml` itself), and sweeps stale testcontainers beside
