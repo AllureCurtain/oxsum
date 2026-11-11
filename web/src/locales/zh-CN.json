@@ -2716,5 +2716,30 @@
     "renewalDue": "待续费",
     "debtDue": "欠款逾期",
     "renewalAndDebt": "待续费 · 欠款逾期"
+  },
+  "invoiceCorrection": {
+    "open": "更正账单",
+    "recover": "恢复已提交的更正",
+    "title": "核对账单更正",
+    "help": "减少原服务费用，保留已有抵扣。原服务期间和收款归属保持不变。",
+    "storageError": "无法保存用于恢复的原始请求。请启用会话存储后再提交。",
+    "success": "原账单已取消，新账单已开具。",
+    "newInvoice": "打开新账单",
+    "newStatement": "打开新客户账单",
+    "successor": "查看后续更正单据",
+    "predecessor": "查看原始单据",
+    "exactInput": "单位为 credit，最多六位小数，已有抵扣将被保留。",
+    "amount": "更正后的服务费用",
+    "invalid": "请在原基础费用行输入精确的非负金额。",
+    "preview": "预览更正",
+    "period": "原服务期间",
+    "oldPayable": "原收款应退金额",
+    "newDebt": "新账单应收金额",
+    "earned": "已确认收入",
+    "deferred": "递延收入",
+    "cashless": "本次不发生现金转移。原款退款与新账单收款需要分别执行，原到期日保留。",
+    "retained": "已保留原提交请求。请以相同标识恢复结果，再开始其他更正。",
+    "confirm": "取消原账单并开具新账单",
+    "close": "关闭"
   }
 }

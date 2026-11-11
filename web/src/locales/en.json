@@ -2716,5 +2716,30 @@
     "renewalDue": "Renewal due",
     "debtDue": "Debt overdue",
     "renewalAndDebt": "Renewal due · debt overdue"
+  },
+  "invoiceCorrection": {
+    "open": "Correct invoice",
+    "recover": "Recover submitted correction",
+    "title": "Review invoice correction",
+    "help": "Reduce the original service charge while retaining every existing credit. The original service period and payment ownership stay unchanged.",
+    "storageError": "The exact request could not be saved for recovery. Enable session storage before submitting.",
+    "success": "The original invoice was cancelled and its successor was issued.",
+    "newInvoice": "Open new invoice",
+    "newStatement": "Open new customer statement",
+    "successor": "Open replacement document",
+    "predecessor": "Open original document",
+    "exactInput": "Credits, with up to six decimal places. Existing credits are retained.",
+    "amount": "Corrected service charge",
+    "invalid": "Enter an exact nonnegative charge on an original base-fee line.",
+    "preview": "Preview correction",
+    "period": "Same service period",
+    "oldPayable": "Original funds owed back",
+    "newDebt": "New invoice to collect",
+    "earned": "Recognized revenue",
+    "deferred": "Deferred revenue",
+    "cashless": "No cash moves now. Refund the original funds and collect the new invoice separately. The original due date is retained.",
+    "retained": "The original submitted request is retained. Recover it with the same identity before starting another correction.",
+    "confirm": "Cancel original and issue new invoice",
+    "close": "Close"
   }
 }

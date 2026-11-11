@@ -812,3 +812,31 @@ export function useMonthlyPayment(customer: string, statement: string) {
     },
   });
 }
+
+export type InvoiceCorrectionPreview = components["schemas"]["InvoiceCorrectionPreview"];
+export type InvoiceCorrectionRequest = components["schemas"]["InvoiceCorrectionRequest"];
+export type InvoiceCorrectionResult = components["schemas"]["InvoiceCorrectionResult"];
+
+export function useInvoiceCorrectionPreview() {
+  return useMutation({
+    mutationFn: (v: { journalId: string; lines: InvoiceCorrectionRequest["lines"] }) =>
+      api<InvoiceCorrectionPreview>(`/business/journals/${v.journalId}/correction-preview`, {
+        method: "POST", body: { lines: v.lines },
+      }),
+  });
+}
+
+export function useCorrectInvoice() {
+  const client = useQueryClient();
+  return useMutation({
+    mutationFn: (v: { journalId: string; request: InvoiceCorrectionRequest }) =>
+      api<InvoiceCorrectionResult>(`/business/journals/${v.journalId}/correct`, {
+        method: "POST", body: v.request,
+      }),
+    onSuccess: () => {
+      for (const key of ["biz-journals", "biz-journal", "biz-statements", "biz-statement", "biz-facts"]) {
+        void client.invalidateQueries({ queryKey: [key] });
+      }
+    },
+  });
+}

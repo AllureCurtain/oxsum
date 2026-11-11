@@ -548,6 +548,10 @@ pub fn router(state: AppState) -> Router {
             post(journals::correction_preview),
         )
         .route(
+            "/business/journals/{journal_id}/correct",
+            post(journals::correct_invoice),
+        )
+        .route(
             "/business/journals/{journal_id}/void",
             post(journals::void_journal),
         )

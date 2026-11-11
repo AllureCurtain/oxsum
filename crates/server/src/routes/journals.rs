@@ -12,8 +12,8 @@ use axum::Extension;
 use axum::extract::{Path, State};
 use axum::http::HeaderMap;
 use oxsum_core::{
-    InvoiceCorrectionPreview, InvoiceCorrectionPreviewRequest, InvoiceJournalDetail,
-    InvoiceJournalPage, Principal,
+    InvoiceCorrectionPreview, InvoiceCorrectionPreviewRequest, InvoiceCorrectionRequest,
+    InvoiceCorrectionResult, InvoiceJournalDetail, InvoiceJournalPage, Principal,
 };
 use serde::Deserialize;
 use uuid::Uuid;
@@ -114,6 +114,23 @@ pub(crate) async fn correction_preview(
     ok(state
         .db
         .preview_invoice_correction(
+            &super::business::personal_token(&headers)?,
+            journal_id,
+            &request,
+        )
+        .await?)
+}
+
+/// Atomically commit one source-bound correction, retaining its exact replay result.
+pub(crate) async fn correct_invoice(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(journal_id): Path<Uuid>,
+    ApiJson(request): ApiJson<InvoiceCorrectionRequest>,
+) -> ApiResult<InvoiceCorrectionResult> {
+    ok(state
+        .db
+        .correct_invoice(
             &super::business::personal_token(&headers)?,
             journal_id,
             &request,
