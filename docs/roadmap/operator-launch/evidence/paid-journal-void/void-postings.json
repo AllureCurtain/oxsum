@@ -1,0 +1,16 @@
+[
+  [
+    "Liabilities:UnearnedPlanFees",
+    "D",
+    4000000,
+    "USD",
+    "settled"
+  ],
+  [
+    "Liabilities:RefundPayable",
+    "C",
+    4000000,
+    "USD",
+    "settled"
+  ]
+]

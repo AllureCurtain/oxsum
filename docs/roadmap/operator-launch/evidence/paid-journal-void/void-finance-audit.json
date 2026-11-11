@@ -1,0 +1,15 @@
+[
+  [
+    "journal.void",
+    "014850df-4712-45f0-833a-a193d1808eed",
+    {
+      "reason": "Local fixture: source-specific correction of the paid plan journal; retain repayment ownership as refund payable, no cash movement.",
+      "totalMinor": 4000000,
+      "periodIndex": 0,
+      "settledMinor": 4000000,
+      "previousState": "paid",
+      "organizationId": "57ae06a2-47b1-4989-806b-69a8229e4569",
+      "reversalEntryId": "cef59e9e-784a-5b93-84ad-46b9dfc5c49b"
+    }
+  ]
+]
