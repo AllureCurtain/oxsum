@@ -599,3 +599,13 @@ format and diff checks pass. [Evidence](evidence/monthly-issuance-atomic.md).
 Independent approval/protected integration and staff issuance/repayment remain.
 No candidate freeze, real PSP activity or new provider attempts. The shared
 provider budget remains 2/5 attempts, CNY0.016896 reserved and CNY0.000052 estimated.
+
+### Browser application consent and notification handoff (#976)
+
+Owner configuration and one-day scoped credential, verified personal consent,
+unchanged original account selection, explicit linked-account switch and namespace
+isolation passed. The independent Python/SQLite receiver accepted a real signed
+archive event, synchronized current state and deduplicated two local replays;
+invalid signature refused. The initially wrong receiver path, its three 404s and
+reasoned endpoint replacement remain in [evidence](evidence/embedded-browser/README.md).
+This development handoff does not close exact-candidate J18 or external gates.

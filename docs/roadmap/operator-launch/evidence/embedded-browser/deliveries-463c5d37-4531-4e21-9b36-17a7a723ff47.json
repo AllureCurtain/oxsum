@@ -1,0 +1,21 @@
+{
+  "data": {
+    "deliveries": [
+      {
+        "deliveryId": "ed1be3b2-f117-44d1-b519-a63b57f5fd9c",
+        "endpointId": "463c5d37-4531-4e21-9b36-17a7a723ff47",
+        "organizationId": "92b22f0e-1fc8-402b-9349-a157016c33f7",
+        "eventType": "customer.changed",
+        "entityId": "92b22f0e-1fc8-402b-9349-a157016c33f7",
+        "status": "delivered",
+        "attempts": 1,
+        "nextAttemptAt": "2026-11-10T06:32:24.744556Z",
+        "responseStatus": 204,
+        "lastError": null,
+        "createdAt": "2026-11-10T06:32:24.744556Z",
+        "deliveredAt": "2026-11-10T06:32:51.722472Z"
+      }
+    ],
+    "nextCursor": null
+  }
+}

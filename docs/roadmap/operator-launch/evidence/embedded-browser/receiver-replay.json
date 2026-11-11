@@ -1,0 +1,9 @@
+{
+  "source": "independent local fixture replay of original event bytes",
+  "httpStatuses": [
+    401,
+    204,
+    204
+  ],
+  "inboxRowsAfterReplay": 1
+}

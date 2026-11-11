@@ -13,6 +13,8 @@ Updated: 2026-11-11
 
 - [ ] [#1009](https://github.com/AllureCurtain/oxsum/issues/1009) — Atomic monthly anchor/document/lines/event and coherent source snapshot implemented; five base regressions reproduced, 15 monthly core and 13 HTTP checks passed. Core selection: 860 passed, one unchanged bundle-upgrade failure covered by #975. Strict core Clippy and formatting passed; independent review/integration pending. [Evidence](docs/roadmap/operator-launch/evidence/monthly-issuance-atomic.md).
 
+- [ ] [#976](https://github.com/AllureCurtain/oxsum/issues/976) — Owner application/credential/notification configuration and verified customer consent passed in the real browser; independent SQLite receiver accepted one signed archive signal, rejected a bad signature and deduplicated replays. Evidence prepared; complete candidate J18 remains. [Evidence](docs/roadmap/operator-launch/evidence/embedded-browser/README.md).
+
 - [ ] [#969](https://github.com/AllureCurtain/oxsum/issues/969) — Actual browser bundle purchase/return and paid-plan activation, fee/payment statement, early-renewal refusal and cancellation service passed with local signed fixtures. Stale plan consumption display is #973; statement correction/dispute, embedded and candidate/external gates remain. [Evidence](docs/roadmap/operator-launch/evidence/commercial-browser/README.md).
 
 - [ ] [#1027](https://github.com/AllureCurtain/oxsum/issues/1027) — Local source-verified invoice correction preview and integer allocation now pass ten focused and one HTTP check. Atomic apply, successor lifecycle, complete source-linked reconciliation and browser acceptance remain.
