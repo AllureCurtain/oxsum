@@ -968,3 +968,5 @@ A lost response retains the exact intent for retry. The original receipt remains
 recoverable after full repayment or archival with current funds authority.
 Customer statement reads reflect the updated FIFO standing; original usage
 lines, terms and proof anchor remain unchanged. No external collection is initiated.
+
+Chat retains a browser key only for its exact customer organization and signed-in user. The portal checks its live key identity and credential organization before reuse, ignores the legacy unscoped browser key, and isolates pending initialization across account switches. A changed session requires reloading Chat before sending.

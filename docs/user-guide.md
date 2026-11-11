@@ -2015,3 +2015,5 @@ not invent a different reference to bypass a duplicate-reference error. The same
 reference cannot also be recorded as a manual top-up. Customer statements show
 the updated repayment and outstanding amount. Archived customers accept exact
 recovery of past successful requests but no new payment.
+
+Chat retains a browser key only for its exact customer organization and signed-in user. The portal checks its live key identity and credential organization before reuse, ignores the legacy unscoped browser key, and isolates pending initialization across account switches. A changed session requires reloading Chat before sending.
