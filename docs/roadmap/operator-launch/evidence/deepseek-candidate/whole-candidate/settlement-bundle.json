@@ -1,0 +1,89 @@
+{
+  "entry": {
+    "id": "4a0daabb-b9f9-54f7-9b50-8bc59503a107",
+    "idempotency_key": "736574746c653a3137383931613433333631303565326138393930363134383565353535373464",
+    "booking_date": [
+      2026,
+      315
+    ],
+    "value_date": [
+      2026,
+      315
+    ],
+    "description": "{\"v\":15,\"request\":\"72da11ab-c538-4d52-8db9-a05c0121d182\",\"channel\":\"bounded-deepseek\",\"model\":\"deepseek-flash\",\"servedModel\":\"deepseek-flash\",\"priceVersion\":1,\"kind\":\"usage\",\"usage\":{\"inputTokens\":9,\"outputTokens\":1},\"lines\":[[\"input\",9,1000000],[\"output\",1,1000000]],\"upstreamAttempts\":1,\"charged\":10,\"freeze\":70,\"sale\":{\"digest\":\"28d57b13a91c1634f786c0c5f116ee828e1ff14e729650945be7a71cb2dc9341\"}}",
+    "postings": [
+      {
+        "account": 0,
+        "direction": "Credit",
+        "amount": "0.000070",
+        "currency": "USD",
+        "layer": "Pending",
+        "dimensions": {}
+      },
+      {
+        "account": 7,
+        "direction": "Debit",
+        "amount": "0.000070",
+        "currency": "USD",
+        "layer": "Pending",
+        "dimensions": {}
+      },
+      {
+        "account": 0,
+        "direction": "Debit",
+        "amount": "0.000010",
+        "currency": "USD",
+        "layer": "Settled",
+        "dimensions": {}
+      },
+      {
+        "account": 7,
+        "direction": "Credit",
+        "amount": "0.000010",
+        "currency": "USD",
+        "layer": "Settled",
+        "dimensions": {}
+      }
+    ],
+    "kind": null,
+    "provenance": {
+      "actor": "3a3205e7568e49269de0a899e30d0fd9",
+      "source": null,
+      "correlation": null
+    },
+    "document": null,
+    "reverses": null,
+    "original_booking_date": null
+  },
+  "head": {
+    "size": 3,
+    "root": "7e232d170752442e946e88d5d9a0118bea1df5040951693ba872ecd6a439c9b8"
+  },
+  "proof": {
+    "leaf_index": 2,
+    "tree_size": 3,
+    "path": [
+      "6748548c19ab1b942cfb1f9ea55ee0165a62356bf7544b9df47c348386ad246c"
+    ]
+  },
+  "price": {
+    "channel": "bounded-deepseek",
+    "model": "deepseek-flash",
+    "version": 1,
+    "row": "{\"v\":1,\"channel\":\"bounded-deepseek\",\"model\":\"deepseek-flash\",\"version\":1,\"weight\":100,\"price\":{\"inputPricePerMillion\":1000000,\"outputPricePerMillion\":1000000,\"maxOutputTokens\":32,\"mode\":\"chat\"}}",
+    "note": "oxsum/price-catalog/bounded-deepseek\n1\neXavVQr1PLK0aBHGn8YlEMU+msMpNRjb/pXS51O1D5g=\n\n\u2014 oxsum/tree-heads yEignph+FJ8IjKWHYfjSiEW2MimTMZk1vUgnPPQGNvJJ1+FN+0HRtKfpxIROotO1j8SPvwPGyMJJqGvO95ZYIow9lgI=\n",
+    "keyName": "oxsum/tree-heads",
+    "publicKey": "bae07494db3c7fafb3ab038a91f786349262c5f0cc7932193b8dde9378df2106",
+    "keyHash": "c848a09e"
+  },
+  "sale": {
+    "organizationId": "df3473d4-3392-478e-af4d-2f1b26febc91",
+    "model": "deepseek-flash",
+    "digest": "28d57b13a91c1634f786c0c5f116ee828e1ff14e729650945be7a71cb2dc9341",
+    "row": "{\"v\":1,\"businessId\":\"32f7184b-a221-4687-801a-68a7f69fb2da\",\"organizationId\":\"df3473d4-3392-478e-af4d-2f1b26febc91\",\"model\":\"deepseek-flash\",\"source\":\"assigned\",\"scheduleId\":\"1f6367a1-25ea-4383-bf0c-16234a132094\",\"bookId\":\"e718756e-e094-4ffa-b83d-0c8a3ab8f869\",\"version\":1,\"draftRevision\":1,\"legacyChannel\":null,\"effectiveFrom\":\"2026-11-11T04:35:40.948361Z\",\"effectiveUntil\":null,\"terms\":{\"price\":{\"inputPricePerMillion\":1000000,\"outputPricePerMillion\":1000000,\"maxOutputTokens\":32,\"mode\":\"chat\"},\"discountPercent\":0}}",
+    "note": "oxsum/sale-catalog/32f7184b-a221-4687-801a-68a7f69fb2da\n1\nKNV7E6kcFjT3hsDF8Rbugo4f8U5yllCUW+enHLLck0E=\n\n\u2014 oxsum/tree-heads yEignhuMLitqtYJoaiDi3RD5Zz5WItzWrCdN3akAB46a1OkWEbal+FxJZHTxW8JmuwjyFBCvu8althBvoGrxlbpLgA0=\n",
+    "keyName": "oxsum/tree-heads",
+    "publicKey": "bae07494db3c7fafb3ab038a91f786349262c5f0cc7932193b8dde9378df2106",
+    "keyHash": "c848a09e"
+  }
+}

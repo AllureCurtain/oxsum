@@ -102,10 +102,14 @@ class Guard(http.server.BaseHTTPRequestHandler):
             raw = self.rfile.read(size)
             require(len(raw) == size, 'Incomplete request')
             body = validate_payload(raw)
-            scenario = 'sse' if body['stream'] else 'whole'
-            require(self.server.active_scenario == scenario, 'Scenario is not active')
+            protocol = 'sse' if body['stream'] else 'whole'
+            # The wire protocol is whole/sse; the booked scenario may carry an
+            # artifact tag (whole-candidate). The request must match the active
+            # protocol, and the reservation books the tagged scenario name.
+            active = self.server.active_scenario
+            require(isinstance(active, str) and active.split('-', 1)[0] == protocol, 'Scenario is not active')
             encoded = json.dumps(body, separators=(',', ':')).encode()
-            attempt = self.server.budget.reserve(scenario, self.server.run_id, hashlib.sha256(encoded).hexdigest())
+            attempt = self.server.budget.reserve(active, self.server.run_id, hashlib.sha256(encoded).hexdigest())
             # No socket or credential is sent before the durable reservation returns.
             connection = self.server.transport()
             connection.request('POST', PATH, body=encoded, headers={

@@ -1,0 +1,102 @@
+{
+  "runtime": {
+    "sourceSha": "cc16bb8fe5d6875ee2bb054e2c436cc788fc94ef",
+    "sha256": "ed097303dcde1f3218ada803648b3e3312f6d2236e23ea2c03bd390742d8ee31",
+    "schemaVersion": "0131_invoice_corrections",
+    "version": "0.1.0"
+  },
+  "sdkSha256": "a3ce667240f11bf209f34306973adbd83c79d487c73391486ea5571cb377325c",
+  "model": "deepseek-flash",
+  "runId": "d4e8819fd638ede7ff1d573c89f7c88a",
+  "fixture": false,
+  "scenarios": {
+    "whole-candidate": {
+      "chargedMinor": 10,
+      "captured": true,
+      "offlineVerified": true
+    },
+    "sse-candidate": {
+      "chargedMinor": 10,
+      "captured": true,
+      "offlineVerified": true
+    }
+  },
+  "scope": "Controlled loopback guard forwards fixed requests over public-pinned TLS; not direct production transport certification",
+  "observedRuntime": {
+    "gitSha": "cc16bb8fe5d6875ee2bb054e2c436cc788fc94ef",
+    "schemaVersion": "0131_invoice_corrections",
+    "version": "0.1.0"
+  },
+  "allowance": {
+    "attempts": 4,
+    "reservedMicros": 33792,
+    "observedUsagePeakCostMicros": 104,
+    "halted": null,
+    "attemptRecords": [
+      {
+        "id": "8c7a978b-3de7-465a-a84a-f76a7bfeb630",
+        "scenario": "whole",
+        "run_id": "5ee9127c6fb58067a52aa04e6418ef49",
+        "model": "deepseek-flash",
+        "reserved_at": "2026-11-10T00:55:11.693626+00:00",
+        "reserved_micros": 8448,
+        "actual_micros": 26,
+        "request_sha256": "8dc9cca046634ece90ae13c132d777b702345017023ca2934c15bb85b5d63672",
+        "status": "http_200",
+        "finished_at": "2026-11-10T00:55:13.458349+00:00",
+        "usage": {
+          "prompt_tokens": 9,
+          "completion_tokens": 1
+        }
+      },
+      {
+        "id": "0087e409-f2d0-44c5-b46a-d557f552814e",
+        "scenario": "sse",
+        "run_id": "5ee9127c6fb58067a52aa04e6418ef49",
+        "model": "deepseek-flash",
+        "reserved_at": "2026-11-10T00:55:13.733933+00:00",
+        "reserved_micros": 8448,
+        "actual_micros": 26,
+        "request_sha256": "4f4d15841b5c7a757f252bfaa638873f52d8a6d7a203ab756265e1d6ecf705d3",
+        "status": "http_200",
+        "finished_at": "2026-11-10T00:55:16.443713+00:00",
+        "usage": {
+          "prompt_tokens": 9,
+          "completion_tokens": 1
+        }
+      },
+      {
+        "id": "9d99b193-307f-43a7-8e05-ae0815182314",
+        "scenario": "whole-candidate",
+        "run_id": "d4e8819fd638ede7ff1d573c89f7c88a",
+        "model": "deepseek-flash",
+        "reserved_at": "2026-11-11T04:35:41.036642+00:00",
+        "reserved_micros": 8448,
+        "actual_micros": 26,
+        "request_sha256": "8dc9cca046634ece90ae13c132d777b702345017023ca2934c15bb85b5d63672",
+        "status": "http_200",
+        "finished_at": "2026-11-11T04:35:43.586020+00:00",
+        "usage": {
+          "prompt_tokens": 9,
+          "completion_tokens": 1
+        }
+      },
+      {
+        "id": "f2f8df33-bc11-4e67-8688-3b015e484551",
+        "scenario": "sse-candidate",
+        "run_id": "d4e8819fd638ede7ff1d573c89f7c88a",
+        "model": "deepseek-flash",
+        "reserved_at": "2026-11-11T04:35:43.817059+00:00",
+        "reserved_micros": 8448,
+        "actual_micros": 26,
+        "request_sha256": "4f4d15841b5c7a757f252bfaa638873f52d8a6d7a203ab756265e1d6ecf705d3",
+        "status": "http_200",
+        "finished_at": "2026-11-11T04:35:45.766996+00:00",
+        "usage": {
+          "prompt_tokens": 9,
+          "completion_tokens": 1
+        }
+      }
+    ]
+  }
+}

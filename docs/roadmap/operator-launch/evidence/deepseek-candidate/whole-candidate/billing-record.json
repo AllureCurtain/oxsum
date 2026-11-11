@@ -1,0 +1,13 @@
+{
+  "bookedOn": "2026-11-11",
+  "requestId": "72da11ab-c538-4d52-8db9-a05c0121d182",
+  "entryId": "4a0daabb-b9f9-54f7-9b50-8bc59503a107",
+  "model": "deepseek-flash",
+  "kind": "usage",
+  "inputTokens": 9,
+  "outputTokens": 1,
+  "chargedMinor": 10,
+  "upstreamAttempts": 1,
+  "keyId": "3a3205e7568e49269de0a899e30d0fd9",
+  "status": "settled"
+}
