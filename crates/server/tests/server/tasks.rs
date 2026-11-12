@@ -44,6 +44,8 @@ enum SubmitAnswer {
     Refuse { status: u16, body: Value },
     /// Accept but answer a body with no task id — a contract break.
     NoId,
+    /// Accept but answer a non-JSON body — a contract break before any task id.
+    BadJson,
 }
 
 /// What upstream answers for `GET /tasks/{id}` — the poll leg, keyed by the
@@ -137,6 +139,12 @@ async fn submit_upstream(
         )
             .into_response(),
         SubmitAnswer::NoId => axum::Json(json!({"status": "submitted"})).into_response(),
+        SubmitAnswer::BadJson => (
+            StatusCode::OK,
+            [("content-type", "text/plain")],
+            "not-json-at-all",
+        )
+            .into_response(),
     }
 }
 
@@ -644,6 +652,67 @@ async fn cancel_releases_and_tells_upstream() {
     .await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(again["state"], "cancelled");
+}
+
+/// A submit upstream answers 2xx but breaks the contract (non-JSON body, or a
+/// JSON answer with no task id): the hold is released and the idempotency claim
+/// is *kept* — the job may exist upstream, so a retry under the same key must
+/// not submit a second task.
+#[tokio::test]
+async fn submit_contract_break_releases_hold_but_keeps_claim() {
+    let Some(url) = url() else {
+        eprintln!("DATABASE_URL not set, skipping");
+        return;
+    };
+    for answer in [SubmitAnswer::BadJson, SubmitAnswer::NoId] {
+        let world = world(&url, 10_000).await;
+        world.script.submit("task-model", answer);
+        // The submit carries an idempotency key so the claim is observable.
+        let submit = |key: &str| {
+            let app = world.app.clone();
+            let key = key.to_owned();
+            async move {
+                let request = Request::builder()
+                    .method("POST")
+                    .uri("/v1/tasks")
+                    .header("authorization", format!("Bearer {key}"))
+                    .header("idempotency-key", "contract-break")
+                    .header("content-type", "application/json")
+                    .body(Body::from(simple_submit().to_string()))
+                    .expect("the test's own request");
+                app.clone()
+                    .oneshot(request)
+                    .await
+                    .expect("the router answers")
+            }
+        };
+        let first = submit(&world.key).await;
+        assert_eq!(first.status(), StatusCode::BAD_GATEWAY);
+        // The freeze was released even though upstream accepted the job.
+        let reserved = world
+            .tenants
+            .get(&world.tenant_id)
+            .await
+            .unwrap()
+            .reserved()
+            .await
+            .unwrap();
+        assert_eq!(reserved, 0, "the contract break must release the hold");
+        assert_eq!(world.script.seen_submits.lock().unwrap().len(), 1);
+        // A retry under the same key meets the kept claim (409 in-flight), not a
+        // second upstream submission — upstream may already be running the job.
+        let second = submit(&world.key).await;
+        assert_eq!(
+            second.status(),
+            StatusCode::CONFLICT,
+            "the kept claim refuses a duplicate submit"
+        );
+        assert_eq!(
+            world.script.seen_submits.lock().unwrap().len(),
+            1,
+            "no second upstream submit may ride a kept claim"
+        );
+    }
 }
 
 /// A submission upstream refuses releases the hold and answers 502 — the
