@@ -27,7 +27,7 @@ The current native and browser verifiers read that same bound; older
 the quota-funded cache settlement failure without dropping evidence. Arbitrary
 configured guardrail output still requires the admission budget tracked by #875.
 
-Every page and flow below carries a status: **shipped** means this repository does it today, **planned** means the text describes the vision and names the issue that will build it. A planned page or flow is not a smaller feature that happens to be missing; it is documented behavior that no code implements. The shipped dashboard is the React app under `web/` (issue #234), served at `/app`: every member page, the admin console and chat live there as `web/src/pages/*.tsx`, and the REST and gateway behavior they call is in `crates/server`. The server-rendered Topcoat pages retired to it (issue #256) — every legacy `/dashboard/*`, auth and `/admin` path answers `301` to its `/app` twin, so the page names below read `/app/<name>` even where the text still says `/dashboard/<name>` for continuity with older notes. Issue #61 is the audit that added these statuses; the resolutions are recorded in docs/decisions.md. Only `/verify` stays server-rendered on purpose (`crates/web`): its skeleton is a plain form — the page is the one surface where an in-browser check can run the *served* verifier (the wasm build of `oxsum_verify`, issue #284), and the form's server-side POST keeps it working where the bundle is not shipped.
+Every page and flow below carries a status: **shipped** means this repository does it today, **planned** means the text describes the vision and names the issue that will build it. A planned page or flow is not a smaller feature that happens to be missing; it is documented behavior that no code implements. The shipped dashboard is the React app under `web/` (issue #234), served at `/app`: every member page, the admin console and chat live there as `web/src/pages/*.tsx`, and the REST and gateway behavior they call is in `crates/server`. The server-rendered Topcoat pages retired to it (issue #256) — every legacy `/dashboard/*`, auth and `/admin` path answers `301` to its `/app` twin, so the page names below read `/app/<name>` even where the text still says `/dashboard/<name>` for continuity with older notes. Issue #61 is the audit that added these statuses; the resolutions are recorded in docs/decisions.md. Two public pages stay server-rendered on purpose, in `crates/web`, outside the React bundle. `/verify` is a plain form: an in-browser check can run the served verifier (the wasm build of `oxsum_verify`, issue #284), and the form's server-side POST keeps it working where that bundle is not shipped. `/bill/{token}` renders a shared usage report from the capability token alone (issue #302); with JavaScript it can run the same verifier over the bundle the page embeds (issue #305), and without JavaScript the figures and operator key still render.
 
 ## Operator launch target (accepted 2026-11-08)
 
@@ -443,15 +443,11 @@ The staff surface is the `/api/v1/business` REST API under a personal session's 
 - Conversations live only in browser-local storage; the server keeps nothing. Simple to build, and no duty to store users' conversations.
 - Each AI reply shows that turn's billing underneath: the frozen upper bound and streaming progress live, then the settled charge — amount, settlement kind, token counts, price version. "Verify this bill" opens `/verify` with the bundle and the content hash prefilled.
 
-## Not in v1
+## Historical scope note
 
-- Payments: further payment gateways beyond the Stripe rail (issue #201), the Airwallex rail (issue #285) and the x402 rail — a real facilitator-delegated chain rail shipped with issue #282, so what remains is additional gateways, not the missing chain leg. Self-service top-up itself is shipped and is *not* on this list (see "Where credit comes from").
-- Multi-currency *billing* (display-side conversion is shipped — see "Bills and verification"; the ledger still keeps credits alone)
-- Anything beyond text chat
+Two short sections used to sit here ("Not in v1" and "Planned, in one place"). They described an earlier slice and are not the current boundary. Current behavior is the shipped sections of this file. Planned operator-launch work is the section near the top of this file and [the operator-launch contract](roadmap/operator-launch/CONTRACT.md). Calls the API refuses are [docs/unsupported.md](unsupported.md).
 
-## Planned, in one place
-
-Nothing this document describes is unbuilt: the last tracked gap — pagination of the hard-truncating lists (#93) — shipped. New planned work lands here as it is filed, tracked by issue as before.
+Read in that light: the gateway serves more than text chat (Anthropic Messages, Gemini, embeddings, rerank, and the task relay are specified under "Gateway"). Hyperswitch is a collection rail beside Stripe, Airwallex, and x402. Display-currency conversion is a view over integer credits; the ledger itself stays in minor units. Pagination of the hard-truncating lists shipped as #93. Later gaps are filed as issues, not collected in a single "nothing is unbuilt" sentence.
 
 ## Customer billing authority (#625)
 

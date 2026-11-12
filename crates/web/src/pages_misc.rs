@@ -1,10 +1,10 @@
-//! The last server-rendered page: `/verify` (public bill verification), plus
-//! the stylesheet it links.
+//! Server-rendered `/verify` (public bill verification), plus the stylesheet
+//! and verifier assets it links. The public `/bill/{token}` page lives in
+//! `bill.rs`.
 //!
-//! Everything else the Topcoat dashboard served — the dashboard, auth and
-//! device pages — retired to the React app under `/app` (issue #256), which the
-//! server redirects the legacy paths to. `/verify` stays here on purpose: it is
-//! the one surface deliberately kept out of the browser bundle.
+//! The Topcoat dashboard, auth, and device pages retired to the React app under
+//! `/app` (issue #256), which the server redirects the legacy paths to.
+//! `/verify` stays here on purpose: its skeleton is outside the React bundle.
 //!
 //! ## `/verify` trust model
 //!
@@ -30,8 +30,9 @@ use topcoat::view::{View, view};
 
 /// Registers the remaining server-rendered pages on the router builder.
 ///
-/// Only `/verify` and its stylesheet are left: the dashboard, auth and device
-/// pages all retired to the React app under `/app` (issue #256), which the
+/// `/verify`, its stylesheet, and the wasm/script assets it loads. The public
+/// bill page is registered beside this (`bill.rs`). The dashboard, auth, and
+/// device pages retired to the React app under `/app` (issue #256), which the
 /// server redirects to. `/verify` stays server-rendered by design — see the
 /// module doc above.
 pub(crate) fn register(builder: RouterBuilder) -> RouterBuilder {

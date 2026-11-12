@@ -812,13 +812,11 @@ async fn a_member_reads_own_key_spend_and_the_shared_history() {
     );
 }
 
-/// The proof bundle the verify link fetches answers inside the session's scope only:
-/// The public verify page renders, and the proof check now runs on the server:
-/// a hash that is not hex is a 400, a bundle that is not JSON is a 400, and a
-/// real bundle verifies. (The Leptos dashboard ran `verify_bundle` in the
-/// browser's WASM; Topcoat has no browser target, so the check moved
-/// server-side — the trust-model change is documented in
-/// `crates/web/src/pages_misc.rs`.)
+/// The public `/verify` form renders, and its no-JavaScript POST runs the check
+/// on the server: a hash that is not hex is a 400, a bundle that is not JSON is
+/// a 400, and a real bundle verifies. When the wasm assets are installed,
+/// `verify.js` runs the same `oxsum_verify` functions in the browser (issue
+/// #284); this test covers the server form that remains the floor.
 #[tokio::test]
 async fn the_verify_page_checks_bundles_on_the_server() {
     let (app, _db) = app_or_skip!();
