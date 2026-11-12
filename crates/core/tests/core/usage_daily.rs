@@ -48,6 +48,15 @@ fn fresh(name: &str) -> String {
     format!("{name}_{}", &Uuid::new_v4().simple().to_string()[..8])
 }
 
+/// The scope these tests read under: every key plus the unattributed rows —
+/// the owner/admin view the rollup's aggregation checks exercise.
+fn everything() -> oxsum_core::CustomerRecordScope {
+    oxsum_core::CustomerRecordScope {
+        key_ids: None,
+        include_unattributed: true,
+    }
+}
+
 /// A registered organization with its wallet: the smallest world a rollup test
 /// needs.
 struct Fixture {
@@ -185,7 +194,7 @@ async fn turns_roll_into_their_booking_day() {
     .await;
 
     let rows =
-        f.db.usage_daily(&f.org.tenant_id, MONDAY, FRIDAY)
+        f.db.usage_daily(&f.org.tenant_id, MONDAY, FRIDAY, &everything())
             .await
             .expect("the rollup reads");
 
@@ -215,7 +224,7 @@ async fn turns_roll_into_their_booking_day() {
 
     // The window bound holds: a narrower window drops Friday.
     let rows =
-        f.db.usage_daily(&f.org.tenant_id, MONDAY, MONDAY)
+        f.db.usage_daily(&f.org.tenant_id, MONDAY, MONDAY, &everything())
             .await
             .expect("the bounded rollup reads");
     assert!(rows.iter().all(|row| row.day == MONDAY));
@@ -238,7 +247,7 @@ async fn a_replayed_write_counts_once() {
         .expect("the replay is ignored");
 
     let rows =
-        f.db.usage_daily(&f.org.tenant_id, MONDAY, MONDAY)
+        f.db.usage_daily(&f.org.tenant_id, MONDAY, MONDAY, &everything())
             .await
             .expect("the rollup reads");
     let row = rows
@@ -265,7 +274,7 @@ async fn the_rollup_is_scoped_per_tenant() {
     turn(&b, "b1", ("chan", "m-b"), None, 10 * ONE, 7 * ONE, MONDAY).await;
 
     let a_rows =
-        a.db.usage_daily(&a.org.tenant_id, MONDAY, MONDAY)
+        a.db.usage_daily(&a.org.tenant_id, MONDAY, MONDAY, &everything())
             .await
             .expect("a's rollup reads");
     assert_eq!(a_rows.len(), 1);
@@ -273,7 +282,7 @@ async fn the_rollup_is_scoped_per_tenant() {
     assert_eq!(a_rows[0].charged_minor, 2 * ONE);
 
     let b_rows =
-        b.db.usage_daily(&b.org.tenant_id, MONDAY, MONDAY)
+        b.db.usage_daily(&b.org.tenant_id, MONDAY, MONDAY, &everything())
             .await
             .expect("b's rollup reads");
     assert_eq!(b_rows.len(), 1);
@@ -287,7 +296,7 @@ async fn an_empty_window_reads_empty() {
     let f = fixture(&url, "empty").await;
     let today = OffsetDateTime::now_utc().date();
     let rows =
-        f.db.usage_daily(&f.org.tenant_id, today, today)
+        f.db.usage_daily(&f.org.tenant_id, today, today, &everything())
             .await
             .expect("the rollup reads");
     assert!(rows.is_empty());

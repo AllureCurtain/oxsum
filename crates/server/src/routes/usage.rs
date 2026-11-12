@@ -29,9 +29,7 @@ pub(super) async fn scoped_key_ids(
 ) -> Result<oxsum_core::CustomerRecordScope, ApiError> {
     Ok(state.db.customer_record_scope(principal).await?)
 }
-pub(super) fn in_scope(key_id: Option<&str>, scope: &oxsum_core::CustomerRecordScope) -> bool {
-    scope.allows(key_id)
-}
+
 pub(crate) async fn usage(
     State(state): State<AppState>,
     Extension(principal): Extension<Principal>,
@@ -58,20 +56,11 @@ pub(crate) async fn usage(
         )));
     }
     let organization = principal.organization();
+    let scoped = scoped_key_ids(&state, &principal).await?;
     let days = state
         .db
-        .usage_daily(&organization.tenant_id, from, to)
+        .usage_daily(&organization.tenant_id, from, to, &scoped)
         .await?;
-    let scoped = scoped_key_ids(&state, &principal).await?;
-    let days = days
-        .into_iter()
-        .filter(|row| {
-            in_scope(
-                row.key_id.map(|id| id.as_simple().to_string()).as_deref(),
-                &scoped,
-            )
-        })
-        .collect();
     ok(UsageRes { days })
 }
 
@@ -117,12 +106,29 @@ pub(crate) async fn budget(
         .db
         .list_keys(organization.id, principal.key_scope())
         .await?;
-    let mut key_budgets = Vec::with_capacity(keys.len());
-    for key in keys.iter().filter(|key| key.revoked_at.is_none()) {
+    let live_keys: Vec<_> = keys.iter().filter(|key| key.revoked_at.is_none()).collect();
+    // One grouped read for the whole list — a query per key turns the page
+    // into an N+1 of sequential round-trips.
+    let committed = wallet
+        .key_committed_windows(
+            &live_keys
+                .iter()
+                .map(|key| {
+                    (
+                        key.id,
+                        key.budget_duration
+                            .map(|duration| duration.period_start(today)),
+                    )
+                })
+                .collect::<Vec<_>>(),
+        )
+        .await?;
+    let mut key_budgets = Vec::with_capacity(live_keys.len());
+    for key in live_keys {
         let window_start = key
             .budget_duration
             .map(|duration| duration.period_start(today));
-        let committed = wallet.key_committed_window(&key.id, window_start).await?;
+        let committed = committed.get(&key.id).copied().unwrap_or(0);
         key_budgets.push(KeyBudget {
             key_id: key.id,
             name: key.name.clone(),

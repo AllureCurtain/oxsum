@@ -2477,6 +2477,65 @@ impl Wallet {
         self.key_committed_in(&mut conn, key_id, since).await
     }
 
+    /// The [`key_committed_window`](Self::key_committed_window) read for many
+    /// keys in one round-trip: each `(key_id, since)` pair gets its own window,
+    /// and a key with no postings answers 0 — the same figure the per-key read
+    /// returns. The budget endpoint lists the organization's keys and asks for
+    /// all of them at once rather than a query per key.
+    ///
+    /// # Errors
+    ///
+    /// Storage failures surface as [`WalletError`].
+    pub async fn key_committed_windows(
+        &self,
+        keys: &[(Uuid, Option<Date>)],
+    ) -> Result<HashMap<Uuid, i64>, WalletError> {
+        let mut committed: HashMap<Uuid, i64> = keys.iter().map(|(id, _)| (*id, 0)).collect();
+        if keys.is_empty() {
+            return Ok(committed);
+        }
+        // One grouped read over the actor set: `unnest` pairs each key's actor
+        // string with its own window start so the per-key `since` rule matches
+        // `key_committed_in` — pending postings always count, settled ones only
+        // on or after that key's window start.
+        let sql = format!(
+            "SELECT actors.actor, COALESCE(SUM(CASE WHEN p.direction = 'D' \
+                              THEN p.amount_minor ELSE -p.amount_minor END), 0)::bigint AS committed \
+             FROM unnest($2::text[], $3::date[]) AS actors(actor, since) \
+             LEFT JOIN ledger_{schema}.entries e \
+               ON e.provenance_actor = actors.actor \
+             LEFT JOIN ledger_{schema}.postings p \
+               ON p.entry_id = e.entry_id AND p.account_index = ANY($1) \
+              AND (p.layer = 'pending' OR actors.since IS NULL OR e.booking_date >= actors.since) \
+             GROUP BY actors.actor",
+            schema = self.tenant_id,
+        );
+        let ids: Vec<String> = keys
+            .iter()
+            .map(|(id, _)| id.as_simple().to_string())
+            .collect();
+        let sinces: Vec<Option<Date>> = keys.iter().map(|(_, since)| *since).collect();
+        let rows = sqlx::query(&sql)
+            .bind(vec![
+                self.wallet.index() as i32,
+                self.bonus.index() as i32,
+                self.credit_line.index() as i32,
+            ])
+            .bind(ids)
+            .bind(sinces)
+            .fetch_all(self.store.pool())
+            .await?;
+        for row in &rows {
+            use sqlx::Row;
+            let actor: String = row.try_get("actor")?;
+            let value: i64 = row.try_get("committed")?;
+            if let Ok(id) = Uuid::parse_str(&actor) {
+                committed.insert(id, value);
+            }
+        }
+        Ok(committed)
+    }
+
     /// The `member_committed_in` read on its own
     /// connection: the member's committed spend across every key they minted
     /// (issue #232).
