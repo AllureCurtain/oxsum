@@ -1,0 +1,41 @@
+# Add labels from the issue title. Never removes a label a person added.
+# Rules live in scripts/issue-labels.mjs and are described in CONTRIBUTING.md.
+#
+# Pull requests are not labeled here. Labeling them needs pull-requests: write,
+# and this workflow stays on contents: read plus issues: write.
+
+name: Label issues
+
+on:
+  issues:
+    types: [opened, edited, reopened]
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  label:
+    name: label
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout label rules
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Add matching labels
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          ISSUE_TITLE: ${{ github.event.issue.title }}
+          ISSUE_NUMBER: ${{ github.event.issue.number }}
+        run: |
+          set -eu
+          labels="$(node --input-type=module -e '
+            import { labelsForTitle } from "./scripts/issue-labels.mjs";
+            process.stdout.write(labelsForTitle(process.env.ISSUE_TITLE).join(","));
+          ')"
+          if [ -z "$labels" ]; then
+            echo "No labels to add."
+            exit 0
+          fi
+          echo "Adding: $labels"
+          gh issue edit "$ISSUE_NUMBER" --add-label "$labels"
