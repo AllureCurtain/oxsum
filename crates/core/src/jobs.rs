@@ -91,6 +91,13 @@ pub mod kinds {
     /// Leader-required — a second runner would re-open the same exceptions
     /// under a second run id.
     pub const RECONCILE_FINANCIAL: &str = "reconcile-financial";
+    /// A manual month-close the operator queued through the admin surface
+    /// (`POST /admin/closings`). The payload carries `{month}`; the pass seals
+    /// that month across every organization's ledger off the request path, so
+    /// a large deployment's close is a claimed run, not a request that outlives
+    /// its timeout. Leader-required — a second runner would seal the same
+    /// organizations at once.
+    pub const CLOSE_MONTH: &str = "close-month";
 }
 
 /// How long a claimed run may take before another worker's claim assumes the
@@ -155,6 +162,7 @@ pub fn requires_leader(kind: &str) -> bool {
             | RECONCILE
             | PAYMENT_FULFILLMENT
             | RECONCILE_FINANCIAL
+            | CLOSE_MONTH
     )
 }
 
@@ -276,6 +284,21 @@ pub struct StatementReport {
     pub reinstated: i64,
 }
 
+/// What a manual close-month pass did: the seals it landed and the
+/// organizations whose close failed (each named with its error, so a partial
+/// pass reports exactly which ledger did not seal rather than aborting the
+/// rest).
+#[derive(Debug, Default)]
+pub struct CloseMonthReport {
+    /// Organizations whose month sealed — including an already-sealed month
+    /// answering its standing record (the pass is idempotent).
+    pub sealed: i64,
+    /// `(tenant_id, error)` per organization `close_month` returned `Err` for.
+    /// One bad ledger does not stop the pass — the others still seal, and the
+    /// next queue of the same month retries the whole set.
+    pub failed: Vec<(String, String)>,
+}
+
 /// The claimed row's columns, `j`-qualified: the claim's CTE exposes a `job_id`
 /// of its own, so bare names would be ambiguous in the RETURNING.
 const JOB_COLS: &str =
@@ -304,13 +327,33 @@ impl Db {
         kind: &str,
         run_at: OffsetDateTime,
     ) -> Result<bool, WalletError> {
+        self.enqueue_job_payload(kind, run_at, Value::Null).await
+    }
+
+    /// Enqueues one run of `kind` carrying kind-specific `payload` — the
+    /// manual close-month's `{month}` is the one caller today. The same
+    /// `(kind)` uniqueness applies, so a payload kind still holds at most one
+    /// pending or running run; a second request for the same kind answers
+    /// `false` whatever its payload.
+    ///
+    /// # Errors
+    ///
+    /// Storage failures surface as [`WalletError`].
+    pub async fn enqueue_job_payload(
+        &self,
+        kind: &str,
+        run_at: OffsetDateTime,
+        payload: Value,
+    ) -> Result<bool, WalletError> {
         let inserted: Option<Uuid> = sqlx::query_scalar(
-            "INSERT INTO oxsum.jobs (kind, run_at, requires_leader) VALUES ($1, $2, $3) \
+            "INSERT INTO oxsum.jobs (kind, run_at, requires_leader, payload) \
+             VALUES ($1, $2, $3, $4) \
              ON CONFLICT DO NOTHING RETURNING job_id",
         )
         .bind(kind)
         .bind(run_at)
         .bind(requires_leader(kind))
+        .bind(payload)
         .fetch_optional(self.pool())
         .await?;
         Ok(inserted.is_some())
@@ -561,6 +604,55 @@ impl Db {
         let (suspended, reinstated) = self.sweep_dunning(today).await?;
         report.suspended = suspended;
         report.reinstated = reinstated;
+        Ok(report)
+    }
+
+    /// Seals `first`'s month across every organization's ledger — the manual
+    /// `close-month` job's pass (the admin route used to run this loop inside
+    /// the request, unbounded over the tenant set and past any request
+    /// timeout). Each organization's `close_month` is independent: a failure is
+    /// recorded against its tenant in the report rather than aborting the
+    /// pass, so one bad ledger cannot hold every other organization's month
+    /// hostage. A sealed month answers its standing record, so a re-run of a
+    /// partially-failed pass closes only what was left.
+    ///
+    /// # Errors
+    ///
+    /// The organizations list failing is the pass's own error; a per-ledger
+    /// `close_month` failure is data in [`CloseMonthReport::failed`], not the
+    /// return — only a report with zero sealed and at least one failure is
+    /// converted back into an `Err` so a wholly-broken pass still reads as
+    /// failed rather than "ran, sealed nothing".
+    pub async fn close_month_organizations(
+        &self,
+        tenants: &crate::Tenants,
+        first: Date,
+    ) -> Result<CloseMonthReport, WalletError> {
+        let mut report = CloseMonthReport::default();
+        for organization in self.organizations().await? {
+            match tenants.get(&organization.tenant_id).await {
+                Ok(wallet) => match wallet.close_month(first).await {
+                    Ok(_) => report.sealed += 1,
+                    Err(error) => report
+                        .failed
+                        .push((organization.tenant_id.clone(), error.to_string())),
+                },
+                Err(error) => report
+                    .failed
+                    .push((organization.tenant_id.clone(), error.to_string())),
+            }
+        }
+        if report.sealed == 0 && !report.failed.is_empty() {
+            return Err(WalletError::Misconfigured(format!(
+                "the close-month pass sealed no organization: {}",
+                report
+                    .failed
+                    .iter()
+                    .map(|(tenant, error)| format!("{tenant}: {error}"))
+                    .collect::<Vec<_>>()
+                    .join("; ")
+            )));
+        }
         Ok(report)
     }
 }
