@@ -85,7 +85,7 @@ async fn push_billing(
     let organization_id = principal.organization.id;
     let tenant_id = principal.organization.tenant_id;
     let mut events = state.billing.subscribe();
-    let Ok(scope) = current_scope(&state, &token, organization_id).await else {
+    let Ok(mut scope) = current_scope(&state, &token, organization_id).await else {
         return;
     };
     // The snapshot first: a fresh page sees the holds already in flight.
@@ -111,8 +111,14 @@ async fn push_billing(
     loop {
         tokio::select! {
             _ = validity.tick() => {
-                if current_scope(&state, &token, organization_id).await.is_err() {
-                    break;
+                // The member's scope re-resolves on the tick: a key minted or
+                // revoked by the member's own list lands within the tick rather
+                // than at the next delivery, and a busy feed stops paying the
+                // scope read per event per socket. The session itself is still
+                // authenticated per event below — revocation stays immediate.
+                match current_scope(&state, &token, organization_id).await {
+                    Ok(resolved) => scope = resolved,
+                    Err(_) => break,
                 }
             }
             event = events.recv() => {
@@ -121,9 +127,15 @@ async fn push_billing(
                 if event.tenant_id() != tenant_id {
                     continue;
                 }
-                // Re-read membership before every delivery: removing a member,
-                // demoting an admin or switching context cannot retain old access.
-                let Ok(scope) = current_scope(&state, &token, organization_id).await else { break };
+                // One read per event: the session still authenticates — a
+                // revoked session or a removed member (the join fails either
+                // way) closes the socket at the next event rather than the next
+                // tick. The scope resolved at open and refreshed on the tick
+                // filters the event's key.
+                let Ok(principal) = session_principal(&state, &token).await else { break };
+                if principal.organization.id != organization_id {
+                    break;
+                }
                 if !scope.allows(Some(&event.key_id().simple().to_string())) {
                     continue;
                 }
