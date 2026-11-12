@@ -6,10 +6,11 @@
 //! built-in PII scan, or an external moderation endpoint — answering a
 //! [`Verdict`]: `Allow`, `Flag` (record the turn's exposure in the settlement
 //! description, bill normally) or `Block` (refuse before money moves / refund
-//! the hold after it lands). The trait is synchronous and cheap enough to run
-//! inside the admit path; the one impl that needs I/O (the moderation callout)
-//! bridges to async the way `PostgresRateLimiter` does — every call site sits
-//! inside axum's runtime.
+//! the hold after it lands). The trait is async — the one impl that needs I/O
+//! (the moderation callout) awaits its HTTP verdict rather than parking a
+//! worker thread — and stays object-safe the codebase's usual way
+//! (`Pin<Box<dyn Future>>`, the [`crate::RailVerifier`] pattern), so the
+//! registry keeps `Arc<dyn Guardrail>`.
 //!
 //! Which policies a turn runs is the union of three bindings, each a set of
 //! policy *names* resolving to rows in `oxsum.guardrail_policies`: the
@@ -27,6 +28,8 @@
 //! unscreened prompt, and refusing before the hold costs the caller nothing.
 
 use std::collections::{HashMap, HashSet};
+use std::future::Future;
+use std::pin::Pin;
 use std::sync::Arc;
 
 use regex::RegexSet;
@@ -401,6 +404,13 @@ pub struct ResponseContext<'a> {
 /// patterns; the moderation callout answers `pre_call` (the screened content
 /// is the prompt) and leaves the response to the org's own endpoint if it adds
 /// a response path later.
+///
+/// The hooks are async: the keyword/PII scans resolve immediately, while the
+/// moderation callout awaits its HTTP verdict — the alternative, bridging a
+/// sync trait through `block_in_place`, parks a runtime worker for the whole
+/// call and starves the pool when the endpoint is down. `Pin<Box<dyn Future>>`
+/// keeps the trait object-safe like the other I/O seams (`RailVerifier`,
+/// `UpstreamBillProvider`).
 pub trait Guardrail: Send + Sync {
     /// The policy's name — the `guardrail_policies.name` it was built from,
     /// recorded into the verdict so the audit names the row that acted.
@@ -408,14 +418,20 @@ pub trait Guardrail: Send + Sync {
 
     /// Judges the request before upstream sees it. Called on `pre_call` —
     /// before the hold, so a `Block` costs nothing.
-    fn evaluate_request(&self, _ctx: &RequestContext<'_>) -> Verdict {
-        Verdict::Allow
+    fn evaluate_request<'a>(
+        &'a self,
+        _ctx: &'a RequestContext<'_>,
+    ) -> Pin<Box<dyn Future<Output = Verdict> + Send + 'a>> {
+        Box::pin(async { Verdict::Allow })
     }
 
     /// Judges the assembled response before the client sees it — or, on a
     /// streamed turn, before it settles. Called on `post_call`.
-    fn evaluate_response(&self, _ctx: &ResponseContext<'_>) -> Verdict {
-        Verdict::Allow
+    fn evaluate_response<'a>(
+        &'a self,
+        _ctx: &'a ResponseContext<'_>,
+    ) -> Pin<Box<dyn Future<Output = Verdict> + Send + 'a>> {
+        Box::pin(async { Verdict::Allow })
     }
 }
 
@@ -609,16 +625,25 @@ impl Guardrail for KeywordPolicy {
         &self.name
     }
 
-    fn evaluate_request(&self, ctx: &RequestContext<'_>) -> Verdict {
-        ctx.texts
+    fn evaluate_request<'a>(
+        &'a self,
+        ctx: &'a RequestContext<'_>,
+    ) -> Pin<Box<dyn Future<Output = Verdict> + Send + 'a>> {
+        let verdict = ctx
+            .texts
             .iter()
             .map(|text| self.scan(text))
             .max_by_key(verdict_rank)
-            .unwrap_or(Verdict::Allow)
+            .unwrap_or(Verdict::Allow);
+        Box::pin(async move { verdict })
     }
 
-    fn evaluate_response(&self, ctx: &ResponseContext<'_>) -> Verdict {
-        self.scan(ctx.output_text)
+    fn evaluate_response<'a>(
+        &'a self,
+        ctx: &'a ResponseContext<'_>,
+    ) -> Pin<Box<dyn Future<Output = Verdict> + Send + 'a>> {
+        let verdict = self.scan(ctx.output_text);
+        Box::pin(async move { verdict })
     }
 }
 
@@ -678,16 +703,21 @@ impl Guardrail for PiiScanner {
         &self.name
     }
 
-    fn evaluate_response(&self, ctx: &ResponseContext<'_>) -> Verdict {
+    fn evaluate_response<'a>(
+        &'a self,
+        ctx: &'a ResponseContext<'_>,
+    ) -> Pin<Box<dyn Future<Output = Verdict> + Send + 'a>> {
         let hits = self.set.matches(ctx.output_text);
-        if !hits.matched_any() {
-            return Verdict::Allow;
-        }
-        let labels: Vec<&str> = hits.iter().map(|i| self.labels[i]).collect();
-        Verdict::Flag {
-            policy: self.name.clone(),
-            reason: format!("possible PII in the answer ({})", labels.join(", ")),
-        }
+        let verdict = if hits.matched_any() {
+            let labels: Vec<&str> = hits.iter().map(|i| self.labels[i]).collect();
+            Verdict::Flag {
+                policy: self.name.clone(),
+                reason: format!("possible PII in the answer ({})", labels.join(", ")),
+            }
+        } else {
+            Verdict::Allow
+        };
+        Box::pin(async move { verdict })
     }
 }
 
@@ -723,8 +753,8 @@ mod tests {
         }
     }
 
-    #[test]
-    fn a_keyword_block_beats_a_flag() {
+    #[tokio::test]
+    async fn a_keyword_block_beats_a_flag() {
         let policy = KeywordPolicy::compile(
             "p",
             &[
@@ -742,20 +772,23 @@ mod tests {
         // Both hit: the block verdict is the one that acts.
         let both = texts(&["alpha and beta"]);
         assert!(matches!(
-            policy.evaluate_request(&request(&both)),
+            policy.evaluate_request(&request(&both)).await,
             Verdict::Block { .. }
         ));
         let flagged = texts(&["only alpha"]);
         assert!(matches!(
-            policy.evaluate_request(&request(&flagged)),
+            policy.evaluate_request(&request(&flagged)).await,
             Verdict::Flag { .. }
         ));
         let clean = texts(&["nothing here"]);
-        assert_eq!(policy.evaluate_request(&request(&clean)), Verdict::Allow);
+        assert_eq!(
+            policy.evaluate_request(&request(&clean)).await,
+            Verdict::Allow
+        );
     }
 
-    #[test]
-    fn a_pii_scan_flags_identifiers() {
+    #[tokio::test]
+    async fn a_pii_scan_flags_identifiers() {
         let scanner = PiiScanner::new("pii");
         let ctx = ResponseContext {
             organization_id: Uuid::new_v4(),
@@ -767,14 +800,14 @@ mod tests {
             streamed: false,
         };
         assert!(matches!(
-            scanner.evaluate_response(&ctx),
+            scanner.evaluate_response(&ctx).await,
             Verdict::Flag { .. }
         ));
         let ctx = ResponseContext {
             output_text: "no identifiers here",
             ..ctx
         };
-        assert_eq!(scanner.evaluate_response(&ctx), Verdict::Allow);
+        assert_eq!(scanner.evaluate_response(&ctx).await, Verdict::Allow);
     }
 
     #[test]

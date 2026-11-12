@@ -11,10 +11,13 @@
 //! paid for, so an endpoint outage must not eat a settled turn. Both log; the
 //! verdict is never silent.
 
+use std::future::Future;
+use std::pin::Pin;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use futures_util::StreamExt;
+use tokio::sync::RwLock;
 
 use oxsum_core::{
     Db, Guardrail, GuardrailPolicy, GuardrailSet, KeywordConfig, KeywordPolicy, ModerationConfig,
@@ -69,42 +72,34 @@ impl ModerationCallout {
     /// unreachable/timeout/error endpoint is `Block` — fail closed before the
     /// hold, where refusing is free. `post_call` shares the request's call but
     /// its error path is the caller's (`evaluate_response` fails open below).
-    fn call(&self, payload: &serde_json::Value, phase: &str) -> Verdict {
-        let send = async {
-            self.http
-                .post(&self.endpoint)
-                .bearer_auth(&self.bearer)
-                .timeout(self.timeout)
-                .json(payload)
-                .send()
-                .await
-        };
-        // The trait is synchronous; the HTTP wait runs through the same
-        // block_in_place bridge `PostgresRateLimiter` uses — every call site
-        // sits inside axum's runtime.
-        let Ok(handle) = tokio::runtime::Handle::try_current() else {
-            tracing::error!(policy = %self.name,
-                "guardrail moderation ran outside a tokio runtime");
-            return self.phase_error(phase);
-        };
-        let outcome = tokio::task::block_in_place(|| handle.block_on(send));
+    ///
+    /// The wait is a real await: the call sites are all async, so a hung
+    /// endpoint costs a pending task, not a parked worker thread.
+    async fn call(&self, payload: serde_json::Value, phase: &str) -> Verdict {
+        let outcome = self
+            .http
+            .post(&self.endpoint)
+            .bearer_auth(&self.bearer)
+            .timeout(self.timeout)
+            .json(&payload)
+            .send()
+            .await;
         match outcome {
             Ok(response) if response.status().is_success() => {
-                let body = tokio::task::block_in_place(|| {
-                    handle.block_on(async {
-                        let mut bytes = Vec::new();
-                        let mut stream = response.bytes_stream();
-                        while let Some(chunk) = stream.next().await {
-                            let chunk = chunk.map_err(|_| "moderation response read failed")?;
-                            if bytes.len().saturating_add(chunk.len()) > MODERATION_BODY_BYTES {
-                                return Err("moderation response exceeds 65536 bytes");
-                            }
-                            bytes.extend_from_slice(&chunk);
+                let body = async {
+                    let mut bytes = Vec::new();
+                    let mut stream = response.bytes_stream();
+                    while let Some(chunk) = stream.next().await {
+                        let chunk = chunk.map_err(|_| "moderation response read failed")?;
+                        if bytes.len().saturating_add(chunk.len()) > MODERATION_BODY_BYTES {
+                            return Err("moderation response exceeds 65536 bytes");
                         }
-                        serde_json::from_slice::<serde_json::Value>(&bytes)
-                            .map_err(|_| "moderation response is not JSON")
-                    })
-                });
+                        bytes.extend_from_slice(&chunk);
+                    }
+                    serde_json::from_slice::<serde_json::Value>(&bytes)
+                        .map_err(|_| "moderation response is not JSON")
+                }
+                .await;
                 match body {
                     Ok(body) => verdict_from_moderation(&self.name, &body),
                     Err(error) => {
@@ -171,21 +166,79 @@ impl Guardrail for ModerationCallout {
         &self.name
     }
 
-    fn evaluate_request(&self, ctx: &RequestContext<'_>) -> Verdict {
+    fn evaluate_request<'a>(
+        &'a self,
+        ctx: &'a RequestContext<'_>,
+    ) -> Pin<Box<dyn Future<Output = Verdict> + Send + 'a>> {
         let payload = serde_json::json!({
             "model": ctx.model,
             "texts": ctx.texts,
             "endUser": ctx.end_user,
         });
-        self.call(&payload, "pre_call")
+        Box::pin(self.call(payload, "pre_call"))
     }
 
-    fn evaluate_response(&self, ctx: &ResponseContext<'_>) -> Verdict {
+    fn evaluate_response<'a>(
+        &'a self,
+        ctx: &'a ResponseContext<'_>,
+    ) -> Pin<Box<dyn Future<Output = Verdict> + Send + 'a>> {
         let payload = serde_json::json!({
             "model": ctx.model,
             "texts": [ctx.output_text],
         });
-        self.call(&payload, "post_call")
+        Box::pin(self.call(payload, "post_call"))
+    }
+}
+
+/// How long a built `GuardrailSet` is reused before admission rebuilds it:
+/// long enough that the hot path is not two indexed reads plus a regex
+/// compile and secret unseal per request, short enough that a policy an org
+/// writes or binds still takes effect within the half-minute, without a
+/// restart or an explicit invalidation handshake.
+const GUARDRAIL_SET_TTL: Duration = Duration::from_secs(30);
+
+/// The cached `GuardrailSet` `AppState` carries: built on first use and
+/// rebuilt when the entry is older than [`GUARDRAIL_SET_TTL`]. The set itself
+/// is immutable — a rebuild produces a fresh `Arc` rather than mutating the
+/// registry turns are resolving against.
+pub(crate) struct GuardrailCache {
+    /// `(built_at, set)`; `None` until the first request builds it.
+    current: Option<(Instant, Arc<GuardrailSet>)>,
+}
+
+impl GuardrailCache {
+    /// An empty cache — the first `get` builds the set.
+    pub(crate) fn new() -> Self {
+        Self { current: None }
+    }
+
+    /// The set for this request, rebuilt when the cached one has aged out.
+    /// The write lock's re-check means a burst of requests on an expired set
+    /// still rebuilds once: a request that waited behind another's rebuild
+    /// sees the fresh entry it produced.
+    pub(crate) async fn get(
+        cache: &RwLock<GuardrailCache>,
+        db: &Db,
+        http: reqwest::Client,
+        secret: Option<&oxsum_core::SecretKey>,
+    ) -> Result<Arc<GuardrailSet>, WalletError> {
+        {
+            let read = cache.read().await;
+            if let Some((built_at, set)) = &read.current
+                && built_at.elapsed() < GUARDRAIL_SET_TTL
+            {
+                return Ok(set.clone());
+            }
+        }
+        let mut write = cache.write().await;
+        if let Some((built_at, set)) = &write.current
+            && built_at.elapsed() < GUARDRAIL_SET_TTL
+        {
+            return Ok(set.clone());
+        }
+        let set = Arc::new(build_guardrail_set(db, http, secret).await?);
+        write.current = Some((Instant::now(), set.clone()));
+        Ok(set)
     }
 }
 
