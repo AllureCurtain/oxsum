@@ -14,7 +14,8 @@ use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use http_body_util::BodyExt;
 use oxsum_core::{Db, SecretKey};
-use oxsum_server::{Config, Signup};
+use oxsum_server::jobs::{JobContext, run_due};
+use oxsum_server::{Config, Metrics, Signup};
 use serde_json::{Value, json};
 use sqlx::PgPool;
 use time::{Duration, OffsetDateTime};
@@ -1204,7 +1205,8 @@ async fn closing_a_month_seals_it_everywhere() {
         "a malformed month is refused"
     );
 
-    // Close last month: every organization answers its closing record.
+    // Close last month: the route queues the pass and answers the queued state
+    // — the seal itself lands when the claimed job runs.
     let (status, body) = call(
         &app,
         "POST",
@@ -1213,15 +1215,23 @@ async fn closing_a_month_seals_it_everywhere() {
     )
     .await;
     assert_eq!(status, StatusCode::OK, "{body}");
-    let records = body["data"].as_array().expect("the closing records");
-    let record = records
-        .iter()
-        .find(|row| row["organization"].is_string())
-        .expect("each organization sealed the month");
-    assert_eq!(record["period"], month);
-    assert!(record["treeRoot"].is_string());
-    assert!(record["trialBalanceRoot"].is_string());
-    assert!(record["sealHash"].is_string());
+    assert_eq!(body["data"]["month"], month);
+    assert_eq!(body["data"]["status"], "queued");
+
+    // Running the claimed job seals the month in every organization's ledger.
+    run_due(
+        &oxsum_core::Db::from_pool(pool.clone()),
+        &JobContext {
+            hold_timeout: std::time::Duration::from_secs(60),
+            metrics: Metrics::new(),
+            webhook: None,
+            retention: oxsum_core::Retention::default(),
+            upstream_price_sync: false,
+            witness: None,
+            bill_provider: None,
+        },
+    )
+    .await;
 
     // GET lists what the ledgers hold — the same record, newest first.
     let (status, body) = call(&app, "GET", "/api/v1/admin/closings", None).await;
@@ -1232,7 +1242,8 @@ async fn closing_a_month_seals_it_everywhere() {
         "the closed month is listed: {closings:?}"
     );
 
-    // Closing it again answers the record again, not an error.
+    // A close already running answers already-queued — the same kind's run is
+    // still claimed, so a retry never duplicates the pass.
     let (status, body) = call(
         &app,
         "POST",
@@ -1241,6 +1252,7 @@ async fn closing_a_month_seals_it_everywhere() {
     )
     .await;
     assert_eq!(status, StatusCode::OK, "{body}");
+    assert!(["queued", "already-queued"].contains(&body["data"]["status"].as_str().unwrap()));
 
     // And the month really is closed: an entry dated into it is refused by the
     // ledger itself — the sealed watermark, not a route-layer convention.
