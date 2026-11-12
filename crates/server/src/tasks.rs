@@ -35,22 +35,12 @@ use crate::gateway::error::{FREEZE_MINOR, GatewayError, REQUEST_ID};
 pub fn router(state: AppState) -> Router<AppState> {
     Router::new()
         .route("/tasks", post(submit))
-        .route("/tasks/{task_id}", get(poll).post(cancel_placeholder))
+        .route("/tasks/{task_id}", get(poll))
         .route("/tasks/{task_id}/cancel", post(cancel))
         .layer(middleware::from_fn_with_state(
             state.clone(),
             crate::auth::require_key_gateway,
         ))
-}
-
-/// `POST /v1/tasks` — never reached: a bare POST to the read path is a client
-/// mistake, answered 405 by the method router before this runs.
-async fn cancel_placeholder() -> Response {
-    GatewayError::Invalid {
-        message: "use POST /v1/tasks/{taskId}/cancel".to_owned(),
-        param: None,
-    }
-    .into_response()
 }
 
 /// `POST /v1/tasks` — submit a task: freeze the declared bound, relay
