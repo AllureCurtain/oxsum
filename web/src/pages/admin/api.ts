@@ -1,4 +1,5 @@
-import { useEffect, useState } from "react";
+import { useState } from "react";
+import { useQuery } from "@tanstack/react-query";
 import { ApiError } from "../../api/client";
 
 // The admin console: the operator surface, token-gated like the server-rendered
@@ -40,25 +41,28 @@ export async function adminApi<T>(token: string, path: string, init?: { method?:
 }
 
 // A tiny query wrapper — the admin surface answers `data` arrays or objects.
+// Rides React Query like the customer hooks: `token`/`path`/`deps` form the
+// key, so two components asking for the same resource share one fetch and a
+// write's `refresh()` refetches from cache rather than re-mounting state.
 export function useAdmin<T>(token: string, path: string, deps: unknown[] = [], enabled = true) {
-  const [data, setData] = useState<T | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [tick, setTick] = useState(0);
-  useEffect(() => {
-    if (!enabled) {
-      setLoading(false);
-      return;
-    }
-    setLoading(true);
-    adminApi<T>(token, path)
-      .then((d) => {
-        setData(d);
-        setError(null);
-      })
-      .catch((e) => setError(e instanceof ApiError ? e.message : "failed"))
-      .finally(() => setLoading(false));
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [token, path, tick, enabled, ...deps]);
-  return { data, error, loading, refresh: () => setTick((t) => t + 1) };
+  const query = useQuery<T, ApiError>({
+    queryKey: ["admin", token, path, ...deps],
+    queryFn: () => adminApi<T>(token, path),
+    enabled,
+    // A POST the caller drives (a form save, an action) lands outside this
+    // hook, so the list it should re-read gets a `refresh()` that bypasses any
+    // dedup window — `staleTime: 0` keeps every `refresh` a real fetch.
+    staleTime: 0,
+  });
+  return {
+    data: query.data ?? null,
+    error: query.error instanceof ApiError ? query.error.message : query.error ? "failed" : null,
+    loading: query.isPending,
+    // Wrap refetch so an `onClick={x.refresh}` passes a MouseEvent, not
+    // React Query's RefetchOptions — the old () => setTick shape is what
+    // every call site still expects.
+    refresh: () => {
+      void query.refetch();
+    },
+  };
 }
