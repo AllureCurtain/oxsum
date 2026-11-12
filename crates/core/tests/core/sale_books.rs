@@ -471,14 +471,11 @@ async fn concurrent_overlaps_cancel_and_replacement_rollback_are_deterministic()
         .await,
         Err(WalletError::Conflict(_))
     ));
-    let empty = override_model(
-        org,
-        "empty",
-        0,
-        Some(start),
-        Some(start + Duration::nanoseconds(1)),
-        None,
-    );
+    // A window that ends when it starts is invalid; `until == from` expresses
+    // it deterministically — a `+1ns` end only collapses onto `from` after the
+    // microsecond truncation in `instant()` when `from`'s sub-µs nanos are not
+    // 999, which made this a flake before.
+    let empty = override_model(org, "empty", 0, Some(start), Some(start), None);
     assert!(matches!(
         db.change_sale_terms(&owner, &request(empty)).await,
         Err(WalletError::InvalidInput(_))
