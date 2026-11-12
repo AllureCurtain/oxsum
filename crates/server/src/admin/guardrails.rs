@@ -151,6 +151,8 @@ pub(crate) async fn set_policy(
         None,
     )
     .await?;
+    // The write must hold on the very next turn — see GuardrailCache::invalidate.
+    crate::guardrail::GuardrailCache::invalidate(&state.guardrails).await;
     ok(policy)
 }
 
@@ -163,6 +165,7 @@ pub(crate) async fn delete_policy(
     if !state.db.delete_guardrail_policy(&name).await? {
         return Err(ApiError::not_found());
     }
+    crate::guardrail::GuardrailCache::invalidate(&state.guardrails).await;
     crate::admin::record(
         &state,
         audit_action::GUARDRAIL_POLICY_DELETE,
@@ -224,6 +227,7 @@ pub(crate) async fn set_binding(
         None,
     )
     .await?;
+    crate::guardrail::GuardrailCache::invalidate(&state.guardrails).await;
     ok(GuardrailBinding {
         scope,
         target,
@@ -241,6 +245,7 @@ pub(crate) async fn delete_binding(
     if !state.db.delete_guardrail_binding(&scope, &target).await? {
         return Err(ApiError::not_found());
     }
+    crate::guardrail::GuardrailCache::invalidate(&state.guardrails).await;
     crate::admin::record(
         &state,
         audit_action::GUARDRAIL_BINDING_DELETE,
