@@ -487,20 +487,47 @@ async fn complete_claim(
             return GatewayError::Internal.into_response();
         }
     };
-    if let Ok(body) = serde_json::from_slice::<Value>(&bytes)
-        && let Err(error) = state
-            .db
-            .complete_request(
-                organization.id,
-                key,
-                i32::from(parts.status.as_u16()),
-                &body,
-            )
-            .await
+    // The claim completes *always*: a body that does not parse, or one too large
+    // to be worth persisting, still names a finished turn — storing the "not
+    // replayable" marker keeps the record from sitting `in_flight` (and a retry
+    // re-running the turn) until the row expires. The marker answers honestly:
+    // the work happened, only its bytes are gone.
+    let stored_body = match serde_json::from_slice::<Value>(&bytes) {
+        Ok(body) if bytes.len() <= REPLAYABLE_BODY_BYTES => body,
+        _ => not_replayable_body(),
+    };
+    if let Err(error) = state
+        .db
+        .complete_request(
+            organization.id,
+            key,
+            i32::from(parts.status.as_u16()),
+            &stored_body,
+        )
+        .await
     {
         tracing::error!(%error, "completing an idempotency record failed");
     }
     Response::from_parts(parts, Body::from(bytes))
+}
+
+/// The largest response body worth storing for replay. A chat completion fits
+/// comfortably; a multi-megabyte answer (embeddings, file payloads) is not
+/// something a retry should expect back verbatim anyway.
+const REPLAYABLE_BODY_BYTES: usize = 64 * 1024;
+
+/// The stored answer for a turn that finished but cannot be replayed: the
+/// original status is kept, but the body tells the caller the work happened
+/// and only its bytes were dropped — the bill and usage row still prove it.
+fn not_replayable_body() -> Value {
+    json!({
+        "error": {
+            "message": "the original turn completed but its answer is not replayable",
+            "type": "server_error",
+            "param": null,
+            "code": "NOT_REPLAYABLE",
+        }
+    })
 }
 
 /// Whether this response is the SSE stream — whose record completes at settlement.
