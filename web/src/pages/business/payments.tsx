@@ -216,8 +216,8 @@ function ManualReceipt() {
           );
         }}
       >
-        {terms.data?.ready ? <p className="font-mono text-sm">1 credit = {terms.data.currency?.ratePerCredit} {currency}</p> : <Banner tone="warn">Collection terms are unavailable. Configure them before recording a receipt.</Banner>}
-        <Button type="button" tone="ghost" onClick={() => terms.refetch()}>Refresh collection terms</Button>
+        {terms.data?.ready ? <p className="font-mono text-sm">{t("biz.payments.collectionTerms", { rate: terms.data.currency?.ratePerCredit, currency })}</p> : <Banner tone="warn">{t("biz.payments.collectionUnavailable")}</Banner>}
+        <Button type="button" tone="ghost" onClick={() => terms.refetch()}>{t("biz.payments.refreshTerms")}</Button>
         <Field label={t("biz.payments.fOrg")} hint={t("biz.payments.manualHint")}>
           <TextInput value={orgId} onChange={(e) => setOrgId(e.target.value)} required placeholder="org uuid" />
         </Field>

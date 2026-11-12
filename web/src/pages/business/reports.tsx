@@ -188,34 +188,34 @@ function RunDetail({ run, onBack }: { run: ReconciliationRun; onBack: () => void
           <Field2 label={t("biz.reports.timeBasis")}>{run.timeBasis}</Field2>
           <Field2 label={t("common.status")}>{comparison ? stateBadge(comparison.state) : "—"}</Field2>
           <Field2 label={t("biz.reports.exceptions")}>{comparison?.exceptionCount ?? "—"}</Field2>
-          <Field2 label="Captured at">{captured.data?.capturedAt ?? (pickedSnapshot ? "—" : run.finishedAt ?? "—")}</Field2>
+          <Field2 label={t("biz.reports.capturedAt")}>{captured.data?.capturedAt ?? (pickedSnapshot ? "—" : run.finishedAt ?? "—")}</Field2>
         </DetailGrid>
         {run.lastError ? <Banner tone="error" className="mt-3">{run.lastError}</Banner> : null}
       </Card>
-      <Card title="Captured comparison">
-        <Field label="Retained attempt">
+      <Card title={t("biz.reports.comparisonTitle")}>
+        <Field label={t("biz.reports.retainedAttempt")}>
           <NativeSelect value={pickedSnapshot ?? ""} onChange={(e) => setPickedSnapshot(e.target.value || undefined)}>
-            {snapshots.isLoading ? <option value={pickedSnapshot ?? ""}>Loading retained attempts…</option> : null}
-            {!run.latestSnapshotId ? <option value="">Legacy projection-only run</option> : null}
+            {snapshots.isLoading ? <option value={pickedSnapshot ?? ""}>{t("biz.reports.loadingAttempts")}</option> : null}
+            {!run.latestSnapshotId ? <option value="">{t("biz.reports.legacyRun")}</option> : null}
             {(snapshots.data ?? []).map((snapshot) => <option key={snapshot.snapshotId} value={snapshot.snapshotId}>{snapshot.capturedAt} · {snapshot.state}</option>)}
           </NativeSelect>
         </Field>
-        {snapshots.isError || captured.isError ? <Banner tone="error">Unable to load the retained comparison.</Banner> : null}
+        {snapshots.isError || captured.isError ? <Banner tone="error">{t("biz.reports.comparisonError")}</Banner> : null}
         {captured.isFetching ? <Skeleton className="h-20 w-full" /> : captured.isError || !comparison || !coverage ? null : <>
           <Banner tone={coverage.complete && coverage.version > 0 ? "success" : "warn"}>
-            {coverage.version === 0 ? "Legacy report: independent ledger comparison was not performed." : coverage.complete ? "All required sources in this comparison have supported ledger evidence." : "Comparison is incomplete. Missing, unsupported or corrupt sources require review."}
+            {coverage.version === 0 ? t("biz.reports.coverageLegacy") : coverage.complete ? t("biz.reports.coverageComplete") : t("biz.reports.coverageIncomplete")}
           </Banner>
-          <p className="my-3 text-sm">Sources checked: {coverage.verifiedSources} / {coverage.sources}. Entries verified: {coverage.verifiedEntries} / {coverage.entries}. Customers: {coverage.organizations}.</p>
+          <p className="my-3 text-sm">{t("biz.reports.coverageStats", { verifiedSources: coverage.verifiedSources, sources: coverage.sources, verifiedEntries: coverage.verifiedEntries, entries: coverage.entries, organizations: coverage.organizations })}</p>
           <p className="mb-3 text-sm">{coverage.basis}</p>
-          <p className="mb-3 text-sm">Outside this comparison: {coverage.notCompared.join(", ") || "None listed"}.</p>
-          <TableShell density="compact" sticky={false} head={["Compared field", {label:"Source assertion",align:"right"}, {label:"Verified ledger",align:"right"}]}>
+          <p className="mb-3 text-sm">{t("biz.reports.notCompared", { list: coverage.notCompared.join(", ") || t("biz.reports.noneListed") })}</p>
+          <TableShell density="compact" sticky={false} head={[t("biz.reports.colField"), {label:t("biz.reports.colAssertion"),align:"right"}, {label:t("biz.reports.colVerified"),align:"right"}]}>
             {coverage.comparedFields.map((field) => <tr key={field}><td>{field}</td><Td mono align="right">{comparison.expectedTotals[field] ?? "—"}</Td><Td mono align="right">{comparison.actualTotals[field] ?? "—"}</Td></tr>)}
           </TableShell>
-          {captured.data?.evidence ? <details className="mt-4"><summary>Captured source evidence and exact differences</summary><pre className="mt-2 max-h-96 overflow-auto whitespace-pre-wrap font-mono text-xs">{JSON.stringify(captured.data.evidence, null, 2)}</pre></details> : null}
+          {captured.data?.evidence ? <details className="mt-4"><summary>{t("biz.reports.evidenceSummary")}</summary><pre className="mt-2 max-h-96 overflow-auto whitespace-pre-wrap font-mono text-xs">{JSON.stringify(captured.data.evidence, null, 2)}</pre></details> : null}
         </>}
       </Card>
-      <Card title="Current exception work list">
-        <p className="mb-3 text-sm">This list tracks current resolution work. The selected attempt retains its original differences in captured evidence.</p>
+      <Card title={t("biz.reports.workListTitle")}>
+        <p className="mb-3 text-sm">{t("biz.reports.workListNote")}</p>
         {exceptions.isLoading ? (
           <Skeleton className="h-20 w-full" />
         ) : exceptions.isError ? (
@@ -278,10 +278,10 @@ function Runs() {
             <TextInput disabled={attempt !== null} type="date" value={to} onChange={(e) => setTo(e.target.value)} required />
           </Field>
           <Field label={t("biz.reports.timeBasis")}>
-            <NativeSelect disabled={attempt !== null} value={basis} onChange={(e) => setBasis(e.target.value as typeof basis)}><option value="booking">Booking</option><option value="service">Service</option><option value="payment">Payment</option></NativeSelect>
+            <NativeSelect disabled={attempt !== null} value={basis} onChange={(e) => setBasis(e.target.value as typeof basis)}><option value="booking">{t("biz.reports.basisBooking")}</option><option value="service">{t("biz.reports.basisService")}</option><option value="payment">{t("biz.reports.basisPayment")}</option></NativeSelect>
           </Field>
-          <div className="flex items-end gap-2"><Button type="submit" isLoading={request.isPending}>{attempt ? "Retry captured request" : t("biz.reports.requestRun")}</Button>{attempt && !request.isPending ? <Button type="button" tone="ghost" onClick={() => { setAttempt(null); request.reset(); }}>Edit request</Button> : null}</div>
-          {request.isError ? <Banner tone="error">The request failed. Retry preserves its original dates, clock and identity.</Banner> : null}
+          <div className="flex items-end gap-2"><Button type="submit" isLoading={request.isPending}>{attempt ? t("biz.reports.retryCaptured") : t("biz.reports.requestRun")}</Button>{attempt && !request.isPending ? <Button type="button" tone="ghost" onClick={() => { setAttempt(null); request.reset(); }}>{t("biz.reports.editRequest")}</Button> : null}</div>
+          {request.isError ? <Banner tone="error">{t("biz.reports.requestFailed")}</Banner> : null}
         </form>
       ) : null}
       {runs.isError ? (
@@ -363,7 +363,7 @@ function ExceptionRow({ e }: { e: ReconciliationException }) {
               isPending={repair.isPending}
               error={repair.error}
               onConfirm={(reason, key) =>
-                repair.mutate({ exceptionId: e.exceptionId, idempotencyKey: key, action, reason })
+                repair.mutateAsync({ exceptionId: e.exceptionId, idempotencyKey: key, action, reason })
               }
             />
             <AuditAction
@@ -375,7 +375,7 @@ function ExceptionRow({ e }: { e: ReconciliationException }) {
               isPending={resolve.isPending}
               error={resolve.error}
               onConfirm={(resolution, key) =>
-                resolve.mutate({ exceptionId: e.exceptionId, idempotencyKey: key, resolution })
+                resolve.mutateAsync({ exceptionId: e.exceptionId, idempotencyKey: key, resolution })
               }
             />
             <AuditAction
@@ -388,7 +388,7 @@ function ExceptionRow({ e }: { e: ReconciliationException }) {
               isPending={waive.isPending}
               error={waive.error}
               onConfirm={(resolution, key) =>
-                waive.mutate({ exceptionId: e.exceptionId, idempotencyKey: key, resolution })
+                waive.mutateAsync({ exceptionId: e.exceptionId, idempotencyKey: key, resolution })
               }
             />
           </span>

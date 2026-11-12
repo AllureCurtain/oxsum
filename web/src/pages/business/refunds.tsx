@@ -87,7 +87,7 @@ function RefundRows() {
                         isPending={resolve.isPending}
                         error={resolve.error}
                         onConfirm={(reason, key) =>
-                          resolve.mutate({ refundId: r.refundId, idempotencyKey: key, decision: "approve", reason })
+                          resolve.mutateAsync({ refundId: r.refundId, idempotencyKey: key, decision: "approve", reason })
                         }
                       />
                       <AuditAction
@@ -100,7 +100,7 @@ function RefundRows() {
                         isPending={resolve.isPending}
                         error={resolve.error}
                         onConfirm={(reason, key) =>
-                          resolve.mutate({ refundId: r.refundId, idempotencyKey: key, decision: "decline", reason })
+                          resolve.mutateAsync({ refundId: r.refundId, idempotencyKey: key, decision: "decline", reason })
                         }
                       />
                     </span>

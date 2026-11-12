@@ -186,7 +186,7 @@ export function BusinessPlans() {
                         reasonLabel={t("biz.reason")}
                         isPending={retire.isPending}
                         error={retire.error}
-                        onConfirm={() => retire.mutate(p.planVersionId)}
+                        onConfirm={() => retire.mutateAsync(p.planVersionId)}
                       />
                     ) : null}
                   </td>

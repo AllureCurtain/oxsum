@@ -156,7 +156,7 @@ function CustomerPlanCard({ customer }: { customer: BusinessCustomer }) {
                 reasonLabel={t("biz.reason")}
                 isPending={cancel.isPending}
                 error={cancel.error}
-                onConfirm={() => cancel.mutate()}
+                onConfirm={() => cancel.mutateAsync()}
               />
             </div>
           ) : null}
@@ -244,7 +244,7 @@ function CustomerDetail({ customer, onBack }: { customer: BusinessCustomer; onBa
               isPending={suspension.isPending}
               error={suspension.error}
               onConfirm={(reason, key) =>
-                suspension.mutate({ idempotencyKey: key, suspended: !c.manualSuspendedAt, reason })
+                suspension.mutateAsync({ idempotencyKey: key, suspended: !c.manualSuspendedAt, reason })
               }
             />
           ) : null}
@@ -259,7 +259,7 @@ function CustomerDetail({ customer, onBack }: { customer: BusinessCustomer; onBa
               isPending={lifecycle.isPending}
               error={lifecycle.error}
               onConfirm={(reason, key) =>
-                lifecycle.mutate({ idempotencyKey: key, state: "archived", reason })
+                lifecycle.mutateAsync({ idempotencyKey: key, state: "archived", reason })
               }
             />
           ) : null}
