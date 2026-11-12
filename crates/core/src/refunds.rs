@@ -805,7 +805,7 @@ impl Db {
         }
         let updated = sqlx::query(
             "UPDATE oxsum.refunds SET provider_refund_id=$2,updated_at=now() \
-             WHERE refund_id=$1 AND state='provider_pending' \
+             WHERE refund_id=$1 \
                AND (provider_refund_id IS NULL OR provider_refund_id=$2)",
         )
         .bind(refund_id)
@@ -816,8 +816,21 @@ impl Db {
         // A PSP returning a different `provider_refund_id` than the one already
         // stored must not silently no-op: `find_refund_for_event` can never match
         // a `refund_*` event to a refund that keeps its old handle. Surface the
-        // mismatch like `note_deposit_refund` does.
+        // mismatch like `note_deposit_refund` does. The same id re-offered after
+        // the refund left `provider_pending` (a failed event released it, then a
+        // late success re-noted the handle) is not a mismatch — 0 rows only
+        // conflicts when a *different* reference is already stored.
         if updated != 1 {
+            let stored: Option<String> = sqlx::query_scalar(
+                "SELECT provider_refund_id FROM oxsum.refunds WHERE refund_id=$1",
+            )
+            .bind(refund_id)
+            .fetch_optional(self.pool())
+            .await?
+            .flatten();
+            if stored.as_deref() == Some(provider_refund_id) {
+                return Ok(());
+            }
             return Err(WalletError::Conflict(
                 "provider refund reference differs".into(),
             ));
