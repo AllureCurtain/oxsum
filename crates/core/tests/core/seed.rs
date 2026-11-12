@@ -279,6 +279,10 @@ async fn the_seed_populates_a_believable_world() {
             &organization.tenant_id,
             today - time::Duration::days(62),
             today,
+            &oxsum_core::CustomerRecordScope {
+                key_ids: None,
+                include_unattributed: true,
+            },
         )
         .await
         .unwrap();

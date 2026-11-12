@@ -1244,10 +1244,12 @@ impl Db {
     /// One organization's daily usage rollup, `[from, to]` inclusive, as the
     /// usage dashboard reads it (roadmap P3-3, issue #126).
     ///
-    /// Rows come back one per `(day, channel, model, key)` — `key_id` stays on
-    /// the row so the caller applies the members' scope rule losslessly: a
-    /// member reads their own keys' days plus the unattributed (`None`) shared
-    /// usage, the same rule the bills page applies to the ledger.
+    /// Rows come back one per `(day, channel, model, key)`, already narrowed to
+    /// the caller's [`crate::CustomerRecordScope`]: a member reads their own
+    /// keys' days plus the unattributed (`NULL`) shared usage, the same rule
+    /// the bills page applies to the ledger — pushed into the query so the
+    /// read never drags the organization's whole window across the wire to
+    /// discard most of it in Rust.
     ///
     /// # Errors
     ///
@@ -1257,18 +1259,31 @@ impl Db {
         tenant_id: &str,
         from: time::Date,
         to: time::Date,
+        scope: &crate::CustomerRecordScope,
     ) -> Result<Vec<UsageDay>, WalletError> {
+        // `key_ids` is the simple-form text the scope carries; `uuid[]` keeps
+        // the comparison in the column's own type. A `None` set means every
+        // key is visible — a NULL bind skips the filter entirely.
+        let key_ids: Option<Vec<Uuid>> = scope.key_ids.as_ref().map(|ids| {
+            ids.iter()
+                .filter_map(|id| Uuid::parse_str(id).ok())
+                .collect()
+        });
         let rows = sqlx::query(
             "SELECT day, key_id, channel, model, turns, \
                     input_tokens, output_tokens, cached_tokens, reasoning_tokens, \
                     charged_minor \
              FROM oxsum.usage_daily \
              WHERE tenant_id = $1 AND day >= $2 AND day <= $3 \
+               AND ((key_id IS NULL AND $4::bool) \
+                    OR (key_id IS NOT NULL AND ($5::uuid[] IS NULL OR key_id = ANY($5)))) \
              ORDER BY day, channel, model, key_id",
         )
         .bind(tenant_id)
         .bind(from)
         .bind(to)
+        .bind(scope.include_unattributed)
+        .bind(key_ids)
         .fetch_all(self.pool())
         .await?;
         let mut days = Vec::with_capacity(rows.len());
