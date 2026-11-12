@@ -30,6 +30,7 @@ import {
   Td,
   TextInput,
 } from "../components/ui";
+import { decimalMinor } from "../lib/money";
 
 const EVENT_GROUPS: { labelKey: string; events: string[] }[] = [
   { labelKey: "webhooks.groupRequests", events: ["request.settled"] },
@@ -92,7 +93,7 @@ export function Webhooks() {
               {
                 url,
                 events,
-                balanceLowMinor: balanceLow === "" ? null : Math.round(Number(balanceLow) * 1_000_000),
+                balanceLowMinor: balanceLow === "" ? null : decimalMinor(balanceLow, 6),
                 budgetThresholdsPercent: thresholds.trim()
                   ? thresholds.split(",").map((v) => Number(v.trim()))
                   : undefined,

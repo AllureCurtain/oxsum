@@ -19,13 +19,8 @@ import {
   TabsTrigger,
 } from "../components/ui";
 import { CodeBlock } from "../components/ui";
-import { Banner, Card, Cr, Field, StatChip, creditsWithDisplay } from "../components/ui";
-
-function amountToMinor(raw: string): number | null {
-  const value = Number(raw);
-  if (!Number.isFinite(value) || value <= 0) return null;
-  return Math.round(value * 1_000_000);
-}
+import { Banner, Card, Cr, Field, StatChip, credits, creditsWithDisplay } from "../components/ui";
+import { decimalMinor } from "../lib/money";
 
 /** The consequence line a consequential form owes its submit button — what
  *  pressing it actually does, stated plainly before the commit. */
@@ -76,7 +71,7 @@ function AmountRail<TData>(props: {
   const [amount, setAmount] = useState("");
   const submit = (e: FormEvent) => {
     e.preventDefault();
-    const minor = amountToMinor(amount);
+    const minor = decimalMinor(amount, 6);
     if (minor !== null) {
       mutation.mutate(minor, props.onSuccess ? { onSuccess: props.onSuccess } : undefined);
     }
@@ -238,7 +233,7 @@ function HyperswitchRail() {
 
   const submit = (e: FormEvent) => {
     e.preventDefault();
-    const minor = amountToMinor(amount);
+    const minor = decimalMinor(amount, 6);
     if (minor === null) return;
     setMountError(null);
     setStage("mounting");
@@ -434,7 +429,7 @@ export function Topup() {
             label={t("topup.creditLine")}
             value={
               balance.data && balance.data.creditLimitMinor > 0
-                ? `${(balance.data.creditUsedMinor / 1_000_000).toFixed(0)} / ${(balance.data.creditLimitMinor / 1_000_000).toFixed(0)}`
+                ? `${credits(balance.data.creditUsedMinor)} / ${credits(balance.data.creditLimitMinor)}`
                 : "—"
             }
             hint={

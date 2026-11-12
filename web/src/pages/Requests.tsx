@@ -4,7 +4,7 @@ import { ArrowLeftRight, Search } from "lucide-react";
 import { useSearchParams } from "react-router-dom";
 import { settlementOutcome } from "../lib/kinds";
 import { useBillingRecords, useDisplay, useKeys, useRequestLog } from "../api/hooks";
-import { useBillingSocket } from "../api/ws";
+import { useSharedBillingSocket } from "../api/ws";
 import {
   Card,
   EmptyRows,
@@ -154,7 +154,7 @@ export function Requests() {
   const records = useBillingRecords(100, before);
   const keys = useKeys();
   const display = useDisplay();
-  const socket = useBillingSocket();
+  const socket = useSharedBillingSocket();
 
   const keyFilter = params.get("key") ?? "";
   const modelFilter = params.get("model") ?? "";

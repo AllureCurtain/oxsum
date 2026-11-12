@@ -10,6 +10,7 @@ import {
   credits,
 } from "../../components/ui";
 import { ApiError } from "../../api/client";
+import { decimalMinor } from "../../lib/money";
 import { adminApi, useAdmin } from "./api";
 
 type AdminStatement = {
@@ -115,7 +116,7 @@ function StatementRow({
                   disabled={busy}
                   onClick={() =>
                     call(`/statements/${s.id}/finalize`, {
-                      idempotencyKey: `fin-${s.id}-${Date.now()}`,
+                      idempotencyKey: `fin-${s.id}-${crypto.randomUUID()}`,
                     })
                   }
                 >
@@ -136,8 +137,8 @@ function StatementRow({
                     disabled={busy || payment === ""}
                     onClick={() =>
                       call(`/statements/${s.id}/payments`, {
-                        amountMinor: Math.round(Number(payment) * 1_000_000),
-                        idempotencyKey: `pay-${s.id}-${Date.now()}`,
+                        amountMinor: decimalMinor(payment, 6),
+                        idempotencyKey: `pay-${s.id}-${crypto.randomUUID()}`,
                       })
                     }
                   >
@@ -148,7 +149,7 @@ function StatementRow({
                     disabled={busy}
                     onClick={() =>
                       call(`/statements/${s.id}/suspend`, {
-                        idempotencyKey: `sus-${s.id}-${Date.now()}`,
+                        idempotencyKey: `sus-${s.id}-${crypto.randomUUID()}`,
                       })
                     }
                   >
