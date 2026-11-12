@@ -803,7 +803,7 @@ impl Db {
         if !identifier(provider_refund_id) {
             return Err(invalid("invalid provider refund reference"));
         }
-        sqlx::query(
+        let updated = sqlx::query(
             "UPDATE oxsum.refunds SET provider_refund_id=$2,updated_at=now() \
              WHERE refund_id=$1 AND state='provider_pending' \
                AND (provider_refund_id IS NULL OR provider_refund_id=$2)",
@@ -811,7 +811,17 @@ impl Db {
         .bind(refund_id)
         .bind(provider_refund_id)
         .execute(self.pool())
-        .await?;
+        .await?
+        .rows_affected();
+        // A PSP returning a different `provider_refund_id` than the one already
+        // stored must not silently no-op: `find_refund_for_event` can never match
+        // a `refund_*` event to a refund that keeps its old handle. Surface the
+        // mismatch like `note_deposit_refund` does.
+        if updated != 1 {
+            return Err(WalletError::Conflict(
+                "provider refund reference differs".into(),
+            ));
+        }
         Ok(())
     }
 
