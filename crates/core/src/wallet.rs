@@ -39,6 +39,9 @@ pub(super) mod transaction_reads;
 
 pub use admission::GatewayAdmission;
 pub use funding_preview::GatewayFundingPreview;
+pub use reads::{
+    LogEntry, RequestEntry, SettledEntry, SettledTurn, TransactionEntry, TransactionKind,
+};
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -47,16 +50,13 @@ use doubleentry::account::AccountRegistry;
 use doubleentry::storage::postgres::{PostgresError, PostgresStore};
 use doubleentry::{
     AccountId, Amount, BalanceLimit, Currency, Description, EntryId, Hash, IdempotencyKey,
-    LedgerId, LedgerPolicy, StoredEntry,
+    LedgerId, LedgerPolicy, LedgerStore, StoredEntry,
 };
 use sha2::{Digest, Sha256};
 use sqlx::PgPool;
 use time::Date;
 use time::macros::date;
 use uuid::Uuid;
-
-use crate::billing::{SettlementKind, SettlementRecord};
-use doubleentry::LedgerStore;
 
 use crate::error::{WalletError, invalid};
 
@@ -250,138 +250,6 @@ pub struct Receipt {
     pub content_hash: Hash,
     /// false means an idempotent replay: nothing new was written.
     pub is_new: bool,
-}
-
-/// One ledger entry as the dashboard's transaction log shows it.
-#[derive(Debug, Clone)]
-pub struct LogEntry {
-    /// Position in the log.
-    pub index: u64,
-    /// The entry's id, hex-encoded.
-    pub id: String,
-    /// What the writer recorded: holds and settlements describe the request.
-    pub description: String,
-    /// The content hash the Merkle log commits to.
-    pub content_hash: String,
-}
-
-/// One settled entry as the bills page lists it and its exports carry it.
-#[derive(Debug, Clone)]
-pub struct SettledEntry {
-    /// The entry's id, hex-encoded.
-    pub id: String,
-    /// The booking date: the server's UTC date when the entry was written. The ledger
-    /// records no time of day.
-    pub booked_on: Date,
-    /// What the entry charged, in minor units, read from the ledger's own postings; 0 for
-    /// the settlements that charge nothing.
-    pub charged_minor: i64,
-    /// The content hash the Merkle log commits to, and that the entry's proof verifies
-    /// against.
-    pub content_hash: String,
-}
-
-/// Which of the bills page's kinds a ledger entry is (issue #90).
-///
-/// A hold is deliberately not a kind: a freeze in flight is the overview's in-flight
-/// list, and an entry that only reserved money bills nothing yet.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum TransactionKind {
-    /// Money in: `Assets:Cash` posted against the wallet.
-    TopUp,
-    /// An operator grant or deduction, or the signup bonus: `Equity:Adjustments`.
-    Adjustment,
-    /// A hold released — a settled gateway turn, or a settlement written through the
-    /// wallet API by hand. The charge is what the wallet's settled layer lost.
-    Settlement,
-}
-
-/// One ledger entry as the bills page's full transaction view lists it (issue #90):
-/// top-ups, bonuses and adjustments, and settled requests — every movement the page
-/// names, newest first.
-#[derive(Debug, Clone)]
-pub struct TransactionEntry {
-    /// The entry's id in the ledger: what the proof endpoint takes.
-    pub id: String,
-    /// Position in the log.
-    pub index: u64,
-    /// The booking date: the server's UTC date when the entry was written. The ledger
-    /// records no time of day.
-    pub booked_on: Date,
-    /// What the writer recorded: a settlement record for a gateway turn, a reason for
-    /// a top-up or an adjustment.
-    pub description: String,
-    /// The content hash the Merkle log commits to, and that the entry's proof verifies
-    /// against.
-    pub content_hash: String,
-    /// The entry's effect on the wallet's settled balance, signed: a top-up or a grant
-    /// reads positive, a deduction or a settled charge negative, a zero-charge
-    /// settlement zero.
-    pub amount_minor: i64,
-    /// Which of the page's kinds this entry is.
-    pub kind: TransactionKind,
-    /// The key that paid, where the entry attributes one: the provenance actor, as its
-    /// id in uuid simple form. Top-ups and adjustments carry none — they are
-    /// organization history any member may read.
-    pub key_id: Option<String>,
-    /// The settled turn's own record, when the entry is a gateway settlement; `None`
-    /// for a settlement written by hand and for every other kind.
-    pub record: Option<SettlementRecord>,
-}
-
-// The API calendar-date representation for a gateway request's UTC booking date.
-time::serde::format_description!(request_date, Date, "[year]-[month]-[day]");
-
-/// One gateway request as the dashboard's requests page lists it, read from the ledger's
-/// settlement entries: what the turn was, how it was priced, what it used, what it charged
-/// and which key paid it.
-#[derive(Debug, Clone, serde::Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct RequestEntry {
-    /// The booking date: the server's UTC date when the settlement was written. The ledger
-    /// records no time of day.
-    #[serde(with = "request_date")]
-    pub booked_on: Date,
-    /// The request id from `x-oxsum-request-id`; the ledger keys are derived from it.
-    pub request_id: String,
-    /// The settlement entry's own id — what `GET /api/v1/entries/{entryId}/proof` names to
-    /// reach this turn's inclusion proof (issue #236). Deriving it from the request id is
-    /// no longer the caller's job.
-    pub entry_id: EntryId,
-    /// The model the caller asked for.
-    pub model: String,
-    /// How the turn was priced, read back as the settlement record's kind.
-    pub kind: SettlementKind,
-    /// Tokens billed as input, as the settlement recorded them.
-    pub input_tokens: i64,
-    /// Tokens billed as output, as the settlement recorded them.
-    pub output_tokens: i64,
-    /// What the settlement charged, in minor units.
-    pub charged_minor: i64,
-    /// The discount the turn's organization qualified for (issue #158) — the
-    /// percent the settlement description snapshots. `None` when none applied.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub discount_percent: Option<i64>,
-    /// How many upstream calls the turn made under the one hold (issue #168):
-    /// above 1 means it failed over between channels. Records written before
-    /// failover existed read back as 1 — the one attempt they made.
-    pub upstream_attempts: i64,
-    /// The API key that paid the turn, as its id in uuid simple form: the hold's provenance
-    /// actor, copied onto the settlement. `None` for a turn held without key attribution.
-    pub key_id: Option<String>,
-    /// How the turn ended — [`SettlementKind::status`]'s spelling (issue #233):
-    /// `settled` for the outcomes that charged, `errored` for the turns that
-    /// served nothing after their hold, `refused` for the requests admission
-    /// turned away before a hold.
-    pub status: &'static str,
-    /// Why the turn refused or errored, when the settlement recorded a reason —
-    /// `None` for a clean settle.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub failure_reason: Option<String>,
-    /// Long v15 failure reason identity, exclusive with inline `failure_reason`.
-    /// This projection does not verify separately retained full text.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub failure_reason_commitment: Option<oxsum_verify::ReasonCommitment>,
 }
 
 /// One slice of a list that walks the log backward, newest first (issue #93).
@@ -643,29 +511,6 @@ impl Wallet {
     pub fn tenant_id(&self) -> &str {
         &self.tenant_id
     }
-}
-
-/// A settled gateway turn as the ledger recorded it, newest first: the settlement's
-/// own record, its booking date and the key that paid it.
-#[derive(Debug, Clone)]
-pub struct SettledTurn {
-    /// The booking date: the server's UTC date when the settlement was written.
-    pub booked_on: Date,
-    /// The settlement entry's own id (issue #236): the id `RequestEntry` and any
-    /// proof lookup name, straight off the stored record rather than derived.
-    pub entry_id: EntryId,
-    /// What the turn charged, in the settlement record's own fields — channel, price
-    /// version and freeze included, so the anomalies page can say where the platform
-    /// lost money upstream.
-    pub record: SettlementRecord,
-    /// The API key that paid the turn, as its id in uuid simple form: the hold's
-    /// provenance actor, copied onto the settlement.
-    pub key_id: Option<String>,
-}
-
-/// Lowercase hex of a byte slice, the spelling the signed-link key fields use.
-fn hex(bytes: &[u8]) -> String {
-    bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
 
 /// The handle of the account registered at `path`, or an error naming it.
