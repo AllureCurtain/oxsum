@@ -302,7 +302,7 @@ impl Wallet {
     /// A wallet opened over a bare ledger schema — the generative tests'
     /// model-only world — has no `oxsum` tables at all: the seal cannot exist
     /// there, so the check answers "not sealed" instead of failing the write.
-    pub(super) async fn day_is_anchored(&self, day: Date) -> Result<bool, WalletError> {
+    async fn day_is_anchored(&self, day: Date) -> Result<bool, WalletError> {
         let table: Option<String> =
             sqlx::query_scalar("SELECT to_regclass('oxsum.usage_anchors')::text")
                 .fetch_one(self.store.pool())
@@ -331,7 +331,7 @@ impl Wallet {
     /// debits on the pool accounts — the ledger's own record of what was reserved,
     /// not a caller assertion. [`WalletError::HoldNotFound`] when no entry is stored
     /// under the key, or when the entry is not a hold.
-    pub(super) async fn outstanding_hold(
+    async fn outstanding_hold(
         &self,
         hold_key: &str,
     ) -> Result<super::transaction_reads::HoldParts, WalletError> {
@@ -419,7 +419,7 @@ impl Wallet {
     /// the settlement description and the turn's provenance. Shared by
     /// [`usage_receipt`](Self::usage_receipt) and
     /// [`usage_receipt_in`](Self::usage_receipt_in).
-    pub(super) fn usage_receipt_draft(
+    fn usage_receipt_draft(
         &self,
         hold_key: &str,
         description: &str,

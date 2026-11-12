@@ -81,10 +81,7 @@ impl Wallet {
     }
     /// The facility committed, on the caller's connection: the account is
     /// debit-normal, so its settled net — credits minus debits — reads negated.
-    pub(super) async fn committed_limit_in(
-        &self,
-        conn: &mut sqlx::PgConnection,
-    ) -> Result<i64, WalletError> {
+    async fn committed_limit_in(&self, conn: &mut sqlx::PgConnection) -> Result<i64, WalletError> {
         Ok(-self.settled_net_in(conn, self.facility).await?)
     }
     /// What the credit line carried for settlements whose booking dates fall in
@@ -114,7 +111,7 @@ impl Wallet {
     /// Settled postings on the credit line of one `direction` (`D` or `C`),
     /// bounded by booking date, facility-leg entries excluded — those are the
     /// credit-limit changes, and a limit moving is neither a draw nor a repayment.
-    pub(super) async fn credit_flow(
+    async fn credit_flow(
         &self,
         direction: &str,
         from: Option<Date>,

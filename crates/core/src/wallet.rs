@@ -35,7 +35,7 @@ mod reads;
 #[path = "wallet/settle.rs"]
 mod settle;
 #[path = "wallet/transaction_reads.rs"]
-pub(super) mod transaction_reads;
+mod transaction_reads;
 
 pub use admission::GatewayAdmission;
 pub use funding_preview::GatewayFundingPreview;

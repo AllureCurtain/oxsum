@@ -371,7 +371,7 @@ impl Wallet {
     /// credit that releases the reserve, a top-up posts `Assets:Cash`, an adjustment
     /// posts `Equity:Adjustments` — each exactly once, because those are the only
     /// writers these accounts have.
-    pub(super) fn classify(&self, stored: &StoredEntry<SCALE>) -> Option<TransactionKind> {
+    fn classify(&self, stored: &StoredEntry<SCALE>) -> Option<TransactionKind> {
         let mut pending_credit = false;
         let mut pending_debit = false;
         let mut cash = false;
@@ -414,7 +414,7 @@ impl Wallet {
     /// settled charge negative, and a settlement that charged nothing reads zero —
     /// the pending-layer release it also writes is not a movement of settled money.
     /// The pool reclassification nets to zero across the two accounts.
-    pub(super) fn settled_effect(&self, stored: &StoredEntry<SCALE>) -> i64 {
+    fn settled_effect(&self, stored: &StoredEntry<SCALE>) -> i64 {
         stored
             .entry
             .postings()
@@ -428,14 +428,14 @@ impl Wallet {
     }
     /// True when the entry settled a hold: the pending-layer credit on a pool account
     /// that [`Wallet::settle`] writes for every settlement, whatever it charges.
-    pub(super) fn is_settlement(&self, stored: &StoredEntry<SCALE>) -> bool {
+    fn is_settlement(&self, stored: &StoredEntry<SCALE>) -> bool {
         stored.entry.postings().iter().any(|p| {
             self.is_pool(p.account) && p.layer == Layer::Pending && p.direction == Direction::Credit
         })
     }
     /// What the entry charged: the pool accounts' net debit in the settled layer, in
     /// minor units. Nothing at all for a settlement that charged nothing.
-    pub(super) fn settled_charge(&self, stored: &StoredEntry<SCALE>) -> i64 {
+    fn settled_charge(&self, stored: &StoredEntry<SCALE>) -> i64 {
         stored
             .entry
             .postings()
@@ -684,7 +684,7 @@ impl Wallet {
     /// recognizes. `before` bounds the walk to indices below it — `None` reads the
     /// head; the resume point is the smallest index the walk left unvisited,
     /// `None` when index 0 was scanned (issue #93).
-    pub(super) async fn scan_back<T>(
+    async fn scan_back<T>(
         &self,
         before: Option<u64>,
         wanted: usize,

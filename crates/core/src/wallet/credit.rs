@@ -100,7 +100,7 @@ impl Wallet {
     /// and a credit-line credit of the same amount, nothing reaching the
     /// spendable pools — and the key-reuse conflict when the entry is anything
     /// else, including a top-up that split part of the same amount to wallet.
-    pub(super) fn repay_replay(
+    fn repay_replay(
         &self,
         stored: &StoredEntry<SCALE>,
         minor: i64,

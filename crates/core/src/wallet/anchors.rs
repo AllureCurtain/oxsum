@@ -162,7 +162,7 @@ impl Wallet {
     /// standing entry instead of committing a second root for the same day. The
     /// [`DocumentRef`] binds the anchor to the map root, and the description
     /// carries the day, root and customer count.
-    pub(super) fn anchor_usage_draft(
+    fn anchor_usage_draft(
         &self,
         day: time::Date,
         description_json: &str,
@@ -643,7 +643,7 @@ impl Wallet {
     /// signs it as a catalog checkpoint. Signing is stateless and deterministic over
     /// (key, origin, version, row), so the note a v1 bundle carries is identical
     /// whether it was made at bill time or after the catalog moved on.
-    pub(super) async fn price_link(
+    async fn price_link(
         &self,
         stored: &StoredEntry<SCALE>,
         key: &HeadSigningKey,
@@ -691,7 +691,7 @@ impl Wallet {
     /// made at bill time or after the sale book moved on. The canonical row
     /// binds only the customer-visible terms, so the evidence cannot attest a
     /// supplier rate.
-    pub(super) async fn sale_link(
+    async fn sale_link(
         &self,
         stored: &StoredEntry<SCALE>,
         key: &HeadSigningKey,
