@@ -4,11 +4,10 @@
 # Build:  docker build -t oxsum .
 # Run:    docker run --rm -p 3000:3000 -e DATABASE_URL=postgresql://user:pass@host/oxsum oxsum
 #
-# The builder rides the latest stable Rust image. The Topcoat dashboard
-# is server-side rendered; the React scaffold (issue #234) builds in the
-# `frontend` stage and is embedded via rust-embed — the runtime is still the
-# single binary, reqwest uses rustls, so the only system package it needs is
-# the CA bundle.
+# The builder rides the latest stable Rust image. The React dashboard
+# (issue #234) builds in the `frontend` stage and is embedded via rust-embed —
+# the runtime is still the single binary, reqwest uses rustls, so the only
+# system package it needs is the CA bundle.
 
 # ---------- frontend ----------
 # The React dashboard (issue #234): Vite + React, built to web/dist and

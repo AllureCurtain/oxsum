@@ -4,14 +4,21 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>oxsum</title>
-    <script type="module" crossorigin src="/app/assets/index-Of7_BGFH.js"></script>
-    <link rel="modulepreload" crossorigin href="/app/assets/rolldown-runtime-WkwZ5CU-.js">
-    <link rel="modulepreload" crossorigin href="/app/assets/react-vendor-Df7u7rNF.js">
-    <link rel="modulepreload" crossorigin href="/app/assets/ui-vendor-Z0YKDiVi.js">
-    <link rel="modulepreload" crossorigin href="/app/assets/motion-dqwwVbWz.js">
-    <link rel="stylesheet" crossorigin href="/app/assets/index-BOAQIBuR.css">
+    <style>
+      body { font-family: system-ui, sans-serif; margin: 3rem auto; max-width: 34rem; line-height: 1.6; color: #333; }
+      code { background: #f0f0f0; padding: .1em .35em; border-radius: 4px; }
+    </style>
   </head>
   <body>
-    <div id="root"></div>
+    <h1>oxsum dashboard placeholder</h1>
+    <p>This is the committed stand-in for the React bundle so
+    <code>rust-embed</code> has a <code>web/dist</code> folder on a fresh
+    checkout. It is not the dashboard.</p>
+    <p>Build the real bundle before serving <code>/app</code>:</p>
+    <pre>cd web &amp;&amp; npm run build</pre>
+    <p>The release Dockerfile runs that build in the <code>frontend</code> stage,
+    so an image build never serves this page. A bare
+    <code>cargo build --release</code> without the bundle does — every hashed
+    asset it points at is intentionally absent.</p>
   </body>
 </html>
