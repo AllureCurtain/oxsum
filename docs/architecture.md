@@ -88,7 +88,7 @@ The axum API, the core, doubleentry and the gateway exist today, with oxsum's ow
 | Module | Location | Responsibility |
 | --- | --- | --- |
 | doubleentry | `crates/doubleentry` | Double-entry bookkeeping, balance limits, pending layer, Merkle inclusion and consistency proofs, period closing. Vendored, see docs/decisions.md |
-| Wallet | `crates/core/src/wallet.rs` + `crates/core/src/wallet/` | One tenant's wallet: top-up, hold, settle, balance, proof bundles, and the transactions the bills page lists and exports (`recent_transactions`). The facade and its account handles stay in `wallet.rs`; the method families are split into `wallet/` leaf modules by domain — `admission`/`funding_preview`/`transaction_reads` (the gateway-side reads and the atomic admission), `holds`/`keys`/`settle` (reservations, per-key committed sums, discharge), `balances`/`credit` (pool reads and the credit line), `promo`/`plan` (promotional lots and plan-fee journals), `anchors`/`reads` (ledger anchors, evidence bundles, signed heads and the dashboard list surface). Built on the shared pool, never on a pool of its own |
+| Wallet | `crates/core/src/wallet.rs` + `crates/core/src/wallet/` | One tenant's wallet: top-up, hold, settle, balance, proof bundles, and the transactions the bills page lists and exports (`recent_transactions`). `wallet.rs` keeps the struct and its account handles, `open`/`bootstrap`, the shared types (`Credits`, `Receipt`, `ListPage`) and the free helpers several leaves call, and re-exports each leaf's public types so their paths stay stable; the method families are split into `wallet/` leaf modules by domain — `admission`/`funding_preview`/`transaction_reads` (the gateway-side reads and the atomic admission), `holds`/`keys`/`settle` (reservations, per-key committed sums, discharge), `balances`/`credit` (pool reads and the credit line), `funding` (top-ups, operator adjustments, credit notes and deposit reversals), `append` (the seal-and-append path every write goes through), `promo`/`plan` (promotional lots and plan-fee journals), `anchors`/`reads` (ledger anchors, evidence bundles, signed heads and the dashboard list surface). Built on the shared pool, never on a pool of its own |
 | Pricing | `crates/core/src/billing.rs` | What a turn costs and what the ledger records: the input upper bound, the freeze (the dearest set that could match), the itemized price book — conditional rules resolved most-specific-wins — the priced lines a settlement decomposes into, the fail-closed check that names a metered dimension no set can bill (`unpriced`), the local `o200k_base` estimate, and the settlement record. No I/O, so it is the same arithmetic in a test and in a request |
 | Usage records | `crates/core/src/usage.rs` | The normalized `UsageRecord` every upstream is read into, the bounds on the caller's attribution, the `oxsum.usage_records` row written beside each landed settlement (issue #102), the `oxsum.usage_daily` rollup the write maintains transactionally for the usage dashboard (issue #126), and the charged-versus-upstream sums the admin margin view reads (issue #112) |
 | Request log | `crates/core/src/request_log.rs` | The per-request operational record `oxsum.request_log` holds (issue #505): one row per gateway request — settled or refused — written *post-settlement and non-blocking*, so a logging failure is traced, never a failed request. `request_log_page` is the keyset-paged read behind `GET /api/v1/requests` (the member's org-scoped read) and `GET /api/v1/admin/requests` (the operator's all-orgs read, `organization_id` carried and filterable); `sweep_request_log` is the retention job's `OXSUM_RETENTION_REQUEST_LOG_DAYS` cleanup. `usage_records` is the settlement's accounting fact; `request_log` is the search surface over it that also names the refusals a ledger join could not |
@@ -145,11 +145,12 @@ crates/
   doubleentry/          Vendored ledger engine (only changed per the rules in docs/decisions.md)
   core/                 Domain layer: wallet, tenants, proof, identity (users, orgs, keys), pricing
     src/
-      wallet.rs         exists: the wallet facade — struct, account handles, top-up and the
-                        shared read/write helpers; the ~100 `impl Wallet` methods live in the
-                        `wallet/` leaf modules beside it (admission, funding_preview,
-                        transaction_reads, holds, keys, settle, balances, credit, promo, plan,
-                        anchors, reads), split by domain per the module rules
+      wallet.rs         exists: the wallet facade — struct, account handles, open/bootstrap,
+                        the shared types and helpers; the `impl Wallet` method families live
+                        in the `wallet/` leaf modules beside it (admission, funding_preview,
+                        transaction_reads, holds, keys, settle, balances, credit, funding,
+                        append, promo, plan, anchors, reads), split by domain per the module
+                        rules
       tenants.rs        exists, shared-pool facade over many ledger facades
       billing.rs        exists: the input upper bound, the freeze, priced usage, the local
                         estimate, the settlement record, and the price book
