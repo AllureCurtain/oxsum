@@ -29,7 +29,7 @@ export default defineConfig({
             { name: "motion", test: /node_modules[\\/]motion[\\/]/ },
             {
               name: "ui-vendor",
-              test: /node_modules[\\/](lucide-react|@radix-ui[\\/]react-(tabs|select|switch|progress|slot|dialog|alert-dialog|dropdown-menu|popover|tooltip|hover-card|scroll-area|separator|label|checkbox|radio-group|avatar|toggle)|sonner)[\\/]/,
+              test: /node_modules[\\/](lucide-react|@radix-ui[\\/]react-(tabs|select|switch|progress|slot|dialog|alert-dialog|dropdown-menu|popover|tooltip|hover-card|scroll-area|separator|label|checkbox|radio-group|avatar|toggle))[\\/]/,
             },
           ],
         },
