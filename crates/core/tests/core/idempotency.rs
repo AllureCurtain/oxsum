@@ -117,6 +117,104 @@ async fn an_expired_claim_is_reclaimable() {
     assert!(matches!(claim, Claim::Fresh { request_id } if request_id == "req-2"));
 }
 
+/// A claim whose turn died before it took a hold — or whose hold was swept —
+/// stays `in_flight` with no `open_holds` row. Past the claim→hold grace, a
+/// retry under the same key takes the record over and runs fresh, instead of
+/// sitting out the record's whole 24-hour TTL.
+#[tokio::test]
+async fn a_dead_in_flight_claim_is_retaken_once_its_hold_is_gone() {
+    let url = db_or_skip!();
+    let (db, org) = world(&url).await;
+    let fp = fingerprint(b"{}");
+    db.claim_request(org, "wedged", &fp, "req-dead")
+        .await
+        .unwrap();
+
+    // Immediately, with no hold the claim is still inside the claim→hold grace:
+    // a live admission could simply not have written its watch row yet.
+    let claim = db
+        .claim_request(org, "wedged", &fp, "req-early")
+        .await
+        .unwrap();
+    assert!(matches!(claim, Claim::InFlight), "{claim:?}");
+
+    // Age the claim past the grace with no open hold — the crash that leaves
+    // `in_flight` forever without the retake path.
+    sqlx::query(
+        "UPDATE oxsum.idempotency_records SET claimed_at = now() - interval '1 minute' \
+         WHERE organization_id = $1 AND idempotency_key = 'wedged'",
+    )
+    .bind(org)
+    .execute(db.pool())
+    .await
+    .unwrap();
+    let claim = db
+        .claim_request(org, "wedged", &fp, "req-retake")
+        .await
+        .unwrap();
+    assert!(
+        matches!(claim, Claim::Fresh { ref request_id } if request_id == "req-retake"),
+        "the stale in_flight claim is retaken: {claim:?}"
+    );
+
+    // The retaken claim completes under the retry's request id and replays it.
+    db.complete_request(org, "wedged", 200, &json!({"done": true}))
+        .await
+        .unwrap();
+    let claim = db
+        .claim_request(org, "wedged", &fp, "req-final")
+        .await
+        .unwrap();
+    let Claim::Replay { request_id, .. } = claim else {
+        panic!("the retaken claim replays the retry's answer")
+    };
+    assert_eq!(request_id, "req-retake");
+}
+
+/// A claim whose hold is still open is a live turn — an old `in_flight` row
+/// under it is *not* retaken, so a slow admission is never double-run.
+#[tokio::test]
+async fn an_in_flight_claim_with_a_live_hold_is_not_retaken() {
+    let url = db_or_skip!();
+    let (db, org) = world(&url).await;
+    let fp = fingerprint(b"{}");
+    db.claim_request(org, "live", &fp, "req-live")
+        .await
+        .unwrap();
+    // Age the claim past the grace, then plant the open hold a live admission
+    // would hold: the hold, not the clock, is the alive-signal.
+    sqlx::query(
+        "UPDATE oxsum.idempotency_records SET claimed_at = now() - interval '1 minute' \
+         WHERE organization_id = $1 AND idempotency_key = 'live'",
+    )
+    .bind(org)
+    .execute(db.pool())
+    .await
+    .unwrap();
+    let tenant: String =
+        sqlx::query_scalar("SELECT tenant_id FROM oxsum.organizations WHERE organization_id=$1")
+            .bind(org)
+            .fetch_one(db.pool())
+            .await
+            .unwrap();
+    sqlx::query(
+        "INSERT INTO oxsum.open_holds \
+         (hold_key, tenant_id, request_id, model, channel, price_version, \
+          input_price, output_price, freeze_minor, opened_at) \
+         VALUES ('req-live:hold', $2, 'req-live', 'm', 'c', 1, 0, 0, 100, now())",
+    )
+    .bind(org)
+    .bind(&tenant)
+    .execute(db.pool())
+    .await
+    .unwrap();
+    let claim = db
+        .claim_request(org, "live", &fp, "req-retry")
+        .await
+        .unwrap();
+    assert!(matches!(claim, Claim::InFlight), "{claim:?}");
+}
+
 /// The key's bounds are validated in core, not the route layer.
 #[tokio::test]
 async fn a_key_outside_its_bounds_is_refused() {
