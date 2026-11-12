@@ -1,3 +1,4 @@
+import { useRef } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api } from "../client";
 import type {
@@ -186,43 +187,45 @@ export function useWitnessCheckpoint() {
   });
 }
 
-export function useStripeTopup() {
+/** One idempotency key per amount intent: a `mutate` retry of the same amount
+ * replays the key so a response lost mid-flight re-reads the standing top-up
+ * instead of minting a second one. A different amount starts a new intent. */
+function useKeyedMutation<TData>(path: string) {
+  const intent = useRef<{ amount: number; key: string } | null>(null);
   return useMutation({
-    mutationFn: (amountMinor: number) =>
-      api<{ checkoutUrl: string; depositId: string }>("/topups/stripe", {
+    mutationFn: (amountMinor: number) => {
+      if (intent.current?.amount !== amountMinor) {
+        intent.current = { amount: amountMinor, key: crypto.randomUUID() };
+      }
+      return api<TData>(path, {
         method: "POST",
-        body: { amountMinor, idempotencyKey: crypto.randomUUID() },
-      }),
+        body: { amountMinor, idempotencyKey: intent.current.key },
+      });
+    },
   });
+}
+
+export function useStripeTopup() {
+  return useKeyedMutation<{ checkoutUrl: string; depositId: string }>("/topups/stripe");
 }
 
 export function useHyperswitchTopup() {
-  return useMutation({
-    mutationFn: (amountMinor: number) =>
-      api<{
-        paymentId: string;
-        clientSecret: string;
-        publishableKey: string;
-        depositId: string;
-        sdkUrl: string;
-      }>("/topups/hyperswitch", {
-        method: "POST",
-        body: { amountMinor, idempotencyKey: crypto.randomUUID() },
-      }),
-  });
+  return useKeyedMutation<{
+    paymentId: string;
+    clientSecret: string;
+    publishableKey: string;
+    depositId: string;
+    sdkUrl: string;
+  }>("/topups/hyperswitch");
 }
 
 export function useAirwallexTopup() {
-  return useMutation({
-    mutationFn: (amountMinor: number) =>
-      api<{ checkoutUrl: string; intentId: string; clientSecret?: string; depositId: string }>(
-        "/topups/airwallex",
-        {
-          method: "POST",
-          body: { amountMinor, idempotencyKey: crypto.randomUUID() },
-        },
-      ),
-  });
+  return useKeyedMutation<{
+    checkoutUrl: string;
+    intentId: string;
+    clientSecret?: string;
+    depositId: string;
+  }>("/topups/airwallex");
 }
 
 export function useRedeemCode() {
