@@ -54,6 +54,46 @@ struct SuiteDb {
 static SUITE_DBS: std::sync::Mutex<Option<std::collections::HashMap<String, SuiteDb>>> =
     std::sync::Mutex::new(None);
 
+/// The suite's scratch-database URL, with the slug derived from
+/// `module_path!()` — under the aggregate binaries (issue #998) a `#[path]`-
+/// loaded file's path ends in `server::<stem>` or `core::<stem>`, so the leaf
+/// is already the slug the file's hand-written `fn url()` used to name. This
+/// removes the per-file helper entirely: a suite calls
+/// `oxsum_testkit::suite_url!()` wherever it once called `url()`.
+///
+/// For the rarer early-return shape, [`suite_db!`](crate::suite_db) unwraps
+/// and skips in one step.
+#[macro_export]
+macro_rules! suite_url {
+    () => {{
+        // module_path! is "<bin>::<module>::…"; a #[path] submodule's leaf is
+        // the file stem, which is the suite slug. Nested test modules keep the
+        // file's slug — the first segment after the binary name is the file.
+        let slug = module_path!()
+            .split("::")
+            .nth(1)
+            .unwrap_or_else(|| module_path!());
+        $crate::suite_db_url(slug)
+    }};
+}
+
+/// Unwraps [`suite_url!`](crate::suite_url) or skips the test: `DATABASE_URL`
+/// unset means the suite cannot run, so the test returns rather than fails.
+/// Replaces the `db_or_skip!`/`app_or_skip!` macro every file defined to do
+/// the same `match url() { Some(u) => u, None => return }`.
+#[macro_export]
+macro_rules! suite_db {
+    () => {
+        match $crate::suite_url!() {
+            Some(u) => u,
+            None => {
+                eprintln!("DATABASE_URL not set, skipping");
+                return;
+            }
+        }
+    };
+}
+
 /// Returns the `DATABASE_URL` for this suite's isolated scratch database,
 /// creating the database on first call. Returns `None` when `DATABASE_URL`
 /// is unset; the caller should skip the test in that case.
