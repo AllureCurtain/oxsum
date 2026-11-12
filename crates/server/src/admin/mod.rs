@@ -23,7 +23,7 @@ use axum::routing::{delete, get, patch, post, put};
 use axum::{Router, middleware};
 use serde::Deserialize;
 use subtle::ConstantTimeEq as _;
-use time::{Date, Month, OffsetDateTime};
+use time::OffsetDateTime;
 use uuid::Uuid;
 
 use crate::AppState;
@@ -221,16 +221,6 @@ pub(crate) fn decode_organization_cursor(text: &str) -> Result<(OffsetDateTime, 
     let created_at = OffsetDateTime::from_unix_timestamp_nanos(nanos).map_err(|_| bad())?;
     let id = Uuid::parse_str(id).map_err(|_| bad())?;
     Ok((created_at, id))
-}
-
-/// `YYYY-MM` as the month's first day. A malformed month is a validation failure,
-/// not an empty result.
-pub(crate) fn parse_month(month: &str) -> Result<Date, ApiError> {
-    let bad = || ApiError::Validation("month must be YYYY-MM".into());
-    let (year, month) = month.split_once('-').ok_or_else(bad)?;
-    let year = year.parse::<i32>().map_err(|_| bad())?;
-    let month = Month::try_from(month.parse::<u8>().map_err(|_| bad())?).map_err(|_| bad())?;
-    Date::from_calendar_date(year, month, 1).map_err(|_| bad())
 }
 
 /// Peels one option layer serde does not: a bare `Option<Option<T>>` field
