@@ -301,7 +301,9 @@ impl Db {
     }
 
     /// Every watched hold, across all organizations, newest first: the platform admin's
-    /// in-flight list.
+    /// in-flight list, bounded to the newest 500 rows — an operator's head-count
+    /// view, where an unbounded read would let a pathological backlog stall the
+    /// admin surface itself.
     ///
     /// The list also includes durable quota-funded and free reservations, whose
     /// priced bound may be zero and whose wallet amount is zero. An organization
@@ -319,7 +321,8 @@ impl Db {
              coalesce(o.name, h.tenant_id) AS organization \
              FROM oxsum.open_holds h \
              LEFT JOIN oxsum.organizations o ON o.tenant_id = h.tenant_id \
-             ORDER BY h.opened_at DESC",
+             ORDER BY h.opened_at DESC \
+             LIMIT 500",
         )
         .fetch_all(self.pool())
         .await?;
