@@ -135,7 +135,7 @@ export function Metering() {
               isLoading={busy === t("admin.metering.hold")}
               loadingText={t("admin.metering.holding")}
               onClick={() =>
-                call("/holds", { ...common, idempotencyKey: `met-${Date.now()}` }, t("admin.metering.hold"))
+                call("/holds", { ...common, idempotencyKey: `met-${crypto.randomUUID()}` }, t("admin.metering.hold"))
               }
             >
               POST /metering/holds
@@ -178,7 +178,7 @@ export function Metering() {
               isLoading={busy === t("admin.metering.settlement")}
               loadingText={t("admin.metering.billing")}
               onClick={() =>
-                call("/settlements", { ...common, idempotencyKey: `met-${Date.now()}` }, t("admin.metering.settlement"))
+                call("/settlements", { ...common, idempotencyKey: `met-${crypto.randomUUID()}` }, t("admin.metering.settlement"))
               }
             >
               POST /metering/settlements

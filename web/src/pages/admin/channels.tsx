@@ -26,6 +26,7 @@ import {
 } from "../../components/ui";
 import { ApiError } from "../../api/client";
 import type { components } from "../../api/schema";
+import { decimalMinor } from "../../lib/money";
 import { adminApi, useAdmin } from "./api";
 
 type ModelFallbackChain = components["schemas"]["ModelFallbackChain"];
@@ -590,17 +591,25 @@ function ChannelPrices({ token, channel, onSaved }: { token: string; channel: st
           setMsg(null);
           setError(null);
           try {
+            const inputMinor = decimalMinor(inputPrice, 6);
+            const outputMinor = outputPrice !== "" ? decimalMinor(outputPrice, 6, true) : null;
+            const costMinor = costPerRequest !== "" ? decimalMinor(costPerRequest, 6, true) : null;
+            if (inputMinor === null || outputMinor === null || costMinor === null) {
+              setError(t("admin.channels.priceInvalid"));
+              setBusy(false);
+              return;
+            }
             const body: PriceRequest = {
               model,
               mode,
               weight: 100,
-              inputPricePerMillion: Math.round(Number(inputPrice) * 1_000_000),
+              inputPricePerMillion: inputMinor,
               ...(hasOutput && outputPrice !== "" ? {
-                outputPricePerMillion: Math.round(Number(outputPrice) * 1_000_000),
+                outputPricePerMillion: outputMinor,
               } : {}),
               ...(mode === "chat" ? { maxOutputTokens: Number(maxOutputTokens) } : {}),
               ...(costPerRequest !== "" ? {
-                costPerRequest: Math.round(Number(costPerRequest) * 1_000_000),
+                costPerRequest: costMinor,
               } : {}),
             };
             await adminApi(token, `/channels/${channel}/prices`, {

@@ -1,5 +1,6 @@
 import * as React from "react";
 import { useEffect, useState } from "react";
+import { useTranslation } from "react-i18next";
 import { Check, Copy } from "lucide-react";
 import {
   AnimatePresence,
@@ -60,6 +61,7 @@ const CopyButton = React.forwardRef<
   HTMLButtonElement,
   React.ComponentProps<"button"> & { value: string }
 >(({ className, value, ...props }, ref) => {
+  const { t } = useTranslation();
   const [copied, setCopied] = useState(false);
   const reduceMotion = useReducedMotion() ?? false;
   const m = iconMotion(reduceMotion);
@@ -68,7 +70,7 @@ const CopyButton = React.forwardRef<
       ref={ref}
       data-slot="copy-button"
       type="button"
-      aria-label={copied ? "Copied" : "Copy"}
+      aria-label={copied ? t("common.copied") : t("common.copy")}
       data-copied={copied}
       className={cn(
         "relative inline-flex h-7 w-7 items-center justify-center rounded-md text-muted transition-colors hover:bg-canvas hover:text-ink",
@@ -106,6 +108,7 @@ const CodeBlock = React.forwardRef<
   HTMLDivElement,
   React.ComponentProps<"div"> & { code: string; language?: string }
 >(({ className, code, language = "text", ...props }, ref) => {
+  const { t } = useTranslation();
   const [copied, setCopied] = useState(false);
   return (
     <div
@@ -116,7 +119,7 @@ const CodeBlock = React.forwardRef<
     >
       <button
         type="button"
-        aria-label="Copy code"
+        aria-label={t("common.copyCode")}
         onClick={async () => {
           if (await copyToClipboard(code)) {
             setCopied(true);
@@ -126,7 +129,7 @@ const CodeBlock = React.forwardRef<
         className="absolute right-2 top-2 z-10 flex items-center gap-1 rounded-md border border-line bg-surface/90 px-2 py-1 text-xs text-muted opacity-0 backdrop-blur-sm transition-opacity hover:bg-canvas hover:text-ink focus-visible:opacity-100 group-hover:opacity-100"
       >
         {copied ? <Check className="size-3" /> : <Copy className="size-3" />}
-        {copied ? "Copied" : "Copy"}
+        {copied ? t("common.copied") : t("common.copy")}
       </button>
       <pre
         data-language={language}

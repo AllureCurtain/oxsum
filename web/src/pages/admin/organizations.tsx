@@ -14,6 +14,7 @@ import {
   credits,
 } from "../../components/ui";
 import { ApiError } from "../../api/client";
+import { decimalMinor } from "../../lib/money";
 import { adminApi, useAdmin } from "./api";
 
 export interface AdminOrg {
@@ -118,9 +119,9 @@ function AdjustOrg({ token, id, onDone }: { token: string; id: string; onDone: (
               await adminApi(token, `/organizations/${id}/adjustments`, {
                 method: "POST",
                 body: {
-                  amountMinor: Math.round(Number(amount) * 1_000_000),
+                  amountMinor: decimalMinor(amount, 6),
                   reason,
-                  idempotencyKey: `adm-${Date.now()}`,
+                  idempotencyKey: `adm-${crypto.randomUUID()}`,
                 },
               });
             }
@@ -135,8 +136,8 @@ function AdjustOrg({ token, id, onDone }: { token: string; id: string; onDone: (
               await adminApi(token, `/organizations/${id}`, {
                 method: "PATCH",
                 body: {
-                  idempotencyKey: `adm-${Date.now()}`,
-                  ...(credit !== "" ? { creditLimitMinor: Math.round(Number(credit) * 1_000_000) } : {}),
+                  idempotencyKey: `adm-${crypto.randomUUID()}`,
+                  ...(credit !== "" ? { creditLimitMinor: decimalMinor(credit, 6, true) } : {}),
                   ...(terms !== "" ? { paymentTermsDays: Number(terms) } : {}),
                   ...(tier !== "" ? { tier } : {}),
                   ...(suspend !== null ? { suspended: suspend } : {}),
@@ -252,7 +253,7 @@ function CreditNotes({ token, id }: { token: string; id: string }) {
             await adminApi(token, `/organizations/${id}/credit-notes`, {
               method: "POST",
               body: {
-                amountMinor: Math.round(Number(amount) * 1_000_000),
+                amountMinor: decimalMinor(amount, 6),
                 reason,
                 idempotencyKey: `cn-${crypto.randomUUID()}`,
               },

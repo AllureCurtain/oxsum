@@ -2,6 +2,7 @@ import { useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Button, Card, Field, NumberInput } from "../../components/ui";
 import { ApiError } from "../../api/client";
+import { decimalMinor } from "../../lib/money";
 import { adminApi } from "./api";
 
 export function Redemptions({ token }: { token: string }) {
@@ -24,7 +25,7 @@ export function Redemptions({ token }: { token: string }) {
                 "/redemption-codes",
                 {
                   method: "POST",
-                  body: { amountMinor: Math.round(Number(amount) * 1_000_000), count: Number(count) },
+                  body: { amountMinor: decimalMinor(amount, 6), count: Number(count) },
                 },
               );
               setBatch(res);

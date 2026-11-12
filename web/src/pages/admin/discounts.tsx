@@ -38,7 +38,7 @@ export function Discounts({ token }: { token: string }) {
                   organizationId: orgId || null,
                   model: model || null,
                   label: label || null,
-                  idempotencyKey: `discount-${Date.now()}`,
+                  idempotencyKey: `discount-${crypto.randomUUID()}`,
                 },
               });
               setMsg(t("admin.discounts.created"));

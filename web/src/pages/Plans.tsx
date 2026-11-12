@@ -63,6 +63,7 @@ function planStateBadge(state: string | undefined) {
 }
 
 function PlanPayment({ enabled }: { enabled: boolean }) {
+  const { t } = useTranslation();
   const checkout = useCheckoutChoice(enabled);
   const quote = usePlanPaymentQuote(enabled);
   const create = useCreateOrder();
@@ -89,20 +90,20 @@ function PlanPayment({ enabled }: { enabled: boolean }) {
     create.mutate({ ...JSON.parse(intent.current.payload), idempotencyKey: intent.current.key    }, { onSuccess: (result) => navigate(`/orders/${result.order.orderId}`) });
   };
   return <div className="flex flex-col gap-3">
-    <p className="text-sm text-muted">Plan payments fund one period. Renewal is manual and becomes available at the current UTC boundary. Old statement debt remains separate.</p>
+    <p className="text-sm text-muted">{t("plans.paymentIntro")}</p>
     {quote.isLoading ? <Skeleton className="h-8 w-full" /> : null}
-    {quote.error ? <Banner tone="warn">{quote.error instanceof Error ? quote.error.message : "Plan quote could not be loaded."}</Banner> : null}
-    {payment?.existingOrderId ? <Link className="text-primary" to={`/orders/${payment.existingOrderId}`}>Resume the existing period payment</Link> : terms ? <div className="flex flex-col gap-2">
-      <p>{price} pays the exact fee of <Cr minor={terms.feeMinor} /> for period {terms.periodIndex + 1}. {terms.periodStart ? `${terms.periodStart} – ${terms.periodEnd} (UTC).` : "The first period starts when paid activation completes."}</p>
-      <Button onClick={() => setReview(true)}>Review plan payment</Button>
+    {quote.error ? <Banner tone="warn">{quote.error instanceof Error ? quote.error.message : t("plans.quoteError")}</Banner> : null}
+    {payment?.existingOrderId ? <Link className="text-primary" to={`/orders/${payment.existingOrderId}`}>{t("plans.resumePayment")}</Link> : terms ? <div className="flex flex-col gap-2">
+      <p>{t("plans.paymentLine", { price })} <Cr minor={terms.feeMinor} /> {t("plans.paymentPeriod", { index: terms.periodIndex + 1 })} {terms.periodStart ? t("plans.paymentRange", { start: terms.periodStart, end: terms.periodEnd }) : t("plans.paymentFirst")}</p>
+      <Button onClick={() => setReview(true)}>{t("plans.reviewPayment")}</Button>
     </div> : null}
-    <Button tone="ghost" disabled={create.isPending} onClick={() => void quote.refetch()}>Refresh payment availability</Button>
+    <Button tone="ghost" disabled={create.isPending} onClick={() => void quote.refetch()}>{t("plans.refreshAvailability")}</Button>
     <AlertDialog open={review} onOpenChange={(open) => { if (!create.isPending) setReview(open); }}>
-      <AlertDialogContent><AlertDialogHeader><AlertDialogTitle>Pay {price} for this plan period?</AlertDialogTitle><AlertDialogDescription>The payment creates plan entitlement after confirmed payment. It does not add spendable wallet credit or automatically renew. The fiat amount rounds up to the smallest currency unit; the sold credit fee stays exact.</AlertDialogDescription></AlertDialogHeader>
-        {intent.current ? <Banner tone="info">A retry recovers the original payment: {JSON.parse(intent.current.payload).displayAmountMinor} fiat minor {JSON.parse(intent.current.payload).displayCurrency}, {JSON.parse(intent.current.payload).rail}. Configuration refreshes do not replace it.</Banner> : null}
+      <AlertDialogContent><AlertDialogHeader><AlertDialogTitle>{t("plans.payTitle", { price })}</AlertDialogTitle><AlertDialogDescription>{t("plans.payExplain")}</AlertDialogDescription></AlertDialogHeader>
+        {intent.current ? <Banner tone="info">{t("plans.retryNote", { amount: JSON.parse(intent.current.payload).displayAmountMinor, currency: JSON.parse(intent.current.payload).displayCurrency, rail: JSON.parse(intent.current.payload).rail })}</Banner> : null}
         <div onChange={() => { if (!create.isPending) { intent.current = null; create.reset(); } }}><CheckoutChoice state={checkout} disabled={create.isPending} /></div>
-        {create.error ? <Banner tone="error">{create.error.message}. Retry unchanged to recover this order, or refresh availability to resume it.</Banner> : null}
-        <AlertDialogFooter><Button tone="ghost" disabled={create.isPending} onClick={() => setReview(false)}>Keep reviewing</Button><Button disabled={!intent.current && !checkout.choice} isLoading={create.isPending} onClick={pay}>Continue to payment</Button></AlertDialogFooter>
+        {create.error ? <Banner tone="error">{create.error.message}. {t("plans.retryError")}</Banner> : null}
+        <AlertDialogFooter><Button tone="ghost" disabled={create.isPending} onClick={() => setReview(false)}>{t("plans.keepReviewing")}</Button><Button disabled={!intent.current && !checkout.choice} isLoading={create.isPending} onClick={pay}>{t("plans.continueToPayment")}</Button></AlertDialogFooter>
       </AlertDialogContent>
     </AlertDialog>
   </div>;

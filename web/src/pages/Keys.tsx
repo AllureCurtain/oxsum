@@ -18,9 +18,11 @@ import {
   Select,
   TableShell,
   TextInput,
+  credits,
 } from "../components/ui";
 import { ApiError } from "../api/client";
 import { CopyButton } from "../components/ui";
+import { decimalMinor } from "../lib/money";
 
 const DURATIONS = ["daily", "weekly", "monthly"] as const;
 
@@ -51,7 +53,7 @@ export function Keys() {
   }, [budget.data]);
 
   function submit() {
-    const spendLimitMinor = limit === "" ? null : Math.round(Number(limit) * 1_000_000);
+    const spendLimitMinor = limit === "" ? null : decimalMinor(limit, 6);
     create.mutate(
       {
         name: name.trim() || undefined,
@@ -214,7 +216,7 @@ function KeyRow(props: {
   const key = props.apiKey;
   const patch = usePatchKey();
   const [limit, setLimit] = useState(
-    key.spendLimitMinor != null ? String(key.spendLimitMinor / 1_000_000) : "",
+    key.spendLimitMinor != null ? credits(key.spendLimitMinor) : "",
   );
   const [duration, setDuration] = useState(key.budgetDuration ?? "");
   const [rpm, setRpm] = useState(key.requestsPerMinute?.toString() ?? "");
@@ -289,7 +291,7 @@ function KeyRow(props: {
                 e.preventDefault();
                 patch.mutate({
                   keyId: key.id,
-                  spendLimitMinor: limit === "" ? null : Math.round(Number(limit) * 1_000_000),
+                  spendLimitMinor: limit === "" ? null : decimalMinor(limit, 6),
                   budgetDuration: (duration || null) as "daily" | "weekly" | "monthly" | null,
                   requestsPerMinute: rpm === "" ? null : Number(rpm),
                   tokensPerMinute: tpm === "" ? null : Number(tpm),

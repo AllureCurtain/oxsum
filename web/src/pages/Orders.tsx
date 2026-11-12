@@ -3,7 +3,7 @@ import { decimalMinor } from "../lib/money";
 import { useBundles } from "../api/hooks/bundles";
 import { useEffect, useRef, useState, type FormEvent } from "react";
 import { Link, useNavigate, useParams, useSearchParams } from "react-router-dom";
-import { useTranslation } from "react-i18next";
+import { Trans, useTranslation } from "react-i18next";
 import {
   ApiError,
   useCheckoutSession,
@@ -306,8 +306,8 @@ export function OrderNew() {
       <Card title={t("orders.newCard")}>
         <form className="flex flex-col gap-3" noValidate={Boolean(intent.current)} onSubmit={submit} onChange={() => { if (!create.isPending) { intent.current = null; create.reset(); } }}>
           <fieldset disabled={create.isPending} className="flex min-w-0 flex-col gap-3">
-          {terms.isLoading ? <p>Loading collection terms…</p> : terms.isError ? <Banner tone="error">Collection terms could not be loaded.</Banner> : terms.data?.ready ? <p className="font-mono text-sm">1 credit = {terms.data.currency?.ratePerCredit} {currency}. Existing orders keep their agreed rate.</p> : <Banner tone="warn">The operator has not configured compatible collection terms.</Banner>}
-          <Button type="button" tone="ghost" onClick={() => terms.refetch()} disabled={create.isPending}>Refresh collection terms</Button>
+          {terms.isLoading ? <p>{t("orders.collectionLoading")}</p> : terms.isError ? <Banner tone="error">{t("orders.collectionError")}</Banner> : terms.data?.ready ? <p className="font-mono text-sm">{t("orders.collectionTerms", { rate: terms.data.currency?.ratePerCredit, currency })}</p> : <Banner tone="warn">{t("orders.collectionNotConfigured")}</Banner>}
+          <Button type="button" tone="ghost" onClick={() => terms.refetch()} disabled={create.isPending}>{t("orders.collectionRefresh")}</Button>
           <CheckoutChoice state={checkout} disabled={create.isPending} />
           <Field label={t("orders.filterPurpose")}>
             <NativeSelect
@@ -321,11 +321,25 @@ export function OrderNew() {
           {purpose === "walletTopup" ? <Field label={t("orders.amountLabel", { currency })} hint={t("orders.amountHint")}>
             <TextInput inputMode="decimal" value={amount} onChange={(e) => setAmount(e.target.value)} required />
           </Field> : <>
-            <Field label="Published bundle"><NativeSelect value={bundleId} onChange={(e) => setBundleId(e.target.value)} required disabled={offers.isLoading}>
-              <option value="">Select a bundle</option>{offers.data?.map((o) => <option key={o.bundleVersionId} value={o.bundleVersionId}>{o.terms.name} · version {o.version} · {fiat(o.terms.displayAmountMinor, o.terms.displayCurrency)}</option>)}
+            <Field label={t("orders.publishedBundle")}><NativeSelect value={bundleId} onChange={(e) => setBundleId(e.target.value)} required disabled={offers.isLoading}>
+              <option value="">{t("orders.selectBundle")}</option>{offers.data?.map((o) => <option key={o.bundleVersionId} value={o.bundleVersionId}>{o.terms.name} · {t("orders.bundleVersion", { version: o.version })} · {fiat(o.terms.displayAmountMinor, o.terms.displayCurrency)}</option>)}
             </NativeSelect></Field>
-            {offers.isError ? <Banner tone="error">Bundle offers could not be loaded.</Banner> : !offers.isLoading && !offers.data?.length ? <Banner tone="info">No bundle offers are currently on sale.</Banner> : null}
-            {offer ? <p>Pay {fiat(offer.terms.displayAmountMinor, offer.terms.displayCurrency)} for <Cr minor={offer.terms.purchasedMinor} /> purchased credit plus <Cr minor={offer.terms.promoMinor} /> promotional credit. Promotion {offer.terms.promoLifetimeDays == null ? "has no expiry" : `expires ${offer.terms.promoLifetimeDays} days after confirmed payment`}. A confirmed partial or full refund cancels remaining promotional credit without cash reimbursement.</p> : null}
+            {offers.isError ? <Banner tone="error">{t("orders.bundlesError")}</Banner> : !offers.isLoading && !offers.data?.length ? <Banner tone="info">{t("orders.noBundles")}</Banner> : null}
+            {offer ? (
+              <p>
+                <Trans
+                  i18nKey={offer.terms.promoLifetimeDays == null ? "orders.bundleTermsNoExpiry" : "orders.bundleTerms"}
+                  values={{
+                    price: fiat(offer.terms.displayAmountMinor, offer.terms.displayCurrency),
+                    days: offer.terms.promoLifetimeDays,
+                  }}
+                  components={{
+                    purchased: <Cr minor={offer.terms.purchasedMinor} />,
+                    promo: <Cr minor={offer.terms.promoMinor} />,
+                  }}
+                />
+              </p>
+            ) : null}
           </>}
           {intent.current ? <Banner tone="info">{t("checkoutChoices.retryHelp")}<p className="font-mono text-xs">{JSON.parse(intent.current.payload).displayAmountMinor} {JSON.parse(intent.current.payload).displayCurrency} · {JSON.parse(intent.current.payload).rail} · {JSON.parse(intent.current.payload).purpose}</p></Banner> : null}
           <p className="text-xs text-muted">{t("orders.createConsequence")}</p>
@@ -662,11 +676,20 @@ export function OrderDetail() {
         <Banner tone="info">{t("orders.returnedWaiting")}</Banner>
       ) : null}
       <FulfillmentBlock order={o} />
-      {o.bundleOffer ? <Card title={`${o.bundleOffer.terms.name} · version ${o.bundleOffer.version}`}>
-        <p>This order purchases <Cr minor={o.bundleOffer.terms.purchasedMinor} /> and grants <Cr minor={o.bundleOffer.terms.promoMinor} /> promotional credit. Promotion {o.bundleOffer.terms.promoLifetimeDays == null ? "has no expiry" : `expires ${o.bundleOffer.terms.promoLifetimeDays} days after confirmed payment`}. A confirmed partial or full refund cancels remaining promotional credit without cash reimbursement.</p>
-      </Card> : o.purpose === "bundle" && o.status !== "fulfilled" ? <Banner tone="warn">This legacy bundle has no published offer snapshot. Checkout and fulfillment require operator review.</Banner> : null}
+      {o.bundleOffer ? <Card title={`${o.bundleOffer.terms.name} · ${t("orders.bundleVersion", { version: o.bundleOffer.version })}`}>
+        <p>
+          <Trans
+            i18nKey={o.bundleOffer.terms.promoLifetimeDays == null ? "orders.purchasedBundleNoExpiry" : "orders.purchasedBundle"}
+            values={{ days: o.bundleOffer.terms.promoLifetimeDays }}
+            components={{
+              purchased: <Cr minor={o.bundleOffer.terms.purchasedMinor} />,
+              promo: <Cr minor={o.bundleOffer.terms.promoMinor} />,
+            }}
+          />
+        </p>
+      </Card> : o.purpose === "bundle" && o.status !== "fulfilled" ? <Banner tone="warn">{t("orders.legacyBundleWarn")}</Banner> : null}
       {o.statementPayment ? <Card title={t("statementPayment.title")}><p>{t("statementPayment.help")}</p><p><Cr minor={o.statementPayment.amountMinor} /></p><Link className="text-primary" to={`/billing/${o.statementPayment.statementId}`}>{t("statementPayment.statementLink")}</Link></Card> : null}
-      {o.planPayment ? <Card title="Purchased plan period"><p>Period {o.planPayment.periodIndex + 1} · exact sold fee <Cr minor={o.planPayment.feeMinor} />. {o.planPayment.periodStart ? `${o.planPayment.periodStart} – ${o.planPayment.periodEnd} (UTC)` : "First service period begins at paid activation."}</p><p className="text-sm text-muted">This payment grants plan entitlement and never adds wallet credit. Its sold version and collection quote remain fixed.</p></Card> : o.purpose === "planPeriod" && o.status !== "fulfilled" ? <Banner tone="warn">This legacy order has no verified period quote. Contact the operator for reconciliation; it cannot automatically grant new entitlement.</Banner> : null}
+      {o.planPayment ? <Card title={t("orders.planPeriodTitle")}><p>{t("orders.planPeriodLine", { index: o.planPayment.periodIndex + 1 })} · <Cr minor={o.planPayment.feeMinor} />. {o.planPayment.periodStart ? t("orders.planPeriodRange", { start: o.planPayment.periodStart, end: o.planPayment.periodEnd }) : t("orders.planPeriodFirst")}</p><p className="text-sm text-muted">{t("orders.planPeriodNote")}</p></Card> : o.purpose === "planPeriod" && o.status !== "fulfilled" ? <Banner tone="warn">{t("orders.legacyPlanWarn")}</Banner> : null}
       <div className="grid grid-cols-2 gap-4 sm:grid-cols-4">
         <div>
           <p className="text-[11px] font-medium uppercase tracking-wider text-muted">
