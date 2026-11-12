@@ -94,6 +94,11 @@ async fn rows(state: &AppState, headers: &HeaderMap) -> Result<Vec<BillView>, Re
         })?;
     let mut transactions = Vec::new();
     let mut before = None;
+    // The export is bounded: an unbounded read over a large org's whole ledger
+    // can run for arbitrary long on a route the request-timeout layer does not
+    // cover. Past the cap the export refuses with guidance rather than a
+    // truncated file — the caller narrows the window and tries again.
+    const MAX_EXPORT_ROWS: usize = 50_000;
     loop {
         let page = wallet
             .scoped_transactions_page(before, 100, &scope)
@@ -106,6 +111,12 @@ async fn rows(state: &AppState, headers: &HeaderMap) -> Result<Vec<BillView>, Re
         transactions.extend(page.rows);
         if before.is_none() {
             break;
+        }
+        if transactions.len() > MAX_EXPORT_ROWS {
+            return Err(Refusal {
+                status: StatusCode::PAYLOAD_TOO_LARGE,
+                message: "the export exceeds 50000 rows; narrow the window and retry",
+            });
         }
     }
     // The organization's display unit (issue #257): the export renders the
