@@ -35,6 +35,10 @@ Pages translate through `useTranslation()`/`t()`; inline markup rides `<Trans>`.
 - `src/pages/` — one file per dashboard page; `auth/` holds the session pages
   (`shared.tsx` carries `AuthCard`/`ErrorText`, one file per flow), `Admin.tsx`
   the operator console.
+- `src/App.tsx` — the routes. Every shell page except the overview and device
+  pages is a `lazy()` chunk inside `components/PageBoundary.tsx` (Suspense plus
+  a reload prompt). `lib/chunk-reload.ts` reloads the tab once when a chunk is
+  gone after a redeploy (issue #1092; `tests/chunk-reload.test.ts`).
 - `src/i18n.ts` + `src/locales/{en,zh-CN}.json` — the i18n instance and its two
   resource files (flat `namespace.key` pairs, shared verbs under `common`).
   Every user-visible string is a key looked up through `t()`; add a key to

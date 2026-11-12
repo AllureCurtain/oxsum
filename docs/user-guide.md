@@ -215,6 +215,13 @@ the EN/中文 switch in the header flips it — the choice is remembered across
 visits. Public pages outside `/app` (`/verify`, the report links) stay English:
 a verification artifact is read against the ledger, not localized.
 
+After the server is upgraded, a tab that was open before the upgrade can find
+a page's code gone the first time it opens that page. The tab then reloads
+itself once and shows the page. If the page still cannot load, the page area
+shows a **Reload** button, and the navigation around it stays usable. While
+the server is restarting, the tab does not reload itself; press **Reload**
+once the server is back.
+
 Business operators enter `/app/business` using an owner or staff session and
 explicit Business context. Capabilities determine which controls are available.
 The deployment-token console remains a technical compatibility surface for

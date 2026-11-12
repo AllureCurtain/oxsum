@@ -4117,3 +4117,78 @@ Stripe deposit-refund recovery is explicitly deferred: the Stripe arm returns
 `refundStatus: null`-equivalent (no queued operation). The Stripe refund API
 differs in identity (`re_…` ids, charge-scoped) and has no queued demand; the
 adapter shape now makes it a single new arm when needed.
+
+## 2026-11-12 — Reload once when a lazy page's chunk is gone after a redeploy (#1092)
+
+Code splitting (#1100) moved the dashboard's pages into hashed chunks that
+load on demand. A tab opened before a redeploy still runs the old entry, so the
+first page it opens that it never loaded can ask for a chunk the new build does
+not have. `spa.rs` answers 404 for a missing asset, the `import()` rejects,
+and with no error boundary React unmounted the whole tree: a blank page that
+only a manual refresh fixed.
+
+Each `lazy()` page import now goes through `withChunkRecovery`
+(`web/src/lib/chunk-reload.ts`). The first failure checks that the server
+answers, then reloads the tab, and the reload fetches the current index, which
+is served no-cache, with the current chunk names. The import stays pending
+while the reload is on its way, so the screen keeps what it showed. A
+`sessionStorage` timestamp allows one automatic reload per 60 seconds per tab.
+A later failure inside that window, a server that does not answer, or storage
+that cannot be read or written rejects with `ChunkLoadError` instead, and the
+route's `PageBoundary` shows an error banner with a Reload button in the page
+slot. A reload that has not replaced the page within 10 seconds, such as one
+the user stopped, ends the same way. The shell stays usable, and opening
+another page clears the banner. The boundary rethrows any other error, so a
+page that fails while it renders fails as it did before. A page module that
+throws while it is evaluated rejects its import just as a missing chunk does,
+so it gets the same single reload and then the banner.
+
+- **Wrapping the factory rather than listening for `vite:preloadError`.**
+  In Vite 8.3.7 that event comes from the preload helper the bundler puts
+  around the page imports (all 24 are wrapped in this build). It fires when
+  the import itself or a stylesheet it preloads fails. A listener cannot keep
+  the import pending: if it calls `preventDefault()`, the import resolves to
+  `undefined`, which `lazy()` cannot render, and if it does not, the import
+  rejects and the page fails while the reload is still starting. Wrapping the
+  factory keeps the import pending until the reload lands, sees the rejection
+  whichever path raised it, and keeps the handling beside the `lazy()` call.
+- **A time window rather than a once-per-session flag.** A flag would refuse
+  the second redeploy a long-lived tab sees. The window re-arms after a
+  minute. Within the minute, a build whose chunks are genuinely missing gets
+  one reload and then the prompt, never a loop.
+- **No reload when nothing can be recorded.** Without a record, nothing would
+  stop the next failure from reloading the tab again, so a blocked or full
+  `sessionStorage` shows the prompt instead of reloading.
+- **A `HEAD` request to the current URL rather than `navigator.onLine`.**
+  `navigator.onLine` reports only the device's network link. A self-hosted
+  redeploy leaves the server unreachable for a few seconds while the device
+  stays online, and a reload then lands on the browser's error page, with no
+  dashboard left to retry from. The check asks the server for the URL the
+  reload would fetch, with `cache: "no-store"` and a 5-second timeout, and it
+  fails offline too. A failure the guard would refuse anyway skips the check,
+  so its prompt does not wait for the server. A failed check reloads nothing
+  and records nothing, so the guard stays armed for the next failure once the
+  server answers. axum answers `HEAD` on every `GET` route, `spa.rs` included.
+  A proxy that refused `HEAD` would cost only the automatic reload; the prompt
+  still shows.
+- **A deadline on the pending import.** The user can stop a reload. An import
+  that never settles would then leave the previous page on screen under the
+  new URL, with no prompt. After 10 seconds the import rejects and the banner
+  shows.
+- **A failure during a reload joins it.** Sent to the guard, it would be
+  refused, because the first claim has just written the record: the old
+  document would show a false error, then the reload would land on the page
+  the user had left. It waits with the first failure instead. When the user
+  has opened another page since, the tab reloads again, because
+  `location.reload()` reloads the URL that is current when it is called. These
+  extra reloads stay inside one document and follow a navigation, so they
+  cannot loop.
+- **A reload follows a failure, not every navigation.** While a reload is on
+  its way, the user can open a page the tab already loaded. That page shows
+  until the reload lands, and the reload lands on the page whose code failed,
+  where the user can open the other page again. Following every navigation
+  would couple the recovery to the router, and the gap it would close lasts
+  only as long as one reload.
+- **The Suspense fallback is unchanged.** It is the empty `PageState` inside
+  the shell. DESIGN.md's `Skeleton` rule covers a data page's own loading
+  state while it reads; the code-load wait is not data loading.
