@@ -33,8 +33,9 @@ base64 = "0.23"
 # seeds stay caller-supplied and the signing path deterministic.
 ed25519-dalek = { version = "2", default-features = false, features = ["std", "zeroize"] }
 dotenvy = "0.15"
-# The dashboard: Topcoat pages, server-side rendered, mounted into the same
-# binary as an axum fallback service (spike/topcoat-dashboard).
+# Server-rendered /verify and the public bill page (crates/web). The React
+# dashboard replaced the Topcoat and Leptos console (issue #256); Topcoat
+# stays for this sliver, mounted as an axum fallback.
 topcoat = { version = "0.10", default-features = false, features = ["tower", "cookie", "view"] }
 # The React dashboard's built assets, embedded into the binary and served at
 # /app (issue #234). Keep the `debug-embed` feature off: without it a debug
