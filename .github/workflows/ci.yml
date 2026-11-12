@@ -136,6 +136,7 @@ jobs:
         run: |
           python3 scripts/test-ci-tools.py
           python3 scripts/test-shared-suites.py
+          node --test scripts/issue-labels.test.mjs
       - name: Test candidate evidence validation
         run: |
           python3 scripts/test-candidate-ci.py

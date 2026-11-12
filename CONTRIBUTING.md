@@ -16,6 +16,26 @@ Branch names match `^(feat|fix|docs|refactor|test|chore|build|ci|perf)/[a-z0-9]+
 
 Format Rust with `scripts/fmt.sh`, not bare `cargo fmt`. The check is `scripts/fmt-check.sh`.
 
+## Issue labels
+
+`.github/workflows/label-issues.yml` runs when an issue is opened, edited, or reopened. It only adds labels. A label someone applied by hand stays, even if the title later stops matching.
+
+The title is matched at the start, case-insensitive, with an optional scope such as `feat(web):`.
+
+| Title prefix | Label added |
+| --- | --- |
+| `fix:` or `bug:` | `bug` |
+| `docs:` | `documentation` |
+| `feat:` | `enhancement` |
+| `Security:` | `security` |
+| `test:` or `chore:` | none by themselves |
+
+`test:` and `chore:` have no matching label in this repository, so they are left for a person. `ci:`, `build:`, `refactor:`, and `perf:` are also left alone.
+
+Any title that contains an acceptance id such as `N21`, a reference to `#725`, or the words `operator launch` / `operator-launch` also gets `operator-launch`. That stacks with the prefix label, so `docs: pilots (N19)` receives both `documentation` and `operator-launch`.
+
+Pull requests are not labeled by this workflow.
+
 ## Reports
 
 - Bugs and features use the issue templates.
