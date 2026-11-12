@@ -212,6 +212,16 @@ impl GuardrailCache {
         Self { current: None }
     }
 
+    /// Drops the cached set so the next `get` rebuilds it. The admin write
+    /// paths call this after they change a policy or binding: a guardrail an
+    /// operator writes must hold on the very next turn, not up to
+    /// [`GUARDRAIL_SET_TTL`] later — a blocked pattern that kept answering
+    /// turns for half a minute after it was written is a refusal that never
+    /// happened.
+    pub(crate) async fn invalidate(cache: &RwLock<GuardrailCache>) {
+        cache.write().await.current = None;
+    }
+
     /// The set for this request, rebuilt when the cached one has aged out.
     /// The write lock's re-check means a burst of requests on an expired set
     /// still rebuilds once: a request that waited behind another's rebuild
