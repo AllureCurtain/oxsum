@@ -640,20 +640,21 @@ pub fn settlement_key_for(hold_key: &str) -> String {
     format!("settle:{}", entry_id_for(hold_key).as_uuid().as_simple())
 }
 
-/// The advisory-lock key serializing one key's limit check with its appends.
-///
-/// A stable hash of the tenant id and the key id: every process holding the same key
-/// computes the same lock, and a key of one tenant can never collide with a key of
-/// another. The domain prefix keeps it out of the engine's lock namespace.
 /// The advisory-lock namespace serializing hold admission against a suspension
 /// flip (issue #162): [`Wallet::hold_for_key`] takes it shared and
 /// `Db::set_suspended` takes it exclusive, both keyed by organization id, so a
 /// suspended flag that commits is the flag the next hold reads.
 pub(crate) const ORG_ADMISSION_LOCK: &str = "oxsum/org-admission/v1:";
 
-/// The advisory-lock key `hold_for_key` serializes one key's holds on. Public so
-/// a test can hold the same lock the wallet waits on — issue #486's pool-fairness
-/// check pins a queued hold's connection use by blocking this lock first.
+/// The advisory-lock key serializing one key's limit check with its appends.
+///
+/// A stable hash of the tenant id and the key id: every process holding the same key
+/// computes the same lock, and a key of one tenant can never collide with a key of
+/// another. The domain prefix keeps it out of the engine's lock namespace.
+///
+/// `hold_for_key` serializes one key's holds on it. Public so a test can hold the same
+/// lock the wallet waits on — issue #486's pool-fairness check pins a queued hold's
+/// connection use by blocking this lock first.
 #[must_use]
 pub fn limit_lock_key(tenant_id: &str, key_id: &Uuid) -> i64 {
     let mut hasher = Sha256::new();
