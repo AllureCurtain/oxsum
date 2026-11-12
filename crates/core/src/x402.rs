@@ -437,14 +437,39 @@ impl crate::Db {
 
         // The credit replays under the nonce-derived key: a retried or raced
         // call answers the standing receipt (`is_new: false`), never a second
-        // credit.
-        let receipt = wallet
+        // credit. A *persistent* `top_up` failure here is the rail's dangerous
+        // edge — the chain transfer already committed (`facilitator_tx_hash` is
+        // durable) while the wallet never saw the money. Record why on the
+        // standing `confirmed` row so an operator reconciling
+        // `confirmed + facilitator_tx_hash IS NOT NULL` deposits reads the
+        // cause; the row is exactly what a credit-recovery pass re-selects.
+        let receipt = match wallet
             .top_up(
                 &format!("x402:{}", payment.payment_ref),
                 payment.amount_minor,
                 on,
             )
-            .await?;
+            .await
+        {
+            Ok(receipt) => receipt,
+            Err(error) => {
+                tracing::error!(%error, payment_ref = %payment.payment_ref,
+                    "x402 credit failed after the chain transfer committed");
+                let _ = sqlx::query(
+                    "UPDATE oxsum.deposits \
+                     SET meta = meta || jsonb_build_object('creditError', $1::text), \
+                         updated_at = now() \
+                     WHERE rail = $2 AND organization_id = $3 AND payment_ref = $4",
+                )
+                .bind(error.to_string())
+                .bind(RAIL_X402)
+                .bind(organization_id)
+                .bind(&payment.payment_ref)
+                .execute(self.pool())
+                .await;
+                return Err(error);
+            }
+        };
 
         // Flip the standing row to credited where it is not already — on a
         // replay `deposit_id` is this call's fresh id, so look the row up by
