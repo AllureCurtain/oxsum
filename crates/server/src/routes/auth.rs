@@ -1,5 +1,7 @@
 //! Authentication routes: registration, login, sessions and password reset.
 
+use std::time::Instant;
+
 use axum::Json;
 use axum::extract::{Path, State};
 use axum::http::header::SET_COOKIE;
@@ -7,17 +9,19 @@ use axum::http::{HeaderMap, HeaderValue};
 use axum::response::{IntoResponse, Redirect, Response};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
+use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
 use oxsum_core::{CreatedSession, LoginOutcome, NewUser, Registration};
 
 use crate::AppState;
+use crate::auth::PersonalToken;
 use crate::error::{ApiError, ApiJson, ApiQuery};
 use crate::oauth::PROVIDER;
 use crate::routes::{ApiResult, Data, SessionInfo, clear_session_cookie, ok, session_cookie};
 
 #[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(crate) struct RegisterReq {
     email: String,
     password: String,
@@ -28,7 +32,7 @@ pub(crate) struct RegisterReq {
 }
 
 #[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(crate) struct LoginReq {
     email: String,
     password: String,
@@ -101,6 +105,40 @@ async fn grant_signup_bonus(state: &AppState, registration: &Registration) -> Re
     Ok(())
 }
 
+/// The credential-trying endpoints' rolling-minute allowance. A login costs an
+/// argon2 verification and a reset mail costs a send, so ten tries a minute per
+/// address is generous for a person and thin for a spray. The limiter keys on a
+/// `Uuid`, so the address is folded into one — stable across requests, and an
+/// attacker spreading guesses across addresses does not share one bucket the
+/// way a per-endpoint key would make them.
+const AUTH_ATTEMPTS_PER_MINUTE: u32 = 10;
+
+/// Rate-limits one credential attempt on the key the caller's identity folds
+/// into, recording the try before the password check or mail spend runs. Keyed
+/// by the SHA-256 of the normalized email — or of the presented token, where
+/// the token is the credential — rather than a fixed id: each address gets its
+/// own bucket, so a spray across addresses is throttled per-target and one
+/// address under attack does not lock the others out.
+fn admit_auth_attempt(state: &AppState, principal_key: &str) -> Result<(), ApiError> {
+    // The `auth:` domain keeps these buckets out of the key-id space the
+    // limiter's other callers use — a key's uuid can never collide with a hash.
+    let digest =
+        Sha256::digest(format!("auth:{}\n", principal_key.trim().to_lowercase()).as_bytes());
+    let mut bytes = [0u8; 16];
+    bytes.copy_from_slice(&digest[..16]);
+    let bucket = Uuid::from_bytes(bytes);
+    match state
+        .rate_limiter
+        .admit(bucket, AUTH_ATTEMPTS_PER_MINUTE, Instant::now())
+    {
+        Ok(_) => Ok(()),
+        Err(limited) => Err(ApiError::RateLimited {
+            limit: i64::from(AUTH_ATTEMPTS_PER_MINUTE),
+            retry_after_secs: limited.retry_after.as_secs(),
+        }),
+    }
+}
+
 /// Logs in: verifies the password, then either mints a session in a cookie or —
 /// for a TOTP-enabled account — withholds it behind a second-factor challenge
 /// (issue #504): `requiresTotp` answers the challenge the client completes at
@@ -112,6 +150,7 @@ pub(crate) async fn login(
     State(state): State<AppState>,
     ApiJson(r): ApiJson<LoginReq>,
 ) -> Result<Response, ApiError> {
+    admit_auth_attempt(&state, &r.email)?;
     match state.db.login(&r.email, &r.password).await? {
         LoginOutcome::Session(created) => {
             let created = *created;
@@ -200,9 +239,9 @@ pub(crate) struct TotpEnrollRes {
 /// unconfirmed until `confirm` proves a live code against it.
 pub(crate) async fn totp_enroll(
     State(state): State<AppState>,
-    headers: HeaderMap,
+    axum::Extension(token): axum::Extension<crate::auth::PersonalToken>,
 ) -> ApiResult<TotpEnrollRes> {
-    let token = super::business::personal_token(&headers)?;
+    let PersonalToken(token) = token;
     let user = state.db.session_user(&token).await?;
     let Some(secret) = state.config.secret() else {
         return Err(ApiError::ServiceUnavailable(
@@ -239,10 +278,10 @@ pub(crate) struct TotpBackupRes {
 /// the secret, then mints and answers the backup codes — once, in the clear.
 pub(crate) async fn totp_confirm(
     State(state): State<AppState>,
-    headers: HeaderMap,
+    axum::Extension(token): axum::Extension<crate::auth::PersonalToken>,
     ApiJson(r): ApiJson<TotpCodeReq>,
 ) -> ApiResult<TotpBackupRes> {
-    let token = super::business::personal_token(&headers)?;
+    let PersonalToken(token) = token;
     let user = state.db.session_user(&token).await?;
     let Some(secret) = state.config.secret() else {
         return Err(ApiError::ServiceUnavailable(
@@ -258,10 +297,10 @@ pub(crate) async fn totp_confirm(
 /// Disables the factor on a live code — removing it is itself second-factored.
 pub(crate) async fn totp_disable(
     State(state): State<AppState>,
-    headers: HeaderMap,
+    axum::Extension(token): axum::Extension<crate::auth::PersonalToken>,
     ApiJson(r): ApiJson<TotpCodeReq>,
 ) -> ApiResult<LogoutRes> {
-    let token = super::business::personal_token(&headers)?;
+    let PersonalToken(token) = token;
     let user = state.db.session_user(&token).await?;
     let Some(secret) = state.config.secret() else {
         return Err(ApiError::ServiceUnavailable(
@@ -388,6 +427,7 @@ pub(crate) async fn oauth_start(
 /// What the provider's redirect carries: `code` and `state` on success,
 /// `error` when it refuses (the user declined, the app was mis-registered).
 #[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 pub(crate) struct OAuthCallbackQuery {
     code: Option<String>,
     state: Option<String>,
@@ -502,9 +542,9 @@ pub(crate) struct VerifyRequestRes {
 /// A resend inside the sixty-second cooldown mints and mails nothing (`sent: false`).
 pub(crate) async fn request_verification(
     State(state): State<AppState>,
-    headers: HeaderMap,
+    axum::Extension(token): axum::Extension<crate::auth::PersonalToken>,
 ) -> ApiResult<VerifyRequestRes> {
-    let token = super::business::personal_token(&headers)?;
+    let PersonalToken(token) = token;
     let user = state.db.session_user(&token).await?;
     let Some(mailer) = state.config.mailer() else {
         return Err(ApiError::ServiceUnavailable(
@@ -583,6 +623,10 @@ pub(crate) async fn forgot_password(
     State(state): State<AppState>,
     ApiJson(r): ApiJson<ForgotPasswordReq>,
 ) -> Result<Response, ApiError> {
+    // The mint itself already cools down per `(user, purpose)` for a minute —
+    // the limiter throttles the per-request cost before that lookup, so a
+    // spray across addresses cannot make the endpoint do free work either.
+    admit_auth_attempt(&state, &r.email)?;
     if let Some(mailer) = state.config.mailer()
         && let Some(minted) = state
             .db
@@ -622,6 +666,10 @@ pub(crate) async fn reset_password(
     State(state): State<AppState>,
     ApiJson(r): ApiJson<ResetPasswordReq>,
 ) -> ApiResult<ResetPasswordRes> {
+    // The token is the credential here — rate-limit the consume path on it the
+    // same way the email-named endpoints are limited, so a guessed-token spray
+    // is throttled per candidate rather than unbounded.
+    admit_auth_attempt(&state, &r.token)?;
     let Some(user_id) = state
         .db
         .consume_email_token(&r.token, oxsum_core::EmailPurpose::Reset)
