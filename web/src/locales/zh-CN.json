@@ -43,7 +43,9 @@
     "prevPage": "前往上一页",
     "previous": "上一页",
     "refresh": "刷新",
-    "retry": "重试"
+    "retry": "重试",
+    "reload": "重新加载",
+    "pageLoadFailed": "此页面无法加载，请重新加载重试。"
   },
   "nav": {
     "main": "主要",

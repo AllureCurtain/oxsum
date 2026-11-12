@@ -43,7 +43,9 @@
     "prevPage": "Go to previous page",
     "previous": "Previous",
     "refresh": "Refresh",
-    "retry": "Retry"
+    "retry": "Retry",
+    "reload": "Reload",
+    "pageLoadFailed": "This page could not be loaded. Reload to try again."
   },
   "nav": {
     "main": "Main",

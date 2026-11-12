@@ -1,8 +1,9 @@
-import { Suspense, lazy, type ReactNode } from "react";
+import { lazy, type ComponentType, type ReactNode } from "react";
 import { ApplicationLink } from "./pages/auth/ApplicationLink";
 import { Navigate, Route, Routes } from "react-router-dom";
 import { AppShell } from "./components/AppShell";
-import { PageState } from "./components/ui";
+import { PageBoundary } from "./components/PageBoundary";
+import { withChunkRecovery } from "./lib/chunk-reload";
 import {
   Device,
   ForgotPassword,
@@ -16,89 +17,103 @@ import {
 import { Overview } from "./pages/Overview";
 
 // Code splitting (issue #1092): every page inside the shell except the
-// landing page lazy-loads, so the ~1 MB single chunk becomes an entry plus
-// per-route-group chunks — a reader of one page no longer downloads the
-// whole admin and business consoles. The auth pages stay eager: they are
-// the first paint a logged-out visitor needs.
+// overview and device pages lazy-loads, so the ~1 MB single chunk becomes an
+// entry plus per-route-group chunks — a reader of one page no longer
+// downloads the whole admin and business consoles. The auth pages stay
+// eager: they are the first paint a logged-out visitor needs.
 //
 // One lazy() per route keeps the chunk per page; the import path *is* the
-// chunk the bundler emits. `L` gives each lazy page its own Suspense
-// boundary so one slow chunk never blanks the shell's other routes.
-const Admin = lazy(() =>
+// chunk the bundler emits. `L` wraps each lazy page in `PageBoundary`: a
+// Suspense boundary for the chunk load, and an error boundary that shows a
+// reload prompt in the page slot when the chunk cannot load.
+
+/**
+ * `lazy()` over a page import that recovers when the page's chunk is gone
+ * (`lib/chunk-reload.ts`).
+ */
+function lazyPage<T extends ComponentType>(
+  load: () => Promise<{ default: T }>,
+) {
+  return lazy(withChunkRecovery(load));
+}
+
+const Admin = lazyPage(() =>
   import("./pages/Admin").then((m) => ({ default: m.Admin })),
 );
-const Business = lazy(() =>
+const Business = lazyPage(() =>
   import("./pages/Business").then((m) => ({ default: m.Business })),
 );
-const Billing = lazy(() =>
+const Billing = lazyPage(() =>
   import("./pages/Billing").then((m) => ({ default: m.Billing })),
 );
-const BillingStatement = lazy(() =>
+const BillingStatement = lazyPage(() =>
   import("./pages/Billing").then((m) => ({ default: m.BillingStatement })),
 );
-const Bills = lazy(() =>
+const Bills = lazyPage(() =>
   import("./pages/Bills").then((m) => ({ default: m.Bills })),
 );
-const Chat = lazy(() =>
+const Chat = lazyPage(() =>
   import("./pages/Chat").then((m) => ({ default: m.Chat })),
 );
-const Evidence = lazy(() =>
+const Evidence = lazyPage(() =>
   import("./pages/Evidence").then((m) => ({ default: m.Evidence })),
 );
-const GettingStarted = lazy(() =>
+const GettingStarted = lazyPage(() =>
   import("./pages/GettingStarted").then((m) => ({ default: m.GettingStarted })),
 );
-const Keys = lazy(() =>
+const Keys = lazyPage(() =>
   import("./pages/Keys").then((m) => ({ default: m.Keys })),
 );
-const Log = lazy(() => import("./pages/Log").then((m) => ({ default: m.Log })));
-const Members = lazy(() =>
+const Log = lazyPage(() =>
+  import("./pages/Log").then((m) => ({ default: m.Log })),
+);
+const Members = lazyPage(() =>
   import("./pages/Members").then((m) => ({ default: m.Members })),
 );
-const Orders = lazy(() =>
+const Orders = lazyPage(() =>
   import("./pages/Orders").then((m) => ({ default: m.Orders })),
 );
-const OrderNew = lazy(() =>
+const OrderNew = lazyPage(() =>
   import("./pages/Orders").then((m) => ({ default: m.OrderNew })),
 );
-const OrderDetail = lazy(() =>
+const OrderDetail = lazyPage(() =>
   import("./pages/Orders").then((m) => ({ default: m.OrderDetail })),
 );
-const Plans = lazy(() =>
+const Plans = lazyPage(() =>
   import("./pages/Plans").then((m) => ({ default: m.Plans })),
 );
-const Pricing = lazy(() =>
+const Pricing = lazyPage(() =>
   import("./pages/Pricing").then((m) => ({ default: m.Pricing })),
 );
-const Requests = lazy(() =>
+const Requests = lazyPage(() =>
   import("./pages/Requests").then((m) => ({ default: m.Requests })),
 );
-const Reports = lazy(() =>
+const Reports = lazyPage(() =>
   import("./pages/Reports").then((m) => ({ default: m.Reports })),
 );
-const Settings = lazy(() =>
+const Settings = lazyPage(() =>
   import("./pages/Settings").then((m) => ({ default: m.Settings })),
 );
-const Statements = lazy(() =>
+const Statements = lazyPage(() =>
   import("./pages/Statements").then((m) => ({ default: m.Statements })),
 );
-const StatementDetail = lazy(() =>
+const StatementDetail = lazyPage(() =>
   import("./pages/Statements").then((m) => ({ default: m.StatementDetail })),
 );
-const Topup = lazy(() =>
+const Topup = lazyPage(() =>
   import("./pages/Topup").then((m) => ({ default: m.Topup })),
 );
-const Usage = lazy(() =>
+const Usage = lazyPage(() =>
   import("./pages/Usage").then((m) => ({ default: m.Usage })),
 );
-const Webhooks = lazy(() =>
+const Webhooks = lazyPage(() =>
   import("./pages/Webhooks").then((m) => ({ default: m.Webhooks })),
 );
 
-/// One Suspense boundary around a lazy page: while its chunk loads, the
-/// shell frame stays and the page slot shows the shared empty state.
+/// The boundaries around a lazy page: while its chunk loads, the shell frame
+/// stays and the page slot shows the shared empty state.
 function L(element: ReactNode) {
-  return <Suspense fallback={<PageState />}>{element}</Suspense>;
+  return <PageBoundary>{element}</PageBoundary>;
 }
 
 export function App() {

@@ -343,6 +343,9 @@ jobs:
       - name: Test complete provider configuration inputs
         if: steps.filter.outputs.stages == 'true'
         run: node --experimental-strip-types --test web/tests/provider-draft.test.ts
+      - name: Test lazy-page chunk recovery
+        if: steps.filter.outputs.stages == 'true'
+        run: node --experimental-strip-types --test web/tests/chunk-reload.test.ts
       # schema.d.ts is generated from crates/server/openapi.yaml; a contract
       # edit that forgets `npm run codegen` commits the stale file. Regenerating
       # and diffing the tracked output keeps the two from drifting (the drift
