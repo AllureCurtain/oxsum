@@ -101,7 +101,7 @@ export function BusinessStaffSection() {
                         isPending={revoke.isPending}
                         error={revoke.error}
                         onConfirm={(reason, key) =>
-                          revoke.mutate({ idempotencyKey: key, userId: s.userId, reason })
+                          revoke.mutateAsync({ idempotencyKey: key, userId: s.userId, reason })
                         }
                       />
                     ) : null}
@@ -204,7 +204,7 @@ function StaffInvitations() {
                       isPending={revoke.isPending}
                       error={revoke.error}
                       onConfirm={(reason, key) =>
-                        revoke.mutate({ invitationId: inv.id, idempotencyKey: key, reason })
+                        revoke.mutateAsync({ invitationId: inv.id, idempotencyKey: key, reason })
                       }
                     />
                   ) : null}

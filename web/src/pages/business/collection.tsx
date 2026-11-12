@@ -1,9 +1,11 @@
 import { useRef, useState } from "react";
+import { useTranslation } from "react-i18next";
 import { useBusiness, useCollectionTerms, useSetCollectionTerms, type CollectionTerms } from "../../api/hooks";
 import { ApiError } from "../../api/client";
 import { Banner, Button, Card, Field, PageState, TextInput } from "../../components/ui";
 
 function Editor({ initial }: { initial: CollectionTerms }) {
+  const { t } = useTranslation();
   const query = useCollectionTerms(true);
   const save = useSetCollectionTerms();
   const [revision, setRevision] = useState(initial.revision);
@@ -26,43 +28,44 @@ function Editor({ initial }: { initial: CollectionTerms }) {
       if (intent.current?.payload !== payload) intent.current = { payload, key: crypto.randomUUID() };
       save.mutate({ ...body, idempotencyKey: intent.current.key }, { onSuccess: (result) => load(result.terms) });
     }}>
-      <p>These settings determine the credits purchased by a payment. Customer display preferences only change presentation.</p>
-      <Field label="Collection currency" hint="Three uppercase letters. Existing payment history pins the currency.">
+      <p>{t("biz.collection.intro")}</p>
+      <Field label={t("biz.collection.currency")} hint={t("biz.collection.currencyHint")}>
         <TextInput value={code} onChange={(e) => setCode(e.target.value.toUpperCase())} maxLength={3} required />
       </Field>
-      <Field label="Currency amount per credit" hint="Exact decimal amount for 1 credit; provider amounts currently use two decimal minor digits.">
+      <Field label={t("biz.collection.rate")} hint={t("biz.collection.rateHint")}>
         <TextInput inputMode="decimal" value={rate} onChange={(e) => setRate(e.target.value)} maxLength={30} required />
       </Field>
-      <Field label="Reason"><TextInput value={reason} onChange={(e) => setReason(e.target.value)} maxLength={500} required /></Field>
-      <p className="font-mono text-sm">1 credit = {rate || "—"} {code || "—"} · revision {revision}</p>
-      <p className="text-sm">A saved rate applies to new payment intents. Existing orders retain their agreed conversion. Saving does not contact a payment provider.</p>
-      {query.data && query.data.revision !== revision ? <Banner tone="warn">Settings changed while this draft was open. Your draft is retained; load the current settings before revising it.</Banner> : null}
+      <Field label={t("biz.reason")}><TextInput value={reason} onChange={(e) => setReason(e.target.value)} maxLength={500} required /></Field>
+      <p className="font-mono text-sm">{t("biz.collection.preview", { rate: rate || "—", code: code || "—", revision })}</p>
+      <p className="text-sm">{t("biz.collection.note")}</p>
+      {query.data && query.data.revision !== revision ? <Banner tone="warn">{t("biz.collection.staleWarn")}</Banner> : null}
       {save.error instanceof ApiError ? <Banner tone="error">{save.error.message}</Banner> : null}
-      {save.isSuccess ? <Banner tone="success">Collection settings saved.</Banner> : null}
+      {save.isSuccess ? <Banner tone="success">{t("biz.collection.saved")}</Banner> : null}
       <div className="flex flex-wrap gap-3">
-        <Button type="submit" isLoading={save.isPending} disabled={!reason.trim()}>Save collection settings</Button>
+        <Button type="submit" isLoading={save.isPending} disabled={!reason.trim()}>{t("biz.collection.save")}</Button>
         <Button type="button" tone="ghost" disabled={save.isPending || query.isFetching} onClick={async () => {
           const result = await query.refetch();
           if (result.data) { load(result.data); save.reset(); }
-        }}>Load current settings</Button>
+        }}>{t("biz.collection.loadCurrent")}</Button>
       </div>
     </form>
   );
 }
 
 export function BusinessCollection() {
+  const { t } = useTranslation();
   const query = useCollectionTerms(true);
   const principal = useBusiness();
-  if (query.isLoading) return <PageState>Loading collection settings…</PageState>;
-  if (query.isError || !query.data) return <Banner tone="error">Collection settings could not be loaded.</Banner>;
+  if (query.isLoading) return <PageState>{t("biz.collection.loading")}</PageState>;
+  if (query.isError || !query.data) return <Banner tone="error">{t("biz.collection.loadError")}</Banner>;
   const terms = query.data;
-  return <Card title="Collection settings">
+  return <Card title={t("biz.collection.title")}>
     <div className="flex flex-col gap-4">
       <Banner tone={terms.ready ? "info" : "warn"}>
-        {terms.ready ? `1 credit = ${terms.currency?.ratePerCredit} ${terms.currency?.code}. Source: ${terms.source}.` : "Collection is unavailable until the owner adopts terms compatible with payment history."}
+        {terms.ready ? t("biz.collection.ready", { rate: terms.currency?.ratePerCredit, code: terms.currency?.code, source: terms.source }) : t("biz.collection.unavailable")}
       </Banner>
-      <p className="text-sm">Retained payment currencies: {terms.historicalCurrencies.join(", ") || "none"}. Payment provider readiness is checked separately.</p>
-      {principal.data?.capabilities.includes("collectionWrite") ? <Editor initial={terms} /> : <p>Only the business owner can change collection settings.</p>}
+      <p className="text-sm">{t("biz.collection.historical", { list: terms.historicalCurrencies.join(", ") || t("biz.collection.noCurrencies") })}</p>
+      {principal.data?.capabilities.includes("collectionWrite") ? <Editor initial={terms} /> : <p>{t("biz.collection.ownerOnly")}</p>}
     </div>
   </Card>;
 }

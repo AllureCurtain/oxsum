@@ -81,7 +81,7 @@ function StatementRows() {
                         isPending={release.isPending}
                         error={release.error}
                         onConfirm={(reason, key) =>
-                          release.mutate({ statementId: s.statementId, idempotencyKey: key, action: "extendGrace", reason })
+                          release.mutateAsync({ statementId: s.statementId, idempotencyKey: key, action: "extendGrace", reason })
                         }
                       />
                     ) : null}
@@ -96,7 +96,7 @@ function StatementRows() {
                         isPending={release.isPending}
                         error={release.error}
                         onConfirm={(reason, key) =>
-                          release.mutate({ statementId: s.statementId, idempotencyKey: key, action: "void", reason })
+                          release.mutateAsync({ statementId: s.statementId, idempotencyKey: key, action: "void", reason })
                         }
                       />
                     ) : null}

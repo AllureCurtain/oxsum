@@ -118,16 +118,24 @@ export function AuditAction({
   reasonRequired?: boolean;
   isPending: boolean;
   error: unknown;
-  /** Called with the collected reason + a fresh idempotency key. */
-  onConfirm: (reason: string, idempotencyKey: string) => void;
+  /** Called with the collected reason + the idempotency key for this open. The
+   * dialog closes only when the returned promise resolves — wire a mutation's
+   * `mutateAsync` (or an equivalent promise) through so a failed write keeps
+   * the typed reason and shows the API error instead of closing blind. */
+  onConfirm: (reason: string, idempotencyKey: string) => Promise<unknown>;
 }) {
   const { t } = useTranslation();
   const [open, setOpen] = useState(false);
   const [reason, setReason] = useState("");
-  const [idemKey] = useState(() => crypto.randomUUID());
+  // Minted per dialog open — a retry of the same attempt replays it, while a
+  // reopened dialog is a new intent and gets a fresh key.
+  const [idemKey, setIdemKey] = useState(() => crypto.randomUUID());
   const close = (v: boolean) => {
     setOpen(v);
-    if (!v) setReason("");
+    if (!v) {
+      setReason("");
+      setIdemKey(crypto.randomUUID());
+    }
   };
   const err = error instanceof ApiError ? error : null;
   return (
@@ -156,10 +164,12 @@ export function AuditAction({
             isLoading={isPending}
             disabled={reasonRequired && reason.trim() === ""}
             onClick={() => {
-              onConfirm(reason.trim(), idemKey);
-              // The caller closes via `open` state on success — leave open on
-              // error so the reason isn't lost. Close when the mutation lands.
-              if (!err) setOpen(false);
+              void onConfirm(reason.trim(), idemKey).then(
+                () => close(false),
+                // A rejected write stays open: the reason is kept and the
+                // mutation's error renders in the Banner above.
+                () => {},
+              );
             }}
           >
             {confirmLabel}
