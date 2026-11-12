@@ -11,7 +11,6 @@ use crate::AppState;
 use crate::error::{ApiError, ApiJson};
 use axum::Extension;
 use axum::extract::{Path, State};
-use axum::http::HeaderMap;
 use oxsum_core::{
     BusinessCapability, CustomerPlan, NewSoldPlan, PeriodAuthorization, PeriodKind, PlanPeriod,
     Principal, SoldPlan,
@@ -131,14 +130,11 @@ pub(crate) struct PublishPlanReq {
 /// included — the staff list.
 pub(crate) async fn staff_plans(
     State(state): State<AppState>,
-    headers: HeaderMap,
+    axum::Extension(token): axum::Extension<crate::auth::PersonalToken>,
 ) -> ApiResult<Vec<SoldPlan>> {
     let principal = state
         .db
-        .business_capability(
-            &super::business::personal_token(&headers)?,
-            BusinessCapability::CatalogWrite,
-        )
+        .business_capability(&token, BusinessCapability::CatalogWrite)
         .await?;
     ok(state.db.sold_plans(principal.business_id).await?)
 }
@@ -147,15 +143,12 @@ pub(crate) async fn staff_plans(
 /// version of one the `planId` names.
 pub(crate) async fn publish_plan(
     State(state): State<AppState>,
-    headers: HeaderMap,
+    axum::Extension(token): axum::Extension<crate::auth::PersonalToken>,
     ApiJson(r): ApiJson<PublishPlanReq>,
 ) -> ApiResult<SoldPlan> {
     let principal = state
         .db
-        .business_capability(
-            &super::business::personal_token(&headers)?,
-            BusinessCapability::CatalogWrite,
-        )
+        .business_capability(&token, BusinessCapability::CatalogWrite)
         .await?;
     let new = NewSoldPlan {
         plan_id: r.plan_id,
@@ -176,15 +169,12 @@ pub(crate) async fn publish_plan(
 /// `POST /api/v1/business/plans/{id}/retire`: stop selling a version.
 pub(crate) async fn retire_plan(
     State(state): State<AppState>,
-    headers: HeaderMap,
+    axum::Extension(token): axum::Extension<crate::auth::PersonalToken>,
     Path(plan_version_id): Path<Uuid>,
 ) -> ApiResult<serde_json::Value> {
     let _principal = state
         .db
-        .business_capability(
-            &super::business::personal_token(&headers)?,
-            BusinessCapability::CatalogWrite,
-        )
+        .business_capability(&token, BusinessCapability::CatalogWrite)
         .await?;
     let retired = state.db.retire_sold_plan(plan_version_id).await?;
     if !retired {
@@ -197,15 +187,12 @@ pub(crate) async fn retire_plan(
 /// its authorized periods — the staff's entitlement read.
 pub(crate) async fn customer_plan(
     State(state): State<AppState>,
-    headers: HeaderMap,
+    axum::Extension(token): axum::Extension<crate::auth::PersonalToken>,
     Path(organization_id): Path<Uuid>,
 ) -> ApiResult<serde_json::Value> {
     let _principal = state
         .db
-        .business_capability(
-            &super::business::personal_token(&headers)?,
-            BusinessCapability::CustomersRead,
-        )
+        .business_capability(&token, BusinessCapability::CustomersRead)
         .await?;
     let plan = state.db.customer_plan(organization_id).await?;
     let periods: Vec<PlanPeriod> = match &plan {
@@ -231,16 +218,13 @@ pub(crate) struct BindPlanReq {
 /// for a free one.
 pub(crate) async fn bind_customer_plan(
     State(state): State<AppState>,
-    headers: HeaderMap,
+    axum::Extension(token): axum::Extension<crate::auth::PersonalToken>,
     Path(organization_id): Path<Uuid>,
     ApiJson(r): ApiJson<BindPlanReq>,
 ) -> ApiResult<CustomerPlan> {
     let _principal = state
         .db
-        .business_capability(
-            &super::business::personal_token(&headers)?,
-            BusinessCapability::CustomersWrite,
-        )
+        .business_capability(&token, BusinessCapability::CustomersWrite)
         .await?;
     let auth = match r.complimentary_grant {
         Some(grant) => PeriodAuthorization::Complimentary(grant),
@@ -256,15 +240,12 @@ pub(crate) async fn bind_customer_plan(
 /// boundary-cancel — same semantics as the customer's own cancel.
 pub(crate) async fn cancel_customer_plan(
     State(state): State<AppState>,
-    headers: HeaderMap,
+    axum::Extension(token): axum::Extension<crate::auth::PersonalToken>,
     Path(organization_id): Path<Uuid>,
 ) -> ApiResult<CustomerPlan> {
     let _principal = state
         .db
-        .business_capability(
-            &super::business::personal_token(&headers)?,
-            BusinessCapability::CustomersWrite,
-        )
+        .business_capability(&token, BusinessCapability::CustomersWrite)
         .await?;
     ok(state.db.cancel_customer_plan(organization_id).await?)
 }

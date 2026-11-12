@@ -15,6 +15,7 @@ use oxsum_core::{
 };
 
 #[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 pub(crate) struct PageQuery {
     after: Option<Uuid>,
     limit: Option<i64>,
@@ -22,27 +23,23 @@ pub(crate) struct PageQuery {
 
 pub(crate) async fn list(
     State(state): State<AppState>,
-    headers: HeaderMap,
+    axum::Extension(token): axum::Extension<crate::auth::PersonalToken>,
     ApiQuery(query): ApiQuery<PageQuery>,
 ) -> ApiResult<IntegrationApplicationPage> {
     ok(state
         .db
-        .integration_applications(
-            &business::personal_token(&headers)?,
-            query.after,
-            query.limit.unwrap_or(50),
-        )
+        .integration_applications(&token, query.after, query.limit.unwrap_or(50))
         .await?)
 }
 
 pub(crate) async fn create(
     State(state): State<AppState>,
-    headers: HeaderMap,
+    axum::Extension(token): axum::Extension<crate::auth::PersonalToken>,
     ApiJson(request): ApiJson<IntegrationApplicationRequest>,
 ) -> ApiResult<IntegrationApplication> {
     ok(state
         .db
-        .create_integration_application(&business::personal_token(&headers)?, &request)
+        .create_integration_application(&token, &request)
         .await?)
 }
 
@@ -199,22 +196,22 @@ pub(crate) async fn revoke_link(
 }
 pub(crate) async fn preview_link(
     State(state): State<AppState>,
-    headers: HeaderMap,
+    axum::Extension(token): axum::Extension<crate::auth::PersonalToken>,
     ApiJson(request): ApiJson<LinkToken>,
 ) -> ApiResult<oxsum_core::ApplicationLinkInvitation> {
     ok(state
         .db
-        .preview_application_link(&business::personal_token(&headers)?, &request.token)
+        .preview_application_link(&token, &request.token)
         .await?)
 }
 pub(crate) async fn accept_link(
     State(state): State<AppState>,
-    headers: HeaderMap,
+    axum::Extension(token): axum::Extension<crate::auth::PersonalToken>,
     ApiJson(request): ApiJson<LinkToken>,
 ) -> ApiResult<oxsum_core::ApplicationLinkInvitation> {
     ok(state
         .db
-        .accept_application_link(&business::personal_token(&headers)?, &request.token)
+        .accept_application_link(&token, &request.token)
         .await?)
 }
 

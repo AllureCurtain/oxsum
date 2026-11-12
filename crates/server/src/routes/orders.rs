@@ -9,6 +9,7 @@
 //! webhook; this surface can never mark an order paid.
 use super::{ApiResult, ok};
 use crate::AppState;
+use crate::auth::PersonalToken;
 use crate::error::{ApiError, ApiJson, ApiQuery};
 use axum::Extension;
 use axum::extract::{Path, State};
@@ -238,7 +239,7 @@ pub(crate) fn purpose_description(purpose: PaymentOrderPurpose) -> &'static str 
 }
 
 #[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(crate) struct Page {
     after: Option<Uuid>,
     limit: Option<i64>,
@@ -378,10 +379,10 @@ pub(crate) async fn checkout_session(
 /// `ReportsRead` read, so a personal session, never a machine credential.
 pub(crate) async fn business_orders(
     State(state): State<AppState>,
-    headers: axum::http::HeaderMap,
+    axum::Extension(token): axum::Extension<crate::auth::PersonalToken>,
     ApiQuery(page): ApiQuery<BusinessOrdersPage>,
 ) -> ApiResult<PaymentOrderPage> {
-    let token = super::business::personal_token(&headers)?;
+    let PersonalToken(token) = token;
     // `ReportsRead` gates the whole-business listing — the same capability the
     // reconciliation report already requires.
     state
@@ -401,7 +402,7 @@ pub(crate) async fn business_orders(
 }
 
 #[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(crate) struct BusinessOrdersPage {
     organization_id: Option<Uuid>,
     purpose: Option<PaymentOrderPurpose>,
@@ -442,10 +443,10 @@ pub(crate) struct ManualOrderRes {
 
 pub(crate) async fn create_manual_order(
     State(state): State<AppState>,
-    headers: axum::http::HeaderMap,
+    axum::Extension(token): axum::Extension<crate::auth::PersonalToken>,
     ApiJson(r): ApiJson<ManualOrderReq>,
 ) -> ApiResult<ManualOrderRes> {
-    let token = super::business::personal_token(&headers)?;
+    let PersonalToken(token) = token;
     if r.purpose
         .is_some_and(|p| p != PaymentOrderPurpose::WalletTopup)
     {
@@ -495,20 +496,17 @@ pub(crate) async fn create_manual_order(
 /// `ReportsRead` action, so it takes the personal token, not a customer key.
 pub(crate) async fn reconciliation(
     State(state): State<AppState>,
-    headers: axum::http::HeaderMap,
+    axum::Extension(token): axum::Extension<crate::auth::PersonalToken>,
 ) -> ApiResult<PaymentReconciliation> {
-    ok(state
-        .db
-        .payment_reconciliation(&super::business::personal_token(&headers)?)
-        .await?)
+    ok(state.db.payment_reconciliation(&token).await?)
 }
 
 /// Retained original allocation and return evidence for personal finance readers.
 pub(crate) async fn statement_payment_evidence(
     State(state): State<AppState>,
-    headers: axum::http::HeaderMap,
+    axum::Extension(token): axum::Extension<crate::auth::PersonalToken>,
     Path(order): Path<Uuid>,
 ) -> ApiResult<Vec<oxsum_core::StatementCashEffect>> {
-    let token = super::business::personal_token(&headers)?;
+    let PersonalToken(token) = token;
     ok(state.db.statement_payment_evidence(&token, order).await?)
 }

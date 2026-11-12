@@ -11,7 +11,7 @@ use crate::error::{ApiError, ApiJson};
 use crate::routes::{ApiResult, ok};
 
 #[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(crate) struct CreateWebhookReq {
     url: String,
     events: Vec<String>,

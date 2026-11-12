@@ -11,13 +11,12 @@ use crate::AppState;
 use crate::error::{ApiError, ApiJson, ApiQuery};
 use axum::Extension;
 use axum::extract::{Path, State};
-use axum::http::HeaderMap;
 use oxsum_core::{PlanStatementDetail, PlanStatementPage, Principal};
 use serde::Deserialize;
 use uuid::Uuid;
 
 #[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(crate) struct Page {
     after: Option<Uuid>,
     limit: Option<i64>,
@@ -56,7 +55,7 @@ pub(crate) async fn my_statement(
 }
 
 #[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(crate) struct BusinessStatementPage {
     /// Narrow to one lifecycle state — `pastDue` is the dunning work list.
     state: Option<String>,
@@ -70,13 +69,13 @@ pub(crate) struct BusinessStatementPage {
 /// list — `ReportsRead`, a personal session, never a machine credential.
 pub(crate) async fn business_statements(
     State(state): State<AppState>,
-    headers: HeaderMap,
+    axum::Extension(token): axum::Extension<crate::auth::PersonalToken>,
     ApiQuery(page): ApiQuery<BusinessStatementPage>,
 ) -> ApiResult<PlanStatementPage> {
     ok(state
         .db
         .business_plan_statements(
-            &super::business::personal_token(&headers)?,
+            &token,
             page.state.as_deref(),
             page.organization_id,
             page.after,
@@ -88,12 +87,12 @@ pub(crate) async fn business_statements(
 /// `GET /api/v1/business/statements/{id}`: one statement plus its lines.
 pub(crate) async fn business_statement(
     State(state): State<AppState>,
-    headers: HeaderMap,
+    axum::Extension(token): axum::Extension<crate::auth::PersonalToken>,
     Path(statement_id): Path<Uuid>,
 ) -> ApiResult<PlanStatementDetail> {
     let statement = state
         .db
-        .business_plan_statement(&super::business::personal_token(&headers)?, statement_id)
+        .business_plan_statement(&token, statement_id)
         .await?
         .ok_or_else(ApiError::not_found)?;
     ok(statement)
@@ -115,14 +114,14 @@ pub(crate) struct ReleaseReviewBody {
 
 pub(crate) async fn release_review(
     State(state): State<AppState>,
-    headers: HeaderMap,
+    axum::Extension(token): axum::Extension<crate::auth::PersonalToken>,
     Path(statement_id): Path<Uuid>,
     ApiJson(r): ApiJson<ReleaseReviewBody>,
 ) -> ApiResult<PlanStatementDetail> {
     ok(state
         .db
         .release_statement_review(
-            &super::business::personal_token(&headers)?,
+            &token,
             statement_id,
             &r.action,
             &r.reason,

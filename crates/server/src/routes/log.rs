@@ -254,7 +254,7 @@ pub(crate) async fn log_head(
 }
 
 #[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(crate) struct ConsistencyQuery {
     from: u64,
 }
@@ -301,7 +301,7 @@ impl From<oxsum_core::SignedPriceHead> for SignedPriceHeadRes {
 }
 
 #[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(crate) struct PriceHeadQuery {
     channel: String,
     model: String,
@@ -385,7 +385,7 @@ impl From<oxsum_core::SignedSaleHead> for SignedSaleHeadRes {
 }
 
 #[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(crate) struct SaleHeadQuery {
     /// The snapshot digest a settlement committed; when present it selects the
     /// snapshot directly and the other parameters are ignored.
@@ -446,7 +446,7 @@ pub(crate) async fn log_key(State(state): State<AppState>) -> ApiResult<Verifyin
 /// The entries query: `before` pages the log backwards; `limit` bounds the
 /// page (1–100, default 100) — the same bounds `Wallet::entries_page` clamps.
 #[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(crate) struct EntriesQuery {
     before: Option<u64>,
     limit: Option<i64>,

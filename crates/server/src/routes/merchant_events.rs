@@ -11,24 +11,20 @@ use oxsum_integrations::merchant_events;
 use serde::Deserialize;
 use uuid::Uuid;
 #[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 pub(crate) struct Page {
     after: Option<Uuid>,
     limit: Option<i64>,
 }
 pub(crate) async fn events(
     State(state): State<AppState>,
-    headers: HeaderMap,
+    axum::Extension(token): axum::Extension<crate::auth::PersonalToken>,
     Path(merchant): Path<Uuid>,
     ApiQuery(page): ApiQuery<Page>,
 ) -> ApiResult<MerchantEventPage> {
     ok(state
         .db
-        .business_merchant_events(
-            &super::business::personal_token(&headers)?,
-            merchant,
-            page.after,
-            page.limit.unwrap_or(50),
-        )
+        .business_merchant_events(&token, merchant, page.after, page.limit.unwrap_or(50))
         .await?)
 }
 fn signed(context: &MerchantSigningContext, headers: &HeaderMap, body: &[u8]) -> bool {

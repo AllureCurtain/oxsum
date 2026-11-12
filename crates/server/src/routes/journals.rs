@@ -7,10 +7,10 @@
 
 use super::{ApiResult, ok};
 use crate::AppState;
+use crate::auth::PersonalToken;
 use crate::error::{ApiError, ApiJson, ApiQuery};
 use axum::Extension;
 use axum::extract::{Path, State};
-use axum::http::HeaderMap;
 use oxsum_core::{
     InvoiceCorrectionPreview, InvoiceCorrectionPreviewRequest, InvoiceCorrectionRequest,
     InvoiceCorrectionResult, InvoiceJournalDetail, InvoiceJournalPage, Principal,
@@ -19,7 +19,7 @@ use serde::Deserialize;
 use uuid::Uuid;
 
 #[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(crate) struct Page {
     after: Option<Uuid>,
     limit: Option<i64>,
@@ -58,7 +58,7 @@ pub(crate) async fn my_journal(
 }
 
 #[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(crate) struct BusinessJournalPage {
     /// Narrow to one lifecycle state — `posted` is the dunning work list.
     state: Option<String>,
@@ -74,13 +74,13 @@ pub(crate) struct BusinessJournalPage {
 /// list — `ReportsRead`, a personal session, never a machine credential.
 pub(crate) async fn business_journals(
     State(state): State<AppState>,
-    headers: HeaderMap,
+    axum::Extension(token): axum::Extension<crate::auth::PersonalToken>,
     ApiQuery(page): ApiQuery<BusinessJournalPage>,
 ) -> ApiResult<InvoiceJournalPage> {
     ok(state
         .db
         .business_journals(
-            &super::business::personal_token(&headers)?,
+            &token,
             page.state.as_deref(),
             page.customer_plan_id,
             page.period_index,
@@ -93,12 +93,12 @@ pub(crate) async fn business_journals(
 /// `GET /api/v1/business/journals/{id}`: one journal plus its lines.
 pub(crate) async fn business_journal(
     State(state): State<AppState>,
-    headers: HeaderMap,
+    axum::Extension(token): axum::Extension<crate::auth::PersonalToken>,
     Path(journal_id): Path<Uuid>,
 ) -> ApiResult<InvoiceJournalDetail> {
     let journal = state
         .db
-        .business_journal(&super::business::personal_token(&headers)?, journal_id)
+        .business_journal(&token, journal_id)
         .await?
         .ok_or_else(ApiError::not_found)?;
     ok(journal)
@@ -107,34 +107,26 @@ pub(crate) async fn business_journal(
 /// Preview exact correction consequences without issuing or paying a document.
 pub(crate) async fn correction_preview(
     State(state): State<AppState>,
-    headers: HeaderMap,
+    axum::Extension(token): axum::Extension<crate::auth::PersonalToken>,
     Path(journal_id): Path<Uuid>,
     ApiJson(request): ApiJson<InvoiceCorrectionPreviewRequest>,
 ) -> ApiResult<InvoiceCorrectionPreview> {
     ok(state
         .db
-        .preview_invoice_correction(
-            &super::business::personal_token(&headers)?,
-            journal_id,
-            &request,
-        )
+        .preview_invoice_correction(&token, journal_id, &request)
         .await?)
 }
 
 /// Atomically commit one source-bound correction, retaining its exact replay result.
 pub(crate) async fn correct_invoice(
     State(state): State<AppState>,
-    headers: HeaderMap,
+    axum::Extension(token): axum::Extension<crate::auth::PersonalToken>,
     Path(journal_id): Path<Uuid>,
     ApiJson(request): ApiJson<InvoiceCorrectionRequest>,
 ) -> ApiResult<InvoiceCorrectionResult> {
     ok(state
         .db
-        .correct_invoice(
-            &super::business::personal_token(&headers)?,
-            journal_id,
-            &request,
-        )
+        .correct_invoice(&token, journal_id, &request)
         .await?)
 }
 
@@ -150,11 +142,11 @@ pub(crate) struct VoidJournalBody {
 
 pub(crate) async fn void_journal(
     State(state): State<AppState>,
-    headers: HeaderMap,
+    axum::Extension(token): axum::Extension<crate::auth::PersonalToken>,
     Path(journal_id): Path<Uuid>,
     ApiJson(r): ApiJson<VoidJournalBody>,
 ) -> ApiResult<InvoiceJournalDetail> {
-    let token = super::business::personal_token(&headers)?;
+    let PersonalToken(token) = token;
     // The reversal posts to the journal organization's ledger; resolve the
     // wallet from the journal's own row before the staff check runs — the
     // same order the dispute resolve uses.

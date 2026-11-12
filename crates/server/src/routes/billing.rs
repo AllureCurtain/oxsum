@@ -70,11 +70,12 @@ pub(crate) async fn list_holds(
         .db
         .open_holds_for_tenant(&principal.organization().tenant_id)
         .await?;
-    let keys = state
-        .db
-        .list_keys(principal.organization().id, principal.key_scope())
-        .await?;
     let scope = state.db.customer_record_scope(&principal).await?;
+    // Decorate only the keys the holds actually name — not the organization's
+    // whole key list, which an organization with many keys would pay for on
+    // every dashboard read.
+    let key_ids: Vec<Uuid> = holds.iter().filter_map(|hold| hold.key_id).collect();
+    let prefixes = state.db.key_prefixes(&key_ids).await?;
     ok(HoldsRes {
         holds: holds
             .into_iter()
@@ -83,11 +84,7 @@ pub(crate) async fn list_holds(
                 request_id: hold.request_id,
                 model: hold.model,
                 freeze_minor: hold.freeze_minor,
-                key_prefix: hold.key_id.and_then(|id| {
-                    keys.iter()
-                        .find(|key| key.id == id)
-                        .map(|key| key.prefix.clone())
-                }),
+                key_prefix: hold.key_id.and_then(|id| prefixes.get(&id).cloned()),
             })
             .collect(),
     })
@@ -118,7 +115,7 @@ pub(crate) struct BillsRes {
 
 /// The transactions query: `before` pages the log backwards.
 #[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(crate) struct BillsQuery {
     before: Option<u64>,
 }
@@ -175,7 +172,7 @@ pub(crate) async fn top_up() -> ApiResult<oxsum_core::Receipt> {
 /// either way. The deposit's `payment_ref` anchors on the signed `nonce`, so
 /// a replayed authorization credits once.
 #[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(crate) struct X402TopupReq {
     payment: String,
     amount_minor: Option<i64>,
@@ -252,7 +249,7 @@ pub(crate) async fn subscription_checkout(
 /// The body of `POST /api/v1/topups/stripe`: the amount to charge and the
 /// idempotency key that anchors the deposit.
 #[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(crate) struct StripeTopupReq {
     idempotency_key: String,
     amount_minor: i64,
@@ -316,7 +313,7 @@ pub(crate) async fn stripe_webhook(
 /// The body of `POST /api/v1/topups/airwallex`: the amount to charge and the
 /// idempotency key that anchors the deposit.
 #[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(crate) struct AirwallexTopupReq {
     idempotency_key: String,
     amount_minor: i64,
@@ -381,7 +378,7 @@ pub(crate) async fn airwallex_webhook(
 /// The body of `POST /api/v1/topups/hyperswitch`: the amount and the
 /// idempotency key that anchors the deposit.
 #[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(crate) struct HyperswitchTopupReq {
     idempotency_key: String,
     amount_minor: i64,
@@ -759,41 +756,83 @@ pub(crate) async fn stripe_legacy_webhook(
     if !stripe.verify_signature(signature, &body) {
         return Err(ApiError::Unauthorized);
     }
+    // The event is typed as far as this endpoint reads it; every other shape is
+    // acknowledged without action so Stripe's retry storm ends on a 200 rather
+    // than looping on a 400.
     #[derive(Deserialize)]
     struct Event {
         #[serde(rename = "type")]
         kind: String,
-        data: EventData,
+        data: Option<EventData>,
     }
     #[derive(Deserialize)]
     struct EventData {
-        object: serde_json::Value,
+        object: Option<EventObject>,
+    }
+    /// The resource `data.object` carries: a session for the checkout events, a
+    /// subscription for `customer.subscription.deleted`, an invoice for
+    /// `invoice.paid`. The fields any variant may name are all optional — a
+    //  shape the event does not answer is the 200-and-skip case, not a 400.
+    #[derive(Deserialize)]
+    struct EventObject {
+        id: Option<String>,
+        amount_total: Option<i64>,
+        subscription: Option<String>,
+        client_reference_id: Option<String>,
+        metadata: Option<EventMetadata>,
+        lines: Option<EventLines>,
+    }
+    #[derive(Deserialize)]
+    struct EventMetadata {
+        oxsum_plan_id: Option<String>,
+    }
+    #[derive(Deserialize)]
+    struct EventLines {
+        data: Option<Vec<EventLine>>,
+    }
+    #[derive(Deserialize)]
+    struct EventLine {
+        period: Option<EventPeriod>,
+    }
+    #[derive(Deserialize)]
+    struct EventPeriod {
+        end: Option<i64>,
     }
     let event: Event = serde_json::from_slice(&body)
         .map_err(|e| ApiError::Validation(format!("unreadable event: {e}")))?;
+    let Some(object) = event.data.and_then(|data| data.object) else {
+        // No actionable object — an event this endpoint does not read is
+        // acknowledged, not retried forever.
+        return Ok(StatusCode::OK);
+    };
     match event.kind.as_str() {
         "checkout.session.completed" => {
-            let session_id = event.data.object["id"]
-                .as_str()
-                .ok_or_else(|| ApiError::Validation("no session id".into()))?;
-            let amount = event.data.object["amount_total"].as_i64();
+            let Some(session_id) = object.id.as_deref() else {
+                return Ok(StatusCode::OK);
+            };
+            let amount = object.amount_total;
             // A subscription-mode session's object carries `subscription` — a
             // top-up's does not, so the field decides which flow opened it.
-            if let Some(subscription_id) = event.data.object["subscription"].as_str()
-                && !subscription_id.is_empty()
+            if let Some(subscription_id) =
+                object.subscription.as_deref().filter(|id| !id.is_empty())
             {
                 // The subscription's opening: bind the organization the
                 // session named to the plan the session's line item priced.
                 // `metadata` is what the org user cannot fake — the session
                 // is Stripe's own record of what was sold.
-                let org = event.data.object["client_reference_id"]
-                    .as_str()
-                    .and_then(|id| uuid::Uuid::parse_str(id).ok())
-                    .ok_or_else(|| ApiError::Validation("no client reference".into()))?;
-                let price_id = event.data.object["metadata"]["oxsum_plan_id"]
-                    .as_str()
-                    .and_then(|id| uuid::Uuid::parse_str(id).ok())
-                    .ok_or_else(|| ApiError::Validation("no plan id".into()))?;
+                let (Some(org), Some(price_id)) = (
+                    object
+                        .client_reference_id
+                        .as_deref()
+                        .and_then(|id| uuid::Uuid::parse_str(id).ok()),
+                    object
+                        .metadata
+                        .as_ref()
+                        .and_then(|m| m.oxsum_plan_id.as_deref())
+                        .and_then(|id| uuid::Uuid::parse_str(id).ok()),
+                ) else {
+                    return Ok(StatusCode::OK);
+                };
                 state
                     .db
                     .bind_subscription(org, price_id, "stripe", Some(subscription_id))
@@ -824,25 +863,32 @@ pub(crate) async fn stripe_legacy_webhook(
             }
         }
         "checkout.session.expired" => {
-            let session_id = event.data.object["id"]
-                .as_str()
-                .ok_or_else(|| ApiError::Validation("no session id".into()))?;
-            if let Some((deposit_id, _, _)) = state.db.find_stripe_by_session(session_id).await? {
+            if let Some(session_id) = object.id.as_deref()
+                && let Some((deposit_id, _, _)) =
+                    state.db.find_stripe_by_session(session_id).await?
+            {
                 state.db.expire_stripe_deposit(deposit_id).await?;
             }
         }
         // A subscription renewal: the invoice Stripe settled rolls the
         // subscription's period forward to the boundary the invoice opened.
         "invoice.paid" => {
-            let subscription_id = event.data.object["subscription"]
-                .as_str()
-                .ok_or_else(|| ApiError::Validation("no subscription id".into()))?;
-            let period_end = event.data.object["lines"]["data"][0]["period"]["end"]
-                .as_i64()
-                .map(time::OffsetDateTime::from_unix_timestamp)
-                .transpose()
-                .map_err(|_| ApiError::Validation("bad period end".into()))?
-                .ok_or_else(|| ApiError::Validation("no period end".into()))?;
+            let (Some(subscription_id), Some(period_end)) = (
+                object.subscription.as_deref(),
+                object
+                    .lines
+                    .as_ref()
+                    .and_then(|lines| lines.data.as_ref())
+                    .and_then(|data| data.first())
+                    .and_then(|line| line.period.as_ref())
+                    .and_then(|period| period.end)
+                    .and_then(|end| time::OffsetDateTime::from_unix_timestamp(end).ok()),
+            ) else {
+                // An invoice without the fields the renewal walks — an empty
+                // line list, a missing period — carries nothing this endpoint
+                // can act on.
+                return Ok(StatusCode::OK);
+            };
             state
                 .db
                 .renew_stripe_subscription(subscription_id, period_end)
@@ -851,10 +897,9 @@ pub(crate) async fn stripe_legacy_webhook(
         // The rail's cancel: Stripe ended the subscription — the period
         // closes, and the wallet takes over from the next hold.
         "customer.subscription.deleted" => {
-            let subscription_id = event.data.object["id"]
-                .as_str()
-                .ok_or_else(|| ApiError::Validation("no subscription id".into()))?;
-            state.db.cancel_stripe_subscription(subscription_id).await?;
+            if let Some(subscription_id) = object.id.as_deref() {
+                state.db.cancel_stripe_subscription(subscription_id).await?;
+            }
         }
         _ => {}
     }
@@ -881,24 +926,32 @@ pub(crate) async fn airwallex_legacy_webhook(
     #[derive(Deserialize)]
     struct Event {
         name: Option<String>,
-        data: EventData,
+        data: Option<EventData>,
     }
     #[derive(Deserialize)]
     struct EventData {
-        object: serde_json::Value,
+        object: Option<EventObject>,
+    }
+    /// The intent `data.object` carries — the id every event names, and the
+    /// decimal-major `amount` the success event reports.
+    #[derive(Deserialize)]
+    struct EventObject {
+        id: Option<String>,
+        amount: Option<f64>,
     }
     let event: Event = serde_json::from_slice(&body)
         .map_err(|e| ApiError::Validation(format!("unreadable event: {e}")))?;
+    let Some(object) = event.data.and_then(|data| data.object) else {
+        return Ok(StatusCode::OK);
+    };
+    let Some(intent_id) = object.id.as_deref() else {
+        return Ok(StatusCode::OK);
+    };
     match event.name.as_deref() {
         Some("payment_intent.succeeded") => {
-            let intent_id = event.data.object["id"]
-                .as_str()
-                .ok_or_else(|| ApiError::Validation("no intent id".into()))?;
             // The intent reports `amount` in decimal major units; the deposit
             // records `received_minor` in cents, like every rail.
-            let amount = event.data.object["amount"]
-                .as_f64()
-                .map(|major| (major * 100.0).round() as i64);
+            let amount = object.amount.map(|major| (major * 100.0).round() as i64);
             // Find the deposit this intent opened, then confirm + credit it.
             // Only a `pending` deposit moves, so a replayed or raced webhook
             // does nothing twice.
@@ -923,9 +976,6 @@ pub(crate) async fn airwallex_legacy_webhook(
             }
         }
         Some("payment_intent.cancelled") | Some("payment_intent.expired") => {
-            let intent_id = event.data.object["id"]
-                .as_str()
-                .ok_or_else(|| ApiError::Validation("no intent id".into()))?;
             if let Some((deposit_id, _, _)) = state.db.find_airwallex_by_intent(intent_id).await? {
                 state.db.expire_airwallex_deposit(deposit_id).await?;
             }

@@ -1,14 +1,15 @@
 //! Customer invitation history and explicitly requested SMTP submission.
 use axum::extract::State;
-use axum::http::HeaderMap;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use crate::AppState;
+use crate::auth::PersonalToken;
 use crate::error::{ApiJson, ApiQuery};
-use crate::routes::{ApiResult, business, ok};
+use crate::routes::{ApiResult, ok};
 
 #[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 pub(crate) struct Query {
     after: Option<Uuid>,
     limit: Option<i64>,
@@ -22,17 +23,13 @@ pub(crate) struct Page {
 }
 pub(crate) async fn list(
     State(state): State<AppState>,
-    headers: HeaderMap,
+    axum::Extension(token): axum::Extension<crate::auth::PersonalToken>,
     ApiQuery(query): ApiQuery<Query>,
 ) -> ApiResult<Page> {
     ok(Page {
         invitations: state
             .db
-            .customer_invitations(
-                &business::personal_token(&headers)?,
-                query.after,
-                query.limit.unwrap_or(25),
-            )
+            .customer_invitations(&token, query.after, query.limit.unwrap_or(25))
             .await?,
         mail_configured: state.config.mailer().is_some(),
     })
@@ -46,10 +43,10 @@ pub(crate) struct Created {
 }
 pub(crate) async fn create(
     State(state): State<AppState>,
-    headers: HeaderMap,
+    axum::Extension(token): axum::Extension<crate::auth::PersonalToken>,
     ApiJson(request): ApiJson<oxsum_core::CustomerInvitationRequest>,
 ) -> ApiResult<Created> {
-    let token = business::personal_token(&headers)?;
+    let PersonalToken(token) = token;
     let invitation = state
         .db
         .create_customer_invitation(&token, &request)

@@ -20,7 +20,7 @@ use crate::routes::{ApiResult, ok};
 /// expiry (defaults to 30 days, capped at 90 by the domain layer) and an
 /// optional address to mail the link to (issue #315).
 #[derive(Debug, Default, Deserialize)]
-#[serde(rename_all = "camelCase", default)]
+#[serde(rename_all = "camelCase", default, deny_unknown_fields)]
 pub(crate) struct CreateLinkBody {
     label: Option<String>,
     #[serde(default, with = "time::serde::rfc3339::option")]
@@ -30,7 +30,7 @@ pub(crate) struct CreateLinkBody {
 
 /// The end-user link body: the customer the reports belong to.
 #[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(crate) struct CreateEndUserLinkBody {
     end_user: String,
     #[serde(default)]
