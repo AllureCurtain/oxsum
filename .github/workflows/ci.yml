@@ -337,6 +337,16 @@ jobs:
       - name: Test complete provider configuration inputs
         if: steps.filter.outputs.stages == 'true'
         run: node --experimental-strip-types --test web/tests/provider-draft.test.ts
+      # schema.d.ts is generated from crates/server/openapi.yaml; a contract
+      # edit that forgets `npm run codegen` commits the stale file. Regenerating
+      # and diffing the tracked output keeps the two from drifting (the drift
+      # this step was added for was a stale docstring after issue #1053).
+      - name: Check the generated client matches the contract
+        if: steps.filter.outputs.stages == 'true'
+        run: |
+          npm --prefix web ci
+          npm --prefix web run codegen
+          git diff --exit-code web/src/api/schema.d.ts
       - uses: docker/setup-buildx-action@v4
         if: steps.filter.outputs.stages == 'true' || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
       - name: Build the frontend stage
