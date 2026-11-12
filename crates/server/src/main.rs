@@ -136,6 +136,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // releases crashed turns' holds, the webhook delivery pass (only when the
     // sealing key can open endpoint secrets — `POST /api/v1/webhooks` refuses
     // without it either), the daily reconcile/statements/retention passes.
+    // Every pass that reaches an upstream shares this one client — the gateway
+    // client's connection pool, cloned (an `Arc`, not a second pool) — instead
+    // of each pass opening its own pool to the same endpoints.
+    let jobs_http = oxsum_server::jobs::http_client();
     let _jobs_worker = oxsum_server::jobs::spawn_worker(
         db,
         oxsum_server::jobs::JobContext {
@@ -144,14 +148,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             webhook: config
                 .secret()
                 .cloned()
-                .map(|secret| (reqwest::Client::new(), secret)),
+                .map(|secret| (jobs_http.clone(), secret)),
             retention: config.retention(),
             upstream_price_sync: config.upstream_price_sync(),
             // Anchoring needs both halves: witnesses to publish to and the key
             // the heads are signed under (issue #231).
             witness: match (config.witness_urls(), config.head_signing_seed()) {
                 (urls, Some(seed)) if !urls.is_empty() => Some(oxsum_server::jobs::WitnessConfig {
-                    http: reqwest::Client::new(),
+                    http: jobs_http.clone(),
                     head_signing_seed: seed,
                     urls: urls.to_vec(),
                 }),
