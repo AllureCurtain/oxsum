@@ -200,13 +200,16 @@ impl IntoResponse for ApiError {
             Self::KeyLimitExceeded {
                 limit_minor,
                 committed_minor,
-            } => (
-                StatusCode::TOO_MANY_REQUESTS,
-                "KEY_LIMIT_EXCEEDED",
-                format!(
-                    "this API key has committed {committed_minor} of its {limit_minor} minor-unit spend limit"
-                ),
-            ),
+            } => {
+                let body = json!({ "error": {
+                    "code": "KEY_LIMIT_EXCEEDED",
+                    "message": format!(
+                        "this API key has committed {committed_minor} of its {limit_minor} minor-unit spend limit"
+                    ),
+                    "details": [{ "limitMinor": limit_minor, "committedMinor": committed_minor }],
+                } });
+                return (StatusCode::TOO_MANY_REQUESTS, Json(body)).into_response();
+            }
             Self::RateLimited {
                 limit,
                 retry_after_secs,
@@ -253,11 +256,16 @@ impl IntoResponse for ApiError {
                 )
                     .into_response();
             }
-            Self::TooManyHolds { limit, open } => (
-                StatusCode::TOO_MANY_REQUESTS,
-                "TOO_MANY_HOLDS",
-                format!("this API key has {open} holds outstanding, at or over its cap of {limit}"),
-            ),
+            Self::TooManyHolds { limit, open } => {
+                let body = json!({ "error": {
+                    "code": "TOO_MANY_HOLDS",
+                    "message": format!(
+                        "this API key has {open} holds outstanding, at or over its cap of {limit}"
+                    ),
+                    "details": [{ "limit": limit, "open": open }],
+                } });
+                return (StatusCode::TOO_MANY_REQUESTS, Json(body)).into_response();
+            }
             Self::InvalidMandate => (
                 StatusCode::FORBIDDEN,
                 "INVALID_MANDATE",
@@ -279,13 +287,16 @@ impl IntoResponse for ApiError {
             Self::MandateExceeded {
                 cap_minor,
                 committed_minor,
-            } => (
-                StatusCode::TOO_MANY_REQUESTS,
-                "MANDATE_EXCEEDED",
-                format!(
-                    "the mandate has committed {committed_minor} of its {cap_minor} minor-unit cap"
-                ),
-            ),
+            } => {
+                let body = json!({ "error": {
+                    "code": "MANDATE_EXCEEDED",
+                    "message": format!(
+                        "the mandate has committed {committed_minor} of its {cap_minor} minor-unit cap"
+                    ),
+                    "details": [{ "capMinor": cap_minor, "committedMinor": committed_minor }],
+                } });
+                return (StatusCode::TOO_MANY_REQUESTS, Json(body)).into_response();
+            }
             Self::PollTooFast { retry_after_secs } => {
                 let body = json!({ "error": {
                     "code": "SLOW_DOWN",
