@@ -227,9 +227,16 @@ pub(crate) async fn refund(
     }
     let note: Option<Uuid> = row.try_get("credit_note_id")?;
     if note.is_none() || row.try_get::<Option<Uuid>, _>("resolved_by")?.is_none() {
-        return Err(WalletError::Conflict(
-            "statement refund has no finance authorization".into(),
-        ));
+        // A provider-side refund that has no finance authorization cannot be
+        // auto-applied — but a `Conflict` here leaves the inbox event `accepted`
+        // and `recoverable_merchant_events` re-applies it forever. The decision
+        // is final (the refund needs a human, not a retry), so stamp the reason
+        // and let `apply_refund_event` mark the event applied; the refund row
+        // stays `provider_pending` for an operator to resolve.
+        sqlx::query("UPDATE oxsum.merchant_event_inbox SET reason='unauthorizedStatementRefund',updated_at=now() WHERE receipt_id=$1 AND state='accepted'")
+            .bind(receipt.id).execute(&mut *tx).await?;
+        tx.commit().await?;
+        return Ok(());
     }
     let effects = reverse_in(
         &mut tx,
