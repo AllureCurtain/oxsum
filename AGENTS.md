@@ -282,6 +282,7 @@ True cross-crate changes use the single full run and reuse rules above.
 
 | When | Read |
 | --- | --- |
+| Finding a document | docs/README.md |
 | Starting any task | TODO.md (open-issue index). Frozen narrative: docs/history/TODO-log.md |
 | Product behavior: roles, billing rules, pages | docs/product.md |
 | Module boundaries, data flow, accounting model | docs/architecture.md |
