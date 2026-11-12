@@ -49,8 +49,8 @@ const LOCK_WAIT_BACKOFF: Duration = Duration::from_millis(20);
 #[derive(Clone, Copy)]
 pub(super) struct PoolSplit {
     pub(super) promo: i64,
-    pub(super) bonus: i64,
-    pub(super) wallet: i64,
+    bonus: i64,
+    wallet: i64,
     pub(super) credit: i64,
 }
 
@@ -112,7 +112,7 @@ impl Wallet {
     /// The body [`hold`](Self::hold) and [`hold_for_service`](Self::hold_for_service)
     /// share: `actor` is the provenance the hold entry carries, `None` for an
     /// unattributed one.
-    pub(super) async fn hold_inner(
+    async fn hold_inner(
         &self,
         key: &str,
         description: &str,
@@ -279,7 +279,7 @@ impl Wallet {
     /// after a hold lands, so the committed shape is the answer, never the
     /// split a retry would compute now), and the key-reuse conflict when the
     /// entry is anything else.
-    pub(super) fn hold_replay(
+    fn hold_replay(
         &self,
         stored: &StoredEntry<SCALE>,
         description: &Description,

@@ -345,7 +345,7 @@ impl Wallet {
     ) -> Result<i64, WalletError> {
         self.plan_source_minor_in(tx, key, path, "D").await
     }
-    pub(super) async fn plan_source_minor_in(
+    async fn plan_source_minor_in(
         &self,
         tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
         key: &str,
