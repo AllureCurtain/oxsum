@@ -1,6 +1,7 @@
 ---
 name: Feature or change
 about: Propose a new feature or a change to existing behavior
+labels: enhancement
 ---
 
 ## Problem

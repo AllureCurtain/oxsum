@@ -1,6 +1,7 @@
 ---
 name: Design discussion
 about: Discuss a design decision before implementing it
+labels: question
 ---
 
 ## Goal

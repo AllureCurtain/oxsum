@@ -1,0 +1,8 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Security report
+    url: https://github.com/AllureCurtain/oxsum/blob/main/SECURITY.md
+    about: Read SECURITY.md before filing. Do not include secrets, exploits, or customer data. Use the security issue template when it is listed.
+  - name: Operator support
+    url: https://github.com/AllureCurtain/oxsum/blob/main/SUPPORT.md
+    about: Self-hosted install, upgrade, and diagnostic questions. Do not attach secrets or database dumps.
