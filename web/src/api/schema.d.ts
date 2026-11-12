@@ -23431,8 +23431,13 @@ export interface components {
         Error: {
             error: {
                 /** @enum {string} */
-                code: "VALIDATION_ERROR" | "UNAUTHORIZED" | "FORBIDDEN" | "INSUFFICIENT_FUNDS" | "KEY_LIMIT_EXCEEDED" | "RATE_LIMITED" | "TOO_MANY_HOLDS" | "TOKENS_PER_MINUTE" | "POOL_BUSY" | "NOT_FOUND" | "CONFLICT" | "DAY_SEALED" | "INTERNAL_ERROR" | "SERVICE_UNAVAILABLE";
+                code: "VALIDATION_ERROR" | "UNAUTHORIZED" | "FORBIDDEN" | "INSUFFICIENT_FUNDS" | "KEY_LIMIT_EXCEEDED" | "RATE_LIMITED" | "TOO_MANY_HOLDS" | "TOKENS_PER_MINUTE" | "POOL_BUSY" | "INVALID_MANDATE" | "MANDATE_NOT_YET_VALID" | "MANDATE_EXPIRED" | "MANDATE_EXCEEDED" | "SLOW_DOWN" | "NOT_FOUND" | "CONFLICT" | "DAY_SEALED" | "INTERNAL_ERROR" | "SERVICE_UNAVAILABLE";
                 message: string;
+                /**
+                 * @description Structured refusal data, usually empty. `KEY_LIMIT_EXCEEDED` carries
+                 *     `[{limitMinor, committedMinor}]`, `TOO_MANY_HOLDS` `[{limit, open}]`,
+                 *     `MANDATE_EXCEEDED` `[{capMinor, committedMinor}]`.
+                 */
                 details: unknown[];
             };
         };
