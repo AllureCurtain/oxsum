@@ -74,7 +74,14 @@ impl Db {
         let options: sqlx::postgres::PgConnectOptions = database_url.parse()?;
         let options = options
             .log_slow_statements(log::LevelFilter::Warn, Duration::from_secs(10))
-            .application_name("oxsum");
+            .application_name("oxsum")
+            // Pin the session timezone to UTC: `col::date` casts in
+            // `financial_facts` and friends evaluate in the connection's
+            // `TimeZone`, so a self-hosted Postgres defaulting elsewhere would
+            // bucket a 00:30-UTC settle into the previous billing day and break
+            // reconciliation against the UTC-anchored ledger `booking_date`.
+            // (`plan_recognition` already spells it `(x AT TIME ZONE 'UTC')::date`.)
+            .options([("timezone", "UTC")]);
         let pool = PgPoolOptions::new()
             .max_connections(max_connections)
             .acquire_slow_threshold(Duration::from_secs(10))
