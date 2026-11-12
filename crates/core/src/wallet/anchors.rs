@@ -15,12 +15,15 @@ use doubleentry::{
     Direction, DocumentRef, Draft, Entry, EntryId, Hash, Layer, Provenance, StoredEntry,
 };
 
-use super::{
-    Credits, SCALE, Wallet, currency, description_of, entry_id_for, hex, idem, stored_receipt,
-};
+use super::{Credits, SCALE, Wallet, currency, description_of, entry_id_for, idem, stored_receipt};
 use doubleentry::LedgerStore;
 use time::OffsetDateTime;
 use uuid::Uuid;
+
+/// Lowercase hex of a byte slice, the spelling the signed-link key fields use.
+fn hex(bytes: &[u8]) -> String {
+    bytes.iter().map(|b| format!("{b:02x}")).collect()
+}
 
 impl Wallet {
     /// Appends the statement anchor — the marker entry committing a finalized
