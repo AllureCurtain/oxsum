@@ -190,11 +190,6 @@ async fn cancel_upstream(
 
 // ── the world ────────────────────────────────────────────────────────────────
 
-fn url() -> Option<String> {
-    let _ = dotenvy::dotenv();
-    oxsum_testkit::suite_db_url("tasks")
-}
-
 /// The world's pieces: app, database, registered organization, scripted upstream.
 #[allow(dead_code)]
 struct World {
@@ -461,7 +456,7 @@ async fn task_row(pool: &PgPool, task_id: Uuid) -> (String, Option<i64>) {
 /// `{taskId, submitted}`.
 #[tokio::test]
 async fn submit_freezes_and_relays() {
-    let Some(url) = url() else {
+    let Some(url) = oxsum_testkit::suite_url!() else {
         eprintln!("DATABASE_URL not set, skipping");
         return;
     };
@@ -502,7 +497,7 @@ async fn submit_freezes_and_relays() {
 /// result's usage and fires `task.succeeded`.
 #[tokio::test]
 async fn poll_to_succeeded_settles() {
-    let Some(url) = url() else {
+    let Some(url) = oxsum_testkit::suite_url!() else {
         eprintln!("DATABASE_URL not set, skipping");
         return;
     };
@@ -570,7 +565,7 @@ async fn poll_to_succeeded_settles() {
 /// row walks to `failed`, and the error lands on it.
 #[tokio::test]
 async fn poll_to_failed_releases() {
-    let Some(url) = url() else {
+    let Some(url) = oxsum_testkit::suite_url!() else {
         eprintln!("DATABASE_URL not set, skipping");
         return;
     };
@@ -612,7 +607,7 @@ async fn poll_to_failed_releases() {
 /// the job — a second cancel is a no-op answer of the terminal row.
 #[tokio::test]
 async fn cancel_releases_and_tells_upstream() {
-    let Some(url) = url() else {
+    let Some(url) = oxsum_testkit::suite_url!() else {
         eprintln!("DATABASE_URL not set, skipping");
         return;
     };
@@ -660,7 +655,7 @@ async fn cancel_releases_and_tells_upstream() {
 /// not submit a second task.
 #[tokio::test]
 async fn submit_contract_break_releases_hold_but_keeps_claim() {
-    let Some(url) = url() else {
+    let Some(url) = oxsum_testkit::suite_url!() else {
         eprintln!("DATABASE_URL not set, skipping");
         return;
     };
@@ -719,7 +714,7 @@ async fn submit_contract_break_releases_hold_but_keeps_claim() {
 /// caller's retry submits again because upstream never accepted anything.
 #[tokio::test]
 async fn submit_refused_releases() {
-    let Some(url) = url() else {
+    let Some(url) = oxsum_testkit::suite_url!() else {
         eprintln!("DATABASE_URL not set, skipping");
         return;
     };
@@ -745,7 +740,7 @@ async fn submit_refused_releases() {
 /// same refusal a chat request for an unserved model takes.
 #[tokio::test]
 async fn unserved_model_refuses() {
-    let Some(url) = url() else {
+    let Some(url) = oxsum_testkit::suite_url!() else {
         eprintln!("DATABASE_URL not set, skipping");
         return;
     };
@@ -763,7 +758,7 @@ async fn unserved_model_refuses() {
 /// task's existence is not an oracle.
 #[tokio::test]
 async fn foreign_key_cannot_read() {
-    let Some(url) = url() else {
+    let Some(url) = oxsum_testkit::suite_url!() else {
         eprintln!("DATABASE_URL not set, skipping");
         return;
     };
@@ -794,7 +789,9 @@ async fn foreign_key_cannot_read() {
 /// denying all channels never dispatches upstream, writes a task or reserves money.
 #[tokio::test]
 async fn grouped_task_submission_cannot_use_a_forbidden_channel() {
-    let Some(url) = url() else { return };
+    let Some(url) = oxsum_testkit::suite_url!() else {
+        return;
+    };
     let world = world(&url, 1_000_000).await;
     let group = world
         .db
@@ -857,7 +854,9 @@ async fn grouped_task_submission_cannot_use_a_forbidden_channel() {
 
 #[tokio::test]
 async fn sibling_key_cannot_poll_cancel_or_replay_a_task() {
-    let Some(url) = url() else { return };
+    let Some(url) = oxsum_testkit::suite_url!() else {
+        return;
+    };
     let world = world(&url, 10_000).await;
     world.script.submit(
         "task-model",
@@ -951,7 +950,9 @@ async fn sibling_key_cannot_poll_cancel_or_replay_a_task() {
 
 #[tokio::test]
 async fn task_poll_and_cancel_retain_submission_endpoint_after_channel_repoint() {
-    let Some(url) = url() else { return };
+    let Some(url) = oxsum_testkit::suite_url!() else {
+        return;
+    };
     let world = world(&url, 10000).await;
     world.script.submit(
         "task-model",
@@ -1031,7 +1032,7 @@ async fn task_poll_and_cancel_retain_submission_endpoint_after_channel_repoint()
 
 #[tokio::test]
 async fn task_admission_honors_customer_models_and_refuses_unsupported_aliases_and_mandates() {
-    let Some(url) = url() else {
+    let Some(url) = oxsum_testkit::suite_url!() else {
         return;
     };
     let world = world(&url, 10_000).await;

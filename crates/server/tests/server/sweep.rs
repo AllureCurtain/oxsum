@@ -27,16 +27,10 @@ fn fresh(name: &str) -> String {
     format!("{name}_{}", &uuid::Uuid::new_v4().simple().to_string()[..8])
 }
 
-/// The DATABASE_URL the tests need, or None to skip.
-fn url() -> Option<String> {
-    let _ = dotenvy::dotenv();
-    oxsum_testkit::suite_db_url("sweep")
-}
-
 /// A funded wallet behind one pool, or an early return when there is no database.
 macro_rules! world {
     ($top_up:expr) => {
-        match url() {
+        match oxsum_testkit::suite_url!() {
             Some(url) => world_for(&url, $top_up).await,
             None => {
                 eprintln!("DATABASE_URL not set, skipping");

@@ -20,14 +20,9 @@ use uuid::Uuid;
 const TOKEN: &str = "operator-token-0123456789";
 const PASSWORD: &str = "correct horse battery";
 
-fn url() -> Option<String> {
-    let _ = dotenvy::dotenv();
-    oxsum_testkit::suite_db_url("display_currency")
-}
-
 macro_rules! app_or_skip {
     () => {
-        match url() {
+        match oxsum_testkit::suite_url!() {
             Some(u) => app_for(&u).await,
             None => {
                 eprintln!("DATABASE_URL not set, skipping");

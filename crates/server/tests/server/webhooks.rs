@@ -22,11 +22,6 @@ use uuid::Uuid;
 
 const ADMIN_TOKEN: &str = "operator-token-1234";
 
-fn url() -> Option<String> {
-    let _ = dotenvy::dotenv();
-    oxsum_testkit::suite_db_url("webhooks")
-}
-
 fn sealing_key() -> SecretKey {
     SecretKey::from_bytes([7; 32])
 }
@@ -35,7 +30,7 @@ fn sealing_key() -> SecretKey {
 /// an operator token so `/metrics` can be scraped, and the app's own registry
 /// so the worker's counts land where the scrape reads.
 async fn world() -> Option<(Router, Db, Metrics)> {
-    let u = url()?;
+    let u = oxsum_testkit::suite_url!()?;
     let pool: PgPool = sqlx::postgres::PgPoolOptions::new()
         .max_connections(5)
         .connect(&u)

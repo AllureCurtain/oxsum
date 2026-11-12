@@ -15,14 +15,9 @@ use uuid::Uuid;
 /// once would claim each other's rows: the whole suite runs serially.
 static JOBS_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
-fn url() -> Option<String> {
-    let _ = dotenvy::dotenv();
-    oxsum_testkit::suite_db_url("jobs")
-}
-
 macro_rules! db_or_skip {
     () => {
-        match url() {
+        match oxsum_testkit::suite_url!() {
             Some(u) => u,
             None => {
                 eprintln!("DATABASE_URL not set, skipping");

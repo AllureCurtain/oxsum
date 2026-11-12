@@ -22,12 +22,6 @@ use tower::ServiceExt;
 
 const PASSWORD: &str = "correct horse battery";
 
-/// The DATABASE_URL tests need, or None to skip.
-fn url() -> Option<String> {
-    let _ = dotenvy::dotenv();
-    oxsum_testkit::suite_db_url("email")
-}
-
 /// A minimal SMTP receiver: it speaks just enough of the protocol for lettre —
 /// greeting, an EHLO answer with no STARTTLS and no AUTH so the transport stays
 /// plain and anonymous, then MAIL/RCPT/DATA — and forwards every captured DATA
@@ -143,7 +137,7 @@ async fn mailing_app(url: &str) -> (Router, PgPool, SmtpStub) {
 
 macro_rules! app_or_skip {
     () => {
-        match url() {
+        match oxsum_testkit::suite_url!() {
             Some(u) => mailing_app(&u).await,
             None => {
                 eprintln!("DATABASE_URL not set, skipping");
@@ -152,7 +146,7 @@ macro_rules! app_or_skip {
         }
     };
     (no_mailer) => {
-        match url() {
+        match oxsum_testkit::suite_url!() {
             Some(u) => online_app(&u, None).await,
             None => {
                 eprintln!("DATABASE_URL not set, skipping");

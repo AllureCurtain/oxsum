@@ -14,7 +14,7 @@ use time::OffsetDateTime;
 use tower::ServiceExt;
 use uuid::Uuid;
 
-use super::{Answer, World, bind, call, chat, request_id, set_plan, url, world};
+use super::{Answer, World, bind, call, chat, request_id, set_plan, world};
 
 async fn cover(world: &World) {
     cover_with(world, 1_000_000).await;
@@ -209,8 +209,7 @@ async fn funded_calls_respect_mandate_time_windows() {
             Some(json!({
                 "capMinor": 1_000,
                 "notBefore": (now + time::Duration::hours(before)).format(&format).unwrap(),
-                "notAfter": (now + time::Duration::hours(after)).format(&format).unwrap(),
-            })),
+                "notAfter": (now + time::Duration::hours(after)).format(&format).unwrap()})),
             Some(&world.session),
         )
         .await;
@@ -628,7 +627,9 @@ async fn current_key_state_and_route_permissions_win_before_atomic_admission() {
 
 #[tokio::test]
 async fn crash_recovery_of_funded_and_free_calls_is_atomic_and_replay_safe_with_one_connection() {
-    let Some(database_url) = url() else { return };
+    let Some(database_url) = oxsum_testkit::suite_url!() else {
+        return;
+    };
     for amount in [0, 40] {
         let world = world(&database_url, 0).await;
         cover(&world).await;
@@ -879,7 +880,9 @@ async fn wait_for_blocked(world: &World, pid: i32, count: i64) {
 
 #[tokio::test]
 async fn one_connection_also_admits_and_recovers_a_real_wallet_reservation() {
-    let Some(database_url) = url() else { return };
+    let Some(database_url) = oxsum_testkit::suite_url!() else {
+        return;
+    };
     let world = world(&database_url, 100).await;
     let input = reservation(&world, 40).await;
     let pool = sqlx::postgres::PgPoolOptions::new()
@@ -1195,7 +1198,9 @@ async fn legacy_wallet_and_funded_admissions_wait_for_append_before_key_rows() {
 
 #[tokio::test]
 async fn independent_keys_do_not_exhaust_a_small_pool_while_waiting_to_reserve() {
-    let Some(database_url) = url() else { return };
+    let Some(database_url) = oxsum_testkit::suite_url!() else {
+        return;
+    };
     let mut world = world(&database_url, 500).await;
     let mut inputs = Vec::new();
     for n in 0..6 {
@@ -1375,7 +1380,9 @@ async fn quota_reservations_do_not_consume_the_plan_wallet_credit_limit() {
 
 #[tokio::test]
 async fn lazy_plan_boundary_reuses_the_admissions_only_connection() {
-    let Some(database_url) = url() else { return };
+    let Some(database_url) = oxsum_testkit::suite_url!() else {
+        return;
+    };
     let world = world(&database_url, 100).await;
     // Historical v1 periods can be moved to a due boundary by the fixture.
     // Today's v2 publisher freezes service dates; do not rewrite that history.

@@ -26,14 +26,9 @@ use uuid::Uuid;
 /// The operator token these tests configure the admin surface with.
 const TOKEN: &str = "operator-token-0123456789";
 
-fn url() -> Option<String> {
-    let _ = dotenvy::dotenv();
-    oxsum_testkit::suite_db_url("subscriptions")
-}
-
 macro_rules! world_or_skip {
     () => {
-        match url() {
+        match oxsum_testkit::suite_url!() {
             Some(u) => world(&u).await,
             None => {
                 eprintln!("DATABASE_URL not set, skipping");

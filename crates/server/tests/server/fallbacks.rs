@@ -196,17 +196,11 @@ impl World {
     }
 }
 
-/// The DATABASE_URL the tests need, or None to skip.
-fn url() -> Option<String> {
-    let _ = dotenvy::dotenv();
-    oxsum_testkit::suite_db_url("fallbacks")
-}
-
 /// A world with `top_up` minor units of credit, or an early return when there
 /// is no database.
 macro_rules! world {
     ($top_up:expr) => {
-        match url() {
+        match oxsum_testkit::suite_url!() {
             Some(url) => world_for(&url, $top_up).await,
             None => {
                 eprintln!("DATABASE_URL not set, skipping");

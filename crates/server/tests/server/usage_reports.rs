@@ -61,15 +61,9 @@ async fn online_app(url: &str) -> (Router, Db) {
     )
 }
 
-/// The DATABASE_URL the tests need, or None to skip.
-fn url() -> Option<String> {
-    let _ = dotenvy::dotenv();
-    oxsum_testkit::suite_db_url("usage_reports")
-}
-
 macro_rules! app_or_skip {
     () => {
-        match url() {
+        match oxsum_testkit::suite_url!() {
             Some(u) => online_app(&u).await,
             None => {
                 eprintln!("DATABASE_URL not set, skipping");
@@ -1381,7 +1375,7 @@ async fn mail_with(stub: &mut SmtpStub, needle: &str) -> String {
 /// says `sent`; the mail carries the period and total too (issue #315).
 #[tokio::test]
 async fn an_emailed_bill_link_reaches_the_customer() {
-    let Some(url) = url() else {
+    let Some(url) = oxsum_testkit::suite_url!() else {
         eprintln!("DATABASE_URL not set, skipping");
         return;
     };

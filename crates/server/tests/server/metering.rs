@@ -25,15 +25,9 @@ use uuid::Uuid;
 /// The operator token these tests configure, like admin.rs's.
 const TOKEN: &str = "operator-token-0123456789";
 
-fn url() -> Option<String> {
-    // `.env` is searched for in the current directory and its parents, see docs/development.md.
-    let _ = dotenvy::dotenv();
-    oxsum_testkit::suite_db_url("metering")
-}
-
 macro_rules! world_or_skip {
     ($top_up:expr) => {
-        match url() {
+        match oxsum_testkit::suite_url!() {
             Some(u) => world(&u, $top_up).await,
             None => {
                 eprintln!("DATABASE_URL not set, skipping");

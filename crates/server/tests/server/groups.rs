@@ -105,14 +105,9 @@ struct World {
     billing: broadcast::Sender<oxsum_server::BillingEvent>,
 }
 
-fn url() -> Option<String> {
-    let _ = dotenvy::dotenv();
-    oxsum_testkit::suite_db_url("groups")
-}
-
 macro_rules! world {
     () => {
-        match url() {
+        match oxsum_testkit::suite_url!() {
             Some(url) => world_for(&url).await,
             None => {
                 eprintln!("DATABASE_URL not set, skipping");

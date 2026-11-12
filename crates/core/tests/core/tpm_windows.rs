@@ -23,14 +23,9 @@ const PASSWORD: &str = "correct horse battery staple";
 /// date for `usage_daily`, but the token window keys on the settle's instant.
 const ON: time::Date = date!(2026 - 10 - 05);
 
-fn url() -> Option<String> {
-    let _ = dotenvy::dotenv();
-    oxsum_testkit::suite_db_url("tpm_windows")
-}
-
 macro_rules! db_or_skip {
     () => {
-        match url() {
+        match oxsum_testkit::suite_url!() {
             Some(u) => u,
             None => {
                 eprintln!("DATABASE_URL not set, skipping");

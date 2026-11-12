@@ -16,15 +16,10 @@ fn secret() -> SecretKey {
     SecretKey::from_bytes([41; 32])
 }
 
-fn url() -> Option<String> {
-    let _ = dotenvy::dotenv();
-    oxsum_testkit::suite_db_url("merchant_events")
-}
-
 /// A migrated database, the owner token and a registered customer org with its
 /// tenant id — every binding needs a real organization for its FK and wallet.
 async fn world() -> Option<(Db, String, Uuid, String)> {
-    let url = url()?;
+    let url = oxsum_testkit::suite_url!()?;
     let db = Db::connect(&url, 12).await.unwrap();
     db.migrate().await.unwrap();
     let owner = setup::owner(&db).await;

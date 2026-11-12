@@ -22,11 +22,6 @@ use uuid::Uuid;
 const WEBHOOK_SECRET: &str = "hyperswitch-whsec-test-1234";
 const PUBLISHABLE_KEY: &str = "pk_snd_test_1234";
 
-fn url() -> Option<String> {
-    let _ = dotenvy::dotenv();
-    oxsum_testkit::suite_db_url("hyperswitch")
-}
-
 fn sealing_key() -> SecretKey {
     SecretKey::from_bytes([7; 32])
 }
@@ -119,7 +114,7 @@ async fn stub_switch() -> (String, SwitchStub) {
 /// A configured world: the switch stub answers `POST /payments`, and the config
 /// carries the rail's keys.
 async fn world() -> Option<(Router, Db, SwitchStub)> {
-    let u = url()?;
+    let u = oxsum_testkit::suite_url!()?;
     let pool: PgPool = sqlx::postgres::PgPoolOptions::new()
         .max_connections(5)
         .connect(&u)
@@ -401,7 +396,7 @@ async fn a_tampered_signature_is_refused() {
 /// webhook 404s — no `OXSUM_HYPERSWITCH_*` means no rail to expose.
 #[tokio::test]
 async fn an_unconfigured_deployment_refuses_cleanly() {
-    let Some(u) = url() else {
+    let Some(u) = oxsum_testkit::suite_url!() else {
         return;
     };
     let pool: PgPool = sqlx::postgres::PgPoolOptions::new()
@@ -542,7 +537,7 @@ const ADMIN_TOKEN: &str = "operator-token-refund";
 /// A world with the admin surface configured too — the reversal path the
 /// refund tests exercise lives on `/api/v1/admin`.
 async fn admin_world() -> Option<(Router, Db, SwitchStub)> {
-    let u = url()?;
+    let u = oxsum_testkit::suite_url!()?;
     let pool: PgPool = sqlx::postgres::PgPoolOptions::new()
         .max_connections(5)
         .connect(&u)

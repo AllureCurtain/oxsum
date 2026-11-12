@@ -40,14 +40,9 @@ use uuid::Uuid;
 const TOKEN: &str = "operator-token-0123456789";
 const PASSWORD: &str = "correct horse battery";
 
-fn url() -> Option<String> {
-    let _ = dotenvy::dotenv();
-    oxsum_testkit::suite_db_url("serving")
-}
-
 macro_rules! world_or_skip {
     ($top_up:expr, $protocol:expr) => {
-        match url() {
+        match oxsum_testkit::suite_url!() {
             Some(u) => world(&u, $top_up, $protocol).await,
             None => {
                 eprintln!("DATABASE_URL not set, skipping");

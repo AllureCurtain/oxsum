@@ -40,11 +40,6 @@ const ACCOUNT: &str = "acct_refunds_test";
 const PASSWORD: &str = "correct horse battery";
 const USD: &str = "USD";
 
-fn url() -> Option<String> {
-    let _ = dotenvy::dotenv();
-    oxsum_testkit::suite_db_url("refunds_http")
-}
-
 fn sealing_key() -> SecretKey {
     SecretKey::from_bytes([9; 32])
 }
@@ -143,7 +138,7 @@ async fn stub_switch() -> (String, SwitchStub) {
 /// A configured world: the switch stub, the merchant bootstrap, the prepared
 /// deployment, and the `(merchant_id, version_id)` the webhook route names.
 async fn world() -> Option<(Router, Db, SwitchStub, Uuid, Uuid)> {
-    let u = url()?;
+    let u = oxsum_testkit::suite_db_url("refunds_http")?;
     let pool: PgPool = sqlx::postgres::PgPoolOptions::new()
         .max_connections(8)
         .connect(&u)

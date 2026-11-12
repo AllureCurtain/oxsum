@@ -49,15 +49,9 @@ async fn model_for(db: &Db) -> String {
     crate::support::flat_model(db, &secret(), 2).await
 }
 
-/// The DATABASE_URL the tests need, or None to skip.
-fn url() -> Option<String> {
-    let _ = dotenvy::dotenv();
-    oxsum_testkit::suite_db_url("mandates")
-}
-
 macro_rules! app_or_skip {
     () => {
-        match url() {
+        match oxsum_testkit::suite_url!() {
             Some(u) => online_app(&u).await,
             None => {
                 eprintln!("DATABASE_URL not set, skipping");

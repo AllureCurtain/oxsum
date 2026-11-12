@@ -24,11 +24,6 @@ const D: time::Date = date!(2026 - 10 - 03);
 /// once would claim each other's rows: the suite runs serially.
 static JOBS_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
-fn url() -> Option<String> {
-    let _ = dotenvy::dotenv();
-    oxsum_testkit::suite_db_url("jobs")
-}
-
 fn fresh(name: &str) -> String {
     format!("{name}_{}", &Uuid::new_v4().simple().to_string()[..8])
 }
@@ -169,7 +164,7 @@ async fn settlement_record(wallet: &Arc<Wallet>, hold_key: &str) -> Option<Value
 #[tokio::test]
 async fn a_sweep_run_resolves_stale_holds_and_chains_the_next() {
     let _guard = JOBS_LOCK.lock().await;
-    let Some(url) = url() else {
+    let Some(url) = oxsum_testkit::suite_url!() else {
         eprintln!("DATABASE_URL not set, skipping");
         return;
     };
@@ -209,7 +204,7 @@ async fn a_sweep_run_resolves_stale_holds_and_chains_the_next() {
 #[tokio::test]
 async fn a_failing_run_retries_then_dies_and_the_kind_recovers() {
     let _guard = JOBS_LOCK.lock().await;
-    let Some(url) = url() else {
+    let Some(url) = oxsum_testkit::suite_url!() else {
         eprintln!("DATABASE_URL not set, skipping");
         return;
     };
@@ -244,7 +239,7 @@ async fn a_failing_run_retries_then_dies_and_the_kind_recovers() {
 #[tokio::test]
 async fn an_unknown_kind_fails_the_run_not_the_worker() {
     let _guard = JOBS_LOCK.lock().await;
-    let Some(url) = url() else {
+    let Some(url) = oxsum_testkit::suite_url!() else {
         eprintln!("DATABASE_URL not set, skipping");
         return;
     };
@@ -270,7 +265,7 @@ async fn an_unknown_kind_fails_the_run_not_the_worker() {
 #[tokio::test]
 async fn a_retention_run_finishes_and_chains_a_day_out() {
     let _guard = JOBS_LOCK.lock().await;
-    let Some(url) = url() else {
+    let Some(url) = oxsum_testkit::suite_url!() else {
         eprintln!("DATABASE_URL not set, skipping");
         return;
     };
@@ -311,7 +306,7 @@ async fn stub_upstream_catalog() -> String {
 #[tokio::test]
 async fn a_price_sync_run_opens_drift_and_chains_a_day_out() {
     let _guard = JOBS_LOCK.lock().await;
-    let Some(url) = url() else {
+    let Some(url) = oxsum_testkit::suite_url!() else {
         eprintln!("DATABASE_URL not set, skipping");
         return;
     };
@@ -407,7 +402,7 @@ async fn a_price_sync_run_opens_drift_and_chains_a_day_out() {
 #[tokio::test]
 async fn witness_checkpoints_anchor_and_collect_cosignatures() {
     let _guard = JOBS_LOCK.lock().await;
-    let Some(url) = url() else {
+    let Some(url) = oxsum_testkit::suite_url!() else {
         eprintln!("DATABASE_URL not set, skipping");
         return;
     };
@@ -593,7 +588,7 @@ async fn settle_usage(world: &World, channel: &str, our_cost_minor: i64, date: t
 #[tokio::test]
 async fn upstream_bill_sync_records_and_flags_drift() {
     let _guard = JOBS_LOCK.lock().await;
-    let Some(url) = url() else {
+    let Some(url) = oxsum_testkit::suite_url!() else {
         eprintln!("DATABASE_URL not set, skipping");
         return;
     };
@@ -689,7 +684,7 @@ async fn upstream_bill_sync_records_and_flags_drift() {
 #[tokio::test]
 async fn upstream_bill_sync_under_threshold_flags_nothing() {
     let _guard = JOBS_LOCK.lock().await;
-    let Some(url) = url() else {
+    let Some(url) = oxsum_testkit::suite_url!() else {
         eprintln!("DATABASE_URL not set, skipping");
         return;
     };
@@ -727,7 +722,7 @@ async fn upstream_bill_sync_under_threshold_flags_nothing() {
 #[tokio::test]
 async fn upstream_bill_sync_no_provider_answer_records_a_gap() {
     let _guard = JOBS_LOCK.lock().await;
-    let Some(url) = url() else {
+    let Some(url) = oxsum_testkit::suite_url!() else {
         eprintln!("DATABASE_URL not set, skipping");
         return;
     };

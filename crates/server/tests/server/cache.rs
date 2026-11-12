@@ -218,14 +218,9 @@ fn admin_app(world: &World) -> Router {
     crate::support::app(Db::from_pool(world.pool.clone()), config)
 }
 
-fn url() -> Option<String> {
-    let _ = dotenvy::dotenv();
-    oxsum_testkit::suite_db_url("cache")
-}
-
 macro_rules! world {
     () => {
-        match url() {
+        match oxsum_testkit::suite_url!() {
             Some(url) => build_world(&url).await,
             None => {
                 eprintln!("DATABASE_URL not set, skipping");

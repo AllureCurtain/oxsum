@@ -19,14 +19,9 @@ use tower::ServiceExt;
 /// The operator token these tests configure.
 const TOKEN: &str = "operator-token-0123456789";
 
-fn url() -> Option<String> {
-    let _ = dotenvy::dotenv();
-    oxsum_testkit::suite_db_url("promo_lots")
-}
-
 macro_rules! app_or_skip {
     () => {
-        match url() {
+        match oxsum_testkit::suite_url!() {
             Some(u) => admin_app(&u).await,
             None => {
                 eprintln!("DATABASE_URL not set, skipping");

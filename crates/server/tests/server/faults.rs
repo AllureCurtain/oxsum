@@ -31,14 +31,9 @@ use uuid::Uuid;
 const TOKEN: &str = "faults-operator-token-0123456789";
 const PASSWORD: &str = "correct horse battery";
 
-fn url() -> Option<String> {
-    let _ = dotenvy::dotenv();
-    oxsum_testkit::suite_db_url("faults")
-}
-
 macro_rules! world_or_skip {
     ($top_up:expr) => {
-        match url() {
+        match oxsum_testkit::suite_url!() {
             Some(u) => world(&u, $top_up).await,
             None => {
                 eprintln!("DATABASE_URL not set, skipping");
@@ -324,7 +319,7 @@ async fn a_killed_settle_stays_consistent_and_conflicts_on_replay() {
 /// free — no leak of `PoolBusy` into a later, quiet request.
 #[tokio::test]
 async fn pool_exhaustion_fails_fast_and_recovers() {
-    let Some(database_url) = url() else {
+    let Some(database_url) = oxsum_testkit::suite_url!() else {
         eprintln!("DATABASE_URL not set, skipping");
         return;
     };

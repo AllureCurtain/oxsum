@@ -14,15 +14,9 @@ const ONE: i64 = 1_000_000;
 const PASSWORD: &str = "correct horse battery staple";
 const D: time::Date = time::macros::date!(2026 - 10 - 01);
 
-fn url() -> Option<String> {
-    // `.env` is searched for in the current directory and its parents, see docs/development.md.
-    let _ = dotenvy::dotenv();
-    oxsum_testkit::suite_db_url("identity")
-}
-
 macro_rules! db_or_skip {
     () => {
-        match url() {
+        match oxsum_testkit::suite_url!() {
             Some(u) => u,
             None => {
                 eprintln!("DATABASE_URL not set, skipping");

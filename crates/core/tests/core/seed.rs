@@ -18,15 +18,9 @@ use uuid::Uuid;
 /// run's freshly-registered demo email as a conflict, so they run in sequence.
 static SEED_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
-fn url() -> Option<String> {
-    // `.env` is searched for in the current directory and its parents, see docs/development.md.
-    let _ = dotenvy::dotenv();
-    oxsum_testkit::suite_db_url("seed")
-}
-
 macro_rules! db_or_skip {
     () => {
-        match url() {
+        match oxsum_testkit::suite_url!() {
             Some(u) => u,
             None => {
                 eprintln!("DATABASE_URL not set, skipping");

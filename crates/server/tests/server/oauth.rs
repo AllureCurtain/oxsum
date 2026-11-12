@@ -130,11 +130,6 @@ async fn online_app(
     (oxsum_server::app(db, config), pool)
 }
 
-fn url() -> Option<String> {
-    let _ = dotenvy::dotenv();
-    oxsum_testkit::suite_db_url("oauth")
-}
-
 /// The stub, an app wired to it, and the pool — the standard test world.
 async fn oauth_app(url: &str) -> (Router, PgPool, Stub) {
     let (stub, stub_url) = github_stub().await;
@@ -151,7 +146,7 @@ async fn oauth_app(url: &str) -> (Router, PgPool, Stub) {
 
 macro_rules! app_or_skip {
     () => {
-        match url() {
+        match oxsum_testkit::suite_url!() {
             Some(u) => oauth_app(&u).await,
             None => {
                 eprintln!("DATABASE_URL not set, skipping");
@@ -225,7 +220,7 @@ fn cookie_token(set_cookie: &str) -> &str {
 
 #[tokio::test]
 async fn the_methods_endpoint_reports_the_provider() {
-    let Some(u) = url() else {
+    let Some(u) = oxsum_testkit::suite_url!() else {
         eprintln!("DATABASE_URL not set, skipping");
         return;
     };
@@ -241,7 +236,7 @@ async fn the_methods_endpoint_reports_the_provider() {
 
 #[tokio::test]
 async fn an_unconfigured_start_answers_not_found() {
-    let Some(u) = url() else {
+    let Some(u) = oxsum_testkit::suite_url!() else {
         eprintln!("DATABASE_URL not set, skipping");
         return;
     };
@@ -375,7 +370,7 @@ async fn a_refused_exchange_bounces() {
 
 #[tokio::test]
 async fn an_invite_deployment_refuses_new_accounts_but_logs_existing_in() {
-    let Some(u) = url() else {
+    let Some(u) = oxsum_testkit::suite_url!() else {
         eprintln!("DATABASE_URL not set, skipping");
         return;
     };

@@ -18,15 +18,11 @@ use uuid::Uuid;
 fn secret() -> SecretKey {
     SecretKey::from_bytes([42; 32])
 }
-fn url() -> Option<String> {
-    let _ = dotenvy::dotenv();
-    oxsum_testkit::suite_db_url("refunds")
-}
 
 /// A migrated database, the owner token, a registered customer org and its
 /// tenant — every order needs a real organization for its FK and wallet.
 async fn world() -> Option<(Db, String, Uuid, String)> {
-    let url = url()?;
+    let url = oxsum_testkit::suite_url!()?;
     let db = Db::connect(&url, 16).await.unwrap();
     db.migrate().await.unwrap();
     db.bootstrap_collection_terms(&oxsum_core::CollectionCurrency {

@@ -19,14 +19,9 @@ use uuid::Uuid;
 /// The operator token these tests configure.
 const TOKEN: &str = "operator-token-0123456789";
 
-fn url() -> Option<String> {
-    let _ = dotenvy::dotenv();
-    oxsum_testkit::suite_db_url("audit")
-}
-
 macro_rules! app_or_skip {
     () => {
-        match url() {
+        match oxsum_testkit::suite_url!() {
             Some(u) => app_for(&u).await,
             None => {
                 eprintln!("DATABASE_URL not set, skipping");

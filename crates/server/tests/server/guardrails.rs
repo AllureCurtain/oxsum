@@ -28,14 +28,9 @@ use uuid::Uuid;
 /// The operator token the admin calls authenticate with.
 const TOKEN: &str = "operator-token-0123456789";
 
-fn url() -> Option<String> {
-    let _ = dotenvy::dotenv();
-    oxsum_testkit::suite_db_url("guardrails")
-}
-
 macro_rules! world_or_skip {
     () => {
-        match url() {
+        match oxsum_testkit::suite_url!() {
             Some(u) => world(&u).await,
             None => {
                 eprintln!("DATABASE_URL not set, skipping");
@@ -978,7 +973,9 @@ async fn long_postblock_refunds_whole_but_streamed_block_still_bills_and_commits
 /// A previously served cache source stays charged; replay cannot settle twice.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn flat_fee_refunds_preserve_provider_cost_and_release_wallet_or_quota() {
-    let Some(url) = url() else { return };
+    let Some(url) = oxsum_testkit::suite_url!() else {
+        return;
+    };
     for quota in [false, true] {
         let world = world_with_funding(&url, !quota).await;
         let wallet = world.tenants.get(&world.tenant_id).await.unwrap();

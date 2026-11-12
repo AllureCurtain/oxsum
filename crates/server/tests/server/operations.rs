@@ -130,11 +130,6 @@ async fn chat_upstream() -> Response {
 
 // ── the world ────────────────────────────────────────────────────────────
 
-fn url() -> Option<String> {
-    let _ = dotenvy::dotenv();
-    oxsum_testkit::suite_db_url("operations")
-}
-
 struct World {
     app: Router,
     pool: PgPool,
@@ -376,7 +371,7 @@ async fn operation_row(pool: &PgPool, operation_id: Uuid) -> Option<sqlx::postgr
 /// bound, the lease stamped under this process's instance id.
 #[tokio::test]
 async fn a_submit_writes_an_operation() {
-    let Some(url) = url() else {
+    let Some(url) = oxsum_testkit::suite_url!() else {
         eprintln!("DATABASE_URL not set, skipping");
         return;
     };
@@ -422,7 +417,7 @@ async fn a_submit_writes_an_operation() {
 /// matching the flat task price, `outcome_kind` the settlement's spelling.
 #[tokio::test]
 async fn a_settled_task_completes_its_operation() {
-    let Some(url) = url() else {
+    let Some(url) = oxsum_testkit::suite_url!() else {
         eprintln!("DATABASE_URL not set, skipping");
         return;
     };
@@ -475,7 +470,7 @@ async fn a_settled_task_completes_its_operation() {
 /// one row, not two.
 #[tokio::test]
 async fn a_replayed_submit_replays_the_operation() {
-    let Some(url) = url() else {
+    let Some(url) = oxsum_testkit::suite_url!() else {
         eprintln!("DATABASE_URL not set, skipping");
         return;
     };
@@ -536,7 +531,7 @@ async fn a_replayed_submit_replays_the_operation() {
 /// the attempt's `external_id`.
 #[tokio::test]
 async fn a_chat_turn_writes_attempts_and_settles() {
-    let Some(url) = url() else {
+    let Some(url) = oxsum_testkit::suite_url!() else {
         eprintln!("DATABASE_URL not set, skipping");
         return;
     };
@@ -601,7 +596,7 @@ async fn a_chat_turn_writes_attempts_and_settles() {
 /// operations it admitted, which is this world's whole list.
 #[tokio::test]
 async fn the_member_operations_list_reads_back() {
-    let Some(url) = url() else {
+    let Some(url) = oxsum_testkit::suite_url!() else {
         eprintln!("DATABASE_URL not set, skipping");
         return;
     };

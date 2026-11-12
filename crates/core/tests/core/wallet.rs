@@ -18,12 +18,6 @@ use time::macros::date;
 const D: time::Date = date!(2026 - 10 - 01);
 const ONE: i64 = 1_000_000;
 
-fn url() -> Option<String> {
-    // `.env` is searched for in the current directory and its parents, see docs/development.md.
-    let _ = dotenvy::dotenv();
-    oxsum_testkit::suite_db_url("wallet")
-}
-
 /// Each test uses a tenant name with a random suffix, so tests never interfere and reruns never collide.
 fn fresh(name: &str) -> String {
     format!("{name}_{}", &uuid::Uuid::new_v4().simple().to_string()[..8])
@@ -47,7 +41,7 @@ async fn pool(url: &str) -> PgPool {
 
 macro_rules! db_or_skip {
     () => {
-        match url() {
+        match oxsum_testkit::suite_url!() {
             Some(u) => u,
             None => {
                 eprintln!("DATABASE_URL not set, skipping");

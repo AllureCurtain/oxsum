@@ -27,14 +27,9 @@ const FRIDAY: Date = date!(2026 - 10 - 09);
 const ANCHOR_DAY: Date = date!(2026 - 09 - 17);
 const PASSWORD: &str = "correct horse battery staple";
 
-fn url() -> Option<String> {
-    let _ = dotenvy::dotenv();
-    oxsum_testkit::suite_db_url("usage_daily")
-}
-
 macro_rules! db_or_skip {
     () => {
-        match url() {
+        match oxsum_testkit::suite_url!() {
             Some(u) => u,
             None => {
                 eprintln!("DATABASE_URL not set, skipping");

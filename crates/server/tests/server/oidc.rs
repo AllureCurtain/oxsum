@@ -29,14 +29,9 @@ const IDP_RSA_PEM: &str = include_str!("../fixtures/test_idp_rsa.pem");
 /// The stub provider's configured name: its `sub` namespaces under `oidc:test`.
 const IDP_NAME: &str = "test";
 
-fn url() -> Option<String> {
-    let _ = dotenvy::dotenv();
-    oxsum_testkit::suite_db_url("oidc")
-}
-
 macro_rules! world_or_skip {
     () => {
-        match url() {
+        match oxsum_testkit::suite_url!() {
             Some(u) => world(&u).await,
             None => {
                 eprintln!("DATABASE_URL not set, skipping");

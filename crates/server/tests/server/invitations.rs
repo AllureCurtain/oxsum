@@ -32,16 +32,9 @@ async fn online_app(url: &str, signup: Signup) -> (Router, PgPool) {
     (oxsum_server::app(db, Config::new(signup, None)), pool)
 }
 
-/// The DATABASE_URL the tests need, or None to skip.
-fn url() -> Option<String> {
-    // `.env` is searched for in the current directory and its parents, see docs/development.md.
-    let _ = dotenvy::dotenv();
-    oxsum_testkit::suite_db_url("invitations")
-}
-
 macro_rules! app_or_skip {
     () => {
-        match url() {
+        match oxsum_testkit::suite_url!() {
             Some(u) => online_app(&u, Signup::Open).await,
             None => {
                 eprintln!("DATABASE_URL not set, skipping");
@@ -484,7 +477,7 @@ async fn a_bad_email_or_password_is_refused_without_spending_the_link() {
 /// In `invite` mode self-registration stays refused — and the link is the way in.
 #[tokio::test]
 async fn invite_mode_refuses_self_registration_but_accepts_the_link() {
-    let Some(u) = url() else {
+    let Some(u) = oxsum_testkit::suite_url!() else {
         eprintln!("DATABASE_URL not set, skipping");
         return;
     };
