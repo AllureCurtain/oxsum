@@ -203,6 +203,12 @@ struct World {
     session: String,
     script: Script,
     channel: String,
+    /// This world's model name: the shared scratch DB accumulates every prior
+    /// iteration's channel, and a second world asking for `task-model` would
+    /// route to the first world's listener (issue: flaky
+    /// `submit_contract_break` — the second submit could land on the wrong
+    /// upstream). The suffix keeps each world's serving set to itself.
+    model: String,
     /// The broadcast sender — unused here, kept so `app_with_billing`'s wiring
     /// is the same as every other suite's.
     billing: broadcast::Sender<BillingEvent>,
@@ -217,6 +223,7 @@ async fn world(url: &str, top_up: i64) -> World {
     oxsum_testkit::set_registration_fixture(db.pool(), true).await;
     let suffix = Uuid::new_v4().simple().to_string()[..8].to_owned();
     let channel = format!("tasks-{suffix}");
+    let model = format!("task-model-{suffix}");
     let secret = SecretKey::from_bytes([7; 32]);
     let script = Script::default();
     let base_url = start_upstream(script.clone()).await;
@@ -237,7 +244,7 @@ async fn world(url: &str, top_up: i64) -> World {
     .expect("the channel is written");
     db.append_price(
         &channel,
-        "task-model",
+        &model,
         oxsum_core::Price {
             input_price_per_million: 0,
             output_price_per_million: 0,
@@ -301,6 +308,7 @@ async fn world(url: &str, top_up: i64) -> World {
         session,
         script,
         channel,
+        model,
         billing,
     }
 }
@@ -415,11 +423,13 @@ async fn task_call(app: &Router, key: &str, method: &str, path: &str) -> (Status
 }
 
 /// A minimal submit body: kind + model, no declared bound, so the channel's
-/// `cost_per_request` freezes.
-fn simple_submit() -> Value {
+/// `cost_per_request` freezes. The model is the world's own — the shared
+/// scratch DB accumulates every world's channel, and a different iteration's
+/// `task-model` price row must not route this submit to the wrong listener.
+fn simple_submit(model: &str) -> Value {
     json!({
         "kind": "image",
-        "model": "task-model",
+        "model": model,
         "input": {"prompt": "a red cube"},
     })
 }
@@ -463,12 +473,12 @@ async fn submit_freezes_and_relays() {
     let world = world(&url, 10_000).await;
     let external = "up-task-1";
     world.script.submit(
-        "task-model",
+        &world.model,
         SubmitAnswer::Accept {
             task_id: external.to_owned(),
         },
     );
-    let response = submit_task(&world.app, &world.key, simple_submit()).await;
+    let response = submit_task(&world.app, &world.key, simple_submit(&world.model)).await;
     assert_eq!(response.status(), StatusCode::OK);
     let body: Value = serde_json::from_slice(
         &response
@@ -481,7 +491,7 @@ async fn submit_freezes_and_relays() {
     .unwrap();
     assert_eq!(body["state"], "submitted");
     assert_eq!(body["kind"], "image");
-    assert_eq!(body["model"], "task-model");
+    assert_eq!(body["model"], world.model);
     let task_id: Uuid = body["taskId"].as_str().unwrap().parse().unwrap();
     // The freeze is the channel's flat `cost_per_request`.
     let (state, _charged) = task_row(&world.pool, task_id).await;
@@ -504,7 +514,7 @@ async fn poll_to_succeeded_settles() {
     let world = world(&url, 10_000).await;
     let external = "up-task-2";
     world.script.submit(
-        "task-model",
+        &world.model,
         SubmitAnswer::Accept {
             task_id: external.to_owned(),
         },
@@ -516,7 +526,7 @@ async fn poll_to_succeeded_settles() {
             usage: Some(json!({"input_tokens": 3, "output_tokens": 0})),
         },
     );
-    let response = submit_task(&world.app, &world.key, simple_submit()).await;
+    let response = submit_task(&world.app, &world.key, simple_submit(&world.model)).await;
     let body: Value = serde_json::from_slice(
         &response
             .into_body()
@@ -572,7 +582,7 @@ async fn poll_to_failed_releases() {
     let world = world(&url, 10_000).await;
     let external = "up-task-3";
     world.script.submit(
-        "task-model",
+        &world.model,
         SubmitAnswer::Accept {
             task_id: external.to_owned(),
         },
@@ -583,7 +593,7 @@ async fn poll_to_failed_releases() {
             error: json!({"message": "out of capacity"}),
         },
     );
-    let response = submit_task(&world.app, &world.key, simple_submit()).await;
+    let response = submit_task(&world.app, &world.key, simple_submit(&world.model)).await;
     let body: Value =
         serde_json::from_slice(&response.into_body().collect().await.unwrap().to_bytes()).unwrap();
     let task_id: Uuid = body["taskId"].as_str().unwrap().parse().unwrap();
@@ -614,12 +624,12 @@ async fn cancel_releases_and_tells_upstream() {
     let world = world(&url, 10_000).await;
     let external = "up-task-4";
     world.script.submit(
-        "task-model",
+        &world.model,
         SubmitAnswer::Accept {
             task_id: external.to_owned(),
         },
     );
-    let response = submit_task(&world.app, &world.key, simple_submit()).await;
+    let response = submit_task(&world.app, &world.key, simple_submit(&world.model)).await;
     let body: Value =
         serde_json::from_slice(&response.into_body().collect().await.unwrap().to_bytes()).unwrap();
     let task_id: Uuid = body["taskId"].as_str().unwrap().parse().unwrap();
@@ -661,11 +671,12 @@ async fn submit_contract_break_releases_hold_but_keeps_claim() {
     };
     for answer in [SubmitAnswer::BadJson, SubmitAnswer::NoId] {
         let world = world(&url, 10_000).await;
-        world.script.submit("task-model", answer);
+        world.script.submit(&world.model, answer);
         // The submit carries an idempotency key so the claim is observable.
         let submit = |key: &str| {
             let app = world.app.clone();
             let key = key.to_owned();
+            let model = world.model.clone();
             async move {
                 let request = Request::builder()
                     .method("POST")
@@ -673,7 +684,7 @@ async fn submit_contract_break_releases_hold_but_keeps_claim() {
                     .header("authorization", format!("Bearer {key}"))
                     .header("idempotency-key", "contract-break")
                     .header("content-type", "application/json")
-                    .body(Body::from(simple_submit().to_string()))
+                    .body(Body::from(simple_submit(&model).to_string()))
                     .expect("the test's own request");
                 app.clone()
                     .oneshot(request)
@@ -720,13 +731,13 @@ async fn submit_refused_releases() {
     };
     let world = world(&url, 10_000).await;
     world.script.submit(
-        "task-model",
+        &world.model,
         SubmitAnswer::Refuse {
             status: 503,
             body: json!({"error": {"message": "capacity"}}),
         },
     );
-    let response = submit_task(&world.app, &world.key, simple_submit()).await;
+    let response = submit_task(&world.app, &world.key, simple_submit(&world.model)).await;
     assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
     // The hold released: no `tasks` row, no lingering freeze.
     let count: i64 = sqlx::query_scalar("SELECT count(*) FROM oxsum.tasks")
@@ -764,12 +775,12 @@ async fn foreign_key_cannot_read() {
     };
     let world = world(&url, 10_000).await;
     world.script.submit(
-        "task-model",
+        &world.model,
         SubmitAnswer::Accept {
             task_id: "up-task-5".to_owned(),
         },
     );
-    let response = submit_task(&world.app, &world.key, simple_submit()).await;
+    let response = submit_task(&world.app, &world.key, simple_submit(&world.model)).await;
     let body: Value =
         serde_json::from_slice(&response.into_body().collect().await.unwrap().to_bytes()).unwrap();
     let task_id = body["taskId"].as_str().unwrap();
@@ -809,7 +820,7 @@ async fn grouped_task_submission_cannot_use_a_forbidden_channel() {
         .assign_key_group(world.organization_id, key_id, Some(group.id))
         .await
         .unwrap();
-    let response = submit_task(&world.app, &world.key, simple_submit()).await;
+    let response = submit_task(&world.app, &world.key, simple_submit(&world.model)).await;
     assert_eq!(response.status(), StatusCode::BAD_REQUEST);
     assert!(world.script.seen_submits.lock().unwrap().is_empty());
     let count: i64 =
@@ -842,12 +853,12 @@ async fn grouped_task_submission_cannot_use_a_forbidden_channel() {
         .await
         .unwrap();
     world.script.submit(
-        "task-model",
+        &world.model,
         SubmitAnswer::Accept {
             task_id: "allowed-task".into(),
         },
     );
-    let response = submit_task(&world.app, &world.key, simple_submit()).await;
+    let response = submit_task(&world.app, &world.key, simple_submit(&world.model)).await;
     assert_eq!(response.status(), StatusCode::OK);
     assert_eq!(world.script.seen_submits.lock().unwrap().len(), 1);
 }
@@ -859,7 +870,7 @@ async fn sibling_key_cannot_poll_cancel_or_replay_a_task() {
     };
     let world = world(&url, 10_000).await;
     world.script.submit(
-        "task-model",
+        &world.model,
         SubmitAnswer::Accept {
             task_id: "isolated-task".into(),
         },
@@ -895,7 +906,7 @@ async fn sibling_key_cannot_poll_cancel_or_replay_a_task() {
             serde_json::from_slice(&res.into_body().collect().await.unwrap().to_bytes()).unwrap();
         (status, body)
     }
-    let (status, original) = submit(&world.app, &world.key, simple_submit()).await;
+    let (status, original) = submit(&world.app, &world.key, simple_submit(&world.model)).await;
     assert_eq!(status, StatusCode::OK, "{original}");
     let task_id = original["taskId"].as_str().unwrap();
     let wallet = world.tenants.get(&world.tenant_id).await.unwrap();
@@ -912,16 +923,16 @@ async fn sibling_key_cannot_poll_cancel_or_replay_a_task() {
         assert_eq!(status, StatusCode::NOT_FOUND, "{body}");
         assert_eq!(body["error"]["code"], "NOT_FOUND");
     }
-    let (status, _) = submit(&world.app, &sibling.secret, simple_submit()).await;
+    let (status, _) = submit(&world.app, &sibling.secret, simple_submit(&world.model)).await;
     assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
-    let mut changed = simple_submit();
+    let mut changed = simple_submit(&world.model);
     changed["input"]["prompt"] = json!("changed");
     assert_eq!(
         submit(&world.app, &world.key, changed).await.0,
         StatusCode::UNPROCESSABLE_ENTITY
     );
     for _ in 0..3 {
-        let (status, replay) = submit(&world.app, &world.key, simple_submit()).await;
+        let (status, replay) = submit(&world.app, &world.key, simple_submit(&world.model)).await;
         assert_eq!(status, StatusCode::OK);
         assert_eq!(replay, original);
     }
@@ -955,7 +966,7 @@ async fn task_poll_and_cancel_retain_submission_endpoint_after_channel_repoint()
     };
     let world = world(&url, 10000).await;
     world.script.submit(
-        "task-model",
+        &world.model,
         SubmitAnswer::Accept {
             task_id: "old-provider-job".into(),
         },
@@ -964,7 +975,7 @@ async fn task_poll_and_cancel_retain_submission_endpoint_after_channel_repoint()
         &world.app,
         "POST",
         "/v1/tasks",
-        Some(json!({"model":"task-model","kind":"custom","input":{},"maxCostMinor":500})),
+        Some(json!({"model":world.model,"kind":"custom","input":{},"maxCostMinor":500})),
         Some(&world.key),
     )
     .await;
@@ -1046,7 +1057,7 @@ async fn task_admission_honors_customer_models_and_refuses_unsupported_aliases_a
         .set_organization_tier(world.organization_id, Some("task-limited"))
         .await
         .unwrap();
-    let response = submit_task(&world.app, &world.key, simple_submit()).await;
+    let response = submit_task(&world.app, &world.key, simple_submit(&world.model)).await;
     assert_eq!(response.status(), StatusCode::FORBIDDEN);
     assert!(world.script.seen_submits.lock().unwrap().is_empty());
     world
@@ -1056,10 +1067,10 @@ async fn task_admission_honors_customer_models_and_refuses_unsupported_aliases_a
         .unwrap();
     world
         .db
-        .create_alias(&world.channel, "task-alias", "task-model")
+        .create_alias(&world.channel, "task-alias", &world.model)
         .await
         .unwrap();
-    let mut aliased = simple_submit();
+    let mut aliased = simple_submit(&world.model);
     aliased["model"] = json!("task-alias");
     assert_eq!(
         submit_task(&world.app, &world.key, aliased).await.status(),
@@ -1071,7 +1082,7 @@ async fn task_admission_honors_customer_models_and_refuses_unsupported_aliases_a
         .header("authorization", format!("Bearer {}", world.key))
         .header("content-type", "application/json")
         .header("x-oxsum-mandate", "a-mandate-must-not-be-ignored")
-        .body(Body::from(simple_submit().to_string()))
+        .body(Body::from(simple_submit(&world.model).to_string()))
         .unwrap();
     assert_eq!(
         world.app.clone().oneshot(request).await.unwrap().status(),
@@ -1091,15 +1102,15 @@ async fn task_admission_honors_customer_models_and_refuses_unsupported_aliases_a
     );
     let (_, list) = call(&world.app, "GET", "/v1/models", None, Some(&world.key)).await;
     let listed = list["data"].as_array().unwrap();
-    assert!(listed.iter().any(|m| m["id"] == "task-model"));
+    assert!(listed.iter().any(|m| m["id"] == world.model));
     assert!(listed.iter().all(|m| m["id"] != "task-alias"));
     world.script.submit(
-        "task-model",
+        &world.model,
         SubmitAnswer::Accept {
             task_id: "permission-snapshot-task".into(),
         },
     );
-    let response = submit_task(&world.app, &world.key, simple_submit()).await;
+    let response = submit_task(&world.app, &world.key, simple_submit(&world.model)).await;
     assert_eq!(response.status(), StatusCode::OK);
     let body: Value =
         serde_json::from_slice(&response.into_body().collect().await.unwrap().to_bytes()).unwrap();
