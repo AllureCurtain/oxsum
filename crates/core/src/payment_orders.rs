@@ -1095,6 +1095,12 @@ impl Db {
                     .bind(order_id)
                     .execute(&mut *tx)
                     .await?;
+                    // The discrepancy decision is final — mark the receipt
+                    // `applied` here too so `recoverable_merchant_events` does
+                    // not re-select `accepted` rows and re-apply the park forever.
+                    // Only the order needs a human, not the inbox event.
+                    sqlx::query("UPDATE oxsum.merchant_event_inbox SET state='applied',updated_at=now() WHERE receipt_id=$1 AND state='accepted'")
+                        .bind(receipt.id).execute(&mut *tx).await?;
                     tx.commit().await?;
                     return Ok(());
                 }
