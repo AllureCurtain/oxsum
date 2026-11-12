@@ -1,12 +1,16 @@
 # Acceptance checkpoint — 2026-11-12
 
-Issue #984. GitHub main is `d4232c7d`.
+Issue #984. GitHub main is `e5f66e00`.
 [Verified merge identities](verified-merges.json) now include every previously
-pending PR through #1029. Implementation integration, development acceptance and
-exact-artifact release acceptance remain separate. N00/N01/N02/N07/N08 owner
-issues are closed; the other owner issues and umbrella #725 stay open only for
-their remaining journey/external/candidate gates, not for pending software
-integration. This ratio is not software completion.
+pending PR through #1029; post-checkpoint merges #1030–#1074 are also on main.
+Implementation integration, development acceptance and exact-artifact release
+acceptance remain separate. As of 2026-11-12 evening, **18 of 21 N-units are
+closed** (N00–N13, N17, N21 plus the conservation umbrellas #768/#779/#829);
+the six open N-units (#740/#741/#742/#744/#745/#746) are external-gate or
+final-verdict items only — real-provider matrix remainder, PSP sandbox/live,
+declared-hardware soak, final candidate manifest verdict, two independent
+pilots and publication. Epic #725 stays open until those close. This ratio is
+not software completion.
 
 ## Integrated software and development evidence
 
@@ -74,16 +78,30 @@ failure, which PR #1004 repaired.
   fixtures cannot replace these gates. Pilot preparation is integrated in #874.
 - **Exact-candidate acceptance**: candidate `cc16bb8f` is frozen with green
   full-tier CI [42951039071](https://github.com/AllureCurtain/oxsum/actions/runs/42951039071)
-  and all nine manifest gates. J01–J16/J18 acceptance against the built image —
-  portal/embedded/offline/deploy/restore journeys — remains. No final
+  and all nine manifest gates. **J02–J12 portal journeys now pass on the built
+  image** ([candidate-journeys](candidate-journeys/README.md), 2026-11-12),
+  and J13/J14/J16/J18 have recorded candidate-tier evidence (offline SDK
+  verification, deploy/rollback and restore rehearsals, embedded rehearsal).
+  Still missing for N18's final verdict: J15 declared-hardware capacity/soak
+  and J17 two independent pilots — both external gates. No final
   operator-launch candidate has completed acceptance.
-- **Conservation umbrellas**: #768, #779 and #829 stay open. Their child repairs
-  are integrated (#778/#780/#784/#798/#812/#815/#837/#840→#847/#841→#868/#842→#903
-  and #1029); what remains is the explicit acceptance audit each umbrella
-  requires, plus any residual scope the audit surfaces — not merged software.
-- **Browser acceptance**: #946 and #969 stay open for the remaining commercial,
-  embedded and final-candidate journeys. Development browser evidence already
-  integrated does not substitute for candidate acceptance.
+- **Conservation umbrellas**: #768, #779 and #829 were **closed 2026-11-12** by
+  acceptance audit — the audits confirmed their child repairs
+  (#778/#780/#784/#798/#812/#815/#837/#840→#847/#841→#868/#842→#903 and #1029)
+  satisfy the conservation criteria with exact test names and ledger semantics.
+- **Browser acceptance**: #946 and #969 were **closed 2026-11-12** — their
+  development-scope acceptance is fully recorded, and the 2026-11-12
+  candidate-image run ([candidate-journeys](candidate-journeys/README.md))
+  re-drove J02–J12 on frozen `cc16bb8f`. Two new defects surfaced are filed as
+  #1072 (revoked-staff dead-end loop) and #1073 (statement surfaces).
+- **N-unit audit closures 2026-11-12**: #729 (N03), #730 (N04), #731 (N05),
+  #732 (N06), #735 (N09), #736 (N10), #737 (N11), #738 (N12), #739 (N13),
+  #743 (N17), #747 (N21) — each closed against recorded evidence with tier
+  labeling preserved; remaining open units are #740 (real-provider matrix
+  remainder), #741 (PSP sandbox/live), #742 (declared-hardware capacity/soak),
+  #744 (final candidate manifest verdict), #745 (two independent pilots),
+  #746 (publication), epic #725 and #622 — all external-gate or final-verdict
+  items, not pending software.
 - **Public publication and existing-service upgrades remain unperformed** under
   the recorded scope; tooling and isolated rehearsal do not claim those actions.
 
