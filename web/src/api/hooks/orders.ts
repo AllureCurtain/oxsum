@@ -1,3 +1,4 @@
+import { useRef } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api } from "../client";
 import type { components } from "../schema";
@@ -106,12 +107,20 @@ export function useOrderRefunds(orderId: string | undefined) {
  * absent asks for the whole refundable remainder. */
 export function useRequestRefund(orderId: string | undefined) {
   const client = useQueryClient();
+  // One key per ask: a retried `mutate` of the same reason/amount replays the
+  // standing request instead of recording a second one.
+  const intent = useRef<{ body: string; key: string } | null>(null);
   return useMutation({
-    mutationFn: (body: { reason: string; amountMinor?: number | null }) =>
-      api<OrderRefund>(`/orders/${orderId}/refund-request`, {
+    mutationFn: (body: { reason: string; amountMinor?: number | null }) => {
+      const serialized = JSON.stringify(body);
+      if (intent.current?.body !== serialized) {
+        intent.current = { body: serialized, key: crypto.randomUUID() };
+      }
+      return api<OrderRefund>(`/orders/${orderId}/refund-request`, {
         method: "POST",
-        body: { idempotencyKey: crypto.randomUUID(), ...body },
-      }),
+        body: { idempotencyKey: intent.current.key, ...body },
+      });
+    },
     onSuccess: () => {
       client.invalidateQueries({ queryKey: ["order-refunds", orderId] });
       client.invalidateQueries({ queryKey: ["order", orderId] });
