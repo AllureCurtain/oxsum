@@ -98,6 +98,12 @@ pub mod kinds {
     /// its timeout. Leader-required — a second runner would seal the same
     /// organizations at once.
     pub const CLOSE_MONTH: &str = "close-month";
+    /// The x402 credit-recovery pass (issue #1089): retries the wallet credit
+    /// for deposits whose chain transfer committed but whose `top_up` failed
+    /// (`meta.creditError`). Unleadered — each row is claimed `FOR UPDATE` and
+    /// the retry replays under the same `x402:<nonce>` key, so a second
+    /// runner's attempt is a replay, never a second credit.
+    pub const RECOVER_DEPOSIT_CREDITS: &str = "recover-deposit-credits";
 }
 
 /// How long a claimed run may take before another worker's claim assumes the
@@ -253,6 +259,9 @@ pub fn next_run(kind: &str) -> Option<Duration> {
         // The refund pass rides the row's own `next_retry_at`, so the poll
         // only bounds how late a due retry starts.
         REFUND_RETRIES => Duration::seconds(30),
+        // Stuck x402 credits should heal promptly once whatever broke the
+        // ledger credit clears; a no-op pass is one indexed SELECT.
+        RECOVER_DEPOSIT_CREDITS => Duration::seconds(30),
         // The receivable marks past-due promptly once its terms lapse: the
         // scan is one indexed UPDATE bounded per pass, so a minute cadence
         // costs nothing and a backlog still drains over ticks.

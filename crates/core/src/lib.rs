@@ -385,7 +385,7 @@ pub use webhooks::{
 };
 pub use x402::{
     ASSET_CREDIT, Ed25519RailVerifier, NETWORK_ED25519, RAIL_X402, RailSettlement, RailVerifier,
-    SCHEME_EXACT, SettleRefusal, VerifiedPayment,
+    SCHEME_EXACT, SettleRefusal, VerifiedPayment, X402RecoveryReport,
 };
 
 pub use customer_authority::{CustomerCapability, CustomerRecordScope};
