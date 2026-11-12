@@ -12986,6 +12986,7 @@ components:
       description: "A staff redemption returns the user and no org/key; a customer or team redemption returns the registration fields."
     RedeemInvitationRequest:
       type: object
+      additionalProperties: false
       required: [token, email, password]
       properties:
         token: { type: string, description: "the invitation link's token" }
@@ -12994,6 +12995,7 @@ components:
         turnstileToken: { type: [string, "null"], description: "the widget's response token — required when the deployment configures the anti-bot check" }
     RegisterRequest:
       type: object
+      additionalProperties: false
       required: [email, password]
       properties:
         email: { type: string, format: email, maxLength: 320 }
@@ -13032,12 +13034,14 @@ components:
         expiresAt: { type: string, format: date-time }
     DeviceAuthorizeRequest:
       type: object
+      additionalProperties: false
       required: [userCode, approve]
       properties:
         userCode: { type: string, description: "the code the user typed; dashes and case are ignored" }
         approve: { type: boolean, description: "true grants a key into the session's organization; false denies the request" }
     DeviceTokenRequest:
       type: object
+      additionalProperties: false
       required: [deviceCode]
       properties:
         deviceCode: { type: string }
@@ -13072,22 +13076,26 @@ components:
           description: the address was already verified, so nothing was mailed
     VerifyEmailRequest:
       type: object
+      additionalProperties: false
       required: [token]
       properties:
         token: { type: string, minLength: 1, maxLength: 256, description: the `oxt-…` token the verification mail's link carries }
     ForgotPasswordRequest:
       type: object
+      additionalProperties: false
       required: [email]
       properties:
         email: { type: string, format: email, maxLength: 320 }
     ResetPasswordRequest:
       type: object
+      additionalProperties: false
       required: [token, password]
       properties:
         token: { type: string, minLength: 1, maxLength: 256, description: the `oxt-…` token the reset mail's link carries }
         password: { type: string, minLength: 12, maxLength: 256, description: at least 12 characters }
     LoginRequest:
       type: object
+      additionalProperties: false
       required: [email, password]
       properties:
         email: { type: string, format: email, maxLength: 320 }
@@ -13108,11 +13116,13 @@ components:
         role: { type: string, enum: [owner, admin, member], description: "the role the session's user holds in this organization" }
     CreateOrganizationRequest:
       type: object
+      additionalProperties: false
       required: [name]
       properties:
         name: { type: string, minLength: 1, maxLength: 80, description: "the new team organization's name" }
     SwitchOrganizationRequest:
       type: object
+      additionalProperties: false
       required: [organizationId]
       properties:
         organizationId: { type: string, format: uuid, description: "must be an organization the session's user is a member of" }
@@ -13154,12 +13164,14 @@ components:
         turnstileSiteKey: { type: [string, "null"], description: "the Turnstile site key when the anti-bot check is configured — public by design, the page hands it to the widget" }
     TotpLoginRequest:
       type: object
+      additionalProperties: false
       required: [challengeToken, code]
       properties:
         challengeToken: { type: string, description: "the `challengeToken` `POST /api/v1/auth/login` answered with `requiresTotp: true`" }
         code: { type: string, description: "a live six-digit authenticator code, or a `xxxx-xxxx` backup code (consumed on use)" }
     TotpCodeRequest:
       type: object
+      additionalProperties: false
       required: [code]
       properties:
         code: { type: string, description: "a live six-digit authenticator code" }
@@ -13213,6 +13225,7 @@ components:
           description: "the decimal places the unit renders with — 2 for most currencies, 0 for JPY-shaped ones; the render rounds half-up to this precision"
     CreateKeyRequest:
       type: object
+      additionalProperties: false
       properties:
         name: { type: string, minLength: 1, maxLength: 80 }
         expiresAt: { type: [string, "null"], format: date-time, description: optional expiry; an expired key authenticates nothing }
@@ -13275,6 +13288,7 @@ components:
         channels: { type: array, items: { $ref: "#/components/schemas/RequestGroupChannel" }, description: "the readable identity of every channel in channelIds, in the same order" }
     RequestGroupChannels:
       type: object
+      additionalProperties: false
       required: [channelIds]
       description: "The whole channel set a group installs — every id must name a real channel."
       properties:
@@ -13302,6 +13316,7 @@ components:
         createdAt: { type: string, format: date-time }
     GuardrailPolicyRequest:
       type: object
+      additionalProperties: false
       required: [kind, config]
       properties:
         kind: { type: string, enum: [keyword, pii, moderation] }
@@ -13316,6 +13331,7 @@ components:
         policies: { type: array, items: { type: string }, description: "the retained ordered policy names; new writes and effective turn unions are limited to eight distinct names" }
     GuardrailBindingRequest:
       type: object
+      additionalProperties: false
       required: [policies]
       properties:
         policies: { type: array, maxItems: 8, uniqueItems: true, items: { type: string, pattern: '^[a-z0-9][a-z0-9._-]{0,63}$' }, description: "Every name must already exist. The complete channel/key/mandate union may contain at most eight policies; an oversized effective union refuses before execution." }
@@ -13395,6 +13411,7 @@ components:
             mandate: { type: string, description: "base64url of the canonical body plus its Ed25519 signature — the blob the delegate presents in `X-Oxsum-Mandate`" }
     CreateMandateRequest:
       type: object
+      additionalProperties: false
       required: [capMinor, notAfter]
       properties:
         capMinor: { type: integer, format: int64, minimum: 1, description: "total committed spend the mandate may carry — must sit inside the key's own `spendLimitMinor` when the key has one" }
@@ -13445,6 +13462,7 @@ components:
         weight: { type: integer, format: int64, minimum: 1, description: "the variant's relative share of the weighted pick" }
     PutExperimentRequest:
       type: object
+      additionalProperties: false
       required: [variants]
       properties:
         variants:
@@ -13479,6 +13497,7 @@ components:
         createdAt: { type: string, format: date-time, description: when the team was created }
     CreateTeamRequest:
       type: object
+      additionalProperties: false
       required: [name]
       properties:
         name: { type: string, minLength: 1, maxLength: 80, description: "the subgroup's name — unique per organization" }
@@ -13490,6 +13509,7 @@ components:
           description: "the team's committed-spend cap across every key its members minted; absent or null carries none"
     UpdateTeamRequest:
       type: object
+      additionalProperties: false
       properties:
         name: { type: string, minLength: 1, maxLength: 80, description: "the team's new name" }
         budgetLimitMinor:
@@ -13502,6 +13522,7 @@ components:
             an explicit null clears it. At least one of `name` and `budgetLimitMinor` is required.
     UpdateMemberRequest:
       type: object
+      additionalProperties: false
       properties:
         role:
           type: string
@@ -13529,6 +13550,7 @@ components:
             of `role`, `budgetLimitMinor` and `teamId` is required.
     TransferOwnershipRequest:
       type: object
+      additionalProperties: false
       required: [userId]
       properties:
         userId: { type: string, format: uuid, description: "the member who becomes the owner; they are an admin or a member of this organization" }
@@ -13577,6 +13599,7 @@ components:
         createdAt: { type: string, format: date-time }
     CreateWebhookRequest:
       type: object
+      additionalProperties: false
       required: [url, events]
       properties:
         url: { type: string, format: uri, minLength: 1, maxLength: 500, description: "the HTTPS (or localhost HTTP) address events are posted to" }
@@ -13647,6 +13670,7 @@ components:
         deliveredAt: { type: [string, "null"], format: date-time }
     ChannelRequest:
       type: object
+      additionalProperties: false
       required: [name, baseUrl]
       properties:
         name: { type: string, minLength: 1, maxLength: 40, pattern: "^[A-Za-z0-9._-]+$", description: the channel's identity; posting an existing name replaces its connection }
@@ -14215,6 +14239,7 @@ components:
       allOf:
         - $ref: "#/components/schemas/PriceSet"
         - type: object
+          additionalProperties: false
           required: [model]
           properties:
             model: { type: string, minLength: 1, maxLength: 200 }
@@ -14241,6 +14266,7 @@ components:
         version: { type: integer, minimum: 1, description: the version this change appended }
     AliasRequest:
       type: object
+      additionalProperties: false
       required: [alias, upstreamModel]
       description: "an alias claim (issue #286): the public name callers write, and the upstream model the channel relays it as"
       properties:
@@ -14248,6 +14274,7 @@ components:
         upstreamModel: { type: string, minLength: 1, maxLength: 200, description: "the model the channel actually serves, forwarded upstream in place of the alias" }
     ModelFallbackChain:
       type: object
+      additionalProperties: false
       required: [fallbacks]
       properties:
         fallbacks:
@@ -14684,6 +14711,7 @@ components:
             only its SHA-256
     CreateEvidenceShareRequest:
       type: object
+      additionalProperties: false
       properties:
         label:
           type: string
@@ -14759,6 +14787,7 @@ components:
             are still the answer, so the operator can pass the link on by hand
     CreateReportLinkRequest:
       type: object
+      additionalProperties: false
       properties:
         label:
           type: string
@@ -14779,6 +14808,7 @@ components:
             exists; a deployment without a mailer refuses it
     CreateEndUserLinkRequest:
       type: object
+      additionalProperties: false
       required: [endUser]
       properties:
         endUser:
@@ -15125,6 +15155,7 @@ components:
           description: The cursor the next page asks with; absent at the list's start.
     EstimatePriceRequest:
       type: object
+      additionalProperties: false
       required: [model]
       properties:
         model: { type: string, minLength: 1, maxLength: 200 }
@@ -15157,6 +15188,7 @@ components:
               description: the upstream protocol — the surface `model` answers on, `openai`, `anthropic` or `gemini`
     AdjustOrganizationRequest:
       type: object
+      additionalProperties: false
       required: [amountMinor, reason, idempotencyKey]
       properties:
         amountMinor:
@@ -15175,6 +15207,7 @@ components:
           description: a retry writes no second entry; the same key replays the same adjustment
     UpdateOrganizationRequest:
       type: object
+      additionalProperties: false
       required: [idempotencyKey]
       properties:
         creditLimitMinor:
@@ -15228,6 +15261,7 @@ components:
           description: a retry writes no second entry; the same key replays the same change. At least one of creditLimitMinor, paymentTermsDays, tier, suspended, dunningGraceDays and displayCurrency must be present.
     UpdateOrgDisplayRequest:
       type: object
+      additionalProperties: false
       required: [displayCurrency]
       properties:
         displayCurrency:
@@ -15239,6 +15273,7 @@ components:
             presentational and moves no money.
     PasswordResetRequest:
       type: object
+      additionalProperties: false
       required: [newPassword]
       properties:
         newPassword:
@@ -15468,6 +15503,7 @@ components:
         organizations: { type: integer, format: int64, minimum: 0, description: how many organizations are assigned the tier }
     SetTierRequest:
       type: object
+      additionalProperties: false
       properties:
         requestsPerMinute:
           type: integer
@@ -15515,6 +15551,7 @@ components:
         createdAt: { type: string, format: date-time }
     CreateDiscountRequest:
       type: object
+      additionalProperties: false
       required: [percent, idempotencyKey]
       properties:
         percent:
@@ -15584,6 +15621,7 @@ components:
           description: catalog order — a rebind to a higher `sortOrder` closes the period as `upgrade`, a lower one as `downgrade`
     SetSubscriptionPlanRequest:
       type: object
+      additionalProperties: false
       required: [quotaMinor, resetPeriod]
       properties:
         quotaMinor:
@@ -15683,6 +15721,7 @@ components:
         createdAt: { type: string, format: date-time }
     BindSubscriptionRequest:
       type: object
+      additionalProperties: false
       required: [planId]
       properties:
         planId: { type: string, format: uuid }
@@ -15696,6 +15735,7 @@ components:
           description: attaches the Stripe subscription id the webhook renewals and cancellations key on; must be unique across bindings
     SubscriptionCheckoutRequest:
       type: object
+      additionalProperties: false
       required: [planId]
       properties:
         planId:
@@ -16060,6 +16100,7 @@ components:
         preview: { $ref: "#/components/schemas/InvoiceCorrectionPreview" }
     VoidJournalRequest:
       type: object
+      additionalProperties: false
       required: [idempotencyKey, reason]
       properties:
         idempotencyKey: { type: string, minLength: 1, maxLength: 200 }
@@ -16185,6 +16226,7 @@ components:
           nullable: true
     ReleaseStatementRequest:
       type: object
+      additionalProperties: false
       required: [idempotencyKey, action, reason]
       properties:
         idempotencyKey: { type: string, minLength: 1, maxLength: 200 }
@@ -16195,6 +16237,7 @@ components:
         reason: { type: string, minLength: 1, maxLength: 500 }
     PublishPlanRequest:
       type: object
+      additionalProperties: false
       required: [name, priceMinor, currency, quotaMinor, periodKind]
       properties:
         planId:
@@ -16217,6 +16260,7 @@ components:
         sortOrder: { type: integer, default: 0 }
     BindPlanRequest:
       type: object
+      additionalProperties: false
       required: [planVersionId]
       properties:
         planVersionId:
@@ -16230,6 +16274,7 @@ components:
           description: required for a free plan — the grant key period 0 authorizes under; refused on a priced plan
     PlanChangeRequest:
       type: object
+      additionalProperties: false
       required: [planVersionId]
       properties:
         planVersionId:
@@ -16389,6 +16434,7 @@ components:
         sealHash: { type: string, description: the seal's own hash, hex — it chains onto the seal before it }
     CloseMonthRequest:
       type: object
+      additionalProperties: false
       required: [month]
       properties:
         month: { type: string, pattern: "^[0-9]{4}-(0[1-9]|1[0-2])$", description: "the month to close, `YYYY-MM`; it must have fully ended" }
@@ -16403,17 +16449,20 @@ components:
           description: "queued for a newly-enqueued run; already-queued when a pending or running close of the same kind is still claimed — a retry never duplicates the pass"
     GenerateStatementsRequest:
       type: object
+      additionalProperties: false
       required: [period]
       properties:
         period: { type: string, pattern: "^[0-9]{4}-(0[1-9]|1[0-2])$", description: "the month to bill, `YYYY-MM`; it must have fully ended" }
         organizationId: { type: string, format: uuid, description: generate for this organization only; absent means every organization the period's usage covers }
     StatementTransitionRequest:
       type: object
+      additionalProperties: false
       required: [idempotencyKey]
       properties:
         idempotencyKey: { type: string, minLength: 1, maxLength: 200, description: carried for uniformity; the transition is idempotent on its own }
     RecordStatementPaymentRequest:
       type: object
+      additionalProperties: false
       required: [amountMinor, idempotencyKey]
       properties:
         amountMinor: { type: integer, format: int64, minimum: 1, description: positive credit minor units; cannot exceed unpaid credit draws through the selected issued month }
@@ -16586,12 +16635,14 @@ components:
         expectedOrigin: { type: string, description: "the tenant ledger origin, `oxsum/ledgers/<tenant>` — the same string `anchor.origin` and `GET /api/v1/log/head` carry" }
     AmountRequest:
       type: object
+      additionalProperties: false
       required: [idempotencyKey, amountMinor]
       properties:
         idempotencyKey: { type: string, minLength: 1, maxLength: 128, description: UTF-8 idempotency key; the server accepts at most 128 bytes }
         amountMinor: { type: integer, format: int64, minimum: 1 }
     X402TopupRequest:
       type: object
+      additionalProperties: false
       required: [payment]
       properties:
         payment:
@@ -16665,6 +16716,7 @@ components:
           description: "the escape hatch — provider extras that fit no column; never reaches the ledger description"
     MeteringHoldRequest:
       type: object
+      additionalProperties: false
       required: [idempotencyKey, organizationId, channel, billableCode, usage]
       properties:
         idempotencyKey: { type: string, minLength: 1, maxLength: 200, description: "UTF-8 idempotency key, scoped to the credential and customer; the returned opaque holdKey binds both" }
@@ -16675,6 +16727,7 @@ components:
         usage: { $ref: "#/components/schemas/EventUsage" }
     MeteringSettleRequest:
       type: object
+      additionalProperties: false
       required: [organizationId, holdKey, usage]
       properties:
         organizationId: { type: string, format: uuid }
@@ -16683,12 +16736,14 @@ components:
         usage: { $ref: "#/components/schemas/EventUsage" }
     MeteringReleaseRequest:
       type: object
+      additionalProperties: false
       required: [organizationId, holdKey]
       properties:
         organizationId: { type: string, format: uuid }
         holdKey: { type: string, minLength: 1 }
     MeteringSettlementRequest:
       type: object
+      additionalProperties: false
       required: [idempotencyKey, organizationId, channel, billableCode, usage]
       properties:
         idempotencyKey: { type: string, minLength: 1, maxLength: 200 }
@@ -17898,11 +17953,13 @@ components:
         revokedAt: { type: [string, "null"], format: date-time }
     RedeemRequest:
       type: object
+      additionalProperties: false
       required: [code]
       properties:
         code: { type: string, description: "the redemption code as minted, `oxr-` plus 64 hex characters" }
     RedemptionCodeBatchRequest:
       type: object
+      additionalProperties: false
       required: [count, amountMinor]
       properties:
         count: { type: integer, minimum: 1, maximum: 1000, description: how many codes this batch mints }
