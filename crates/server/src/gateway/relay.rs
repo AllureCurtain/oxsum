@@ -555,8 +555,8 @@ impl Turn {
     /// so a `Block` cannot un-send them: every verdict here lands in the
     /// settlement's `guardrail` field, a `blocked` one marked `streamed` so the
     /// bill says the answer flew before the policy could hold it.
-    pub fn evaluate_response_guardrails(&mut self) {
-        let Some(plan) = self.plan.as_mut() else {
+    pub async fn evaluate_response_guardrails(&mut self) {
+        let Some(plan) = self.plan.as_ref() else {
             return;
         };
         if plan.response_guardrails.is_empty() {
@@ -574,7 +574,7 @@ impl Turn {
         };
         let mut notes: Vec<oxsum_core::SettlementGuardrailOwned> = Vec::new();
         for policy in &plan.response_guardrails {
-            match policy.evaluate_response(&ctx) {
+            match policy.evaluate_response(&ctx).await {
                 oxsum_core::Verdict::Allow => {}
                 oxsum_core::Verdict::Flag { policy, reason } => {
                     notes.push(oxsum_core::SettlementGuardrailOwned {
@@ -1443,7 +1443,7 @@ pub fn stream(
         // the policies' verdicts can only be recorded — flagged or blocked
         // alike lands in the settlement's `guardrail` field, a blocked one
         // marked `streamed`.
-        turn.evaluate_response_guardrails();
+        turn.evaluate_response_guardrails().await;
         // Read the closing frame before `settle` gives the plan up.
         let closing_frame = turn.closing_frame();
         let (kind, charge) = turn.closing();

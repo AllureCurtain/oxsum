@@ -1124,7 +1124,7 @@ async fn run(
             channel: &primary.channel,
         };
         for policy in &guardrails {
-            match policy.evaluate_request(&ctx) {
+            match policy.evaluate_request(&ctx).await {
                 oxsum_core::Verdict::Allow => {}
                 oxsum_core::Verdict::Flag { policy, reason } => {
                     pending_flags.push(oxsum_core::SettlementGuardrailOwned {
@@ -1824,7 +1824,7 @@ async fn run(
                             };
                             let mut blocked: Option<(String, String)> = None;
                             for policy in &guardrails {
-                                match policy.evaluate_response(&response_ctx) {
+                                match policy.evaluate_response(&response_ctx).await {
                                     oxsum_core::Verdict::Allow => {}
                                     oxsum_core::Verdict::Flag { policy, reason } => {
                                         turn.note_guardrail(oxsum_core::SettlementGuardrailOwned {
@@ -2088,7 +2088,7 @@ async fn serve_cache_hit(
         };
         let mut blocked: Option<(String, String)> = None;
         for policy in &response_guardrails {
-            match policy.evaluate_response(&response_ctx) {
+            match policy.evaluate_response(&response_ctx).await {
                 oxsum_core::Verdict::Allow => {}
                 oxsum_core::Verdict::Flag { policy, reason } => {
                     turn.note_guardrail(oxsum_core::SettlementGuardrailOwned {

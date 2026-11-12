@@ -70,15 +70,20 @@ pub(crate) struct AppState {
     /// per process is what lets the sweeper tell a crashed worker's operations
     /// from a live one's.
     pub(crate) instance_id: String,
+    /// The built `GuardrailSet`, rebuilt on a short TTL (see
+    /// [`guardrail::GuardrailCache`]): admission reads it every request, so it
+    /// must not pay the policies + bindings reads and the regex/secret build
+    /// per turn.
+    pub(crate) guardrails: Arc<tokio::sync::RwLock<guardrail::GuardrailCache>>,
 }
 
 impl AppState {
-    /// The guardrail impls a turn runs (issue #502): the `GuardrailSet` built
-    /// per request from the stored policies and bindings — two indexed reads —
-    /// then filtered to this channel/key/mandate. Per request rather than at
-    /// startup so a policy the org writes or binds takes effect on the next
-    /// call, never on a restart; the build is cheap and the verdicts are the
-    /// hot path. `build_guardrail_set` skips a policy that cannot build, so a
+    /// The guardrail impls a turn runs (issue #502): the cached `GuardrailSet`
+    /// filtered to this channel/key/mandate. The set rebuilds on a short TTL
+    /// rather than per request — a policy the org writes or binds takes effect
+    /// within the TTL, never on a restart, and the hot path stops paying the
+    /// two reads plus the regex compile and secret unseal per turn.
+    /// `build_guardrail_set` skips a policy that cannot build, so a
     /// misconfigured rule degrades to its absence rather than fail the app.
     /// Over-limit keyword configurations and effective policy unions are the
     /// explicit exception: affected turns refuse before evaluation/execution.
@@ -92,8 +97,13 @@ impl AppState {
         // A deployment without a secret seals nothing — and holds no moderation
         // credentials either, so a `moderation` policy is skipped for want of
         // the key that would open its bearer.
-        let set = guardrail::build_guardrail_set(&self.db, self.http.clone(), self.config.secret())
-            .await?;
+        let set = guardrail::GuardrailCache::get(
+            &self.guardrails,
+            &self.db,
+            self.http.clone(),
+            self.config.secret(),
+        )
+        .await?;
         set.for_turn(channel, key_id, key_required, mandate_required)
     }
 }
@@ -141,6 +151,7 @@ pub fn app_with_billing(
         rate_limiter,
         metrics: metrics.clone(),
         instance_id: uuid::Uuid::new_v4().to_string(),
+        guardrails: Arc::new(tokio::sync::RwLock::new(guardrail::GuardrailCache::new())),
     };
     (routes::router(state), billing, metrics)
 }
