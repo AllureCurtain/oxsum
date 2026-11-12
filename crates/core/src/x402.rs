@@ -46,6 +46,25 @@ pub const NETWORK_ED25519: &str = "oxsum-ed25519";
 /// The only asset the wallet credits.
 pub const ASSET_CREDIT: &str = "OXSUM-CREDIT";
 
+/// Credit-recovery attempts before a stuck x402 deposit is fenced off
+/// (`meta.creditExhausted`) for an operator (issue #1089).
+pub const X402_CREDIT_MAX_ATTEMPTS: i32 = 5;
+/// Rows each recovery pass takes — a backlog drains over passes.
+const RECOVERY_BATCH: i64 = 64;
+
+/// What one `recover-deposit-credits` pass did (issue #1089).
+#[derive(Debug, Default)]
+pub struct X402RecoveryReport {
+    /// Stuck deposits the pass selected.
+    pub found: usize,
+    /// Deposits whose retry credited the wallet and flipped `credited`.
+    pub recovered: usize,
+    /// Deposits whose retry failed again below the attempt budget.
+    pub still_failing: usize,
+    /// Deposits that hit [`X402_CREDIT_MAX_ATTEMPTS`] and stopped retrying.
+    pub exhausted: usize,
+}
+
 /// A verified payment authorization: what the rail credits, and the reference
 /// the deposit anchors on.
 #[derive(Debug, Clone)]
@@ -508,5 +527,155 @@ impl crate::Db {
         }
         tx.commit().await?;
         Ok(receipt)
+    }
+
+    /// Retries the wallet credit for x402 deposits whose chain transfer
+    /// committed but whose `top_up` failed — the rows `credit_x402_deposit`
+    /// marks with `meta.creditError` (issue #1089).
+    ///
+    /// Each row is claimed `FOR UPDATE` while the credit is attempted, and the
+    /// credit runs under the same nonce-derived key (`x402:<payment_ref>`) the
+    /// request path used — the ledger's idempotency gate makes a recovered
+    /// grant credit exactly once, whether it raced a retry or replayed one.
+    /// On success the row flips `confirmed → credited`, drops `creditError`,
+    /// and fires the same `deposit.credited` event and `balance.low`
+    /// latch-clear as the request path. On failure `meta.creditAttempts`
+    /// counts up; at [`X402_CREDIT_MAX_ATTEMPTS`] the row is marked
+    /// `creditExhausted` and left `confirmed` — it stops retrying but stays
+    /// visible to the `DepositsStuck` drift class rather than being hidden.
+    ///
+    /// The pass is idempotent and safe to run unleadered: two workers racing
+    /// one row serialize on its `FOR UPDATE` claim, and the loser's `top_up`
+    /// replays the standing receipt.
+    ///
+    /// # Errors
+    ///
+    /// Storage failures surface as [`WalletError`]; a per-row `top_up` failure
+    /// is recorded on the row, not propagated.
+    pub async fn recover_x402_credits(
+        &self,
+        tenants: &crate::Tenants,
+        on: time::Date,
+    ) -> Result<X402RecoveryReport, WalletError> {
+        let mut report = X402RecoveryReport::default();
+        let rows: Vec<(Uuid, String, String, i64, i32)> = sqlx::query_as(
+            "SELECT d.organization_id, o.tenant_id, d.payment_ref, d.amount_minor, \
+                    COALESCE((d.meta->>'creditAttempts')::int, 0) \
+             FROM oxsum.deposits d JOIN oxsum.organizations o \
+               ON o.organization_id = d.organization_id \
+             WHERE d.rail = $1 AND d.status = 'confirmed' \
+               AND d.meta->>'creditError' IS NOT NULL \
+               AND d.meta->>'creditExhausted' IS NULL \
+             ORDER BY d.updated_at LIMIT $2",
+        )
+        .bind(RAIL_X402)
+        .bind(RECOVERY_BATCH)
+        .fetch_all(self.pool())
+        .await?;
+        for (organization_id, tenant_id, payment_ref, amount_minor, attempts) in rows {
+            report.found += 1;
+            // Claim the row for the whole attempt so a racing request or
+            // second worker's pass serializes on it rather than crediting in
+            // parallel.
+            let mut tx = self.pool().begin().await?;
+            let claimed: bool = sqlx::query_scalar(
+                "SELECT EXISTS (SELECT 1 FROM oxsum.deposits \
+                 WHERE rail = $1 AND organization_id = $2 AND payment_ref = $3 \
+                   AND status = 'confirmed' FOR UPDATE)",
+            )
+            .bind(RAIL_X402)
+            .bind(organization_id)
+            .bind(&payment_ref)
+            .fetch_one(&mut *tx)
+            .await?;
+            if !claimed {
+                tx.rollback().await?;
+                continue;
+            }
+            let wallet = tenants.get(&tenant_id).await?;
+            match wallet
+                .top_up(&format!("x402:{payment_ref}"), amount_minor, on)
+                .await
+            {
+                Ok(receipt) => {
+                    let flipped = sqlx::query(
+                        "UPDATE oxsum.deposits \
+                         SET status = 'credited', entry_id = $1, \
+                             meta = meta - 'creditError' - 'creditAttempts', \
+                             updated_at = now() \
+                         WHERE rail = $2 AND organization_id = $3 AND payment_ref = $4 \
+                           AND status <> 'credited'",
+                    )
+                    .bind(*receipt.entry_id.as_uuid())
+                    .bind(RAIL_X402)
+                    .bind(organization_id)
+                    .bind(&payment_ref)
+                    .execute(&mut *tx)
+                    .await?
+                    .rows_affected();
+                    if flipped > 0 {
+                        Self::enqueue_event(
+                            &mut tx,
+                            organization_id,
+                            DEPOSIT_CREDITED,
+                            serde_json::json!({
+                                "rail": RAIL_X402,
+                                "paymentRef": payment_ref,
+                                "amountMinor": amount_minor,
+                                "entryId": receipt.entry_id.as_uuid(),
+                                "recovered": true,
+                            }),
+                        )
+                        .await?;
+                        if let Ok(available) = wallet.available().await {
+                            Self::clear_balance_low(&mut tx, organization_id, available).await?;
+                        }
+                    }
+                    tx.commit().await?;
+                    report.recovered += 1;
+                }
+                Err(error) => {
+                    let attempts = attempts + 1;
+                    if attempts >= X402_CREDIT_MAX_ATTEMPTS {
+                        sqlx::query(
+                            "UPDATE oxsum.deposits \
+                             SET meta = meta || jsonb_build_object(\
+                                     'creditError', $1::text, \
+                                     'creditAttempts', $2::int, \
+                                     'creditExhausted', true), \
+                                 updated_at = now() \
+                             WHERE rail = $3 AND organization_id = $4 AND payment_ref = $5",
+                        )
+                        .bind(error.to_string())
+                        .bind(attempts)
+                        .bind(RAIL_X402)
+                        .bind(organization_id)
+                        .bind(&payment_ref)
+                        .execute(&mut *tx)
+                        .await?;
+                        report.exhausted += 1;
+                    } else {
+                        sqlx::query(
+                            "UPDATE oxsum.deposits \
+                             SET meta = meta || jsonb_build_object(\
+                                     'creditError', $1::text, \
+                                     'creditAttempts', $2::int), \
+                                 updated_at = now() \
+                             WHERE rail = $3 AND organization_id = $4 AND payment_ref = $5",
+                        )
+                        .bind(error.to_string())
+                        .bind(attempts)
+                        .bind(RAIL_X402)
+                        .bind(organization_id)
+                        .bind(&payment_ref)
+                        .execute(&mut *tx)
+                        .await?;
+                        report.still_failing += 1;
+                    }
+                    tx.commit().await?;
+                }
+            }
+        }
+        Ok(report)
     }
 }

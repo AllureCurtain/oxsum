@@ -85,6 +85,7 @@ pub fn spawn_worker(db: Db, ctx: JobContext) -> tokio::task::JoinHandle<()> {
             kinds::EXPIRE_LOTS,
             kinds::STATEMENT_PAST_DUE,
             kinds::RECONCILE_FINANCIAL,
+            kinds::RECOVER_DEPOSIT_CREDITS,
         ];
         if ctx.webhook.is_some() {
             periodic.push(kinds::DELIVER_WEBHOOKS);
@@ -476,6 +477,20 @@ async fn run_one(
                 request_log = report.request_log,
                 "the retention pass cleaned up"
             );
+        }
+        kinds::RECOVER_DEPOSIT_CREDITS => {
+            let report = db
+                .recover_x402_credits(&tenants, OffsetDateTime::now_utc().date())
+                .await?;
+            if report.found > 0 {
+                info!(
+                    found = report.found,
+                    recovered = report.recovered,
+                    still_failing = report.still_failing,
+                    exhausted = report.exhausted,
+                    "the x402 credit-recovery pass ran"
+                );
+            }
         }
         kinds::CLOSE_MONTH => {
             // The operator's month rides the payload; a malformed one is a

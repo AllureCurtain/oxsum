@@ -576,3 +576,108 @@ async fn a_foreign_network_is_refused_before_the_facilitator() {
     assert_eq!(status, StatusCode::FORBIDDEN);
     assert_eq!(*stub.settle_calls.lock().unwrap(), 0);
 }
+
+// --- The credit-recovery pass (issue #1089) ---
+//
+// A deposit whose chain transfer committed but whose `top_up` failed carries
+// `meta.creditError`; the `recover-deposit-credits` job re-selects those rows
+// and retries the credit under the same `x402:<nonce>` key.
+
+/// Plants a stuck deposit row the way a `top_up` failure leaves it: `confirmed`
+/// with the chain hash recorded and `creditError` on `meta`. Returns the
+/// `(organization_id, payment_ref)` the row anchors on.
+async fn stuck_deposit(db: &Db, payment_ref: &str, amount_minor: i64) -> Uuid {
+    let organization_id: Uuid = sqlx::query_scalar(
+        "SELECT organization_id FROM oxsum.organizations ORDER BY created_at LIMIT 1",
+    )
+    .fetch_one(db.pool())
+    .await
+    .unwrap();
+    sqlx::query(
+        "INSERT INTO oxsum.deposits \
+             (deposit_id, organization_id, rail, payment_ref, amount_minor, \
+              received_minor, status, facilitator_tx_hash, meta) \
+         VALUES ($1, $2, 'x402', $3, $4, $4, 'confirmed', '0xTXHASH', $5)",
+    )
+    .bind(Uuid::new_v4())
+    .bind(organization_id)
+    .bind(payment_ref)
+    .bind(amount_minor)
+    .bind(json!({"creditError": "simulated credit failure"}))
+    .execute(db.pool())
+    .await
+    .unwrap();
+    organization_id
+}
+
+/// Enqueues a due `recover-deposit-credits` run the way the startup pass does.
+async fn enqueue_recovery(db: &Db) {
+    sqlx::query(
+        "INSERT INTO oxsum.jobs (kind, run_at) VALUES ($1, now() - interval '1 second') \
+         ON CONFLICT DO NOTHING",
+    )
+    .bind(oxsum_core::kinds::RECOVER_DEPOSIT_CREDITS)
+    .execute(db.pool())
+    .await
+    .unwrap();
+}
+
+fn jobs_ctx() -> oxsum_server::jobs::JobContext {
+    oxsum_server::jobs::JobContext {
+        hold_timeout: std::time::Duration::from_secs(60),
+        metrics: oxsum_server::Metrics::new(),
+        webhook: None,
+        retention: oxsum_core::Retention::default(),
+        upstream_price_sync: false,
+        witness: None,
+        bill_provider: None,
+    }
+}
+
+/// A deposit stuck `confirmed + creditError` gets credited by the recovery
+/// pass — the retry replays under the nonce-derived key, lands once, flips the
+/// row `credited` and clears the error marker.
+#[tokio::test]
+async fn a_stuck_credit_is_recovered_by_the_sweep() {
+    let Some((app, db)) = world().await else {
+        return;
+    };
+    let key = register_session(&app).await;
+    let before = balance(&app, &key).await;
+    stuck_deposit(&db, "nonce-stuck-1", 4_000_000).await;
+
+    enqueue_recovery(&db).await;
+    oxsum_server::jobs::run_due(&db, &jobs_ctx()).await;
+
+    let after = balance(&app, &key).await;
+    assert_eq!(after - before, 4_000_000, "the recovered credit landed");
+    let row: (String, Option<String>) = sqlx::query_as(
+        "SELECT status, meta->>'creditError' FROM oxsum.deposits \
+         WHERE payment_ref = 'nonce-stuck-1'",
+    )
+    .fetch_one(db.pool())
+    .await
+    .unwrap();
+    assert_eq!(row.0, "credited");
+    assert_eq!(row.1, None, "the error marker is cleared");
+}
+
+/// A recovered pass is idempotent: a second run finds the row already
+/// `credited` and credits nothing twice.
+#[tokio::test]
+async fn the_recovery_pass_is_idempotent() {
+    let Some((app, db)) = world().await else {
+        return;
+    };
+    let key = register_session(&app).await;
+    let before = balance(&app, &key).await;
+    stuck_deposit(&db, "nonce-stuck-2", 2_000_000).await;
+
+    let ctx = jobs_ctx();
+    for _ in 0..2 {
+        enqueue_recovery(&db).await;
+        oxsum_server::jobs::run_due(&db, &ctx).await;
+    }
+
+    assert_eq!(balance(&app, &key).await - before, 2_000_000);
+}
