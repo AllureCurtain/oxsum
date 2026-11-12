@@ -11066,8 +11066,14 @@ paths:
         server's current UTC date answers `400`, as does a malformed `month`. A month
         that is already closed answers its existing record — the call is idempotent,
         and the seals table's primary key is what makes a double-close impossible
-        rather than merely reported. Answers the closing record of every
-        organization.
+        rather than merely reported.
+
+        The close runs as a claimed background job across every organization's
+        ledger, off the request path — a deployment whose month-close would outlive
+        a request timeout still seals fully. This call answers the queued state, not
+        the records: `GET` on the same path returns the seals once the pass lands.
+        A `status` of `already-queued` means a pending or running close of the same
+        kind is still claimed — a retry never duplicates the pass.
       security:
         - adminToken: []
       requestBody:
@@ -11077,7 +11083,7 @@ paths:
             schema: { $ref: "#/components/schemas/CloseMonthRequest" }
       responses:
         "200":
-          description: The closing record of every organization
+          description: The close the endpoint queued
           content:
             application/json:
               schema:
@@ -11085,8 +11091,7 @@ paths:
                 required: [data]
                 properties:
                   data:
-                    type: array
-                    items: { $ref: "#/components/schemas/AdminClosing" }
+                    $ref: "#/components/schemas/CloseMonthAccepted"
         "400": { $ref: "#/components/responses/Error" }
         "401": { $ref: "#/components/responses/Error" }
         "500": { $ref: "#/components/responses/Error" }
@@ -16387,6 +16392,15 @@ components:
       required: [month]
       properties:
         month: { type: string, pattern: "^[0-9]{4}-(0[1-9]|1[0-2])$", description: "the month to close, `YYYY-MM`; it must have fully ended" }
+    CloseMonthAccepted:
+      type: object
+      required: [month, status]
+      properties:
+        month: { type: string, description: "the month the queued run will seal, `YYYY-MM`" }
+        status:
+          type: string
+          enum: [queued, already-queued]
+          description: "queued for a newly-enqueued run; already-queued when a pending or running close of the same kind is still claimed — a retry never duplicates the pass"
     GenerateStatementsRequest:
       type: object
       required: [period]

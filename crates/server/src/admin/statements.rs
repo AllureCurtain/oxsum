@@ -7,7 +7,7 @@ use oxsum_core::{Seal, audit_action};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use crate::admin::{parse_month, record};
+use crate::admin::record;
 use crate::error::{ApiError, ApiJson, ApiQuery};
 use crate::routes::{ApiResult, ok};
 use crate::{AppState, today};
@@ -67,31 +67,57 @@ pub(crate) struct CloseReq {
     month: String,
 }
 
-/// Closes one month across every organization's ledger and answers each closing
-/// record — the seal it appended.
+/// The queued close the endpoint answers: `202` — the month's seal runs as a
+/// claimed job, not inside this request, so a deployment of any size reads the
+/// same immediate response.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct CloseAccepted {
+    /// The month the queued run will seal, `YYYY-MM`.
+    month: String,
+    /// `queued` for a newly-enqueued run, `already-queued` when a pending or
+    /// running close of this kind is still claimed — a retry of the same call
+    /// never duplicates the pass.
+    status: &'static str,
+}
+
+/// Queues one month-close across every organization's ledger and answers the
+/// queued state — the pass runs as the `close-month` job off the request path,
+/// so a deployment whose close outlives the request timeout still seals fully.
 ///
-/// The month must have fully ended, which `Wallet::close_month` enforces; closing
-/// an already-sealed month answers the record it holds, so the call is idempotent.
+/// The month must have fully ended, which `Wallet::close_month` enforces inside
+/// the run; closing an already-sealed month answers the record it holds, so a
+/// re-queued pass seals only what an earlier partial run left. `GET` the
+/// closings endpoint for the resulting seals.
 pub(crate) async fn close_month(
     State(state): State<AppState>,
     ApiJson(request): ApiJson<CloseReq>,
-) -> ApiResult<Vec<ClosingRes>> {
-    let first = parse_month(&request.month)?;
-    let mut answer = Vec::new();
-    for organization in state.db.organizations().await? {
-        let wallet = state.tenants.get(&organization.tenant_id).await?;
-        let seal = wallet.close_month(first).await?;
-        answer.push(ClosingRes::of(&organization.name, &seal));
-    }
+) -> ApiResult<CloseAccepted> {
+    // The month validates at the request edge — `statement_period` covers a
+    // malformed YYYY-MM and a month that has not fully ended alike, refusing
+    // here as `400` rather than as a queued job that dead-letters inside the
+    // worker.
+    oxsum_core::statement_period(&request.month)?;
+    let queued = state
+        .db
+        .enqueue_job_payload(
+            oxsum_core::kinds::CLOSE_MONTH,
+            time::OffsetDateTime::now_utc(),
+            serde_json::json!({ "month": request.month }),
+        )
+        .await?;
     record(
         &state,
         audit_action::CLOSING_CLOSE,
         Some(request.month.clone()),
-        serde_json::json!({ "organizations": answer.len() }),
+        serde_json::json!({ "queued": queued }),
         None,
     )
     .await?;
-    ok(answer)
+    ok(CloseAccepted {
+        month: request.month,
+        status: if queued { "queued" } else { "already-queued" },
+    })
 }
 
 /// The optional filters of `GET /admin/statements`.

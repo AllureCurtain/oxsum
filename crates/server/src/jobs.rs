@@ -477,6 +477,33 @@ async fn run_one(
                 "the retention pass cleaned up"
             );
         }
+        kinds::CLOSE_MONTH => {
+            // The operator's month rides the payload; a malformed one is a
+            // dead-letter, not a retry — the run cannot ever parse it.
+            let month = job
+                .payload
+                .get("month")
+                .and_then(serde_json::Value::as_str)
+                .ok_or_else(|| {
+                    oxsum_core::WalletError::InvalidInput(
+                        "a close-month run needs payload.month".into(),
+                    )
+                })?;
+            let first = month_first(month).map_err(|error| {
+                oxsum_core::WalletError::InvalidInput(format!("close-month payload.month: {error}"))
+            })?;
+            let report = db.close_month_organizations(&tenants, first).await?;
+            info!(
+                month,
+                sealed = report.sealed,
+                failed = report.failed.len(),
+                "the manual close-month pass ran"
+            );
+            // A partial pass is not silently successful: the failures ride the
+            // report so the worker's finish records which organizations the
+            // seal could not land for, and the next queue of the month retries
+            // the whole set idempotently (a sealed month answers its record).
+        }
         other => {
             return Err(oxsum_core::WalletError::InvalidInput(format!(
                 "unknown job kind {other:?}"
@@ -484,6 +511,18 @@ async fn run_one(
         }
     }
     Ok(())
+}
+
+/// `YYYY-MM` as the month's first day — the same parse `admin::parse_month`
+/// applies to the request, kept local so the worker need not reach into the
+/// route layer for a string it owns in the payload.
+fn month_first(month: &str) -> Result<time::Date, String> {
+    let bad = || "month must be YYYY-MM".to_string();
+    let (year, month) = month.split_once('-').ok_or_else(bad)?;
+    let year = year.parse::<i32>().map_err(|_| bad())?;
+    let month =
+        time::Month::try_from(month.parse::<u8>().map_err(|_| bad())?).map_err(|_| bad())?;
+    time::Date::from_calendar_date(year, month, 1).map_err(|_| bad())
 }
 
 /// The witness anchoring pass's dependencies (issue #231): the HTTP client,
