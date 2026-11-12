@@ -165,7 +165,7 @@ required checks and independent review pass. Never use `--admin` to bypass them.
 
 Issue-driven, one PR per minimal feature; once `main` exists, all task development happens in git worktrees:
 
-- Settle the direction in an issue first, with completion criteria written down, before touching code. TODO.md entries map one-to-one onto issues: the issue carries the discussion, TODO carries only status.
+- Settle the direction in an issue first, with completion criteria written down, before touching code. TODO.md is a short index of open issues, one row each. The issue carries the discussion. Do not append narrative status, test counts, or evidence paths to TODO.md or to docs/history/TODO-log.md. That log is frozen.
 - One PR does one thing: a minimal feature, or the complete closure of one issue. If two unrelated things need changing, split into two PRs.
 - A PR may contain multiple commits, split by logical step (migration, implementation, tests, docs are separate commits), so history stays readable after a rebase merge.
 - Changes and their documentation go into the same PR, see the doc-update rules below.
@@ -282,7 +282,7 @@ True cross-crate changes use the single full run and reuse rules above.
 
 | When | Read |
 | --- | --- |
-| Starting any task | TODO.md |
+| Starting any task | TODO.md (open-issue index). Frozen narrative: docs/history/TODO-log.md |
 | Product behavior: roles, billing rules, pages | docs/product.md |
 | Module boundaries, data flow, accounting model | docs/architecture.md |
 | Interfaces | docs/api.md and `crates/server/openapi.yaml` |
@@ -303,7 +303,7 @@ True cross-crate changes use the single full run and reuse rules above.
 
 Documentation is updated in the same PR as the code:
 
-- Starting or finishing a task: update TODO.md
+- Starting or finishing a task: add or remove that issue's one row in TODO.md. Do not append a log line.
 - Product behavior changed (roles, billing, pages): update docs/product.md
 - Module boundaries or data flow changed: update docs/architecture.md
 - A technical decision made: append an entry to docs/decisions.md
