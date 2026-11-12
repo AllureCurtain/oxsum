@@ -16,8 +16,30 @@ import { ProviderModels } from "./provider-models";
 // A dialog is one in-memory intent. Failed unchanged submissions reuse its key;
 // editing any field starts a new intent. Closing discards unsent secret inputs.
 type Credential = Channel["credentials"][number];
+
+// A guided import preset: which upstream the operator is bringing their own
+// credential from. `import` opens the connection dialog prefilled with the
+// provider's endpoint/protocol and a per-provider credential hint instead of a
+// blank form — the honest version of "import your account" (issue #506), where
+// each supported provider's own credential flow is pasted or uploaded, never a
+// consumer-account OAuth scrape.
+type ImportPreset = {
+  key: string;
+  name: string;
+  protocol: "openai" | "anthropic" | "gemini" | "tasks";
+  baseUrl: string;
+  credentialField: "apiKey" | "serviceAccountJson";
+};
+const IMPORT_PRESETS: ImportPreset[] = [
+  { key: "openai", name: "OpenAI platform", protocol: "openai", baseUrl: "https://api.openai.com/v1", credentialField: "apiKey" },
+  { key: "anthropic", name: "Anthropic Console", protocol: "anthropic", baseUrl: "https://api.anthropic.com/v1", credentialField: "apiKey" },
+  { key: "gemini", name: "Google Gemini / Vertex", protocol: "gemini", baseUrl: "https://generativelanguage.googleapis.com/v1beta", credentialField: "serviceAccountJson" },
+  { key: "azure", name: "Azure OpenAI", protocol: "openai", baseUrl: "", credentialField: "apiKey" },
+  { key: "custom", name: "Other compatible", protocol: "openai", baseUrl: "", credentialField: "apiKey" },
+];
+
 type Action =
-  | { kind: "connection"; channel?: Channel }
+  | { kind: "connection"; channel?: Channel; importPreset?: ImportPreset }
   | { kind: "credential" | "billing" | "clearBilling" | "check"; channel: Channel }
   | { kind: "status" | "remove"; channel: Channel; credential: Credential };
 
@@ -26,11 +48,16 @@ function ProviderDialog({ action, onClose, onSaved }: {
 }) {
   const { t } = useTranslation();
   const channel = action.channel;
+  const isImport = action.kind === "connection" && action.importPreset !== undefined;
+  const [selectedPresetKey, setSelectedPresetKey] = useState(
+    isImport && action.kind === "connection" ? action.importPreset?.key : undefined,
+  );
+  const importPreset = IMPORT_PRESETS.find((p) => p.key === selectedPresetKey);
   const initialPolicy = channel?.settings.destinationPolicy;
   const [name, setName] = useState(channel?.name ?? "");
-  const [baseUrl, setBaseUrl] = useState(channel?.baseUrl ?? "");
+  const [baseUrl, setBaseUrl] = useState(channel?.baseUrl ?? importPreset?.baseUrl ?? "");
   const [protocol, setProtocol] = useState<"openai" | "anthropic" | "gemini" | "tasks">(
-    (channel?.protocol as "openai" | "anthropic" | "gemini" | "tasks") ?? "openai",
+    (channel?.protocol as "openai" | "anthropic" | "gemini" | "tasks") ?? importPreset?.protocol ?? "openai",
   );
   const [network, setNetwork] = useState(initialPolicy?.network ?? "public");
   const [allowedIps, setAllowedIps] = useState(initialPolicy?.allowedIps?.join("\n") ?? "");
@@ -51,7 +78,9 @@ function ProviderDialog({ action, onClose, onSaved }: {
     || (action.kind === "connection" && (!channel || repoint));
   const disabling = action.kind === "status" && action.credential.status === "active";
   const dangerous = (action.kind === "connection" && !channel) || repoint || disabling || action.kind === "remove" || action.kind === "clearBilling";
-  const title = t(`biz.provider.${action.kind === "connection" ? (channel ? "edit" : "create") : action.kind}`);
+  const title = isImport && importPreset
+    ? t("biz.provider.importTitle", { provider: importPreset.name })
+    : t(`biz.provider.${action.kind === "connection" ? (channel ? "edit" : "create") : action.kind}`);
   const target = action.kind === "status" || action.kind === "remove"
     ? `${channel?.name} / •••${action.credential.apiKeyLast4}` : channel?.name ?? name;
 
@@ -124,6 +153,21 @@ function ProviderDialog({ action, onClose, onSaved }: {
           {!check.data ? (
             <fieldset disabled={busy} className="flex min-w-0 flex-col gap-4" onChange={edited}>
               {action.kind === "connection" ? <>
+                {isImport ? (
+                  <Field label={t("biz.provider.importProvider")} hint={t("biz.provider.importProviderHelp")}>
+                    <Select value={selectedPresetKey ?? ""} onChange={(event) => {
+                      const preset = IMPORT_PRESETS.find((p) => p.key === event.target.value);
+                      if (preset) {
+                        setSelectedPresetKey(preset.key);
+                        setBaseUrl(preset.baseUrl);
+                        setProtocol(preset.protocol);
+                      }
+                    }}>
+                      {IMPORT_PRESETS.map((preset) => <option key={preset.key} value={preset.key}>{preset.name}</option>)}
+                    </Select>
+                  </Field>
+                ) : null}
+                {importPreset ? <Banner tone="info">{t(`biz.provider.importHelp.${importPreset.key}`)}</Banner> : null}
                 <Field label={t("biz.channels.colName")} hint={t("biz.provider.nameHelp")}>
                   <TextInput value={name} onChange={(event) => setName(event.target.value)} required maxLength={128} disabled={!!channel} autoComplete="off" />
                 </Field>
@@ -148,9 +192,17 @@ function ProviderDialog({ action, onClose, onSaved }: {
                 {!channel ? <Banner tone="warn">{t("biz.provider.upsertHelp")}</Banner> : null}
                 {repoint ? <Banner tone="warn">{t("biz.provider.repoint", { url: channel?.baseUrl })}</Banner> : null}
               </> : null}
-              {needsKey ? <Field label={t(action.kind === "billing" ? "biz.provider.billingSecret" : "biz.provider.secret")} hint={t("biz.provider.secretHelp")}>
-                <TextInput type="password" value={secret} onChange={(event) => setSecret(event.target.value)} required minLength={8} maxLength={8192} autoComplete="new-password" spellCheck={false} />
-              </Field> : null}
+              {needsKey ? (
+                importPreset?.credentialField === "serviceAccountJson" ? (
+                  <Field label={t("biz.provider.serviceAccountJson")} hint={t("biz.provider.serviceAccountJsonHelp")}>
+                    <Textarea value={secret} onChange={(event) => setSecret(event.target.value)} required minLength={8} maxLength={8192} rows={4} autoComplete="off" spellCheck={false} className="mono" />
+                  </Field>
+                ) : (
+                  <Field label={t(action.kind === "billing" ? "biz.provider.billingSecret" : importPreset ? "biz.provider.importSecret" : "biz.provider.secret")} hint={t("biz.provider.secretHelp")}>
+                    <TextInput type="password" value={secret} onChange={(event) => setSecret(event.target.value)} required minLength={8} maxLength={8192} autoComplete="new-password" spellCheck={false} />
+                  </Field>
+                )
+              ) : null}
               {action.kind === "credential" ? <p className="text-sm text-ink-secondary">{t("biz.provider.rotateHelp")}</p> : null}
               {disabling ? <Banner tone="warn">{t("biz.provider.disableHelp", { name: target })}</Banner> : null}
               {action.kind === "remove" ? <Banner tone="warn">{t("biz.provider.removeHelp", { name: target })}</Banner> : null}
@@ -259,7 +311,10 @@ export function BusinessChannels() {
       ) : <>
         <h2 className="text-xl font-bold">{t("biz.channels.title")}</h2>
         <p className="text-sm text-ink-secondary">{t("biz.provider.intro")}</p>
-        <Card title={t("biz.channels.listTitle")} actions={canWrite ? <Button onClick={() => open({ kind: "connection" })}>{t("biz.provider.create")}</Button> : null}>
+        <Card title={t("biz.channels.listTitle")} actions={canWrite ? <div className="flex flex-wrap gap-2">
+          <Button tone="ghost" onClick={() => open({ kind: "connection" })}>{t("biz.provider.create")}</Button>
+          <Button onClick={() => open({ kind: "connection", importPreset: IMPORT_PRESETS[0] })}>{t("biz.provider.import")}</Button>
+        </div> : null}>
           <TableShell head={[t("biz.channels.colName"), t("biz.channels.colProtocol"), t("biz.channels.colUrl"), t("biz.channels.colModels"), t("biz.channels.colKeys")]} loading={channels.isLoading ? 4 : 0}>
             {!channels.isLoading && channels.data?.channels.map((channel) => <tr key={channel.id}>
               <td><button type="button" className="font-medium text-primary" onClick={() => { setPicked(channel.id); setSaved(false); }}>{channel.name}</button></td>
