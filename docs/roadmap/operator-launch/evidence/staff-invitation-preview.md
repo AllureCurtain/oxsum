@@ -42,3 +42,9 @@ continues to the Business console.
   organization, key or funds were returned by either staff registration.
 - Fast PR CI `42741717964` passed. Independent approval and protected integration
   remain. This is development repair evidence, not final candidate certification.
+
+After rebasing onto integrated application/checkout/build changes, 19 affected
+invitation HTTP/core checks passed (zero skips), strict core/server all-target
+Clippy passed (5m30s), and contract codegen/frontend build passed again. The
+previous 2,191-test run is retained for its documented source; it is not relabeled
+as a full run of the newer main.
