@@ -1,45 +1,35 @@
 # Operator launch execution ledger
 
-## Current checkpoint (2026-11-11)
+## Current checkpoint (2026-11-12)
 
 [Verified integration and acceptance checkpoint](evidence/acceptance-checkpoint.md)
 supersedes pending-integration and provider-budget statements in the historical
-log below. Application/readiness software and commercial browser evidence are
-integrated; the CI-selection repair #1003/#1004 and refund-history repair #975
-are now integrated as well (full CI 42853550892 passed 2,230 ordinary, 26 shared
-and 37 PostgreSQL engine tests plus all fast/build jobs). N00/N01/N02/N07/N08
-owner issues are closed; issue closure alone does not certify journeys or
-release artifacts.
+log below. **All 25 PRs the 2026-11-11 checkpoint recorded as open are now
+merged** (#975–#1029); post-merge work through #1057 is also on main at
+`d4232c7d`. N00/N01/N02/N07/N08 owner issues are closed; the remaining open owner
+issues hold only journey/external/candidate gates, not pending software
+integration. Issue closure alone does not certify journeys or release artifacts.
 
-Monthly credit approval, inspection, atomic issuance and repayment now have
-implemented PRs #1005/#1008/#1010/#1012/#1014/#1016. Staff repayment passed 2,284
-workspace cases before the final manual-order extension and 52 affected cases
-afterward, plus actual bilingual desktop/mobile exact-retry, duplicate-reference,
-Support and customer balance acceptance. Its browser and listener were closed.
-Quota and two-customer/in-flight price browser evidence is retained in #991/#995;
-post-fix sale localization and retained-feedback language repair passed actual
-browser acceptance on #996 (`6e4198b3`).
-#977/#979/#980/#982 and later repairs remain open pending protected integration.
+Monthly credit approval, inspection, atomic issuance, repayment and staff-verified
+payment are integrated in #1005/#1008/#1010/#1012/#1014/#1016 with browser
+evidence on merged heads. Quota/price, consent/delivery, dispute outcomes,
+journal correction, reconciliation dates, complimentary binding, credential
+isolation, sale pricing/locale and provider rotation/status repairs are
+integrated in #977/#979/#980/#982/#985/#987/#989/#991/#993/#995/#996/#1020–#1026/#1029.
+Invoice reissue apply is integrated in #1030; Stripe refund recovery in #1049;
+Airwallex TLS cap and deposit-refund recovery in #1042/#1043; sale gating and
+effective-window repairs in #1055/#1056/#1057.
 
 Finance comparison verified 15 source and 20 ledger entries with six equal totals
-and four explicit missing-cost exceptions. The provider budget is 4/5 attempts,
-33,792 CNY millionths reserved and 104 estimated usage after candidate
-certification consumed attempts 3-4/5. The complete actual PSP, reference soak
-and independent pilots remain unperformed. The checkpoint retains their
-requirements and the dependency-aware review queue.
+and four explicit missing-cost exceptions. The provider budget is 4/5 attempts
+reserved state after candidate certification consumed attempts 3–4/5 (2/5
+remaining, 16,896 CNY millionths reserved, 52 estimated usage). The complete
+actual PSP certification, reference soak and independent pilots remain
+unperformed. The checkpoint retains their requirements.
 
-Provider rotation/repoint and pinned-stream evidence #1025 passed CI 42880623901.
-Five calls charged exactly 70 minor, and six original bills passed offline checks
-with 36 altered inputs rejected. The discovered request-status mismatch is fixed
-in #1026; 133 related and eight final focused checks, a real-listener 502 regression
-and CI 42882442481 passed. TaskSpace 8 and all acceptance listeners are closed.
-Invoice correction #1027 now has a local source-verified preview and integer
-allocation; ten focused checks and one HTTP check passed. It exposed a real
-partial plan-dispute defect, repaired in PR #1029 with 73 library, 100 related
-core and 18 HTTP checks plus final affected checks and strict Clippy. Atomic
-reissue apply and successor lifecycle/UI remain unimplemented. Full embedded and
-monthly overdue/restoration acceptance remain. All 25 PRs have zero recorded
-reviews; missing independent approval still prevents normal integration.
+Thirteen merged worktrees and nine superseded local branches were removed on
+2026-11-12; the journal records their identities. Conservation umbrellas
+#768/#779/#829 remain open only for their explicit acceptance audits.
 
 ## Historical execution log
 
@@ -268,7 +258,7 @@ Status describes implementation: `planned`, `in_progress`, or `integrated`. `int
 | N07 [#733](https://github.com/AllureCurtain/oxsum/issues/733) — Customer invitation and registration | N03 | integrated | [#781](https://github.com/AllureCurtain/oxsum/pull/781) / `392fe74` | Invitation/local SMTP/registration implementation integrated; browser invitation and registration evidence recorded in #958. Final candidate J06 remains. |
 | N08 [#734](https://github.com/AllureCurtain/oxsum/issues/734) — Staff invitation and roles | N03 | integrated | [#782](https://github.com/AllureCurtain/oxsum/pull/782) / `ab39dde` | Staff authority integrated; preview/consent repair #950 and Finance/Support invitation, role and revocation browser evidence recorded in #958. Final candidate J07 remains. |
 | N09 [#735](https://github.com/AllureCurtain/oxsum/issues/735) — Readiness and first bill | N03–N08; N10 outcomes | in_progress | [#845](https://github.com/AllureCurtain/oxsum/pull/845) / `df4ad4f` | Business/customer readiness and receipt/funding implemented through #916 with #910/#911/#913 integrated. Actual 2/5 to 5/5 readiness, zero-wallet/free call and offline WASM evidence is #961. Complete candidate J02/J08 remains. |
-| N10 [#736](https://github.com/AllureCurtain/oxsum/issues/736) — Commercial journeys and repairs | N05–N09; N11 financial policy | in_progress | [#761](https://github.com/AllureCurtain/oxsum/pull/761) / `c9297d7`; [#764](https://github.com/AllureCurtain/oxsum/pull/764) / `c7926fe`; [#766](https://github.com/AllureCurtain/oxsum/pull/766) / `90a25ea`; [#778](https://github.com/AllureCurtain/oxsum/pull/778) / `8cf0794`; [#780](https://github.com/AllureCurtain/oxsum/pull/780) / `c79a588`; [#784](https://github.com/AllureCurtain/oxsum/pull/784) / `65e8b07` | Statement debt sources/repayment and financial repairs integrated through #953. Portal corrections #980/#982 and monthly #1005/#1008/#1010/#1012/#1014/#1016 await review/integration. Bundle purchase/return and paid-plan activation/cancel evidence is #974; policy-2 renewal/change/cancel/expiry evidence is PR #1022 with guidance/mobile repairs #1020/#1021. Invoice reissue and final J09–J12 remain. |
+| N10 [#736](https://github.com/AllureCurtain/oxsum/issues/736) — Commercial journeys and repairs | N05–N09; N11 financial policy | in_progress | [#761](https://github.com/AllureCurtain/oxsum/pull/761) / `c9297d7`; [#764](https://github.com/AllureCurtain/oxsum/pull/764) / `c7926fe`; [#766](https://github.com/AllureCurtain/oxsum/pull/766) / `90a25ea`; [#778](https://github.com/AllureCurtain/oxsum/pull/778) / `8cf0794`; [#780](https://github.com/AllureCurtain/oxsum/pull/780) / `c79a588`; [#784](https://github.com/AllureCurtain/oxsum/pull/784) / `65e8b07` | Statement debt sources/repayment and financial repairs integrated through #953. Portal corrections #980/#982 and monthly operations #1005/#1008/#1010/#1012/#1014/#1016 are integrated. Invoice reissue apply is integrated in #1030. Bundle purchase/return and paid-plan activation/cancel evidence is #974; policy-2 renewal/change/cancel/expiry evidence is #1022 with guidance/mobile repairs #1020/#1021. Final J09–J12 candidate journeys remain. |
 | N11 [#737](https://github.com/AllureCurtain/oxsum/issues/737) — Daily revenue and reconciliation | N00; #779 integration | in_progress | [#783](https://github.com/AllureCurtain/oxsum/pull/783) / `2e11e9b`; [#784](https://github.com/AllureCurtain/oxsum/pull/784) / `65e8b07` | Daily recognition/evidence #851 and independent source comparison #896 integrated. Finance browser comparison in #985 verifies 15 sources/20 entries and six monetary totals, with four missing-cost exceptions retained. Exact-candidate conservation remains. |
 | N12 [#738](https://github.com/AllureCurtain/oxsum/issues/738) — Independent evidence delivery | N09–N11 | in_progress | #858 | Retained-head WASM verification integrated in PR #861 (`b67a2d3b`); period/statement portal #863 integrated in PR #865 (`cbabfafd`); complete discoverable retained trust/evidence flows and genuine candidate exports verified offline with rejection matrix. |
 | N13 [#739](https://github.com/AllureCurtain/oxsum/issues/739) — Artifact promotion and deployment | N00 | in_progress | [#753](https://github.com/AllureCurtain/oxsum/pull/753) / `1cc5e0a` | Byte/provenance gate and original config/layer promotion integrated (#806 / `0b06184`), with isolated registry transport checks passed. #810 explicit digest deployment/runtime evidence and compatible rollback are integrated in #813 (`941434a`); 16 focused tests passed. #814 original SDK publication integrated in #816 (`45a833e`), with 11 checks and real npm loopback-registry byte/lifecycle/conflict/redirect rehearsal passed. Actual candidate publication/runtime/rollback acceptance remains; an isolated digest-deploy/rollback rehearsal against the frozen `cc16bb8f` candidate image passed 2026-11-11 — the loaded archive's `org.opencontainers.image.revision` matched the source SHA, `--check-config`/`--migrate-only`/`--detach` landed `/readyz ready (0131_invoice_corrections)` and `/api/v1/version` `{gitSha cc16bb8f, version 0.1.0, schemaVersion 0131_invoice_corrections}` exactly as the manifest records, a local-registry push supplied a real `sha256:` digest and a deploy-by-digest + same-schema rollback returned to the retained `cc16bb8f` artifact with the same three version fields. This ran the real candidate image under `linux/amd64` emulation on the operator host; it is not a verified-candidate `deployment_plan` (that still needs authorized GHCR provenance) and not live service authority. [Gate](evidence/candidate-format.md); [promotion](evidence/candidate-image-promotion.md); [deployment](evidence/candidate-digest-deploy.md); [SDK publication](evidence/candidate-sdk-publication.md). |
@@ -288,15 +278,15 @@ Status describes implementation: `planned`, `in_progress`, or `integrated`. `int
 | [#793](https://github.com/AllureCurtain/oxsum/issues/793) | `.worktrees/payment-replay-regressions` / `fix/payment-replay-regressions` | integrated #797 | Bundle replay and historical upgrade checks repaired; combined regression gates passed. |
 | [#795](https://github.com/AllureCurtain/oxsum/issues/795) | `.worktrees/statement-prepayment-once` / `fix/statement-prepayment-once` | integrated #798 | Closing prepayment applies once; fully covered statements become paid; renewal remains separate from older debt. |
 | [#794](https://github.com/AllureCurtain/oxsum/issues/794) | `.worktrees/launch-progress-reconciliation` / `docs/launch-progress-reconciliation` | integrated #796 | Initial integration reconciled; each new unit maintains current progress. |
-| [#803](https://github.com/AllureCurtain/oxsum/issues/803) | `.worktrees/plan-usage-once` / `fix/plan-usage-once` | validated; PR integration pending | Forward once-only usage repair, actual cash/credit settlement regressions; 1,899 workspace passes, six existing opt-in skips. |
-| [#809](https://github.com/AllureCurtain/oxsum/issues/809) | `.worktrees/legacy-plan-usage` / `fix/legacy-plan-usage` | in_progress | Explicit source-linked historical correction; preserve entries and distinguish receivable relief from refund payable. |
-| [#811](https://github.com/AllureCurtain/oxsum/issues/811) | `.worktrees/statement-lock-order` / `fix/statement-lock-order` | in_progress | Plan-before-statement lifecycle locks and locked overdue rechecks implemented; six controlled cases, 53 combined core/HTTP checks with zero skips, strict Clippy and independent review passed; integration pending. [Evidence](evidence/statement-lock-order.md). |
-| [#820](https://github.com/AllureCurtain/oxsum/issues/820) | `.worktrees/statement-review-finance` / `fix/statement-review-finance` | in_progress | Atomic statement/journal void, aggregate dunning and retained legacy debt projection; 1,937 workspace passes on the #809-integrated snapshot, 66 final core/HTTP checks passed; integration pending. [Evidence](evidence/statement-review-finance.md). |
+| [#803](https://github.com/AllureCurtain/oxsum/issues/803) | integrated PR #815 (`e35e557`) | closed | Forward once-only wallet/credit usage repair validated and integrated; 69 focused and 1,899 workspace passes, all H1–H6 active. |
+| [#809](https://github.com/AllureCurtain/oxsum/issues/809) | integrated PR #821 (`68b3441`) | closed | Explicit source-proven historical correction integrated; 1,912 full and 60 final combined checks passed. |
+| [#811](https://github.com/AllureCurtain/oxsum/issues/811) | integrated PR #817 (`1ebb7e41`) | closed | Plan statement lifecycle serialization integrated; six controlled and 53 combined checks, strict Clippy and independent review retained. |
+| [#820](https://github.com/AllureCurtain/oxsum/issues/820) | integrated PR #836 (`6c03cf1`) | closed | Atomic financial void and aggregate dunning integrated; 1,937 full and 66 final focused checks passed. |
 
 | [#843](https://github.com/AllureCurtain/oxsum/issues/843) | `.worktrees/business-readiness` / `feat/business-readiness` | integrated #845 | Authoritative business setup facts and role-aware UI; 1,950 full workspace tests and 25 focused checks, strict Clippy, contract/frontend build and independent review passed on `d0ea03c`. PR #845 integrated as `df4ad4f`. [Evidence](evidence/business-readiness.md). Customer readiness remains separate. |
 | [#849](https://github.com/AllureCurtain/oxsum/issues/849) | PR #892 / `7e2c6216` | integrated | 23 targeted, 248 related and 2,070 complete workspace checks passed; strict Clippy and source review passed. Post-merge CI `42558914887` green; #854/#859/#875 remain before customer readiness. [Evidence](evidence/funded-call-admission.md). |
-| [#854](https://github.com/AllureCurtain/oxsum/issues/854) | follow-up after #849 | planned | Lazy boundary cancellation must stop quota draws; distinguish cancelled subscriptions from still-serving past-due quota. |
-| [#859](https://github.com/AllureCurtain/oxsum/issues/859) | follow-up after #849/#854 | planned | Align team deletion with admission/member lock order; source review found a potential inversion, controlled runtime evidence remains. |
+| [#854](https://github.com/AllureCurtain/oxsum/issues/854) | integrated PR #897 (`b20934c4`) | closed | Cancelled-plan boundary quota repair integrated; focused PostgreSQL and independent review evidence retained. |
+| [#859](https://github.com/AllureCurtain/oxsum/issues/859) | integrated PR #902 (`bbbcd154`) | closed | Team deletion and reassignment admission serialization integrated; controlled monetary and quota-funded races included. |
 
 The six older retained worktrees listed in the [checkpoint](evidence/integration-reconciliation.md) contain no tracked edits; their corresponding work has integrated. Check ownership and dependents before removing them. Their presence does not represent six unfinished feature implementations.
 

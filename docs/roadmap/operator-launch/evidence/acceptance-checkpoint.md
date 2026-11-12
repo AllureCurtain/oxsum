@@ -1,10 +1,12 @@
-# Acceptance checkpoint — 2026-11-11
+# Acceptance checkpoint — 2026-11-12
 
-Issue #984. GitHub main is `2ee706019a02f24b4b8ed4b949b8c5254b27a178`.
-[Verified merge identities](verified-merges.json) now include #1000/#1001.
-Implementation integration, development acceptance and exact-artifact release
-acceptance remain separate. N00/N01/N02/N07/N08 owner issues are closed; 17 owner
-issues and umbrella #725 remain open. This ratio is not software completion.
+Issue #984. GitHub main is `d4232c7d`.
+[Verified merge identities](verified-merges.json) now include every previously
+pending PR through #1029. Implementation integration, development acceptance and
+exact-artifact release acceptance remain separate. N00/N01/N02/N07/N08 owner
+issues are closed; the other owner issues and umbrella #725 stay open only for
+their remaining journey/external/candidate gates, not for pending software
+integration. This ratio is not software completion.
 
 ## Integrated software and development evidence
 
@@ -14,134 +16,95 @@ Readiness, staff invitations, console reload, exact plan amounts and first-call
 WASM repairs are integrated through #967. Owner/customer/staff, bundle purchase/
 return and paid-plan activation/cancellation evidence is integrated through #974.
 Aggregate integration binaries and shared-target rules integrated in #1001/#1000.
-TODO removes duplicate #866/#898 entries and records exact merged implementations.
 
 Finance's retained [source/ledger comparison](browser-financial-comparison/README.md)
 verified 15 sources and 20 entries with all six monetary totals equal. Four
 missing-cost exceptions remain open; no invented cost or waiver supplies evidence.
 Quota exhaustion/overage and two-customer/pinned in-flight price acceptance now
-have separate evidence PRs #991/#995. Monthly operations now have complete local
-implementation and targeted browser evidence in the pending PRs below.
+have separate evidence in merged PRs #991/#995. Monthly credit/statement/
+issuance/repayment operations are integrated in #1005/#1008/#1010/#1012/#1014/#1016
+with staff browser evidence on the merged heads.
 
-## Pending integration
+## Previously pending — all merged
 
-GitHub read on November 11 found **25 open PRs**, all with zero recorded reviews.
-The original 19 have all five fast required checks green on their recorded heads; #1016
-completed [CI 42865423868](https://github.com/AllureCurtain/oxsum/actions/runs/42865423868)
-on `3e5b7d65`. This checkpoint revision will receive a new CI run. Entire reports missing
-independent reviewer approval. No self-approval or protection bypass is accepted.
-PR CI does not replace full integration, engine or candidate evidence.
-New #1020/#1021 fast CI passed; #1022 completed fast CI 42875606308
-on `6e9b4dd2`. No independent approval is recorded.
+The November 11 checkpoint recorded **25 open PRs** awaiting protected
+integration. As of 2026-11-12 **all 25 are merged** onto main:
 
-| PR | Reviewed change should establish | Dependency / remaining acceptance |
-| --- | --- | --- |
-| #975 | Historical manual refund upgrade fixture | Included in #1004; independent approval pending |
-| #977 | Application consent and signed durable delivery/replay | Complete embedded journey remains |
-| #979 | Original quota-window consumption | Browser 0 → 80/100 passed; integrate with #991 |
-| #980 | Explicit dispute outcomes and retained exact retry | Independent approval and candidate remain |
-| #982 | Paid journal correction and original-source returns | Replacement/reissue journey remains |
-| #985 | Current integration and Finance comparison evidence | This checkpoint; no feature acceptance implied |
-| #987 | ISO reconciliation dates | Independent approval and candidate remain |
-| #989 | Explicit complimentary binding and ambiguous recovery | Independent approval and candidate remain |
-| #991 | Browser quota boundary and offline proof | Independent approval; preserves tested stack |
-| #993 | Chat credential isolation across user/customer | Independent approval and candidate remain |
-| #995 | Distinct customer and in-flight sale prices | Independent review and candidate remain |
-| #996 | Bilingual sale editor and exact validation | Browser reacceptance passed, including retained feedback language repair |
-| #1004 | Aggregate CI/process-shared suite execution | Includes #975; exact branch full CI passed |
-| #1005 | Staff monthly credit terms | Actual credit approval browser passed |
-| #1008 | Staff monthly statement reads | Bilingual detail/mobile/pagination passed |
-| #1010 | Atomic monthly issuance/anchor | Source/audit failure and concurrency tests passed |
-| #1012 | Reviewed staff monthly issuance | Depends on #1008/#1010; browser exact recovery passed |
-| #1014 | Atomic monthly repayment/paid replay | Depends on #1010/#975; 2,266 workspace tests passed |
-| #1016 | Staff monthly verified payment | Depends on #1012/#1014; browser and 52 final affected checks passed |
-| #1020 | Separate manual renewal from overdue-debt guidance | Four focused cases and English/Chinese browser passed |
-| #1021 | Readable mobile statement amounts | 390px local scroll and reachable detail verified |
-| #1022 | Policy-2 renewal/change/cancel/expiry browser evidence | Depends on #979/#1020/#1021; exact candidate remains |
-| #1025 | Provider rotation/repoint and pinned SSE evidence | Six offline proofs and 36 rejections passed; observed status defect retained as #1024 |
-| #1026 | Actual gateway status in request logs after admission | Repairs #1024; 133 related/eight final checks and real-listener regression passed |
-| #1029 | Exact partial plan dispute amounts and authenticated-source comparison | Fixes #1028 found during #1027; real-ledger regressions passed, review/integration pending |
+| PR | Established | Merge commit | Merged |
+| --- | --- | --- | --- |
+| #975 | Historical manual refund upgrade fixture | `2cc680ee` | 2026-11-11 |
+| #977 | Application consent and signed durable delivery/replay | `e92ac2a4` | 2026-11-11 |
+| #979 | Original quota-window consumption | `99d9ead7` | 2026-11-11 |
+| #980 | Explicit dispute outcomes and retained exact retry | `5534c2ee` | 2026-11-11 |
+| #982 | Paid journal correction and original-source returns | `3af0951d` | 2026-11-11 |
+| #985 | Current integration and Finance comparison evidence | `5b73501f` | 2026-11-11 |
+| #987 | ISO reconciliation dates | `b5ca0260` | 2026-11-11 |
+| #989 | Explicit complimentary binding and ambiguous recovery | `048e80f1` | 2026-11-11 |
+| #991 | Browser quota boundary and offline proof | `99a233e7` | 2026-11-11 |
+| #993 | Chat credential isolation across user/customer | `f66c4f8a` | 2026-11-11 |
+| #995 | Distinct customer and in-flight sale prices | `154862d6` | 2026-11-11 |
+| #996 | Bilingual sale editor and exact validation | `742294f7` | 2026-11-11 |
+| #1004 | Aggregate CI/process-shared suite execution | `98e95342` | 2026-11-11 |
+| #1005 | Staff monthly credit terms | `75005313` | 2026-11-11 |
+| #1008 | Staff monthly statement reads | `8b1e6895` | 2026-11-11 |
+| #1010 | Atomic monthly issuance/anchor | `9ffd411d` | 2026-11-11 |
+| #1012 | Reviewed staff monthly issuance | `a40c9574` | 2026-11-11 |
+| #1014 | Atomic monthly repayment/paid replay | `9a0171e8` | 2026-11-11 |
+| #1016 | Staff monthly verified payment | `5a75f3f7` | 2026-11-11 |
+| #1020 | Separate manual renewal from overdue-debt guidance | `8a83ea20` | 2026-11-11 |
+| #1021 | Readable mobile statement amounts | `5b73839e` | 2026-11-11 |
+| #1022 | Policy-2 renewal/change/cancel/expiry browser evidence | `f9e1bc49` | 2026-11-11 |
+| #1025 | Provider rotation/repoint and pinned SSE evidence | `3e69a4e9` | 2026-11-11 |
+| #1026 | Actual gateway status in request logs after admission | `99435ba9` | 2026-11-11 |
+| #1029 | Exact partial plan dispute amounts and authenticated-source comparison | `0b4df4ae` | 2026-11-11 |
 
-Full [CI 42853550892](https://github.com/AllureCurtain/oxsum/actions/runs/42853550892)
-on #1004 source `532d766c86a0f50ff001ceb4ff2c09eb38f034ee` passed 2,230 ordinary,
-26 process-shared and 37 PostgreSQL engine cases plus fast checks. Main
-[CI 42819010276](https://github.com/AllureCurtain/oxsum/actions/runs/42819010276)
-on `2ee70601` failed three shards because old per-file invocations did not match
-aggregate binaries. The branch result must become main evidence after protected
-integration; a successful Release image job does not repair failed main CI.
+Post-merge PR #1030–#1057 work (invoice reissue, Stripe refund recovery, sale
+gating/effective-window fixes, models-sale gating, fallback 4xx, README/docs
+refresh) is also merged on main through `d4232c7d`. Current main CI health must
+be read from the newest main run rather than the older `2ee70601` selector
+failure, which PR #1004 repaired.
 
-#1016 ran 2,284 workspace tests successfully before extending reference sharing to
-staff manual orders; 52 final affected tests then passed with strict core/server
-Clippy, contract/codegen/build checks. Actual browser sent five payment requests:
-overpayment refusal, successful August payment, exact recovery after intentionally
-lost success response, duplicate-reference refusal and successful September
-payment. Two unique receipts totaling 2,000,003 minor each have one ledger entry,
-reference and actor audit. Customer credit used is zero; no wallet funds were
-created. TaskSpace 5 and its local listener were closed. Evidence remains on that
-PR and is not yet on main or a final candidate.
+## Remaining gates — unchanged
 
-#996 subsequently completed actual desktop/mobile save, publication, assignment
-and exact customer preview in Chinese/English. Browser reacceptance found retained
-feedback stuck in its original language; commit `6e4198b3` repairs render-time
-translation. Four focused and five contract checks and production build passed.
-TaskSpace 6 and its local listener were closed. Its new CI remains a separate
-required gate; no model/PSP/email request or provider budget was consumed.
-
-#1022 records actual four-customer policy-2 boundary acceptance. Original service
-bounds and immutable accounting inputs were created together with the existing
-private test clock, never edited afterward. Failed/expired orders were inert;
-paid renewal/replay, new-version payment, worker cancellation and no-renewal
-expiry preserved the expected periods and balanced ledger. A bounded direct
-quota probe confirms cancelled quota draws zero and expired remainder retains
-its original window. Zero-debt guidance and mobile amount wrapping were repaired
-in #1020/#1021. TaskSpace 7 and ports 18817/18818 are closed; no provider budget
-was consumed. These tests do not claim a real elapsed month or genuine PSP.
-
-#1025 (`b6f3b97b`) completed CI 42880623901. The owner exercised credential
-add/disable/remove/re-enable and connection replacement while an original SSE
-request remained active. Five calls charged 70 minor in total; a disabled-key
-failure produced a zero-charge settlement. Six offline proofs and 36 tampering
-checks passed. Admin denial left configuration unchanged. TaskSpace 8 and ports
-18821/18822 closed. The original HTTP-502/client versus HTTP-200/log mismatch
-remains preserved in the evidence rather than represented as accepted.
-
-#1026 (`8b60ba72`) repairs that mismatch by retaining the selected response status.
-133 affected gateway/cache/guardrail/request-log checks and eight final request-log
-checks passed, with strict server Clippy and contract/frontend/format validation.
-The same isolated fixture then returned and recorded 502 with no charge, upstream
-attempt or hold. CI 42882442481 passed. Entire still reports missing independent
-approval; no gate was bypassed and no merge occurred.
-
-## Remaining execution
-
-- Complete source-linked invoice reissue under #1027: local branch now has a source-verified preview and integer allocation, with ten focused checks and one HTTP check passed. Atomic apply, successor payment/recognition/reconciliation, UI and browser acceptance remain. Main still has only link
-  fields and safe refusals, but no mutation/UI. This is a software gap, not only
-  browser acceptance. Complete the embedded application and monthly overdue/
-  restoration browser journeys. Provider rotation now has #1025 development
-  evidence and its observed status defect has repair #1026. Renewal failure/expiry/success,
-  replay and boundary change/cancel/no-renewal expiry now have scoped policy-2
-  development evidence in #1022; actual future-boundary/candidate acceptance remains. Tests support their own tested
-  scope; existing local fixtures do not complete every advertised journey.
-- Obtain independent review and integrate dependencies normally. Freeze one
-  integrated SHA only after main is repaired, then execute full CI with engine
-  and process-shared coverage. Build/smoke and accept that exact image, frontend
-  and SDK across J01–J16/J18, offline evidence, deployment/upgrade/restore and
-  compatible rollback. No final operator-launch candidate has been frozen.
-- Genuine PSP sandbox credentials and secure SDK/HTTPS automatic callback path,
-  native Linux amd64 4CPU/8GiB capacity/eight-hour soak host, and two independent
-  operator participants remain external prerequisites. Local macOS fixtures
-  cannot replace these gates. Pilot preparation is already integrated in #874.
-- Public publication and existing-service upgrades remain unperformed under the
-  recorded scope; tooling and isolated rehearsal do not claim those actions.
+- **External prerequisites still unperformed**: genuine PSP sandbox certification
+  completion (Stripe test-mode capture→webhook→credited is certified 2026-11-11;
+  Airwallex hosted-page capture/webhook remains provider-side blocked), secure
+  SDK/HTTPS automatic callback path, native Linux amd64 4-CPU/8-GiB capacity and
+  eight-hour soak host, and two independent operator participants. Local macOS
+  fixtures cannot replace these gates. Pilot preparation is integrated in #874.
+- **Exact-candidate acceptance**: candidate `cc16bb8f` is frozen with green
+  full-tier CI [42951039071](https://github.com/AllureCurtain/oxsum/actions/runs/42951039071)
+  and all nine manifest gates. J01–J16/J18 acceptance against the built image —
+  portal/embedded/offline/deploy/restore journeys — remains. No final
+  operator-launch candidate has completed acceptance.
+- **Conservation umbrellas**: #768, #779 and #829 stay open. Their child repairs
+  are integrated (#778/#780/#784/#798/#812/#815/#837/#840→#847/#841→#868/#842→#903
+  and #1029); what remains is the explicit acceptance audit each umbrella
+  requires, plus any residual scope the audit surfaces — not merged software.
+- **Browser acceptance**: #946 and #969 stay open for the remaining commercial,
+  embedded and final-candidate journeys. Development browser evidence already
+  integrated does not substitute for candidate acceptance.
+- **Public publication and existing-service upgrades remain unperformed** under
+  the recorded scope; tooling and isolated rehearsal do not claim those actions.
 
 ## Persistent allowance and cleanup
 
 DeepSeek allowance remains **2/5 attempts**, **16,896 CNY millionths reserved**,
-**52 millionths** estimated usage. No new real-provider request occurred during
-monthly acceptance. Historical 0/5 entries are superseded, never a reset.
+**52 millionths** estimated usage (candidate certification consumed attempts
+3–4/5; the 4/5 recorded mid-checkpoint was the reservation state at that write).
+No new real-provider request occurred during monthly or reconciliation work.
+Historical 0/5 entries are superseded, never a reset.
 
-The private cleanup journal retained 67 explicitly removed merged worktrees;
-this checkpoint does not increase that count. Current unmerged worktrees and the
-shared `plan-consumption-read/web/node_modules` asset source remain in use. The
-shared build cache is not a task checkout. Temporary acceptance browser spaces
-and task listeners are closed when their acceptance completes.
+The private cleanup journal retained 67 explicitly removed merged worktrees. This
+checkpoint reconciles a further **13 merged worktrees removed on 2026-11-12**
+(`bundle-refund-upgrade`, `chat-credential-isolation`,
+`complimentary-plan-binding`, `customer-credit-terms`, `dispute-outcomes`,
+`embedded-browser-evidence`, `launch-status`, `paid-journal-void`,
+`plan-consumption-read`, `quota-browser`, `reconciliation-dates`, `sale-browser`,
+`sale-locales` — all clean, zero unpushed commits) plus **9 superseded local
+branches** whose content is already integrated on main (`build/candidate-*`,
+`build/verify-lock-dependency`, `build/audit-postgres-dependencies`,
+`ci/verified-*`, `backup/funded-call-admission-before-ledger-merge`). One remote
+branch remains: `fix/staff-invitation-preview` (unmerged; the staff-preview
+repair it carried was superseded by merged #989/#993 work — verify before
+deleting). The shared build cache is not a task checkout.
