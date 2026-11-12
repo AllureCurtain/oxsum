@@ -10,10 +10,20 @@
 //! named, and the token counts are recorded once settlement knows them. As with
 //! `/metrics` labels, attributes only ever carry bounded vocabularies — never a
 //! request id, organization, or key.
+//!
+//! The whole exporter is also compile-time optional: the crate's default `otlp`
+//! feature carries it, and a `--no-default-features` build drops the
+//! opentelemetry dependency tree entirely — `init` then only installs fmt and
+//! an `OXSUM_OTLP_ENDPOINT` the environment set anyway warns once instead of
+//! silently doing nothing.
 
+#[cfg(feature = "otlp")]
 use opentelemetry::trace::TracerProvider;
+#[cfg(feature = "otlp")]
 use opentelemetry_otlp::{SpanExporter, WithExportConfig};
+#[cfg(feature = "otlp")]
 use opentelemetry_sdk::trace::{SdkTracerProvider, Tracer};
+#[cfg(feature = "otlp")]
 use opentelemetry_sdk::{Resource, runtime};
 use tracing_subscriber::Registry;
 use tracing_subscriber::layer::SubscriberExt;
@@ -22,10 +32,23 @@ use tracing_subscriber::util::SubscriberInitExt;
 /// The shutdown handle: flushing the provider pushes the buffered spans to the
 /// collector before the process exits. `Drop` alone cannot await the export, so
 /// the binary calls [`OtelGuard::shutdown`] on the drain path.
+#[cfg(feature = "otlp")]
 pub struct OtelGuard {
     provider: SdkTracerProvider,
 }
 
+/// The no-`otlp` build's placeholder: never constructed, it exists only so
+/// `init` keeps its signature for the binary.
+#[cfg(not(feature = "otlp"))]
+pub struct OtelGuard(());
+
+#[cfg(not(feature = "otlp"))]
+impl OtelGuard {
+    /// Nothing to flush — the exporter is not in this build.
+    pub fn shutdown(self) {}
+}
+
+#[cfg(feature = "otlp")]
 impl OtelGuard {
     /// Flushes every buffered span. Call before the process exits.
     pub fn shutdown(self) {
@@ -46,6 +69,7 @@ impl OtelGuard {
 /// installs them together, and every span both logs and exports under the same
 /// env filter. The span fields the gateway sets under `gen_ai.*` arrive as OTLP
 /// attributes unchanged.
+#[cfg(feature = "otlp")]
 pub fn layer<S>(
     endpoint: &str,
 ) -> Result<
@@ -90,6 +114,7 @@ where
 ///
 /// Returns the guard only when the layer was installed — an unset endpoint is
 /// `None` and the binary runs exactly as before.
+#[cfg(feature = "otlp")]
 pub fn init(endpoint: Option<&str>) -> Result<Option<OtelGuard>, Box<dyn std::error::Error>> {
     let filter =
         tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into());
@@ -105,4 +130,23 @@ pub fn init(endpoint: Option<&str>) -> Result<Option<OtelGuard>, Box<dyn std::er
             Ok(None)
         }
     }
+}
+
+/// The `--no-default-features` build's `init`: fmt installs identically, but the
+/// opentelemetry stack is not in the tree, so an endpoint the deployment still
+/// exports warns — a set variable that does nothing is a misconfiguration to
+/// surface, not to swallow.
+#[cfg(not(feature = "otlp"))]
+pub fn init(endpoint: Option<&str>) -> Result<Option<OtelGuard>, Box<dyn std::error::Error>> {
+    let filter =
+        tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into());
+    let fmt = tracing_subscriber::fmt::layer();
+    Registry::default().with(filter).with(fmt).init();
+    if endpoint.is_some() {
+        tracing::warn!(
+            "OXSUM_OTLP_ENDPOINT is set but this binary was built without the `otlp` \
+             feature; no spans are exported"
+        );
+    }
+    Ok(None)
 }

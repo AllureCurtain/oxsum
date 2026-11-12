@@ -211,6 +211,9 @@ mod suspension;
 mod sweep;
 #[path = "server/tasks.rs"]
 mod tasks;
+// The collector test needs the exporter built: the suite only exists under the
+// crate's default `otlp` feature.
+#[cfg(feature = "otlp")]
 #[path = "server/telemetry.rs"]
 mod telemetry;
 #[path = "server/terms.rs"]

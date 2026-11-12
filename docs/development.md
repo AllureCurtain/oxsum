@@ -578,6 +578,14 @@ Point a collector at it:
 OXSUM_OTLP_ENDPOINT=http://localhost:4318 cargo run -p oxsum-server
 ```
 
+The exporter is also a compile-time opt-out: `oxsum-server`'s default `otlp`
+feature carries the whole opentelemetry tree, so a deployment that never runs
+a collector can build `--no-default-features` and drop it. That binary's
+`telemetry::init` installs fmt exactly the same and warns once when
+`OXSUM_OTLP_ENDPOINT` is set anyway — a set variable that does nothing is a
+misconfiguration to surface, not to swallow. The clippy CI job compiles the
+crate `--no-default-features` so the gate cannot silently rot.
+
 oxsum's own tables are migrated at startup, in the same process that serves requests: `Db::migrate`
 creates the `oxsum` schema and applies the files under `crates/core/migrations/` that have not run
 yet, each in one transaction together with its row in `oxsum._migrations`, under a database-wide

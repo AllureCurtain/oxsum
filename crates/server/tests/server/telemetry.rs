@@ -7,6 +7,9 @@
 //! test binary, and the scoped form exercises the same code — the layer, the
 //! batch exporter, the guard's flush — without owning the process.
 
+// The `otlp` feature gates the exporter; `mod` above carries the cfg.
+#![cfg(feature = "otlp")]
+
 use std::sync::{Arc, Mutex};
 
 use axum::Router;

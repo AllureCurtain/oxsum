@@ -207,6 +207,12 @@ jobs:
       - name: Run strict Clippy
         if: needs.filter.outputs.rust == 'true'
         run: cargo clippy --workspace --all-targets -- -D warnings
+      # The `otlp` feature gate only holds while something compiles without it —
+      # a default-features build would silently re-bury the exporter in the
+      # tree.
+      - name: Check the no-OTLP build still compiles
+        if: needs.filter.outputs.rust == 'true'
+        run: cargo check -p oxsum-server --no-default-features --all-targets
 
   # Publishability of the crates that ship outside the workspace (issue #468):
   # oxsum-verify and its vendored doubleentry dependency must `cargo publish
