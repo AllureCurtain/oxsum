@@ -1084,6 +1084,8 @@
       "monthHint": "YYYY-MM, must have fully ended",
       "seal": "Seal",
       "sealed": "sealed",
+      "queued": "Close queued — it runs in the background and the seals list refreshes when it lands.",
+      "alreadyQueued": "A close is already running; its seals land in the list when it finishes.",
       "colMonth": "Month",
       "colOrganization": "Organization",
       "colEntries": "Entries",

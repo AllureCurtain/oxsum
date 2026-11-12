@@ -29,8 +29,9 @@ export function Closings({ token }: { token: string }) {
           onSubmit={async (e) => {
             e.preventDefault();
             try {
-              await adminApi(token, "/closings", { method: "POST", body: { month } });
-              setMsg(t("admin.closings.sealed"));
+              const res = await adminApi<{ month: string; status: string }>(token, "/closings", { method: "POST", body: { month } });
+              // The close now runs as a job; the list repaints when its seals land.
+              setMsg(res.status === "queued" ? t("admin.closings.queued") : t("admin.closings.alreadyQueued"));
               closings.refresh();
             } catch (err) {
               setMsg(err instanceof ApiError ? err.message : "failed");

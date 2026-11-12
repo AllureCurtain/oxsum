@@ -15299,8 +15299,14 @@ export interface paths {
          *     server's current UTC date answers `400`, as does a malformed `month`. A month
          *     that is already closed answers its existing record — the call is idempotent,
          *     and the seals table's primary key is what makes a double-close impossible
-         *     rather than merely reported. Answers the closing record of every
-         *     organization.
+         *     rather than merely reported.
+         *
+         *     The close runs as a claimed background job across every organization's
+         *     ledger, off the request path — a deployment whose month-close would outlive
+         *     a request timeout still seals fully. This call answers the queued state, not
+         *     the records: `GET` on the same path returns the seals once the pass lands.
+         *     A `status` of `already-queued` means a pending or running close of the same
+         *     kind is still claimed — a retry never duplicates the pass.
          */
         post: {
             parameters: {
@@ -15315,14 +15321,14 @@ export interface paths {
                 };
             };
             responses: {
-                /** @description The closing record of every organization */
+                /** @description The close the endpoint queued */
                 200: {
                     headers: {
                         [name: string]: unknown;
                     };
                     content: {
                         "application/json": {
-                            data: components["schemas"]["AdminClosing"][];
+                            data: components["schemas"]["CloseMonthAccepted"];
                         };
                     };
                 };
@@ -21306,6 +21312,15 @@ export interface components {
         CloseMonthRequest: {
             /** @description the month to close, `YYYY-MM`; it must have fully ended */
             month: string;
+        };
+        CloseMonthAccepted: {
+            /** @description the month the queued run will seal, `YYYY-MM` */
+            month: string;
+            /**
+             * @description queued for a newly-enqueued run; already-queued when a pending or running close of the same kind is still claimed — a retry never duplicates the pass
+             * @enum {string}
+             */
+            status: "queued" | "already-queued";
         };
         GenerateStatementsRequest: {
             /** @description the month to bill, `YYYY-MM`; it must have fully ended */
