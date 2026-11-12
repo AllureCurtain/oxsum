@@ -968,14 +968,30 @@ impl Wallet {
             return Err(WalletError::InvalidInput("amount must not be zero".into()));
         }
         if minor > 0 {
-            return self
+            let key = key.to_owned();
+            let description = description_of(reason)?;
+            match self
                 .append(
-                    Entry::<Draft, SCALE>::new(entry_id_for(key), idem(key)?, on)
-                        .with_description(description_of(reason)?)
+                    Entry::<Draft, SCALE>::new(entry_id_for(&key), idem(&key)?, on)
+                        .with_description(description.clone())
                         .debit(self.adjustments, amt, currency())
                         .credit(self.bonus, amt, currency()),
                 )
-                .await;
+                .await
+            {
+                // The key was taken between the read and the append — most often by
+                // a racing copy of this same grant, whose stored entry answers the
+                // retry rather than a bare conflict.
+                Err(WalletError::Conflict(_)) => {
+                    return match self.store.get(entry_id_for(&key)).await? {
+                        Some(stored) => self.adjust_replay(&stored, &description, minor, &key),
+                        None => Err(WalletError::Conflict(format!(
+                            "idempotency key {key:?} is already taken"
+                        ))),
+                    };
+                }
+                other => return other,
+            }
         }
         let description = description_of(reason)?;
         let mut last_err = None;
@@ -1047,13 +1063,24 @@ impl Wallet {
         }
         let key = format!("credit-note/{idempotency_key}");
         let amt = Credits::from_minor(minor);
-        self.append(
-            Entry::<Draft, SCALE>::new(entry_id_for(&key), idem(&key)?, on)
-                .with_description(description_of(reason)?)
-                .debit(self.revenue, amt, currency())
-                .credit(self.wallet, amt, currency()),
-        )
-        .await
+        let description = description_of(reason)?;
+        match self
+            .append(
+                Entry::<Draft, SCALE>::new(entry_id_for(&key), idem(&key)?, on)
+                    .with_description(description.clone())
+                    .debit(self.revenue, amt, currency())
+                    .credit(self.wallet, amt, currency()),
+            )
+            .await
+        {
+            Err(WalletError::Conflict(_)) => match self.store.get(entry_id_for(&key)).await? {
+                Some(stored) => self.credit_note_replay(&stored, &description, minor, &key),
+                None => Err(WalletError::Conflict(format!(
+                    "idempotency key {key:?} is already taken"
+                ))),
+            },
+            other => other,
+        }
     }
 
     /// Reverses a credited deposit: one ledger entry that takes back purchased
@@ -1093,13 +1120,24 @@ impl Wallet {
         }
         let amt = positive(minor)?;
         let key = format!("deposit-reversal/{idempotency_key}");
-        self.append(
-            Entry::<Draft, SCALE>::new(entry_id_for(&key), idem(&key)?, on)
-                .with_description(description_of(reason)?)
-                .debit(self.wallet, amt, currency())
-                .credit(self.cash, amt, currency()),
-        )
-        .await
+        let description = description_of(reason)?;
+        match self
+            .append(
+                Entry::<Draft, SCALE>::new(entry_id_for(&key), idem(&key)?, on)
+                    .with_description(description.clone())
+                    .debit(self.wallet, amt, currency())
+                    .credit(self.cash, amt, currency()),
+            )
+            .await
+        {
+            Err(WalletError::Conflict(_)) => match self.store.get(entry_id_for(&key)).await? {
+                Some(stored) => self.reverse_deposit_replay(&stored, &description, minor, &key),
+                None => Err(WalletError::Conflict(format!(
+                    "idempotency key {key:?} is already taken"
+                ))),
+            },
+            other => other,
+        }
     }
 
     /// Retain complete refund Cash and its proven original Wallet allocation.
@@ -1954,6 +1992,84 @@ impl Wallet {
                 "idempotency key {key:?} is already taken"
             )))
         }
+    }
+
+    /// The shared replay check for a two-leg entry: `debit` of `minor` on
+    /// `debit_account`, `credit` of `minor` on `credit_account`, the reason as
+    /// the description. Answers the stored receipt when the entry is exactly
+    /// that, else the key-reuse conflict — the same shape `deduction_replay`
+    /// uses, generalized so every crediting/debiting write replays its own key.
+    fn two_leg_replay(
+        &self,
+        stored: &StoredEntry<SCALE>,
+        debit_account: AccountId,
+        credit_account: AccountId,
+        description: &Description,
+        minor: i64,
+        key: &str,
+    ) -> Result<Receipt, WalletError> {
+        let leg = |account: AccountId, direction: Direction| -> i64 {
+            stored
+                .entry
+                .postings()
+                .iter()
+                .filter(|p| {
+                    p.account == account && p.layer == Layer::Settled && p.direction == direction
+                })
+                .map(|p| p.amount.to_minor())
+                .sum()
+        };
+        if leg(debit_account, Direction::Debit) == minor
+            && leg(credit_account, Direction::Credit) == minor
+            && stored.entry.description().as_str() == description.as_str()
+        {
+            Ok(stored_receipt(stored))
+        } else {
+            Err(WalletError::Conflict(format!(
+                "idempotency key {key:?} is already taken"
+            )))
+        }
+    }
+
+    /// Replay for a positive `adjust` (a grant): `debit Adjustments / credit
+    /// Bonus`. The negative `adjust` arm goes through `deduction_replay`.
+    fn adjust_replay(
+        &self,
+        stored: &StoredEntry<SCALE>,
+        description: &Description,
+        minor: i64,
+        key: &str,
+    ) -> Result<Receipt, WalletError> {
+        self.two_leg_replay(
+            stored,
+            self.adjustments,
+            self.bonus,
+            description,
+            minor,
+            key,
+        )
+    }
+
+    /// Replay for a `credit_note`: `debit Revenue / credit Wallet`.
+    fn credit_note_replay(
+        &self,
+        stored: &StoredEntry<SCALE>,
+        description: &Description,
+        minor: i64,
+        key: &str,
+    ) -> Result<Receipt, WalletError> {
+        self.two_leg_replay(stored, self.revenue, self.wallet, description, minor, key)
+    }
+
+    /// Replay for a `reverse_deposit`: `debit Wallet / credit Cash`.
+    fn reverse_deposit_replay(
+        &self,
+        stored: &StoredEntry<SCALE>,
+        description: &Description,
+        minor: i64,
+        key: &str,
+    ) -> Result<Receipt, WalletError> {
+        self.two_leg_replay(stored, self.wallet, self.cash, description, minor, key)
     }
 
     /// Hold: reserves part of the balance in the pending layer; the settled balance is untouched.
