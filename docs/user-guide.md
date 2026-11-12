@@ -109,6 +109,16 @@ This operation sets the connection by name: an existing name replaces its
 credential pool. Open the existing row and choose **Edit connection** when
 preserving its pool. Configuration saves make no upstream request.
 
+**Import account** is a guided alternative for bringing an upstream you already
+hold. It opens the same audited connection write with the chosen provider's
+endpoint, protocol and credential field prefilled, so you supply only the
+credential that upstream issued you — an API key, a service-account JSON or an
+equivalent bring-your-own credential. Supported presets cover OpenAI platform,
+Anthropic Console, Google Gemini/Vertex (service-account JSON) and Azure
+OpenAI, plus a generic compatible-upstream choice. Consumer AI subscriptions
+are not OAuth-importable: the import is the provider's own issued credential,
+never a personal-account scrape.
+
 Public connections require HTTPS and public addresses. An internal service
 requires the owner's explicit grant for every exact IPv4/IPv6 address; use
 neither hostnames nor CIDR ranges in that list. Reserved and metadata addresses

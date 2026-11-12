@@ -1938,6 +1938,20 @@
     "provider": {
       "intro": "上游连接和凭据由运营商所有者管理。保存配置不会向上游发送请求。",
       "create": "创建或替换连接",
+      "import": "导入账户",
+      "importTitle": "导入 {{provider}} 凭据",
+      "importProvider": "上游账户",
+      "importProviderHelp": "选择该凭据所属的上游。每项预设接入地址与协议；你只需提供它签发的凭据。",
+      "importSecret": "上游凭据",
+      "serviceAccountJson": "服务账号 JSON",
+      "serviceAccountJsonHelp": "粘贴该上游签发的完整服务账号 JSON 密钥。保存后仅可读其最后四位。",
+      "importHelp": {
+        "openai": "粘贴 OpenAI 平台 API 密钥（sk-…）。OpenAI 订阅无法 OAuth 导入 —— 该密钥即是受支持的凭据。",
+        "anthropic": "粘贴 Anthropic Console API 密钥。Anthropic 支持真正的 OAuth 与 API 密钥；该密钥即是凭据。",
+        "gemini": "上传用于 Vertex AI 的 Google 服务账号 JSON 密钥，或 Gemini API 密钥。这是自带 GCP 凭据，而非 OAuth。",
+        "azure": "粘贴 Azure OpenAI 租户或服务主体凭据，以及你的部署接入地址。",
+        "custom": "粘贴 OpenAI 兼容上游的 API 密钥或令牌及其接入地址。"
+      },
       "edit": "编辑连接",
       "credential": "添加凭据",
       "billing": "设置账单查询凭据",

@@ -1938,6 +1938,20 @@
     "provider": {
       "intro": "Provider connections and credentials are managed by the business owner. Saving configuration makes no upstream request.",
       "create": "Create or replace connection",
+      "import": "Import account",
+      "importTitle": "Import {{provider}} credential",
+      "importProvider": "Provider account",
+      "importProviderHelp": "Choose the upstream this credential belongs to. Each presets the endpoint and protocol; you supply only the credential it issues you.",
+      "importSecret": "Provider credential",
+      "serviceAccountJson": "Service account JSON",
+      "serviceAccountJsonHelp": "Paste the full service-account JSON key this provider issued. Only its last four characters can be read after saving.",
+      "importHelp": {
+        "openai": "Paste an OpenAI platform API key (sk-…). OpenAI subscriptions are not OAuth-importable — the key is the supported credential.",
+        "anthropic": "Paste an Anthropic Console API key. Anthropic supports real OAuth and API keys; the key is the credential.",
+        "gemini": "Upload a Google service-account JSON key for Vertex AI or a Gemini API key. This is bring-your-own-GCP-credential, not OAuth.",
+        "azure": "Paste an Azure OpenAI tenant or service-principal credential and your deployment endpoint URL.",
+        "custom": "Paste the API key or token for an OpenAI-compatible upstream and its base URL."
+      },
       "edit": "Edit connection",
       "credential": "Add credential",
       "billing": "Set billing credential",
