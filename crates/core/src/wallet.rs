@@ -42,7 +42,6 @@ pub use funding_preview::GatewayFundingPreview;
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
 
 use doubleentry::account::AccountRegistry;
 use doubleentry::storage::postgres::{PostgresError, PostgresStore};
@@ -151,55 +150,10 @@ const LEGACY_PROMO_KEY: &str = "legacy-promo-migration";
 /// cover fails every attempt anyway and surfaces the same refusal as before.
 const POOL_SPLIT_ATTEMPTS: usize = 3;
 
-/// How many of one key's holds may be inside the locked transaction at once —
-/// the width of the in-process queue [`Wallet::key_queue`] admits by (issue
-/// #486). One is the honest width: the per-key advisory lock serializes the
-/// holds anyway, so a second admitted hold can only wait inside the transaction
-/// — holding its pooled connection — for exactly the connection-pinning the
-/// queue exists to prevent. The width lives in the semaphore's permit count,
-/// never as a second copy.
-const KEY_QUEUE_WIDTH: usize = 1;
-
-/// How long a hold may wait in the in-process queue before refusing fast rather
-/// than queueing longer than the pool's own acquire timeout would have let it.
-/// The queued hold costs nothing — no connection — so the budget is the
-/// caller's patience, not the pool's; it matches `ACQUIRE_TIMEOUT` so a refused
-/// queue-wait surfaces on the same timescale a refused checkout did.
-const KEY_QUEUE_WAIT: Duration = Duration::from_secs(5);
-
 /// How many times `open` re-reads the account table after a racing opener
 /// committed it mid-bootstrap. The winner's write is one statement batch, so a
 /// loser only loops while racers keep landing in between.
 const OPEN_RACE_ATTEMPTS: usize = 3;
-
-/// How many times a `hold` may lose the ledger's append lock to a racing writer
-/// before refusing `PoolBusy`: each miss drops the transaction's connection and
-/// sleeps `LOCK_WAIT_BACKOFF` off the pool, so the count times the patience
-/// window, not the contention depth. Sized so a queued burst drains — a busy
-/// ledger appends in milliseconds — rather than on the pool's acquire timeout.
-const LOCK_WAIT_ATTEMPTS: usize = 250;
-
-/// How long a hold that lost the append-lock claim sleeps before re-checking —
-/// async time, so the wait costs no connection.
-const LOCK_WAIT_BACKOFF: Duration = Duration::from_millis(20);
-
-/// How one amount divides across the funded pools — promo first (it is the
-/// money that can expire), then the bonus pool, the purchased wallet, and the
-/// credit line last. Any side may be zero; the parts always sum to the amount
-/// the split was computed for.
-#[derive(Clone, Copy)]
-struct PoolSplit {
-    promo: i64,
-    bonus: i64,
-    wallet: i64,
-    credit: i64,
-}
-
-impl PoolSplit {
-    fn total(&self) -> i64 {
-        self.promo + self.bonus + self.wallet + self.credit
-    }
-}
 
 /// What the wallet account may do: be drawn on only up to what it holds, and never
 /// release a reservation it did not take.
@@ -374,18 +328,6 @@ pub struct TransactionEntry {
     /// for a settlement written by hand and for every other kind.
     pub record: Option<SettlementRecord>,
 }
-
-/// Entries one bills read scans for settlements, per page. A gateway turn writes two
-/// entries — the hold and the settlement that releases it — so a page this size carries
-/// hundreds of bills, and a read stops as soon as it has enough.
-const BILLS_SCAN: usize = 512;
-
-/// Entries one requests read scans for settlement records, per page.
-///
-/// A gateway turn writes two entries — the hold and the settlement that releases it — and
-/// top-ups and hand-driven holds write more, so a scan this size carries a full page of
-/// requests even when other writes interleave. A read stops as soon as it has enough.
-const REQUESTS_SCAN: usize = 512;
 
 // The API calendar-date representation for a gateway request's UTC booking date.
 time::serde::format_description!(request_date, Date, "[year]-[month]-[day]");

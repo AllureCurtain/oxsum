@@ -1,8 +1,8 @@
 //! The read surface the dashboard lists: entries, transactions, requests, settlements.
 
 use super::{
-    BILLS_SCAN, ListPage, LogEntry, REQUESTS_SCAN, RequestEntry, SCALE, SettledEntry, SettledTurn,
-    TransactionEntry, TransactionKind, Wallet, currency,
+    ListPage, LogEntry, RequestEntry, SCALE, SettledEntry, SettledTurn, TransactionEntry,
+    TransactionKind, Wallet, currency,
 };
 use crate::billing::SettlementRecord;
 use crate::error::{WalletError, invalid};
@@ -10,6 +10,18 @@ use doubleentry::{
     AccountId, BalanceKey, BalanceQuery, Cursor, Direction, Layer, LedgerStore, LogIndex,
     StoredEntry,
 };
+
+/// Entries one bills read scans for settlements, per page. A gateway turn writes two
+/// entries — the hold and the settlement that releases it — so a page this size carries
+/// hundreds of bills, and a read stops as soon as it has enough.
+const BILLS_SCAN: usize = 512;
+
+/// Entries one requests read scans for settlement records, per page.
+///
+/// A gateway turn writes two entries — the hold and the settlement that releases it — and
+/// top-ups and hand-driven holds write more, so a scan this size carries a full page of
+/// requests even when other writes interleave. A read stops as soon as it has enough.
+const REQUESTS_SCAN: usize = 512;
 
 impl Wallet {
     /// The newest entries of the log, newest first, at most `limit`.

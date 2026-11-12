@@ -1,8 +1,7 @@
 //! Holds: the raw reservation the wallet and the service surface take.
 
 use super::{
-    Credits, KEY_QUEUE_WAIT, KEY_QUEUE_WIDTH, LOCK_WAIT_ATTEMPTS, LOCK_WAIT_BACKOFF,
-    ORG_ADMISSION_LOCK, POOL_SPLIT_ATTEMPTS, PoolSplit, Receipt, SCALE, Wallet, currency,
+    Credits, ORG_ADMISSION_LOCK, POOL_SPLIT_ATTEMPTS, Receipt, SCALE, Wallet, currency,
     description_of, entry_id_for, idem, is_deadlock, limit_lock_key, positive, stored_receipt,
 };
 use crate::error::{WalletError, invalid};
@@ -12,8 +11,54 @@ use doubleentry::{
     Description, Direction, Draft, Entry, Layer, LedgerStore, Posting, Provenance, StoredEntry,
 };
 use std::sync::Arc;
+use std::time::Duration;
 use time::Date;
 use uuid::Uuid;
+
+/// How many of one key's holds may be inside the locked transaction at once —
+/// the width of the in-process queue [`Wallet::key_queue`] admits by (issue
+/// #486). One is the honest width: the per-key advisory lock serializes the
+/// holds anyway, so a second admitted hold can only wait inside the transaction
+/// — holding its pooled connection — for exactly the connection-pinning the
+/// queue exists to prevent. The width lives in the semaphore's permit count,
+/// never as a second copy.
+const KEY_QUEUE_WIDTH: usize = 1;
+
+/// How long a hold may wait in the in-process queue before refusing fast rather
+/// than queueing longer than the pool's own acquire timeout would have let it.
+/// The queued hold costs nothing — no connection — so the budget is the
+/// caller's patience, not the pool's; it matches `ACQUIRE_TIMEOUT` so a refused
+/// queue-wait surfaces on the same timescale a refused checkout did.
+const KEY_QUEUE_WAIT: Duration = Duration::from_secs(5);
+
+/// How many times a `hold` may lose the ledger's append lock to a racing writer
+/// before refusing `PoolBusy`: each miss drops the transaction's connection and
+/// sleeps `LOCK_WAIT_BACKOFF` off the pool, so the count times the patience
+/// window, not the contention depth. Sized so a queued burst drains — a busy
+/// ledger appends in milliseconds — rather than on the pool's acquire timeout.
+const LOCK_WAIT_ATTEMPTS: usize = 250;
+
+/// How long a hold that lost the append-lock claim sleeps before re-checking —
+/// async time, so the wait costs no connection.
+const LOCK_WAIT_BACKOFF: Duration = Duration::from_millis(20);
+
+/// How one amount divides across the funded pools — promo first (it is the
+/// money that can expire), then the bonus pool, the purchased wallet, and the
+/// credit line last. Any side may be zero; the parts always sum to the amount
+/// the split was computed for.
+#[derive(Clone, Copy)]
+pub(super) struct PoolSplit {
+    pub(super) promo: i64,
+    pub(super) bonus: i64,
+    pub(super) wallet: i64,
+    pub(super) credit: i64,
+}
+
+impl PoolSplit {
+    fn total(&self) -> i64 {
+        self.promo + self.bonus + self.wallet + self.credit
+    }
+}
 
 impl Wallet {
     /// Hold: reserves part of the balance in the pending layer; the settled balance is untouched.
