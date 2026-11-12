@@ -1,4 +1,4 @@
-//! The append path every ledger write goes through: seal a draft against the
+//! The append path every ledger entry goes through: seal a draft against the
 //! ledger's current calendar, append it on the pool or inside a borrowed
 //! transaction, and take the append advisory lock a promo-row writer needs
 //! first.

@@ -4,9 +4,11 @@
 //! and the helpers several leaves call stay in this file; the method families live in
 //! the `wallet/` leaf modules beside it, split by domain (admission, funding_preview,
 //! transaction_reads, holds, keys, settle, balances, credit, funding, append, promo,
-//! plan, anchors, reads). Every leaf is an `impl Wallet` block in a child module, so it
-//! sees the struct's private fields. An item a sibling leaf calls is `pub(super)`; an
-//! item only one leaf uses lives in that leaf and stays private.
+//! plan, anchors, reads). Each leaf is a child module holding one `impl Wallet` block,
+//! so its methods see the struct's private fields, plus the types and constants of its
+//! domain. An item a sibling leaf uses is `pub(super)`, or `pub(crate)` when code outside
+//! the wallet uses it too; an item only one leaf uses lives in that leaf and stays
+//! private.
 
 #[path = "wallet/admission.rs"]
 mod admission;
@@ -640,21 +642,32 @@ pub fn settlement_key_for(hold_key: &str) -> String {
     format!("settle:{}", entry_id_for(hold_key).as_uuid().as_simple())
 }
 
-/// The advisory-lock namespace serializing hold admission against a suspension
-/// flip (issue #162): [`Wallet::hold_for_key`] takes it shared and
-/// `Db::set_suspended` takes it exclusive, both keyed by organization id, so a
-/// suspended flag that commits is the flag the next hold reads.
+/// The advisory-lock namespace, keyed by organization id, that serializes hold
+/// admission against writes to the organization's admission state (issue #162).
+///
+/// Holds take it shared: `lock_key_admission_in` for [`Wallet::hold_for_key`] and
+/// [`Wallet::admit_gateway`], and `hold_inner`, behind [`Wallet::hold`] and
+/// [`Wallet::hold_for_service`], when the tenant is an organization. The writers take it
+/// exclusive: `Db::set_suspended`, the dunning sweep, the customer lifecycle and
+/// suspension setters, credit-term changes, application-customer archival, and the
+/// monthly statement and repayment paths. A suspended flag that commits is therefore
+/// the flag the next hold reads.
 pub(crate) const ORG_ADMISSION_LOCK: &str = "oxsum/org-admission/v1:";
 
 /// The advisory-lock key serializing one key's limit check with its appends.
 ///
-/// A stable hash of the tenant id and the key id: every process holding the same key
-/// computes the same lock, and a key of one tenant can never collide with a key of
-/// another. The domain prefix keeps it out of the engine's lock namespace.
+/// A stable hash of a domain prefix, the tenant id and the key id, so every process
+/// holding the same key computes the same lock. The digest is cut to 64 bits, so this
+/// lock coincides with another key's, or with any other advisory lock such as the
+/// engine's append locks, only on a hash collision. A collision only makes the two
+/// holders wait on each other; the lock carries no data. The prefix keeps the hash
+/// input apart from `credit_lock_key`'s.
 ///
-/// `hold_for_key` serializes one key's holds on it. Public so a test can hold the same
-/// lock the wallet waits on — issue #486's pool-fairness check pins a queued hold's
-/// connection use by blocking this lock first.
+/// [`Wallet::lock_key_settlement_in`] takes it, so one key's admissions
+/// (`hold_for_key`, `admit_gateway`), its gateway settlements and the sweep of its
+/// admitted holds run one at a time. Public so a test can hold the same lock the wallet
+/// waits on — issue #486's pool-fairness check pins a queued hold's connection use by
+/// blocking this lock first.
 #[must_use]
 pub fn limit_lock_key(tenant_id: &str, key_id: &Uuid) -> i64 {
     let mut hasher = Sha256::new();
