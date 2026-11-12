@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { createContext, useContext, useEffect, useRef, useState, type ReactNode } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 
 // `/ws/billing` pushes the organization's live billing: a `snapshot` of
@@ -30,6 +30,30 @@ type Wire =
 const BACKOFF_MIN_MS = 1_000;
 const BACKOFF_MAX_MS = 30_000;
 const DEAD_AFTER = 8;
+
+export interface BillingSocket {
+  turns: LiveTurn[];
+  live: boolean;
+  dead: boolean;
+  reconnect: () => void;
+}
+
+/** The single `/ws/billing` connection a shell owns. Mounting the hook twice
+ * opened two sockets (the topbar island plus the requests page), so consumers
+ * subscribe to the provider's state instead of opening their own. */
+const BillingSocketContext = createContext<BillingSocket | null>(null);
+
+export function BillingSocketProvider({ children, enabled = true }: { children: ReactNode; enabled?: boolean }) {
+  const socket = useBillingSocket(enabled);
+  return <BillingSocketContext.Provider value={socket}>{children}</BillingSocketContext.Provider>;
+}
+
+/** The shell's shared socket. Returns an inert never-live answer outside the
+ * provider (the auth pages run under no shell), so callers never branch. */
+export function useSharedBillingSocket(): BillingSocket {
+  const socket = useContext(BillingSocketContext);
+  return socket ?? { turns: [], live: false, dead: false, reconnect: () => {} };
+}
 
 export function useBillingSocket(enabled = true) {
   const [turns, setTurns] = useState<LiveTurn[]>([]);

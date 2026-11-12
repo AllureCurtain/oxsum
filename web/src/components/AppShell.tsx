@@ -43,6 +43,7 @@ import { useTranslation } from "react-i18next";
 import { Banner, Button, IconButton, TextInput } from "./ui";
 import { LanguageSwitcher } from "./LanguageSwitcher";
 import { LiveIsland } from "./LiveIsland";
+import { BillingSocketProvider } from "../api/ws";
 
 // Nav labels are i18n keys under `nav.*`, resolved with `t()` at render so the
 // rail follows the header's language switch.
@@ -368,7 +369,11 @@ function CustomerShell() {
   const { user, role } = session.data;
   const crumbs = breadcrumb(location.pathname, location.hash, t);
 
+  // One `/ws/billing` connection for the whole shell — the topbar island and
+  // the requests page both subscribe to the provider rather than opening
+  // their own sockets.
   return (
+    <BillingSocketProvider>
     <div className="flex min-h-screen">
       {/* ---- mobile drawer (<640px) ---- */}
       {drawerOpen ? (
@@ -501,6 +506,7 @@ function CustomerShell() {
         <BusinessContact />
       </div>
     </div>
+    </BillingSocketProvider>
   );
 }
 

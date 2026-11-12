@@ -1,5 +1,5 @@
 import { useTranslation } from "react-i18next";
-import { useBillingSocket } from "../api/ws";
+import { useSharedBillingSocket } from "../api/ws";
 import { credits } from "./ui";
 
 /**
@@ -10,7 +10,7 @@ import { credits } from "./ui";
  */
 export function LiveIsland() {
   const { t } = useTranslation();
-  const { turns, live, dead, reconnect } = useBillingSocket();
+  const { turns, live, dead, reconnect } = useSharedBillingSocket();
   const lastSettled = turns.find((t) => t.state === "settled" && t.chargedMinor !== undefined);
   const inFlight = turns.filter((t) => t.state !== "settled").length;
 
