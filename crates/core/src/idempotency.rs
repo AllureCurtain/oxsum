@@ -148,6 +148,26 @@ impl Db {
                 return Ok(Claim::Mismatch);
             }
             if record.status == "in_flight" {
+                // A live `in_flight` record means the first turn is still
+                // running — refuse the retry 409. But the row can outlive its
+                // turn: a crash between claim and hold, or a settled hold whose
+                // usage write never landed, leaves `in_flight` until the 24h
+                // `expires_at`. The live arbiter is the hold, not the clock —
+                // `oxsum.open_holds.request_id` names the same request id, so a
+                // record with no open hold under it is safe to take over: the
+                // claim is re-pointed at the new request and the retry runs.
+                if self.hold_alive(&record.request_id).await? {
+                    return Ok(Claim::InFlight);
+                }
+                if self
+                    .retake(organization, key, &record.request_id, request_id)
+                    .await?
+                {
+                    return Ok(Claim::Fresh {
+                        request_id: request_id.to_owned(),
+                    });
+                }
+                // A racing retry won the retake — in-flight is the honest answer.
                 return Ok(Claim::InFlight);
             }
             return Ok(Claim::Replay {
@@ -212,6 +232,54 @@ impl Db {
         .execute(self.pool())
         .await?;
         Ok(())
+    }
+
+    /// Whether the turn an `in_flight` record belongs to still has an open
+    /// hold — the live arbiter that separates "still running" from "crashed
+    /// mid-flight". `oxsum.open_holds.request_id` carries the same request id.
+    async fn hold_alive(&self, request_id: &str) -> Result<bool, WalletError> {
+        sqlx::query_scalar::<_, bool>(
+            "SELECT EXISTS (SELECT 1 FROM oxsum.open_holds WHERE request_id = $1)",
+        )
+        .bind(request_id)
+        .fetch_one(self.pool())
+        .await
+        .map_err(Into::into)
+    }
+
+    /// Takes over a stale `in_flight` record whose hold is gone: re-points the
+    /// claim at the retry's request id and clears the stale replay payload.
+    /// Returns `false` when a racing claim already moved the row.
+    ///
+    /// The `claimed_at` grace bounds the claim→hold window: a record younger
+    /// than it is left alone, because its hold may simply not be written yet —
+    /// only a claim that has sat open past the window with no hold is treated
+    /// as dead. This keeps a slow-but-live admission from being double-run.
+    async fn retake(
+        &self,
+        organization: Uuid,
+        key: &str,
+        stale_request_id: &str,
+        new_request_id: &str,
+    ) -> Result<bool, WalletError> {
+        let retaken = sqlx::query_scalar::<_, String>(
+            "UPDATE oxsum.idempotency_records \
+             SET request_id = $4, status = 'in_flight', \
+                 response_status = NULL, response_body = NULL, \
+                 claimed_at = now(), expires_at = now() + $5::interval \
+             WHERE organization_id = $1 AND idempotency_key = $2 \
+               AND status = 'in_flight' AND request_id = $3 \
+               AND claimed_at < now() - interval '10 seconds' \
+             RETURNING request_id",
+        )
+        .bind(organization)
+        .bind(key)
+        .bind(stale_request_id)
+        .bind(new_request_id)
+        .bind(CLAIM_TTL)
+        .fetch_optional(self.pool())
+        .await?;
+        Ok(retaken.is_some())
     }
 
     /// Releases a claim whose request was refused before money moved: the key
