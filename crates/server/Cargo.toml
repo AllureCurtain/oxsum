@@ -37,11 +37,13 @@ tokio.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
 # OTLP trace export (issue #224): the bridging layer and the exporter, wired in
-# main.rs only when OXSUM_OTLP_ENDPOINT is set.
-opentelemetry.workspace = true
-opentelemetry_sdk.workspace = true
-opentelemetry-otlp.workspace = true
-tracing-opentelemetry.workspace = true
+# main.rs only when OXSUM_OTLP_ENDPOINT is set. Optional behind the `otlp`
+# feature (default on) — a `--no-default-features` build drops the whole
+# opentelemetry dep tree for deployments that never run a collector.
+opentelemetry = { workspace = true, optional = true }
+opentelemetry_sdk = { workspace = true, optional = true }
+opentelemetry-otlp = { workspace = true, optional = true }
+tracing-opentelemetry = { workspace = true, optional = true }
 uuid.workspace = true
 # The relay generator, see Cargo.toml at the workspace root.
 async-stream.workspace = true
@@ -95,6 +97,17 @@ ed25519-dalek.workspace = true
 # `oidc.rs` signs the stub IdP's id_token the way a provider would (RS256 over
 # a checked-in throwaway key).
 jsonwebtoken.workspace = true
+
+[features]
+# OTLP trace export (issue #224). Default on so released binaries are
+# unchanged; `--no-default-features` builds without the collector stack.
+default = ["otlp"]
+otlp = [
+    "dep:opentelemetry",
+    "dep:opentelemetry_sdk",
+    "dep:opentelemetry-otlp",
+    "dep:tracing-opentelemetry",
+]
 
 [lints]
 workspace = true
