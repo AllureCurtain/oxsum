@@ -72,11 +72,7 @@ async fn order_wallet(
     tenants: &Tenants,
     organization: uuid::Uuid,
 ) -> Result<Option<Arc<oxsum_core::Wallet>>, WalletError> {
-    let tenant: Option<String> =
-        sqlx::query_scalar("SELECT tenant_id FROM oxsum.organizations WHERE organization_id=$1")
-            .bind(organization)
-            .fetch_optional(db.pool())
-            .await?;
+    let tenant: Option<String> = db.tenant_for_organization(organization).await?;
     match tenant {
         Some(tenant_id) => Ok(Some(tenants.get(&tenant_id).await?)),
         None => Ok(None),

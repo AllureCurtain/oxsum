@@ -275,6 +275,23 @@ pub(crate) fn display_currency_pair(
 }
 
 impl Db {
+    /// The tenant id of one organization — the wallet its money posts to — or
+    /// `None` when no organization carries the id.
+    ///
+    /// # Errors
+    ///
+    /// Storage failures surface as [`WalletError`].
+    pub async fn tenant_for_organization(
+        &self,
+        organization_id: Uuid,
+    ) -> Result<Option<String>, WalletError> {
+        sqlx::query_scalar("SELECT tenant_id FROM oxsum.organizations WHERE organization_id=$1")
+            .bind(organization_id)
+            .fetch_optional(self.pool())
+            .await
+            .map_err(Into::into)
+    }
+
     /// Every organization, oldest first, with its headcount: what the callers
     /// that genuinely need the whole table (the month-close across every
     /// ledger, the anomaly scan across every organization) iterate. Balances

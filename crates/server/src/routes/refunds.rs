@@ -255,16 +255,7 @@ pub(crate) async fn resolve_dispute(
 ) -> ApiResult<OrderDispute> {
     // The re-charge posts to the dispute organization's ledger; resolve the
     // wallet from the dispute's own row before the staff check runs.
-    let tenant: Option<String> = sqlx::query_scalar(
-        "SELECT o.tenant_id FROM oxsum.disputes d \
-         JOIN oxsum.organizations o ON o.organization_id=d.organization_id \
-         WHERE d.dispute_id=$1",
-    )
-    .bind(dispute_id)
-    .fetch_optional(state.db.pool())
-    .await
-    .map_err(|_| ApiError::Internal)?;
-    let Some(tenant) = tenant else {
+    let Some(tenant) = state.db.tenant_for_dispute(dispute_id).await? else {
         return Err(ApiError::not_found());
     };
     let wallet = state.tenants.get(&tenant).await.map_err(ApiError::from)?;
