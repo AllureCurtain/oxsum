@@ -20,11 +20,6 @@ use sha2::Sha512;
 use tower::ServiceExt;
 use uuid::Uuid;
 
-fn url() -> Option<String> {
-    let _ = dotenvy::dotenv();
-    oxsum_testkit::suite_db_url("examples_surface")
-}
-
 async fn post(app: &Router, uri: &str, body: Value, token: Option<&str>) -> (StatusCode, Value) {
     let mut req = Request::post(uri).header("content-type", "application/json");
     if let Some(token) = token {
@@ -66,7 +61,9 @@ async fn get(app: &Router, uri: &str, token: &str) -> (StatusCode, Value) {
 /// codes it names — a caller can test each boundary rather than assume it.
 #[tokio::test]
 async fn documented_refusals_answer_their_named_codes() {
-    let Some(url) = url() else { return };
+    let Some(url) = oxsum_testkit::suite_url!() else {
+        return;
+    };
     let db = Db::connect(&url, 10).await.unwrap();
     db.migrate().await.unwrap();
     let app = oxsum_server::app(db.clone(), Config::new(Signup::Invite, None));
@@ -188,7 +185,9 @@ async fn documented_refusals_answer_their_named_codes() {
 /// minting authority stays with the owner's session.
 #[tokio::test]
 async fn a_scoped_credential_cannot_reach_past_its_grant() {
-    let Some(url) = url() else { return };
+    let Some(url) = oxsum_testkit::suite_url!() else {
+        return;
+    };
     let db = Db::connect(&url, 10).await.unwrap();
     db.migrate().await.unwrap();
     let owner = setup::owner(&db).await;
@@ -298,7 +297,9 @@ async fn a_scoped_credential_cannot_reach_past_its_grant() {
 /// deployment, proven here against the real router.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_webhook_retry_storm_single_credits() {
-    let Some(url) = url() else { return };
+    let Some(url) = oxsum_testkit::suite_url!() else {
+        return;
+    };
     let db = Db::connect(&url, 10).await.unwrap();
     db.migrate().await.unwrap();
     let owner = setup::owner(&db).await;

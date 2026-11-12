@@ -26,15 +26,9 @@ use time::macros::date;
 const D: time::Date = date!(2026 - 10 - 01);
 const SEED: [u8; 32] = [42; 32];
 
-fn url() -> Option<String> {
-    // `.env` is searched for in the current directory and its parents, see docs/development.md.
-    let _ = dotenvy::dotenv();
-    oxsum_testkit::suite_db_url("price_heads")
-}
-
 macro_rules! db_or_skip {
     () => {
-        match url() {
+        match oxsum_testkit::suite_url!() {
             Some(u) => u,
             None => {
                 eprintln!("DATABASE_URL not set, skipping");

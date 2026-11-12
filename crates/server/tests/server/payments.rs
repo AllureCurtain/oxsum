@@ -42,11 +42,6 @@ const PASSWORD: &str = "correct horse battery";
 /// unit, so the server-rated conversion is the order's `0.0014 USD`/credit.
 const USD: &str = "USD";
 
-fn url() -> Option<String> {
-    let _ = dotenvy::dotenv();
-    oxsum_testkit::suite_db_url("payments")
-}
-
 fn sealing_key() -> SecretKey {
     SecretKey::from_bytes([9; 32])
 }
@@ -126,7 +121,7 @@ async fn stub_switch() -> (String, SwitchStub) {
 /// carries the rail's environment bootstrap, and `prepare` seeds the merchant.
 /// The returned `(merchant_id, version_id)` locates the versioned webhook URL.
 async fn world() -> Option<(Router, Db, SwitchStub, Uuid, Uuid)> {
-    let u = url()?;
+    let u = oxsum_testkit::suite_url!()?;
     let pool: PgPool = sqlx::postgres::PgPoolOptions::new()
         .max_connections(8)
         .connect(&u)

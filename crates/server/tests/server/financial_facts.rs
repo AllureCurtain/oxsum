@@ -22,11 +22,6 @@ use uuid::Uuid;
 
 const PASSWORD: &str = "financial facts http fixture password";
 
-fn url() -> Option<String> {
-    let _ = dotenvy::dotenv();
-    oxsum_testkit::suite_db_url("financial_facts_http")
-}
-
 async fn call(
     app: &Router,
     method: &str,
@@ -71,7 +66,7 @@ struct World {
 }
 
 async fn world() -> Option<World> {
-    let u = url()?;
+    let u = oxsum_testkit::suite_db_url("financial_facts_http")?;
     let pool: PgPool = sqlx::postgres::PgPoolOptions::new()
         .max_connections(8)
         .connect(&u)

@@ -115,12 +115,6 @@ fn trust_at(origin: &Origin, head: TreeHead) -> WitnessTrust {
     }
 }
 
-/// The DATABASE_URL tests need, or None to skip.
-fn url() -> Option<String> {
-    let _ = dotenvy::dotenv();
-    oxsum_testkit::suite_db_url("witness")
-}
-
 /// Posts a raw body to `/add-checkpoint` and returns status, content-type and
 /// the response text — the endpoint speaks `text/plain`, not JSON.
 async fn post_checkpoint(
@@ -165,7 +159,7 @@ fn no_proof(old: u64, new: u64) -> ConsistencyProof {
 /// the returned note is filed as the voucher.
 #[tokio::test]
 async fn a_checkpoint_is_cosigned_and_the_served_head_advances() {
-    let Some(url) = url() else {
+    let Some(url) = oxsum_testkit::suite_url!() else {
         eprintln!("DATABASE_URL not set, skipping");
         return;
     };
@@ -245,7 +239,7 @@ async fn a_checkpoint_is_cosigned_and_the_served_head_advances() {
 /// same cosigned head — not an error. At-least-once delivery sends it twice.
 #[tokio::test]
 async fn a_reoffered_head_cosigns_again_without_advancing() {
-    let Some(url) = url() else {
+    let Some(url) = oxsum_testkit::suite_url!() else {
         eprintln!("DATABASE_URL not set, skipping");
         return;
     };
@@ -287,7 +281,7 @@ async fn a_reoffered_head_cosigns_again_without_advancing() {
 /// does not move off the head it already stands behind.
 #[tokio::test]
 async fn a_fork_at_the_same_size_is_refused() {
-    let Some(url) = url() else {
+    let Some(url) = oxsum_testkit::suite_url!() else {
         eprintln!("DATABASE_URL not set, skipping");
         return;
     };
@@ -321,7 +315,7 @@ async fn a_fork_at_the_same_size_is_refused() {
 /// only ever moves forward.
 #[tokio::test]
 async fn a_shrunk_checkpoint_is_refused() {
-    let Some(url) = url() else {
+    let Some(url) = oxsum_testkit::suite_url!() else {
         eprintln!("DATABASE_URL not set, skipping");
         return;
     };
@@ -350,7 +344,7 @@ async fn a_shrunk_checkpoint_is_refused() {
 /// submitter can come back with the right proof.
 #[tokio::test]
 async fn growth_without_a_proof_is_refused() {
-    let Some(url) = url() else {
+    let Some(url) = oxsum_testkit::suite_url!() else {
         eprintln!("DATABASE_URL not set, skipping");
         return;
     };
@@ -371,7 +365,7 @@ async fn growth_without_a_proof_is_refused() {
 /// A proof that does not verify — genuine hashes, wrong tree — is also a 400.
 #[tokio::test]
 async fn a_proof_that_does_not_verify_is_refused() {
-    let Some(url) = url() else {
+    let Some(url) = oxsum_testkit::suite_url!() else {
         eprintln!("DATABASE_URL not set, skipping");
         return;
     };
@@ -397,7 +391,7 @@ async fn a_proof_that_does_not_verify_is_refused() {
 /// cannot attribute to a log key.
 #[tokio::test]
 async fn an_unsigned_note_is_refused() {
-    let Some(url) = url() else {
+    let Some(url) = oxsum_testkit::suite_url!() else {
         eprintln!("DATABASE_URL not set, skipping");
         return;
     };
@@ -420,7 +414,7 @@ async fn an_unsigned_note_is_refused() {
 /// trust-on-first-use, which is the whole point of the pinset.
 #[tokio::test]
 async fn an_untrusted_origin_is_refused() {
-    let Some(url) = url() else {
+    let Some(url) = oxsum_testkit::suite_url!() else {
         eprintln!("DATABASE_URL not set, skipping");
         return;
     };
@@ -453,7 +447,7 @@ async fn a_deployment_without_a_witness_answers_404() {
 /// The body is `text/plain` — a JSON submission is a 400, not a guess.
 #[tokio::test]
 async fn a_non_text_body_is_refused() {
-    let Some(url) = url() else {
+    let Some(url) = oxsum_testkit::suite_url!() else {
         eprintln!("DATABASE_URL not set, skipping");
         return;
     };
@@ -467,7 +461,7 @@ async fn a_non_text_body_is_refused() {
 /// already vouched refuses to start, rather than rolling back onto a fork.
 #[tokio::test]
 async fn reseeding_a_contradictory_root_refuses_to_start() {
-    let Some(url) = url() else {
+    let Some(url) = oxsum_testkit::suite_url!() else {
         eprintln!("DATABASE_URL not set, skipping");
         return;
     };

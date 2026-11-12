@@ -23,10 +23,6 @@ use uuid::Uuid;
 
 const PASSWORD: &str = "business console fixture password";
 
-fn url() -> Option<String> {
-    oxsum_testkit::suite_db_url("business_console_http")
-}
-
 async fn call(
     app: &Router,
     method: &str,
@@ -69,7 +65,7 @@ struct World {
 }
 
 async fn world() -> Option<World> {
-    let u = url()?;
+    let u = oxsum_testkit::suite_db_url("business_console_http")?;
     let pool: PgPool = sqlx::postgres::PgPoolOptions::new()
         .max_connections(8)
         .connect(&u)

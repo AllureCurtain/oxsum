@@ -31,15 +31,10 @@ use uuid::Uuid;
 /// is configured to trust exactly its public half.
 const PAYER_SEED: [u8; 32] = [23; 32];
 
-fn url() -> Option<String> {
-    let _ = dotenvy::dotenv();
-    oxsum_testkit::suite_db_url("x402")
-}
-
 /// A deployment with the x402 rail configured: the verifier pins the public
 /// half of `PAYER_SEED`.
 async fn world() -> Option<(Router, Db)> {
-    let u = url()?;
+    let u = oxsum_testkit::suite_url!()?;
     let pool: PgPool = sqlx::postgres::PgPoolOptions::new()
         .max_connections(5)
         .connect(&u)
@@ -302,7 +297,7 @@ async fn a_foreign_scheme_network_or_asset_is_refused() {
 /// An unconfigured deployment answers 503: no pinned payer key, no rail.
 #[tokio::test]
 async fn an_unconfigured_deployment_refuses_cleanly() {
-    let Some(u) = url() else {
+    let Some(u) = oxsum_testkit::suite_url!() else {
         return;
     };
     let pool: PgPool = sqlx::postgres::PgPoolOptions::new()
@@ -393,7 +388,7 @@ async fn stub_facilitator() -> (String, FacilitatorStub) {
 /// A deployment with the facilitator rail configured: the verifier delegates
 /// to the stub sidecar on `base-sepolia`.
 async fn facilitator_world() -> Option<(Router, Db, FacilitatorStub)> {
-    let u = url()?;
+    let u = oxsum_testkit::suite_url!()?;
     let pool: PgPool = sqlx::postgres::PgPoolOptions::new()
         .max_connections(5)
         .connect(&u)

@@ -13,15 +13,9 @@ use uuid::Uuid;
 
 const PASSWORD: &str = "correct horse battery staple";
 
-fn url() -> Option<String> {
-    // `.env` is searched for in the current directory and its parents, see docs/development.md.
-    let _ = dotenvy::dotenv();
-    oxsum_testkit::suite_db_url("sessions")
-}
-
 macro_rules! db_or_skip {
     () => {
-        match url() {
+        match oxsum_testkit::suite_url!() {
             Some(u) => u,
             None => {
                 eprintln!("DATABASE_URL not set, skipping");

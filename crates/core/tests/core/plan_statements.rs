@@ -23,11 +23,6 @@ use uuid::Uuid;
 
 const ONE: i64 = 1_000_000;
 
-fn url() -> Option<String> {
-    let _ = dotenvy::dotenv();
-    oxsum_testkit::suite_db_url("plan_statements")
-}
-
 /// A migrated database, the staff owner token, a registered customer org, its
 /// wallet and the business singleton.
 struct World {
@@ -40,7 +35,7 @@ struct World {
 }
 
 async fn world() -> Option<World> {
-    let url = url()?;
+    let url = oxsum_testkit::suite_url!()?;
     let pool: PgPool = sqlx::postgres::PgPoolOptions::new()
         .max_connections(8)
         .connect(&url)

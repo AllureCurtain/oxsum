@@ -10,15 +10,9 @@ use serde_json::json;
 use sqlx::PgPool;
 use uuid::Uuid;
 
-fn url() -> Option<String> {
-    // `.env` is searched for in the current directory and its parents, see docs/development.md.
-    let _ = dotenvy::dotenv();
-    oxsum_testkit::suite_db_url("idempotency")
-}
-
 macro_rules! db_or_skip {
     () => {
-        match url() {
+        match oxsum_testkit::suite_url!() {
             Some(u) => u,
             None => {
                 eprintln!("DATABASE_URL not set, skipping");

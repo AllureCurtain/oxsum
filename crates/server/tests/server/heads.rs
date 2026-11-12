@@ -65,16 +65,9 @@ async fn online_app_with(
     (crate::support::app(db, config), pool)
 }
 
-/// The DATABASE_URL tests need, or None to skip.
-fn url() -> Option<String> {
-    // `.env` is searched for in the current directory and its parents, see docs/development.md.
-    let _ = dotenvy::dotenv();
-    oxsum_testkit::suite_db_url("heads")
-}
-
 macro_rules! app_or_skip {
     ($seed:expr) => {
-        match url() {
+        match oxsum_testkit::suite_url!() {
             Some(u) => online_app(&u, $seed).await,
             None => {
                 eprintln!("DATABASE_URL not set, skipping");
@@ -962,7 +955,7 @@ async fn the_sale_head_endpoint_needs_a_seed_and_a_credential() {
 /// cosignatures — `data: null` before the first anchor (issue #231).
 #[tokio::test]
 async fn log_checkpoint() {
-    let Some(url) = url() else {
+    let Some(url) = oxsum_testkit::suite_url!() else {
         eprintln!("DATABASE_URL not set, skipping");
         return;
     };
@@ -1039,7 +1032,7 @@ async fn log_checkpoint_serves_the_pinned_witness_keys() {
     use doubleentry::witness::Origin;
     use doubleentry::witness::signing::SigningKey;
 
-    let Some(url) = url() else {
+    let Some(url) = oxsum_testkit::suite_url!() else {
         eprintln!("DATABASE_URL not set, skipping");
         return;
     };

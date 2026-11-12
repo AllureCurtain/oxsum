@@ -27,14 +27,9 @@ async fn online_app(url: &str) -> (Router, PgPool) {
     (oxsum_server::app(db, Config::new(Signup::Open, None)), pool)
 }
 
-fn url() -> Option<String> {
-    let _ = dotenvy::dotenv();
-    oxsum_testkit::suite_db_url("device")
-}
-
 macro_rules! app_or_skip {
     () => {
-        match url() {
+        match oxsum_testkit::suite_url!() {
             Some(u) => online_app(&u).await,
             None => {
                 eprintln!("DATABASE_URL not set, skipping");
@@ -243,7 +238,7 @@ async fn cool_down(user_code: &str) {
     .execute(
         &sqlx::postgres::PgPoolOptions::new()
             .max_connections(1)
-            .connect(&url().unwrap())
+            .connect(&oxsum_testkit::suite_url!().unwrap())
             .await
             .unwrap(),
     )

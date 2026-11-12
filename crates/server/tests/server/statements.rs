@@ -29,14 +29,9 @@ const ONE: i64 = 1_000_000;
 const AUG: Date = date!(2026 - 08 - 15);
 const SEPT: Date = date!(2026 - 09 - 15);
 
-fn url() -> Option<String> {
-    let _ = dotenvy::dotenv();
-    oxsum_testkit::suite_db_url("statements")
-}
-
 macro_rules! app_or_skip {
     () => {
-        match url() {
+        match oxsum_testkit::suite_url!() {
             Some(u) => admin_app(&u).await,
             None => {
                 eprintln!("DATABASE_URL not set, skipping");
@@ -992,7 +987,7 @@ async fn a_signed_anchor_verifies_the_head_that_follows_it() {
     // a seeded app is built below.
     let (_app, _pool) = app_or_skip!();
     // Rebuild the app with a signing seed: the same deployment, now attesting.
-    let db_url = url().expect("DATABASE_URL is set (app_or_skip connected)");
+    let db_url = oxsum_testkit::suite_url!().expect("DATABASE_URL is set (app_or_skip connected)");
     let pool2 = sqlx::postgres::PgPoolOptions::new()
         .max_connections(5)
         .connect(&db_url)
@@ -1089,7 +1084,7 @@ fn proof_head(value: &Value) -> Option<doubleentry::TreeHead> {
 #[tokio::test]
 async fn the_proof_bundle_verifies_off_its_own_answer() {
     let (_app, _pool) = app_or_skip!();
-    let db_url = url().expect("DATABASE_URL is set (app_or_skip connected)");
+    let db_url = oxsum_testkit::suite_url!().expect("DATABASE_URL is set (app_or_skip connected)");
     let pool = sqlx::postgres::PgPoolOptions::new()
         .max_connections(5)
         .connect(&db_url)

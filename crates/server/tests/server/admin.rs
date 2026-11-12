@@ -28,15 +28,9 @@ fn secret() -> SecretKey {
     SecretKey::from_bytes([7; 32])
 }
 
-fn url() -> Option<String> {
-    // `.env` is searched for in the current directory and its parents, see docs/development.md.
-    let _ = dotenvy::dotenv();
-    oxsum_testkit::suite_db_url("admin")
-}
-
 macro_rules! app_or_skip {
     () => {
-        match url() {
+        match oxsum_testkit::suite_url!() {
             Some(u) => admin_app(&u, Some(TOKEN)).await,
             None => {
                 eprintln!("DATABASE_URL not set, skipping");
@@ -402,7 +396,7 @@ async fn changing_the_connection_keeps_the_prices() {
 
 #[tokio::test]
 async fn only_the_operator_token_opens_the_surface() {
-    let Some(url) = url() else {
+    let Some(url) = oxsum_testkit::suite_url!() else {
         eprintln!("DATABASE_URL not set, skipping");
         return;
     };
@@ -1944,7 +1938,7 @@ async fn an_adjustment_replays_and_refuses_every_credential_but_the_operators() 
 /// at zero — the default — registration writes no ledger entry, so the balance is 0.
 #[tokio::test]
 async fn the_signup_bonus_credits_a_new_organization_at_registration() {
-    let Some(u) = url() else {
+    let Some(u) = oxsum_testkit::suite_url!() else {
         eprintln!("DATABASE_URL not set, skipping");
         return;
     };

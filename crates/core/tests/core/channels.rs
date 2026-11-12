@@ -15,15 +15,9 @@ use oxsum_core::{Db, MAX_WEIGHT, Price, PriceBook, SecretKey, WalletError};
 use sqlx::PgPool;
 use std::collections::BTreeMap;
 
-fn url() -> Option<String> {
-    // `.env` is searched for in the current directory and its parents, see docs/development.md.
-    let _ = dotenvy::dotenv();
-    oxsum_testkit::suite_db_url("channels")
-}
-
 macro_rules! db_or_skip {
     () => {
-        match url() {
+        match oxsum_testkit::suite_url!() {
             Some(u) => u,
             None => {
                 eprintln!("DATABASE_URL not set, skipping");

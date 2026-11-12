@@ -22,11 +22,6 @@ use uuid::Uuid;
 
 const WEBHOOK_SECRET: &str = "whsec-test-secret-1234";
 
-fn url() -> Option<String> {
-    let _ = dotenvy::dotenv();
-    oxsum_testkit::suite_db_url("stripe")
-}
-
 fn sealing_key() -> SecretKey {
     SecretKey::from_bytes([7; 32])
 }
@@ -197,7 +192,7 @@ async fn stub_stripe() -> (String, StripeStub) {
 /// A configured world: the Stripe stub answers checkout sessions, and the
 /// config carries the rail's three variables.
 async fn world() -> Option<(Router, Db, StripeStub)> {
-    let u = url()?;
+    let u = oxsum_testkit::suite_url!()?;
     let pool: PgPool = sqlx::postgres::PgPoolOptions::new()
         .max_connections(5)
         .connect(&u)
@@ -516,7 +511,7 @@ async fn an_unsigned_webhook_is_refused() {
 /// the webhook 404s — no `OXSUM_STRIPE_*` means no rail to expose.
 #[tokio::test]
 async fn an_unconfigured_deployment_refuses_cleanly() {
-    let u = url().unwrap();
+    let u = oxsum_testkit::suite_url!().unwrap();
     let pool: PgPool = sqlx::postgres::PgPoolOptions::new()
         .max_connections(5)
         .connect(&u)
@@ -599,7 +594,7 @@ const ADMIN_TOKEN: &str = "operator-token-stripe-refund";
 /// A world with the admin surface configured too — the reversal path the
 /// deposit-refund recovery tests exercise lives on `/api/v1/admin`.
 async fn admin_world() -> Option<(Router, Db, StripeStub)> {
-    let u = url()?;
+    let u = oxsum_testkit::suite_url!()?;
     let pool: PgPool = sqlx::postgres::PgPoolOptions::new()
         .max_connections(5)
         .connect(&u)

@@ -14,14 +14,9 @@ use uuid::Uuid;
 const D: time::Date = time::macros::date!(2026 - 10 - 01);
 const ONE: i64 = 1_000_000;
 
-fn url() -> Option<String> {
-    let _ = dotenvy::dotenv();
-    oxsum_testkit::suite_db_url("promo_lots")
-}
-
 macro_rules! db_or_skip {
     () => {
-        match url() {
+        match oxsum_testkit::suite_url!() {
             Some(u) => u,
             None => {
                 eprintln!("DATABASE_URL not set, skipping");
@@ -34,7 +29,7 @@ macro_rules! db_or_skip {
 /// A migrated database, a registered organization and its wallet — the world
 /// every lot lives in.
 async fn world() -> Option<(Db, Uuid, String, sqlx::PgPool, Arc<Wallet>)> {
-    let url = url()?;
+    let url = oxsum_testkit::suite_url!()?;
     let db = Db::connect(&url, 16).await.unwrap();
     db.migrate().await.unwrap();
     let registration = db

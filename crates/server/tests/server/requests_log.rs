@@ -24,14 +24,9 @@ use tokio::net::TcpListener;
 use tower::ServiceExt;
 use uuid::Uuid;
 
-fn url() -> Option<String> {
-    let _ = dotenvy::dotenv();
-    oxsum_testkit::suite_db_url("requests_log")
-}
-
 macro_rules! world_or_skip {
     () => {
-        match url() {
+        match oxsum_testkit::suite_url!() {
             Some(u) => world(&u).await,
             None => {
                 eprintln!("DATABASE_URL not set, skipping");

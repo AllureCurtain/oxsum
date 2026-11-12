@@ -13,14 +13,9 @@ use sqlx::PgPool;
 use time::{Date, OffsetDateTime};
 use uuid::Uuid;
 
-fn url() -> Option<String> {
-    let _ = dotenvy::dotenv();
-    oxsum_testkit::suite_db_url("financial_facts")
-}
-
 macro_rules! db_or_skip {
     () => {
-        match url() {
+        match oxsum_testkit::suite_url!() {
             Some(u) => u,
             None => {
                 eprintln!("DATABASE_URL not set, skipping");

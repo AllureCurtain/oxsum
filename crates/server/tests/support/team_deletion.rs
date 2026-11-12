@@ -7,7 +7,7 @@ use sqlx::{Postgres, Transaction};
 use time::OffsetDateTime;
 use uuid::Uuid;
 
-use super::{Reservation, World, url, world};
+use super::{Reservation, World, world};
 
 #[derive(Clone, Copy, Debug)]
 enum Funding {

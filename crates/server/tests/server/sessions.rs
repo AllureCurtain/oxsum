@@ -29,16 +29,9 @@ async fn online_app(url: &str, secure_cookie: bool) -> (Router, PgPool) {
     (crate::support::app(db, config), pool)
 }
 
-/// The DATABASE_URL tests need, or None to skip.
-fn url() -> Option<String> {
-    // `.env` is searched for in the current directory and its parents, see docs/development.md.
-    let _ = dotenvy::dotenv();
-    oxsum_testkit::suite_db_url("sessions")
-}
-
 macro_rules! app_or_skip {
     ($secure:expr) => {
-        match url() {
+        match oxsum_testkit::suite_url!() {
             Some(u) => online_app(&u, $secure).await,
             None => {
                 eprintln!("DATABASE_URL not set, skipping");

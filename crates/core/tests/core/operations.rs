@@ -20,14 +20,9 @@ const D: Date = date!(2026 - 11 - 06);
 /// other's lapsed operations, so the suite runs serially on one lock.
 static OPS_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
-fn url() -> Option<String> {
-    let _ = dotenvy::dotenv();
-    oxsum_testkit::suite_db_url("operations")
-}
-
 macro_rules! db_or_skip {
     () => {
-        match url() {
+        match oxsum_testkit::suite_url!() {
             Some(u) => u,
             None => {
                 eprintln!("DATABASE_URL not set, skipping");

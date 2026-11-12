@@ -23,10 +23,6 @@ use uuid::Uuid;
 const WEBHOOK_SECRET: &str = "merchant-whsec-versioned-1";
 const ACCOUNT: &str = "acct_versioned_test";
 
-fn url() -> Option<String> {
-    let _ = dotenvy::dotenv();
-    oxsum_testkit::suite_db_url("merchant_events_http")
-}
 fn key() -> SecretKey {
     SecretKey::from_bytes([43; 32])
 }
@@ -44,7 +40,7 @@ fn config(webhook_secret: &str) -> MerchantVersionInput {
 /// The database, the production app and an enabled Hyperswitch merchant pinned
 /// at revision 1 under `owner`'s business.
 async fn world() -> Option<(Db, Router, MerchantMutationResult, String)> {
-    let u = url()?;
+    let u = oxsum_testkit::suite_db_url("merchant_events_http")?;
     let db = Db::connect(&u, 10).await.unwrap();
     db.migrate().await.unwrap();
     let owner = setup::owner(&db).await;

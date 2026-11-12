@@ -812,12 +812,6 @@ impl World {
     }
 }
 
-/// The DATABASE_URL the tests need, or None to skip.
-fn url() -> Option<String> {
-    let _ = dotenvy::dotenv();
-    oxsum_testkit::suite_db_url("gateway")
-}
-
 /// A world with `top_up` minor units of credit, or an early return when there is no database.
 /// The second spelling picks the channel's protocol — `world!(n, "anthropic")` for the
 /// `/v1/messages` tests.
@@ -826,7 +820,7 @@ macro_rules! world {
         world!($top_up, "openai")
     };
     ($top_up:expr, $protocol:expr) => {
-        match url() {
+        match oxsum_testkit::suite_url!() {
             Some(url) => world_for(&url, $top_up, $protocol).await,
             None => {
                 eprintln!("DATABASE_URL not set, skipping");
@@ -2627,7 +2621,7 @@ async fn concurrent_turns_cannot_overdraw_the_wallet() {
 #[tokio::test]
 #[ignore = "the load check runs on demand against a local stack, see docs/development.md"]
 async fn a_saturated_pool_refuses_backpressure_never_a_500() {
-    let Some(url) = url() else {
+    let Some(url) = oxsum_testkit::suite_url!() else {
         eprintln!("DATABASE_URL not set, skipping");
         return;
     };

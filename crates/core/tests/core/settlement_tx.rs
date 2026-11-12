@@ -20,14 +20,9 @@ const ONE: i64 = 1_000_000;
 /// The posting date of the test writes, like the server's `today()`.
 const D: Date = date!(2026 - 11 - 06);
 
-fn url() -> Option<String> {
-    let _ = dotenvy::dotenv();
-    oxsum_testkit::suite_db_url("settlement_tx")
-}
-
 macro_rules! db_or_skip {
     () => {
-        match url() {
+        match oxsum_testkit::suite_url!() {
             Some(u) => u,
             None => {
                 eprintln!("DATABASE_URL not set, skipping");

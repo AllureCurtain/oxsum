@@ -91,14 +91,9 @@ async fn checked_app(url: &str) -> (Router, PgPool, SiteVerify) {
     (app, pool, stub)
 }
 
-fn url() -> Option<String> {
-    let _ = dotenvy::dotenv();
-    oxsum_testkit::suite_db_url("antibot")
-}
-
 macro_rules! app_or_skip {
     () => {
-        match url() {
+        match oxsum_testkit::suite_url!() {
             Some(u) => checked_app(&u).await,
             None => {
                 eprintln!("DATABASE_URL not set, skipping");
@@ -107,7 +102,7 @@ macro_rules! app_or_skip {
         }
     };
     (unchecked) => {
-        match url() {
+        match oxsum_testkit::suite_url!() {
             Some(u) => online_app(&u, None).await,
             None => {
                 eprintln!("DATABASE_URL not set, skipping");
@@ -180,7 +175,7 @@ async fn the_methods_endpoint_advertises_the_site_key() {
     let body: Value = serde_json::from_slice(&bytes).unwrap();
     assert_eq!(body["data"]["turnstileSiteKey"], "site-key");
 
-    let (app, _pool) = match url() {
+    let (app, _pool) = match oxsum_testkit::suite_url!() {
         Some(u) => online_app(&u, None).await,
         None => return,
     };
