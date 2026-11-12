@@ -741,6 +741,21 @@ pub struct WitnessCosign {
 }
 
 impl crate::Db {
+    /// Every organization's `(organization_id, tenant_id)` pair, oldest first:
+    /// the walk the witness pass publishes a signed head for.
+    ///
+    /// # Errors
+    ///
+    /// Storage failures surface as [`WalletError`].
+    pub async fn organization_tenants(&self) -> Result<Vec<(uuid::Uuid, String)>, WalletError> {
+        sqlx::query_as(
+            "SELECT organization_id, tenant_id FROM oxsum.organizations ORDER BY created_at",
+        )
+        .fetch_all(self.pool())
+        .await
+        .map_err(Into::into)
+    }
+
     /// The pass's own read of the checkpoint row — `(head size, note)` —
     /// without the cosignature join the public surface pays for.
     ///

@@ -810,6 +810,30 @@ async fn insert_line_in(
 }
 
 impl Db {
+    /// The tenant id of the organization a journal belongs to — the wallet the
+    /// void posts to — or `None` when no journal carries the id. The caller
+    /// needs the wallet before it can authenticate, so this read runs outside
+    /// the staff check; `void_invoice_journal` re-scopes the row under the
+    /// business inside its own transaction.
+    ///
+    /// # Errors
+    ///
+    /// Storage failures surface as [`WalletError`].
+    pub async fn tenant_for_journal(
+        &self,
+        journal_id: Uuid,
+    ) -> Result<Option<String>, WalletError> {
+        sqlx::query_scalar(
+            "SELECT o.tenant_id FROM oxsum.invoice_journals j \
+             JOIN oxsum.organizations o ON o.organization_id=j.organization_id \
+             WHERE j.journal_id=$1",
+        )
+        .bind(journal_id)
+        .fetch_optional(self.pool())
+        .await
+        .map_err(Into::into)
+    }
+
     /// Reads one journal by id — the row the detail and staff reads project.
     async fn journal_row(&self, journal_id: Uuid) -> Result<Option<InvoiceJournal>, WalletError> {
         let row = sqlx::query(&format!(

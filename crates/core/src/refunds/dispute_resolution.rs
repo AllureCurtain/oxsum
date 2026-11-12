@@ -180,6 +180,30 @@ async fn verify_history(
 }
 
 impl Db {
+    /// The tenant id of the organization a dispute belongs to — the wallet the
+    /// resolution posts to — or `None` when no dispute carries the id. The
+    /// caller needs the wallet before it can authenticate, so this read runs
+    /// outside the staff check; `resolve_order_dispute` re-scopes the row under
+    /// the business inside its own transaction.
+    ///
+    /// # Errors
+    ///
+    /// Storage failures surface as [`WalletError`].
+    pub async fn tenant_for_dispute(
+        &self,
+        dispute_id: Uuid,
+    ) -> Result<Option<String>, WalletError> {
+        sqlx::query_scalar(
+            "SELECT o.tenant_id FROM oxsum.disputes d \
+             JOIN oxsum.organizations o ON o.organization_id=d.organization_id \
+             WHERE d.dispute_id=$1",
+        )
+        .bind(dispute_id)
+        .fetch_optional(self.pool())
+        .await
+        .map_err(Into::into)
+    }
+
     /// Resolve a dispute with live business authority, exact wallet ownership,
     /// ledger/documents and audit in one transaction. Matching request keys
     /// replay; changed terms and inconsistent retained effects are conflicts.

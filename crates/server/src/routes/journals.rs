@@ -150,16 +150,7 @@ pub(crate) async fn void_journal(
     // The reversal posts to the journal organization's ledger; resolve the
     // wallet from the journal's own row before the staff check runs — the
     // same order the dispute resolve uses.
-    let tenant: Option<String> = sqlx::query_scalar(
-        "SELECT o.tenant_id FROM oxsum.invoice_journals j \
-         JOIN oxsum.organizations o ON o.organization_id=j.organization_id \
-         WHERE j.journal_id=$1",
-    )
-    .bind(journal_id)
-    .fetch_optional(state.db.pool())
-    .await
-    .map_err(|_| ApiError::Internal)?;
-    let Some(tenant) = tenant else {
+    let Some(tenant) = state.db.tenant_for_journal(journal_id).await? else {
         return Err(ApiError::not_found());
     };
     let wallet = state.tenants.get(&tenant).await.map_err(ApiError::from)?;

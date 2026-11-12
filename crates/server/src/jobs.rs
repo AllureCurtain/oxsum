@@ -29,6 +29,14 @@ use crate::metrics::Metrics;
 /// late one starts.
 pub const POLL_INTERVAL: Duration = Duration::from_secs(5);
 
+/// The HTTP client every upstream-facing pass shares — the gateway client's
+/// own connection pool, exposed to the binary that wires `JobContext` so the
+/// webhook, witness, price-sync and task-poll halves clone one pool instead of
+/// each opening its own to the same endpoints.
+pub fn http_client() -> reqwest::Client {
+    crate::gateway::client()
+}
+
 /// What one run needs beyond the database.
 #[derive(Clone)]
 pub struct JobContext {
@@ -531,11 +539,7 @@ async fn witness_checkpoints(
         cosigned: 0,
         unreachable: 0,
     };
-    let organizations: Vec<(uuid::Uuid, String)> = sqlx::query_as(
-        "SELECT organization_id, tenant_id FROM oxsum.organizations ORDER BY created_at",
-    )
-    .fetch_all(db.pool())
-    .await?;
+    let organizations = db.organization_tenants().await?;
     for (organization, tenant) in organizations {
         report.organizations += 1;
         let wallet = tenants.get(&tenant).await?;
