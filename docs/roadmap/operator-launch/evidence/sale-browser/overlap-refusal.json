@@ -1,7 +1,0 @@
-[
-  {
-    "url": "/api/v1/business/sale-books/changes",
-    "status": 409,
-    "body": "{\"error\":{\"code\":\"CONFLICT\",\"details\":[],\"message\":\"overlapping sale windows in the same scope\"}}"
-  }
-]

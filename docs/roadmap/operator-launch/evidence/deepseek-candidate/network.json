@@ -1,8 +1,0 @@
-{
-  "source": "https://dns.google/resolve",
-  "observed_at": "2026-11-11T04:35:36.701155+00:00",
-  "hostname": "api.deepseek.com",
-  "addresses": [
-    "3.173.21.63"
-  ]
-}

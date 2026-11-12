@@ -1,9 +1,0 @@
-{
-  "base": "http://127.0.0.1:57530",
-  "version": {
-    "gitSha": "ca835528c5001434ae24256c177f1adb50bed274",
-    "schemaVersion": "0128_application_notifications",
-    "version": "0.1.0"
-  },
-  "binarySha256": "e7929a66305d868e8aebf203498ca1bbbf1aa6d5be17ed3f3c607a794a56e117"
-}

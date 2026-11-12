@@ -1,6 +1,0 @@
-data: {"id": "local-sale", "object": "chat.completion.chunk", "choices": [{"index": 0, "delta": {"role": "assistant", "content": "Pinned local stream"}, "finish_reason": null}]}
-
-data: {"id": "local-sale", "object": "chat.completion.chunk", "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}], "usage": {"prompt_tokens": 9, "completion_tokens": 3, "total_tokens": 12}}
-
-data: [DONE]
-

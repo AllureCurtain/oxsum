@@ -15,7 +15,7 @@ This contract specifies the implementation target; adoption does not mean the fe
 3. [BASELINE.md](BASELINE.md): source reconciliation, compatibility and initial route ownership.
 4. [TASKS.md](TASKS.md): dependency-ordered implementation and completion criteria.
 5. [ACCEPTANCE.md](ACCEPTANCE.md): A01–A31 and promotion gates G1–G5.
-6. [STATUS.md](STATUS.md): issue mapping and next action; [evidence/](evidence/) holds performed checks.
+6. [STATUS.md](STATUS.md): issue mapping and next action. [evidence/](evidence/) keeps the written conclusions. Screenshot and JSON captures were removed from the tree; retrieve them as [EVIDENCE.md](../EVIDENCE.md) describes.
 
 ## Execution rules
 
