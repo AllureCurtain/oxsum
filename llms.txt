@@ -1,0 +1,26 @@
+# oxsum
+
+> Self-hosted, verifiable billing for AI APIs. A deployment reserves credits before a call, settles recorded usage against pinned sale terms, and appends the settlement to a Merkle log the customer can check. Rust and PostgreSQL. OpenAI-compatible gateway. No platform fee in this model. Workspace version 0.1.0. No GitHub Release yet.
+
+oxsum is not a hosted wallet. One Business owns suppliers, sale terms, and collection. Customer accounts own balances, keys, and bills. The React portal is at `/app`. `/verify` and `/bill/{token}` stay server-rendered so a bill can be read without that bundle and without JavaScript.
+
+A proof establishes inclusion of retained bytes in a supplied log head, and the charge, price, and sale checks named in docs/proofs.md. It does not establish that an upstream token count was truthful, that a key shipped beside the bundle is an independent identity, or that a witness run by the same operator is organizationally independent.
+
+## Read these first
+
+- [README](https://github.com/AllureCurtain/oxsum/blob/main/README.md): definition, status, local quickstart, FAQ
+- [README.zh-CN](https://github.com/AllureCurtain/oxsum/blob/main/README.zh-CN.md): Chinese landing page; the English docs are authoritative
+- [Documentation index](https://github.com/AllureCurtain/oxsum/blob/main/docs/README.md): which page wins when documents overlap
+- [Product overview](https://github.com/AllureCurtain/oxsum/blob/main/docs/product-page.md): short product description
+- [Proof scope](https://github.com/AllureCurtain/oxsum/blob/main/docs/proofs.md): what each check establishes and what it does not
+- [Verify a bill](https://github.com/AllureCurtain/oxsum/blob/main/docs/verify-your-bill.md): customer steps
+- [Install](https://github.com/AllureCurtain/oxsum/blob/main/docs/self-hosted-install.md): image install
+- [Security](https://github.com/AllureCurtain/oxsum/blob/main/SECURITY.md): how to report a vulnerability
+
+## Do not treat as current
+
+- `docs/history/TODO-log.md` is a frozen status dump.
+- `docs/decisions.md` entries marked Superseded are history.
+- `docs/assets/demo.gif` and the stills beside it are the 2026-10-24 dashboard.
+- oxsum.785777.xyz is not a supported trial and was not tied to a commit on 2026-11-12.
+- `docs/roadmap/` screenshot and JSON captures may be absent from the tree; the markdown conclusions are the published part. See `docs/roadmap/EVIDENCE.md` when that file is on the branch.

@@ -1,4 +1,4 @@
-# Continuous integration: format, lints, and the full test suites.
+# Continuous integration: pull requests run the fast tier; heavy suites run on main.
 #
 # Two tiers (issue #552): a pull request runs the fast tier — `filter`, `fmt`,
 # `clippy --all-targets`, the lib/doc tests, `wasm`, `frontend`, `publishable`

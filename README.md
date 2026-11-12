@@ -11,11 +11,13 @@ Oxsum is usage-based billing for an AI-service business that runs the software i
 
 Before an admitted model call, oxsum reserves the applicable upper bound, then settles the recorded usage against the pinned terms and releases unused credit. Purchased funds, promotional credit, plan quota, and approved credit lines keep their separate accounting rules. Each settlement is appended to a Merkle transparency log. A customer who retains the entry hash — and, for the stronger checks, an earlier log head and a signing key they chose to trust — can check that bill on `/verify` or with the [`verify-oxsum-bill`](web/verify-sdk) package. The check has a [documented scope](docs/proofs.md). It does not establish that an upstream provider's token count was truthful.
 
-**Status.** The workspace version is 0.1.0, and there is no GitHub Release yet. Operator onboarding still has gaps tracked in [#725](https://github.com/AllureCurtain/oxsum/issues/725). `verify-oxsum-bill` is not on npm (`npm view verify-oxsum-bill` returned 404 on 2026-11-12); build it from [`web/verify-sdk`](web/verify-sdk). On that date, [oxsum.785777.xyz](https://oxsum.785777.xyz) redirected to `/app` and returned the embedded app's HTML; `GET /api/v1/version` did not return a version document. That probe did not sign in or confirm the deployed commit, balances, credentials, or provider access. A green pull-request CI run is the fast tier, not a full release-candidate pass ([candidate gates](docs/self-hosted-release.md)).
+**Status.** The workspace version is 0.1.0, and there is no GitHub Release yet. Operator onboarding still has gaps tracked in [#725](https://github.com/AllureCurtain/oxsum/issues/725). `verify-oxsum-bill` is not on npm (`npm view verify-oxsum-bill` returned 404 on 2026-11-12); build it from [`web/verify-sdk`](web/verify-sdk). [oxsum.785777.xyz](https://oxsum.785777.xyz) is not a supported trial: on 2026-11-12 it redirected to `/app` and returned HTML, and `GET /api/v1/version` did not return a version document. That probe did not identify the commit, balances, credentials, or provider access. Pictures in this file are the 2026-10-24 dashboard, not the current UI. A green pull-request CI run is the fast tier, not a full release-candidate pass ([candidate gates](docs/self-hosted-release.md)).
 
 ## Run it locally
 
 Rust stable at or above the workspace MSRV 1.98, and Docker with Compose. `.env.example` already points `DATABASE_URL` at the database `compose.yaml` creates. The server loads `.env` when the file is present.
+
+### The process is up
 
 ```bash
 git clone https://github.com/AllureCurtain/oxsum.git
@@ -25,15 +27,26 @@ docker compose up -d
 cargo run -p oxsum-server
 ```
 
-The first `cargo run` compiles the workspace. Then check [health](http://127.0.0.1:3000/healthz) and [readiness](http://127.0.0.1:3000/readyz). Readiness answers only when PostgreSQL is reachable and migrations have applied.
+The first `cargo run` compiles the workspace. Then check [health](http://127.0.0.1:3000/healthz) and [readiness](http://127.0.0.1:3000/readyz). Readiness answers only when PostgreSQL is reachable and migrations have applied. Stopping here leaves a database with no Business owner.
 
-Opening the portal needs an operator token. Uncomment `OXSUM_ADMIN_TOKEN` in `.env` and set it to the output of `openssl rand -hex 24` (at least 16 characters), then restart. Follow the one-time owner setup in the [installation runbook](docs/self-hosted-install.md): mint a setup token, accept it at [http://127.0.0.1:3000/app/setup](http://127.0.0.1:3000/app/setup), sign in at [http://127.0.0.1:3000/app](http://127.0.0.1:3000/app), and choose Business. A local checkout uses `.env` and `cargo run`. An image deployment uses [`deploy/`](deploy/docker-compose.core.yml) and the same runbook.
+### Become the owner
+
+Uncomment `OXSUM_ADMIN_TOKEN` in `.env`, set it to the output of `openssl rand -hex 24` (at least 16 characters), and restart the server. Mint a one-time setup invitation:
+
+```bash
+curl -s -X POST http://127.0.0.1:3000/api/v1/admin/business/setup-tokens \
+  -H "authorization: Bearer $OXSUM_ADMIN_TOKEN" \
+  -H "content-type: application/json" \
+  -d '{"idempotencyKey":"setup-1","ownerEmail":"owner@example.com"}'
+```
+
+The response shows `token` once. Open [http://127.0.0.1:3000/app/setup](http://127.0.0.1:3000/app/setup), accept with that email and a password of at least 12 characters, then sign in at [http://127.0.0.1:3000/app](http://127.0.0.1:3000/app) and choose Business. Keep the deployment token out of the customer browser. An image deployment uses [`deploy/`](deploy/docker-compose.core.yml) and the [installation runbook](docs/self-hosted-install.md) instead of `cargo run`. The runbook's setup call is the same endpoint.
 
 `OXSUM_SECRET_KEY` (`openssl rand -base64 32`) is required before the database stores a provider or payment credential. `OXSUM_HEAD_SIGNING_KEY` is optional; without it the signed-log routes answer 503 and the wallet still serves.
 
-Customer registration stays invite-only until the owner opens it. `OXSUM_SIGNUP` does not override that saved policy. Registration grants no purchased funds and no staff authority. A running process, a configured channel, or a merchant row is not evidence of a successful model call or payment. Use the documented setup APIs where this revision has no browser editor ([#725](https://github.com/AllureCurtain/oxsum/issues/725)). Keep the deployment token in operator tooling.
+Customer registration stays invite-only until the owner opens it. `OXSUM_SIGNUP` does not override that saved policy. Registration grants no purchased funds and no staff authority. A running process, a configured channel, or a merchant row is not evidence of a successful model call or payment. Use the documented setup APIs where this revision has no browser editor ([#725](https://github.com/AllureCurtain/oxsum/issues/725)).
 
-`docker build -t oxsum .` builds a local image containing the binary, the React app, and the verifier assets. The image still needs an external PostgreSQL and deployment configuration. `.env` is excluded from the image. The supported install path is the [runbook](docs/self-hosted-install.md), which pins an immutable image reference.
+`docker build -t oxsum .` builds a local image containing the binary, the React app, and the verifier assets. The image still needs an external PostgreSQL and deployment configuration. `.env` is excluded from the image. The supported install path pins an immutable image reference; there is no floating published tag to pull.
 
 ## What a proof establishes
 
@@ -103,7 +116,7 @@ Issue [#728](https://github.com/AllureCurtain/oxsum/issues/728) replaced an olde
 
 ## Earlier dashboard pictures
 
-These captures are from 2026-10-24 ([#362](https://github.com/AllureCurtain/oxsum/issues/362)): a sequence of real pages, top-up through Requests, Bills, and `/verify`. The sidebar is the earlier flat navigation. The current portal groups Main, Configure, and Account, and adds pages such as Orders, Plans, Billing, Evidence, and Business. The opening frame of `demo.gif` and the stills below were checked against that older chrome. Later frames of the animation were not replayed one by one. They illustrate that revision. They are not acceptance of the current candidate.
+These captures are from 2026-10-24 ([#362](https://github.com/AllureCurtain/oxsum/issues/362)): a sequence of real pages, top-up through Requests, Bills, and `/verify`. The sidebar is the earlier flat navigation. The current portal groups Main, Configure, and Account, and adds pages such as Orders, Plans, Billing, Evidence, and Business. The opening frame of `demo.gif` and the stills below were checked against that older chrome. Later frames of the animation were not replayed one by one. They illustrate that revision. They are not the current UI, and [oxsum.785777.xyz](https://oxsum.785777.xyz) is not a stand-in for them or for a release candidate.
 
 ![Earlier dashboard: top up, requests, bills, and verify](docs/assets/demo.gif)
 
@@ -113,12 +126,32 @@ These captures are from 2026-10-24 ([#362](https://github.com/AllureCurtain/oxsu
 
 ## Documentation
 
+Start at the [documentation index](docs/README.md).
+
 - [Product overview](docs/product-page.md), [behavior](docs/product.md), and [user guide](docs/user-guide.md)
 - [API](docs/api.md), [integrations](docs/integrations.md), and [unsupported operations](docs/unsupported.md)
 - [Verify a bill](docs/verify-your-bill.md), [proof scope](docs/proofs.md), and [payment evidence](docs/rails.md)
 - [Install](docs/self-hosted-install.md), [upgrade and restore](docs/self-hosted-upgrade.md), and [candidate and release gates](docs/self-hosted-release.md)
 - [Development](docs/development.md), [architecture](docs/architecture.md), and [decisions](docs/decisions.md)
 - [Security](SECURITY.md) and [support](SUPPORT.md)
+
+## FAQ
+
+**Is oxsum a hosted wallet?** No. You run the binary and PostgreSQL. This deployment model takes no platform fee.
+
+**What does reserve-then-settle mean?** An admitted call reserves an upper bound in integer minor units (1 credit = 1,000,000). Settlement records the usage the deployment wrote down, charges that amount, and releases the rest.
+
+**What does a Merkle proof establish?** That the retained entry bytes still hash to the expected value and sit in the supplied log head, plus the charge, price, and sale checks [docs/proofs.md](docs/proofs.md) names. It does not establish that the provider's token count was truthful.
+
+**Does it replace LiteLLM or new-api?** Project decisions describe an overlap with those self-hosted proxies. The recorded aim is ledger-backed settlement a customer can check, not a claim that oxsum replaces them.
+
+**Can I `npm install verify-oxsum-bill`?** Not as of 2026-11-12 (`npm view` returned 404). Build it from `web/verify-sdk`, or run `bash scripts/check-verify-consumer.sh`.
+
+**Is there a release or a public demo to click?** There is no GitHub Release yet. The pictures below are the 2026-10-24 dashboard. oxsum.785777.xyz answered on 2026-11-12 and is not a supported trial.
+
+**Why is some UI still not React?** The dashboard is the React app at `/app`. `/verify` and `/bill/{token}` stay server-rendered so a bill can be read without the dashboard bundle and without JavaScript. Details are in [docs/README.md](docs/README.md).
+
+**Where do I start as an operator?** Bring the process up, then become the owner, both in [Run it locally](#run-it-locally). Portal gaps are [#725](https://github.com/AllureCurtain/oxsum/issues/725).
 
 ## Where it sits
 
