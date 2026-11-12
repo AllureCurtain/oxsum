@@ -275,28 +275,32 @@ pub(crate) fn display_currency_pair(
 }
 
 impl Db {
-    /// Every organization, oldest first, with its headcount: what the platform admin's
-    /// organizations page lists. Balances are read per organization through the wallet
-    /// by the caller — this is the identity list, not the money.
+    /// Every organization, oldest first, with its headcount: what the callers
+    /// that genuinely need the whole table (the month-close across every
+    /// ledger, the anomaly scan across every organization) iterate. Balances
+    /// are read per organization through the wallet by the caller — this is
+    /// the identity list, not the money.
+    ///
+    /// Reads go through [`organizations_page`](Self::organizations_page) a
+    /// page at a time rather than one unbounded `SELECT`, so a long table
+    /// walks instead of landing in a single read. Callers listing for a page
+    /// of their own use `organizations_page` directly.
     ///
     /// # Errors
     ///
     /// Storage failures surface as [`WalletError`].
     pub async fn organizations(&self) -> Result<Vec<AdminOrganization>, WalletError> {
-        let rows = sqlx::query(
-            "SELECT o.organization_id, o.name, o.tenant_id, o.kind, o.created_at, o.payment_terms_days, o.tier, COALESCE(o.suspended_at,o.dunning_suspended_at,(SELECT c.archived_at FROM oxsum.customer_profiles c WHERE c.organization_id=o.organization_id AND c.state='archived')) AS suspended_at, \
-             o.dunning_grace_days, o.dunning_suspended_at, o.display_currency, o.display_rate_per_credit, \
-             count(m.user_id) AS members \
-             FROM oxsum.organizations o LEFT JOIN oxsum.memberships m USING (organization_id) \
-             GROUP BY o.organization_id ORDER BY o.created_at",
-        )
-        .fetch_all(self.pool())
-        .await?;
-        let mut organizations = Vec::with_capacity(rows.len());
-        for row in &rows {
-            organizations.push(admin_organization(row)?);
+        let mut organizations = Vec::new();
+        let mut after = None;
+        loop {
+            let page = self.organizations_page(after, 100).await?;
+            let done = page.next_cursor.is_none();
+            after = page.next_cursor;
+            organizations.extend(page.rows);
+            if done {
+                return Ok(organizations);
+            }
         }
-        Ok(organizations)
     }
 
     /// The organizations, page by page, oldest first (issue #93): at most `limit`
