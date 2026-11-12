@@ -84,7 +84,7 @@ async fn submit(
             &request_id,
         );
     };
-    let mut claimed = None;
+    let mut claim = SubmitClaim::default();
     match submit_inner(
         &state,
         &organization,
@@ -92,14 +92,14 @@ async fn submit(
         map,
         &request_id,
         &headers,
-        &mut claimed,
+        &mut claim,
     )
     .await
     {
         Ok((response, completed_body)) => {
             // The claim completes with the answer it produced: a retry under
             // the same key replays this body rather than submitting twice.
-            if let (Some(key), Some(body)) = (claimed.as_deref(), completed_body.as_ref()) {
+            if let (Some(key), Some(body)) = (claim.key(), completed_body.as_ref()) {
                 let _ = state
                     .db
                     .complete_request(organization.id, key, 200, body)
@@ -108,13 +108,35 @@ async fn submit(
             response
         }
         Err(error) => {
-            // A refused submit frees the claim so a corrected retry can take
-            // it — the refusal carried no state worth replaying.
-            if let Some(key) = claimed.as_deref() {
+            // A refusal before upstream accepted frees the claim so a corrected
+            // retry can take it — the refusal carried no state worth replaying.
+            // Once upstream accepted (a 2xx answered), the claim stays: the job
+            // may exist upstream, so a retry under the freed key would submit a
+            // second task and take a second freeze.
+            if !claim.accepted
+                && let Some(key) = claim.key()
+            {
                 let _ = state.db.release_request(organization.id, key).await;
             }
             error_response(error, &request_id)
         }
+    }
+}
+
+/// What `submit` needs back from [`submit_inner`] about the idempotency claim:
+/// the key it claimed (if any) and whether upstream accepted the job. The two
+/// travel together because the caller's release-or-keep decision depends on
+/// both — a claim is only safe to release while upstream never saw the task.
+#[derive(Default)]
+struct SubmitClaim {
+    key: Option<String>,
+    accepted: bool,
+}
+
+impl SubmitClaim {
+    /// The claimed idempotency key, when this submit took one.
+    fn key(&self) -> Option<&str> {
+        self.key.as_deref()
     }
 }
 
@@ -128,7 +150,7 @@ async fn submit_inner(
     body: &serde_json::Map<String, Value>,
     request_id: &str,
     headers: &HeaderMap,
-    claimed: &mut Option<String>,
+    claim: &mut SubmitClaim,
 ) -> Result<(Response, Option<Value>), GatewayError> {
     let kind = match body.get("kind").and_then(Value::as_str) {
         Some(raw) => TaskKind::parse(raw)?,
@@ -171,7 +193,7 @@ async fn submit_inner(
             .await
         {
             Ok(oxsum_core::Claim::Fresh { .. }) => {
-                *claimed = Some(key.clone());
+                claim.key = Some(key.clone());
             }
             Ok(oxsum_core::Claim::InFlight) => {
                 return Err(GatewayError::idempotency_in_flight());
@@ -452,13 +474,23 @@ async fn submit_inner(
                 .filter(|body| body.get("error").is_some()),
         ));
     }
-    let upstream_body: Value = upstream.json().await.map_err(|error| {
-        GatewayError::upstream(
-            StatusCode::BAD_GATEWAY,
-            format!("upstream's submit answer was not JSON: {error}"),
-            None,
-        )
-    })?;
+    // A 2xx means upstream accepted the job — even when its answer cannot be
+    // read into a task. From here on a failure must neither release the claim
+    // (a retry would submit a second task) nor abandon the freeze silently: the
+    // hold is released because no `tasks` row can ever settle it, and the claim
+    // is kept because upstream may already be running the work.
+    claim.accepted = true;
+    let upstream_body: Value = match upstream.json().await {
+        Ok(body) => body,
+        Err(error) => {
+            release_task_hold(state, &hold_key).await;
+            return Err(GatewayError::upstream(
+                StatusCode::BAD_GATEWAY,
+                format!("upstream's submit answer was not JSON: {error}"),
+                None,
+            ));
+        }
+    };
     let Some(external_task_id) = upstream_body
         .get("id")
         .or_else(|| upstream_body.get("taskId"))
