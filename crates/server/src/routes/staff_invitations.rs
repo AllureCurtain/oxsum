@@ -1,14 +1,15 @@
 //! Business staff invitation history and explicitly requested SMTP submission.
 use axum::extract::State;
-use axum::http::HeaderMap;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use crate::AppState;
+use crate::auth::PersonalToken;
 use crate::error::{ApiJson, ApiQuery};
-use crate::routes::{ApiResult, business, ok};
+use crate::routes::{ApiResult, ok};
 
 #[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 pub(crate) struct Query {
     after: Option<Uuid>,
     limit: Option<i64>,
@@ -22,17 +23,13 @@ pub(crate) struct Page {
 }
 pub(crate) async fn list(
     State(state): State<AppState>,
-    headers: HeaderMap,
+    axum::Extension(token): axum::Extension<crate::auth::PersonalToken>,
     ApiQuery(query): ApiQuery<Query>,
 ) -> ApiResult<Page> {
     ok(Page {
         invitations: state
             .db
-            .staff_invitations(
-                &business::personal_token(&headers)?,
-                query.after,
-                query.limit.unwrap_or(25),
-            )
+            .staff_invitations(&token, query.after, query.limit.unwrap_or(25))
             .await?,
         mail_configured: state.config.mailer().is_some(),
     })
@@ -46,10 +43,10 @@ pub(crate) struct Created {
 }
 pub(crate) async fn create(
     State(state): State<AppState>,
-    headers: HeaderMap,
+    axum::Extension(token): axum::Extension<crate::auth::PersonalToken>,
     ApiJson(request): ApiJson<oxsum_core::StaffInvitationRequest>,
 ) -> ApiResult<Created> {
-    let token = business::personal_token(&headers)?;
+    let PersonalToken(token) = token;
     let invitation = state.db.create_staff_invitation(&token, &request).await?;
     if request.send_email
         && let Some(secret) = invitation.token.as_deref()
@@ -93,17 +90,12 @@ pub(crate) async fn create(
 }
 pub(crate) async fn revoke(
     State(state): State<AppState>,
-    headers: HeaderMap,
+    axum::Extension(token): axum::Extension<crate::auth::PersonalToken>,
     axum::extract::Path(id): axum::extract::Path<Uuid>,
     ApiJson(request): ApiJson<oxsum_core::InvitationRevokeRequest>,
 ) -> ApiResult<oxsum_core::BusinessMutationResult> {
     ok(state
         .db
-        .revoke_invitation(
-            &business::personal_token(&headers)?,
-            id,
-            oxsum_core::InvitationScope::Staff,
-            &request,
-        )
+        .revoke_invitation(&token, id, oxsum_core::InvitationScope::Staff, &request)
         .await?)
 }

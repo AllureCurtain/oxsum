@@ -24,7 +24,7 @@ const OPERATIONS_DEFAULT_LIMIT: i64 = 50;
 const OPERATIONS_MAX_LIMIT: i64 = 200;
 
 #[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(crate) struct OperationsQuery {
     limit: Option<i64>,
     cursor: Option<String>,

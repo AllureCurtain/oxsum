@@ -18,7 +18,7 @@ const REQUESTS_DEFAULT_LIMIT: usize = 50;
 const REQUESTS_MAX_LIMIT: usize = 200;
 
 #[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(crate) struct RequestsQuery {
     key_id: Option<Uuid>,
     model: Option<String>,

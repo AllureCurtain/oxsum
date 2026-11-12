@@ -9,6 +9,7 @@ use oxsum_core::{
 };
 
 use crate::AppState;
+use crate::auth::PersonalToken;
 use crate::error::{ApiError, ApiJson, ApiQuery};
 use crate::routes::auth::{require_bot_check, send_verification};
 use crate::routes::{ApiResult, SessionInfo, double_option_i64, double_option_uuid, ok, person};
@@ -180,10 +181,10 @@ pub(crate) struct DeleteAccountReq {
 /// commit, so the answer is the last thing the credential ever receives.
 pub(crate) async fn delete_account(
     State(state): State<AppState>,
-    headers: axum::http::HeaderMap,
+    axum::Extension(token): axum::Extension<crate::auth::PersonalToken>,
     ApiJson(request): ApiJson<DeleteAccountReq>,
 ) -> ApiResult<oxsum_core::AccountDeletion> {
-    let token = super::business::personal_token(&headers)?;
+    let PersonalToken(token) = token;
     let user = state.db.session_user(&token).await?;
     let deletion = state.db.delete_account(user.id, &request.password).await?;
     ok(deletion)
@@ -213,10 +214,10 @@ pub(crate) struct CreatedInvitationRes {
 }
 pub(crate) async fn create_invitation(
     State(state): State<AppState>,
-    headers: axum::http::HeaderMap,
+    axum::Extension(token): axum::Extension<crate::auth::PersonalToken>,
     ApiJson(request): ApiJson<oxsum_core::TeamInvitationRequest>,
 ) -> ApiResult<CreatedInvitationRes> {
-    let token = super::business::personal_token(&headers)?;
+    let PersonalToken(token) = token;
     let email = super::recipient_email(request.email.as_deref())?;
     if email.is_some() && state.config.mailer().is_none() {
         return Err(
@@ -244,28 +245,20 @@ pub(crate) async fn create_invitation(
 }
 pub(crate) async fn accept_invitation(
     State(state): State<AppState>,
-    headers: axum::http::HeaderMap,
+    axum::Extension(token): axum::Extension<crate::auth::PersonalToken>,
     ApiJson(request): ApiJson<oxsum_core::InvitationAcceptRequest>,
 ) -> ApiResult<oxsum_core::InvitationAcceptance> {
-    ok(state
-        .db
-        .accept_invitation(&super::business::personal_token(&headers)?, &request.token)
-        .await?)
+    ok(state.db.accept_invitation(&token, &request.token).await?)
 }
 pub(crate) async fn revoke_invitation(
     State(state): State<AppState>,
-    headers: axum::http::HeaderMap,
+    axum::Extension(token): axum::Extension<crate::auth::PersonalToken>,
     Path(id): Path<Uuid>,
     ApiJson(request): ApiJson<oxsum_core::InvitationRevokeRequest>,
 ) -> ApiResult<oxsum_core::BusinessMutationResult> {
     ok(state
         .db
-        .revoke_invitation(
-            &super::business::personal_token(&headers)?,
-            id,
-            oxsum_core::InvitationScope::Team,
-            &request,
-        )
+        .revoke_invitation(&token, id, oxsum_core::InvitationScope::Team, &request)
         .await?)
 }
 
@@ -349,7 +342,7 @@ pub(crate) async fn redeem_invitation(
 }
 
 #[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(crate) struct UpdateMemberReq {
     /// The role half of the change; absent leaves it.
     role: Option<AssignableRole>,
@@ -386,7 +379,7 @@ impl From<AssignableRole> for Role {
 }
 
 #[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(crate) struct TransferOwnershipReq {
     user_id: Uuid,
 }

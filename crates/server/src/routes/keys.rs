@@ -20,7 +20,7 @@ use crate::gateway::MANDATE_HEADER;
 use crate::routes::{ApiResult, ok};
 
 #[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(crate) struct CreateKeyReq {
     name: Option<String>,
     /// RFC 3339; absent means a key that never expires.
@@ -58,7 +58,7 @@ pub(crate) struct CreateKeyReq {
 }
 
 #[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(crate) struct UpdateKeyConstraintsReq {
     /// The new limit in minor units; null clears it back to unlimited.
     #[serde(default)]
@@ -169,7 +169,7 @@ pub(crate) async fn revoke_key(
 /// The body of `POST /api/v1/org/keys/{keyId}/mandates` (issue #262): the bounds
 /// the delegate may spend inside — always narrowing the key's own.
 #[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(crate) struct CreateMandateReq {
     /// Total committed spend this mandate may carry, in minor units.
     cap_minor: i64,
@@ -262,7 +262,7 @@ pub(crate) async fn patch_key(
 /// `tag=name:value`, resolving which tag-scoped token buckets the request
 /// would land in).
 #[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(crate) struct EntitlementQuery {
     /// The gateway model the request would call; absent skips the allowlist question.
     #[serde(default)]

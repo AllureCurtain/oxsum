@@ -11,7 +11,6 @@ use crate::AppState;
 use crate::error::{ApiError, ApiJson, ApiQuery};
 use axum::Extension;
 use axum::extract::{Path, State};
-use axum::http::HeaderMap;
 use oxsum_core::{
     DisputeResolution, NewRefundRequest, OrderCreditNotePage, OrderDispute, OrderDisputePage,
     OrderRefund, OrderRefundPage, RefundDecision,
@@ -73,6 +72,7 @@ pub(crate) async fn order_refunds(
 }
 
 #[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 pub(crate) struct Page {
     after: Option<Uuid>,
     limit: Option<i64>,
@@ -82,28 +82,24 @@ pub(crate) struct Page {
 /// by cursor — a `ReportsRead` action.
 pub(crate) async fn business_refunds(
     State(state): State<AppState>,
-    headers: HeaderMap,
+    axum::Extension(token): axum::Extension<crate::auth::PersonalToken>,
     ApiQuery(page): ApiQuery<Page>,
 ) -> ApiResult<OrderRefundPage> {
     ok(state
         .db
-        .business_refunds(
-            &super::business::personal_token(&headers)?,
-            page.after,
-            page.limit.unwrap_or(50),
-        )
+        .business_refunds(&token, page.after, page.limit.unwrap_or(50))
         .await?)
 }
 
 /// `GET /api/v1/business/refunds/{refundId}`: one refund the business owns.
 pub(crate) async fn business_refund(
     State(state): State<AppState>,
-    headers: HeaderMap,
+    axum::Extension(token): axum::Extension<crate::auth::PersonalToken>,
     Path(refund_id): Path<Uuid>,
 ) -> ApiResult<OrderRefund> {
     let refund = state
         .db
-        .business_refund(&super::business::personal_token(&headers)?, refund_id)
+        .business_refund(&token, refund_id)
         .await?
         .ok_or_else(ApiError::not_found)?;
     ok(refund)
@@ -123,14 +119,14 @@ pub(crate) struct ResolveBody {
 
 pub(crate) async fn resolve_refund(
     State(state): State<AppState>,
-    headers: HeaderMap,
+    axum::Extension(token): axum::Extension<crate::auth::PersonalToken>,
     Path(refund_id): Path<Uuid>,
     ApiJson(r): ApiJson<ResolveBody>,
 ) -> ApiResult<OrderRefund> {
     let (refund, needs_provider_call) = state
         .db
         .resolve_order_refund(
-            &super::business::personal_token(&headers)?,
+            &token,
             refund_id,
             r.decision,
             r.reason.as_deref(),
@@ -193,32 +189,24 @@ async fn issue_provider_refund(state: &AppState, refund: &OrderRefund) -> Result
 /// refund flow issued — finance read.
 pub(crate) async fn business_credit_notes(
     State(state): State<AppState>,
-    headers: HeaderMap,
+    axum::Extension(token): axum::Extension<crate::auth::PersonalToken>,
     ApiQuery(page): ApiQuery<Page>,
 ) -> ApiResult<OrderCreditNotePage> {
     ok(state
         .db
-        .business_order_credit_notes(
-            &super::business::personal_token(&headers)?,
-            page.after,
-            page.limit.unwrap_or(50),
-        )
+        .business_order_credit_notes(&token, page.after, page.limit.unwrap_or(50))
         .await?)
 }
 
 /// `GET /api/v1/business/disputes`: contested charges only — never refunds.
 pub(crate) async fn business_disputes(
     State(state): State<AppState>,
-    headers: HeaderMap,
+    axum::Extension(token): axum::Extension<crate::auth::PersonalToken>,
     ApiQuery(page): ApiQuery<Page>,
 ) -> ApiResult<OrderDisputePage> {
     ok(state
         .db
-        .business_disputes(
-            &super::business::personal_token(&headers)?,
-            page.after,
-            page.limit.unwrap_or(50),
-        )
+        .business_disputes(&token, page.after, page.limit.unwrap_or(50))
         .await?)
 }
 
@@ -226,7 +214,7 @@ pub(crate) async fn business_disputes(
 /// row per staff financial action, newest first. `ReportsRead`; `action`
 /// narrows to one audited action. The staff console's audit page (T24).
 #[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(crate) struct AuditPage {
     after: Option<Uuid>,
     action: Option<String>,
@@ -234,13 +222,13 @@ pub(crate) struct AuditPage {
 }
 pub(crate) async fn business_audit(
     State(state): State<AppState>,
-    headers: HeaderMap,
+    axum::Extension(token): axum::Extension<crate::auth::PersonalToken>,
     ApiQuery(page): ApiQuery<AuditPage>,
 ) -> ApiResult<oxsum_core::FinanceAuditPage> {
     ok(state
         .db
         .business_finance_audit(
-            &super::business::personal_token(&headers)?,
+            &token,
             page.after,
             page.action.as_deref(),
             page.limit.unwrap_or(50),
@@ -261,7 +249,7 @@ pub(crate) struct DisputeResolveBody {
 
 pub(crate) async fn resolve_dispute(
     State(state): State<AppState>,
-    headers: HeaderMap,
+    axum::Extension(token): axum::Extension<crate::auth::PersonalToken>,
     Path(dispute_id): Path<Uuid>,
     ApiJson(r): ApiJson<DisputeResolveBody>,
 ) -> ApiResult<OrderDispute> {
@@ -284,7 +272,7 @@ pub(crate) async fn resolve_dispute(
         .db
         .resolve_order_dispute(
             &wallet,
-            &super::business::personal_token(&headers)?,
+            &token,
             dispute_id,
             r.resolution,
             r.reason.as_deref(),

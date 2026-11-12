@@ -24,7 +24,7 @@ use crate::routes::{ApiResult, ok, parse_day, wallet};
 
 /// The `POST /org/evidence-bundles` body: the ended span the bundle covers.
 #[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(crate) struct MintPeriodBody {
     from: String,
     to: String,
@@ -33,7 +33,7 @@ pub(crate) struct MintPeriodBody {
 /// The `POST .../share` body — every field optional; absent means the
 /// defaults the core applies.
 #[derive(Debug, Default, Deserialize)]
-#[serde(rename_all = "camelCase", default)]
+#[serde(rename_all = "camelCase", default, deny_unknown_fields)]
 pub(crate) struct CreateShareBody {
     label: Option<String>,
     #[serde(default, with = "time::serde::rfc3339::option")]

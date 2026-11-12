@@ -3,10 +3,10 @@
 use std::time::Duration;
 
 use crate::AppState;
+use crate::auth::PersonalToken;
 use crate::error::{ApiError, ApiJson, ApiQuery};
 use crate::routes::{ApiResult, ok};
 use axum::extract::{Path, State};
-use axum::http::HeaderMap;
 use oxsum_core::{
     BusinessChannelPage, ModelAlias, ModelPrice, ProviderAliasInput, ProviderBillKeyInput,
     ProviderCacheInput, ProviderChange, ProviderConnection, ProviderConnectionCheck,
@@ -17,17 +17,18 @@ use serde::Deserialize;
 use uuid::Uuid;
 
 #[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 pub(crate) struct Page {
     after: Option<Uuid>,
     limit: Option<i64>,
 }
 pub(crate) async fn connection_check(
     State(state): State<AppState>,
-    headers: HeaderMap,
+    axum::Extension(token): axum::Extension<crate::auth::PersonalToken>,
     Path(channel): Path<String>,
     ApiJson(request): ApiJson<ProviderRequest<ProviderRemoveInput>>,
 ) -> ApiResult<ProviderConnectionCheck> {
-    let token = super::business::personal_token(&headers)?;
+    let PersonalToken(token) = token;
     let secret = state.config.secret().ok_or_else(|| {
         ApiError::ServiceUnavailable("provider encryption is not configured".into())
     })?;
@@ -91,71 +92,58 @@ pub(crate) async fn connection_check(
 }
 pub(crate) async fn channels(
     State(state): State<AppState>,
-    headers: HeaderMap,
+    axum::Extension(token): axum::Extension<crate::auth::PersonalToken>,
     ApiQuery(page): ApiQuery<Page>,
 ) -> ApiResult<BusinessChannelPage> {
     ok(state
         .db
-        .business_channels(
-            &super::business::personal_token(&headers)?,
-            page.after,
-            page.limit.unwrap_or(50),
-        )
+        .business_channels(&token, page.after, page.limit.unwrap_or(50))
         .await?)
 }
 pub(crate) async fn prices(
     State(state): State<AppState>,
-    headers: HeaderMap,
+    axum::Extension(token): axum::Extension<crate::auth::PersonalToken>,
     Path(name): Path<String>,
 ) -> ApiResult<Vec<ModelPrice>> {
-    ok(state
-        .db
-        .business_channel_prices(&super::business::personal_token(&headers)?, &name)
-        .await?)
+    ok(state.db.business_channel_prices(&token, &name).await?)
 }
 pub(crate) async fn aliases(
     State(state): State<AppState>,
-    headers: HeaderMap,
+    axum::Extension(token): axum::Extension<crate::auth::PersonalToken>,
     Path(name): Path<String>,
 ) -> ApiResult<Vec<ModelAlias>> {
-    ok(state
-        .db
-        .business_channel_aliases(&super::business::personal_token(&headers)?, &name)
-        .await?)
+    ok(state.db.business_channel_aliases(&token, &name).await?)
 }
 pub(crate) async fn fallbacks(
     State(state): State<AppState>,
-    headers: HeaderMap,
+    axum::Extension(token): axum::Extension<crate::auth::PersonalToken>,
     Path(model): Path<String>,
 ) -> ApiResult<serde_json::Value> {
-    ok(
-        serde_json::json!({"fallbacks":state.db.business_model_fallbacks(&super::business::personal_token(&headers)?,&model).await?}),
-    )
+    ok(serde_json::json!({"fallbacks":state.db.business_model_fallbacks(&token,&model).await?}))
 }
 async fn change(
     state: &AppState,
-    headers: &HeaderMap,
+    token: &str,
     key: &str,
     reason: &str,
     change: ProviderChange,
 ) -> ApiResult<ProviderMutationResult> {
-    let token = super::business::personal_token(headers)?;
     let secret = state.config.secret().ok_or_else(|| {
         ApiError::ServiceUnavailable("provider encryption is not configured".into())
     })?;
     ok(state
         .db
-        .change_business_provider(&token, key, reason, &change, secret)
+        .change_business_provider(token, key, reason, &change, secret)
         .await?)
 }
 pub(crate) async fn set_channel(
     State(state): State<AppState>,
-    headers: HeaderMap,
+    axum::Extension(token): axum::Extension<crate::auth::PersonalToken>,
     ApiJson(request): ApiJson<ProviderRequest<ProviderConnection>>,
 ) -> ApiResult<ProviderMutationResult> {
     change(
         &state,
-        &headers,
+        &token,
         &request.idempotency_key,
         &request.reason,
         ProviderChange::Connection {
@@ -166,13 +154,13 @@ pub(crate) async fn set_channel(
 }
 pub(crate) async fn add_credential(
     State(state): State<AppState>,
-    headers: HeaderMap,
+    axum::Extension(token): axum::Extension<crate::auth::PersonalToken>,
     Path(channel): Path<String>,
     ApiJson(request): ApiJson<ProviderRequest<ProviderCredentialInput>>,
 ) -> ApiResult<ProviderMutationResult> {
     change(
         &state,
-        &headers,
+        &token,
         &request.idempotency_key,
         &request.reason,
         ProviderChange::AddCredential {
@@ -184,13 +172,13 @@ pub(crate) async fn add_credential(
 }
 pub(crate) async fn bill_key(
     State(state): State<AppState>,
-    headers: HeaderMap,
+    axum::Extension(token): axum::Extension<crate::auth::PersonalToken>,
     Path(channel): Path<String>,
     ApiJson(request): ApiJson<ProviderRequest<ProviderBillKeyInput>>,
 ) -> ApiResult<ProviderMutationResult> {
     change(
         &state,
-        &headers,
+        &token,
         &request.idempotency_key,
         &request.reason,
         ProviderChange::BillKey {
@@ -202,13 +190,13 @@ pub(crate) async fn bill_key(
 }
 pub(crate) async fn credential_status(
     State(state): State<AppState>,
-    headers: HeaderMap,
+    axum::Extension(token): axum::Extension<crate::auth::PersonalToken>,
     Path((channel, credential)): Path<(String, Uuid)>,
     ApiJson(request): ApiJson<ProviderRequest<ProviderStatusInput>>,
 ) -> ApiResult<ProviderMutationResult> {
     change(
         &state,
-        &headers,
+        &token,
         &request.idempotency_key,
         &request.reason,
         ProviderChange::CredentialStatus {
@@ -221,13 +209,13 @@ pub(crate) async fn credential_status(
 }
 pub(crate) async fn remove_credential(
     State(state): State<AppState>,
-    headers: HeaderMap,
+    axum::Extension(token): axum::Extension<crate::auth::PersonalToken>,
     Path((channel, credential)): Path<(String, Uuid)>,
     ApiJson(request): ApiJson<ProviderRequest<ProviderRemoveInput>>,
 ) -> ApiResult<ProviderMutationResult> {
     change(
         &state,
-        &headers,
+        &token,
         &request.idempotency_key,
         &request.reason,
         ProviderChange::RemoveCredential {
@@ -239,13 +227,13 @@ pub(crate) async fn remove_credential(
 }
 pub(crate) async fn cache(
     State(state): State<AppState>,
-    headers: HeaderMap,
+    axum::Extension(token): axum::Extension<crate::auth::PersonalToken>,
     Path(channel): Path<String>,
     ApiJson(request): ApiJson<ProviderRequest<ProviderCacheInput>>,
 ) -> ApiResult<ProviderMutationResult> {
     change(
         &state,
-        &headers,
+        &token,
         &request.idempotency_key,
         &request.reason,
         ProviderChange::Cache {
@@ -257,13 +245,13 @@ pub(crate) async fn cache(
 }
 pub(crate) async fn append_price(
     State(state): State<AppState>,
-    headers: HeaderMap,
+    axum::Extension(token): axum::Extension<crate::auth::PersonalToken>,
     Path(channel): Path<String>,
     ApiJson(request): ApiJson<ProviderRequest<ProviderPriceInput>>,
 ) -> ApiResult<ProviderMutationResult> {
     change(
         &state,
-        &headers,
+        &token,
         &request.idempotency_key,
         &request.reason,
         ProviderChange::Price {
@@ -275,13 +263,13 @@ pub(crate) async fn append_price(
 }
 pub(crate) async fn set_alias(
     State(state): State<AppState>,
-    headers: HeaderMap,
+    axum::Extension(token): axum::Extension<crate::auth::PersonalToken>,
     Path(channel): Path<String>,
     ApiJson(request): ApiJson<ProviderRequest<ProviderAliasInput>>,
 ) -> ApiResult<ProviderMutationResult> {
     change(
         &state,
-        &headers,
+        &token,
         &request.idempotency_key,
         &request.reason,
         ProviderChange::Alias {
@@ -293,13 +281,13 @@ pub(crate) async fn set_alias(
 }
 pub(crate) async fn remove_alias(
     State(state): State<AppState>,
-    headers: HeaderMap,
+    axum::Extension(token): axum::Extension<crate::auth::PersonalToken>,
     Path((channel, alias)): Path<(String, String)>,
     ApiJson(request): ApiJson<ProviderRequest<ProviderRemoveInput>>,
 ) -> ApiResult<ProviderMutationResult> {
     change(
         &state,
-        &headers,
+        &token,
         &request.idempotency_key,
         &request.reason,
         ProviderChange::RemoveAlias { channel, alias },
@@ -308,13 +296,13 @@ pub(crate) async fn remove_alias(
 }
 pub(crate) async fn set_fallbacks(
     State(state): State<AppState>,
-    headers: HeaderMap,
+    axum::Extension(token): axum::Extension<crate::auth::PersonalToken>,
     Path(model): Path<String>,
     ApiJson(request): ApiJson<ProviderRequest<ProviderFallbackInput>>,
 ) -> ApiResult<ProviderMutationResult> {
     change(
         &state,
-        &headers,
+        &token,
         &request.idempotency_key,
         &request.reason,
         ProviderChange::Fallbacks {

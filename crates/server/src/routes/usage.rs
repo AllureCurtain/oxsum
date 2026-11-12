@@ -16,7 +16,7 @@ const RECORDS_DEFAULT_LIMIT: usize = 50;
 const RECORDS_MAX_LIMIT: usize = 200;
 
 #[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(crate) struct UsageQuery {
     from: Option<String>,
     to: Option<String>,
@@ -221,7 +221,7 @@ pub(crate) struct KeyBudget {
 }
 
 #[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(crate) struct RecordsQuery {
     before: Option<u64>,
     limit: Option<usize>,
@@ -256,7 +256,7 @@ pub(crate) struct RecordsRes {
 }
 
 #[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(crate) struct EstimateReq {
     model: String,
     /// Which billing mode's routes to price against; absent means `chat`

@@ -725,6 +725,40 @@ impl Db {
         Ok(key)
     }
 
+    /// The display prefixes of the named keys, for callers that decorate a
+    /// list they already hold — `list_holds` marks each open hold with the key
+    /// prefix it reserved under, and fetches only the ids the holds name
+    /// rather than the organization's whole key list.
+    ///
+    /// Scope is not applied: a hold's row already names its key, and a caller
+    /// that can see the hold may see which key took it — the same rule the
+    /// holds list itself applies to `request_id`/`model`.
+    ///
+    /// # Errors
+    ///
+    /// Storage failures surface as [`WalletError`].
+    pub async fn key_prefixes(
+        &self,
+        key_ids: &[Uuid],
+    ) -> Result<BTreeMap<Uuid, String>, WalletError> {
+        if key_ids.is_empty() {
+            return Ok(BTreeMap::new());
+        }
+        let rows = sqlx::query("SELECT key_id, prefix FROM oxsum.api_keys WHERE key_id = ANY($1)")
+            .bind(key_ids)
+            .fetch_all(self.pool())
+            .await?;
+        rows.iter()
+            .map(|row| {
+                use sqlx::Row;
+                Ok((
+                    row.try_get::<Uuid, _>("key_id")?,
+                    row.try_get::<String, _>("prefix")?,
+                ))
+            })
+            .collect::<Result<BTreeMap<_, _>, WalletError>>()
+    }
+
     /// Every key of an organization the principal may see, newest first. Metadata only.
     ///
     /// A member sees only keys they created; a consumption key sees its own metadata.

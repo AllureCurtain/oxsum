@@ -101,6 +101,7 @@ pub(crate) async fn resume(
     checkout(&state, org, order, &request).await
 }
 #[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 pub(crate) struct Page {
     after: Option<Uuid>,
     limit: Option<i64>,

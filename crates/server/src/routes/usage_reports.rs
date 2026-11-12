@@ -26,7 +26,7 @@ fn hex(bytes: &[u8]) -> String {
 
 /// The `POST` body: who the report is for and the ended span it covers.
 #[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(crate) struct MintBody {
     end_user: String,
     from: String,

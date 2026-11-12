@@ -17,7 +17,6 @@ use crate::AppState;
 use crate::error::{ApiError, ApiJson, ApiQuery};
 use axum::Extension;
 use axum::extract::{Path, State};
-use axum::http::HeaderMap;
 use oxsum_core::{
     CostCoverage, FinancialFacts, Principal, ReconciliationException, ReconciliationRepair,
     ReconciliationRun, ReconciliationSnapshot, TimeBasis,
@@ -26,7 +25,7 @@ use serde::Deserialize;
 use uuid::Uuid;
 
 #[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(crate) struct FactsQuery {
     organization_id: Option<Uuid>,
     model: Option<String>,
@@ -60,14 +59,14 @@ fn facts_query(
 /// `ReportsRead`, a personal session, never a machine credential.
 pub(crate) async fn business_financial_facts(
     State(state): State<AppState>,
-    headers: HeaderMap,
+    axum::Extension(token): axum::Extension<crate::auth::PersonalToken>,
     ApiQuery(q): ApiQuery<FactsQuery>,
 ) -> ApiResult<FinancialFacts> {
     let (from, to, basis) = facts_query(&q)?;
     ok(state
         .db
         .business_financial_facts(
-            &super::business::personal_token(&headers)?,
+            &token,
             &oxsum_core::FactFilter {
                 organization_id: q.organization_id,
                 model: q.model,
@@ -96,7 +95,7 @@ pub(crate) async fn org_usage_report(
 }
 
 #[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(crate) struct CoverageQuery {
     organization_id: Option<Uuid>,
     from: Option<String>,
@@ -107,24 +106,19 @@ pub(crate) struct CoverageQuery {
 /// provider/day detail the upstream-bill reconciliation reads — `ReportsRead`.
 pub(crate) async fn business_cost_coverage(
     State(state): State<AppState>,
-    headers: HeaderMap,
+    axum::Extension(token): axum::Extension<crate::auth::PersonalToken>,
     ApiQuery(q): ApiQuery<CoverageQuery>,
 ) -> ApiResult<CostCoverage> {
     let from = q.from.as_deref().map(parse_day).transpose()?;
     let to = q.to.as_deref().map(parse_day).transpose()?;
     ok(state
         .db
-        .business_cost_coverage(
-            &super::business::personal_token(&headers)?,
-            q.organization_id,
-            from,
-            to,
-        )
+        .business_cost_coverage(&token, q.organization_id, from, to)
         .await?)
 }
 
 #[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(crate) struct RunPage {
     after: Option<Uuid>,
     limit: Option<i64>,
@@ -133,35 +127,31 @@ pub(crate) struct RunPage {
 /// `GET /api/v1/business/reconciliation-runs`: the run history — `ReportsRead`.
 pub(crate) async fn business_runs(
     State(state): State<AppState>,
-    headers: HeaderMap,
+    axum::Extension(token): axum::Extension<crate::auth::PersonalToken>,
     ApiQuery(page): ApiQuery<RunPage>,
 ) -> ApiResult<Vec<ReconciliationRun>> {
     ok(state
         .db
-        .reconciliation_runs(
-            &super::business::personal_token(&headers)?,
-            page.after,
-            page.limit.unwrap_or(50),
-        )
+        .reconciliation_runs(&token, page.after, page.limit.unwrap_or(50))
         .await?)
 }
 
 /// `GET /api/v1/business/reconciliation-runs/{id}`: one run.
 pub(crate) async fn business_run(
     State(state): State<AppState>,
-    headers: HeaderMap,
+    axum::Extension(token): axum::Extension<crate::auth::PersonalToken>,
     Path(run_id): Path<Uuid>,
 ) -> ApiResult<ReconciliationRun> {
     let run = state
         .db
-        .reconciliation_run(&super::business::personal_token(&headers)?, run_id)
+        .reconciliation_run(&token, run_id)
         .await?
         .ok_or_else(ApiError::not_found)?;
     ok(run)
 }
 
 #[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(crate) struct ExceptionQuery {
     /// `true` lists only still-open exceptions — the work list.
     open: Option<bool>,
@@ -171,17 +161,13 @@ pub(crate) struct ExceptionQuery {
 /// exceptions — `ReportsRead`.
 pub(crate) async fn business_run_exceptions(
     State(state): State<AppState>,
-    headers: HeaderMap,
+    axum::Extension(token): axum::Extension<crate::auth::PersonalToken>,
     Path(run_id): Path<Uuid>,
     ApiQuery(q): ApiQuery<ExceptionQuery>,
 ) -> ApiResult<Vec<ReconciliationException>> {
     ok(state
         .db
-        .reconciliation_exceptions(
-            &super::business::personal_token(&headers)?,
-            Some(run_id),
-            q.open.unwrap_or(false),
-        )
+        .reconciliation_exceptions(&token, Some(run_id), q.open.unwrap_or(false))
         .await?)
 }
 
@@ -189,16 +175,12 @@ pub(crate) async fn business_run_exceptions(
 /// the work list the console drains. `ReportsRead`.
 pub(crate) async fn business_exceptions(
     State(state): State<AppState>,
-    headers: HeaderMap,
+    axum::Extension(token): axum::Extension<crate::auth::PersonalToken>,
     ApiQuery(q): ApiQuery<ExceptionQuery>,
 ) -> ApiResult<Vec<ReconciliationException>> {
     ok(state
         .db
-        .reconciliation_exceptions(
-            &super::business::personal_token(&headers)?,
-            None,
-            q.open.unwrap_or(true),
-        )
+        .reconciliation_exceptions(&token, None, q.open.unwrap_or(true))
         .await?)
 }
 
@@ -216,20 +198,14 @@ pub(crate) struct RunBody {
 
 pub(crate) async fn request_run(
     State(state): State<AppState>,
-    headers: HeaderMap,
+    axum::Extension(token): axum::Extension<crate::auth::PersonalToken>,
     ApiJson(r): ApiJson<RunBody>,
 ) -> ApiResult<ReconciliationRun> {
     let start = parse_day(&r.period_start)?;
     let end = parse_day(&r.period_end)?;
     ok(state
         .db
-        .request_reconciliation_run_with_basis(
-            &super::business::personal_token(&headers)?,
-            start,
-            end,
-            r.time_basis,
-            &r.idempotency_key,
-        )
+        .request_reconciliation_run_with_basis(&token, start, end, r.time_basis, &r.idempotency_key)
         .await?)
 }
 
@@ -245,14 +221,14 @@ pub(crate) struct CloseBody {
 
 pub(crate) async fn resolve_exception(
     State(state): State<AppState>,
-    headers: HeaderMap,
+    axum::Extension(token): axum::Extension<crate::auth::PersonalToken>,
     Path(exception_id): Path<Uuid>,
     ApiJson(r): ApiJson<CloseBody>,
 ) -> ApiResult<ReconciliationException> {
     ok(state
         .db
         .close_reconciliation_exception(
-            &super::business::personal_token(&headers)?,
+            &token,
             exception_id,
             "resolve",
             &r.resolution,
@@ -263,14 +239,14 @@ pub(crate) async fn resolve_exception(
 
 pub(crate) async fn waive_exception(
     State(state): State<AppState>,
-    headers: HeaderMap,
+    axum::Extension(token): axum::Extension<crate::auth::PersonalToken>,
     Path(exception_id): Path<Uuid>,
     ApiJson(r): ApiJson<CloseBody>,
 ) -> ApiResult<ReconciliationException> {
     ok(state
         .db
         .close_reconciliation_exception(
-            &super::business::personal_token(&headers)?,
+            &token,
             exception_id,
             "waive",
             &r.resolution,
@@ -307,7 +283,7 @@ fn snake(action: &str) -> &str {
 
 pub(crate) async fn repair_exception(
     State(state): State<AppState>,
-    headers: HeaderMap,
+    axum::Extension(token): axum::Extension<crate::auth::PersonalToken>,
     Path(exception_id): Path<Uuid>,
     ApiJson(r): ApiJson<RepairBody>,
 ) -> ApiResult<ReconciliationRepair> {
@@ -315,7 +291,7 @@ pub(crate) async fn repair_exception(
     ok(state
         .db
         .repair_reconciliation_exception(
-            &super::business::personal_token(&headers)?,
+            &token,
             exception_id,
             &action,
             &r.reason,
@@ -327,7 +303,7 @@ pub(crate) async fn repair_exception(
 
 /// Pagination over immutable comparison attempts.
 #[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(crate) struct SnapshotQuery {
     after: Option<Uuid>,
     limit: Option<i64>,
@@ -336,30 +312,25 @@ pub(crate) struct SnapshotQuery {
 /// List retained attempt summaries under ReportsRead.
 pub(crate) async fn snapshots(
     State(state): State<AppState>,
-    headers: HeaderMap,
+    axum::Extension(token): axum::Extension<crate::auth::PersonalToken>,
     Path(run): Path<Uuid>,
     ApiQuery(q): ApiQuery<SnapshotQuery>,
 ) -> ApiResult<Vec<ReconciliationSnapshot>> {
     ok(state
         .db
-        .reconciliation_snapshots(
-            &super::business::personal_token(&headers)?,
-            run,
-            q.after,
-            q.limit.unwrap_or(50),
-        )
+        .reconciliation_snapshots(&token, run, q.after, q.limit.unwrap_or(50))
         .await?)
 }
 
 /// Read one immutable attempt's sources and exact differences under ReportsRead.
 pub(crate) async fn snapshot(
     State(state): State<AppState>,
-    headers: HeaderMap,
+    axum::Extension(token): axum::Extension<crate::auth::PersonalToken>,
     Path((run, snapshot)): Path<(Uuid, Uuid)>,
 ) -> ApiResult<ReconciliationSnapshot> {
     ok(state
         .db
-        .reconciliation_snapshot(&super::business::personal_token(&headers)?, run, snapshot)
+        .reconciliation_snapshot(&token, run, snapshot)
         .await?
         .ok_or_else(|| {
             oxsum_core::WalletError::NotFound("unknown reconciliation snapshot".into())

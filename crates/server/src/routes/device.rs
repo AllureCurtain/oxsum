@@ -48,6 +48,7 @@ fn verification_uri(state: &AppState) -> String {
 
 /// The `code` query parameter of `GET /api/v1/device/request`.
 #[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 pub(crate) struct DeviceRequestQuery {
     code: String,
 }

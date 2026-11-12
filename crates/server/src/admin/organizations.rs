@@ -46,7 +46,7 @@ pub(crate) struct OrganizationRes {
 /// The organizations query string: the page size, and where the walk resumes — an
 /// earlier answer's `nextCursor`, echoed verbatim (issue #93).
 #[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(crate) struct OrganizationsQuery {
     limit: Option<usize>,
     cursor: Option<String>,

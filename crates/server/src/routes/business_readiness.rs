@@ -1,19 +1,18 @@
 //! Current-actor business setup facts; no probes or secrets in the response.
 
 use axum::extract::State;
-use axum::http::HeaderMap;
 
 use crate::AppState;
-use crate::routes::{ApiResult, business, ok};
+use crate::routes::{ApiResult, ok};
 
 pub(crate) async fn get(
     State(state): State<AppState>,
-    headers: HeaderMap,
+    axum::Extension(token): axum::Extension<crate::auth::PersonalToken>,
 ) -> ApiResult<oxsum_core::BusinessReadiness> {
     ok(state
         .db
         .business_readiness(
-            &business::personal_token(&headers)?,
+            &token,
             state.config.secret(),
             state.config.public_url().is_some(),
         )
