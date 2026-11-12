@@ -263,33 +263,32 @@ pub fn router(state: AppState) -> Router {
     // No credential: signup while the deployment allows it, and the login/logout pair.
     // Logout sits outside the auth middleware on purpose: logging out twice is not an
     // error, so it must answer 200 with no session at all.
-    // Personal account handlers authenticate their own session in either context.
     let open = Router::new()
         // The deployment's own identity: version, build SHA and the schema the
         // binary migrates to. Unauthenticated — the upgrade runbook reads it
         // before any account exists (issue #619).
         .route("/version", get(ops::version))
-        .route("/auth/totp/disable", post(auth::totp_disable))
-        .route("/auth/totp/confirm", post(auth::totp_confirm))
-        .route("/auth/totp/enroll", post(auth::totp_enroll))
-        .route("/auth/verify/request", post(auth::request_verification))
-        .route("/users/me", delete(org::delete_account))
         .route("/auth/register", post(auth::register))
+        // The initial owner consent still guards itself: setup acceptance runs
+        // before a business context exists, and `register_owner` creates the
+        // first staff account with no credential at all.
+        .route("/business/setup", post(business::accept_setup))
+        .route("/business/setup/register", post(business::register_owner))
+        // Service-credential surface (issue #788): `/integration/*` is answered
+        // by an `ActingService`, never a personal session. The two dual-auth
+        // reads — the customer list and detail accept either a staff session or
+        // a granted service — stay here too, since the personal middleware
+        // would refuse the machine credential they also serve. `billing` is
+        // service-only; `PATCH` on the detail is personal-only but shares the
+        // path, and axum merges disjoint methods across merged routers, so it
+        // lives on the personal router below.
         .route(
-            "/session/context",
-            get(business::context).post(business::select_context),
+            "/integration/notification-endpoints",
+            get(application_notifications::service_list),
         )
-        .route("/business", get(business::business))
-        .route("/business/readiness", get(business_readiness::get))
-        .route("/business/applications/{applicationId}/notification-endpoints",get(application_notifications::list).post(application_notifications::create))
-        .route("/business/applications/{applicationId}/notification-endpoints/{endpointId}/disable",post(application_notifications::disable))
-        .route("/business/applications/{applicationId}/notification-endpoints/{endpointId}/deliveries",get(application_notifications::deliveries))
-        .route("/business/applications/{applicationId}/notification-endpoints/{endpointId}/deliveries/{deliveryId}/retry",post(application_notifications::retry))
-        .route("/integration/notification-endpoints",get(application_notifications::service_list))
-        .route("/integration/notification-endpoints/{endpointId}/deliveries",get(application_notifications::service_deliveries))
         .route(
-            "/business/applications",
-            get(integration_applications::list).post(integration_applications::create),
+            "/integration/notification-endpoints/{endpointId}/deliveries",
+            get(application_notifications::service_deliveries),
         )
         .route(
             "/integration/customers",
@@ -361,6 +360,98 @@ pub fn router(state: AppState) -> Router {
             post(integration_applications::archive),
         )
         .route(
+            "/webhooks/merchants/{merchant}/versions/{version}",
+            post(merchant_events::webhook),
+        )
+        // Dual-auth reads: a staff session or a granted service credential
+        // (`customers`/`customer` branch on `has_machine_credential`), and the
+        // service-only `billingRead` (issue #788).
+        .route(
+            "/business/customers",
+            get(business::customers).post(business::provision_customer),
+        )
+        .route(
+            "/business/customers/{organization_id}",
+            get(business::customer),
+        )
+        .route(
+            "/business/customers/{organization_id}/billing",
+            get(business::customer_billing),
+        )
+        .route("/auth/login", post(auth::login))
+        .route("/auth/logout", post(auth::logout))
+        // The login's second factor (issue #504): enrollment needs a session,
+        // and the second leg trades a challenge plus a code for one — the
+        // challenge is the credential, so it stays open.
+        .route("/auth/totp", post(auth::totp_login))
+        // The seller branding (issue #614, T23): a public cosmetic read — the
+        // login and register pages brand themselves before any session exists.
+        .route("/branding", get(business_profile::branding))
+        // OAuth is a browser redirect, not a JSON endpoint: the provider sends
+        // the browser here, so both answers are `Location` headers, and every
+        // failure lands back on /login rather than on an error body.
+        .route("/auth/oauth/{provider}", get(auth::oauth_start))
+        .route("/auth/oauth/{provider}/callback", get(auth::oauth_callback))
+        // Which login methods the deployment offers: the login page's only
+        // unauthenticated read, so it knows whether to draw the GitHub button
+        // and which OIDC provider buttons to draw.
+        .route("/auth/methods", get(auth::auth_methods))
+        // The email flows: verification consumes a mailed token, and the reset
+        // pair is open by design — the token is the credential.
+        .route("/auth/verify", post(auth::verify_email))
+        .route("/auth/password/forgot", post(auth::forgot_password))
+        .route("/auth/password/reset", post(auth::reset_password))
+        // Registration through an invitation link remains available in invite mode.
+        .route("/invitations/redeem", post(org::redeem_invitation))
+        .route("/invitations/preview", post(org::preview_invitation))
+        // The device grant's tool leg: the device code is the credential, so
+        // both endpoints stay open in every signup mode (issue #156).
+        .route("/device/code", post(device::device_code))
+        .route("/device/token", post(device::device_token))
+        // The operator's tree-head verifying key: a public key, so no credential.
+        .route("/log/key", get(log::log_key))
+        // The public evidence download (issue #616): the share token in the
+        // path is the credential, so it sits open like the webhooks — the
+        // token resolves or it does not, and a dead one earns 410.
+        .route("/evidence/{token}", get(evidence::public_download))
+        // Stripe's webhook: the provider calls here, the `Stripe-Signature`
+        // header is the credential — org-agnostic, so it must not sit behind
+        // the session or the API key.
+        .route("/webhooks/stripe", post(billing::stripe_webhook))
+        // Airwallex's webhook (issue #285): same open-surface rule — the
+        // `x-timestamp` + `x-signature` pair is the credential.
+        .route("/webhooks/airwallex", post(billing::airwallex_webhook))
+        // The Hyperswitch switch's webhook (issue #319): the HMAC over the
+        // raw body (`X-Webhook-Signature-512`) is the credential.
+        .route("/webhooks/hyperswitch", post(billing::hyperswitch_webhook));
+
+    // Personal-session routes: the business console and the account actions a
+    // logged-in user takes. `require_personal_session` resolves the cookie once
+    // and hands each handler `Extension<PersonalToken>`, so no handler on this
+    // router can run the check late or skip it — a machine credential is a 403
+    // and a missing cookie a 401 before the handler sees the request. Dual-auth
+    // and service-only business reads stay on `open` above.
+    let personal = Router::new()
+        .route("/auth/totp/disable", post(auth::totp_disable))
+        .route("/auth/totp/confirm", post(auth::totp_confirm))
+        .route("/auth/totp/enroll", post(auth::totp_enroll))
+        .route("/auth/verify/request", post(auth::request_verification))
+        .route("/users/me", delete(org::delete_account))
+        .route(
+            "/session/context",
+            get(business::context).post(business::select_context),
+        )
+        .route("/business", get(business::business))
+        .route("/business/readiness", get(business_readiness::get))
+        .route("/business/applications/{applicationId}/notification-endpoints",get(application_notifications::list).post(application_notifications::create))
+        .route("/business/applications/{applicationId}/notification-endpoints/{endpointId}/disable",post(application_notifications::disable))
+        .route("/business/applications/{applicationId}/notification-endpoints/{endpointId}/deliveries",get(application_notifications::deliveries))
+        .route("/business/applications/{applicationId}/notification-endpoints/{endpointId}/deliveries/{deliveryId}/retry",post(application_notifications::retry))
+        .route(
+            "/business/applications",
+            get(integration_applications::list).post(integration_applications::create),
+        )
+        .route(
             "/business/profile",
             get(business_profile::get).post(business_profile::save),
         )
@@ -425,10 +516,6 @@ pub fn router(state: AppState) -> Router {
         .route(
             "/business/orders",
             get(orders::business_orders).post(orders::create_manual_order),
-        )
-        .route(
-            "/webhooks/merchants/{merchant}/versions/{version}",
-            post(merchant_events::webhook),
         )
         .route(
             "/business/checkout-routes",
@@ -498,15 +585,13 @@ pub fn router(state: AppState) -> Router {
             "/business/integration-credentials/{credential_id}/revoke",
             post(business::revoke_integration_credential),
         )
-        .route(
-            "/business/customers",
-            get(business::customers).post(business::provision_customer),
-        )
+        // The PATCH half of the dual-auth customer detail (`GET` stays on
+        // `open`): disjoint methods on one path merge cleanly, and the update
+        // is personal-only.
         .route(
             "/business/customers/{organization_id}",
-            get(business::customer).patch(business::update_customer),
+            patch(business::update_customer),
         )
-        // Service-only customer billing read (billingRead, issue #788).
         .route("/business/customers/{organization_id}/monthly-statements", get(business::monthly_statements))
         .route("/business/customers/{organization_id}/monthly-statements/{statement_id}/payments", post(business::monthly_payment))
         .route("/business/customers/{organization_id}/monthly-statements/actions", post(business::monthly_statement_action))
@@ -514,10 +599,6 @@ pub fn router(state: AppState) -> Router {
         .route(
             "/business/customers/{organization_id}/credit-terms",
             get(business::customer_credit_terms).put(business::set_customer_credit_terms),
-        )
-        .route(
-            "/business/customers/{organization_id}/billing",
-            get(business::customer_billing),
         )
         // The sold-plan catalogue staff CRUD and a customer's binding
         // (issue #610).
@@ -631,31 +712,6 @@ pub fn router(state: AppState) -> Router {
             "/business/collection-terms",
             get(business::collection_terms).post(business::set_collection_terms),
         )
-        .route("/business/setup", post(business::accept_setup))
-        .route("/business/setup/register", post(business::register_owner))
-        .route("/auth/login", post(auth::login))
-        .route("/auth/logout", post(auth::logout))
-        // The login's second factor (issue #504): enrollment needs a session,
-        // and the second leg trades a challenge plus a code for one — the
-        // challenge is the credential, so it stays open.
-        .route("/auth/totp", post(auth::totp_login))
-        // The seller branding (issue #614, T23): a public cosmetic read — the
-        // login and register pages brand themselves before any session exists.
-        .route("/branding", get(business_profile::branding))
-        // OAuth is a browser redirect, not a JSON endpoint: the provider sends
-        // the browser here, so both answers are `Location` headers, and every
-        // failure lands back on /login rather than on an error body.
-        .route("/auth/oauth/{provider}", get(auth::oauth_start))
-        .route("/auth/oauth/{provider}/callback", get(auth::oauth_callback))
-        // Which login methods the deployment offers: the login page's only
-        // unauthenticated read, so it knows whether to draw the GitHub button
-        // and which OIDC provider buttons to draw.
-        .route("/auth/methods", get(auth::auth_methods))
-        // The email flows: verification consumes a mailed token, and the reset
-        // pair is open by design — the token is the credential.
-        .route("/auth/verify", post(auth::verify_email))
-        .route("/auth/password/forgot", post(auth::forgot_password))
-        .route("/auth/password/reset", post(auth::reset_password))
         // Application consent requires an existing verified personal session.
         .route(
             "/application-links/preview",
@@ -665,10 +721,7 @@ pub fn router(state: AppState) -> Router {
             "/application-links/accept",
             post(integration_applications::accept_link),
         )
-        // Registration through an invitation link remains available in invite mode.
-        .route("/invitations/redeem", post(org::redeem_invitation))
         .route("/invitations/accept", post(org::accept_invitation))
-        .route("/invitations/preview", post(org::preview_invitation))
         .route("/org/invitations", post(org::create_invitation))
         .route(
             "/org/invitations/{invitationId}/revoke",
@@ -690,26 +743,7 @@ pub fn router(state: AppState) -> Router {
             "/business/staff-invitations/{invitationId}/revoke",
             post(staff_invitations::revoke),
         )
-        // The device grant's tool leg: the device code is the credential, so
-        // both endpoints stay open in every signup mode (issue #156).
-        .route("/device/code", post(device::device_code))
-        .route("/device/token", post(device::device_token))
-        // The operator's tree-head verifying key: a public key, so no credential.
-        .route("/log/key", get(log::log_key))
-        // The public evidence download (issue #616): the share token in the
-        // path is the credential, so it sits open like the webhooks — the
-        // token resolves or it does not, and a dead one earns 410.
-        .route("/evidence/{token}", get(evidence::public_download))
-        // Stripe's webhook: the provider calls here, the `Stripe-Signature`
-        // header is the credential — org-agnostic, so it must not sit behind
-        // the session or the API key.
-        .route("/webhooks/stripe", post(billing::stripe_webhook))
-        // Airwallex's webhook (issue #285): same open-surface rule — the
-        // `x-timestamp` + `x-signature` pair is the credential.
-        .route("/webhooks/airwallex", post(billing::airwallex_webhook))
-        // The Hyperswitch switch's webhook (issue #319): the HMAC over the
-        // raw body (`X-Webhook-Signature-512`) is the credential.
-        .route("/webhooks/hyperswitch", post(billing::hyperswitch_webhook));
+        .layer(middleware::from_fn(crate::auth::require_personal_session));
 
     // The platform admin: an operator token, not an organization key, and its own middleware.
     let admin = crate::admin::router(state.clone());
@@ -755,7 +789,8 @@ pub fn router(state: AppState) -> Router {
         )
         .nest(
             "/api/v1",
-            open.merge(authenticated)
+            open.merge(personal)
+                .merge(authenticated)
                 .nest("/admin", admin)
                 .nest("/metering", metering)
                 // The backstop sits on the API and gateway nests, not the top

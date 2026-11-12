@@ -39,80 +39,66 @@ pub(crate) fn personal_token(headers: &HeaderMap) -> Result<String, ApiError> {
 
 pub(crate) async fn context(
     State(state): State<AppState>,
-    headers: HeaderMap,
+    axum::Extension(token): axum::Extension<crate::auth::PersonalToken>,
 ) -> ApiResult<oxsum_core::SessionContextInfo> {
-    ok(state.db.session_context(&personal_token(&headers)?).await?)
+    ok(state.db.session_context(&token).await?)
 }
 pub(crate) async fn select_context(
     State(state): State<AppState>,
-    headers: HeaderMap,
+    axum::Extension(token): axum::Extension<crate::auth::PersonalToken>,
     ApiJson(request): ApiJson<oxsum_core::SessionContextRequest>,
 ) -> ApiResult<oxsum_core::SessionContextInfo> {
-    ok(state
-        .db
-        .switch_session_context(&personal_token(&headers)?, &request)
-        .await?)
+    ok(state.db.switch_session_context(&token, &request).await?)
 }
 pub(crate) async fn business(
     State(state): State<AppState>,
-    headers: HeaderMap,
+    axum::Extension(token): axum::Extension<crate::auth::PersonalToken>,
 ) -> ApiResult<oxsum_core::BusinessPrincipal> {
     ok(state
         .db
-        .business_capability(
-            &personal_token(&headers)?,
-            oxsum_core::BusinessCapability::OverviewRead,
-        )
+        .business_capability(&token, oxsum_core::BusinessCapability::OverviewRead)
         .await?)
 }
 pub(crate) async fn staff(
     State(state): State<AppState>,
-    headers: HeaderMap,
+    axum::Extension(token): axum::Extension<crate::auth::PersonalToken>,
 ) -> ApiResult<Vec<oxsum_core::BusinessStaff>> {
-    ok(state.db.business_staff(&personal_token(&headers)?).await?)
+    ok(state.db.business_staff(&token).await?)
 }
 pub(crate) async fn set_staff(
     State(state): State<AppState>,
-    headers: HeaderMap,
+    axum::Extension(token): axum::Extension<crate::auth::PersonalToken>,
     ApiJson(request): ApiJson<oxsum_core::BusinessStaffRequest>,
 ) -> ApiResult<oxsum_core::BusinessMutationResult> {
-    ok(state
-        .db
-        .set_business_staff(&personal_token(&headers)?, &request)
-        .await?)
+    ok(state.db.set_business_staff(&token, &request).await?)
 }
 pub(crate) async fn revoke_staff(
     State(state): State<AppState>,
-    headers: HeaderMap,
+    axum::Extension(token): axum::Extension<crate::auth::PersonalToken>,
     ApiJson(request): ApiJson<oxsum_core::BusinessStaffRevokeRequest>,
 ) -> ApiResult<oxsum_core::BusinessMutationResult> {
-    ok(state
-        .db
-        .revoke_business_staff(&personal_token(&headers)?, &request)
-        .await?)
+    ok(state.db.revoke_business_staff(&token, &request).await?)
 }
 pub(crate) async fn transfer_ownership(
     State(state): State<AppState>,
-    headers: HeaderMap,
+    axum::Extension(token): axum::Extension<crate::auth::PersonalToken>,
     ApiJson(request): ApiJson<oxsum_core::BusinessOwnershipRequest>,
 ) -> ApiResult<oxsum_core::BusinessMutationResult> {
     ok(state
         .db
-        .transfer_business_ownership(&personal_token(&headers)?, &request)
+        .transfer_business_ownership(&token, &request)
         .await?)
 }
 pub(crate) async fn registration(
     State(state): State<AppState>,
-    headers: HeaderMap,
+    axum::Extension(token): axum::Extension<crate::auth::PersonalToken>,
     ApiJson(request): ApiJson<oxsum_core::BusinessRegistrationRequest>,
 ) -> ApiResult<oxsum_core::BusinessMutationResult> {
-    ok(state
-        .db
-        .set_business_registration(&personal_token(&headers)?, &request)
-        .await?)
+    ok(state.db.set_business_registration(&token, &request).await?)
 }
 
 #[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub(crate) struct CustomerQuery {
     after: Option<uuid::Uuid>,
     limit: Option<i64>,
@@ -154,28 +140,20 @@ pub(crate) async fn customer(
 }
 pub(crate) async fn customer_credit_terms(
     State(state): State<AppState>,
-    headers: HeaderMap,
+    axum::Extension(token): axum::Extension<crate::auth::PersonalToken>,
     axum::extract::Path(id): axum::extract::Path<uuid::Uuid>,
 ) -> ApiResult<oxsum_core::BusinessCustomerCreditTerms> {
-    ok(state
-        .db
-        .business_customer_credit_terms(&personal_token(&headers)?, id)
-        .await?)
+    ok(state.db.business_customer_credit_terms(&token, id).await?)
 }
 pub(crate) async fn set_customer_credit_terms(
     State(state): State<AppState>,
-    headers: HeaderMap,
+    axum::Extension(token): axum::Extension<crate::auth::PersonalToken>,
     axum::extract::Path(id): axum::extract::Path<uuid::Uuid>,
     ApiJson(request): ApiJson<oxsum_core::BusinessCustomerCreditTermsRequest>,
 ) -> ApiResult<oxsum_core::BusinessMutationResult> {
     ok(state
         .db
-        .set_business_customer_credit_terms(
-            &personal_token(&headers)?,
-            &state.tenants,
-            id,
-            &request,
-        )
+        .set_business_customer_credit_terms(&token, &state.tenants, id, &request)
         .await?)
 }
 pub(crate) async fn provision_customer(
@@ -194,7 +172,7 @@ pub(crate) async fn provision_customer(
 
 /// Optional `?before=<index>&limit=<n>` on the customer billing read.
 #[derive(serde::Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(crate) struct CustomerBillingQuery {
     before: Option<u64>,
     limit: Option<usize>,
@@ -296,52 +274,47 @@ pub(crate) struct CustomerBillRow {
 }
 pub(crate) async fn update_customer(
     State(state): State<AppState>,
-    headers: HeaderMap,
+    axum::Extension(token): axum::Extension<crate::auth::PersonalToken>,
     axum::extract::Path(id): axum::extract::Path<uuid::Uuid>,
     ApiJson(request): ApiJson<oxsum_core::BusinessCustomerUpdate>,
 ) -> ApiResult<oxsum_core::BusinessMutationResult> {
     ok(state
         .db
-        .update_business_customer(&personal_token(&headers)?, id, &request)
+        .update_business_customer(&token, id, &request)
         .await?)
 }
 pub(crate) async fn customer_lifecycle(
     State(state): State<AppState>,
-    headers: HeaderMap,
+    axum::Extension(token): axum::Extension<crate::auth::PersonalToken>,
     axum::extract::Path(id): axum::extract::Path<uuid::Uuid>,
     ApiJson(request): ApiJson<oxsum_core::BusinessCustomerLifecycle>,
 ) -> ApiResult<oxsum_core::BusinessMutationResult> {
     ok(state
         .db
-        .set_customer_lifecycle(&personal_token(&headers)?, id, &request)
+        .set_customer_lifecycle(&token, id, &request)
         .await?)
 }
 pub(crate) async fn customer_suspension(
     State(state): State<AppState>,
-    headers: HeaderMap,
+    axum::Extension(token): axum::Extension<crate::auth::PersonalToken>,
     axum::extract::Path(id): axum::extract::Path<uuid::Uuid>,
     ApiJson(request): ApiJson<oxsum_core::BusinessCustomerSuspension>,
 ) -> ApiResult<oxsum_core::BusinessMutationResult> {
     ok(state
         .db
-        .set_customer_suspension(&personal_token(&headers)?, id, &request)
+        .set_customer_suspension(&token, id, &request)
         .await?)
 }
 
 pub(crate) async fn revoke_customer_invitation(
     State(state): State<AppState>,
-    headers: HeaderMap,
+    axum::Extension(token): axum::Extension<crate::auth::PersonalToken>,
     axum::extract::Path(id): axum::extract::Path<uuid::Uuid>,
     ApiJson(request): ApiJson<oxsum_core::InvitationRevokeRequest>,
 ) -> ApiResult<oxsum_core::BusinessMutationResult> {
     ok(state
         .db
-        .revoke_invitation(
-            &personal_token(&headers)?,
-            id,
-            oxsum_core::InvitationScope::Customer,
-            &request,
-        )
+        .revoke_invitation(&token, id, oxsum_core::InvitationScope::Customer, &request)
         .await?)
 }
 
@@ -358,58 +331,48 @@ pub(crate) async fn integration(
 }
 pub(crate) async fn integration_credentials(
     State(state): State<AppState>,
-    headers: HeaderMap,
+    axum::Extension(token): axum::Extension<crate::auth::PersonalToken>,
     ApiQuery(query): ApiQuery<CustomerQuery>,
 ) -> ApiResult<oxsum_core::IntegrationCredentialPage> {
     ok(state
         .db
-        .integration_credentials(
-            &personal_token(&headers)?,
-            query.after,
-            query.limit.unwrap_or(50),
-        )
+        .integration_credentials(&token, query.after, query.limit.unwrap_or(50))
         .await?)
 }
 pub(crate) async fn create_integration_credential(
     State(state): State<AppState>,
-    headers: HeaderMap,
+    axum::Extension(token): axum::Extension<crate::auth::PersonalToken>,
     ApiJson(request): ApiJson<oxsum_core::IntegrationCredentialRequest>,
 ) -> ApiResult<oxsum_core::CreatedIntegrationCredential> {
     ok(state
         .db
-        .create_integration_credential(&personal_token(&headers)?, &request)
+        .create_integration_credential(&token, &request)
         .await?)
 }
 pub(crate) async fn revoke_integration_credential(
     State(state): State<AppState>,
-    headers: HeaderMap,
+    axum::Extension(token): axum::Extension<crate::auth::PersonalToken>,
     axum::extract::Path(id): axum::extract::Path<uuid::Uuid>,
     ApiJson(request): ApiJson<oxsum_core::IntegrationCredentialRevokeRequest>,
 ) -> ApiResult<oxsum_core::BusinessMutationResult> {
     ok(state
         .db
-        .revoke_integration_credential(&personal_token(&headers)?, id, &request)
+        .revoke_integration_credential(&token, id, &request)
         .await?)
 }
 
 pub(crate) async fn collection_terms(
     State(state): State<AppState>,
-    headers: HeaderMap,
+    axum::Extension(token): axum::Extension<crate::auth::PersonalToken>,
 ) -> ApiResult<oxsum_core::CollectionTerms> {
-    ok(state
-        .db
-        .business_collection_terms(&personal_token(&headers)?)
-        .await?)
+    ok(state.db.business_collection_terms(&token).await?)
 }
 pub(crate) async fn set_collection_terms(
     State(state): State<AppState>,
-    headers: HeaderMap,
+    axum::Extension(token): axum::Extension<crate::auth::PersonalToken>,
     ApiJson(request): ApiJson<oxsum_core::CollectionTermsRequest>,
 ) -> ApiResult<oxsum_core::CollectionTermsMutation> {
-    ok(state
-        .db
-        .set_collection_terms(&personal_token(&headers)?, &request)
-        .await?)
+    ok(state.db.set_collection_terms(&token, &request).await?)
 }
 
 #[derive(serde::Deserialize)]
@@ -422,14 +385,14 @@ pub(crate) struct MonthlyStatementQuery {
 
 pub(crate) async fn monthly_statements(
     State(state): State<AppState>,
-    headers: HeaderMap,
+    axum::Extension(token): axum::Extension<crate::auth::PersonalToken>,
     axum::extract::Path(customer): axum::extract::Path<uuid::Uuid>,
     crate::error::ApiQuery(query): crate::error::ApiQuery<MonthlyStatementQuery>,
 ) -> ApiResult<oxsum_core::BusinessMonthlyStatementPage> {
     ok(state
         .db
         .business_monthly_statements(
-            &personal_token(&headers)?,
+            &token,
             customer,
             query.period.as_deref(),
             query.after,
@@ -440,47 +403,36 @@ pub(crate) async fn monthly_statements(
 
 pub(crate) async fn monthly_statement(
     State(state): State<AppState>,
-    headers: HeaderMap,
+    axum::Extension(token): axum::Extension<crate::auth::PersonalToken>,
     axum::extract::Path((customer, statement)): axum::extract::Path<(uuid::Uuid, uuid::Uuid)>,
 ) -> ApiResult<oxsum_core::BusinessMonthlyStatementDetail> {
     ok(state
         .db
-        .business_monthly_statement(&personal_token(&headers)?, customer, statement)
+        .business_monthly_statement(&token, customer, statement)
         .await?)
 }
 
 pub(crate) async fn monthly_statement_action(
     State(state): State<AppState>,
-    headers: HeaderMap,
+    axum::Extension(token): axum::Extension<crate::auth::PersonalToken>,
     axum::extract::Path(customer): axum::extract::Path<uuid::Uuid>,
     ApiJson(request): ApiJson<oxsum_core::BusinessMonthlyStatementAction>,
 ) -> ApiResult<oxsum_core::BusinessMonthlyStatementActionResult> {
     ok(state
         .db
-        .mutate_business_monthly_statement(
-            &personal_token(&headers)?,
-            &state.tenants,
-            customer,
-            &request,
-        )
+        .mutate_business_monthly_statement(&token, &state.tenants, customer, &request)
         .await?)
 }
 
 /// Record verified money through current personal staff authority.
 pub(crate) async fn monthly_payment(
     State(state): State<AppState>,
-    headers: HeaderMap,
+    axum::Extension(token): axum::Extension<crate::auth::PersonalToken>,
     axum::extract::Path((customer, statement)): axum::extract::Path<(uuid::Uuid, uuid::Uuid)>,
     ApiJson(request): ApiJson<oxsum_core::BusinessMonthlyPaymentRequest>,
 ) -> ApiResult<oxsum_core::BusinessMonthlyPaymentResult> {
     ok(state
         .db
-        .record_business_monthly_payment(
-            &personal_token(&headers)?,
-            &state.tenants,
-            customer,
-            statement,
-            &request,
-        )
+        .record_business_monthly_payment(&token, &state.tenants, customer, statement, &request)
         .await?)
 }

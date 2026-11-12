@@ -64,6 +64,42 @@ pub async fn require_key_gateway(
     Ok(next.run(request).await)
 }
 
+/// The session cookie's value, resolved by [`require_personal_session`] and
+/// handed to the business surface's handlers as a request extension. Carrying
+/// the resolved token rather than re-reading the header is what makes the
+/// personal check unskippable on the routes the middleware covers: a handler
+/// that takes `Extension<PersonalToken>` cannot run without it.
+#[derive(Debug, Clone)]
+pub(crate) struct PersonalToken(pub String);
+
+impl std::ops::Deref for PersonalToken {
+    type Target = str;
+    fn deref(&self) -> &str {
+        &self.0
+    }
+}
+
+/// The business console's credential check: a personal session cookie, never a
+/// machine credential — an explicit `Authorization`/`x-api-key` cannot inherit
+/// ambient browser rights. The resolved cookie value rides in the request's
+/// extensions as [`PersonalToken`], so the ~hundred business handlers under
+/// this middleware take it rather than re-extracting (and possibly skipping)
+/// the check themselves.
+pub(crate) async fn require_personal_session(
+    request: Request,
+    next: Next,
+) -> Result<Response, ApiError> {
+    if has_machine_credential(request.headers()) {
+        return Err(ApiError::Forbidden(
+            "business authority requires a personal session".into(),
+        ));
+    }
+    let token = session_cookie_value(request.headers()).ok_or(ApiError::Unauthorized)?;
+    let mut request = request;
+    request.extensions_mut().insert(PersonalToken(token));
+    Ok(next.run(request).await)
+}
+
 /// The metering surface accepts only current integration credentials. Scope
 /// and selected customer are rechecked inside the core authorization transaction.
 pub async fn require_service(
