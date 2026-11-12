@@ -4802,8 +4802,7 @@ impl Wallet {
     }
 
     /// Appends a usage day anchor — the marker entry committing `day`'s
-    /// sorted-map root into the tenant ledger (issue #338). `pub(crate)`: only
-    /// [`crate::Db::anchor_usage_days`] calls it.
+    /// sorted-map root into the tenant ledger (issue #338).
     ///
     /// One entry per `(organization, day)`: a 1-minor balanced
     /// `Equity:Adjustments` debit/credit (the marker is metadata, not money),
@@ -4811,19 +4810,15 @@ impl Wallet {
     /// standing entry instead of committing a second root for the same day. The
     /// [`DocumentRef`] binds the anchor to the map root, and the description
     /// carries the day, root and customer count.
-    ///
-    /// # Errors
-    ///
-    /// Storage and ledger failures surface as [`WalletError`].
-    pub(crate) async fn anchor_usage_day(
+    fn anchor_usage_draft(
         &self,
         day: time::Date,
         description_json: &str,
         map_root: Hash,
-    ) -> Result<(EntryId, u64), WalletError> {
+    ) -> Result<Entry<Draft, SCALE>, WalletError> {
         let key = format!("usage-anchor/{day}");
         let minor = Credits::from_minor(1);
-        let entry = Entry::<Draft, SCALE>::new(
+        Ok(Entry::<Draft, SCALE>::new(
             entry_id_for(&key),
             idem(&key)?,
             OffsetDateTime::now_utc().date(),
@@ -4831,13 +4826,41 @@ impl Wallet {
         .with_document(DocumentRef::new(USAGE_ANCHOR_DOCUMENT, map_root).map_err(invalid)?)
         .with_description(description_of(description_json)?)
         .debit(self.adjustments, minor, currency())
-        .credit(self.adjustments, minor, currency());
-        let receipt = match self.append(entry).await {
+        .credit(self.adjustments, minor, currency()))
+    }
+
+    /// Appends `day`'s usage anchor inside the caller's transaction
+    /// (issue #1088): the pass reads the day's leaves and inserts the
+    /// bookkeeping row on the same transaction, so the committed `map_root`
+    /// provably covers every leaf the day holds — a late settle either holds
+    /// the per-customer advisory lock this transaction already took, or blocks
+    /// on it until the anchor commits, where `day_is_anchored_in` then refuses
+    /// it.
+    ///
+    /// The entry carries the same idempotency key as the standalone form, so
+    /// a replay inside the transaction answers the standing entry rather than
+    /// conflicting on it.
+    ///
+    /// # Errors
+    ///
+    /// As [`append_in`](Self::append_in); the transaction is the caller's to
+    /// commit or roll back.
+    pub(crate) async fn anchor_usage_day_in(
+        &self,
+        tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+        day: time::Date,
+        description_json: &str,
+        map_root: Hash,
+    ) -> Result<(EntryId, u64), WalletError> {
+        let key = format!("usage-anchor/{day}");
+        let entry = self.anchor_usage_draft(day, description_json, map_root)?;
+        let receipt = match self.append_in(tx, entry).await {
             Ok(receipt) => receipt,
             Err(error) => {
                 // A raced pass lands on the same idempotency key; the standing
-                // entry is the same anchor either way, so read it back.
-                let Some(stored) = self.store.get(entry_id_for(&key)).await? else {
+                // entry is the same anchor either way, so read it back on the
+                // caller's transaction rather than committing a second root.
+                let Some(stored) = self.entry_in(tx, entry_id_for(&key)).await? else {
                     return Err(error);
                 };
                 stored_receipt(&stored)
