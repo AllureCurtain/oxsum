@@ -1,12 +1,13 @@
 //! The wallet facade: holds, settlements, receipts and ledger reads.
 //!
 //! The [`Wallet`] struct, its account handles, `open`/`bootstrap`, the shared types
-//! and the helpers several leaves call stay in this file; the method families live in
-//! the `wallet/` leaf modules beside it, split by domain (admission, funding_preview,
-//! transaction_reads, holds, keys, settle, balances, credit, funding, append, promo,
-//! plan, anchors, reads). Each leaf is a child module holding one `impl Wallet` block,
-//! so its methods see the struct's private fields, plus the types and constants of its
-//! domain. An item a sibling leaf uses is `pub(super)`, or `pub(crate)` when code outside
+//! ([`Credits`], [`Receipt`], [`ListPage`]) and the helpers several leaves call stay in
+//! this file; the method families live in the `wallet/` leaf modules beside it, split
+//! by domain (admission, funding_preview, transaction_reads, holds, keys, settle,
+//! balances, credit, funding, append, promo, plan, anchors, reads). Each leaf is a
+//! child module holding one `impl Wallet` block, so its methods see the struct's
+//! private fields, plus the types and constants of its domain. A leaf's item that a
+//! sibling leaf or this file uses is `pub(super)`, or `pub(crate)` when code outside
 //! the wallet uses it too; an item only one leaf uses lives in that leaf and stays
 //! private.
 
