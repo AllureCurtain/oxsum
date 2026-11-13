@@ -29,19 +29,21 @@ fn terms() -> SolanaTerms {
     SolanaTerms {
         pay_to: "oxsumDepositAddr111111111111111111111111111".to_owned(),
         spl_token_mint: None,
+        asset_decimals: 9,
         rate_micro: 200_000_000, // 200 credits per SOL, in minor units
         intent_ttl_secs: 600,
     }
 }
 
-/// The stubbed chain: maps `reference -> signature` and validates the
-/// expected transfer's `amount`/`recipient`/`reference` against a scripted
-/// answer. `paid` arms the lookup to find and validate; `wrong` arms it to
-/// answer a transfer that does not honor the intent.
+/// The stubbed chain: maps `reference -> [signatures]` (newest first, like
+/// `getSignaturesForAddress`) and validates the expected transfer's
+/// `amount`/`recipient`/`reference` against a scripted answer. `paid` arms
+/// the lookup to find and validate; `wrong` arms it to answer a transfer
+/// that does not honor the intent.
 #[derive(Clone, Default)]
 struct SolanaStub {
-    /// `reference` → the signature `find_reference` answers.
-    located: Arc<Mutex<std::collections::HashMap<String, String>>>,
+    /// `reference` → the signatures `find_reference` answers, newest first.
+    located: Arc<Mutex<std::collections::HashMap<String, Vec<String>>>>,
     /// `signature` → the `ValidatedTransfer` `validate_transfer` answers.
     validated: Arc<Mutex<std::collections::HashMap<String, ValidatedTransfer>>>,
 }
@@ -56,8 +58,15 @@ impl ChainLookup for SolanaStub {
     fn find_reference<'a>(
         &'a self,
         reference: &'a str,
-    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Option<String>> + Send + 'a>> {
-        Box::pin(async move { self.located.lock().unwrap().get(reference).cloned() })
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Vec<String>> + Send + 'a>> {
+        Box::pin(async move {
+            self.located
+                .lock()
+                .unwrap()
+                .get(reference)
+                .cloned()
+                .unwrap_or_default()
+        })
     }
 
     fn validate_transfer<'a>(
@@ -175,7 +184,7 @@ async fn solana_intent_pays_once() {
     stub.located
         .lock()
         .unwrap()
-        .insert(reference.clone(), signature.to_owned());
+        .insert(reference.clone(), vec![signature.to_owned()]);
     stub.validated.lock().unwrap().insert(
         signature.to_owned(),
         ValidatedTransfer {
@@ -230,7 +239,7 @@ async fn solana_confirm_refuses_an_unpaying_transfer() {
     stub.located
         .lock()
         .unwrap()
-        .insert(reference.clone(), signature.to_owned());
+        .insert(reference.clone(), vec![signature.to_owned()]);
     stub.validated.lock().unwrap().insert(
         signature.to_owned(),
         ValidatedTransfer {
@@ -302,7 +311,7 @@ async fn solana_signature_credits_once_across_organizations() {
         stub.located
             .lock()
             .unwrap()
-            .insert(reference.clone(), signature.to_owned());
+            .insert(reference.clone(), vec![signature.to_owned()]);
     }
     stub.validated.lock().unwrap().insert(
         signature.to_owned(),

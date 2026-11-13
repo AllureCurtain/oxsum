@@ -20,6 +20,7 @@ fn terms() -> SolanaTerms {
     SolanaTerms {
         pay_to: "oxsumDepositAddr111111111111111111111111111".to_owned(),
         spl_token_mint: None,
+        asset_decimals: 9,
         rate_micro: 200_000_000,
         intent_ttl_secs: 600,
     }

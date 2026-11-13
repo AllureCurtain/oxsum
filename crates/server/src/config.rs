@@ -1793,6 +1793,11 @@ fn solana_of() -> Result<Option<Arc<oxsum_core::SolanaRailVerifier>>, String> {
     if commitment != "confirmed" && commitment != "finalized" {
         return Err("OXSUM_SOLANA_COMMITMENT must be confirmed or finalized".into());
     }
+    let asset_decimals = var("OXSUM_SOLANA_DECIMALS")
+        .map(|v| v.parse::<u32>())
+        .transpose()
+        .map_err(|_| "OXSUM_SOLANA_DECIMALS must be a non-negative integer".to_owned())?
+        .unwrap_or(9);
     let intent_ttl_secs = var("OXSUM_SOLANA_INTENT_TTL_SECS")
         .map(|v| v.parse::<i64>())
         .transpose()
@@ -1803,6 +1808,7 @@ fn solana_of() -> Result<Option<Arc<oxsum_core::SolanaRailVerifier>>, String> {
         pay_to: pay_to.clone(),
         spl_token_mint: spl_token_mint.clone().filter(|s| !s.is_empty()),
         commitment,
+        asset_decimals,
         rate_micro,
         intent_ttl_secs,
     };
@@ -1814,6 +1820,7 @@ fn solana_of() -> Result<Option<Arc<oxsum_core::SolanaRailVerifier>>, String> {
     let terms = oxsum_core::SolanaTerms {
         pay_to,
         spl_token_mint,
+        asset_decimals,
         rate_micro,
         intent_ttl_secs,
     };
