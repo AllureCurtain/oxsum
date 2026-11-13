@@ -4399,3 +4399,23 @@ replacing the static `OXSUM_SOLANA_RATE_MICRO` (recorded per intent at open),
 verified against the chosen mint at boot (now enforced), and the operational
 half — hot-wallet key custody, consolidation and withdrawal — which this rail
 deliberately does not automate (tracked as a follow-up on #1117).
+
+## 2026-11-13 — Lossless balances, RPC-error telemetry, bounded opens, a read-only marker (#1130)
+
+Four rail hardenings. **Balances parse without the `as_i64` precision trap**:
+`lamport_delta` reads `preBalances`/`postBalances` as `u64` (with a string
+fallback for string-typed nodes), never through an `f64` round-trip that
+blurs lamports past 2^53 — a real SOL wallet's balance is inside `i64`, but
+the parse is now loss-free whatever the RPC returns. **RPC failures are not
+"not paid yet"**: `find_reference`/`validate_transfer` warn-log and count a
+transport/RPC error (`solana_rpc_errors_total`) instead of flattening it into
+the same `None` an unpaying transfer earns — an unreachable endpoint is a
+loud miss, never a silent "no payment". **The open surface is bounded**:
+`OXSUM_SOLANA_MIN_MINOR`/`_MAX_MINOR` cap the credit one intent opens, and
+`OXSUM_SOLANA_OPENS_PER_MINUTE` throttles intents per organization — both
+checked in `open_solana_deposit` before a `payment_ref` is minted.
+**The reference marker must be read-only and non-signer**: `validate_transfer`
+now requires the marker's `accountKeys` entry to state `signer:false` and
+`writable:false` (a bare-string form is tolerated), matching the Solana Pay
+recipe and `docs/architecture.md` — a marker that signed or mutated is not
+the throwaway index the rail keys on.

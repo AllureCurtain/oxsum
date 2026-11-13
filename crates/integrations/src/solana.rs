@@ -68,6 +68,15 @@ pub struct SolanaConfig {
     /// `OXSUM_SOLANA_INTENT_TTL_SECS` (default 600 — Solana Pay's own
     /// unbounded-poll guard).
     pub intent_ttl_secs: i64,
+    /// The smallest credit amount an intent opens (`OXSUM_SOLANA_MIN_MINOR`,
+    /// default 1) and the largest (`OXSUM_SOLANA_MAX_MINOR`, default
+    /// `i64::MAX`) — per-call bounds on the rail's open surface.
+    pub min_amount_minor: i64,
+    /// See `min_amount_minor`.
+    pub max_amount_minor: i64,
+    /// The most intents one organization may open per minute
+    /// (`OXSUM_SOLANA_OPENS_PER_MINUTE`, default 0 — unbounded).
+    pub opens_per_minute: i64,
 }
 
 impl std::fmt::Debug for SolanaConfig {
@@ -319,14 +328,15 @@ impl SolanaRpcClient {
             Some(keys) => keys,
             None => return Ok(None),
         };
-        // The `reference` marker must be present as an account key. With
-        // `jsonParsed`, accountKeys entries are `{pubkey, signer, writable,
-        // source}` objects; a bare-string form is tolerated defensively.
-        let reference_present = account_keys.iter().any(|key| {
-            let pubkey = key["pubkey"].as_str().or_else(|| key.as_str());
-            pubkey == Some(expected.reference.as_str())
-        });
-        if !reference_present {
+        // The `reference` marker must be present as an account key — and as
+        // the read-only, non-signer account the Solana Pay recipe attaches
+        // (issue #1130). With `jsonParsed`, accountKeys entries are `{pubkey,
+        // signer, writable, source}` objects; a bare-string form (the signer
+        // set of a partially-decoded payload) is tolerated defensively but a
+        // structured entry must state `signer:false` and `writable:false` —
+        // a marker that signed or mutated is not the throwaway index the rail
+        // keys on.
+        if !reference_marker_present(account_keys, &expected.reference) {
             return Ok(None);
         }
         let delivered = match expected.spl_token_mint.as_deref() {
@@ -385,7 +395,25 @@ impl oxsum_core::ChainLookup for SolanaRpcClient {
         &'a self,
         reference: &'a str,
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Vec<String>> + Send + 'a>> {
-        Box::pin(async move { self.find_reference(reference).await.unwrap_or_default() })
+        Box::pin(async move {
+            match self.find_reference(reference).await {
+                Ok(signatures) => signatures,
+                // A transport/RPC failure is *not* "not paid yet" — log it as
+                // an error and count it, so an unreachable endpoint never
+                // masquerades as an unpaid intent. The empty Vec still reads
+                // "no matching transfer" upstream, but now it is a loud miss.
+                Err(e) => {
+                    tracing::warn!(
+                        reference,
+                        error = %e.0,
+                        "solana find_reference RPC failed; treating as unlocated"
+                    );
+                    metrics::counter!("solana_rpc_errors_total", "call" => "find_reference")
+                        .increment(1);
+                    Vec::new()
+                }
+            }
+        })
     }
 
     fn validate_transfer<'a>(
@@ -406,6 +434,17 @@ impl oxsum_core::ChainLookup for SolanaRpcClient {
                 },
             )
             .await
+            .inspect_err(|e| {
+                // Same distinction as find_reference: a transport failure is
+                // not "the transfer does not honor" — warn and count it.
+                tracing::warn!(
+                    signature,
+                    error = %e.0,
+                    "solana validate_transfer RPC failed; treating as unvalidated"
+                );
+                metrics::counter!("solana_rpc_errors_total", "call" => "validate_transfer")
+                    .increment(1);
+            })
             .ok()
             .flatten()
             .map(|v| oxsum_core::ValidatedTransfer {
@@ -430,6 +469,45 @@ impl oxsum_core::ChainLookup for SolanaRpcClient {
 /// the index into both balance arrays. `None` when the recipient is not among
 /// the transaction's account keys — the payment never reached the deposit
 /// address.
+/// The `reference` marker must appear as an account key — and as the
+/// read-only, non-signer account the Solana Pay recipe attaches (issue #1130).
+/// With `jsonParsed`, accountKeys entries are `{pubkey, signer, writable,
+/// source}` objects; a bare-string form (a partially-decoded payload's signer
+/// set) carries no flags and is accepted defensively, but a structured entry
+/// must state `signer:false` and `writable:false` — a marker that signed or
+/// mutated is not the throwaway index the rail keys on, and matching
+/// `docs/architecture.md`'s "read-only non-signer" contract is the point.
+fn reference_marker_present(account_keys: &[Value], reference: &str) -> bool {
+    account_keys.iter().any(|key| {
+        let pubkey = key["pubkey"].as_str().or_else(|| key.as_str());
+        if pubkey != Some(reference) {
+            return false;
+        }
+        match (key.get("signer"), key.get("writable")) {
+            (None, None) => true,
+            (signer, writable) => {
+                signer.and_then(Value::as_bool) == Some(false)
+                    && writable.and_then(Value::as_bool) == Some(false)
+            }
+        }
+    })
+}
+
+/// A balance figure parsed without the `as_i64` precision trap: `u64` first
+/// (the exact integer serde_json hands back), then a string form for any
+/// node that arrived as a JSON string, never through an `f64` round-trip
+/// which silently loses lamports past 2^53. The result saturates into `i64`
+/// — the column's type — so an absurd balance clamps rather than wraps.
+fn balance_i64(v: Option<&Value>) -> i64 {
+    v.and_then(|n| n.as_u64().map(|u| u.min(i64::MAX as u64) as i64))
+        .or_else(|| {
+            v.and_then(Value::as_str)
+                .and_then(|s| s.parse::<u128>().ok())
+                .map(|u| u.min(i64::MAX as u128) as i64)
+        })
+        .unwrap_or(0)
+}
+
 fn lamport_delta(
     account_keys: &[Value],
     pre_balances: Option<&Vec<Value>>,
@@ -439,14 +517,8 @@ fn lamport_delta(
     let index = account_keys
         .iter()
         .position(|key| key["pubkey"].as_str().or_else(|| key.as_str()) == Some(recipient))?;
-    let pre = pre_balances
-        .and_then(|b| b.get(index))
-        .and_then(Value::as_i64)
-        .unwrap_or(0);
-    let post = post_balances
-        .and_then(|b| b.get(index))
-        .and_then(Value::as_i64)
-        .unwrap_or(0);
+    let pre = balance_i64(pre_balances.and_then(|b| b.get(index)));
+    let post = balance_i64(post_balances.and_then(|b| b.get(index)));
     Some(post.saturating_sub(pre))
 }
 
@@ -680,6 +752,59 @@ mod tests {
             "payToAddr",
         );
         assert_eq!(delta, Some(5_000));
+    }
+
+    #[test]
+    fn lamport_delta_keeps_precision_past_two_pow_53() {
+        // A balance beyond f64's 53-bit mantissa must not round: 2^53 + 2
+        // lamports pre, 2^53 + 5002 post — the delta is exactly 5000, which
+        // an f64 round-trip would blur into a wrong figure.
+        let big_pre: i64 = 9_007_199_254_740_994; // 2^53 + 2
+        let tx = sol_tx(big_pre, big_pre + 5_000, "payToAddr");
+        let keys = tx["transaction"]["message"]["accountKeys"]
+            .as_array()
+            .unwrap();
+        let delta = lamport_delta(
+            keys,
+            tx["meta"]["preBalances"].as_array(),
+            tx["meta"]["postBalances"].as_array(),
+            "payToAddr",
+        );
+        assert_eq!(delta, Some(5_000));
+    }
+
+    /// The reference marker must be a read-only non-signer key (issue #1130):
+    /// a structured `{pubkey, signer, writable}` entry that signed or was
+    /// writable is not the throwaway index the rail keys on.
+    #[test]
+    fn reference_marker_must_be_read_only_non_signer() {
+        // Read-only non-signer — the Solana Pay recipe's shape — is accepted.
+        let good = json!([
+            {"pubkey": "PAYER", "signer": true, "writable": true, "source": "transaction"},
+            {"pubkey": "REF", "signer": false, "writable": false, "source": "transaction"}
+        ]);
+        assert!(reference_marker_present(good.as_array().unwrap(), "REF"));
+        // A marker that signed the transaction is not the index.
+        let signer = json!([
+            {"pubkey": "PAYER", "signer": true, "writable": true, "source": "transaction"},
+            {"pubkey": "REF", "signer": true, "writable": false, "source": "transaction"}
+        ]);
+        assert!(!reference_marker_present(signer.as_array().unwrap(), "REF"));
+        // A writable marker is not read-only.
+        let writable = json!([
+            {"pubkey": "PAYER", "signer": true, "writable": true, "source": "transaction"},
+            {"pubkey": "REF", "signer": false, "writable": true, "source": "transaction"}
+        ]);
+        assert!(!reference_marker_present(
+            writable.as_array().unwrap(),
+            "REF"
+        ));
+        // A bare-string key (no flags) is tolerated defensively.
+        let bare = json!(["PAYER", "REF"]);
+        assert!(reference_marker_present(bare.as_array().unwrap(), "REF"));
+        // Absent entirely.
+        let none = json!([{"pubkey": "OTHER", "signer": false, "writable": false}]);
+        assert!(!reference_marker_present(none.as_array().unwrap(), "REF"));
     }
 
     #[test]

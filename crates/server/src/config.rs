@@ -1824,6 +1824,25 @@ fn solana_of() -> Result<Option<Arc<oxsum_core::SolanaRailVerifier>>, String> {
         .transpose()
         .map_err(|_| "OXSUM_SOLANA_INTENT_TTL_SECS must be an integer".to_owned())?
         .unwrap_or(600);
+    // The open-intent surface's bounds (issue #1130): per-call amount limits
+    // and a per-organization opens-per-minute cap. Defaults keep today's
+    // behavior (min 1, unbounded max, unbounded rate) — a deployment tightens
+    // them deliberately.
+    let min_amount_minor = var("OXSUM_SOLANA_MIN_MINOR")
+        .map(|v| v.parse::<i64>())
+        .transpose()
+        .map_err(|_| "OXSUM_SOLANA_MIN_MINOR must be an integer".to_owned())?
+        .unwrap_or(1);
+    let max_amount_minor = var("OXSUM_SOLANA_MAX_MINOR")
+        .map(|v| v.parse::<i64>())
+        .transpose()
+        .map_err(|_| "OXSUM_SOLANA_MAX_MINOR must be an integer".to_owned())?
+        .unwrap_or(i64::MAX);
+    let opens_per_minute = var("OXSUM_SOLANA_OPENS_PER_MINUTE")
+        .map(|v| v.parse::<i64>())
+        .transpose()
+        .map_err(|_| "OXSUM_SOLANA_OPENS_PER_MINUTE must be an integer".to_owned())?
+        .unwrap_or(0);
     let config = oxsum_integrations::solana::SolanaConfig {
         rpc_url: rpc_url.clone(),
         pay_to: pay_to.clone(),
@@ -1832,6 +1851,9 @@ fn solana_of() -> Result<Option<Arc<oxsum_core::SolanaRailVerifier>>, String> {
         asset_decimals,
         rate_micro,
         intent_ttl_secs,
+        min_amount_minor,
+        max_amount_minor,
+        opens_per_minute,
     };
     let client = oxsum_integrations::solana::SolanaRpcClient::new(
         rpc_url,
@@ -1844,6 +1866,9 @@ fn solana_of() -> Result<Option<Arc<oxsum_core::SolanaRailVerifier>>, String> {
         asset_decimals,
         rate_micro,
         intent_ttl_secs,
+        min_amount_minor,
+        max_amount_minor,
+        opens_per_minute,
     };
     Ok(Some(Arc::new(oxsum_core::SolanaRailVerifier::new(
         Arc::new(client),

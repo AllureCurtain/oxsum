@@ -32,6 +32,9 @@ fn terms() -> SolanaTerms {
         asset_decimals: 9,
         rate_micro: 200_000_000, // 200 credits per SOL, in minor units
         intent_ttl_secs: 600,
+        min_amount_minor: 1,
+        max_amount_minor: i64::MAX,
+        opens_per_minute: 0,
     }
 }
 
