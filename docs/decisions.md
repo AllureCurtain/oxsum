@@ -4419,3 +4419,71 @@ now requires the marker's `accountKeys` entry to state `signer:false` and
 `writable:false` (a bare-string form is tolerated), matching the Solana Pay
 recipe and `docs/architecture.md` — a marker that signed or mutated is not
 the throwaway index the rail keys on.
+
+## 2026-11-13 — Solana mainnet readiness: oracle pricing, multi-asset, multisig custody, screening (#1117)
+
+The devnet rail (#1117 option A, hardened across #1127–#1131) is now being
+taken to small-amount mainnet rehearsal. Six decisions govern the whole
+batch, recorded here once rather than split across the 16 issues that
+implement them. They settle the questions #1117 left open.
+
+**Mainnet prices the intent in USDC; SOL stays opt-in and oracle-priced.**
+The devnet rail's `OXSUM_SOLANA_RATE_MICRO` static figure was the stand-in a
+mainnet rail could not keep: a flat minor-credits-per-SOL config drifts with
+the market inside minutes. The mainnet rail prices in USDC first — one USDC
+buys one dollar of credit (1 USDC = 1_000_000 minor-credits at 6 decimals, so
+`rate_micro` for USDC is the fixed `1_000_000`, never an oracle lookup),
+matching how the x402 rail already prices its `$x / 1k tokens` billing. SOL
+remains a supported asset but is opt-in and must be oracle-priced at open:
+an intent that wants SOL locks a live Pyth quote rather than a config rate.
+The devnet "SOL-first" order inverts on mainnet.
+
+**The price locks at open, inside a 15-minute window.** An intent's
+`meta.rateMicro` (for SOL) is written by `open_solana_deposit` at the moment
+the intent is created, sampled from Pyth Hermes' HTTP endpoint
+(`hermes.pyth.network`). The locked figure rides with the intent; `verify`
+reads only the locked `meta`, never a live price. A SOL intent refuses to
+open when the freshest Pyth quote is older than 60 seconds or quotes a
+confidence interval wider than 1% of the price — a stale or diffuse oracle
+is not a price. The `expiresAt` stays the intent's own deadline (default
+`OXSUM_SOLANA_INTENT_TTL_SECS`, recommended 900 s on mainnet); the locked
+rate is not a floating quote that expires with the price feed, it is the
+fixed term the intent was opened under. USDC needs no oracle — its rate is
+the fixed unit conversion. `OXSUM_SOLANA_RATE_MICRO` survives only as a
+devnet/test stand-in behind an explicit opt-in; a mainnet `SOLANA_ENABLED`
+deployment that leaves the static rate set is a misconfiguration to refuse,
+not a silent fallback.
+
+**A refund repays the asset the customer paid, never the credit.** The
+deposit's `meta` already records the mint, the delivered base units and the
+locked rate; a refund reverses the same transfer — same mint, same delivered
+base units, to an address the customer names — rather than converting the
+credited figure back at whatever the live rate now is. The credited amount is
+a ledger figure, not an asset amount.
+
+**`payTo` is a Squads v4 multisig vault, not a hot wallet.** The server never
+holds a spend key: `OXSUM_SOLANA_PAY_TO` names a Squads 2-of-3 multisig
+(vault PDA), so the server's view of funds is read-only — `validate_transfer`
+only ever reads chain state. Refunds and consolidation out of the vault are
+manual, executed through the multisig by its signers (operations lead,
+finance, one offline backup key). The boot validates `payTo` as far as it
+can — the address is checked against the Squads v4 program's vault PDA
+derivation where the program id is on record, and the runbook documents the
+signer roles — but full on-chain introspection is not a startup gate.
+
+**Sanctions screening runs before credit; a hit flags, never refunds.** The
+payer's send address (the transaction's debited signer) is screened before
+`credit_solana_deposit` books the ledger entry: Chainalysis' free sanctions
+API plus a local copy of the OFAC SDN Solana-address list, both cached.
+A hit does not credit and does not refund — the deposit moves to `flagged`,
+enters the operator review queue, and a human decides. An external-API
+failure does not open the gate either: the deposit stays pending and the
+next pass retries, so screening is a deny-until-cleared check, not
+deny-on-hit.
+
+**x402 and the Solana top-up are parallel rails, not substitutes.** x402
+bills per API call against a signed authorization — pay-as-you-go on the
+settlement edge. The Solana top-up pre-loads credit onto the wallet the
+freeze/settle ledger already runs. They sit side by side in product: a
+customer can hold prepaid balance *and* be billed per call; the top-up
+builds the float the per-call rail draws from, it does not replace it.
