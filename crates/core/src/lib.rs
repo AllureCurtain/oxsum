@@ -342,7 +342,8 @@ pub use sessions::{
     SessionPrincipal,
 };
 pub use solana::{
-    ChainLookup, ExpectedTransfer, RAIL_SOLANA, SolanaRailVerifier, SolanaTerms, ValidatedTransfer,
+    ChainLookup, ExpectedTransfer, LockedRate, OracleQuote, PriceOracle, RAIL_SOLANA,
+    SolanaPricing, SolanaRailVerifier, SolanaTerms, ValidatedTransfer,
 };
 pub use staff_invitations::{StaffInvitationPage, StaffInvitationSummary, StaffMailTarget};
 pub use statement_pdf::render_statement_pdf;

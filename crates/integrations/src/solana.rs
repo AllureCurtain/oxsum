@@ -59,10 +59,12 @@ pub struct SolanaConfig {
     /// and base units is mint-aware so a 6-decimal mint does not misprice.
     pub asset_decimals: u32,
     /// The locked rate in minor-credits per whole asset that intents quote and
-    /// credits settle at, `OXSUM_SOLANA_RATE_MICRO` — one whole SOL
-    /// (`10^asset_decimals` base units) buys `rate_micro` minor-credits.
-    /// Devnet's static stand-in for a price oracle: a mainnet rail replaces
-    /// this with an oracle lookup recorded per intent.
+    /// credits settle at, `OXSUM_SOLANA_RATE_MICRO` — one whole asset
+    /// (`10^asset_decimals` base units) buys `rate_micro` minor-credits. It is
+    /// the figure an SPL intent (a fixed conversion) or a
+    /// `OXSUM_SOLANA_DEVNET_STATIC_RATE=1` devnet deployment locks; a
+    /// native-SOL mainnet deployment prices each intent off the Pyth oracle at
+    /// open instead (issue #1139) and this field carries 0 — unused.
     pub rate_micro: i64,
     /// How long a `pending` intent stays payable before the poll expires it,
     /// `OXSUM_SOLANA_INTENT_TTL_SECS` (default 600 — Solana Pay's own
