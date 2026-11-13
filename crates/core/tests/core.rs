@@ -190,6 +190,8 @@ mod sessions;
 mod settlement_capacity;
 #[path = "core/settlement_tx.rs"]
 mod settlement_tx;
+#[path = "core/solana_concurrency.rs"]
+mod solana_concurrency;
 #[path = "core/solana_deposits.rs"]
 mod solana_deposits;
 #[path = "core/staff_invitations.rs"]

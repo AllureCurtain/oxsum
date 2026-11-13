@@ -1182,9 +1182,17 @@ async fn solana_usdt_open_and_confirm_credits() {
 /// tests build `with_pricing` themselves; the static ones go through
 /// `world`/`world_with_terms`.
 async fn world_with(verifier: SolanaRailVerifier) -> Option<(Router, Db)> {
+    world_sized(verifier, 5).await
+}
+
+/// The same world on a wider pool — the concurrency tests spawn more parallel
+/// requests than the default five connections can hold at once, and a
+/// `PoolTimedOut` would read as a 429 rather than the shape under test
+/// (issue #1153).
+async fn world_sized(verifier: SolanaRailVerifier, connections: u32) -> Option<(Router, Db)> {
     let u = oxsum_testkit::suite_url!()?;
     let pool: PgPool = sqlx::postgres::PgPoolOptions::new()
-        .max_connections(5)
+        .max_connections(connections)
         .connect(&u)
         .await
         .expect("connects to PostgreSQL");
@@ -1718,4 +1726,128 @@ async fn solana_screening_absent_payer_is_unavailable_but_disabled_credits() {
     .await;
     assert_eq!(status, StatusCode::OK, "{receipt}");
     assert_eq!(balance(&app2, &key2).await, 1000);
+}
+
+/// Issue #1153: a burst of concurrent opens on one organization lands every
+/// intent under its own `reference` — the anchor is minted inside the open,
+/// so N raced requests answer N distinct pending rows, never a collision.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn solana_concurrent_opens_land_distinct_references() {
+    let stub = SolanaStub::default();
+    // A wider pool: the burst needs more parallel checkouts than the default
+    // five, or a checkout timeout would answer 429 rather than an intent.
+    let verifier = SolanaRailVerifier::new(Arc::new(stub), terms());
+    let Some((app, db)) = world_sized(verifier, 16).await else {
+        return;
+    };
+    let key = register_session(&app).await;
+    const N: usize = 8;
+    let barrier = Arc::new(tokio::sync::Barrier::new(N));
+    let mut opens = Vec::with_capacity(N);
+    for _ in 0..N {
+        let app = app.clone();
+        let key = key.clone();
+        let barrier = barrier.clone();
+        opens.push(tokio::spawn(async move {
+            barrier.wait().await;
+            call(
+                &app,
+                "POST",
+                "/api/v1/topups/solana",
+                Some(json!({"amountMinor": 1000})),
+                Some(&key),
+            )
+            .await
+        }));
+    }
+    let mut references = std::collections::HashSet::new();
+    for open in opens {
+        let (status, intent) = open.await.unwrap();
+        assert_eq!(status, StatusCode::OK, "{intent}");
+        assert!(
+            references.insert(intent["data"]["reference"].as_str().unwrap().to_owned()),
+            "a second open answered the same reference: {intent}"
+        );
+    }
+    let pending: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM oxsum.deposits WHERE rail = 'solana' AND status = 'pending'",
+    )
+    .fetch_one(db.pool())
+    .await
+    .unwrap();
+    assert_eq!(pending, N as i64);
+}
+
+/// Issue #1153: N confirms on the same `reference` through HTTP — exactly
+/// one 200 Receipt, the rest the route's own refusal shape (the row is no
+/// longer `pending`, so `find_solana_deposit` 404s or the credit refuses).
+/// The balance moves exactly once.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn solana_concurrent_confirms_credit_once() {
+    let stub = SolanaStub::default();
+    let verifier = SolanaRailVerifier::new(Arc::new(stub.clone()), terms());
+    let Some((app, _db)) = world_sized(verifier, 16).await else {
+        return;
+    };
+    let key = register_session(&app).await;
+    let (status, intent) = call(
+        &app,
+        "POST",
+        "/api/v1/topups/solana",
+        Some(json!({"amountMinor": 1000})),
+        Some(&key),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{intent}");
+    let reference = intent["data"]["reference"].as_str().unwrap().to_owned();
+    let signature = "sigConcHttp000000000000000000000000000000000000000000000000";
+    stub.located
+        .lock()
+        .unwrap()
+        .insert(reference.clone(), vec![signature.to_owned()]);
+    stub.validated.lock().unwrap().insert(
+        signature.to_owned(),
+        ValidatedTransfer {
+            signature: signature.to_owned(),
+            delivered: 5_000,
+            block_time: Some(0),
+            payer: None,
+        },
+    );
+    const N: usize = 8;
+    let barrier = Arc::new(tokio::sync::Barrier::new(N));
+    let mut confirms = Vec::with_capacity(N);
+    for _ in 0..N {
+        let app = app.clone();
+        let key = key.clone();
+        let reference = reference.clone();
+        let barrier = barrier.clone();
+        confirms.push(tokio::spawn(async move {
+            barrier.wait().await;
+            call(
+                &app,
+                "POST",
+                "/api/v1/topups/solana/confirm",
+                Some(json!({"reference": reference})),
+                Some(&key),
+            )
+            .await
+        }));
+    }
+    let mut ok = 0;
+    let mut refused = 0;
+    for confirm in confirms {
+        let (status, _) = confirm.await.unwrap();
+        match status {
+            StatusCode::OK => ok += 1,
+            // A raced loser sees the row already walked: `find_solana_deposit`
+            // 404s on the settled intent or the credit answers a refusal —
+            // the point is the balance books once, whichever surface reads.
+            StatusCode::NOT_FOUND | StatusCode::FORBIDDEN | StatusCode::CONFLICT => refused += 1,
+            other => panic!("a raced confirm is a 200 or a refusal: {other}"),
+        }
+    }
+    assert_eq!(ok, 1, "exactly one confirm answers the receipt");
+    assert_eq!(refused, N - 1);
+    assert_eq!(balance(&app, &key).await, 1000);
 }
