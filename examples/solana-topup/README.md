@@ -129,7 +129,11 @@ the mint's base units).
   carrying the same `reference` marker. The rail validates it through
   `postTokenBalances` instead of lamport deltas, so the recipient's
   associated token account must exist — `pay.mjs`/`topup.mjs` create it
-  idempotently in the same transaction.
+  idempotently in the same transaction. (The newer whitelist form —
+  `OXSUM_SOLANA_ASSETS=sol,usdc` + `OXSUM_SOLANA_MINT_USDC=<mint>` — runs
+  both assets on one deployment; the open body then names
+  `"asset":"usdc"`/`"sol"`. The legacy `SPL_TOKEN_MINT` form below still
+  parses for this single-mint walkthrough.)
 - **Devnet USDC.** Against real devnet, skip `--mint` and set
   `OXSUM_SOLANA_SPL_TOKEN_MINT` to the public USDC mint
   (`4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU`), funding the payer's ATA

@@ -4527,3 +4527,37 @@ changes. Reading the multisig's policy on-chain would take an RPC read at
 boot the rail deliberately does not do; signer review stays an operator act
 recorded in `docs/self-hosted-solana-multisig.md`. Refunds and consolidation
 are manual multisig ops in every case — the server never signs.
+
+## 2026-11-14 — One rail, a mint whitelist: SOL and USDC on one deployment (#1140)
+
+`OXSUM_SOLANA_SPL_TOKEN_MINT`/`_DECIMALS` picked exactly one asset globally.
+The rail now carries a whitelist: `OXSUM_SOLANA_ASSETS` is the
+comma-separated, display-ordered key list (`sol` always accepted — the only
+key with no mint), and `OXSUM_SOLANA_MINT_<KEY>` names each SPL asset's mint
+(`usdt` reserved for #1152). The customer picks the asset at intent-open
+(`"asset":"usdc"` on `POST /topups/solana`); the intent `meta` locks `asset`,
+`splToken`, `assetDecimals` and `rateMicro`, and `verify_locked` honors those
+figures — plus a defensive refusal of any locked `splToken` no configured
+asset carries. One `payTo` vault receives every asset; an SPL top-up lands
+in its ATA for the locked mint, which `token_delta`'s existing
+owner-or-accountIndex match already attributes.
+
+**Decimals are on-chain, never declared.** Under the whitelist there is no
+operator `DECIMALS` per mint: the boot audit (`verify_mints`) reads each
+mint's own account and fills `asset_decimals` — the #1129 check turned from
+"verify a declaration" into "the mint is authoritative". **Token-2022 mints
+are refused at boot**: the mint account's `owner` must not be
+`TokenzQd…` — Token-2022's transfer-fee and hook extensions are not modelled
+by `token_delta`, so an extension mint could misprice or mis-credit.
+**Stablecoins lock parity**: every SPL whitelist entry holds
+`USD_PEGGED_RATE_MICRO` (1_000_000 — dollar for dollar); `RATE_MICRO` prices
+only volatile SOL until issue #1139's oracle lands, which plugs into
+`AssetTerms::rate_micro` at intent-open. `OXSUM_SOLANA_DEFAULT_ASSET`
+defaults to the first SPL entry (`usdc` recommended on mainnet — a
+stablecoin default cannot be under-priced by SOL's drift), else `sol`.
+
+The legacy form still parses: `SPL_TOKEN_MINT` without `ASSETS` runs the
+rail on that one mint (locked at `RATE_MICRO`, `DECIMALS` required and
+cross-checked on-chain as before), so an existing devnet config boots
+unchanged. No schema migration — the intent's asset rides in `meta`, which
+already carried the locked terms.
