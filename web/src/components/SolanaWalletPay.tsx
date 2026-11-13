@@ -84,8 +84,13 @@ export function SolanaWalletPay({
   const endpoint = useMemo(() => solanaRpcEndpoint(intent.cluster), [intent.cluster]);
   const blocked: EndpointBlock | null = "error" in endpoint ? endpoint.error : null;
   const connectionRef = useRef<Connection | null>(null);
-  if (connectionRef.current === null && "ok" in endpoint) {
-    connectionRef.current = new Connection(endpoint.ok, "confirmed");
+  const endpointUrl = "ok" in endpoint ? endpoint.ok : null;
+  // A fresh intent on a different cluster must not reuse the old intent's
+  // Connection — re-derive it whenever the resolved endpoint changes.
+  const connectionUrlRef = useRef<string | null>(null);
+  if (connectionUrlRef.current !== endpointUrl) {
+    connectionUrlRef.current = endpointUrl;
+    connectionRef.current = endpointUrl === null ? null : new Connection(endpointUrl, "confirmed");
   }
 
   if (usable.length === 0) {
