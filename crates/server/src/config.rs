@@ -1843,9 +1843,10 @@ struct SolanaAssetSpec {
 /// The list is comma-separated lowercase keys — `sol` (native, always
 /// accepted) plus SPL keys like `usdc` whose mint rides in
 /// `OXSUM_SOLANA_MINT_<KEY>` (required for every non-`sol` entry; `usdt` is
-/// the reserved #1152 slot). Every SPL asset locks the fixed USD parity rate
-/// — it is a stablecoin by contract, so `RATE_MICRO` prices only volatile
-/// `sol`. Key order is display order.
+/// the opt-in #1151 key — `solana_usdt_gate` refuses it unless
+/// `OXSUM_SOLANA_USDT_ENABLED` is on). Every SPL asset locks the fixed USD
+/// parity rate — it is a stablecoin by contract, so `RATE_MICRO` prices only
+/// volatile `sol`. Key order is display order.
 ///
 /// The **legacy** form — `OXSUM_SOLANA_SPL_TOKEN_MINT` without
 /// `OXSUM_SOLANA_ASSETS` — still parses so an existing devnet config boots:
@@ -1949,6 +1950,74 @@ fn solana_asset_specs(
     }
 }
 
+/// The `OXSUM_SOLANA_USDT_ENABLED` flag's raw value → the boolean (issue
+/// #1151). `1`/`true` turns the `usdt` whitelist key on, `0`/`false`/unset is
+/// off — off is the default so an existing `usdc`-only config changes
+/// nothing — and an unparseable value is a startup error rather than a
+/// silent off (the operator meant *something* by setting it), the same parse
+/// shape `OXSUM_SOLANA_SANCTIONS_ENABLED` holds.
+fn usdt_enabled_of(raw: Option<String>) -> Result<bool, String> {
+    match raw.as_deref() {
+        Some("1") | Some("true") => Ok(true),
+        None | Some("0") | Some("false") => Ok(false),
+        Some(_) => Err("OXSUM_SOLANA_USDT_ENABLED must be 1/true or 0/false".into()),
+    }
+}
+
+/// Whether the operator's environment reaches for USDT at all — a `usdt`
+/// entry on the `OXSUM_SOLANA_ASSETS` list, or `OXSUM_SOLANA_MINT_USDT` set.
+/// The raw list scan mirrors `solana_asset_specs`' entry normalization
+/// (trim, lowercase) without running the whole parse.
+fn solana_usdt_declared(assets_raw: Option<&str>, mint_usdt_set: bool) -> bool {
+    mint_usdt_set
+        || assets_raw.is_some_and(|raw| {
+            raw.split(',')
+                .map(str::trim)
+                .any(|entry| entry.eq_ignore_ascii_case("usdt"))
+        })
+}
+
+/// The USDT enablement gate (issue #1151). USDT is a first-class whitelist
+/// key — same USD-pegged parity and on-chain mint audit as `usdc` — but it
+/// only exists behind `OXSUM_SOLANA_USDT_ENABLED`, a dedicated opt-in: the
+/// mint is the highest-value wrong-config a mainnet operator can paste (a
+/// look-alike USDT mint would settle worthless tokens at parity), so
+/// enablement is deliberate and the boot refuses the half-config in both
+/// directions. `declared` is `solana_usdt_declared`'s answer — the environment
+/// reaches for USDT somewhere; `whitelisted` is whether the parsed
+/// `SolanaAssetSpec`s actually carry a `usdt` entry — the two diverge under
+/// the legacy form, which has no `ASSETS` list to hold the key.
+///
+/// - flag off + USDT declared (either direction) → startup error naming the
+///   flag, never a silently-accepted or silently-dropped asset;
+/// - flag on + `MINT_USDT` without `usdt` on the whitelist → startup error —
+///   the mint names an asset the whitelist does not carry;
+/// - flag on + `usdt` on the whitelist → accepted; the per-key mint
+///   requirement `solana_asset_specs` already runs covers the missing
+///   `MINT_USDT`.
+///
+/// `solana_of` calls it twice: once before the rail-presence early return
+/// (passing `declared` for `whitelisted` — nothing parsed yet, so only the
+/// flag-off arm can fire), and again with the parsed specs.
+fn solana_usdt_gate(enabled: bool, declared: bool, whitelisted: bool) -> Result<(), String> {
+    if !enabled && declared {
+        return Err(
+            "OXSUM_SOLANA_USDT_ENABLED is off but USDT is configured — remove the \
+             `usdt` OXSUM_SOLANA_ASSETS entry / OXSUM_SOLANA_MINT_USDT, or set \
+             OXSUM_SOLANA_USDT_ENABLED=1 to accept USDT deposits"
+                .into(),
+        );
+    }
+    if enabled && declared && !whitelisted {
+        return Err(
+            "OXSUM_SOLANA_MINT_USDT names an asset OXSUM_SOLANA_ASSETS does not \
+             carry — add `usdt` to the whitelist, or unset the mint"
+                .into(),
+        );
+    }
+    Ok(())
+}
+
 /// The endpoint list `solana_of` builds the client pool from (issue #1145):
 /// `OXSUM_SOLANA_RPC_URLS` wins when both variables are set — a deployment
 /// migrating to the plural name must not silently double its pool — and
@@ -1968,8 +2037,8 @@ fn solana_rpc_urls_of(plural: Option<&str>, singular: Option<&str>) -> Vec<Strin
         .unwrap_or_default()
 }
 
-/// Parses the Solana deposit rail (issues #1117, #1139, #1140, #1145). The
-/// complete set: `OXSUM_SOLANA_RPC_URLS` (or `OXSUM_SOLANA_RPC_URL`) +
+/// Parses the Solana deposit rail (issues #1117, #1139, #1140, #1145, #1151).
+/// The complete set: `OXSUM_SOLANA_RPC_URLS` (or `OXSUM_SOLANA_RPC_URL`) +
 /// `OXSUM_SOLANA_PAY_TO`, plus a rate source — a Pyth oracle a `sol`
 /// whitelist intent prices at open (issue #1139) or the static
 /// `OXSUM_SOLANA_RATE_MICRO` a devnet deployment pins behind
@@ -1978,9 +2047,12 @@ fn solana_rpc_urls_of(plural: Option<&str>, singular: Option<&str>) -> Vec<Strin
 /// `OXSUM_SOLANA_MINT_<KEY>` / `OXSUM_SOLANA_DEFAULT_ASSET` /
 /// `OXSUM_SOLANA_COMMITMENT` / `OXSUM_SOLANA_INTENT_TTL_SECS` /
 /// `OXSUM_SOLANA_RPC_AUTH_HEADER` optional — the requireds or none, a subset
-/// is a startup error like the Stripe trio. Unset and the rail is absent:
-/// `POST /api/v1/topups/solana` answers 503 and the `solana-deposits` job
-/// schedules nothing.
+/// is a startup error like the Stripe trio. The `usdt` whitelist key is
+/// opt-in (issue #1151): `OXSUM_SOLANA_USDT_ENABLED` gates it, and the boot
+/// refuses either half of a mismatch — USDT configured with the flag off, or
+/// `MINT_USDT` beside a whitelist that does not carry `usdt`. Unset and the
+/// rail is absent: `POST /api/v1/topups/solana` answers 503 and the
+/// `solana-deposits` job schedules nothing.
 ///
 /// The endpoint set is a pool (issue #1145): `OXSUM_SOLANA_RPC_URLS` is the
 /// comma-separated list a mainnet deployment fills with its authenticated
@@ -1999,6 +2071,17 @@ fn solana_of() -> Result<Option<Arc<oxsum_core::SolanaRailVerifier>>, String> {
     let rate_micro = var("OXSUM_SOLANA_RATE_MICRO");
     let spl_token_mint = var("OXSUM_SOLANA_SPL_TOKEN_MINT");
     let assets_declared = var("OXSUM_SOLANA_ASSETS");
+    // The USDT opt-in (issue #1151) parses before the rail-presence check: a
+    // malformed flag is a startup error whatever else is set, and a declared
+    // USDT with the flag off is refused here — not silently dropped — even
+    // when `MINT_USDT` is the rail's only variable. The flag-on half of the
+    // gate runs below, once the parsed specs exist.
+    let usdt_enabled = usdt_enabled_of(var("OXSUM_SOLANA_USDT_ENABLED"))?;
+    let usdt_declared = solana_usdt_declared(
+        assets_declared.as_deref(),
+        var("OXSUM_SOLANA_MINT_USDT").is_some(),
+    );
+    solana_usdt_gate(usdt_enabled, usdt_declared, usdt_declared)?;
     let devnet_static = var("OXSUM_SOLANA_DEVNET_STATIC_RATE")
         .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
         .unwrap_or(false);
@@ -2011,6 +2094,8 @@ fn solana_of() -> Result<Option<Arc<oxsum_core::SolanaRailVerifier>>, String> {
     .sum::<usize>();
     // Any PYTH_* knob or the devnet flag also counts as "the operator meant
     // the rail" — a lone `OXSUM_SOLANA_PYTH_*` must not be silently ignored.
+    // A declared USDT counts the same way: `MINT_USDT` set with the flag on
+    // but no endpoints/pay_to is the rail half-config, not a no-op.
     let pyth_touched = [
         "OXSUM_SOLANA_PYTH_URL",
         "OXSUM_SOLANA_PYTH_FEED_ID",
@@ -2024,6 +2109,7 @@ fn solana_of() -> Result<Option<Arc<oxsum_core::SolanaRailVerifier>>, String> {
         && assets_declared.is_none()
         && !devnet_static
         && !pyth_touched
+        && !usdt_declared
     {
         return Ok(None);
     }
@@ -2082,6 +2168,15 @@ fn solana_of() -> Result<Option<Arc<oxsum_core::SolanaRailVerifier>>, String> {
         .transpose()?;
     let mut specs = solana_asset_specs(rate_micro, declared_decimals)?;
     let legacy_form = assets_declared.is_none();
+    // The gate's flag-on half (issue #1151): `MINT_USDT` beside a whitelist
+    // — or legacy form — that does not carry `usdt` is a half-config. The
+    // flag-off arm already fired above; a `usdt` entry missing its mint
+    // failed inside `solana_asset_specs` like any other key.
+    solana_usdt_gate(
+        usdt_enabled,
+        usdt_declared,
+        specs.iter().any(|s| s.key == "usdt"),
+    )?;
     // The rate-source gate (issue #1139): the legacy form always prices
     // statically — its `spl` or `sol` single asset locks `RATE_MICRO`, so a
     // legacy deployment without the figure is a startup error. Under the
@@ -2730,7 +2825,6 @@ mod tests {
         let err = super::solana_custody_of(Some("not-base58!!!"), TEST_VAULT_0).unwrap_err();
         assert!(err.contains("OXSUM_SOLANA_MULTISIG_ACCOUNT"), "{err}");
     }
-
     #[test]
     fn from_str_and_parse_agree() {
         for raw in ["invite", "open", " OPEN "] {
