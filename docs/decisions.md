@@ -4324,3 +4324,18 @@ renames the transaction APIs the scripts use), kept out of
 `scripts/verify-examples.sh` because that gate stays chain-free; the walkthrough
 documents the one scratch-loop caveat a fresh `payTo` hits (rent-exempt
 minimum — a bare few-thousand-lamport first deposit is refused).
+
+The rail was then rehearsed on the **public devnet** the same day: payer
+funded at faucet.solana.com (the manual route the 410 forces), `payTo`
+primed with 0.1 SOL for rent, and `examples/solana-topup/topup.mjs` run
+against `https://api.devnet.solana.com` — intent → reference-marked
+`SystemProgram.transfer` → confirm → replay → the 15 s poll crediting a
+second never-confirmed intent. Every assertion held; the only
+soft-failure was the confirm racing the poll (the poll had already
+credited the intent, so the on-demand confirm found no `pending` row and
+answered 404 — the documented race, not a defect), and the wallet
+balanced to exactly two credits, never two-and-a-fraction. That is the
+deployment shape the rail now supports: the JSON-RPC URL is the only
+cluster switch — `OXSUM_SOLANA_RPC_URL` flips devnet ↔ mainnet with no
+code change, `OXSUM_SOLANA_SPL_TOKEN_MINT` the USDC mainnet mint when a
+real deployment chooses it.
