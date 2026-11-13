@@ -595,15 +595,29 @@ the paying transaction must honor. In the dashboard the **Solana** tab renders
 that intent as a Solana Pay transfer-request URL plus a QR code — scan it with
 a Solana wallet, or copy the link, and the wallet fills in the recipient,
 amount and `reference` marker itself. The manual `payTo` / amount /
-`reference` fields stay beneath the QR for a wallet that cannot scan. The
-deposit credits when the transfer is found and validated on-chain — the
-15-second poll picks it up even without the "I've sent it" confirm button. If a
-transfer arrives that cannot settle — under-delivered, over-delivered, or landed
-after the intent's `expiresAt` — the page lists it under the top-up form with its
-status and the asset it locked (issue #1142). When an operator opens a refund on
-one, the row asks for your refund address: paste the base58 Solana address the
-payout should send to — the rail never guesses it from the paying transaction —
-and after the operator approves and the multisig pays, the row closes with the
+`reference` fields stay beneath the QR for a wallet that cannot scan.
+
+While the intent stands open the tab shows its live status (issue #1148): a
+countdown to `expiresAt` — red once under a minute remains — the locked
+amount in the intent's own asset ("5.00 USDC", not raw lamports), and a
+state line that updates as the page re-asks the confirm endpoint every few
+seconds. **Waiting for your on-chain payment** means no honoring transfer
+has landed yet; a confirm that finds the intent already out of `pending`
+reads as **still waiting for on-chain confirmation** — informational, never
+an error — because the server's own poll may have just settled it and the
+balance watcher confirms the credit a moment later. A transfer that cannot
+settle names its exception instead — **underpaid** or **late** — and the
+deposit waits on the review queue rather than retrying forever. When the
+countdown runs out unpaid the intent is **expired**: open a new one to try
+again, since a lapsed intent can never credit. The deposit credits when the
+transfer is found and validated on-chain — the 15-second poll picks it up
+even without the "I've sent it" confirm button. If a transfer arrives that
+cannot settle — under-delivered, over-delivered, or landed after the intent's
+`expiresAt` — the page lists it under the top-up form with its status and the
+asset it locked (issue #1142). When an operator opens a refund on one, the
+row asks for your refund address: paste the base58 Solana address the payout
+should send to — the rail never guesses it from the paying transaction — and
+after the operator approves and the multisig pays, the row closes with the
 payout's signature as proof.
 
 On a deployment that promotes a rail's environment credentials to an explicit
