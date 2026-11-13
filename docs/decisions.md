@@ -1,5 +1,22 @@
 # Technical decisions
 
+## 2026-11-14 — Every solana terminal meta records the payer and the delivered figures (#1186)
+
+The reconciliation CSV's `payer` column exported empty on every row because
+no write path merged the verify context's `payerAddress` into `meta`, and a
+`flagged` row recorded no `delivered`/`expected`/`received_minor` at all —
+the queue could not say what the parked transfer sent. The fix is uniform:
+every terminal write — `credited`/`overpaid` on the credit path,
+`underpaid`/`late` through `mark_solana_exception`, and `flagged` through
+`flag_solana_deposit` — now merges `payerAddress`, `delivered`, `expected`
+and `receivedCredits` into `meta` and sets `received_minor` to the delivered
+figure converted back at the locked rate. `meta.payerAddress` stays a string
+or `NULL` when the transfer's shape yields no payer (the screening path's
+`TemporarilyUnavailable` rule already refuses to book an unattributed
+credit, so the column's `NULL` is the pre-screen disabled case, not a missed
+attribution); `meta.screening.address` remains the fallback for a `flagged`
+row parked before the merge landed.
+
 ## 2026-11-11 — Direct Stripe is the active primary rail; Hyperswitch deferred
 
 `docs/product.md` and `docs/roadmap/operator-launch/CONTRACT.md` originally
