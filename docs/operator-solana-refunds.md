@@ -103,7 +103,10 @@ A refund is two separate, deliberately unlinked acts — keep them honest:
 1. **The on-chain return.** The operator (or a delegated signer) sends the
    refund from `payTo` back to the customer's wallet — a plain
    `SystemProgram.transfer` / SPL `TransferChecked` for the figure being
-   returned. Record that transaction's signature: it is the refund's proof.
+   returned. When `payTo` is a Squads v4 multisig vault
+   (`docs/self-hosted-solana-multisig.md`) this is a multisig operation: a
+   signer proposes the spend, the threshold approves it — the server never
+   signs. Record that transaction's signature: it is the refund's proof.
    Never reuse the deposit's `reference` — the refund is a new transfer.
 
 2. **The ledger note.** On the deployment, post a **manual receipt** (`POST
@@ -138,7 +141,8 @@ the books and the chain reconcile.
 
 ## What this runbook does not cover
 
-Price-oracle selection and lock timing, dual SOL+USDC support, the wallet
-adapter that removes the manual reference step, and hot-wallet key custody /
-consolidation / withdrawal — the follow-ups tracked on #1117, not this rail's
-current scope.
+Price-oracle selection and lock timing, dual SOL+USDC support, and the wallet
+adapter that removes the manual reference step — the follow-ups tracked on
+#1117, not this rail's current scope. Key custody — receiving `payTo` into a
+Squads v4 multisig vault and who signs a spend — is the operator-side setup
+in `docs/self-hosted-solana-multisig.md` (issue #1143).

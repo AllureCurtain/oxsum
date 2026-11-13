@@ -4487,3 +4487,43 @@ settlement edge. The Solana top-up pre-loads credit onto the wallet the
 freeze/settle ledger already runs. They sit side by side in product: a
 customer can hold prepaid balance *and* be billed per call; the top-up
 builds the float the per-call rail draws from, it does not replace it.
+
+## 2026-11-14 — The rail's payTo is provably a Squads v4 vault, not a hot wallet (#1143)
+
+The server holds no spend key — the custody question is whether `payTo` is
+the account it should receive into, not whether the process can sign.
+`OXSUM_SOLANA_MULTISIG_ACCOUNT` is added as an optional custody pin: when it
+names the Squads v4 multisig *account* (the multisig PDA, not a signer, not
+the `createKey`), the boot derives that multisig's `vault index 0` PDA
+**offline** and refuses to start unless `OXSUM_SOLANA_PAY_TO` equals it —
+the misconfiguration this catches is a `payTo` that is not the vault (a
+pasted hot-wallet, a vault of a different index, a multisig that was
+re-created so its PDAs moved). Unset, the rail still boots — a plain wallet
+is a legitimate devnet `payTo` — but a loud startup warning marks `payTo`
+as an unverified hot wallet, never silently.
+
+The derivation is hand-rolled in `crates/integrations/src/squads.rs`, keeping
+the rail's standing no-`solana-sdk` rule: a Solana PDA is
+`sha256(seeds ‖ bump ‖ program ‖ "ProgramDerivedAddress")` iterated over
+descending bumps until the digest is *not* an ed25519 curve point — the only
+curve arithmetic the check needs. That off-curve test is the one new
+dependency, `curve25519-dalek` (already in the lockfile via `ed25519-dalek`;
+`CompressedEdwardsY::decompress` answers "is this a real point", whose
+negation is PDA validity). `bs58` joins the integrations crate to decode the
+addresses. The Squads seeds mirror `getVaultPda` (`["multisig", multisigPda,
+"vault", u8(index)]`) under program
+`SQDS4ep65T869zMMBKyuUq6aD6EgTu8psMjkvj52pCf` — verified against the
+`@sqds/multisig` SDK, which is also the known-answer source the unit tests
+pin. **One correction on the record:** the issue text's program id
+(`…Tu8HMyMzFkuw7Kp`) is a near-miss that still decodes to 32 bytes; the
+verified v4 id is `…Tu8psMjkvj52pCf`, and the derivation is pinned to it.
+
+**The residual, on the record.** The check is a *derivation*, not on-chain
+introspection: it proves `payTo` equals the PDA the multisig account implies,
+not that the multisig's threshold/members are the intended signers (a 1-of-1
+derives the same as a 3-of-5), and it cannot see a policy edited after
+`payTo` was pinned — the vault address is stable across member/threshold
+changes. Reading the multisig's policy on-chain would take an RPC read at
+boot the rail deliberately does not do; signer review stays an operator act
+recorded in `docs/self-hosted-solana-multisig.md`. Refunds and consolidation
+are manual multisig ops in every case — the server never signs.

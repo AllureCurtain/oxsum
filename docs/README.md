@@ -16,6 +16,7 @@ Use this page to pick a document. Longer pages disagree with themselves in place
 | Operator launch status | [Operator launch](roadmap/operator-launch/README.md). Screenshot and JSON captures are indexed in [EVIDENCE.md](roadmap/EVIDENCE.md) once that note is on the branch you have; the markdown conclusions are the part to read |
 | Run an operator procedure | `runbooks/` — rehearsal and ops runbooks, e.g. [Solana mainnet rehearsal](runbooks/solana-mainnet-rehearsal.md) |
 | Release gates | [Self-hosted release](self-hosted-release.md) |
+| Solana deposit custody | [Solana multisig](self-hosted-solana-multisig.md) — receiving into a Squads v4 vault; refunds in [Solana top-up refunds](operator-solana-refunds.md) |
 | Day-to-day UI | [User guide](user-guide.md) and [DESIGN.md](../DESIGN.md) |
 | Security or support | [SECURITY.md](../SECURITY.md), [SUPPORT.md](../SUPPORT.md) |
 | What is unfinished | [TODO.md](../TODO.md), one row per open issue |
