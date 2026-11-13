@@ -1169,6 +1169,148 @@ async fn an_over_delivered_transfer_credits_once_and_marks_overpaid() {
     assert_eq!(queue[0].delivered, Some(2_500));
 }
 
+/// Issue #1186's stub: a `OneSig` whose validated transfer carries the payer
+/// wallet the rail attributes — the shape a credit or exception mark needs to
+/// merge `payerAddress` from.
+#[derive(Debug)]
+struct AttributedSig {
+    signature: String,
+    delivered: i64,
+    payer: String,
+}
+
+impl ChainLookup for AttributedSig {
+    fn find_reference<'a>(
+        &'a self,
+        _reference: &'a str,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Vec<String>> + Send + 'a>> {
+        Box::pin(async move { vec![self.signature.clone()] })
+    }
+    fn validate_transfer<'a>(
+        &'a self,
+        signature: &'a str,
+        expected: &'a ExpectedTransfer,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Option<ValidatedTransfer>> + Send + 'a>>
+    {
+        Box::pin(async move {
+            if signature != self.signature {
+                return None;
+            }
+            // The transfer is the intent's payment; `delivered` rides up
+            // unjudged so the verifier classifies an under/over-delivery the
+            // way #1142's marks do.
+            if expected.recipient != "oxsumDepositAddr111111111111111111111111111" {
+                return None;
+            }
+            Some(ValidatedTransfer {
+                signature: signature.to_owned(),
+                delivered: self.delivered,
+                block_time: Some(0),
+                payer: Some(self.payer.clone()),
+            })
+        })
+    }
+}
+
+/// Issue #1186: every terminal state merges the full verification record —
+/// `payerAddress`, `delivered`, `expected`, `receivedCredits` — into `meta`
+/// and sets `received_minor`, so the queue row and the CSV's `payer` column
+/// attribute what the chain sent. An exact-pay `credited` row and a short
+/// `underpaid` one prove the credit and exception paths write it alike.
+#[tokio::test]
+async fn every_terminal_meta_records_the_payer_and_figures() {
+    let Some(db) = database("solana_terminal_meta").await else {
+        return;
+    };
+    let org = organization(&db, "terminal-meta").await;
+    let wallet = wallet_for(&db, org).await;
+    let terms = terms();
+    let payer = "attributedPayerWallet777777777777777777777";
+
+    // The credit path: an exact 5_000-lamport pay on the 1000-credit intent
+    // lands `credited` with the payer and figures on `meta`.
+    let credited_id = Uuid::new_v4();
+    db.open_solana_deposit(org, credited_id, 1000, &terms, None, &rate(&terms, None))
+        .await
+        .unwrap()
+        .expect("inserts");
+    let verifier = SolanaRailVerifier::new(
+        Arc::new(AttributedSig {
+            signature: "sigCreditMeta000000000000000000000000000000000000".to_owned(),
+            delivered: 5_000,
+            payer: payer.to_owned(),
+        }),
+        terms.clone(),
+    );
+    let verdict = db
+        .credit_solana_deposit(&wallet, credited_id, &verifier, time::Date::MAX)
+        .await
+        .unwrap();
+    assert!(matches!(verdict, SolanaCredit::Credited(_)), "{verdict:?}");
+    let row = sqlx::query(
+        "SELECT status, received_minor, meta FROM oxsum.deposits WHERE deposit_id = $1",
+    )
+    .bind(credited_id)
+    .fetch_one(db.pool())
+    .await
+    .unwrap();
+    assert_eq!(row.get::<String, _>("status"), "credited");
+    assert_eq!(row.get::<Option<i64>, _>("received_minor"), Some(1_000));
+    let meta = row.get::<serde_json::Value, _>("meta");
+    assert_eq!(meta["payerAddress"].as_str().unwrap(), payer);
+    assert_eq!(meta["delivered"].as_i64().unwrap(), 5_000);
+    assert_eq!(meta["expected"].as_i64().unwrap(), 5_000);
+    assert_eq!(meta["receivedCredits"].as_i64().unwrap(), 1_000);
+
+    // The exception path: a 3_000-lamport delivery on the same intent marks
+    // `underpaid` — the same `meta` record plus `exception`, and the queue
+    // row carries the payer the CSV exports.
+    let underpaid_id = Uuid::new_v4();
+    db.open_solana_deposit(org, underpaid_id, 1000, &terms, None, &rate(&terms, None))
+        .await
+        .unwrap()
+        .expect("inserts");
+    let short = SolanaRailVerifier::new(
+        Arc::new(AttributedSig {
+            signature: "sigUnderMeta0000000000000000000000000000000000000".to_owned(),
+            delivered: 3_000,
+            payer: payer.to_owned(),
+        }),
+        terms,
+    );
+    let verdict = db
+        .credit_solana_deposit(&wallet, underpaid_id, &short, time::Date::MAX)
+        .await
+        .unwrap();
+    assert!(matches!(verdict, SolanaCredit::Underpaid), "{verdict:?}");
+    let row = sqlx::query(
+        "SELECT status, received_minor, meta FROM oxsum.deposits WHERE deposit_id = $1",
+    )
+    .bind(underpaid_id)
+    .fetch_one(db.pool())
+    .await
+    .unwrap();
+    assert_eq!(row.get::<String, _>("status"), solana_status::UNDERPAID);
+    assert_eq!(row.get::<Option<i64>, _>("received_minor"), Some(600));
+    let meta = row.get::<serde_json::Value, _>("meta");
+    assert_eq!(meta["payerAddress"].as_str().unwrap(), payer);
+    assert_eq!(meta["delivered"].as_i64().unwrap(), 3_000);
+    assert_eq!(meta["expected"].as_i64().unwrap(), 5_000);
+    assert_eq!(meta["receivedCredits"].as_i64().unwrap(), 600);
+    assert_eq!(meta["exception"].as_str().unwrap(), "underpaid");
+    // The queue row surfaces `payer` — the field the CSV's `payer` column
+    // serializes — on the exception deposits (`credited` is terminal, not an
+    // exception, so the windowed CSV export is what reads its `payer`).
+    let queue = db.solana_exception_deposits(None, 10, None).await.unwrap();
+    let underpaid = queue
+        .iter()
+        .find(|row| row.deposit_id == underpaid_id)
+        .expect("the underpaid deposit is on the queue");
+    assert_eq!(underpaid.payer.as_deref(), Some(payer));
+    assert_eq!(underpaid.delivered, Some(3_000));
+    assert_eq!(underpaid.received_minor, Some(600));
+}
+
 /// Issue #1142: the refund state machine — `underpaid → refund_pending →
 /// (address) → approved → refunded` — with each order violation refused and
 /// `refunded` terminal. Driven at the Db layer where the transitions live.
@@ -1479,7 +1621,8 @@ async fn a_flagged_payer_parks_the_deposit_for_review() {
     );
     assert_eq!(wallet.available().await.unwrap(), 0);
     let row = sqlx::query(
-        "SELECT status, facilitator_tx_hash, meta FROM oxsum.deposits WHERE deposit_id = $1",
+        "SELECT status, facilitator_tx_hash, received_minor, meta \
+         FROM oxsum.deposits WHERE deposit_id = $1",
     )
     .bind(deposit_id)
     .fetch_one(db.pool())
@@ -1498,6 +1641,18 @@ async fn a_flagged_payer_parks_the_deposit_for_review() {
         meta["screening"]["address"].as_str().unwrap(),
         "sanctionedPayerAddr444444444444444444444444"
     );
+    // The flagged row records the same terminal figures every other mark
+    // does (issue #1186): the parked transfer's delivered/expected in the
+    // locked asset's base units, `received_minor` its worth in minor-credits,
+    // and `payerAddress` the attributed wallet the queue reads back.
+    assert_eq!(meta["delivered"].as_i64().unwrap(), 5_000);
+    assert_eq!(meta["expected"].as_i64().unwrap(), 5_000);
+    assert_eq!(meta["receivedCredits"].as_i64().unwrap(), 1_000);
+    assert_eq!(
+        meta["payerAddress"].as_str().unwrap(),
+        "sanctionedPayerAddr444444444444444444444444"
+    );
+    assert_eq!(row.get::<Option<i64>, _>("received_minor"), Some(1_000));
     // The operator queue reads it back — the DB-level half #1142's fuller
     // exception queue lands on.
     let queue = db.admin_flagged_solana_deposits(50).await.unwrap();
@@ -1518,6 +1673,23 @@ async fn a_flagged_payer_parks_the_deposit_for_review() {
             .iter()
             .all(|d| d.status == "flagged" && d.rail == "solana")
     );
+    // The exception-queue row carries the attributed payer the CSV exports
+    // (issue #1186) — `meta.payerAddress` merged by the flag write.
+    let exceptions = db
+        .solana_exception_deposits(Some(solana_status::FLAGGED), 10, None)
+        .await
+        .unwrap();
+    let flagged = exceptions
+        .iter()
+        .find(|row| row.deposit_id == deposit_id)
+        .expect("the flagged deposit is on the exception queue");
+    assert_eq!(
+        flagged.payer.as_deref(),
+        Some("sanctionedPayerAddr444444444444444444444444")
+    );
+    assert_eq!(flagged.delivered, Some(5_000));
+    assert_eq!(flagged.expected, Some(5_000));
+    assert_eq!(flagged.received_minor, Some(1_000));
 }
 
 #[tokio::test]
