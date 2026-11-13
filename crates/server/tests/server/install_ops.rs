@@ -358,6 +358,73 @@ async fn check_config_validates_env_without_a_database() {
     );
     assert!(err.contains("OXSUM_SOLANA_RATE_MICRO"), "{err}");
 
+    // The rail's endpoint set (issue #1145): the plural variable configures
+    // the rail, and a half-set (endpoint list without the pay-to) is a
+    // startup error naming it.
+    let bad = run(&[(
+        "OXSUM_SOLANA_RPC_URLS",
+        "https://mainnet.helius-rpc.com/?api-key=x,https://api.devnet.solana.com",
+    )]);
+    assert!(!bad.status.success());
+    let err = format!(
+        "{}{}",
+        String::from_utf8_lossy(&bad.stderr),
+        String::from_utf8_lossy(&bad.stdout)
+    );
+    assert!(err.contains("OXSUM_SOLANA_PAY_TO"), "{err}");
+    // The singular still configures the rail, comma-separated entries
+    // included; a full trio passes the check.
+    let ok = run(&[
+        (
+            "OXSUM_SOLANA_RPC_URL",
+            "https://api.devnet.solana.com,https://a.example.com",
+        ),
+        (
+            "OXSUM_SOLANA_PAY_TO",
+            "payToExample111111111111111111111111111",
+        ),
+        ("OXSUM_SOLANA_RATE_MICRO", "200000000"),
+    ]);
+    assert!(
+        ok.status.success(),
+        "a comma-separated singular endpoint list must pass: {}",
+        String::from_utf8_lossy(&ok.stderr)
+    );
+    // A hostless endpoint entry is a startup error naming the variable —
+    // the client's boot check, not a runtime surprise.
+    let bad = run(&[
+        ("OXSUM_SOLANA_RPC_URLS", "not a url"),
+        (
+            "OXSUM_SOLANA_PAY_TO",
+            "payToExample111111111111111111111111111",
+        ),
+        ("OXSUM_SOLANA_RATE_MICRO", "200000000"),
+    ]);
+    assert!(!bad.status.success());
+    let err = format!(
+        "{}{}",
+        String::from_utf8_lossy(&bad.stderr),
+        String::from_utf8_lossy(&bad.stdout)
+    );
+    assert!(err.contains("OXSUM_SOLANA_RPC_URLS"), "{err}");
+    // A colon-less auth header can never parse — refused at boot.
+    let bad = run(&[
+        ("OXSUM_SOLANA_RPC_URLS", "https://api.devnet.solana.com"),
+        (
+            "OXSUM_SOLANA_PAY_TO",
+            "payToExample111111111111111111111111111",
+        ),
+        ("OXSUM_SOLANA_RATE_MICRO", "200000000"),
+        ("OXSUM_SOLANA_RPC_AUTH_HEADER", "AuthorizationBearerX"),
+    ]);
+    assert!(!bad.status.success());
+    let err = format!(
+        "{}{}",
+        String::from_utf8_lossy(&bad.stderr),
+        String::from_utf8_lossy(&bad.stdout)
+    );
+    assert!(err.contains("OXSUM_SOLANA_RPC_AUTH_HEADER"), "{err}");
+
     // Missing DATABASE_URL names that instead of connecting to nothing.
     let missing = binary::oxsum()
         .arg("--check-config")

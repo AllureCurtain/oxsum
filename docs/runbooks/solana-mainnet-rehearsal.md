@@ -72,13 +72,15 @@ Complete every line before configuring the deployment.
 ## Step 1 — configure and boot for mainnet
 
 Set the rail's environment in `deploy/.env` (or the env source your install
-uses). The rail is all-or-none: `OXSUM_SOLANA_RPC_URL`,
-`OXSUM_SOLANA_PAY_TO`, `OXSUM_SOLANA_RATE_MICRO` together, or the endpoints
-answer 503.
+uses). The rail is all-or-none: `OXSUM_SOLANA_RPC_URLS` (or
+`OXSUM_SOLANA_RPC_URL`), `OXSUM_SOLANA_PAY_TO`, `OXSUM_SOLANA_RATE_MICRO`
+together, or the endpoints answer 503.
 
 ```dotenv
-# The authenticated endpoint, never the public cluster endpoint.
-OXSUM_SOLANA_RPC_URL=https://mainnet.helius-rpc.com/?api-key=<key>
+# The authenticated endpoint pool, never the public cluster endpoint —
+# comma-separated providers the client fails over across (issue #1145); a
+# second provider listed here is the rehearsal's own failover proof.
+OXSUM_SOLANA_RPC_URLS=https://mainnet.helius-rpc.com/?api-key=<key>
 
 # The multisig vault every intent pays.
 OXSUM_SOLANA_PAY_TO=<vault base58 address>

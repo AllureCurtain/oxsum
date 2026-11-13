@@ -4651,3 +4651,48 @@ now extracts the payer at validate time and screens it before
   status vocabulary; this lands the status, the park write and a minimal
   read-only list so #1142's queue lands on a status that already exists
   rather than inventing a parallel one.
+
+## 2026-11-14 — Authenticated RPC endpoints with failover, and the rail's metric surface (#1145)
+
+The rail moves off the single public endpoint onto a pool of configured,
+typically authenticated, providers. `OXSUM_SOLANA_RPC_URLS` is the
+comma-separated endpoint list a mainnet deployment fills with Helius
+(`https://mainnet.helius-rpc.com/?api-key=…`), Triton or any JSON-RPC origin —
+the API key lives inside each URL, which is why no bespoke auth machinery is
+needed for the common providers; `OXSUM_SOLANA_RPC_AUTH_HEADER` remains as an
+optional verbatim `Name: value` header for a provider that cannot key auth in
+the URL. `OXSUM_SOLANA_RPC_URL` keeps working (comma-separated too) and the
+plural wins when both are set, so a mid-migration environment never silently
+doubles its pool.
+
+`SolanaRpcClient` is now a pool, not a point: every JSON-RPC call walks the
+endpoints starting at a round-robin cursor, retrying the next one on a
+transport failure, a non-2xx or an RPC-level `error` — all three are the same
+"this endpoint did not answer" signal to the verifier, which keeps its
+`ChainLookup` surface unchanged; the boot's per-mint audit reads
+(`mint_owner`, `mint_decimals` — issue #1140) fail over the same way because
+they run through the same `call`. Two consecutive failures open a ~30s
+cooldown that skips the endpoint entirely, so a dead provider stops eating
+the per-call timeout every pass; when every endpoint sits inside its cooldown
+the call still walks the whole pool once rather than dying on a shared
+window, and a single-endpoint pool is never skipped (there is nowhere else to
+send the call). The `endpoint` metric label is the endpoint's host (plus a
+non-default port) — the URL's query, where the API key lives, is deliberately
+dropped at construction, so a credential can never reach a metric, a log
+line or a `Debug` print.
+
+The rail's operator surface lands on `/metrics`:
+`solana_rpc_errors_total{call,endpoint}` (the existing counter, now
+per-endpoint), `solana_rpc_failovers_total{from,to}` per hop,
+`solana_rpc_endpoint_healthy{endpoint}` as the cooldown's 1/0,
+`solana_deposits_paid_uncredited` (+ `_oldest_seconds`) refreshed by each
+`solana-deposits` pass — `confirmed` means the chain verified but the ledger
+credit never landed, the "paid but uncredited" alert —
+`solana_exception_queue_depth{status}` per deposit status (the #1142
+statuses join the same series when they land), and
+`solana_screening_hits_total{result}` pre-created so #1144's check
+increments the same name. Facade-level emissions (`metrics::counter!` in
+oxsum-integrations) now reach `/metrics` because `main` installs the app's
+own recorder into the metrics facade's global slot — previously those calls
+landed nowhere; per-app registries in tests are untouched. Alert thresholds
+are documented in `docs/operator-solana-refunds.md`'s monitoring section.

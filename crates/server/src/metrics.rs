@@ -3,13 +3,19 @@
 //! The recorder lives in [`AppState`] rather than the `metrics` facade's global slot: every
 //! `app()` gets a registry of its own, so a test can drive a turn and read back the exact
 //! counts it caused — a shared registry would leak one test's traffic into another's scrape.
-//! Instrumentation is at the call site, not on the billing broadcast: the broadcast is lossy
-//! under lag and the sweeper never publishes, so each counter is written where the event
-//! happens.
+//! `main` is the one exception: it installs the app's own recorder into the facade's global
+//! slot ([`Metrics::install_global`]) so the facade-level emissions a library makes — the
+//! Solana rail's per-endpoint RPC series in `oxsum-integrations` — land on `/metrics` beside
+//! the registry's own (issue #1145). Instrumentation is at the call site, not on the billing
+//! broadcast: the broadcast is lossy under lag and the sweeper never publishes, so each
+//! counter is written where the event happens.
 //!
 //! Label values only ever carry bounded vocabularies: route patterns, status classes,
 //! settlement kinds, claim outcomes. Never a request id, an organization or a key — a label
-//! that grows per caller would be a cardinality leak the scrape cannot put back.
+//! that grows per caller would be a cardinality leak the scrape cannot put back. The one
+//! widening is the Solana rail's `endpoint` label: it carries the *host* of each configured
+//! RPC endpoint — a handful of operator-chosen values set at boot, never per-request data,
+//! and never the API key the URL may hold (the key is dropped when the label is derived).
 
 use std::sync::Arc;
 use std::time::Instant;
@@ -60,6 +66,22 @@ const WEBHOOK_DELIVERIES: &str = "oxsum_webhook_deliveries_total";
 const JOBS_RUNS: &str = "oxsum_jobs_runs_total";
 /// The shared connection pool, by `state` (`open`/`idle`) — refreshed on each scrape.
 const POOL_CONNECTIONS: &str = "oxsum_db_pool_connections";
+/// Solana deposits that verified on-chain (`confirmed`) but whose ledger
+/// credit never landed — refreshed by each `solana-deposits` pass; >0 is the
+/// "paid but uncredited" alert (issue #1145).
+const SOLANA_PAID_UNCREDITED: &str = "solana_deposits_paid_uncredited";
+/// Age in seconds of the oldest confirmed-not-credited Solana deposit —
+/// emitted beside [`SOLANA_PAID_UNCREDITED`] so the alert can say how stale.
+const SOLANA_PAID_UNCREDITED_AGE: &str = "solana_deposits_paid_uncredited_oldest_seconds";
+/// Solana deposit rows per `status` (`confirmed`/`reversed`/`expired` — the
+/// exception queue an operator works; #1142's `underpaid`/`overpaid`/`late`/
+/// `flagged`/`refund_pending` join the same series when that issue lands).
+/// Emitted every poll pass, zeroed for statuses no row sits in.
+const SOLANA_EXCEPTION_QUEUE: &str = "solana_exception_queue_depth";
+/// Sanctions-screening hits on the Solana rail, by `result` (`flagged`).
+/// Emitted here — the counter's series exists so the screening work (#1144)
+/// increments the same name rather than minting a second spelling.
+const SOLANA_SCREENING_HITS: &str = "solana_screening_hits_total";
 
 /// The per-app metric registry: a Prometheus recorder plus the handle that renders it.
 ///
@@ -126,6 +148,20 @@ impl Metrics {
         self.handle.render()
     }
 
+    /// Installs this registry as the `metrics` facade's global recorder —
+    /// `main`'s call after the app's own registry exists. Facade-level
+    /// emissions (`metrics::counter!` in `oxsum-integrations`, the Solana
+    /// rail's RPC failover series) land nowhere until a recorder holds the
+    /// global slot; installing the app's own registry there is what carries
+    /// them into `/metrics`. A test installs nothing — its per-app registry
+    /// stays private the way the module contract wants — and a second install
+    /// is a logged no-op, never a fatal.
+    pub fn install_global(&self) {
+        if let Err(error) = metrics::set_global_recorder(self.recorder.clone()) {
+            tracing::warn!(%error, "a global metrics recorder was already installed");
+        }
+    }
+
     /// What the sweeper records after a pass — `main`'s one instrumentation call, which is
     /// why it is a method rather than a module function the binary crate cannot reach.
     pub fn swept(&self, released: u64) {
@@ -144,6 +180,76 @@ impl Metrics {
             JOBS_RUNS,
             1,
             &[("kind", kind.to_owned()), ("result", result.to_owned())],
+        );
+    }
+
+    /// What a `solana-deposits` pass reports on the rail's health (issue
+    /// #1145): the per-status queue depth (`solana_exception_queue_depth`) —
+    /// the documented exception set emitted at 0 when no row sits in it, so
+    /// an alert on `>0` always has a series to read — and the paid-but-
+    /// uncredited gauge plus the oldest one's age in seconds.
+    ///
+    /// `status_counts` is the live `SELECT status, count(*)` the pass ran:
+    /// statuses outside the exception set (`pending`, `credited`) are
+    /// reported too, so the series reflects the table, not a hardcoded list.
+    /// `paid_uncredited_oldest_secs` is `None` — and the age gauge zeroed —
+    /// when nothing sits `confirmed`.
+    pub fn solana_deposit_health(
+        &self,
+        status_counts: &[(String, i64)],
+        paid_uncredited: i64,
+        paid_uncredited_oldest_secs: Option<i64>,
+    ) {
+        // The exception statuses an operator works — emitted at 0 whenever no
+        // row carries them, so the alert's `>0` always has a series. #1142's
+        // new statuses (underpaid/overpaid/late/flagged/refund_pending/
+        // refunded) join this list the day that issue lands; statuses the
+        // table already reports but the list does not name are emitted from
+        // the live counts below, so nothing ever hides.
+        const EXCEPTION_STATUSES: &[&str] = &[
+            "confirmed",
+            "reversed",
+            "expired",
+            "underpaid",
+            "overpaid",
+            "late",
+            "flagged",
+            "refund_pending",
+            "refunded",
+        ];
+        for (status, count) in status_counts {
+            self.set_gauge(
+                SOLANA_EXCEPTION_QUEUE,
+                *count as f64,
+                &[("status", status.clone())],
+            );
+        }
+        for status in EXCEPTION_STATUSES {
+            if !status_counts.iter().any(|(s, _)| s == status) {
+                self.set_gauge(
+                    SOLANA_EXCEPTION_QUEUE,
+                    0.0,
+                    &[("status", (*status).to_owned())],
+                );
+            }
+        }
+        self.set_gauge(SOLANA_PAID_UNCREDITED, paid_uncredited as f64, &[]);
+        self.set_gauge(
+            SOLANA_PAID_UNCREDITED_AGE,
+            paid_uncredited_oldest_secs.unwrap_or(0) as f64,
+            &[],
+        );
+    }
+
+    /// One sanctions-screening hit on the Solana rail — the counter #1144's
+    /// screening check increments per flagged payer. Emitted here so the
+    /// series' spelling is owned by the registry, not whichever call site
+    /// lands first.
+    pub fn solana_screening_hit(&self) {
+        self.count(
+            SOLANA_SCREENING_HITS,
+            1,
+            &[("result", "flagged".to_owned())],
         );
     }
 
@@ -194,6 +300,18 @@ impl Metrics {
                 "Webhook deliveries attempted, by outcome.",
             ),
             (JOBS_RUNS, "Periodic job runs, by kind and result."),
+            (
+                "solana_rpc_errors_total",
+                "Solana JSON-RPC calls that failed, by call and endpoint host (issue #1145).",
+            ),
+            (
+                "solana_rpc_failovers_total",
+                "Solana RPC calls retried onto a different endpoint, by the hop's from and to hosts.",
+            ),
+            (
+                SOLANA_SCREENING_HITS,
+                "Sanctions screening hits on the Solana rail, by result — the counter #1144's check increments.",
+            ),
         ];
         for (name, help) in DESCRIPTIONS {
             self.recorder
@@ -209,10 +327,35 @@ impl Metrics {
                 POOL_CONNECTIONS,
                 "Shared connection pool connections, by state.",
             ),
+            (
+                "solana_rpc_endpoint_healthy",
+                "Whether a configured Solana RPC endpoint is serving calls (1) or inside its failure cooldown (0).",
+            ),
+            (
+                SOLANA_PAID_UNCREDITED,
+                "Solana deposits verified on-chain (confirmed) whose ledger credit never landed.",
+            ),
+            (
+                SOLANA_PAID_UNCREDITED_AGE,
+                "Age in seconds of the oldest confirmed-not-credited Solana deposit.",
+            ),
+            (
+                SOLANA_EXCEPTION_QUEUE,
+                "Solana deposit rows by status — the exception queue an operator works.",
+            ),
         ] {
             self.recorder
                 .describe_gauge(KeyName::from(name), None, help.into());
         }
+        // Pre-create the screening-hits series: a scrape before the first hit
+        // still carries the counter (a `>0` alert has a series to read), and
+        // #1144's screening check increments this same name.
+        self.recorder
+            .register_counter(
+                &key(SOLANA_SCREENING_HITS, &[("result", "flagged".to_owned())]),
+                &metadata(),
+            )
+            .increment(0);
     }
 }
 

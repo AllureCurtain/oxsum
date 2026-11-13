@@ -38,3 +38,6 @@ url.workspace = true
 # A stub HTTP server for the wire-level tests (the Anthropic cost_report
 # contract is proven against a live axum stub, not just type-level).
 axum.workspace = true
+# The Solana failover tests read metric labels back off a local Prometheus
+# recorder — the registry a deployment's /metrics renders.
+metrics-exporter-prometheus.workspace = true

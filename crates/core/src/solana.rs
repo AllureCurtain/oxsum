@@ -1544,6 +1544,43 @@ impl Db {
             .collect()
     }
 
+    /// The rail's operator-health snapshot (issue #1145): the per-status
+    /// deposit counts the `solana_exception_queue_depth{status}` gauge emits,
+    /// plus the paid-but-uncredited figure — deposits whose `confirmed` state
+    /// means the chain validated a paying transaction yet the ledger credit
+    /// never landed (a crash between the `confirmed` and `credited` writes).
+    /// The poll emits this every pass so a scrape reads the same view the
+    /// pass worked from, not a point-in-time query of its own.
+    ///
+    /// `(status_counts, paid_uncredited, paid_uncredited_oldest_secs)` —
+    /// `paid_uncredited` is the number of `confirmed` rows (the only
+    /// "verified on-chain, not credited" state the walk produces),
+    /// `paid_uncredited_oldest_secs` the age in seconds since the oldest
+    /// one's `updated_at` — the row's own clock, the closest durable figure
+    /// to the chain's `blockTime` the table records — `None` when there is
+    /// none.
+    pub async fn solana_deposit_health(
+        &self,
+    ) -> Result<(Vec<(String, i64)>, i64, Option<i64>), WalletError> {
+        let status_counts: Vec<(String, i64)> = sqlx::query_as(
+            "SELECT status, count(*) FROM oxsum.deposits \
+             WHERE rail = $1 GROUP BY status",
+        )
+        .bind(RAIL_SOLANA)
+        .fetch_all(self.pool())
+        .await?;
+        let (paid_uncredited, oldest): (i64, Option<i64>) = sqlx::query_as(
+            "SELECT count(*), \
+                    max(EXTRACT(EPOCH FROM (now() - updated_at)))::bigint \
+             FROM oxsum.deposits \
+             WHERE rail = $1 AND status = 'confirmed'",
+        )
+        .bind(RAIL_SOLANA)
+        .fetch_one(self.pool())
+        .await?;
+        Ok((status_counts, paid_uncredited, oldest))
+    }
+
     /// Moves a Solana deposit to `expired` — the poll's outcome once
     /// `meta.expiresAt` has passed without a matching transfer, a no-op on a
     /// deposit that already ended its walk.
