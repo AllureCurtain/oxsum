@@ -25,6 +25,16 @@
 
 use serde_json::{Value, json};
 
+/// Standard base64 decode for the `getAccountInfo` `data` field — a thin
+/// wrapper so `mint_decimals` names its error instead of unwrapping a
+/// library type.
+fn base64_decode(raw: &str) -> Result<Vec<u8>, String> {
+    use base64::Engine as _;
+    base64::engine::general_purpose::STANDARD
+        .decode(raw)
+        .map_err(|e| e.to_string())
+}
+
 /// The deployment's Solana acceptance criteria, read from the
 /// `OXSUM_SOLANA_*` environment set. `Config` holds it; the periodic poll and
 /// the confirm route read it to decide what an honoring transfer looks like.
@@ -159,6 +169,38 @@ impl SolanaRpcClient {
     #[must_use]
     pub fn config(&self) -> &SolanaConfig {
         &self.config
+    }
+
+    /// Reads the configured SPL mint's decimals from the chain (issue #1129).
+    /// `getAccountInfo(mint)` with base64 encoding answers the raw SPL mint
+    /// layout, whose `decimals` byte sits at offset 44 (after mintAuthority
+    /// option+key, supply and the initialized flag). The boot calls this when
+    /// `spl_token_mint` is set so a configured `OXSUM_SOLANA_DECIMALS` that
+    /// disagrees with the real mint fails startup instead of mispricing every
+    /// deposit — a 6-decimal USDC mint read as 9 decimals would overcharge
+    /// by 1000×.
+    ///
+    /// `Err` when the RPC fails or the mint account is missing/unparseable;
+    /// `None` when `spl_token_mint` is unset (native SOL has no mint to read).
+    pub async fn mint_decimals(&self) -> Result<Option<u32>, SolanaError> {
+        let Some(mint) = self.config.spl_token_mint.as_deref() else {
+            return Ok(None);
+        };
+        let result = self
+            .call("getAccountInfo", json!([mint, {"encoding": "base64"}]))
+            .await?;
+        let data_b64 = result["value"]["data"][0]
+            .as_str()
+            .ok_or_else(|| SolanaError("getAccountInfo returned no mint data".into()))?;
+        let bytes = base64_decode(data_b64)
+            .map_err(|e| SolanaError(format!("mint data is not base64: {e}")))?;
+        // SPL mint layout: mintAuthority (36) + supply (8) + decimals (1) +
+        // isInitialized (1) + freezeAuthority (36) — decimals is byte 44.
+        let decimals = bytes
+            .get(44)
+            .copied()
+            .ok_or_else(|| SolanaError("mint account data is too short".into()))?;
+        Ok(Some(u32::from(decimals)))
     }
 
     /// One JSON-RPC call. Returns the `result` field; a transport failure, a
@@ -372,6 +414,12 @@ impl oxsum_core::ChainLookup for SolanaRpcClient {
                 block_time: v.block_time,
             })
         })
+    }
+
+    fn mint_decimals<'a>(
+        &'a self,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Option<u32>> + Send + 'a>> {
+        Box::pin(async move { self.mint_decimals().await.ok().flatten() })
     }
 }
 

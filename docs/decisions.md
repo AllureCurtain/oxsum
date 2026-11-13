@@ -4337,11 +4337,7 @@ second never-confirmed intent. Every assertion held; the only
 soft-failure was the confirm racing the poll (the poll had already
 credited the intent, so the on-demand confirm found no `pending` row and
 answered 404 — the documented race, not a defect), and the wallet
-balanced to exactly two credits, never two-and-a-fraction. That is the
-deployment shape the rail now supports: the JSON-RPC URL is the only
-cluster switch — `OXSUM_SOLANA_RPC_URL` flips devnet ↔ mainnet with no
-code change, `OXSUM_SOLANA_SPL_TOKEN_MINT` the USDC mainnet mint when a
-real deployment chooses it.
+balanced to exactly two credits, never two-and-a-fraction.
 
 ## 2026-11-13 — The rail verifies against the intent's locked terms (#1127)
 
@@ -4381,3 +4377,25 @@ against the chain, then opens a short transaction that re-locks the row,
 re-checks `status='pending'`, and credits — a raced poll or confirm simply
 finds the row already settled, which the signature idempotency key makes a
 no-op anyway.
+
+## 2026-11-13 — Finalized commitment by default; the mint's decimals are verified at boot (#1129)
+
+Two boot-time hardenings that make a mainnet cut safe-by-default rather than
+safe-by-remembering. **`OXSUM_SOLANA_COMMITMENT` defaults to `finalized`** —
+a devnet loop sets `confirmed` explicitly for latency; shipping the dangerous
+default the other way would silently under-protect a mainnet deployment.
+**A configured SPL mint is verified against its declared decimals at
+startup**: when `OXSUM_SOLANA_SPL_TOKEN_MINT` is set,
+`OXSUM_SOLANA_DECIMALS` is required (it no longer silently defaults to SOL's
+9 — the mispricing that default would mask), and `main` reads the mint's
+decimals on-chain (`getAccountInfo` byte 44) and refuses to start on a
+mismatch. A 6-decimal USDC mint declared as 9 is a 1000× overcharge waiting
+to happen; the boot check turns it into a startup error.
+
+This also removes the earlier note's claim that mainnet is "just flip the RPC
+URL." A mainnet cut's actual prerequisites, on the record: a price oracle
+replacing the static `OXSUM_SOLANA_RATE_MICRO` (recorded per intent at open),
+`OXSUM_SOLANA_COMMITMENT=finalized` (now the default), `OXSUM_SOLANA_DECIMALS`
+verified against the chosen mint at boot (now enforced), and the operational
+half — hot-wallet key custody, consolidation and withdrawal — which this rail
+deliberately does not automate (tracked as a follow-up on #1117).

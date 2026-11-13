@@ -83,6 +83,36 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     db.migrate().await?;
     tracing::info!("oxsum schema ready");
 
+    // A configured SPL mint must agree with its declared decimals on-chain
+    // before the rail serves traffic (issue #1129): a 6-decimal USDC mint
+    // declared as 9 would misprice every deposit 1000×, and the wrong
+    // direction is the dangerous one. Native SOL has no mint to check — the
+    // verifier answers `None` and the check skips.
+    if let Some(verifier) = config.solana()
+        && verifier.terms().spl_token_mint.is_some()
+    {
+        let declared = verifier.terms().asset_decimals;
+        match verifier.mint_decimals().await {
+            Some(onchain) if onchain != declared => {
+                return Err(format!(
+                    "OXSUM_SOLANA_DECIMALS is {declared} but the configured SPL mint reports \
+                     {onchain} decimals on-chain — refusing to start on a 10^\
+                     {} mispricing",
+                    (declared as i64 - onchain as i64).abs()
+                )
+                .into());
+            }
+            Some(_) => {}
+            None => {
+                return Err(
+                    "could not read the configured SPL mint's decimals on-chain — \
+                     refusing to start with an unverifiable OXSUM_SOLANA_DECIMALS"
+                        .into(),
+                );
+            }
+        }
+    }
+
     // `oxsum seed` fills the database with the demo world and exits — it shares this boot path so
     // a seeded deployment looks exactly like one the server has been running on.
     match std::env::args().nth(1).as_deref() {
