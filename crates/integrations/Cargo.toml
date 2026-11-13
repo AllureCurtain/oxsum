@@ -41,3 +41,24 @@ axum.workspace = true
 # The Solana failover tests read metric labels back off a local Prometheus
 # recorder — the registry a deployment's /metrics renders.
 metrics-exporter-prometheus.workspace = true
+# The local-validator e2e (issue #1152): the scratch database the credit path
+# books on, plus the crates the hand-rolled transaction builder needs —
+# `tests/` targets see dev-dependencies only, so the builder's own deps are
+# redeclared here even where the library already uses them. The wire format
+# is built by hand in the suite: no solana-sdk dev-dependency (the crate's
+# no-SDK stance holds there too).
+base64.workspace = true
+bs58.workspace = true
+curve25519-dalek.workspace = true
+dotenvy.workspace = true
+ed25519-dalek.workspace = true
+oxsum-core.workspace = true
+oxsum-testkit.workspace = true
+rand.workspace = true
+reqwest.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+sqlx.workspace = true
+time.workspace = true
+tokio.workspace = true
+uuid.workspace = true
