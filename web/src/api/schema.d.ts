@@ -5486,8 +5486,15 @@ export interface paths {
          *     keys the `solana:<signature>` ledger credit, so a raced poll or a
          *     replayed confirm credits nothing twice. `403` means no honoring
          *     transfer has landed yet — or the found one does not honor the intent
-         *     (wrong recipient, underpayment, wrong mint, missing marker); a
-         *     deployment without `OXSUM_SOLANA_*` answers 503.
+         *     (wrong recipient, underpayment, wrong mint, missing marker) — **or the
+         *     paying transaction already credited another deposit**: one on-chain
+         *     signature credits at most one deposit ever, whatever organization
+         *     opened it, so a transaction carrying two markers pays once but does
+         *     not spend twice. `404` means no `pending` intent answers to that
+         *     `reference` — including the race where the `solana-deposits` poll
+         *     already credited it (the money arrived; the `404` is "no open intent",
+         *     not "the deposit is missing"). A deployment without `OXSUM_SOLANA_*`
+         *     answers 503.
          */
         post: {
             parameters: {
@@ -5506,6 +5513,7 @@ export interface paths {
                 400: components["responses"]["Error"];
                 401: components["responses"]["Error"];
                 403: components["responses"]["Error"];
+                404: components["responses"]["Error"];
                 500: components["responses"]["Error"];
                 503: components["responses"]["Error"];
             };
