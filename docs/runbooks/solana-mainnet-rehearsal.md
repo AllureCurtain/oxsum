@@ -24,13 +24,13 @@ installed deployment (`docs/self-hosted-install.md`) and an operator token
 The mainnet target state is the batch tracked under #1117. Features that have
 not merged yet are marked **(pending #NNNN)** where a step's expected outcome
 depends on them; the step still runs — the expected result names both the
-merged and the target behavior. As of this writing the merged rail is the
-devnet-hardened one: single asset (SOL or one configured SPL mint),
-`OXSUM_SOLANA_RATE_MICRO` static pricing, `finalized` commitment, the 15 s
-`solana-deposits` poll and the manual refund runbook. Pending companion work:
+merged and the target behavior. As of this writing the merged rail carries
+the multi-asset whitelist (`OXSUM_SOLANA_ASSETS`, #1140) and oracle-priced
+SOL intents via Pyth (#1139 — a `sol` intent locks the Hermes quote's rate
+into its `meta` at open); `finalized` commitment, the 15 s
+`solana-deposits` poll and the manual refund runbook stand from the
+devnet-hardened batch. Pending companion work:
 
-- #1139 — oracle-priced SOL intents via Pyth (locked at open)
-- #1140 — multi-asset deposits (SOL + USDC on one deployment)
 - #1141 — Solana Pay transfer-request URL + QR on the top-up page
 - #1142 — exception queue + pull-payment refund flow (`underpaid` / `overpaid` /
   `late` / `flagged` / `refund_pending` / `refunded` statuses)
@@ -87,15 +87,17 @@ OXSUM_SOLANA_PAY_TO=<vault base58 address>
 # later reader cannot mistake the posture.
 OXSUM_SOLANA_COMMITMENT=finalized
 
-# USDC as the rehearsal asset (pending #1140: one deployment carries both SOL
-# and USDC; until then the rail prices exactly one configured mint, and USDC
-# is the right choice for a dollar-denominated rehearsal — its rate is the
-# fixed unit conversion, never an oracle).
+# USDC as the rehearsal asset, via the legacy single-mint form (the rail
+# also carries a multi-asset whitelist since #1140 — one deployment can
+# serve both SOL and USDC — but the legacy form is the right choice for a
+# dollar-denominated rehearsal: its one asset locks the static rate, never
+# an oracle).
 OXSUM_SOLANA_SPL_TOKEN_MINT=EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v
 OXSUM_SOLANA_DECIMALS=6
 # 1 USDC = 1 USD of credit at 6 decimals: 1_000_000 minor-credits per whole
-# unit. With #1139 merged this figure survives only as a devnet/test stand-in
-# — a mainnet deployment that prices SOL must lock a live oracle per intent.
+# unit. Under #1139 this figure is required by the legacy form — a `sol`
+# whitelist intent on a mainnet deployment prices off the Pyth oracle at
+# open instead.
 OXSUM_SOLANA_RATE_MICRO=1000000
 
 # The safety bounds — the whole point of the rehearsal cap.
