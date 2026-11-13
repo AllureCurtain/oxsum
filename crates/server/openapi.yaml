@@ -4133,16 +4133,25 @@ paths:
       security: [{ sessionCookie: [] }]
       summary: Open a Solana top-up intent
       description: |
-        The `solana` deposit rail (issues #1117, #1140): opens a `pending`
-        deposit intent and answers the `reference`, `asset`, `payTo`,
-        `amountLamports` and `expiresAt` the caller's wallet needs to pay it —
-        the whitelist asset the body's `asset` names (`sol`, `usdc`, …) or
-        the deployment's `OXSUM_SOLANA_DEFAULT_ASSET` when omitted.
-        `payment_ref` anchors on the per-intent `reference` marker account
-        the paying transaction must carry, so the intent is unique by
-        construction; the amount books at the intent's locked rate
-        (`OXSUM_SOLANA_RATE_MICRO` for a volatile asset, fixed USD parity
-        for a stablecoin — the devnet stand-in a mainnet oracle replaces).
+        The `solana` deposit rail (issues #1117, #1139, #1140): opens a
+        `pending` deposit intent and answers the `reference`, `asset`,
+        `payTo`, `amountLamports` and `expiresAt` the caller's wallet needs
+        to pay it — the whitelist asset the body's `asset` names (`sol`,
+        `usdc`, …) or the deployment's `OXSUM_SOLANA_DEFAULT_ASSET` when
+        omitted. `payment_ref` anchors on the per-intent `reference` marker
+        account the paying transaction must carry, so the intent is unique
+        by construction.
+
+        The amount books at the rate the intent locks at open. A `sol`
+        intent is oracle-priced: the open samples Pyth Hermes for the
+        `Crypto.SOL/USD` quote and converts it to `rateMicro` at 1 USD = 1
+        credit, refusing the open — `403`, never a silent fallback — when
+        the freshest quote is stale or its confidence is too wide. A
+        USD-pegged asset locks the fixed parity (no oracle call); so does a
+        `sol` intent on a devnet deployment opted in with
+        `OXSUM_SOLANA_DEVNET_STATIC_RATE=1`, and the legacy single-asset
+        form's `OXSUM_SOLANA_RATE_MICRO`. Once locked, the rate reads only
+        from the intent's own `meta` — nothing re-prices a pending deposit.
 
         A deployment without `OXSUM_SOLANA_*` answers 503: the rail is
         configured or it is not.
@@ -4162,6 +4171,7 @@ paths:
                   data: { $ref: "#/components/schemas/SolanaTopupResponse" }
         "400": { $ref: "#/components/responses/Error" }
         "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
         "500": { $ref: "#/components/responses/Error" }
         "503": { $ref: "#/components/responses/Error" }
   /api/v1/topups/solana/confirm:

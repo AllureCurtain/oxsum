@@ -4561,3 +4561,43 @@ rail on that one mint (locked at `RATE_MICRO`, `DECIMALS` required and
 cross-checked on-chain as before), so an existing devnet config boots
 unchanged. No schema migration — the intent's asset rides in `meta`, which
 already carried the locked terms.
+
+## 2026-11-14 — `sol` intents are oracle-priced at open; the static rate is devnet-only (#1139)
+
+A `sol` whitelist intent no longer locks `OXSUM_SOLANA_RATE_MICRO` verbatim:
+the open samples the deployment's `PriceOracle` — `crates/integrations::
+pyth`, a narrow Pyth Hermes client (`GET /v2/updates/price/latest`, one call,
+the `parsed` block's `price`/`conf`/`expo`/`publish_time` — no `pyth-sdk`,
+the same thin-client shape as the rail's JSON-RPC one) — converts the
+`Crypto.SOL/USD` figure to `rate_micro` at 1 USD = 1 credit, and locks it
+into `meta` with `rateSource: "pyth"` and the quote's own
+`pythPrice`/`pythConf`/`pythExpo`/`pythPublishTime` so the locked figure can
+be re-derived and audited. `verify_locked` already reads only `meta`, so the
+settle needs no new locking — an oracle drift or `OXSUM_SOLANA_*` change
+cannot retro-price a pending deposit.
+
+The policy is per-asset on the #1140 model: `SolanaPricing` (`Static` |
+`Oracle{feed_id, max_quote_age_secs, max_conf_ratio}`) rides on the verifier,
+and `resolve_rate(&AssetTerms)` prices each open — a USD-pegged asset answers
+its fixed parity `LockedRate::Static` without an oracle call (a stablecoin's
+rate is a constant of the deployment), while the mint-less `sol` entry is the
+only volatile asset the oracle gates. `AssetTerms::rate_micro` keeps its
+#1140 meaning as the static figure the `Static` arm locks; the oracle writes
+its resolved figure into the same `meta.rateMicro` field at open.
+
+The refusal is the point: a `sol` open whose freshest quote is older than
+`OXSUM_SOLANA_PYTH_MAX_AGE_SECS` (default 60), whose `conf/price` exceeds
+`OXSUM_SOLANA_PYTH_MAX_CONF_RATIO` (default 0.01), or whose oracle cannot
+answer is refused `403 FORBIDDEN` — never priced off a stale or static
+figure. `OXSUM_SOLANA_RATE_MICRO` survives for the legacy single-asset form
+(its one asset always locks statically — a native-SOL legacy deployment is
+devnet by construction) and for a `sol` whitelist entry behind the explicit
+`OXSUM_SOLANA_DEVNET_STATIC_RATE=1`; set `RATE_MICRO` beside a `sol`
+whitelist entry without the flag and the boot refuses: the dangerous
+direction is a mainnet silently pricing intents at a hand-set figure. A
+whitelist that carries no `sol` entry needs no rate source at all.
+
+`PriceOracle` is the seam (`oxsum-core`, object-safe boxed futures like
+`ChainLookup`) so core stays HTTP-free and tests stub the quote in-process;
+the route resolves the rate before `open_solana_deposit` runs because an
+oracle sample must not ride inside the intent's insert path.
