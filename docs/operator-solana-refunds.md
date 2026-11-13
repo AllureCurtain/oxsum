@@ -188,6 +188,44 @@ Tuning notes:
 - Endpoint labels carry host only — a Helius API key in the URL can never
   reach a metric, a log line or a `Debug` print.
 
+## Accelerating confirmation with a Helius webhook (issue #1150)
+
+The rail's confirm path is the 15-second `solana-deposits` poll: an intent
+sits `pending` until a tick walks it. Setting
+`OXSUM_SOLANA_HELIUS_WEBHOOK_SECRET` mounts a receiver at
+`POST /api/v1/webhooks/solana` that Helius pushes matched transactions to —
+the push only *schedules* the intent's own on-chain re-verify, so a deposit
+can credit seconds after the payment lands instead of on the next tick.
+Polling keeps running unchanged; the webhook is additive acceleration, never
+the trust boundary — a forged or replayed push resolves nothing, because the
+credit is always the rail's own `findReference` + `validateTransfer` check.
+
+Subscribing is operator-side; the server only ever receives:
+
+1. Pick the delivery secret — any bearer token, it just has to match on both
+   sides — and set it as `OXSUM_SOLANA_HELIUS_WEBHOOK_SECRET` in the
+   deployment's environment.
+2. Create the Helius webhook pointed at the deployment's receiver, with
+   `authHeader` set to the same value (Helius echoes it verbatim in
+   `Authorization` on every delivery — that echo is the only credential):
+   - Helius dashboard → Webhooks → create an `enhanced` (or `raw`) webhook
+     with `webhookURL` `https://<your-host>/api/v1/webhooks/solana`, the
+     `accountAddresses` list carrying the deployment's `PAY_TO`, and
+     `authHeader` the secret.
+   - Or the API: `POST https://api.helius.xyz/v0/webhooks?api-key=<KEY>` with
+     body `{webhookURL, transactionTypes: ["TRANSFER"], accountAddresses:
+     ["<PAY_TO>"], webhookType: "enhanced", authHeader: "<secret>"}`.
+
+A wrong or missing `Authorization` is `401`; a payload that is not Helius's
+JSON array is `400`; a replayed signature is acknowledged `200` without a
+second chain round-trip (`solana_webhook_deliveries` dedups — Helius retries
+until it hears a 2xx). Unset the secret and the route is unmounted (404):
+nothing to monitor, nothing to secure. The subscription's lifecycle — edit,
+rotate, delete — stays on Helius's side (`GET`/`PUT`/`DELETE
+/v0/webhooks[/{id}]`); rotating the secret means updating both Helius's
+`authHeader` and the env var, and deliveries arriving with the old value
+simply 401 in between.
+
 ## What this runbook does not cover
 
 Price-oracle lock timing, the wallet adapter that removes the manual

@@ -487,6 +487,30 @@ async fn check_config_validates_env_without_a_database() {
         String::from_utf8_lossy(&bad.stdout)
     );
     assert!(err.contains("OXSUM_SOLANA_RPC_AUTH_HEADER"), "{err}");
+    // The optional Helius webhook (issue #1150): the shared secret parses
+    // beside a configured rail, and a lone secret beside no rail is a warn
+    // (the receiver mounts nothing), never a startup error — `--check-config`
+    // passes either way because polling stays the default.
+    let ok = run(&[
+        ("OXSUM_SOLANA_RPC_URLS", "https://api.devnet.solana.com"),
+        (
+            "OXSUM_SOLANA_PAY_TO",
+            "payToExample111111111111111111111111111",
+        ),
+        ("OXSUM_SOLANA_RATE_MICRO", "200000000"),
+        ("OXSUM_SOLANA_HELIUS_WEBHOOK_SECRET", "helius-secret"),
+    ]);
+    assert!(
+        ok.status.success(),
+        "the helius webhook secret beside a rail must pass: {}",
+        String::from_utf8_lossy(&ok.stderr)
+    );
+    let ok = run(&[("OXSUM_SOLANA_HELIUS_WEBHOOK_SECRET", "helius-secret")]);
+    assert!(
+        ok.status.success(),
+        "a lone webhook secret warns and drops, never errors: {}",
+        String::from_utf8_lossy(&ok.stderr)
+    );
 
     // Missing DATABASE_URL names that instead of connecting to nothing.
     let missing = binary::oxsum()
