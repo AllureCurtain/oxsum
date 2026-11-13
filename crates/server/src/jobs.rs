@@ -512,6 +512,26 @@ async fn run_one(
                     OffsetDateTime::now_utc().date(),
                 )
                 .await?;
+            // The rail's operator surface (issue #1145): every pass refreshes
+            // the exception-queue depth and the paid-but-uncredited gauges, so
+            // a scrape reads the same table view the pass just worked. A
+            // failed health read logs and is skipped — the pass itself
+            // already ran; a metric must never fail the job.
+            match db.solana_deposit_health().await {
+                Ok((status_counts, paid_uncredited, oldest_secs)) => {
+                    ctx.metrics
+                        .solana_deposit_health(&status_counts, paid_uncredited, oldest_secs);
+                    if paid_uncredited > 0 {
+                        warn!(
+                            paid_uncredited,
+                            oldest_secs, "solana deposits verified on-chain await their credit"
+                        );
+                    }
+                }
+                Err(error) => {
+                    warn!(%error, "the solana deposit-health read failed; gauges not refreshed")
+                }
+            }
             if checked > 0 || expired > 0 {
                 info!(
                     checked,

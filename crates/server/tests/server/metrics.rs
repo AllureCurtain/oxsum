@@ -247,6 +247,167 @@ async fn a_scrape_counts_requests_and_reports_the_pool() {
     assert!(value(pool) >= 1.0, "{pool}");
 }
 
+/// The Solana rail's operator surface (issue #1145): a `solana-deposits`
+/// pass refreshes the exception-queue and paid-but-uncredited gauges, and
+/// the scrape carries the rail's series. A `confirmed` deposit — the chain
+/// validated it, the ledger credit never landed — is exactly the alert's
+/// subject.
+#[tokio::test]
+async fn the_solana_pass_refreshes_the_rails_operator_gauges() {
+    let Some(u) = oxsum_testkit::suite_url!() else {
+        eprintln!("DATABASE_URL not set, skipping");
+        return;
+    };
+    let pool = sqlx::postgres::PgPoolOptions::new()
+        .max_connections(5)
+        .connect(&u)
+        .await
+        .expect("connects to PostgreSQL");
+    let db = Db::from_pool(pool.clone());
+    db.migrate().await.expect("migrates");
+    oxsum_testkit::set_registration_fixture(db.pool(), true).await;
+    let (app, _events, metrics) = oxsum_server::app_with_billing(
+        db.clone(),
+        Config::new(Signup::Open, None)
+            .with_admin_token(OPERATOR_TOKEN)
+            .with_secret(oxsum_core::SecretKey::from_bytes([7; 32])),
+    );
+    let (_key, _session) = register(&app).await;
+
+    // One organization, three deposits across the statuses an operator
+    // works: a `confirmed` one (paid, uncredited — the alert), an `expired`
+    // one, and a `pending` one the poll walks.
+    let organization_id: uuid::Uuid = sqlx::query_scalar(
+        "SELECT organization_id FROM oxsum.organizations ORDER BY created_at LIMIT 1",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("the registered organization exists");
+    for (i, status) in ["confirmed", "expired", "pending"].iter().enumerate() {
+        sqlx::query(
+            "INSERT INTO oxsum.deposits \
+                 (deposit_id, organization_id, rail, payment_ref, amount_minor, status, meta) \
+             VALUES ($1, $2, 'solana', $3, 1000, $4, '{}')",
+        )
+        .bind(uuid::Uuid::new_v4())
+        .bind(organization_id)
+        .bind(format!("ref-{i}"))
+        .bind(status)
+        .execute(&pool)
+        .await
+        .expect("the deposit row inserts");
+    }
+
+    // Drive the pass the way the worker does: a due `solana-deposits` row
+    // and a context carrying the app's own registry plus a stub chain.
+    struct NoChain;
+    impl std::fmt::Debug for NoChain {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            f.write_str("NoChain")
+        }
+    }
+    impl oxsum_core::ChainLookup for NoChain {
+        fn find_reference<'a>(
+            &'a self,
+            _reference: &'a str,
+        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Vec<String>> + Send + 'a>> {
+            Box::pin(async { Vec::new() })
+        }
+        fn validate_transfer<'a>(
+            &'a self,
+            _signature: &'a str,
+            _expected: &'a oxsum_core::ExpectedTransfer,
+        ) -> std::pin::Pin<
+            Box<
+                dyn std::future::Future<Output = Option<oxsum_core::ValidatedTransfer>> + Send + 'a,
+            >,
+        > {
+            Box::pin(async { None })
+        }
+    }
+    let verifier = oxsum_core::SolanaRailVerifier::new(
+        std::sync::Arc::new(NoChain),
+        oxsum_core::SolanaTerms::new(
+            "payTo".into(),
+            vec![oxsum_core::AssetTerms {
+                key: "sol".into(),
+                spl_token_mint: None,
+                asset_decimals: 9,
+                rate_micro: 200_000_000,
+            }],
+            "sol".into(),
+            600,
+            1,
+            i64::MAX,
+            0,
+        ),
+    );
+    sqlx::query(
+        "INSERT INTO oxsum.jobs (kind, run_at) \
+         VALUES ('solana-deposits', now() - interval '1 second') \
+         ON CONFLICT DO NOTHING",
+    )
+    .execute(&pool)
+    .await
+    .expect("the solana-deposits run is due");
+    let ctx = oxsum_server::jobs::JobContext {
+        hold_timeout: std::time::Duration::from_secs(60),
+        metrics: metrics.clone(),
+        webhook: None,
+        retention: oxsum_core::Retention::default(),
+        upstream_price_sync: false,
+        witness: None,
+        bill_provider: None,
+        solana: Some(std::sync::Arc::new(verifier)),
+    };
+    oxsum_server::jobs::run_due(&db, &ctx).await;
+
+    let (status, body) = scrape(&app, Some(OPERATOR_TOKEN)).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    // The confirmed deposit is the paid-but-uncredited alert's subject. The
+    // exact sample line, not `sample`'s prefix match — `…_oldest_seconds`
+    // shares the prefix and would shadow the count.
+    let paid = body
+        .lines()
+        .find(|line| line.starts_with("solana_deposits_paid_uncredited "))
+        .expect("the paid-uncredited gauge is reported");
+    assert_eq!(value(paid), 1.0, "{paid}");
+    let oldest = sample(&body, "solana_deposits_paid_uncredited_oldest_seconds", &[])
+        .expect("the oldest-age gauge is reported");
+    assert!(value(oldest) >= 0.0, "{oldest}");
+    // The exception queue carries the real statuses the pass saw.
+    let confirmed = sample(
+        &body,
+        "solana_exception_queue_depth",
+        &["status=\"confirmed\""],
+    )
+    .expect("the confirmed depth is reported");
+    assert_eq!(value(confirmed), 1.0, "{confirmed}");
+    let expired = sample(
+        &body,
+        "solana_exception_queue_depth",
+        &["status=\"expired\""],
+    )
+    .expect("the expired depth is reported");
+    assert_eq!(value(expired), 1.0, "{expired}");
+    // A status no row sits in still has a series, at zero.
+    let flagged = sample(
+        &body,
+        "solana_exception_queue_depth",
+        &["status=\"flagged\""],
+    )
+    .expect("the flagged depth is reported at zero");
+    assert_eq!(value(flagged), 0.0, "{flagged}");
+    // The pre-created screening series carries its HELP line on the first
+    // scrape — a >0 alert has a metric to read before any hit lands. (The
+    // RPC-failover series are describe-only until a real call emits a sample:
+    // HELP lines only render for series with samples.)
+    assert!(
+        body.contains("# HELP solana_screening_hits_total"),
+        "{body}"
+    );
+}
+
 #[tokio::test]
 async fn rate_limit_rejections_are_counted_by_surface() {
     let (app, pool) = app_or_skip!();

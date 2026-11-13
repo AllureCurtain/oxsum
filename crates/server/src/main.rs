@@ -150,6 +150,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // The app's own metrics registry comes back out so the jobs worker can count its passes into
     // the same registry `/metrics` renders.
     let (app, _events, metrics) = oxsum_server::app_with_billing(db.clone(), config.clone());
+    // The app's own registry also takes the metrics facade's global slot, so
+    // facade-level emissions — the Solana rail's per-endpoint RPC series in
+    // oxsum-integrations (issue #1145) — render on /metrics beside the
+    // registry's own. Tests never install one: their per-app registry stays
+    // private by design.
+    metrics.install_global();
     // One worker claims the periodic jobs off oxsum.jobs: the hold sweeper that
     // releases crashed turns' holds, the webhook delivery pass (only when the
     // sealing key can open endpoint secrets — `POST /api/v1/webhooks` refuses
