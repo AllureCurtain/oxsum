@@ -600,6 +600,7 @@ async fn migrating_twice_and_concurrently_is_safe() {
             "sale_versions".to_owned(),
             "service_credentials".to_owned(),
             "sessions".to_owned(),
+            "solana_webhook_deliveries".to_owned(),
             "sold_plans".to_owned(),
             "staff_invitation_mail".to_owned(),
             "statement_lines".to_owned(),
