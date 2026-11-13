@@ -416,6 +416,45 @@ interfaces private. Genuine Stripe sandbox acceptance requires a separately
 supplied Stripe test-account credential. See the stack README for exact
 configuration, identity persistence and task-only cleanup.
 
+### Solana end-to-end tests
+
+The `oxsum-integrations` `e2e` suite (`crates/integrations/tests/e2e/`,
+issue #1152) drives real deposits against a local `solana-test-validator`:
+the payer airdrops from the faucet, the suite builds and signs the paying
+transactions by hand (the workspace carries no `solana-sdk` dependency — the
+wire format is a ~200-line builder in the test), and the production
+`SolanaRpcClient` plus `credit_solana_deposit` verify and book them on the
+scratch database. Covered: SOL and SPL/USDC happy paths (the SPL case creates
+a real mint and ATAs on the validator's built-in Token program), underpay,
+overpay, post-expiry arrival, a same-signature replay, and a marker drowned
+by noise transfers.
+
+The suite skips cleanly when no validator answers — nothing below is needed
+for a regular `cargo nextest run`. To run it for real:
+
+```bash
+# 1) Install the agave toolchain once — the prebuilt release asset for your
+#    platform under https://github.com/anza-xyz/agave/releases (pinned v4.4.1
+#    in CI), e.g.:
+#      macOS arm64 : solana-release-aarch64-apple-darwin.tar.bz2
+#      Linux x86_64: solana-release-x86_64-unknown-linux-gnu.tar.bz2
+#    or via solana-install (https://docs.anza.xyz/cli/install).
+
+# 2) Start the validator:
+solana-test-validator --reset --quiet --rpc-port 8899 --faucet-port 9900
+
+# 3) Run only the e2e suite:
+OXSUM_SOLANA_E2E_RPC=http://127.0.0.1:8899 \
+  cargo nextest run -p oxsum-integrations --test e2e
+```
+
+`OXSUM_SOLANA_E2E_RPC` defaults to `http://127.0.0.1:8899`, so the env only
+matters for a non-default port. CI runs the same suite in the `solana-e2e`
+job (heavy tier: post-merge, nightly and dispatch), which installs the
+pinned agave release into a cached directory, starts the validator and runs
+the archived test binary — the job fails when the validator never comes up
+rather than letting the skips pass silently.
+
 ## Branch naming
 
 Each branch contains one issue or PR and uses lowercase ASCII in this form:
