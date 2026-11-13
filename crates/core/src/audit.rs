@@ -160,6 +160,9 @@ pub mod action {
     pub const SOLANA_REFUND_APPROVE: &str = "solana.refund.approve";
     /// A solana refund's payout signature was recorded, closing the deposit.
     pub const SOLANA_REFUND_COMPLETE: &str = "solana.refund.complete";
+    /// The operator ran the solana vault reconciliation scan — the read-only
+    /// walk that reports on-chain transfers no deposit recorded (issue #1149).
+    pub const SOLANA_RECONCILE_SCAN: &str = "solana.reconcile.scan";
 
     /// Every action the surface writes — the `action` filter's vocabulary.
     pub const ALL: &[&str] = &[
@@ -218,6 +221,7 @@ pub mod action {
         SOLANA_REFUND_REQUEST,
         SOLANA_REFUND_APPROVE,
         SOLANA_REFUND_COMPLETE,
+        SOLANA_RECONCILE_SCAN,
     ];
 }
 

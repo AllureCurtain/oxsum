@@ -130,6 +130,13 @@ pub fn router(state: AppState) -> Router<AppState> {
         // The solana rail's exception queue and pull-payment refund
         // lifecycle (issue #1142).
         .route("/solana/exceptions", get(solana::exceptions))
+        // The reconciliation surface (issue #1149): the daily deposit CSV
+        // and the read-only unrecorded-on-chain scan.
+        .route(
+            "/solana/reconciliation/deposits.csv",
+            get(solana::deposits_csv),
+        )
+        .route("/solana/reconciliation/scan", post(solana::scan))
         .route("/solana/{deposit_id}/refund", post(solana::request_refund))
         .route(
             "/solana/{deposit_id}/refund-approve",

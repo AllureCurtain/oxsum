@@ -1,5 +1,10 @@
 //! `/api/v1/admin/solana`: the rail's operator exception queue and its
-//! pull-payment refund lifecycle (issue #1142).
+//! pull-payment refund lifecycle (issue #1142), plus the vault
+//! reconciliation surface (issue #1149): a daily CSV export of every solana
+//! deposit for line-by-line matching against the multisig vault, and a
+//! read-only scan that walks `payTo`'s on-chain signature history and
+//! reports the transfers no recorded deposit accounts for — the
+//! "money arrived with no intent" report.
 //!
 //! The queue lists the deposits the verify path marked — `underpaid`,
 //! `overpaid`, `late`, `flagged` — plus the refund lifecycle's own states
@@ -16,6 +21,9 @@
 //! the opened credit while the surplus goes back the same way.
 
 use axum::extract::{Path, State};
+use axum::http::HeaderValue;
+use axum::http::header::{CONTENT_DISPOSITION, CONTENT_TYPE};
+use axum::response::{IntoResponse, Response};
 use serde::Deserialize;
 use time::OffsetDateTime;
 use uuid::Uuid;
@@ -23,7 +31,7 @@ use uuid::Uuid;
 use crate::AppState;
 use crate::admin::record;
 use crate::error::{ApiError, ApiJson, ApiQuery};
-use crate::routes::{ApiResult, ok};
+use crate::routes::{ApiResult, ok, parse_day};
 
 /// The operator identity an admin write records — the token has no name, so
 /// `meta.refund` attributes the lifecycle to the role, and the audit row
@@ -203,4 +211,334 @@ pub(crate) async fn complete_refund(
     )
     .await?;
     ok(deposit)
+}
+
+// ---------------------------------------------------------------------------
+// The reconciliation surface (issue #1149): the daily CSV export and the
+// unrecorded-on-chain scan. Both are read-only — the CSV describes recorded
+// deposits, the scan describes the chain; neither moves money.
+// ---------------------------------------------------------------------------
+
+/// The CSV export's row cap: a day's worth of deposits is far smaller in any
+/// realistic deployment, and past the cap the export *refuses* — a `400`
+/// telling the operator to narrow the window, the envelope this surface has —
+/// rather than ship a truncated file a reconciler would read as complete.
+/// The window can always be narrowed.
+const MAX_CSV_ROWS: i64 = 50_000;
+
+/// The scan's walk bound: how many `payTo` signatures one request reads at
+/// most. Each costs one `getTransaction`, so the bound is the walk's
+/// politeness budget — a vault with a longer history runs the scan again
+/// after investigating, or waits for the next pass.
+const MAX_SCAN_SIGNATURES: usize = 1_000;
+const DEFAULT_SCAN_SIGNATURES: usize = 200;
+
+/// `depositId,organizationId,paymentRef,signature,payer,asset,amountMinor,
+/// delivered,expected,rateMicro,receivedMinor,status,createdAt,
+/// refundSignature,refundStatus` — the column freeze `openapi.yaml` records
+/// and this array is the single source of.
+const CSV_FIELDS: &[&str] = &[
+    "depositId",
+    "organizationId",
+    "paymentRef",
+    "signature",
+    "payer",
+    "asset",
+    "amountMinor",
+    "delivered",
+    "expected",
+    "rateMicro",
+    "receivedMinor",
+    "status",
+    "createdAt",
+    "refundSignature",
+    "refundStatus",
+];
+
+/// The export's query string: `from`/`to` are ISO calendar dates (`YYYY-MM-DD`),
+/// the window `[from, to]` inclusive — `to` is a *day*, not an instant, so the
+/// SQL bound is `to + 1 day`. Omitted, the window is the last complete UTC day
+/// (yesterday): the file a daily reconciliation job asks for. Both or neither:
+/// `from` without `to` (or the reverse) is a `400`, not a silently different
+/// window.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(crate) struct DepositsCsvQuery {
+    from: Option<String>,
+    to: Option<String>,
+}
+
+/// The reconciliation window `[from, to]` as instants (`from` 00:00 UTC to
+/// `to + 1 day` 00:00 UTC). `Ok((from_instant, to_instant, from_day, to_day))`
+/// — the day pair rides along for the filename.
+fn csv_window(
+    query: &DepositsCsvQuery,
+) -> Result<(OffsetDateTime, OffsetDateTime, time::Date, time::Date), ApiError> {
+    match (&query.from, &query.to) {
+        (None, None) => {
+            let yesterday = crate::today() - time::Duration::days(1);
+            let from = yesterday.midnight().assume_utc();
+            Ok((from, from + time::Duration::days(1), yesterday, yesterday))
+        }
+        (Some(from), Some(to)) => {
+            let from_day = parse_day(from)?;
+            let to_day = parse_day(to)?;
+            if to_day < from_day {
+                return Err(ApiError::Validation(
+                    "the window's `to` is before its `from`".into(),
+                ));
+            }
+            let from_instant = from_day.midnight().assume_utc();
+            // `to` bounds inclusively: the SQL upper bound is its *next* day.
+            // A `to` of Date::MAX has none — the same shape a `to < from`
+            // window takes: refuse, never panic.
+            let to_instant = to_day
+                .next_day()
+                .ok_or_else(|| ApiError::Validation("the window's `to` overflows".into()))?
+                .midnight()
+                .assume_utc();
+            Ok((from_instant, to_instant, from_day, to_day))
+        }
+        _ => Err(ApiError::Validation(
+            "`from` and `to` come as a pair, or neither".into(),
+        )),
+    }
+}
+
+/// `GET /api/v1/admin/solana/reconciliation/deposits.csv` (issue #1149): the
+/// daily deposit export — every solana deposit created inside the window,
+/// oldest first, as RFC-4180 CSV for line-by-line reconciliation against the
+/// vault. `?from=&to=` bound the window (default: the last complete UTC day).
+/// Over `MAX_CSV_ROWS` the answer is `400`, never a truncated file: a partial
+/// CSV reconciles as "some deposits never existed", the worst lie an export
+/// can tell — the operator narrows the window and retries.
+pub(crate) async fn deposits_csv(
+    State(state): State<AppState>,
+    ApiQuery(query): ApiQuery<DepositsCsvQuery>,
+) -> Result<Response, ApiError> {
+    // An unconfigured rail still has deposits of other rails, but none named
+    // solana — the export would answer a header alone. The rail's own flag is
+    // the honest refusal, like the rest of the solana surface.
+    state.config.solana().ok_or_else(|| {
+        ApiError::ServiceUnavailable("the solana deposit rail is not configured".into())
+    })?;
+    let (from, to, from_day, to_day) = csv_window(&query)?;
+    // `limit + 1` detects truncation: one extra row means the window held
+    // more than the cap and the export refuses rather than truncate.
+    let rows = state
+        .db
+        .solana_deposits_window(from, to, MAX_CSV_ROWS + 1)
+        .await?;
+    if rows.len() as i64 > MAX_CSV_ROWS {
+        return Err(ApiError::Validation(format!(
+            "the window holds over {MAX_CSV_ROWS} solana deposits; narrow `from`/`to` and retry"
+        )));
+    }
+    let mut body = CSV_FIELDS.join(",");
+    body.push('\n');
+    for row in &rows {
+        body.push_str(&csv_row(row));
+        body.push('\n');
+    }
+    let filename = format!("solana-deposits-{from_day}-{to_day}.csv");
+    let mut response = body.into_response();
+    response.headers_mut().insert(
+        CONTENT_TYPE,
+        HeaderValue::from_static("text/csv; charset=utf-8"),
+    );
+    response.headers_mut().insert(
+        CONTENT_DISPOSITION,
+        HeaderValue::from_str(&format!("attachment; filename=\"{filename}\""))
+            .map_err(|_| ApiError::Internal)?,
+    );
+    Ok(response)
+}
+
+/// One deposit as a CSV row. Column provenance:
+///
+/// - `signature` — `facilitator_tx_hash` (or `meta.signature`), the paying
+///   transaction.
+/// - `payer` — `meta.payerAddress` when a path recorded it, falling back to
+///   `meta.screening.address` on a `flagged` row; empty when the row never
+///   recorded one (the verify context's `payerAddress` is not merged into
+///   `meta` today — documented, not invented).
+/// - `delivered`/`expected` — the locked asset's own base units
+///   (`meta.delivered`, `meta.expected`/`meta.solLamports`).
+/// - `rateMicro` — the intent's locked `meta.rateMicro`.
+/// - `refundStatus` — the pull-payment lifecycle derived from `status` +
+///   `meta.refund`: `requested` (refund_pending), `approved` (refund_pending
+///   with `approvedAt`), `completed` (refunded), empty otherwise.
+fn csv_row(row: &oxsum_core::SolanaExceptionDeposit) -> String {
+    let opt = |v: Option<i64>| v.map(|n| n.to_string()).unwrap_or_default();
+    let refund_status = match row.status.as_str() {
+        "refunded" => "completed",
+        "refund_pending" => {
+            if row
+                .refund
+                .as_ref()
+                .is_some_and(|r| r["approvedAt"].is_string())
+            {
+                "approved"
+            } else {
+                "requested"
+            }
+        }
+        _ => "",
+    };
+    let created_at = row
+        .created_at
+        .format(&time::format_description::well_known::Rfc3339)
+        .unwrap_or_default();
+    let cells = [
+        row.deposit_id.to_string(),
+        row.organization_id.to_string(),
+        row.payment_ref.clone(),
+        row.signature.clone().unwrap_or_default(),
+        row.payer.clone().unwrap_or_default(),
+        row.asset.clone().unwrap_or_default(),
+        row.amount_minor.to_string(),
+        opt(row.delivered),
+        opt(row.expected),
+        row.rate_micro.map(|n| n.to_string()).unwrap_or_default(),
+        opt(row.received_minor),
+        row.status.clone(),
+        created_at,
+        row.refund_signature.clone().unwrap_or_default(),
+        refund_status.to_owned(),
+    ];
+    cells.map(|cell| csv_field(&cell)).join(",")
+}
+
+/// One CSV field, RFC-4180: quoted only when a comma, a quote or a line break
+/// would otherwise shift the row it sits in; its own quotes doubled.
+fn csv_field(value: &str) -> String {
+    if value.contains([',', '"', '\n', '\r']) {
+        format!("\"{}\"", value.replace('"', "\"\""))
+    } else {
+        value.to_owned()
+    }
+}
+
+/// The scan request body: how many of `payTo`'s most recent signatures to
+/// walk (bounded), the window the operator chose. Omitted, a conservative
+/// page — the walk fetches one `getTransaction` per candidate, so the bound
+/// is the RPC politeness budget.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(crate) struct ScanReq {
+    limit: Option<usize>,
+}
+
+/// One on-chain transfer the scan could not match to a recorded deposit —
+/// the "money arrived with no intent" row the operator investigates.
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct UnmatchedTransfer {
+    signature: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    block_time: Option<i64>,
+    asset: Option<String>,
+    delivered: i64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    payer: Option<String>,
+    /// Always `false` — the row exists precisely because no intent recorded
+    /// the signature; the field names the report's semantics.
+    matched_intent: bool,
+}
+
+/// The scan's answer: how much history was walked and which transfers in it
+/// recorded no deposit.
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct ScanReport {
+    /// How many `payTo` signature-history entries the walk scanned.
+    scanned: usize,
+    /// The transfers that paid `payTo` but match no
+    /// `deposits.facilitator_tx_hash` — each needs an operator's eyes.
+    unmatched: Vec<UnmatchedTransfer>,
+}
+
+/// `POST /api/v1/admin/solana/reconciliation/scan` (issue #1149): walks
+/// `payTo`'s on-chain signature history (bounded at `limit`, default 200,
+/// max 1000), filters to transactions that actually delivered value into the
+/// vault in a whitelisted asset, and reports each whose signature no
+/// `deposits.facilitator_tx_hash` records — the deposits the rail never
+/// opened an intent for. A synchronous bounded call, not a job: the endpoint
+/// pool the walk runs over already fails over, and a POST + audit row is how
+/// the operator's action is recorded.
+///
+/// Read-only by construction: the scan diffs the chain against the table and
+/// *reports* — it never credits, never marks a deposit, never moves money.
+/// An unmatched row is the manual-investigation trigger: the operator
+/// confirms the transfer on the vault and walks the refund/intent path by
+/// hand.
+pub(crate) async fn scan(
+    State(state): State<AppState>,
+    ApiJson(request): ApiJson<ScanReq>,
+) -> ApiResult<ScanReport> {
+    let verifier = state.config.solana().ok_or_else(|| {
+        ApiError::ServiceUnavailable("the solana deposit rail is not configured".into())
+    })?;
+    let limit = request
+        .limit
+        .unwrap_or(DEFAULT_SCAN_SIGNATURES)
+        .clamp(1, MAX_SCAN_SIGNATURES);
+    // The chain walk — `payTo`'s inbound transfers, bounded.
+    let scanned = verifier.scan_received(limit).await;
+    let signatures: Vec<String> = scanned.iter().map(|t| t.signature.clone()).collect();
+    // Diff against the recorded deposits: an on-chain signature that paid
+    // the vault but appears nowhere is money that arrived with no intent.
+    let recorded = state.db.solana_recorded_signatures(&signatures).await?;
+    let unmatched = scanned
+        .into_iter()
+        .filter(|t| !recorded.contains(&t.signature))
+        .map(|t| UnmatchedTransfer {
+            signature: t.signature,
+            block_time: t.block_time,
+            asset: t.asset,
+            delivered: t.delivered,
+            payer: t.payer,
+            matched_intent: false,
+        })
+        .collect::<Vec<_>>();
+    record(
+        &state,
+        oxsum_core::audit_action::SOLANA_RECONCILE_SCAN,
+        None,
+        serde_json::json!({
+            "scanned": signatures.len(),
+            "unmatched": unmatched.len(),
+            "limit": limit,
+        }),
+        Some(&format!("solana-reconcile-scan/{}", Uuid::new_v4())),
+    )
+    .await?;
+    ok(ScanReport {
+        scanned: signatures.len(),
+        unmatched,
+    })
+}
+
+/// Only the tests below reach in.
+#[cfg(test)]
+mod tests {
+    // The tests may unwrap: a panic here is a failing test, which is what a test is for.
+    #![allow(clippy::unwrap_used, clippy::expect_used)]
+
+    /// RFC-4180: a field with a comma, a quote or a line break is quoted and
+    /// its own quotes doubled; every other field passes through verbatim.
+    /// A CSV whose fields could shift columns would lie to the reconciler
+    /// reading it line by line.
+    #[test]
+    fn a_csv_field_quotes_only_when_it_must() {
+        assert_eq!(super::csv_field("plain"), "plain");
+        assert_eq!(super::csv_field("has,comma"), "\"has,comma\"");
+        assert_eq!(
+            super::csv_field("has\"quote"),
+            "\"has\"\"quote\"",
+            "a quote doubles inside the quoting"
+        );
+        assert_eq!(super::csv_field("has\nnewline"), "\"has\nnewline\"");
+        assert_eq!(super::csv_field("has\rcr"), "\"has\rcr\"");
+    }
 }

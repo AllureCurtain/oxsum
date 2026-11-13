@@ -1,11 +1,21 @@
 openapi: 3.1.0
 info:
   title: oxsum API
-  version: 0.124.0
+  version: 0.125.0
   x-consumption-cache: Response cache v2 binds the exact complete request, concrete endpoint and semantic headers, customer/key permissions, selected experiment/mandate, alias targets, and every admitted route's price, destination, settings and credential configuration. A primary route without an available credential cannot serve a cache hit. Text case and whitespace are significant; old digests miss. Legacy excludeSystem is accepted but ignored.
   x-ledger-description: Ledger descriptions contain at most 16384 Unicode scalar values (at most 65536 UTF-8 bytes before JSON escaping). Settlement v14 and canonical hashes are unchanged; full subscription/cache provenance is retained. Writers and offline/browser verifiers must support this bound. Older 512-character readers cannot read longer new entries even with the same database schema. Arbitrary guardrail-output budgeting remains issue 875.
   description: |
     Common conventions (auth, idempotency, error format, money units) are documented in docs/api.md.
+
+    0.125.0 adds the solana rail's vault reconciliation surface (issue
+    #1149): `GET /api/v1/admin/solana/reconciliation/deposits.csv` exports
+    every solana deposit in a UTC-day window as RFC-4180 CSV for
+    line-by-line reconciliation against the multisig vault, and
+    `POST /api/v1/admin/solana/reconciliation/scan` walks `payTo`'s
+    on-chain signature history and reports each transfer that delivered
+    value into the vault but matches no recorded deposit — the
+    "money arrived with no intent" report. Both are read-only: the CSV
+    describes the table, the scan describes the chain; nothing moves.
 
     0.124.0 adds the solana rail's operator exception queue and pull-payment
     refund flow (issue #1142). Deposits whose located paying transfer cannot
@@ -11183,6 +11193,109 @@ paths:
         "400": { $ref: "#/components/responses/Error" }
         "401": { $ref: "#/components/responses/Error" }
         "500": { $ref: "#/components/responses/Error" }
+  /api/v1/admin/solana/reconciliation/deposits.csv:
+    get:
+      summary: The daily solana deposit export for vault reconciliation
+      description: |
+        Every `solana` deposit created inside the window, oldest first, as
+        RFC-4180 UTF-8 CSV (issue #1149) — the file a daily reconciliation
+        job diffs against the multisig vault's own statement. `from`/`to`
+        are ISO calendar dates (`YYYY-MM-DD`) bounding the `createdAt`
+        window inclusively (`to` is a day, so the SQL bound is
+        `to + 1 day`); both or neither must be given — a lone bound is
+        `400`. Omitted, the window is the last complete UTC day
+        (yesterday). The export is bounded at 50_000 rows; over the cap it
+        answers `400` — never a truncated file a reconciler would read as
+        complete — and the operator narrows the window and retries.
+        `Content-Disposition` names `solana-deposits-<from>-<to>.csv`.
+
+        The column freeze — `depositId`, `organizationId`, `paymentRef`
+        (the intent's `reference` marker), `signature` (the paying
+        transaction — `facilitator_tx_hash`), `payer` (the attributed
+        payer: `meta.payerAddress` when a path recorded it, falling back
+        to `meta.screening.address` on a `flagged` row; empty when no path
+        recorded one — the verify context's `payerAddress` is not merged
+        into `meta` today), `asset` (the whitelist key the intent
+        locked), `amountMinor` (the credit figure opened for),
+        `delivered`/`expected` (the located transfer's delivery and the
+        intent's demand in that asset's own base units), `rateMicro`
+        (the locked rate — minor-credits per whole `asset`),
+        `receivedMinor` (the delivered figure converted back at the
+        locked rate), `status`, `createdAt` (RFC-3339),
+        `refundSignature` (the multisig payout's signature) and
+        `refundStatus` (`requested`/`approved`/`completed` across the
+        pull-payment lifecycle, empty otherwise). All statuses export —
+        not only the exception queue's — because a line-by-line vault
+        reconciliation wants the credited rows too.
+      security:
+        - adminToken: []
+      parameters:
+        - name: from
+          in: query
+          required: false
+          schema: { type: string, format: date }
+          description: the window's first UTC day; pairs with `to`
+        - name: to
+          in: query
+          required: false
+          schema: { type: string, format: date }
+          description: the window's last UTC day (inclusive); pairs with `from`
+      responses:
+        "200":
+          description: "The deposit CSV, `text/csv`, `Content-Disposition: attachment`"
+          content:
+            text/csv:
+              schema: { type: string }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
+        "503": { $ref: "#/components/responses/Error" }
+  /api/v1/admin/solana/reconciliation/scan:
+    post:
+      summary: Scan the vault for on-chain transfers no deposit recorded
+      description: |
+        The unrecorded-deposit scan (issue #1149): walks `payTo`'s
+        `getSignaturesForAddress` history — newest first, paginated,
+        bounded at `limit` (default 200, max 1_000 — one `getTransaction`
+        per candidate, so the bound is the walk's RPC budget) — filters
+        to the transactions that actually delivered value into the vault
+        in a whitelisted asset (a positive lamport delta for `sol`, a
+        positive token-account delta owned by `payTo` for an SPL mint —
+        never a `payTo`-signed outbound send like a refund payout), and
+        reports each whose signature no `deposits.facilitator_tx_hash`
+        records: `matchedIntent: false` — money that arrived with no
+        intent, the row the operator investigates by hand on the vault
+        and walks the refund/intent path for.
+
+        Read-only by construction: the scan diffs the chain against the
+        table and *reports* — it never credits, never marks a deposit,
+        never moves money. Synchronous and bounded rather than a job: the
+        endpoint pool the walk runs over already fails over, and a POST
+        plus an audit row (`solana.reconcile.scan`) is how the operator's
+        run is recorded. A scan over a vault with more history than the
+        bound simply answers the newest `limit` — the operator runs again
+        after investigating.
+      security:
+        - adminToken: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/SolanaScanRequest" }
+      responses:
+        "200":
+          description: The scan report — scanned count plus the unmatched transfers
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data: { $ref: "#/components/schemas/SolanaScanReport" }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
+        "503": { $ref: "#/components/responses/Error" }
   /api/v1/admin/solana/{depositId}/refund:
     post:
       summary: Open a pull-payment refund on an exception deposit
@@ -17238,7 +17351,9 @@ components:
         delivered: { type: integer, format: int64, nullable: true, description: what the transfer delivered, in the locked asset's own base units }
         expected: { type: integer, format: int64, nullable: true, description: what the intent demanded, in the locked asset's own base units }
         splToken: { type: string, nullable: true, description: the SPL mint the intent priced in; null for native SOL }
+        rateMicro: { type: integer, format: int64, nullable: true, description: the rate the intent locked — minor-credits per whole `asset`; null on a row opened before the field was recorded }
         signature: { type: string, nullable: true, description: the paying transaction's signature }
+        payer: { type: string, nullable: true, description: the attributed payer — `meta.payerAddress` when a path recorded it, else `meta.screening.address` on a `flagged` row; null when no path recorded one }
         entryId: { type: string, format: uuid, nullable: true, description: the ledger entry that credited the wallet — set on `overpaid`, whose opened amount still credited }
         refundAddress: { type: string, nullable: true, description: the customer's refund address — supplied, never derived }
         refund:
@@ -17271,6 +17386,40 @@ components:
       required: [address]
       properties:
         address: { type: string, minLength: 1, description: the base58 Solana public key the pull-payment refund pays }
+    SolanaScanRequest:
+      type: object
+      additionalProperties: false
+      properties:
+        limit:
+          type: integer
+          minimum: 1
+          maximum: 1000
+          default: 200
+          description: how many of `payTo`'s most recent signatures the scan walks — one `getTransaction` per candidate, so the bound is the RPC budget
+    SolanaScanReport:
+      type: object
+      required: [scanned, unmatched]
+      properties:
+        scanned:
+          type: integer
+          description: how many `payTo` signature-history entries the walk scanned
+        unmatched:
+          type: array
+          items: { $ref: "#/components/schemas/SolanaUnmatchedTransfer" }
+          description: the transfers that paid `payTo` but match no recorded deposit — the "money arrived with no intent" rows
+    SolanaUnmatchedTransfer:
+      type: object
+      required: [signature, delivered, matchedIntent]
+      properties:
+        signature: { type: string, description: the on-chain transaction's signature }
+        blockTime: { type: integer, format: int64, description: the chain-recorded time (seconds since the Unix epoch) }
+        asset: { type: string, nullable: true, description: the whitelist asset key the delivered delta counted in (`sol` for a lamport delta, an SPL key for a token one) }
+        delivered: { type: integer, format: int64, description: what the transfer delivered to `payTo`, in `asset`'s base units }
+        payer: { type: string, description: the attributed payer — the debited signer or token-account owner — when the transaction's shape yields one }
+        matchedIntent:
+          type: boolean
+          enum: [false]
+          description: always `false` — the row exists precisely because no deposit recorded the signature
     SettleRequest:
       type: object
       required: [holdKey, actualMinor]

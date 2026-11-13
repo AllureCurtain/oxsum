@@ -178,6 +178,27 @@ pub struct ValidatedTransfer {
     pub payer: Option<String>,
 }
 
+/// One inbound transfer the reconciliation scan surfaced (issue #1149),
+/// mirroring `oxsum_core::ScannedTransfer`: a transaction in `payTo`'s
+/// signature history that delivered value to the deposit address in a
+/// whitelisted asset — the on-chain row the operator diffs against the
+/// recorded deposits.
+#[derive(Debug, Clone)]
+pub struct ScannedTransfer {
+    /// The transaction's signature.
+    pub signature: String,
+    /// The on-chain `blockTime` — when the chain recorded the transfer.
+    pub block_time: Option<i64>,
+    /// The whitelist asset key the delivered delta counts in (`sol` for a
+    /// lamport delta, an SPL key for a token one).
+    pub asset: Option<String>,
+    /// What the transaction delivered to `payTo`, in `asset`'s base units.
+    pub delivered: i64,
+    /// The payer's address — the same attribution `ValidatedTransfer.payer`
+    /// makes — when the transaction's shape yields one.
+    pub payer: Option<String>,
+}
+
 /// How long an endpoint sits out after enough consecutive failures: the
 /// circuit-breaker half of the failover (issue #1145). Thirty seconds is a
 /// poll-cycle granularity — long enough that a dead provider stops eating the
@@ -633,6 +654,181 @@ impl SolanaRpcClient {
         Ok(signatures)
     }
 
+    /// The reconciliation scan's chain side (issue #1149): walks
+    /// `getSignaturesForAddress(payTo)` — newest first, paginated through the
+    /// `before` cursor, bounded at `max_signatures` — and fetches each
+    /// candidate's `getTransaction` once, keeping only the transactions that
+    /// delivered value to `payTo` in a whitelisted asset: a positive lamport
+    /// delta (the `sol` arm) or a positive token-account delta owned by
+    /// `payTo` on a configured mint. A `payTo`-signed outbound transaction —
+    /// a refund payout, a consolidation — never reports: its recipient delta
+    /// is negative or absent. Failed transactions are dropped the same way
+    /// `validate_transfer` drops them.
+    ///
+    /// This is deliberately *not* `validate_transfer`: there is no
+    /// `reference` to demand (the scan exists to find the payments that
+    /// carried none), no amount to meet — it reports what arrived, and the
+    /// caller diffs the signatures against the recorded deposits. Pages are
+    /// walked sequentially through the same endpoint pool every call uses,
+    /// so the failover and cooldown rules apply unchanged; `max_signatures`
+    /// is what bounds the `getTransaction` fan-out on a busy vault.
+    pub async fn scan_received(
+        &self,
+        max_signatures: usize,
+    ) -> Result<Vec<ScannedTransfer>, SolanaError> {
+        const PAGE: usize = 100;
+        let mut signatures = Vec::new();
+        let mut before: Option<String> = None;
+        // The walk's page bound: `max_signatures` caps the rows scanned, and
+        // the page loop additionally stops when a page comes back short — a
+        // vault with a long history walks only what the bound asks for.
+        while signatures.len() < max_signatures {
+            let mut opts = serde_json::Map::new();
+            opts.insert("limit".into(), json!(PAGE));
+            opts.insert("commitment".into(), json!(self.config.commitment));
+            if let Some(cursor) = &before {
+                opts.insert("before".into(), json!(cursor));
+            }
+            let result = self
+                .call(
+                    "scan_received",
+                    "getSignaturesForAddress",
+                    json!([self.config.pay_to, Value::Object(opts)]),
+                )
+                .await?;
+            let page = result.as_array().cloned().unwrap_or_default();
+            if page.is_empty() {
+                break;
+            }
+            before = page
+                .last()
+                .and_then(|row| row["signature"].as_str())
+                .map(str::to_owned);
+            signatures.extend(
+                page.iter()
+                    .filter_map(|row| row["signature"].as_str().map(str::to_owned)),
+            );
+            if page.len() < PAGE {
+                break;
+            }
+        }
+        signatures.truncate(max_signatures);
+        // For each candidate, prove it paid payTo in a whitelisted asset and
+        // report the delivered figure. `getTransaction` runs once per
+        // signature — sequential and bounded, the polite walk the endpoint
+        // pool already amortizes.
+        let mut found = Vec::new();
+        for signature in signatures {
+            match self.inspect_received(&signature).await {
+                Ok(Some(scanned)) => found.push(scanned),
+                Ok(None) => {}
+                // A single unreadable transaction does not sink the scan:
+                // the signature stays unreported, and a transport failure
+                // already counted against its endpoint inside `call`.
+                Err(e) => {
+                    tracing::warn!(
+                        signature,
+                        error = %e.0,
+                        "the reconciliation scan could not read a transaction"
+                    );
+                }
+            }
+        }
+        Ok(found)
+    }
+
+    /// `getTransaction(signature)` under the scan's looser contract: `Ok(Some)`
+    /// when the transaction delivered value to `payTo` in a whitelisted asset —
+    /// the figure and the asset key it counted in. `Ok(None)` for a failed
+    /// transaction, a missing one, or one that moved nothing into the vault
+    /// (a `payTo`-signed send, an unrelated touch). The `delivered` figure is
+    /// the recipient-side delta — what the vault gained — never judged.
+    async fn inspect_received(
+        &self,
+        signature: &str,
+    ) -> Result<Option<ScannedTransfer>, SolanaError> {
+        let result = self
+            .call(
+                "scan_received",
+                "getTransaction",
+                json!([
+                    signature,
+                    {
+                        "encoding": "jsonParsed",
+                        "commitment": self.config.commitment,
+                        "maxSupportedTransactionVersion": 0,
+                    },
+                ]),
+            )
+            .await?;
+        if result.is_null() {
+            return Ok(None);
+        }
+        let meta = &result["meta"];
+        if !meta["err"].is_null() {
+            return Ok(None);
+        }
+        let message = &result["transaction"]["message"];
+        let account_keys = match message["accountKeys"].as_array() {
+            Some(keys) => keys,
+            None => return Ok(None),
+        };
+        // Native SOL first: `payTo`'s own post-minus-pre lamport delta — the
+        // vault's gain. A non-positive delta means nothing arrived (the tx
+        // may still touch payTo — as fee payer, as an outbound source).
+        if let Some(delta) = lamport_delta(
+            account_keys,
+            meta["preBalances"].as_array(),
+            meta["postBalances"].as_array(),
+            &self.config.pay_to,
+        ) && delta > 0
+        {
+            let payer = sol_payer(
+                account_keys,
+                meta["preBalances"].as_array(),
+                meta["postBalances"].as_array(),
+            );
+            return Ok(Some(ScannedTransfer {
+                signature: signature.to_owned(),
+                block_time: result["blockTime"].as_i64(),
+                asset: Some("sol".to_owned()),
+                delivered: delta,
+                payer,
+            }));
+        }
+        // Each whitelisted SPL mint: the token-account delta owned by `payTo`
+        // on that mint. `token_delta` already matches `owner` or the account
+        // address itself, so a payTo that *is* an ATA still attributes.
+        for asset in &self.config.mints {
+            let Some(mint) = asset.mint.as_deref() else {
+                continue;
+            };
+            if let Some(delta) = token_delta(
+                meta["postTokenBalances"].as_array(),
+                meta["preTokenBalances"].as_array(),
+                account_keys,
+                &self.config.pay_to,
+                mint,
+            ) && delta > 0
+            {
+                let payer = spl_payer(
+                    meta["preTokenBalances"].as_array(),
+                    meta["postTokenBalances"].as_array(),
+                    account_keys,
+                    mint,
+                );
+                return Ok(Some(ScannedTransfer {
+                    signature: signature.to_owned(),
+                    block_time: result["blockTime"].as_i64(),
+                    asset: Some(asset.key.clone()),
+                    delivered: delta,
+                    payer,
+                }));
+            }
+        }
+        Ok(None)
+    }
+
     /// `getTransaction(signature, jsonParsed)` — the `validateTransfer` half:
     /// prove the located transaction is this intent's paying transfer.
     /// `Ok(None)` means the transaction exists but is not the payment — a
@@ -835,6 +1031,37 @@ impl oxsum_core::ChainLookup for SolanaRpcClient {
         mint: &'a str,
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Option<String>> + Send + 'a>> {
         Box::pin(async move { self.mint_owner(mint).await.ok() })
+    }
+
+    fn scan_received<'a>(
+        &'a self,
+        max_signatures: usize,
+    ) -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = Vec<oxsum_core::ScannedTransfer>> + Send + 'a>,
+    > {
+        Box::pin(async move {
+            self.scan_received(max_signatures)
+                .await
+                .inspect_err(|e| {
+                    // A transport/RPC failure is not "nothing arrived" — warn it
+                    // so a blind scan never reads as a clean reconciliation;
+                    // the per-endpoint count already landed inside `call`.
+                    tracing::warn!(
+                        error = %e.0,
+                        "the solana reconciliation scan's chain walk failed"
+                    );
+                })
+                .unwrap_or_default()
+                .into_iter()
+                .map(|t| oxsum_core::ScannedTransfer {
+                    signature: t.signature,
+                    block_time: t.block_time,
+                    asset: t.asset,
+                    delivered: t.delivered,
+                    payer: t.payer,
+                })
+                .collect()
+        })
     }
 }
 
