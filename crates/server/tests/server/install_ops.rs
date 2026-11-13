@@ -218,6 +218,74 @@ async fn check_config_validates_env_without_a_database() {
     assert!(err.contains("OXSUM_CUSTOMER_SELF_REGISTER"), "{err}");
     assert!(err.contains("OXSUM_SMTP_URL"), "{err}");
 
+    // The solana rail's asset whitelist (issue #1140): the required trio on,
+    // `OXSUM_SOLANA_ASSETS` + `OXSUM_SOLANA_MINT_<KEY>` parsing — a whitelist
+    // entry that is not `sol` must name its mint, a default off the
+    // whitelist names itself, and the complete whitelist passes.
+    let rail = |extra: &[(&str, &str)]| {
+        let mut vars = vec![
+            ("OXSUM_SOLANA_RPC_URL", "http://127.0.0.1:9"),
+            ("OXSUM_SOLANA_PAY_TO", "payToAddr"),
+            ("OXSUM_SOLANA_RATE_MICRO", "200000000"),
+        ];
+        vars.extend_from_slice(extra);
+        run(&vars)
+    };
+    // `usdc` on the whitelist without its mint names the mint variable.
+    let bad = rail(&[("OXSUM_SOLANA_ASSETS", "sol,usdc")]);
+    assert!(!bad.status.success());
+    let err = format!(
+        "{}{}",
+        String::from_utf8_lossy(&bad.stderr),
+        String::from_utf8_lossy(&bad.stdout)
+    );
+    assert!(err.contains("OXSUM_SOLANA_MINT_USDC"), "{err}");
+    // A default off the whitelist names the default variable.
+    let bad = rail(&[
+        ("OXSUM_SOLANA_ASSETS", "sol,usdc"),
+        ("OXSUM_SOLANA_MINT_USDC", "usdcMint"),
+        ("OXSUM_SOLANA_DEFAULT_ASSET", "doge"),
+    ]);
+    assert!(!bad.status.success());
+    let err = format!(
+        "{}{}",
+        String::from_utf8_lossy(&bad.stderr),
+        String::from_utf8_lossy(&bad.stdout)
+    );
+    assert!(err.contains("OXSUM_SOLANA_DEFAULT_ASSET"), "{err}");
+    // The complete whitelist parses — `--check-config` never opens the RPC,
+    // so the mint audit does not run here (boot-only).
+    let ok = rail(&[
+        ("OXSUM_SOLANA_ASSETS", "sol,usdc"),
+        ("OXSUM_SOLANA_MINT_USDC", "usdcMint"),
+        ("OXSUM_SOLANA_DEFAULT_ASSET", "usdc"),
+    ]);
+    assert!(
+        ok.status.success(),
+        "the whitelist env must pass: {}",
+        String::from_utf8_lossy(&ok.stderr)
+    );
+    // The legacy single-mint form still parses: SPL_TOKEN_MINT +
+    // DECIMALS, no ASSETS at all (issue #1140 backward-compat).
+    let ok = rail(&[
+        ("OXSUM_SOLANA_SPL_TOKEN_MINT", "legacyMint"),
+        ("OXSUM_SOLANA_DECIMALS", "6"),
+    ]);
+    assert!(
+        ok.status.success(),
+        "the legacy mint env must pass: {}",
+        String::from_utf8_lossy(&ok.stderr)
+    );
+    // The legacy mint without its decimals names the requirement.
+    let bad = rail(&[("OXSUM_SOLANA_SPL_TOKEN_MINT", "legacyMint")]);
+    assert!(!bad.status.success());
+    let err = format!(
+        "{}{}",
+        String::from_utf8_lossy(&bad.stderr),
+        String::from_utf8_lossy(&bad.stdout)
+    );
+    assert!(err.contains("OXSUM_SOLANA_DECIMALS"), "{err}");
+
     // Missing DATABASE_URL names that instead of connecting to nothing.
     let missing = binary::oxsum()
         .arg("--check-config")

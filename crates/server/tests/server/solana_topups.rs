@@ -16,7 +16,8 @@ use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use http_body_util::BodyExt;
 use oxsum_core::{
-    ChainLookup, Db, ExpectedTransfer, SolanaRailVerifier, SolanaTerms, ValidatedTransfer,
+    AssetTerms, ChainLookup, Db, ExpectedTransfer, SolanaRailVerifier, SolanaTerms,
+    USD_PEGGED_RATE_MICRO, ValidatedTransfer,
 };
 use oxsum_server::{Config, Signup};
 use serde_json::{Value, json};
@@ -26,16 +27,48 @@ use uuid::Uuid;
 
 /// The deployment's terms: a fixed devnet rate, native SOL, a 10-minute TTL.
 fn terms() -> SolanaTerms {
-    SolanaTerms {
-        pay_to: "oxsumDepositAddr111111111111111111111111111".to_owned(),
-        spl_token_mint: None,
-        asset_decimals: 9,
-        rate_micro: 200_000_000, // 200 credits per SOL, in minor units
-        intent_ttl_secs: 600,
-        min_amount_minor: 1,
-        max_amount_minor: i64::MAX,
-        opens_per_minute: 0,
-    }
+    SolanaTerms::new(
+        "oxsumDepositAddr111111111111111111111111111".to_owned(),
+        vec![AssetTerms {
+            key: "sol".to_owned(),
+            spl_token_mint: None,
+            asset_decimals: 9,
+            rate_micro: 200_000_000, // 200 credits per SOL, in minor units
+        }],
+        "sol".to_owned(),
+        600,
+        1,
+        i64::MAX,
+        0,
+    )
+}
+
+/// The two-asset whitelist (issue #1140): `sol` at the configured devnet
+/// rate plus a 6-decimal `usdc` at the fixed USD parity — the deployment a
+/// customer picks a side on at open, defaulting to `usdc`.
+fn multi_asset_terms() -> SolanaTerms {
+    SolanaTerms::new(
+        "oxsumDepositAddr111111111111111111111111111".to_owned(),
+        vec![
+            AssetTerms {
+                key: "sol".to_owned(),
+                spl_token_mint: None,
+                asset_decimals: 9,
+                rate_micro: 200_000_000,
+            },
+            AssetTerms {
+                key: "usdc".to_owned(),
+                spl_token_mint: Some("usdcMint11111111111111111111111111111111".to_owned()),
+                asset_decimals: 6,
+                rate_micro: USD_PEGGED_RATE_MICRO,
+            },
+        ],
+        "usdc".to_owned(),
+        600,
+        1,
+        i64::MAX,
+        0,
+    )
 }
 
 /// The stubbed chain: maps `reference -> [signatures]` (newest first, like
@@ -94,6 +127,12 @@ impl ChainLookup for SolanaStub {
 
 /// A configured world: the Solana rail is on, with the stubbed chain.
 async fn world(stub: SolanaStub) -> Option<(Router, Db)> {
+    world_with_terms(stub, terms()).await
+}
+
+/// The same world under explicit terms — the multi-asset suite passes its
+/// whitelist (issue #1140).
+async fn world_with_terms(stub: SolanaStub, terms: SolanaTerms) -> Option<(Router, Db)> {
     let u = oxsum_testkit::suite_url!()?;
     let pool: PgPool = sqlx::postgres::PgPoolOptions::new()
         .max_connections(5)
@@ -103,8 +142,8 @@ async fn world(stub: SolanaStub) -> Option<(Router, Db)> {
     let db = Db::from_pool(pool);
     db.migrate().await.expect("migrates");
     oxsum_testkit::set_registration_fixture(db.pool(), true).await;
-    let config = Config::new(Signup::Open, None)
-        .with_solana(SolanaRailVerifier::new(Arc::new(stub), terms()));
+    let config =
+        Config::new(Signup::Open, None).with_solana(SolanaRailVerifier::new(Arc::new(stub), terms));
     Some((oxsum_server::app(db.clone(), config), db))
 }
 
@@ -388,4 +427,106 @@ async fn solana_unconfigured_answers_503() {
     )
     .await;
     assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+}
+
+/// Issue #1140: one deployment serves both assets. An open naming
+/// `{"asset":"usdc"}` locks the USDC mint, its 6 decimals and the fixed USD
+/// parity rate into the intent's meta; an open naming `{"asset":"sol"}` —
+/// or none, when `sol` is the default — takes the native path at the
+/// configured `RATE_MICRO`.
+#[tokio::test]
+async fn solana_open_picks_the_named_asset() {
+    let stub = SolanaStub::default();
+    let Some((app, db)) = world_with_terms(stub, multi_asset_terms()).await else {
+        return;
+    };
+    let key = register_session(&app).await;
+
+    // `{"asset":"usdc"}`: the whitelist's USDC entry prices the intent —
+    // 1000 minor-credits at parity = 1000 USDC base units (6 decimals).
+    let (status, intent) = call(
+        &app,
+        "POST",
+        "/api/v1/topups/solana",
+        Some(json!({"amountMinor": 1000, "asset": "usdc"})),
+        Some(&key),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{intent}");
+    assert_eq!(intent["data"]["asset"].as_str().unwrap(), "usdc");
+    assert_eq!(intent["data"]["amountLamports"].as_i64().unwrap(), 1_000);
+    assert_eq!(
+        intent["data"]["splToken"].as_str().unwrap(),
+        "usdcMint11111111111111111111111111111111"
+    );
+
+    // `{"asset":"sol"}`: the native path at the configured rate — 5_000
+    // lamports, `splToken` null.
+    let (status, intent) = call(
+        &app,
+        "POST",
+        "/api/v1/topups/solana",
+        Some(json!({"amountMinor": 1000, "asset": "sol"})),
+        Some(&key),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{intent}");
+    assert_eq!(intent["data"]["asset"].as_str().unwrap(), "sol");
+    assert_eq!(intent["data"]["amountLamports"].as_i64().unwrap(), 5_000);
+    assert!(intent["data"]["splToken"].is_null(), "{intent}");
+
+    // No `asset` at all: the deployment's default (`usdc` here) resolves.
+    let (status, intent) = call(
+        &app,
+        "POST",
+        "/api/v1/topups/solana",
+        Some(json!({"amountMinor": 1000})),
+        Some(&key),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{intent}");
+    assert_eq!(intent["data"]["asset"].as_str().unwrap(), "usdc");
+
+    // The intent's meta records the locked figures the deposit row carries.
+    let reference = intent["data"]["reference"].as_str().unwrap().to_owned();
+    let meta: Value = sqlx::query_scalar(
+        "SELECT meta FROM oxsum.deposits WHERE payment_ref = $1 AND rail = 'solana'",
+    )
+    .bind(&reference)
+    .fetch_one(db.pool())
+    .await
+    .unwrap();
+    assert_eq!(meta["asset"].as_str().unwrap(), "usdc");
+    assert_eq!(
+        meta["splToken"].as_str().unwrap(),
+        "usdcMint11111111111111111111111111111111"
+    );
+    assert_eq!(meta["assetDecimals"].as_i64().unwrap(), 6);
+    assert_eq!(meta["rateMicro"].as_i64().unwrap(), USD_PEGGED_RATE_MICRO);
+}
+
+/// Issue #1140: an `asset` the whitelist does not carry is a 400, never a
+/// silent re-price under the default — and nothing opens for it.
+#[tokio::test]
+async fn solana_open_refuses_an_unknown_asset() {
+    let stub = SolanaStub::default();
+    let Some((app, db)) = world_with_terms(stub, multi_asset_terms()).await else {
+        return;
+    };
+    let key = register_session(&app).await;
+    let (status, body) = call(
+        &app,
+        "POST",
+        "/api/v1/topups/solana",
+        Some(json!({"amountMinor": 1000, "asset": "doge"})),
+        Some(&key),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    let count: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM oxsum.deposits WHERE rail = 'solana'")
+            .fetch_one(db.pool())
+            .await
+            .unwrap();
+    assert_eq!(count, 0);
 }
