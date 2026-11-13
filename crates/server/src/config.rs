@@ -791,6 +791,16 @@ impl Config {
         self.solana.as_ref().map(|v| v.as_ref())
     }
 
+    /// Mutable access to the solana verifier for the boot's mint audit
+    /// (issue #1140): `verify_mints` fills each whitelisted mint's on-chain
+    /// decimals into the terms before the config is shared with the router
+    /// and the jobs worker. `None` when the rail is absent or the `Arc` is
+    /// already shared — which cannot happen at boot, where nothing else
+    /// holds it yet.
+    pub fn solana_for_boot_audit(&mut self) -> Option<&mut oxsum_core::SolanaRailVerifier> {
+        self.solana.as_mut().and_then(Arc::get_mut)
+    }
+
     /// Sets the Solana rail's verifier. Tests use this; the server reads the
     /// `OXSUM_SOLANA_*` environment.
     #[must_use]
@@ -1817,22 +1827,141 @@ fn solana_custody_of(
 }
 
 /// Parses the Solana deposit rail (issue #1117). The complete set:
+/// One whitelist entry `solana_of` resolved from the environment — the
+/// asset's key, the mint its deposits pay (`None` for native SOL) and the
+/// rate its intents lock. `asset_decimals` is the declared figure under the
+/// legacy single-mint form; under `OXSUM_SOLANA_ASSETS` the boot replaces it
+/// with the mint's own on-chain decimals, so the value here is a placeholder
+/// for SPL entries.
+struct SolanaAssetSpec {
+    key: String,
+    mint: Option<String>,
+    asset_decimals: u32,
+    rate_micro: i64,
+}
+
+/// Parses the asset whitelist `OXSUM_SOLANA_ASSETS` declares (issue #1140).
+/// The list is comma-separated lowercase keys — `sol` (native, always
+/// accepted) plus SPL keys like `usdc` whose mint rides in
+/// `OXSUM_SOLANA_MINT_<KEY>` (required for every non-`sol` entry; `usdt` is
+/// the reserved #1152 slot). Every SPL asset locks the fixed USD parity rate
+/// — it is a stablecoin by contract, so `RATE_MICRO` prices only volatile
+/// `sol`. Key order is display order.
+///
+/// The **legacy** form — `OXSUM_SOLANA_SPL_TOKEN_MINT` without
+/// `OXSUM_SOLANA_ASSETS` — still parses so an existing devnet config boots:
+/// it yields the single `spl` asset the mint names (locked at `RATE_MICRO`,
+/// decimals from the still-required `OXSUM_SOLANA_DECIMALS`, which the boot
+/// cross-checks on-chain like before). Set both and the whitelist wins, with
+/// the legacy pair ignored — the two forms describing one rail would only
+/// disagree.
+fn solana_asset_specs(
+    rate_micro: i64,
+    declared_decimals: Option<u32>,
+) -> Result<Vec<SolanaAssetSpec>, String> {
+    let legacy_mint = var("OXSUM_SOLANA_SPL_TOKEN_MINT").filter(|m| !m.is_empty());
+    match var("OXSUM_SOLANA_ASSETS") {
+        None => {
+            // The legacy single-asset deployment: native SOL, or one SPL
+            // mint under the `spl` key — the shape the rail held before the
+            // whitelist.
+            Ok(match legacy_mint {
+                Some(mint) => vec![SolanaAssetSpec {
+                    key: "spl".to_owned(),
+                    mint: Some(mint),
+                    asset_decimals: declared_decimals.ok_or(
+                        "OXSUM_SOLANA_DECIMALS must be set when \
+                         OXSUM_SOLANA_SPL_TOKEN_MINT is — it is checked against \
+                         the mint's on-chain decimals at startup",
+                    )?,
+                    rate_micro,
+                }],
+                None => vec![SolanaAssetSpec {
+                    key: "sol".to_owned(),
+                    mint: None,
+                    asset_decimals: 9,
+                    rate_micro,
+                }],
+            })
+        }
+        Some(raw) => {
+            let mut specs = Vec::new();
+            for entry in raw.split(',').map(str::trim).filter(|k| !k.is_empty()) {
+                let key = entry.to_ascii_lowercase();
+                if !key
+                    .chars()
+                    .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit())
+                {
+                    return Err(format!(
+                        "OXSUM_SOLANA_ASSETS entry {entry:?} must be a lowercase \
+                         alphanumeric key"
+                    ));
+                }
+                if specs.iter().any(|s: &SolanaAssetSpec| s.key == key) {
+                    return Err(format!(
+                        "OXSUM_SOLANA_ASSETS names {key:?} twice — a key is one mint"
+                    ));
+                }
+                if key == "sol" {
+                    // Native SOL: the only entry with no mint — and the only
+                    // volatile asset, so it takes `RATE_MICRO` until the
+                    // #1139 oracle lands.
+                    specs.push(SolanaAssetSpec {
+                        key,
+                        mint: None,
+                        asset_decimals: 9,
+                        rate_micro,
+                    });
+                    continue;
+                }
+                let mint = var(&format!("OXSUM_SOLANA_MINT_{}", key.to_uppercase()))
+                    .filter(|m| !m.is_empty())
+                    .ok_or_else(|| {
+                        format!(
+                            "OXSUM_SOLANA_MINT_{} must be set — {key:?} is on \
+                             OXSUM_SOLANA_ASSETS and is not `sol`",
+                            key.to_uppercase()
+                        )
+                    })?;
+                // An SPL asset on the whitelist is a USD stablecoin: it locks
+                // the fixed parity rate, never the volatile `RATE_MICRO`.
+                // TODO(#1139): when the oracle lands, the plug point is the
+                // AssetTerms this becomes — a non-pegged SPL key would take
+                // its `rate_micro` from the oracle instead of parity.
+                specs.push(SolanaAssetSpec {
+                    key,
+                    mint: Some(mint),
+                    asset_decimals: 0, // the boot replaces it with the mint's own
+                    rate_micro: oxsum_core::USD_PEGGED_RATE_MICRO,
+                });
+            }
+            if specs.is_empty() {
+                return Err("OXSUM_SOLANA_ASSETS must name at least one asset".into());
+            }
+            Ok(specs)
+        }
+    }
+}
+
+/// Parses the Solana deposit rail (issues #1117, #1140). The complete set:
 /// `OXSUM_SOLANA_RPC_URL` + `OXSUM_SOLANA_PAY_TO` + `OXSUM_SOLANA_RATE_MICRO`,
-/// with `OXSUM_SOLANA_SPL_TOKEN_MINT` / `OXSUM_SOLANA_COMMITMENT` /
-/// `OXSUM_SOLANA_INTENT_TTL_SECS` optional —
-/// the three requireds or none, a subset is a startup error like the Stripe
-/// trio. Unset and the rail is absent: `POST /api/v1/topups/solana` answers
-/// 503 and the `solana-deposits` job schedules nothing.
+/// with `OXSUM_SOLANA_ASSETS` + `OXSUM_SOLANA_MINT_<KEY>` /
+/// `OXSUM_SOLANA_DEFAULT_ASSET` / `OXSUM_SOLANA_COMMITMENT` /
+/// `OXSUM_SOLANA_INTENT_TTL_SECS` optional — the three requireds or none, a
+/// subset is a startup error like the Stripe trio. Unset and the rail is
+/// absent: `POST /api/v1/topups/solana` answers 503 and the
+/// `solana-deposits` job schedules nothing.
 fn solana_of() -> Result<Option<Arc<oxsum_core::SolanaRailVerifier>>, String> {
     let rpc_url = var("OXSUM_SOLANA_RPC_URL");
     let pay_to = var("OXSUM_SOLANA_PAY_TO");
     let rate_micro = var("OXSUM_SOLANA_RATE_MICRO");
     let spl_token_mint = var("OXSUM_SOLANA_SPL_TOKEN_MINT");
+    let assets_declared = var("OXSUM_SOLANA_ASSETS");
     let present = [&rpc_url, &pay_to, &rate_micro]
         .iter()
         .filter(|v| v.is_some())
         .count();
-    if present == 0 && spl_token_mint.is_none() {
+    if present == 0 && spl_token_mint.is_none() && assets_declared.is_none() {
         return Ok(None);
     }
     if present < 3 {
@@ -1859,27 +1988,36 @@ fn solana_of() -> Result<Option<Arc<oxsum_core::SolanaRailVerifier>>, String> {
     if commitment != "confirmed" && commitment != "finalized" {
         return Err("OXSUM_SOLANA_COMMITMENT must be confirmed or finalized".into());
     }
-    // When an SPL mint is configured, decimals must be declared explicitly —
-    // silently defaulting to SOL's 9 would misprice a 6-decimal mint 1000×.
-    // The boot then verifies the declared figure against the mint's on-chain
-    // decimals in `main` (SolanaRpcClient::mint_decimals) and refuses to start
-    // on a mismatch. Native SOL keeps the 9 default.
-    let mint_configured = spl_token_mint
-        .as_deref()
-        .map(|m| !m.is_empty())
-        .unwrap_or(false);
-    let asset_decimals = match (var("OXSUM_SOLANA_DECIMALS"), mint_configured) {
-        (Some(v), _) => v
-            .parse::<u32>()
-            .map_err(|_| "OXSUM_SOLANA_DECIMALS must be a non-negative integer".to_owned())?,
-        (None, true) => {
-            return Err(
-                "OXSUM_SOLANA_DECIMALS must be set when OXSUM_SOLANA_SPL_TOKEN_MINT is — \
-                 it is checked against the mint's on-chain decimals at startup"
-                    .into(),
-            );
+    // The legacy decimals declaration: still required beside
+    // `OXSUM_SOLANA_SPL_TOKEN_MINT` under the single-mint form (the boot
+    // cross-checks it on-chain); under `OXSUM_SOLANA_ASSETS` the mint's own
+    // decimals are authoritative and the declaration is ignored.
+    let declared_decimals = var("OXSUM_SOLANA_DECIMALS")
+        .map(|v| {
+            v.parse::<u32>()
+                .map_err(|_| "OXSUM_SOLANA_DECIMALS must be a non-negative integer".to_owned())
+        })
+        .transpose()?;
+    let mut specs = solana_asset_specs(rate_micro, declared_decimals)?;
+    // `OXSUM_SOLANA_DEFAULT_ASSET`: the key an `asset`-less open resolves.
+    // Unset, the whitelist's first SPL entry wins when present — a
+    // stablecoin default cannot be under-priced by SOL's drift — else `sol`.
+    let default_asset = match var("OXSUM_SOLANA_DEFAULT_ASSET") {
+        Some(key) => {
+            let key = key.trim().to_ascii_lowercase();
+            if !specs.iter().any(|s| s.key == key) {
+                return Err(format!(
+                    "OXSUM_SOLANA_DEFAULT_ASSET {key:?} is not in OXSUM_SOLANA_ASSETS"
+                ));
+            }
+            key
         }
-        (None, false) => 9,
+        None => specs
+            .iter()
+            .find(|s| s.mint.is_some())
+            .unwrap_or(&specs[0])
+            .key
+            .clone(),
     };
     let intent_ttl_secs = var("OXSUM_SOLANA_INTENT_TTL_SECS")
         .map(|v| v.parse::<i64>())
@@ -1912,33 +2050,47 @@ fn solana_of() -> Result<Option<Arc<oxsum_core::SolanaRailVerifier>>, String> {
     // masquerade as the vault. Unset, the rail is unverified: a loud warn
     // marks `payTo` as a hot wallet the operator chose not to pin.
     solana_custody_of(var("OXSUM_SOLANA_MULTISIG_ACCOUNT").as_deref(), &pay_to)?;
+
+    let whitelist: Vec<oxsum_integrations::solana::MintWhitelistEntry> = specs
+        .iter()
+        .map(|s| oxsum_integrations::solana::MintWhitelistEntry {
+            key: s.key.clone(),
+            mint: s.mint.clone(),
+        })
+        .collect();
     let config = oxsum_integrations::solana::SolanaConfig {
         rpc_url: rpc_url.clone(),
         pay_to: pay_to.clone(),
-        spl_token_mint: spl_token_mint.clone().filter(|s| !s.is_empty()),
+        mints: whitelist.clone(),
         commitment,
-        asset_decimals,
-        rate_micro,
-        intent_ttl_secs,
-        min_amount_minor,
-        max_amount_minor,
-        opens_per_minute,
     };
     let client = oxsum_integrations::solana::SolanaRpcClient::new(
         rpc_url,
         crate::jobs::http_client(),
         config,
     );
-    let terms = oxsum_core::SolanaTerms {
+    // Under the whitelist the boot still must verify each mint's decimals —
+    // but the declared figure is gone, so the on-chain value fills the spec
+    // in `main` (the verifier's `verify_mints` audit). The terms are built
+    // here with the declared-or-placeholder decimals; the audit replaces
+    // them before serving.
+    let terms = oxsum_core::SolanaTerms::new(
         pay_to,
-        spl_token_mint,
-        asset_decimals,
-        rate_micro,
+        specs
+            .drain(..)
+            .map(|s| oxsum_core::AssetTerms {
+                key: s.key,
+                spl_token_mint: s.mint,
+                asset_decimals: s.asset_decimals,
+                rate_micro: s.rate_micro,
+            })
+            .collect(),
+        default_asset,
         intent_ttl_secs,
         min_amount_minor,
         max_amount_minor,
         opens_per_minute,
-    };
+    );
     Ok(Some(Arc::new(oxsum_core::SolanaRailVerifier::new(
         Arc::new(client),
         terms,

@@ -56,7 +56,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     let database_url = required_env("DATABASE_URL")?;
-    let config = Config::from_env()?;
+    // Mutable while the boot's mint audit fills the whitelist's on-chain
+    // decimals into the rail's terms — nothing else shares the `Arc` yet.
+    let mut config = Config::from_env()?;
 
     // One pool for the whole database, shared by every tenant. Each PostgreSQL connection
     // is a backend process, so this number is the process's whole connection budget rather
@@ -83,34 +85,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     db.migrate().await?;
     tracing::info!("oxsum schema ready");
 
-    // A configured SPL mint must agree with its declared decimals on-chain
-    // before the rail serves traffic (issue #1129): a 6-decimal USDC mint
-    // declared as 9 would misprice every deposit 1000×, and the wrong
-    // direction is the dangerous one. Native SOL has no mint to check — the
-    // verifier answers `None` and the check skips.
-    if let Some(verifier) = config.solana()
-        && verifier.terms().spl_token_mint.is_some()
-    {
-        let declared = verifier.terms().asset_decimals;
-        match verifier.mint_decimals().await {
-            Some(onchain) if onchain != declared => {
-                return Err(format!(
-                    "OXSUM_SOLANA_DECIMALS is {declared} but the configured SPL mint reports \
-                     {onchain} decimals on-chain — refusing to start on a 10^\
-                     {} mispricing",
-                    (declared as i64 - onchain as i64).abs()
-                )
-                .into());
-            }
-            Some(_) => {}
-            None => {
-                return Err(
-                    "could not read the configured SPL mint's decimals on-chain — \
-                     refusing to start with an unverifiable OXSUM_SOLANA_DECIMALS"
-                        .into(),
-                );
-            }
-        }
+    // Every whitelisted SPL mint is audited on-chain before the rail serves
+    // traffic (issues #1129, #1140): the mint's own decimals replace the
+    // config's placeholder — a 6-decimal USDC mint priced at 9 would
+    // mischarge 1000× — and its owner program must be the classic SPL Token
+    // program, never Token-2022, whose extensions the rail does not model.
+    // A failure refuses the boot with the mint named. The audit mutates the
+    // verifier's terms, so it runs before the config is shared with the
+    // router and the jobs worker.
+    if let Some(verifier) = config.solana_for_boot_audit() {
+        verifier
+            .verify_mints()
+            .await
+            .map_err(|e| format!("the solana rail's mint audit refused the boot: {e}"))?;
     }
 
     // `oxsum seed` fills the database with the demo world and exits — it shares this boot path so

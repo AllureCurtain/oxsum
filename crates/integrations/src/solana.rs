@@ -35,9 +35,27 @@ fn base64_decode(raw: &str) -> Result<Vec<u8>, String> {
         .map_err(|e| e.to_string())
 }
 
+/// One payable asset on the whitelist (issue #1140): the key the open
+/// request names and the SPL mint a top-up in it must pay — `None` for
+/// native SOL, which is the only key allowed a `None` mint. The whitelist's
+/// per-asset decimals and rate live in `oxsum_core::AssetTerms` — the client
+/// itself only needs the mint list to read on-chain decimals at boot.
+#[derive(Debug, Clone)]
+pub struct MintWhitelistEntry {
+    /// The asset's lowercase key (`sol`, `usdc`, …) — the
+    /// `OXSUM_SOLANA_ASSETS` entry and the `OXSUM_SOLANA_MINT_<KEY>` suffix.
+    pub key: String,
+    /// The SPL mint the asset pays, or `None` for native SOL.
+    pub mint: Option<String>,
+}
+
 /// The deployment's Solana acceptance criteria, read from the
-/// `OXSUM_SOLANA_*` environment set. `Config` holds it; the periodic poll and
-/// the confirm route read it to decide what an honoring transfer looks like.
+/// `OXSUM_SOLANA_*` environment set. `Config` holds it; the client reads only
+/// what its RPC calls need — the endpoint, commitment, the `payTo` reference
+/// and `mints`, the whitelist the boot audits on-chain. The per-asset
+/// figures the intents lock (`asset_decimals`, `rate_micro`, the open
+/// bounds) live on `oxsum_core::SolanaTerms`, which the server hands the
+/// verifier beside this client.
 #[derive(Clone)]
 pub struct SolanaConfig {
     /// The JSON-RPC endpoint, `OXSUM_SOLANA_RPC_URL` — devnet
@@ -46,37 +64,16 @@ pub struct SolanaConfig {
     pub rpc_url: String,
     /// The deposit address every intent pays, `OXSUM_SOLANA_PAY_TO` (base58
     /// public key). For an SPL top-up this is the owner whose associated token
-    /// account receives the mint.
+    /// account receives the mint — one vault receives every asset.
     pub pay_to: String,
-    /// The SPL token mint a top-up must pay, `OXSUM_SOLANA_SPL_TOKEN_MINT`.
-    /// `None` — the default — expects native SOL, measured in lamports.
-    pub spl_token_mint: Option<String>,
+    /// The mint whitelist `OXSUM_SOLANA_ASSETS` + `OXSUM_SOLANA_MINT_<KEY>`
+    /// declare (issue #1140): every mint the boot verifies on-chain — its
+    /// decimals are authoritative and its owner program must be the classic
+    /// SPL Token program, never Token-2022.
+    pub mints: Vec<MintWhitelistEntry>,
     /// The commitment `find_reference` / `validate_transfer` ask the RPC for:
     /// `confirmed` (default) or `finalized` (`OXSUM_SOLANA_COMMITMENT`).
     pub commitment: String,
-    /// Base units per whole asset the rail prices in (`OXSUM_SOLANA_DECIMALS`,
-    /// default 9 for native SOL / 6 for USDC). The conversion between credits
-    /// and base units is mint-aware so a 6-decimal mint does not misprice.
-    pub asset_decimals: u32,
-    /// The locked rate in minor-credits per whole asset that intents quote and
-    /// credits settle at, `OXSUM_SOLANA_RATE_MICRO` — one whole SOL
-    /// (`10^asset_decimals` base units) buys `rate_micro` minor-credits.
-    /// Devnet's static stand-in for a price oracle: a mainnet rail replaces
-    /// this with an oracle lookup recorded per intent.
-    pub rate_micro: i64,
-    /// How long a `pending` intent stays payable before the poll expires it,
-    /// `OXSUM_SOLANA_INTENT_TTL_SECS` (default 600 — Solana Pay's own
-    /// unbounded-poll guard).
-    pub intent_ttl_secs: i64,
-    /// The smallest credit amount an intent opens (`OXSUM_SOLANA_MIN_MINOR`,
-    /// default 1) and the largest (`OXSUM_SOLANA_MAX_MINOR`, default
-    /// `i64::MAX`) — per-call bounds on the rail's open surface.
-    pub min_amount_minor: i64,
-    /// See `min_amount_minor`.
-    pub max_amount_minor: i64,
-    /// The most intents one organization may open per minute
-    /// (`OXSUM_SOLANA_OPENS_PER_MINUTE`, default 0 — unbounded).
-    pub opens_per_minute: i64,
 }
 
 impl std::fmt::Debug for SolanaConfig {
@@ -84,10 +81,15 @@ impl std::fmt::Debug for SolanaConfig {
         f.debug_struct("SolanaConfig")
             .field("rpc_url", &self.rpc_url)
             .field("pay_to", &self.pay_to)
-            .field("spl_token_mint", &self.spl_token_mint)
+            .field(
+                "mints",
+                &self
+                    .mints
+                    .iter()
+                    .map(|entry| entry.key.as_str())
+                    .collect::<Vec<_>>(),
+            )
             .field("commitment", &self.commitment)
-            .field("rate_micro", &self.rate_micro)
-            .field("intent_ttl_secs", &self.intent_ttl_secs)
             .finish()
     }
 }
@@ -140,10 +142,10 @@ pub struct ValidatedTransfer {
 
 /// The narrow JSON-RPC client the rail talks to, bound to the deployment's
 /// [`SolanaConfig`]: `base_url` is the RPC endpoint, and `config` carries the
-/// `pay_to`/`spl_token_mint`/`commitment`/`rate_micro` terms the two Solana
-/// Pay calls are asked under. Binding the config in (rather than passing it
-/// per call) is what lets the client be a `ChainLookup` — the verifier's seam
-/// hands it only the intent's `reference`/`amount`.
+/// `pay_to`/`mints`/`commitment` terms the two Solana Pay calls and the
+/// boot's mint audit are asked under. Binding the config in (rather than
+/// passing it per call) is what lets the client be a `ChainLookup` — the
+/// verifier's seam hands it only the intent's `reference`/`amount`.
 #[derive(Clone)]
 pub struct SolanaRpcClient {
     base_url: String,
@@ -172,29 +174,23 @@ impl SolanaRpcClient {
         }
     }
 
-    /// The deployment's terms — `open_solana_deposit` reads `pay_to`,
-    /// `spl_token_mint`, `rate_micro` and `intent_ttl_secs` off it to write
-    /// the intent's `meta`.
+    /// The deployment's chain-side config — endpoint, `payTo`, the mint
+    /// whitelist and the commitment the calls ask for.
     #[must_use]
     pub fn config(&self) -> &SolanaConfig {
         &self.config
     }
 
-    /// Reads the configured SPL mint's decimals from the chain (issue #1129).
+    /// Reads a mint's decimals from the chain (issues #1129, #1140).
     /// `getAccountInfo(mint)` with base64 encoding answers the raw SPL mint
     /// layout, whose `decimals` byte sits at offset 44 (after mintAuthority
-    /// option+key, supply and the initialized flag). The boot calls this when
-    /// `spl_token_mint` is set so a configured `OXSUM_SOLANA_DECIMALS` that
-    /// disagrees with the real mint fails startup instead of mispricing every
-    /// deposit — a 6-decimal USDC mint read as 9 decimals would overcharge
-    /// by 1000×.
+    /// option+key, supply and the initialized flag). The boot calls this once
+    /// per whitelisted mint so the mint's own figure — never an operator's
+    /// declaration — sets `asset_decimals`: a 6-decimal USDC mint read as 9
+    /// decimals would overcharge by 1000×.
     ///
-    /// `Err` when the RPC fails or the mint account is missing/unparseable;
-    /// `None` when `spl_token_mint` is unset (native SOL has no mint to read).
-    pub async fn mint_decimals(&self) -> Result<Option<u32>, SolanaError> {
-        let Some(mint) = self.config.spl_token_mint.as_deref() else {
-            return Ok(None);
-        };
+    /// `Err` when the RPC fails or the mint account is missing/unparseable.
+    pub async fn mint_decimals(&self, mint: &str) -> Result<u32, SolanaError> {
         let result = self
             .call("getAccountInfo", json!([mint, {"encoding": "base64"}]))
             .await?;
@@ -209,7 +205,24 @@ impl SolanaRpcClient {
             .get(44)
             .copied()
             .ok_or_else(|| SolanaError("mint account data is too short".into()))?;
-        Ok(Some(u32::from(decimals)))
+        Ok(u32::from(decimals))
+    }
+
+    /// Reads the program that owns a mint account — the Token or Token-2022
+    /// program id `getAccountInfo` reports as `owner`. The boot calls this
+    /// once per whitelisted mint and refuses Token-2022: extensions the rail
+    /// does not model (transfer fees, hooks, required memos) could misprice
+    /// or mis-credit a deposit (issue #1140).
+    ///
+    /// `Err` when the RPC fails or the account is missing/unparseable.
+    pub async fn mint_owner(&self, mint: &str) -> Result<String, SolanaError> {
+        let result = self
+            .call("getAccountInfo", json!([mint, {"encoding": "base64"}]))
+            .await?;
+        result["value"]["owner"]
+            .as_str()
+            .map(str::to_owned)
+            .ok_or_else(|| SolanaError("getAccountInfo returned no owner".into()))
     }
 
     /// One JSON-RPC call. Returns the `result` field; a transport failure, a
@@ -457,8 +470,16 @@ impl oxsum_core::ChainLookup for SolanaRpcClient {
 
     fn mint_decimals<'a>(
         &'a self,
+        mint: &'a str,
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Option<u32>> + Send + 'a>> {
-        Box::pin(async move { self.mint_decimals().await.ok().flatten() })
+        Box::pin(async move { self.mint_decimals(mint).await.ok() })
+    }
+
+    fn mint_owner<'a>(
+        &'a self,
+        mint: &'a str,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Option<String>> + Send + 'a>> {
+        Box::pin(async move { self.mint_owner(mint).await.ok() })
     }
 }
 
