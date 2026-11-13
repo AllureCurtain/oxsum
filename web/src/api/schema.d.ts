@@ -5898,6 +5898,65 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/webhooks/solana": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * The Solana rail's optional Helius push — accelerate, never trust
+         * @description The optional Helius webhook receiver (issue #1150): a push *triggers*
+         *     a re-verification of the intents it might match — it never credits on
+         *     its own claims. `Authorization` carries the shared secret the Helius
+         *     webhook's `authHeader` config echoes on every delivery, compared
+         *     constant-time against `OXSUM_SOLANA_HELIUS_WEBHOOK_SECRET`; a missing
+         *     or wrong one is 401. The body is a JSON array of transaction entries —
+         *     an `accountData[].account` (enhanced) or
+         *     `transaction.message.accountKeys[]` (raw) set names the candidate
+         *     `reference` markers, matched against `pending` intents' `payment_ref`.
+         *     Every intent that intersects runs the same `credit_solana_deposit`
+         *     walk the poll tick and the confirm route share — the server verifies
+         *     on-chain and credits on its own check. A signature already claimed is
+         *     acknowledged without a second chain round-trip (the
+         *     `solana_webhook_deliveries` dedup); a malformed payload is 400. A
+         *     deployment that never set the secret mounts nothing and answers 404 —
+         *     polling stays the rail's only confirm path.
+         */
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": Record<string, never>[];
+                };
+            };
+            responses: {
+                /** @description acknowledged — every verified delivery is answered 200 whether an intent moved or not */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content?: never;
+                };
+                400: components["responses"]["Error"];
+                401: components["responses"]["Error"];
+                404: components["responses"]["Error"];
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/redemptions": {
         parameters: {
             query?: never;

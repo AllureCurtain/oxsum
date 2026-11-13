@@ -366,6 +366,12 @@ pub struct Config {
     /// `SolanaRailVerifier` that answers the `RailVerifier` seam. `None` — the
     /// default — runs no rail and the solana endpoints answer 503.
     solana: Option<Arc<oxsum_core::SolanaRailVerifier>>,
+    /// The shared secret the optional Helius webhook receiver verifies
+    /// (issue #1150): the `authHeader` value Helius echoes in `Authorization`
+    /// on every delivery. `None` — the default — mounts no receiver and
+    /// `POST /api/v1/webhooks/solana` answers 404 like every unconfigured
+    /// inbound webhook; polling stays the rail's only confirm path.
+    solana_helius_webhook_secret: Option<String>,
     /// The provider the `upstream-bill-sync` job asks for each channel's daily
     /// billed cost (issue #283): the OpenAI Costs impl when
     /// `OXSUM_UPSTREAM_BILL_SYNC` is enabled (and `OXSUM_SECRET_KEY` present to
@@ -419,6 +425,7 @@ impl Config {
             display_currency: None,
             x402: None,
             solana: None,
+            solana_helius_webhook_secret: None,
             bill_provider: None,
             branding: Branding::default(),
             evidence_upstream_cost: false,
@@ -565,6 +572,11 @@ impl Config {
         let bill_provider = bill_provider_of(secret.as_ref())?;
         let x402 = x402_of()?;
         let solana = solana_of()?;
+        // The optional Helius webhook receiver (issue #1150): a shared secret
+        // is only meaningful beside a configured rail — set without the rail it
+        // warns and mounts nothing, because polling is the default and the push
+        // path is purely additive acceleration, never the only confirm.
+        let solana_helius_webhook_secret = solana_helius_webhook_secret_of(solana.is_some())?;
         // Operator-intent cross-checks (issue #619): `OXSUM_RAILS` declares the
         // deposit rails the operator means to run and `OXSUM_CUSTOMER_SELF_REGISTER`
         // the registration shape — both validated against what the rest of the
@@ -610,6 +622,7 @@ impl Config {
             display_currency,
             x402,
             solana,
+            solana_helius_webhook_secret,
             bill_provider,
             branding: branding_of()?,
             evidence_upstream_cost: evidence_upstream_cost_of()?,
@@ -806,6 +819,23 @@ impl Config {
     #[must_use]
     pub fn with_solana(mut self, verifier: oxsum_core::SolanaRailVerifier) -> Self {
         self.solana = Some(Arc::new(verifier));
+        self
+    }
+
+    /// The shared secret the Helius webhook receiver verifies (issue #1150),
+    /// or `None` when `OXSUM_SOLANA_HELIUS_WEBHOOK_SECRET` is unset — in which
+    /// case `POST /api/v1/webhooks/solana` answers 404 like every unconfigured
+    /// inbound webhook.
+    #[must_use]
+    pub fn solana_helius_webhook_secret(&self) -> Option<&str> {
+        self.solana_helius_webhook_secret.as_deref()
+    }
+
+    /// Sets the Helius webhook receiver's shared secret. Tests use this; the
+    /// server reads `OXSUM_SOLANA_HELIUS_WEBHOOK_SECRET`.
+    #[must_use]
+    pub fn with_solana_helius_webhook_secret(mut self, secret: impl Into<String>) -> Self {
+        self.solana_helius_webhook_secret = Some(secret.into());
         self
     }
 
@@ -2376,6 +2406,33 @@ fn solana_of() -> Result<Option<Arc<oxsum_core::SolanaRailVerifier>>, String> {
         );
     }
     Ok(Some(Arc::new(verifier)))
+}
+
+/// Parses `OXSUM_SOLANA_HELIUS_WEBHOOK_SECRET` (issue #1150): the shared secret
+/// a Helius webhook echoes in `Authorization` on every delivery — the only
+/// credential the push path carries, verified constant-time. `rail` is whether
+/// `solana_of` built a rail: set beside no rail the secret is a half-config the
+/// boot warns about and drops, because polling stays the default and an orphan
+/// receiver would only confuse a deployment that meant the rail to be off.
+/// Unset answers `None` — polling stays the rail's only confirm path.
+fn solana_helius_webhook_secret_of(rail: bool) -> Result<Option<String>, String> {
+    let secret = var("OXSUM_SOLANA_HELIUS_WEBHOOK_SECRET")
+        .map(|v| v.trim().to_owned())
+        .filter(|v| !v.is_empty());
+    match (secret, rail) {
+        (Some(secret), true) => Ok(Some(secret)),
+        (Some(_), false) => {
+            // Warn rather than refuse: the rail being off is the deliberate
+            // posture — a secret beside it is inert, and a startup error over
+            // an optional accelerator would be a deployment footgun.
+            tracing::warn!(
+                "OXSUM_SOLANA_HELIUS_WEBHOOK_SECRET is set but the solana rail is \
+                 not configured — the webhook receiver is not mounted"
+            );
+            Ok(None)
+        }
+        (None, _) => Ok(None),
+    }
 }
 
 /// The `OXSUM_SOLANA_SANCTIONS_*` gate (issue #1144). `ENABLED` is the

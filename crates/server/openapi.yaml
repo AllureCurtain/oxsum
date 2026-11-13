@@ -4451,6 +4451,42 @@ paths:
           description: acknowledged — every verified event is answered 200 whether the deposit moved or not
         "401": { $ref: "#/components/responses/Error" }
         "404": { $ref: "#/components/responses/Error" }
+  /api/v1/webhooks/solana:
+    post:
+      summary: The Solana rail's optional Helius push — accelerate, never trust
+      description: |
+        The optional Helius webhook receiver (issue #1150): a push *triggers*
+        a re-verification of the intents it might match — it never credits on
+        its own claims. `Authorization` carries the shared secret the Helius
+        webhook's `authHeader` config echoes on every delivery, compared
+        constant-time against `OXSUM_SOLANA_HELIUS_WEBHOOK_SECRET`; a missing
+        or wrong one is 401. The body is a JSON array of transaction entries —
+        an `accountData[].account` (enhanced) or
+        `transaction.message.accountKeys[]` (raw) set names the candidate
+        `reference` markers, matched against `pending` intents' `payment_ref`.
+        Every intent that intersects runs the same `credit_solana_deposit`
+        walk the poll tick and the confirm route share — the server verifies
+        on-chain and credits on its own check. A signature already claimed is
+        acknowledged without a second chain round-trip (the
+        `solana_webhook_deliveries` dedup); a malformed payload is 400. A
+        deployment that never set the secret mounts nothing and answers 404 —
+        polling stays the rail's only confirm path.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: array
+              description: Helius's transaction array — each entry carries `signature` plus `accountData[]` (enhanced) or `transaction.message.accountKeys` (raw)
+              items:
+                type: object
+      responses:
+        "200":
+          description: acknowledged — every verified delivery is answered 200 whether an intent moved or not
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
   /api/v1/redemptions:
     post:
       x-consumption-key-access: denied

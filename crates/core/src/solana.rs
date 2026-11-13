@@ -1543,6 +1543,74 @@ impl Db {
         }
     }
 
+    /// Finds every `pending` solana intent whose `payment_ref` — the
+    /// `reference` marker account — is one of the keys a webhook push named
+    /// (issue #1150). The inbound Helius receiver hands over the account keys
+    /// a pushed transaction carried; the intents that intersect are the ones
+    /// that transaction might settle, and the receiver runs the ordinary
+    /// `credit_solana_deposit` walk for each — the push never names a
+    /// signature to trust, only narrows which intents are worth re-verifying.
+    /// Organization-agnostic on purpose: the webhook is unauthenticated and
+    /// carries no org credential, so the match is on the marker alone — which
+    /// is safe because a marker is a throwaway address only its intent could
+    /// name. `(deposit_id, organization_id)` is all the resume needs.
+    ///
+    /// The expiry is deliberately *not* filtered: the lapse verdict belongs to
+    /// the paying transaction's `blockTime` inside `credit_solana_deposit`, so
+    /// a payment that landed before `expiresAt` still credits even when the
+    /// push arrives after the TTL. `(deposit_id, tenant_id)` is what the
+    /// receiver needs to resolve each intent's wallet — the organization's
+    /// `tenant_id` rides the join so the handler does not ask a second time.
+    pub async fn find_solana_intents_by_refs(
+        &self,
+        references: &[String],
+    ) -> Result<Vec<(Uuid, String)>, WalletError> {
+        if references.is_empty() {
+            return Ok(Vec::new());
+        }
+        let rows: Vec<(Uuid, String)> = sqlx::query_as(
+            "SELECT d.deposit_id, o.tenant_id \
+             FROM oxsum.deposits d \
+             JOIN oxsum.organizations o ON o.organization_id = d.organization_id \
+             WHERE d.rail = $1 AND d.status = 'pending' AND d.payment_ref = ANY($2)",
+        )
+        .bind(RAIL_SOLANA)
+        .bind(references)
+        .fetch_all(self.pool())
+        .await?;
+        Ok(rows)
+    }
+
+    /// Claims one inbound webhook delivery by the transaction signature it
+    /// names (issue #1150): the dedup anchor the `POST /api/v1/webhooks/solana`
+    /// receiver inserts before it walks any intent. Returns `true` when the
+    /// signature was new — the receiver proceeds to match and re-verify —
+    /// and `false` when a delivery naming the same signature was already
+    /// claimed, so a retried or replayed push acknowledges without a second
+    /// chain round-trip. `matched` records how many pending intents the push's
+    /// keys resolved to, so the row reads whether the push named a live intent
+    /// or a transaction the rail had no stake in. The signature is the same
+    /// idempotency anchor `facilitator_tx_hash` records on the credit — a
+    /// signature already spent still dedups here, because its re-verify is the
+    /// work the replay is spared.
+    pub async fn record_solana_webhook_delivery(
+        &self,
+        signature: &str,
+        matched: i32,
+    ) -> Result<bool, WalletError> {
+        let inserted = sqlx::query(
+            "INSERT INTO oxsum.solana_webhook_deliveries (signature, matched) \
+             VALUES ($1, $2) \
+             ON CONFLICT (signature) DO NOTHING",
+        )
+        .bind(signature)
+        .bind(matched)
+        .execute(self.pool())
+        .await?
+        .rows_affected();
+        Ok(inserted > 0)
+    }
+
     /// Verifies and credits a `pending` solana deposit: the poll pass and the
     /// confirm route share this walk. The deposit row is read unlocked, the
     /// `reference` in `meta` drives `verifier.verify_locked`, and the verdict

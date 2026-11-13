@@ -432,7 +432,12 @@ pub fn router(state: AppState) -> Router {
         .route("/webhooks/airwallex", post(billing::airwallex_webhook))
         // The Hyperswitch switch's webhook (issue #319): the HMAC over the
         // raw body (`X-Webhook-Signature-512`) is the credential.
-        .route("/webhooks/hyperswitch", post(billing::hyperswitch_webhook));
+        .route("/webhooks/hyperswitch", post(billing::hyperswitch_webhook))
+        // The Solana rail's optional Helius push (issue #1150): the shared
+        // `Authorization` secret Helius echoes is the credential — and even a
+        // verified push only *triggers* a re-verify on the chain; it never
+        // credits on its own claims. Unmounted when the secret is unset.
+        .route("/webhooks/solana", post(billing::solana_webhook));
 
     // Personal-session routes: the business console and the account actions a
     // logged-in user takes. `require_personal_session` resolves the cookie once

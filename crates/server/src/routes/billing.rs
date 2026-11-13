@@ -449,6 +449,138 @@ pub(crate) async fn solana_refund_address(
         .await?)
 }
 
+/// Extracts the candidate `reference` marker accounts a Helius webhook entry
+/// carries — the account keys the paying transaction touched, so a pushed
+/// transaction narrows which `pending` intents are worth re-verifying (issue
+/// #1150). Both documented payload shapes are read: the *enhanced* entry's
+/// `accountData[].account`, and the *raw* entry's
+/// `transaction.message.accountKeys[]`. An entry carrying neither yields no
+/// keys — it is still acknowledged, but resolves no intent.
+fn solana_webhook_references(entry: &serde_json::Value) -> Vec<String> {
+    let mut keys = Vec::new();
+    let mut push = |v: &serde_json::Value| {
+        if let Some(key) = v.as_str()
+            && !key.is_empty()
+        {
+            keys.push(key.to_owned());
+        }
+    };
+    // Enhanced: `accountData` is an array of `{account, nativeBalanceChange,
+    // tokenBalanceChanges[]}` — the touched accounts ride `account`.
+    if let Some(accounts) = entry.get("accountData").and_then(|v| v.as_array()) {
+        for account in accounts {
+            if let Some(v) = account.get("account") {
+                push(v);
+            }
+        }
+    }
+    // Raw: the getTransaction-shaped envelope keys the message's account list.
+    if let Some(keys_arr) = entry
+        .get("transaction")
+        .and_then(|t| t.get("message"))
+        .and_then(|m| m.get("accountKeys"))
+        .and_then(|k| k.as_array())
+    {
+        for v in keys_arr {
+            push(v);
+        }
+    }
+    keys
+}
+
+/// The Solana rail's inbound webhook (issue #1150): the optional Helius push
+/// that *accelerates* confirmation — never the trust boundary. Org-agnostic and
+/// credential-free on the `open` surface; the `Authorization` header Helius
+/// echoes its configured `authHeader` into is the credential, compared
+/// constant-time against `OXSUM_SOLANA_HELIUS_WEBHOOK_SECRET`.
+///
+/// The push is a hint, not a fact: each entry's account keys are matched
+/// against `pending` intents' `payment_ref` markers, and every intent that
+/// intersects runs the same `credit_solana_deposit` walk the poll tick and the
+/// confirm route share — the server verifies on-chain and credits on its own
+/// check; the push's own claims never move the ledger. A signature already
+/// claimed is a no-op `200` (the `solana_webhook_deliveries` dedup); a
+/// malformed payload is `400`; a wrong or missing `Authorization` is `401`;
+/// and a deployment that never set the secret mounts nothing and `404`s like
+/// every unconfigured inbound webhook.
+pub(crate) async fn solana_webhook(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Result<StatusCode, ApiError> {
+    use subtle::ConstantTimeEq as _;
+    let (verifier, secret) = match (
+        state.config.solana(),
+        state.config.solana_helius_webhook_secret(),
+    ) {
+        (Some(verifier), Some(secret)) => (verifier, secret),
+        _ => return Err(ApiError::not_found()),
+    };
+    // The shared-secret echo is the credential Helius supports — its `authHeader`
+    // config value rides verbatim in `Authorization`. Compare constant-time.
+    let presented = headers
+        .get(axum::http::header::AUTHORIZATION)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or_default();
+    let matches: bool = presented.as_bytes().ct_eq(secret.as_bytes()).into();
+    if presented.is_empty() || !matches {
+        return Err(ApiError::Unauthorized);
+    }
+    // Defensive parse: the body must be a JSON array of transaction entries —
+    // anything else (an object, a scalar, malformed JSON) is a 400, because a
+    // shape the receiver cannot read is a contract violation, not "no intents".
+    let entries: serde_json::Value = serde_json::from_slice(&body)
+        .map_err(|_| ApiError::Validation("the webhook payload is not valid JSON".into()))?;
+    let Some(entries) = entries.as_array() else {
+        return Err(ApiError::Validation(
+            "the webhook payload must be a JSON array of transactions".into(),
+        ));
+    };
+    for entry in entries {
+        let Some(signature) = entry.get("signature").and_then(|v| v.as_str()) else {
+            continue;
+        };
+        // Match first so `matched` records what this push resolved, then claim
+        // the signature — a replay's `matched` stays the first delivery's.
+        let references = solana_webhook_references(entry);
+        let intents = state.db.find_solana_intents_by_refs(&references).await?;
+        if !state
+            .db
+            .record_solana_webhook_delivery(signature, intents.len() as i32)
+            .await?
+        {
+            // A signature already claimed is a replay — acknowledged, and the
+            // work the dedup spared is the re-verify the first delivery ran.
+            continue;
+        }
+        for (deposit_id, tenant_id) in intents {
+            // Resolve the intent's wallet from the tenant the match already
+            // joined — the same lookup the poll pass runs per intent — then
+            // re-verify on the chain and credit on the server's own check,
+            // never the push's.
+            let wallet = state.tenants.get(&tenant_id).await?;
+            match state
+                .db
+                .credit_solana_deposit(&wallet, deposit_id, verifier, today())
+                .await
+            {
+                Ok(_) | Err(WalletError::Forbidden(_)) => {}
+                // One bad intent must not stall the rest of the delivery — the
+                // row stays pending for the next poll or push, exactly like the
+                // poll pass's own posture.
+                Err(error) => {
+                    tracing::warn!(
+                        deposit_id = %deposit_id,
+                        error = %error,
+                        "the solana webhook's re-verify failed; the row stays pending"
+                    );
+                }
+            }
+        }
+    }
+    Ok(StatusCode::OK)
+}
+
 /// The body of `POST /api/v1/topups/stripe`: the amount to charge and the
 /// idempotency key that anchors the deposit.
 #[derive(Deserialize)]
