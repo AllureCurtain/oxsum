@@ -1086,6 +1086,39 @@ fresh checkout and tells a developer to run the two `npm` commands above when
 the server serves it unbuilt. Styling follows DESIGN.md: its tokens are mapped onto
 Tailwind v4 theme colors in `web/src/index.css`.
 
+### Lazy-page chunk recovery (#1092)
+
+`node --experimental-strip-types --test web/tests/chunk-reload.test.ts` runs
+the reload guard and the recovery around it against a fake window. It covers:
+
+- one automatic reload per 60-second window per tab; a failure inside the
+  window, or with storage that cannot be read, shows the prompt without
+  checking the server;
+- no reload when the server does not answer the check before it, including a
+  check still unanswered after 5 seconds, or when `sessionStorage` cannot be
+  read or written;
+- a second failure during a reload, which waits with the first and reloads
+  again only when the user has opened another page;
+- one recovery shared by every page in the tab, so a second page's failure
+  joins the reload the first one started;
+- the `ChunkLoadError` that brings up the reload prompt once the guard refuses,
+  or once a reload has not replaced the page within 10 seconds.
+
+The frontend CI gate runs it with the other web checks. `web/` has no DOM test
+setup, so the route boundary itself is checked in a browser.
+
+Browser acceptance needs a running build:
+
+1. Load the dashboard, swap the served build for one whose chunk names differ,
+   then open a page the tab has not loaded yet. The tab reloads once and shows
+   that page.
+2. Within a minute of that reload, delete another page's chunk from the served
+   build and open that page. The page slot shows the reload prompt, the tab
+   does not reload again, and opening another page clears the prompt.
+3. Stop the server and open a page the tab has not loaded. The prompt shows and
+   the tab stays on the dashboard. Start the server again and press Reload: the
+   page loads.
+
 ## Test strategy
 
 - Unit tests: inside each module's `#[cfg(test)]`, covering pure logic such as tenant id validation and configuration parsing.
