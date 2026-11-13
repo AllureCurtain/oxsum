@@ -631,6 +631,7 @@ fn jobs_ctx() -> oxsum_server::jobs::JobContext {
         upstream_price_sync: false,
         witness: None,
         bill_provider: None,
+        solana: None,
     }
 }
 

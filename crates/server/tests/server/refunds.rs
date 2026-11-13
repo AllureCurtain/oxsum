@@ -436,6 +436,7 @@ fn ctx() -> JobContext {
         upstream_price_sync: false,
         witness: None,
         bill_provider: None,
+        solana: None,
     }
 }
 
