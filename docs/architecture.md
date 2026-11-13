@@ -268,6 +268,39 @@ Principle: **domain logic belongs in core; the gateway does protocol and orchest
 6. A finalized statement closes the loop on the *rollups* too (issue #221): finalizing appends an anchor marker to the organization's ledger whose document hash is the window digest — `oxsum/statement-window/v1` folded over the covered entries' `contentHash` bytes in log order — and whose description carries the rollup digest (`oxsum/statement-rollup/v1` over the canonical `StatementRollupV1` bytes), while the statement row records `anchor_entry_id`/`anchor_log_index` plus the two digests (`windowHash`, `rollupHash`). The detail endpoints (org and admin) serve the anchor object, and `oxsum_verify::verify_statement_anchor` re-runs the client-side check — window fold equality, canonical-rollup digest equality, and on a signing deployment the note attesting the head at exactly `logIndex + 1` — so a verified bill also proves no covered entry was dropped, inserted, reordered or repainted.
 7. The whole verification chain runs in the browser (WASM after hydration); the server only hands out raw bundles and never takes part in the verdict.
 
+### The Solana top-up rail
+
+The `solana` deposit rail (the batch under issue #1117) walks one intent from open to credit or exception. The server holds no spend key — `payTo` is the deployment's Squads v4 `vault index 0` when `OXSUM_SOLANA_MULTISIG_ACCOUNT` pins it (issue #1143) — so paying out is always an operator act on the multisig, never a server transaction.
+
+```mermaid
+flowchart TD
+    open["POST /topups/solana<br/>open intent"] --> price{"asset priced how?"}
+    price -->|"sol whitelist"| pyth["Pyth Hermes quote<br/>(issue #1139)"]
+    price -->|"pegged / devnet / legacy"| static["static or 1_000_000 parity"]
+    pyth --> lock["lock asset + rateMicro into meta"]
+    static --> lock
+    lock --> pending["deposit pending<br/>payment_ref = reference"]
+    pending --> wallet["customer wallet pays<br/>reference as read-only marker<br/>(Solana Pay QR, issue #1141)"]
+    wallet --> locate["confirm endpoint or<br/>15s solana-deposits poll<br/>findReference + validateTransfer"]
+    locate -->|"no honoring transfer"| pending
+    locate --> valid{"the located transfer<br/>judged on locked meta"}
+    valid -->|"blockTime ≥ expiresAt"| late["late → exception queue"]
+    valid -->|"under-delivered"| under["underpaid → exception queue"]
+    valid -->|"honoring, exact or over"| screen{"sanctions screen<br/>(issue #1144)"}
+    screen -->|"payer hits a source"| flagged["flagged → operator review"]
+    screen -->|"screen unreachable"| pending
+    screen -->|"clear or gate off"| credit["credit opened amount<br/>solana:signature — once ever"]
+    credit -->|"delivered > expected"| over["overpaid: credit stands,<br/>surplus on the queue"]
+    late --> queue["GET /admin/solana/exceptions<br/>customer: /topups/solana/deposits"]
+    under --> queue
+    flagged --> queue
+    over --> queue
+    queue --> refund["pull-payment refund (issue #1142)<br/>refund → refund-address →<br/>refund-approve → multisig pays →<br/>refund-complete → refunded"]
+    pending -->|"expiresAt lapses unpaid"| expired["expired — a payment that<br/>landed before expiresAt still<br/>credits; blockTime judges lateness"]
+```
+
+Two branches run beside it: the RPC failover pool (`OXSUM_SOLANA_RPC_URLS`, issue #1145) that `findReference`/`validateTransfer` call through — round-robin, a twice-failing endpoint sitting out a ~30 s cooldown — and the reconciliation pass that reads every `solana` row against `payTo`'s on-chain signature list (issue #1149). The optional Helius webhook (issue #1150) mounts `POST /api/v1/webhooks/solana` — a push only re-runs the matching intent's own verify sooner, the server still credits on its own check; unset, the route is unmounted and polling stays the only confirm path. The wallet-adapter pay button (issue #1147) mounts beside the QR on the dashboard — a convenience the customer may ignore, not a rail change. The local test-validator e2e suite (issue #1152) is the remaining follow-up.
+
 ## Core entities
 
 Only relationships; the ledger's table structure is authoritative in `crates/doubleentry/schema/postgres.sql`, oxsum's own in `crates/core/migrations/`.

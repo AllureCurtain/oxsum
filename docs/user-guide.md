@@ -589,7 +589,7 @@ top-up page, which watches the balance until the switch's webhook credits it;
 cancelling returns the same way and credits nothing. Programmatic callers use
 the same handles with the SDK of their choice.
 
-The Solana rail (`OXSUM_SOLANA_*`; issues #1117/#1141) is the on-chain path:
+The Solana rail (`OXSUM_SOLANA_*`; issues #1117/#1139/#1140/#1141) is the on-chain path:
 `POST /api/v1/topups/solana` opens a `pending` intent and answers the terms
 the paying transaction must honor. In the dashboard the **Solana** tab renders
 that intent two ways. With a Solana wallet installed (Phantom, Solflare,
