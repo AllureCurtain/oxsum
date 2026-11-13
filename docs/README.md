@@ -33,7 +33,7 @@ Use this page to pick a document. Longer pages disagree with themselves in place
 | `crates/doubleentry` | Vendored ledger engine. Change it only under the rules in `AGENTS.md` |
 | `web/` | React dashboard, built into the binary and served at `/app` |
 | `demo/` | One isolated local script, `demo/demo.py`. Not the dashboard pictures |
-| `examples/` | Maintained walkthroughs (scoped management, consumption, webhooks, the offline verifier) |
+| `examples/` | Maintained walkthroughs (scoped management, consumption, webhooks, the Solana rail, the offline verifier) |
 | `deploy/` | Compose profiles for an image install |
 | `docs/roadmap/` | Launch and release notes. Conclusions stay in markdown. Captures are not required reading |
 | `TODO.md` | Open-issue index. `docs/history/TODO-log.md` is a frozen narrative, not a place to append |

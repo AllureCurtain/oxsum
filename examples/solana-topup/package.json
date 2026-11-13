@@ -1,0 +1,17 @@
+{
+  "name": "oxsum-solana-topup-example",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Solana top-up walkthrough against a live oxsum deployment: intent → on-chain reference-marked transfer → confirm and poll credit.",
+  "type": "module",
+  "engines": {
+    "node": ">=20.16"
+  },
+  "scripts": {
+    "keys": "node keys.mjs",
+    "walkthrough": "node topup.mjs"
+  },
+  "dependencies": {
+    "@solana/web3.js": "1.98.4"
+  }
+}
