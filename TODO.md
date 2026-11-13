@@ -10,6 +10,7 @@ Open GitHub issues are the queue. This file is only the index. One row per open 
 
 | Issue | Title |
 | --- | --- |
+| [#1146](https://github.com/AllureCurtain/oxsum/issues/1146) | docs(solana): mainnet small-amount rehearsal runbook |
 | [#1131](https://github.com/AllureCurtain/oxsum/issues/1131) | docs(solana): align openapi/api/product; returns meta.expiresAt; add solana-refunds runbook |
 | [#1130](https://github.com/AllureCurtain/oxsum/issues/1130) | fix(solana): lossless balance parsing, error/metric distinction, open-intent limits, read-only marker check |
 | [#1129](https://github.com/AllureCurtain/oxsum/issues/1129) | fix(solana): startup validates SPL mint decimals; commitment defaults to finalized |
