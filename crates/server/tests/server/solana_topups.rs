@@ -1,4 +1,4 @@
-//! HTTP tests for the Solana deposit rail (issue #1117).
+//! HTTP tests for the Solana deposit rail (issues #1117, #1142).
 //!
 //! `POST /api/v1/topups/solana` opens a `pending` intent carrying a unique
 //! `reference` marker; `POST /api/v1/topups/solana/confirm` submits it and
@@ -6,6 +6,12 @@
 //! lookup — `credit_solana_deposit` walks the same pending → confirmed →
 //! credited path every rail shares. A replayed confirm credits once, a
 //! mismatched transfer refuses, and an unconfigured deployment 503s.
+//!
+//! Issue #1142's queue: a located-but-short transfer marks `underpaid`, a
+//! late one `late`, and an over-delivery credits and marks `overpaid` — each
+//! readable on `/api/v1/admin/solana/exceptions`, and each refundable
+//! through the pull-payment lifecycle (`refund` → the customer's
+//! `refund-address` → `refund-approve` → `refund-complete` → `refunded`).
 //!
 //! The tests need DATABASE_URL and skip without it.
 
@@ -114,13 +120,15 @@ impl ChainLookup for SolanaStub {
     {
         Box::pin(async move {
             let answer = self.validated.lock().unwrap().get(signature).cloned()?;
-            // Honor only a transfer that meets the intent's terms — the same
-            // gates `SolanaRpcClient::validate_transfer` runs against the
-            // chain (recipient, amount, mint, marker). The stub answers `None`
-            // when any term fails, the same shape a dishonoring tx earns.
-            if answer.delivered < expected.amount {
-                return None;
-            }
+            // The armed transfer is the intent's payment — the same answer
+            // `SolanaRpcClient::validate_transfer` gives once the recipient,
+            // mint and marker prove out (issue #1142): the delivered figure
+            // rides up unjudged, and the verifier classifies an under-
+            // delivery `underpaid` rather than masquerading as "not paid".
+            // `None` here is "not the payment at all", which the stub reaches
+            // only for an unarmed signature — a wrong recipient/mint/marker
+            // would dishonor the same way on-chain.
+            let _ = expected;
             Some(answer)
         })
     }
@@ -167,7 +175,12 @@ impl SanctionsScreen for ScreenStub {
     }
 }
 
-/// A configured world: the Solana rail is on, with the stubbed chain.
+/// The operator token the exception-queue and refund lifecycle tests use
+/// (issue #1142).
+const ADMIN_TOKEN: &str = "solana-operator-token-0123456789";
+
+/// A configured world: the Solana rail is on, with the stubbed chain, and
+/// the operator admin surface is on for the exception-queue tests.
 async fn world(stub: SolanaStub) -> Option<(Router, Db)> {
     world_with_terms(stub, terms()).await
 }
@@ -318,8 +331,13 @@ async fn solana_intent_pays_once() {
     assert_eq!(balance(&app, &key).await, 1000, "{replay}");
 }
 
+/// Issue #1142: a located transfer that delivers under the asked amount is
+/// not "not paid yet" — the deposit marks `underpaid` and lands on the
+/// operator's exception queue, never silently `pending` forever. The confirm
+/// answers `409`, the ledger moves nothing, and a second confirm is the
+/// terminal `404` the queue's settled state earns.
 #[tokio::test]
-async fn solana_confirm_refuses_an_unpaying_transfer() {
+async fn solana_confirm_marks_an_underpaid_transfer() {
     let stub = SolanaStub::default();
     let Some((app, _db)) = world(stub.clone()).await else {
         return;
@@ -335,7 +353,8 @@ async fn solana_confirm_refuses_an_unpaying_transfer() {
     .await;
     assert_eq!(status, StatusCode::OK, "{intent}");
     let reference = intent["data"]["reference"].as_str().unwrap().to_owned();
-    // Arm the stub with a transfer that underpays — validate refuses it.
+    // Arm the stub with a transfer that underpays — it is the intent's
+    // payment (recipient, mint, marker all honor) but delivers far short.
     let signature = "sig2222222222222222222222222222222222222222222222222222222222222222";
     stub.located
         .lock()
@@ -350,6 +369,35 @@ async fn solana_confirm_refuses_an_unpaying_transfer() {
             payer: None,
         },
     );
+    let (status, body) = call(
+        &app,
+        "POST",
+        "/api/v1/topups/solana/confirm",
+        Some(json!({"reference": reference})),
+        Some(&key),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CONFLICT, "{body}");
+    assert_eq!(balance(&app, &key).await, 0);
+    // The deposit is on the admin exception queue as `underpaid`, carrying
+    // the delivered figure, the locked asset and the spent signature.
+    let (status, queue) = call(
+        &app,
+        "GET",
+        "/api/v1/admin/solana/exceptions?status=underpaid",
+        None,
+        Some(ADMIN_TOKEN),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{queue}");
+    let entries = queue["data"]["entries"].as_array().unwrap();
+    assert_eq!(entries.len(), 1, "{queue}");
+    let deposit = &entries[0];
+    assert_eq!(deposit["status"].as_str().unwrap(), "underpaid");
+    assert_eq!(deposit["signature"].as_str().unwrap(), signature);
+    assert_eq!(deposit["delivered"].as_i64().unwrap(), 1);
+    assert_eq!(deposit["asset"].as_str().unwrap(), "sol");
+    // A second confirm is the settled terminal answer, not a second walk.
     let (status, _) = call(
         &app,
         "POST",
@@ -358,8 +406,7 @@ async fn solana_confirm_refuses_an_unpaying_transfer() {
         Some(&key),
     )
     .await;
-    assert_eq!(status, StatusCode::FORBIDDEN);
-    assert_eq!(balance(&app, &key).await, 0);
+    assert_eq!(status, StatusCode::NOT_FOUND);
 }
 
 #[tokio::test]
@@ -1034,7 +1081,9 @@ async fn world_with(verifier: SolanaRailVerifier) -> Option<(Router, Db)> {
     let db = Db::from_pool(pool);
     db.migrate().await.expect("migrates");
     oxsum_testkit::set_registration_fixture(db.pool(), true).await;
-    let config = Config::new(Signup::Open, None).with_solana(verifier);
+    let config = Config::new(Signup::Open, None)
+        .with_solana(verifier)
+        .with_admin_token(ADMIN_TOKEN);
     Some((oxsum_server::app(db.clone(), config), db))
 }
 

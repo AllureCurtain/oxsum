@@ -5,8 +5,8 @@
 //! Skips without DATABASE_URL.
 use oxsum_core::{
     AssetTerms, ChainLookup, Db, ExpectedTransfer, LockedRate, NewUser, SanctionsScreen,
-    ScreenVerdict, SolanaRailVerifier, SolanaTerms, USD_PEGGED_RATE_MICRO, ValidatedTransfer,
-    WalletError,
+    ScreenVerdict, SolanaCredit, SolanaRailVerifier, SolanaTerms, USD_PEGGED_RATE_MICRO,
+    ValidatedTransfer, WalletError, solana_status,
 };
 use sqlx::Row;
 use std::sync::{Arc, Mutex};
@@ -297,9 +297,12 @@ impl ChainLookup for OneSig {
             if signature != self.signature {
                 return None;
             }
-            // Honor only the terms the intent locked — the live-rate figure a
-            // repriced verify would demand is deliberately not this.
-            if expected.amount != self.delivered || expected.recipient != self.pay_to() {
+            // Prove the transfer is the intent's payment — recipient and
+            // marker honor — and report what it delivered; the delivered
+            // figure rides up unjudged for the verifier to classify
+            // (issue #1142): `delivered < expected` is underpaid, not
+            // "not the payment".
+            if expected.recipient != self.pay_to() {
                 return None;
             }
             Some(ValidatedTransfer {
@@ -350,11 +353,9 @@ impl ChainLookup for ManySigs {
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Option<ValidatedTransfer>> + Send + 'a>>
     {
         Box::pin(async move {
+            let _ = expected;
             if signature != self.paying {
                 return None; // every noise signature dishonors
-            }
-            if expected.amount != self.delivered {
-                return None;
             }
             Some(ValidatedTransfer {
                 signature: signature.to_owned(),
@@ -399,11 +400,13 @@ async fn verify_walks_past_dishonoring_transactions_to_find_the_payment() {
     let wallet = oxsum_core::Wallet::open(db.pool().clone(), &tenant_id)
         .await
         .unwrap();
-    let receipt = db
+    let credit = db
         .credit_solana_deposit(&wallet, deposit_id, &verifier, time::Date::MAX)
         .await
-        .unwrap()
-        .expect("the real payment is found and credits");
+        .unwrap();
+    let SolanaCredit::Credited(receipt) = credit else {
+        panic!("the real payment is found and credits: {credit:?}");
+    };
     assert!(receipt.is_new);
     assert_eq!(wallet.available().await.unwrap(), 1000);
 }
@@ -451,16 +454,18 @@ async fn expiry_is_judged_on_block_time_not_the_confirm_clock() {
         }),
         short.clone(),
     );
-    let receipt = db
+    let credit = db
         .credit_solana_deposit(&wallet, on_time, &early, time::Date::MAX)
         .await
-        .unwrap()
-        .expect("a payment on-chain before expiry credits even when confirmed late");
+        .unwrap();
+    let SolanaCredit::Credited(receipt) = credit else {
+        panic!("a payment on-chain before expiry credits even when confirmed late: {credit:?}");
+    };
     assert!(receipt.is_new);
     assert_eq!(wallet.available().await.unwrap(), 1000);
 
-    // Edge 2: on-chain after expiry (block_time >= expiresAt) — refused,
-    // never credited.
+    // Edge 2: on-chain after expiry (block_time >= expiresAt) — `late` on
+    // the queue (issue #1142), never credited.
     let late = Uuid::new_v4();
     db.open_solana_deposit(org, late, 1000, &short, None, &rate(&short, None))
         .await
@@ -475,13 +480,21 @@ async fn expiry_is_judged_on_block_time_not_the_confirm_clock() {
         }),
         short,
     );
-    let refused = db
+    let verdict = db
         .credit_solana_deposit(&wallet, late, &late_verifier, time::Date::MAX)
-        .await;
+        .await
+        .unwrap();
     assert!(
-        matches!(refused, Err(WalletError::Forbidden(_))),
-        "a payment on-chain after expiry must not credit: {refused:?}"
+        matches!(verdict, SolanaCredit::Late),
+        "a payment on-chain after expiry must not credit: {verdict:?}"
     );
+    let status: String =
+        sqlx::query_scalar("SELECT status FROM oxsum.deposits WHERE deposit_id = $1")
+            .bind(late)
+            .fetch_one(db.pool())
+            .await
+            .unwrap();
+    assert_eq!(status, solana_status::LATE);
     assert_eq!(wallet.available().await.unwrap(), 1000);
 }
 
@@ -543,11 +556,13 @@ async fn a_second_organizations_intent_on_a_spent_signature_is_forbidden() {
         terms(),
     );
     // The first organization's credit lands.
-    let receipt = db
+    let credit = db
         .credit_solana_deposit(&wallets[0], deposit_ids[0], &verifier, time::Date::MAX)
         .await
-        .unwrap()
-        .expect("the first credit runs");
+        .unwrap();
+    let SolanaCredit::Credited(receipt) = credit else {
+        panic!("the first credit runs: {credit:?}");
+    };
     assert!(receipt.is_new);
     // The second organization's confirm resolves to the same signature —
     // already spent — and must be a clean Forbidden, never a storage fault.
@@ -669,7 +684,7 @@ async fn verify_locked_settles_at_the_intents_terms_not_the_live_config() {
     );
     // Drive credit_solana_deposit through the verifier. The stub honors only
     // the locked 5_000-to-payTo figure; had verify used the live terms it
-    // would have demanded the repriced amount and returned None.
+    // would have demanded the repriced recipient and dishonored.
     let tenant_id: String =
         sqlx::query_scalar("SELECT tenant_id FROM oxsum.organizations WHERE organization_id = $1")
             .bind(org)
@@ -679,11 +694,13 @@ async fn verify_locked_settles_at_the_intents_terms_not_the_live_config() {
     let wallet = oxsum_core::Wallet::open(db.pool().clone(), &tenant_id)
         .await
         .unwrap();
-    let receipt = db
+    let credit = db
         .credit_solana_deposit(&wallet, deposit_id, &verifier, time::Date::MAX)
         .await
-        .unwrap()
-        .expect("the locked intent credits");
+        .unwrap();
+    let SolanaCredit::Credited(receipt) = credit else {
+        panic!("the locked intent credits: {credit:?}");
+    };
     assert!(receipt.is_new, "the credit ran fresh, not a replay");
     // The wallet now holds exactly the opened 1000 minor-credits — the locked
     // amount, not a repriced figure.
@@ -830,10 +847,12 @@ async fn verify_locked_honors_the_locked_asset_and_refuses_off_whitelist() {
             Box<dyn std::future::Future<Output = Option<ValidatedTransfer>> + Send + 'a>,
         > {
             Box::pin(async move {
+                // Prove the payment — locked mint, located signature — and
+                // report `delivered` unjudged for the verifier's per-asset
+                // comparison (issue #1142).
                 if signature != self.signature
                     || expected.spl_token_mint.as_deref()
                         != Some("usdcMint11111111111111111111111111111111")
-                    || expected.amount != self.delivered
                 {
                     return None;
                 }
@@ -862,11 +881,13 @@ async fn verify_locked_honors_the_locked_asset_and_refuses_off_whitelist() {
     let wallet = oxsum_core::Wallet::open(db.pool().clone(), &tenant_id)
         .await
         .unwrap();
-    let receipt = db
+    let credit = db
         .credit_solana_deposit(&wallet, deposit_id, &verifier, time::Date::MAX)
         .await
-        .unwrap()
-        .expect("the locked USDC intent credits");
+        .unwrap();
+    let SolanaCredit::Credited(receipt) = credit else {
+        panic!("the locked USDC intent credits: {credit:?}");
+    };
     assert!(receipt.is_new);
     assert_eq!(wallet.available().await.unwrap(), 1000);
     let _ = reference;
@@ -960,22 +981,400 @@ async fn oracle_priced_intent_locks_and_verifies_the_quote_rate() {
         }),
         terms(),
     );
+    let wallet = wallet_for(&db, org).await;
+    let verdict = db
+        .credit_solana_deposit(&wallet, deposit_id, &verifier, time::Date::MAX)
+        .await
+        .unwrap();
+    assert!(
+        matches!(verdict, SolanaCredit::Credited(_)),
+        "the locked oracle rate credits: {verdict:?}"
+    );
+    assert_eq!(wallet.available().await.unwrap(), 1000);
+}
+
+/// Issue #1142's fixture: a wallet on the test org — the piece every
+/// exception test needs.
+async fn wallet_for(db: &Db, org: Uuid) -> oxsum_core::Wallet {
     let tenant_id: String =
         sqlx::query_scalar("SELECT tenant_id FROM oxsum.organizations WHERE organization_id = $1")
             .bind(org)
             .fetch_one(db.pool())
             .await
             .unwrap();
-    let wallet = oxsum_core::Wallet::open(db.pool().clone(), &tenant_id)
-        .await
-        .unwrap();
-    let receipt = db
-        .credit_solana_deposit(&wallet, deposit_id, &verifier, time::Date::MAX)
+    oxsum_core::Wallet::open(db.pool().clone(), &tenant_id)
         .await
         .unwrap()
-        .expect("the locked oracle rate credits");
+}
+
+/// Opens a 1000-credit intent under `terms`/`asset` and runs
+/// `credit_solana_deposit` against a `OneSig` answering
+/// `delivered`/`block_time`. Returns the deposit id and the verdict.
+async fn credit_with(
+    db: &Db,
+    wallet: &oxsum_core::Wallet,
+    org: Uuid,
+    terms: &SolanaTerms,
+    asset: Option<&str>,
+    delivered: i64,
+    block_time: i64,
+) -> (Uuid, SolanaCredit) {
+    let deposit_id = Uuid::new_v4();
+    db.open_solana_deposit(org, deposit_id, 1000, terms, asset, &rate(terms, asset))
+        .await
+        .unwrap()
+        .expect("inserts");
+    let verifier = SolanaRailVerifier::new(
+        Arc::new(OneSig {
+            reference: Mutex::new(String::new()),
+            signature: format!("sig{}", &Uuid::new_v4().simple().to_string()[..24]),
+            delivered,
+            block_time,
+        }),
+        terms.clone(),
+    );
+    let verdict = db
+        .credit_solana_deposit(wallet, deposit_id, &verifier, time::Date::MAX)
+        .await
+        .unwrap();
+    (deposit_id, verdict)
+}
+
+/// Issue #1142 × #1140: a located transfer that delivers under the asked
+/// amount marks `underpaid` with the verification figures on `meta` — and the
+/// under/over verdict is in *the locked asset's* base units. Run for a `sol`
+/// intent (lamports: 5_000 asked, 3_000 delivered) and a `usdc` one (1_000
+/// mint units asked, 600 delivered): the same underpayment shape, two
+/// different denominators — the per-asset expected figure is what makes a
+/// short USDC payment `underpaid` rather than a SOL-denominated verdict.
+#[tokio::test]
+async fn an_under_delivered_transfer_marks_underpaid_with_the_figures() {
+    let Some(db) = database("solana_underpaid").await else {
+        return;
+    };
+    // (asset, delivered, expected base units, expected received_minor)
+    for (asset, delivered, expected_units, expected_minor) in [
+        (Some("sol"), 3_000_i64, 5_000_i64, 600_i64),
+        (Some("usdc"), 600_i64, 1_000_i64, 600_i64),
+    ] {
+        let org = organization(&db, "underpaid").await;
+        let wallet = wallet_for(&db, org).await;
+        let terms = multi_asset_terms();
+        let (deposit_id, verdict) =
+            credit_with(&db, &wallet, org, &terms, asset, delivered, 0).await;
+        assert!(matches!(verdict, SolanaCredit::Underpaid), "{verdict:?}");
+        assert_eq!(wallet.available().await.unwrap(), 0);
+        let row = sqlx::query(
+            "SELECT status, received_minor, facilitator_tx_hash, meta \
+             FROM oxsum.deposits WHERE deposit_id = $1",
+        )
+        .bind(deposit_id)
+        .fetch_one(db.pool())
+        .await
+        .unwrap();
+        assert_eq!(row.get::<String, _>("status"), solana_status::UNDERPAID);
+        // `received_minor` is the delivered figure converted back at the
+        // locked rate: 3_000 lamports at 200M minor/SOL = 600 credits;
+        // 600 USDC units at parity = 600 credits.
+        assert_eq!(
+            row.get::<Option<i64>, _>("received_minor"),
+            Some(expected_minor)
+        );
+        assert!(
+            row.get::<Option<String>, _>("facilitator_tx_hash")
+                .is_some()
+        );
+        let meta = row.get::<serde_json::Value, _>("meta");
+        assert_eq!(meta["delivered"].as_i64().unwrap(), delivered);
+        assert_eq!(meta["expected"].as_i64().unwrap(), expected_units);
+        assert_eq!(meta["exception"].as_str().unwrap(), "underpaid");
+        // The row is on the exception queue the admin list reads — carrying
+        // the locked asset so the operator knows the denomination.
+        let queue = db
+            .solana_exception_deposits(Some(solana_status::UNDERPAID), 10, None)
+            .await
+            .unwrap();
+        let row = queue
+            .iter()
+            .find(|row| row.deposit_id == deposit_id)
+            .expect("the marked deposit is on the queue");
+        assert_eq!(row.status, solana_status::UNDERPAID);
+        assert_eq!(row.asset.as_deref(), asset);
+        assert_eq!(row.delivered, Some(delivered));
+        assert_eq!(row.expected, Some(expected_units));
+        assert_eq!(row.received_minor, Some(expected_minor));
+        assert!(row.signature.is_some());
+        // A second credit run is the settled no-op — the verdict stands, the
+        // row does not re-mark.
+        let verifier = SolanaRailVerifier::new(
+            Arc::new(OneSig {
+                reference: Mutex::new(String::new()),
+                signature: "sigNeverConsulted000000000000000000".to_owned(),
+                delivered: 9_000,
+                block_time: 0,
+            }),
+            multi_asset_terms(),
+        );
+        let replay = db
+            .credit_solana_deposit(&wallet, deposit_id, &verifier, time::Date::MAX)
+            .await
+            .unwrap();
+        assert!(matches!(replay, SolanaCredit::Settled), "{replay:?}");
+        assert_eq!(wallet.available().await.unwrap(), 0);
+    }
+}
+
+/// Issue #1142: an over-delivery credits the opened amount once — `entry_id`
+/// proves the credit — and the row marks `overpaid` so the surplus is visible
+/// on the queue for a refund. For a `usdc` intent the surplus is judged in
+/// USDC base units, not lamports.
+#[tokio::test]
+async fn an_over_delivered_transfer_credits_once_and_marks_overpaid() {
+    let Some(db) = database("solana_overpaid").await else {
+        return;
+    };
+    let org = organization(&db, "overpaid").await;
+    let wallet = wallet_for(&db, org).await;
+    // A USDC intent: 1000 credits at parity asks 1_000 mint units; the
+    // transfer delivers 2_500.
+    let terms = multi_asset_terms();
+    let (deposit_id, verdict) =
+        credit_with(&db, &wallet, org, &terms, Some("usdc"), 2_500, 0).await;
+    let SolanaCredit::Credited(receipt) = verdict else {
+        panic!("the over-delivery credits: {verdict:?}");
+    };
     assert!(receipt.is_new);
+    // The opened amount credits — never the surplus.
     assert_eq!(wallet.available().await.unwrap(), 1000);
+    let row =
+        sqlx::query("SELECT status, entry_id, meta FROM oxsum.deposits WHERE deposit_id = $1")
+            .bind(deposit_id)
+            .fetch_one(db.pool())
+            .await
+            .unwrap();
+    assert_eq!(row.get::<String, _>("status"), solana_status::OVERPAID);
+    assert!(row.get::<Option<Uuid>, _>("entry_id").is_some());
+    let meta = row.get::<serde_json::Value, _>("meta");
+    assert!(meta["overpaid"].as_bool().unwrap());
+    assert_eq!(meta["delivered"].as_i64().unwrap(), 2_500);
+    assert_eq!(meta["expected"].as_i64().unwrap(), 1_000);
+    // The queue reads it as an exception with the entry that proves credit.
+    let queue = db
+        .solana_exception_deposits(Some(solana_status::OVERPAID), 10, None)
+        .await
+        .unwrap();
+    assert_eq!(queue.len(), 1);
+    assert_eq!(queue[0].asset.as_deref(), Some("usdc"));
+    assert!(queue[0].entry_id.is_some());
+    assert_eq!(queue[0].delivered, Some(2_500));
+}
+
+/// Issue #1142: the refund state machine — `underpaid → refund_pending →
+/// (address) → approved → refunded` — with each order violation refused and
+/// `refunded` terminal. Driven at the Db layer where the transitions live.
+#[tokio::test]
+async fn the_refund_walks_pending_address_approve_complete() {
+    let Some(db) = database("solana_refund").await else {
+        return;
+    };
+    let org = organization(&db, "refund").await;
+    let wallet = wallet_for(&db, org).await;
+    let terms = terms();
+    let (deposit_id, _) = credit_with(&db, &wallet, org, &terms, None, 3_000, 0).await;
+    // Open: underpaid → refund_pending, recording who/why.
+    let opened = db
+        .solana_request_refund(deposit_id, "operator", "under-delivered")
+        .await
+        .unwrap();
+    assert_eq!(opened.status, solana_status::REFUND_PENDING);
+    let refund = opened.refund.expect("meta.refund is recorded");
+    assert_eq!(refund["requestedBy"].as_str().unwrap(), "operator");
+    assert_eq!(refund["reason"].as_str().unwrap(), "under-delivered");
+    assert!(refund["requestedAt"].is_string());
+    // Approving with no address is refused.
+    let early = db.solana_approve_refund(deposit_id, "operator").await;
+    assert!(matches!(early, Err(WalletError::Conflict(_))), "{early:?}");
+    // The customer names the refund address — validated base58-32.
+    let bad = db
+        .solana_set_refund_address(org, deposit_id, "not-base58!!")
+        .await;
+    assert!(matches!(bad, Err(WalletError::InvalidInput(_))), "{bad:?}");
+    let addressed = db
+        .solana_set_refund_address(
+            org,
+            deposit_id,
+            "4uQeVj5tqViQh7yWWGStvkEG1Zmhx6uasJtWCJziofM",
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        addressed.refund_address.as_deref(),
+        Some("4uQeVj5tqViQh7yWWGStvkEG1Zmhx6uasJtWCJziofM")
+    );
+    // Another organization's write is a `NotFound`, not a leak.
+    let other = organization(&db, "refund-other").await;
+    let foreign = db
+        .solana_set_refund_address(
+            other,
+            deposit_id,
+            "4uQeVj5tqViQh7yWWGStvkEG1Zmhx6uasJtWCJziofM",
+        )
+        .await;
+    assert!(
+        matches!(foreign, Err(WalletError::NotFound(_))),
+        "{foreign:?}"
+    );
+    // Completing before approval is refused.
+    let payout =
+        "299xJhoRJCHgYo6xxU78Joi8sY7uXrsp7kzXMxbVFZVLKHqVAfV1R3dA864pwEhe6z1wYWy1BXDzyvzNZDKHfdMd";
+    let unapproved = db.solana_complete_refund(deposit_id, payout).await;
+    assert!(
+        matches!(unapproved, Err(WalletError::Conflict(_))),
+        "{unapproved:?}"
+    );
+    // Approve, then the address freezes.
+    let approved = db
+        .solana_approve_refund(deposit_id, "operator")
+        .await
+        .unwrap();
+    assert!(approved.refund.unwrap()["approvedAt"].is_string());
+    let frozen = db
+        .solana_set_refund_address(org, deposit_id, "11111111111111111111111111111111")
+        .await;
+    assert!(
+        matches!(frozen, Err(WalletError::Conflict(_))),
+        "{frozen:?}"
+    );
+    // Complete: refunded with the payout signature — terminal.
+    let closed = db.solana_complete_refund(deposit_id, payout).await.unwrap();
+    assert_eq!(closed.status, solana_status::REFUNDED);
+    assert_eq!(closed.refund_signature.as_deref(), Some(payout));
+    // A replayed complete with the standing signature answers the row; a
+    // contradicting signature is the audit-protecting Conflict.
+    let replay = db.solana_complete_refund(deposit_id, payout).await.unwrap();
+    assert_eq!(replay.status, solana_status::REFUNDED);
+    let contradiction = db
+        .solana_complete_refund(
+            deposit_id,
+            "1111111111111111111111111111111111111111111111111111111111111111",
+        )
+        .await;
+    assert!(
+        matches!(contradiction, Err(WalletError::Conflict(_))),
+        "{contradiction:?}"
+    );
+    // And no credit ever ran — the customer's money returns on-chain.
+    assert_eq!(wallet.available().await.unwrap(), 0);
+}
+
+/// Issue #1142: a refund opens only on the refundable statuses. `pending`,
+/// `credited`, `expired`, `refund_pending`-replays and `refunded` all refuse —
+/// `Conflict` (or a replay for an already-open refund), never a reset.
+#[tokio::test]
+async fn a_refund_opens_only_on_the_refundable_statuses() {
+    let Some(db) = database("solana_refund_gate").await else {
+        return;
+    };
+    let org = organization(&db, "refund-gate").await;
+    let wallet = wallet_for(&db, org).await;
+    let terms = terms();
+    // `pending` refuses.
+    let pending = Uuid::new_v4();
+    db.open_solana_deposit(org, pending, 1000, &terms, None, &rate(&terms, None))
+        .await
+        .unwrap()
+        .expect("inserts");
+    let refused = db.solana_request_refund(pending, "op", "no").await;
+    assert!(
+        matches!(refused, Err(WalletError::Conflict(_))),
+        "{refused:?}"
+    );
+    // `credited` (exact pay) refuses — nothing is owed.
+    let (credited_id, verdict) = credit_with(&db, &wallet, org, &terms, None, 5_000, 0).await;
+    assert!(matches!(verdict, SolanaCredit::Credited(_)));
+    let refused = db.solana_request_refund(credited_id, "op", "no").await;
+    assert!(
+        matches!(refused, Err(WalletError::Conflict(_))),
+        "{refused:?}"
+    );
+    // An open refund replays rather than re-entering — and `refunded` is a
+    // terminal `Conflict`.
+    let (underpaid_id, _) = credit_with(&db, &wallet, org, &terms, None, 3_000, 0).await;
+    db.solana_request_refund(underpaid_id, "op", "first")
+        .await
+        .unwrap();
+    let replay = db
+        .solana_request_refund(underpaid_id, "op", "again")
+        .await
+        .unwrap();
+    assert_eq!(replay.status, solana_status::REFUND_PENDING);
+    assert_eq!(
+        replay.refund.unwrap()["reason"].as_str().unwrap(),
+        "first",
+        "the replay answers the standing refund, not a rewrite"
+    );
+    // `flagged` — the #1144 screening status — is refundable: the refund
+    // lifecycle predates the writer that lands rows there.
+    let flagged = Uuid::new_v4();
+    db.open_solana_deposit(org, flagged, 1000, &terms, None, &rate(&terms, None))
+        .await
+        .unwrap()
+        .expect("inserts");
+    sqlx::query("UPDATE oxsum.deposits SET status = 'flagged' WHERE deposit_id = $1")
+        .bind(flagged)
+        .execute(db.pool())
+        .await
+        .unwrap();
+    let opened = db
+        .solana_request_refund(flagged, "op", "screening hold")
+        .await
+        .unwrap();
+    assert_eq!(opened.status, solana_status::REFUND_PENDING);
+    // Unknown deposits are `NotFound`.
+    let missing = db.solana_request_refund(Uuid::new_v4(), "op", "x").await;
+    assert!(
+        matches!(missing, Err(WalletError::NotFound(_))),
+        "{missing:?}"
+    );
+}
+
+/// Issue #1142: the queue filters and the org-scoped list only sees its own
+/// rows — the two reads the admin table and the customer Topup surface make.
+#[tokio::test]
+async fn the_exception_queue_filters_by_status_and_scopes_by_org() {
+    let Some(db) = database("solana_queue").await else {
+        return;
+    };
+    let org = organization(&db, "queue").await;
+    let wallet = wallet_for(&db, org).await;
+    let terms = terms();
+    let (underpaid_id, _) = credit_with(&db, &wallet, org, &terms, None, 3_000, 0).await;
+    let (overpaid_id, _) = credit_with(&db, &wallet, org, &terms, None, 9_000, 0).await;
+    // `None` lists every exception status; the filter narrows to one.
+    let all = db.solana_exception_deposits(None, 10, None).await.unwrap();
+    assert_eq!(all.len(), 2);
+    let only_overpaid = db
+        .solana_exception_deposits(Some(solana_status::OVERPAID), 10, None)
+        .await
+        .unwrap();
+    assert_eq!(only_overpaid.len(), 1);
+    assert_eq!(only_overpaid[0].deposit_id, overpaid_id);
+    // The org-scoped list is the same rows through the customer's lens.
+    let mine = db.solana_exception_deposits_for(org, 10).await.unwrap();
+    assert_eq!(mine.len(), 2);
+    // Another org sees none of them.
+    let other = organization(&db, "queue-other").await;
+    let theirs = db.solana_exception_deposits_for(other, 10).await.unwrap();
+    assert!(theirs.is_empty());
+    // `solana_deposit_for` answers one org-scoped row and refuses the leak.
+    let row = db.solana_deposit_for(org, underpaid_id).await.unwrap();
+    assert!(row.is_some());
+    assert!(
+        db.solana_deposit_for(other, underpaid_id)
+            .await
+            .unwrap()
+            .is_none()
+    );
 }
 
 /// Issue #1144: a `Flagged` verdict parks the deposit — `pending → flagged`,
