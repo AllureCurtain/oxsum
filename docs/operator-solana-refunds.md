@@ -151,6 +151,12 @@ Tuning notes:
 
 ## What this runbook does not cover
 
-The wallet adapter that removes the manual reference step, and hot-wallet key
-custody / consolidation / withdrawal — the follow-ups tracked on #1117, not
-this rail's current scope.
+Price-oracle lock timing, the wallet adapter that removes the manual
+reference step, and hot-wallet key custody / consolidation / withdrawal —
+the follow-ups tracked on #1117, not this rail's current scope. Key custody —
+receiving `payTo` into a Squads v4 multisig vault and who signs a spend — is
+the operator-side setup in `docs/self-hosted-solana-multisig.md` (issue
+#1143). Dual SOL+USDC deposits shipped with #1140 — USDT joined as an opt-in
+whitelist key behind `OXSUM_SOLANA_USDT_ENABLED` (#1151): an intent's
+`meta.asset` names the asset its refund must move, and a stablecoin's
+`rateMicro` is the fixed 1_000_000 parity.
