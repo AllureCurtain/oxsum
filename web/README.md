@@ -55,6 +55,13 @@ npm run dev          # vite dev server, proxies /api to localhost:3000
 Start the backend separately (`cargo run -p oxsum-server` with `.env`), then
 open the Vite URL — session cookies are same-origin through the proxy.
 
+One build-time variable shapes the bundle: `VITE_SOLANA_RPC_URL` names the
+JSON-RPC endpoint the Topup page's wallet-adapter pay button sends the
+customer-signed transfer through (issue #1147), defaulting to
+`https://api.mainnet-beta.solana.com`. It is a `VITE_*` read inside
+`import.meta.env`, not an `OXSUM_*` server var — set it at `npm run build`
+for an authenticated or devnet loop.
+
 ## Production
 
 `npm run build` emits `dist/`; `crates/server/src/spa.rs` embeds it via

@@ -592,10 +592,17 @@ the same handles with the SDK of their choice.
 The Solana rail (`OXSUM_SOLANA_*`; issues #1117/#1141) is the on-chain path:
 `POST /api/v1/topups/solana` opens a `pending` intent and answers the terms
 the paying transaction must honor. In the dashboard the **Solana** tab renders
-that intent as a Solana Pay transfer-request URL plus a QR code — scan it with
-a Solana wallet, or copy the link, and the wallet fills in the recipient,
-amount and `reference` marker itself. The manual `payTo` / amount /
-`reference` fields stay beneath the QR for a wallet that cannot scan.
+that intent two ways. With a Solana wallet installed (Phantom, Solflare,
+Backpack — any Wallet Standard wallet) a **pay with wallet** button appears
+(issue #1147): click it, approve the transfer the wallet pops up, and the
+signed transaction lands on-chain carrying the `reference` marker — nothing
+to copy. The page then verifies the transfer exactly as a scanned payment.
+Without an installed wallet the tab renders the intent as a Solana Pay
+transfer-request URL plus a QR code — scan it with a Solana wallet, or copy
+the link, and the wallet fills in the recipient, amount and `reference`
+marker itself. The manual `payTo` / amount / `reference` fields stay beneath
+the QR for a wallet that cannot scan; when no compatible wallet is detected
+the button stays away and the QR/manual path is the payment.
 
 While the intent stands open the tab shows its live status (issue #1148): a
 countdown to `expiresAt` — red once under a minute remains — the locked

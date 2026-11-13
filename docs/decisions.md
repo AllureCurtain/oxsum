@@ -4861,3 +4861,41 @@ queue's own writes are recorded — a job would have hidden the actor.
 Nothing on this path credits, marks or sends: an unmatched row is the
 manual-investigation trigger, and the refund/intent path stays a human
 decision.
+
+## 2026-11-14 — Wallet-adapter pay button: Wallet Standard enumeration, lazy chunk, browser-side RPC (#1147)
+
+The open intent's Topup panel gains a "pay with wallet" control that sends
+the reference-carrying transfer straight from an installed wallet — the user
+never copies `payTo` or the marker. Three choices shape it.
+
+- **Enumerate the Wallet Standard, not per-wallet adapters.** Phantom,
+  Solflare, Backpack and every current wallet inject a Wallet Standard
+  registration, which `@solana/wallet-standard-wallet-adapter-react`'s
+  `useStandardWalletAdapters([])` reads with zero per-wallet packages — the
+  heavier `@solana/wallet-adapter-wallets` bundle and the
+  `wallet-adapter-react-ui` modal were deliberately left out. The component
+  filters to `Installed`/`Loadable` adapters and dedupes by name, so a
+  browser with no injected wallet renders only the install hint and the
+  QR/manual path carries the payment unchanged — the graceful fallback the
+  issue requires.
+- **The wallet stack is a lazy chunk.** `web3.js` plus the adapter tree
+  outweighs the rest of the Topup page, and a Stripe/Hyperswitch top-up
+  should never download it. `SolanaWalletPay` mounts through
+  `React.lazy()`/`Suspense` inside the open-intent panel, so the ~300 kB
+  (87 kB gzip) chunk fetches only when a Solana intent actually stands open;
+  the built `dist/` confirms it splits off `index`/`Topup`. The transaction
+  itself is built client-side — `SystemProgram.transfer` for `sol`, ATA
+  derivation + `createAssociatedTokenAccountIdempotent` +
+  `TransferChecked` for an `splToken` mint — with `reference` appended as a
+  read-only non-signer key on the paying instruction, the same Solana Pay
+  marker the `solana:` URL encodes and `getSignaturesForAddress` scans for.
+- **The browser RPC is a `VITE_*` build var, never a backend proxy.**
+  `adapter.sendTransaction` needs an endpoint; `VITE_SOLANA_RPC_URL` (read
+  by `import.meta.env`, default `https://api.mainnet-beta.solana.com`)
+  supplies it. It only ever carries the customer's already-signed
+  transaction — the rail's `OXSUM_SOLANA_RPC_URLS` pool stays the
+  authoritative verify path — so a public or rate-limited endpoint degrades
+  the send, never the credit decision, and no server-side submit route had
+  to be invented. After send the page re-asks `POST /topups/solana/confirm`
+  on the identical mutation "I've sent it" uses, so the signature settles
+  on the existing poll/status path rather than a parallel one.
