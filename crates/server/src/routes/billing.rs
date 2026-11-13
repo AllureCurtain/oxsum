@@ -259,14 +259,17 @@ pub(crate) struct SolanaTopupReq {
 }
 
 /// `POST /api/v1/topups/solana`: the Solana deposit rail (issues #1117,
-/// #1140). Opens a `pending` deposit intent and answers the `reference`,
-/// `payTo`, `asset`, `amountLamports` and `expiresAt` a wallet needs to pay
-/// it — the asset the body names (or the deployment default) off the
-/// `OXSUM_SOLANA_ASSETS` whitelist, native `sol` or a configured SPL mint.
-/// `payment_ref` anchors on the per-intent `reference` marker, so the intent
-/// is unique by construction. An `asset` off the whitelist is a 400; a
-/// deployment without `OXSUM_SOLANA_*` answers 503 — the rail is configured
-/// or it is not.
+/// #1139, #1140). Opens a `pending` deposit intent and answers the
+/// `reference`, `payTo`, `asset`, `amountLamports` and `expiresAt` a wallet
+/// needs to pay it — the asset the body names (or the deployment default)
+/// off the `OXSUM_SOLANA_ASSETS` whitelist, native `sol` or a configured SPL
+/// mint. `payment_ref` anchors on the per-intent `reference` marker, so the
+/// intent is unique by construction. A `sol` intent is priced at open off the
+/// deployment's Pyth oracle: a stale, over-wide or missing quote refuses the
+/// open `403` rather than pinning a fallback rate; a USD-pegged intent locks
+/// the fixed parity without an oracle call. An `asset` off the whitelist is
+/// a 400; a deployment without `OXSUM_SOLANA_*` answers 503 — the rail is
+/// configured or it is not.
 pub(crate) async fn solana_topup(
     State(state): State<AppState>,
     Extension(principal): Extension<Principal>,
@@ -283,6 +286,10 @@ pub(crate) async fn solana_topup(
         .ok_or_else(|| {
             ApiError::Validation("the asset is not one the solana rail accepts".into())
         })?;
+    // Price the intent before the insert: a `sol` open samples the oracle
+    // (or refuses when the quote is stale/wide or absent), a pegged open
+    // answers the fixed parity without an oracle call (issue #1139).
+    let rate = verifier.resolve_rate(&asset_terms).await?;
     let deposit_id = Uuid::new_v4();
     let opened = state
         .db
@@ -292,6 +299,7 @@ pub(crate) async fn solana_topup(
             r.amount_minor,
             verifier.terms(),
             r.asset.as_deref(),
+            &rate,
         )
         .await?;
     let Some((reference, lamports, expires_at)) = opened else {

@@ -1826,7 +1826,6 @@ fn solana_custody_of(
     Ok(SolanaCustody::VerifiedMultisigVault)
 }
 
-/// Parses the Solana deposit rail (issue #1117). The complete set:
 /// One whitelist entry `solana_of` resolved from the environment — the
 /// asset's key, the mint its deposits pay (`None` for native SOL) and the
 /// rate its intents lock. `asset_decimals` is the declared figure under the
@@ -1854,7 +1853,10 @@ struct SolanaAssetSpec {
 /// decimals from the still-required `OXSUM_SOLANA_DECIMALS`, which the boot
 /// cross-checks on-chain like before). Set both and the whitelist wins, with
 /// the legacy pair ignored — the two forms describing one rail would only
-/// disagree.
+/// disagree. `legacy` marks the form: a legacy deployment always prices its
+/// one asset statically (a native-SOL legacy deployment is devnet by
+/// construction — the oracle gate `OXSUM_SOLANA_DEVNET_STATIC_RATE` guards
+/// only the whitelist `sol` key, issue #1139).
 fn solana_asset_specs(
     rate_micro: i64,
     declared_decimals: Option<u32>,
@@ -1864,7 +1866,10 @@ fn solana_asset_specs(
         None => {
             // The legacy single-asset deployment: native SOL, or one SPL
             // mint under the `spl` key — the shape the rail held before the
-            // whitelist.
+            // whitelist. A legacy deployment always prices its one asset
+            // statically: `solana_of` keys `SolanaPricing::Static` off the
+            // form, not the asset, so an oracle gate never fires here
+            // (issue #1139 — the gate guards only the whitelist `sol` key).
             Ok(match legacy_mint {
                 Some(mint) => vec![SolanaAssetSpec {
                     key: "spl".to_owned(),
@@ -1904,8 +1909,10 @@ fn solana_asset_specs(
                 }
                 if key == "sol" {
                     // Native SOL: the only entry with no mint — and the only
-                    // volatile asset, so it takes `RATE_MICRO` until the
-                    // #1139 oracle lands.
+                    // volatile asset, so it is the one the #1139 oracle prices
+                    // at open (the static `rate_micro` carried here is the
+                    // `Static`-policy/devnet fallback the open locks when the
+                    // oracle is not the rail's pricing).
                     specs.push(SolanaAssetSpec {
                         key,
                         mint: None,
@@ -1924,10 +1931,9 @@ fn solana_asset_specs(
                         )
                     })?;
                 // An SPL asset on the whitelist is a USD stablecoin: it locks
-                // the fixed parity rate, never the volatile `RATE_MICRO`.
-                // TODO(#1139): when the oracle lands, the plug point is the
-                // AssetTerms this becomes — a non-pegged SPL key would take
-                // its `rate_micro` from the oracle instead of parity.
+                // the fixed parity rate, never the volatile `RATE_MICRO` — and
+                // never an oracle call: a pegged asset's rate is a constant of
+                // the deployment (issue #1139).
                 specs.push(SolanaAssetSpec {
                     key,
                     mint: Some(mint),
@@ -1943,43 +1949,78 @@ fn solana_asset_specs(
     }
 }
 
-/// Parses the Solana deposit rail (issues #1117, #1140). The complete set:
-/// `OXSUM_SOLANA_RPC_URL` + `OXSUM_SOLANA_PAY_TO` + `OXSUM_SOLANA_RATE_MICRO`,
-/// with `OXSUM_SOLANA_ASSETS` + `OXSUM_SOLANA_MINT_<KEY>` /
-/// `OXSUM_SOLANA_DEFAULT_ASSET` / `OXSUM_SOLANA_COMMITMENT` /
-/// `OXSUM_SOLANA_INTENT_TTL_SECS` optional — the three requireds or none, a
-/// subset is a startup error like the Stripe trio. Unset and the rail is
-/// absent: `POST /api/v1/topups/solana` answers 503 and the
-/// `solana-deposits` job schedules nothing.
+/// Parses the Solana deposit rail (issues #1117, #1139, #1140). The complete
+/// set: `OXSUM_SOLANA_RPC_URL` + `OXSUM_SOLANA_PAY_TO`, plus a rate source —
+/// a Pyth oracle a `sol` whitelist intent prices at open (issue #1139) or
+/// the static `OXSUM_SOLANA_RATE_MICRO` a devnet deployment pins behind
+/// `OXSUM_SOLANA_DEVNET_STATIC_RATE=1` (and the figure the legacy
+/// single-asset form always locks). `OXSUM_SOLANA_ASSETS` +
+/// `OXSUM_SOLANA_MINT_<KEY>` / `OXSUM_SOLANA_DEFAULT_ASSET` /
+/// `OXSUM_SOLANA_COMMITMENT` / `OXSUM_SOLANA_INTENT_TTL_SECS` optional — the
+/// requireds or none, a subset is a startup error like the Stripe trio.
+/// Unset and the rail is absent: `POST /api/v1/topups/solana` answers 503
+/// and the `solana-deposits` job schedules nothing.
 fn solana_of() -> Result<Option<Arc<oxsum_core::SolanaRailVerifier>>, String> {
     let rpc_url = var("OXSUM_SOLANA_RPC_URL");
     let pay_to = var("OXSUM_SOLANA_PAY_TO");
     let rate_micro = var("OXSUM_SOLANA_RATE_MICRO");
     let spl_token_mint = var("OXSUM_SOLANA_SPL_TOKEN_MINT");
     let assets_declared = var("OXSUM_SOLANA_ASSETS");
+    let devnet_static = var("OXSUM_SOLANA_DEVNET_STATIC_RATE")
+        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+        .unwrap_or(false);
     let present = [&rpc_url, &pay_to, &rate_micro]
         .iter()
         .filter(|v| v.is_some())
         .count();
-    if present == 0 && spl_token_mint.is_none() && assets_declared.is_none() {
+    // Any PYTH_* knob or the devnet flag also counts as "the operator meant
+    // the rail" — a lone `OXSUM_SOLANA_PYTH_*` must not be silently ignored.
+    let pyth_touched = [
+        "OXSUM_SOLANA_PYTH_URL",
+        "OXSUM_SOLANA_PYTH_FEED_ID",
+        "OXSUM_SOLANA_PYTH_MAX_AGE_SECS",
+        "OXSUM_SOLANA_PYTH_MAX_CONF_RATIO",
+    ]
+    .iter()
+    .any(|k| var(k).is_some());
+    if present == 0
+        && spl_token_mint.is_none()
+        && assets_declared.is_none()
+        && !devnet_static
+        && !pyth_touched
+    {
         return Ok(None);
     }
-    if present < 3 {
+    if present < 2 {
         return Err(
-            "OXSUM_SOLANA_RPC_URL, OXSUM_SOLANA_PAY_TO and OXSUM_SOLANA_RATE_MICRO \
-             are set together, or none"
-                .into(),
+            "OXSUM_SOLANA_RPC_URL and OXSUM_SOLANA_PAY_TO are set together, or none".into(),
         );
     }
-    let (Some(rpc_url), Some(pay_to), Some(rate_micro)) = (rpc_url, pay_to, rate_micro) else {
+    let (Some(rpc_url), Some(pay_to)) = (rpc_url, pay_to) else {
         return Ok(None);
     };
-    let rate_micro: i64 = rate_micro
-        .parse()
-        .map_err(|_| "OXSUM_SOLANA_RATE_MICRO must be an integer".to_owned())?;
-    if rate_micro <= 0 {
-        return Err("OXSUM_SOLANA_RATE_MICRO must be positive".into());
-    }
+    // The rate source (issue #1139): a `sol` whitelist intent is oracle-priced
+    // by default — `RATE_MICRO` is the devnet stand-in and is only read
+    // behind the explicit `OXSUM_SOLANA_DEVNET_STATIC_RATE=1` opt-in. The
+    // legacy single-asset form keeps its static `RATE_MICRO` unconditionally
+    // (a native-SOL legacy deployment is devnet by construction); a whitelist
+    // `sol` entry that sets it without the flag is a startup error, never a
+    // silent mainnet fallback.
+    let rate_micro: i64 = match rate_micro {
+        Some(raw) => {
+            let v: i64 = raw
+                .parse()
+                .map_err(|_| "OXSUM_SOLANA_RATE_MICRO must be an integer".to_owned())?;
+            if v <= 0 {
+                return Err("OXSUM_SOLANA_RATE_MICRO must be positive".into());
+            }
+            v
+        }
+        // Under the whitelist a `sol` entry may price entirely off the
+        // oracle — no static figure to carry; a legacy deployment still
+        // needs it (checked below, where the form is known).
+        None => 0,
+    };
     // Default finalized for mainnet-grade finality; a devnet deployment sets
     // `OXSUM_SOLANA_COMMITMENT=confirmed` explicitly for latency. The wrong
     // direction is the dangerous one — a `confirmed` default would silently
@@ -1999,6 +2040,38 @@ fn solana_of() -> Result<Option<Arc<oxsum_core::SolanaRailVerifier>>, String> {
         })
         .transpose()?;
     let mut specs = solana_asset_specs(rate_micro, declared_decimals)?;
+    let legacy_form = assets_declared.is_none();
+    // The rate-source gate (issue #1139): the legacy form always prices
+    // statically — its `spl` or `sol` single asset locks `RATE_MICRO`, so a
+    // legacy deployment without the figure is a startup error. Under the
+    // whitelist the oracle prices `sol` unless `DEVNET_STATIC_RATE=1` pins
+    // the static figure instead — a whitelist `sol` carrying `RATE_MICRO`
+    // without the flag is refused, the dangerous direction being a mainnet
+    // silently pricing SOL at a hand-set figure.
+    if legacy_form && rate_micro == 0 {
+        return Err(
+            "OXSUM_SOLANA_RATE_MICRO must be set under the legacy single-asset form — \
+             the rail's one asset locks it statically"
+                .into(),
+        );
+    }
+    let whitelist_sol = !legacy_form && specs.iter().any(|s| s.mint.is_none());
+    if whitelist_sol && rate_micro != 0 && !devnet_static {
+        return Err(
+            "OXSUM_SOLANA_RATE_MICRO may only price a `sol` whitelist intent behind \
+             OXSUM_SOLANA_DEVNET_STATIC_RATE=1 — a mainnet SOL intent is \
+             oracle-priced and this would silently pin a static rate"
+                .into(),
+        );
+    }
+    if whitelist_sol && devnet_static && rate_micro == 0 {
+        return Err(
+            "OXSUM_SOLANA_DEVNET_STATIC_RATE=1 pins a `sol` whitelist intent to \
+             OXSUM_SOLANA_RATE_MICRO — set it too (a zero rate would open \
+             zero-amount intents)"
+                .into(),
+        );
+    }
     // `OXSUM_SOLANA_DEFAULT_ASSET`: the key an `asset`-less open resolves.
     // Unset, the whitelist's first SPL entry wins when present — a
     // stablecoin default cannot be under-priced by SOL's drift — else `sol`.
@@ -2091,10 +2164,44 @@ fn solana_of() -> Result<Option<Arc<oxsum_core::SolanaRailVerifier>>, String> {
         max_amount_minor,
         opens_per_minute,
     );
-    Ok(Some(Arc::new(oxsum_core::SolanaRailVerifier::new(
-        Arc::new(client),
-        terms,
-    ))))
+    // The pricing the verifier resolves at open (issue #1139): `Static` for
+    // the legacy single-asset form and for a `sol` whitelist behind
+    // `DEVNET_STATIC_RATE=1`; the Pyth oracle for a `sol` whitelist entry
+    // otherwise. A `sol`-only whitelist still builds the oracle client —
+    // pegged assets never call it, so an oracle-less `usdc` deployment
+    // costs nothing.
+    let (pricing, oracle) = if legacy_form || devnet_static || !whitelist_sol {
+        (oxsum_core::SolanaPricing::Static, None)
+    } else {
+        let feed_id = var("OXSUM_SOLANA_PYTH_FEED_ID")
+            .filter(|s| !s.is_empty())
+            .unwrap_or_else(|| oxsum_integrations::pyth::DEFAULT_SOL_USD_FEED_ID.to_owned());
+        let max_quote_age_secs = var("OXSUM_SOLANA_PYTH_MAX_AGE_SECS")
+            .map(|v| v.parse::<i64>())
+            .transpose()
+            .map_err(|_| "OXSUM_SOLANA_PYTH_MAX_AGE_SECS must be an integer".to_owned())?
+            .unwrap_or(60);
+        let max_conf_ratio = var("OXSUM_SOLANA_PYTH_MAX_CONF_RATIO")
+            .map(|v| v.parse::<f64>())
+            .transpose()
+            .map_err(|_| "OXSUM_SOLANA_PYTH_MAX_CONF_RATIO must be a number".to_owned())?
+            .unwrap_or(0.01);
+        let pyth_url = var("OXSUM_SOLANA_PYTH_URL")
+            .filter(|s| !s.is_empty())
+            .unwrap_or_else(|| "https://hermes.pyth.network".to_owned());
+        let pyth = oxsum_integrations::pyth::PythClient::new(pyth_url, crate::jobs::http_client());
+        (
+            oxsum_core::SolanaPricing::Oracle {
+                feed_id,
+                max_quote_age_secs,
+                max_conf_ratio,
+            },
+            Some(Arc::new(pyth) as Arc<dyn oxsum_core::PriceOracle>),
+        )
+    };
+    Ok(Some(Arc::new(
+        oxsum_core::SolanaRailVerifier::with_pricing(Arc::new(client), terms, pricing, oracle),
+    )))
 }
 
 /// Cross-checks `OXSUM_RAILS` (issue #619): the comma-separated deposit rails
