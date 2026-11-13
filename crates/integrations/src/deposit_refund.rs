@@ -388,8 +388,10 @@ async fn stripe_read(
 /// (`pi_…`) a Stripe refund names. A `pi_…` is already canonical and needs no
 /// lookup; a `cs_…` resolves through `GET /v1/checkout/sessions/{id}` — a
 /// session that never paid has no `payment_intent`, so it stays `UnknownRefund`
-/// rather than fabricating an anchor.
-async fn stripe_payment_intent(
+/// rather than fabricating an anchor. Shared with the order-refund arm in
+/// [`crate::merchant_checkout`]: a Stripe order's durable reference is also the
+/// `cs_…` Checkout Session id, which `v1/refunds` cannot accept either.
+pub(crate) async fn resolve_stripe_payment_intent(
     context: &MerchantSigningContext,
     provider_payment_id: &str,
     http: &ProviderHttp,
@@ -433,7 +435,7 @@ async fn stripe_create(
     http: &ProviderHttp,
     id: &str,
 ) -> Result<Value, UnknownRefund> {
-    let payment_intent = stripe_payment_intent(
+    let payment_intent = resolve_stripe_payment_intent(
         context,
         target.provider_payment_id.as_deref().ok_or(UnknownRefund)?,
         http,

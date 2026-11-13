@@ -816,3 +816,79 @@ async fn a_charge_refunded_event_never_settles() {
         "pending"
     );
 }
+
+/// An order refund's durable `provider_payment_id` is the `cs_…` Checkout
+/// Session the order's charge resolved under — but `v1/refunds` names its
+/// parent by `payment_intent` (`pi_…`). The arm resolves `cs_…`→`pi_…` before
+/// creating, so the wire carries the intent, never the session id (#1041's
+/// latent defect in `docs/rails.md`).
+#[tokio::test]
+async fn an_order_refund_resolves_session_to_intent() {
+    let Some((_app, db, stub)) = admin_world().await else {
+        return;
+    };
+    let context = db
+        .environment_merchant(oxsum_core::MerchantRail::Stripe, &sealing_key())
+        .await
+        .unwrap()
+        .expect("the Stripe bootstrap seeded a merchant");
+    let http = oxsum_integrations::provider_http::ProviderHttp::default();
+    let now = time::OffsetDateTime::now_utc();
+    let refund = oxsum_core::OrderRefund {
+        refund_id: Uuid::new_v4(),
+        order_id: Uuid::new_v4(),
+        organization_id: Uuid::new_v4(),
+        amount_minor: 4_000_000,
+        display_amount_minor: 4000,
+        display_currency: "USD".to_owned(),
+        reason: "customer asked".to_owned(),
+        state: "provider_pending".to_owned(),
+        hyperswitch_body_id: false,
+        provider_refund_id: None,
+        retry_count: 0,
+        business_id: Uuid::new_v4(),
+        resolved_by: None,
+        next_retry_at: None,
+        note_id: None,
+        cash_effect: None,
+        created_at: now,
+        updated_at: now,
+    };
+
+    // The pinned reference is the session id; the resolver reads it to the
+    // intent the stub answers for `GET /v1/checkout/sessions/{cs}`.
+    let handle = oxsum_integrations::merchant_checkout::create_refund(
+        &context,
+        &refund,
+        "cs_test_123",
+        &http,
+    )
+    .await
+    .expect("the refund resolves its intent and issues");
+    let creates = stub.refund_creates.lock().unwrap().clone();
+    assert_eq!(creates.len(), 1);
+    assert_eq!(creates[0]["payment_intent"], json!("pi_test_123"));
+    assert_ne!(creates[0]["payment_intent"], json!("cs_test_123"));
+    assert_eq!(creates[0]["amount"], json!(4000));
+    assert!(handle.provider_refund_id.starts_with("re_"));
+
+    // An already-intent reference skips the session lookup entirely — the same
+    // resolver short-circuits a `pi_…` without contacting the provider.
+    stub.refund_creates.lock().unwrap().clear();
+    let refund = oxsum_core::OrderRefund {
+        refund_id: Uuid::new_v4(),
+        ..refund
+    };
+    let handle = oxsum_integrations::merchant_checkout::create_refund(
+        &context,
+        &refund,
+        "pi_direct_9",
+        &http,
+    )
+    .await
+    .expect("a pi_ reference issues without a session lookup");
+    let creates = stub.refund_creates.lock().unwrap().clone();
+    assert_eq!(creates.len(), 1);
+    assert_eq!(creates[0]["payment_intent"], json!("pi_direct_9"));
+    assert!(handle.provider_refund_id.starts_with("re_"));
+}

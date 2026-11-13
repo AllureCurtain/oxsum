@@ -1,4 +1,5 @@
 //! Credential-bearing compatibility checkout through a pinned merchant version.
+use crate::deposit_refund;
 use crate::provider_http::ProviderHttp;
 use oxsum_core::{MerchantPaymentBinding, MerchantRail, MerchantSigningContext, OrderRefund};
 use reqwest::Method;
@@ -285,6 +286,13 @@ pub async fn create_refund(
             return hyperswitch::refund(context, refund, provider_payment_id, http, metadata).await;
         }
         MerchantRail::Stripe => {
+            // The durable order reference is the `cs_…` Checkout Session id;
+            // `v1/refunds` names its parent by `payment_intent` (`pi_…`), so the
+            // session resolves to its intent first (#1041's latent defect).
+            let payment_intent =
+                deposit_refund::resolve_stripe_payment_intent(context, provider_payment_id, http)
+                    .await
+                    .map_err(|_| RefundRequestError::Unknown)?;
             let response = http
                 .request(Method::POST, base, policy, &["v1", "refunds"])
                 .await
@@ -292,7 +300,7 @@ pub async fn create_refund(
                 .bearer_auth(context.api_key())
                 .header("idempotency-key", refund_id.to_string())
                 .form(&[
-                    ("payment_intent", provider_payment_id.to_string()),
+                    ("payment_intent", payment_intent),
                     ("amount", amount_minor.to_string()),
                     ("metadata[refund_id]", refund_id.to_string()),
                     ("metadata[order_id]", refund.order_id.to_string()),
