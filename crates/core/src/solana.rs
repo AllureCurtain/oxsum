@@ -23,11 +23,20 @@
 //! `pending → confirmed → credited` walk, the `deposit.credited` event and
 //! the `balance.low` latch-clear are the ones every rail shares.
 //!
-//! Devnet in this cut: `OXSUM_SOLANA_RATE_MICRO` is the static rate the
-//! intent locks in minor-credits per whole volatile asset (SOL) — the
-//! stand-in a mainnet deployment swaps for a price oracle recorded per intent
-//! (issue #1139). USD-pegged assets like USDC lock the fixed `1_000_000`. No
-//! real funds, no mainnet.
+//! Pricing at open (issue #1139): a `sol` intent is oracle-priced — the open
+//! samples the deployment's `PriceOracle` (Pyth Hermes in production —
+//! `crates/integrations::pyth`) for the `Crypto.SOL/USD` quote, refuses a
+//! quote older than `max_quote_age_secs` or with `conf/price` over
+//! `max_conf_ratio`, converts the USD figure to `rate_micro` (minor-credits
+//! per whole SOL at 1 USD = 1 credit) and locks it into the intent's `meta`
+//! with the quote's `price`/`conf`/`publish_time` for audit. `verify` only
+//! ever reads the locked `meta`, so a live-rate drift or oracle change cannot
+//! retro-price a pending deposit. A USD-pegged asset needs no oracle — its
+//! rate is the fixed `USD_PEGGED_RATE_MICRO` conversion. `OXSUM_SOLANA_
+//! RATE_MICRO` survives only for the legacy single-asset form and a `sol`
+//! whitelist entry behind the explicit devnet opt-in (`SolanaPricing::
+//! Static`, wired by `OXSUM_SOLANA_DEVNET_STATIC_RATE=1`) — never a silent
+//! mainnet fallback.
 
 use rand::Rng;
 use serde_json::json;
@@ -45,9 +54,9 @@ pub const RAIL_SOLANA: &str = "solana";
 
 /// The fixed `rate_micro` a USD-pegged asset locks: one whole asset unit (a
 /// dollar's worth of USDC) buys one whole credit — `1_000_000` minor units.
-/// Every asset with `usd_pegged()` set prices at parity; volatile assets like
-/// SOL take their rate from `OXSUM_SOLANA_RATE_MICRO` until the #1139 oracle
-/// lands.
+/// Every asset with `usd_pegged()` set prices at parity, never an oracle
+/// call; volatile assets like SOL price through `SolanaPricing` at open
+/// (issue #1139).
 pub const USD_PEGGED_RATE_MICRO: i64 = 1_000_000;
 
 /// One Solana deposit-intent `open` may quote an intent this many seconds
@@ -63,13 +72,158 @@ const DEFAULT_INTENT_TTL_SECS: i64 = 600;
 /// mis-credit a deposit.
 pub const TOKEN_2022_PROGRAM_ID: &str = "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb";
 
+/// How a `sol` intent prices its `rate_micro` at open (issue #1139). A
+/// USD-pegged asset never consults this policy — its rate is the fixed
+/// `USD_PEGGED_RATE_MICRO` conversion either way.
+#[derive(Clone, Debug)]
+pub enum SolanaPricing {
+    /// The devnet/test stand-in behind the explicit
+    /// `OXSUM_SOLANA_DEVNET_STATIC_RATE=1` opt-in — and the shape the legacy
+    /// single-asset form keeps: the intent locks the configured `rate_micro`
+    /// verbatim. Never a mainnet default: a `sol` whitelist entry without
+    /// this flag and without an oracle bound refuses to open rather than
+    /// silently fall back.
+    Static,
+    /// Oracle-priced: the open samples `PriceOracle::latest` for the
+    /// deployment's `feed_id`, refuses a stale or wide-confidence quote, and
+    /// converts the USD price to `rate_micro` at 1 USD = 1 credit.
+    Oracle {
+        /// The price feed the oracle is asked for — `Crypto.SOL/USD` on Pyth
+        /// Hermes by default (`OXSUM_SOLANA_PYTH_FEED_ID`).
+        feed_id: String,
+        /// The oldest a quote's `publish_time` may be (seconds before now)
+        /// and still price an intent — `OXSUM_SOLANA_PYTH_MAX_AGE_SECS`,
+        /// default 60. Staler refuses the open; the quote is too old to lock.
+        max_quote_age_secs: i64,
+        /// The largest `conf/price` a quote may carry — `OXSUM_SOLANA_PYTH_
+        /// MAX_CONF_RATIO`, default 0.01 (1%). Wider refuses: the oracle's own
+        /// uncertainty band is too loose to lock a rate from.
+        max_conf_ratio: f64,
+    },
+}
+
+/// A single oracle price quote, in the shape Pyth Hermes answers: `price` and
+/// `conf` are integers scaled by `10^expo`, so `price * 10^expo` is the USD
+/// figure and `conf/price` the relative uncertainty. Core keeps the raw
+/// integer fields — the conversion and the freshness/confidence gates live
+/// here so the integrations client stays a thin parser.
+#[derive(Debug, Clone, Copy)]
+pub struct OracleQuote {
+    /// The quoted price, scaled by `10^expo` (e.g. 20493000000 at expo -8 =
+    /// USD 204.93).
+    pub price: i64,
+    /// The oracle's confidence interval around `price`, same scaling —
+    /// `conf/price` is the relative uncertainty the gate checks.
+    pub conf: i64,
+    /// The base-10 exponent `price`/`conf` are scaled by (typically negative).
+    pub expo: i32,
+    /// When the oracle published this quote, seconds since the Unix epoch —
+    /// the freshness the staleness gate judges.
+    pub publish_time: i64,
+}
+
+impl OracleQuote {
+    /// The quote as minor-credits per whole asset at 1 USD = 1 credit
+    /// (`rate_micro`): `price * 10^(expo+6)` computed in integers — a USD
+    /// price of `price*10^expo` is `price*10^(expo+6)` minor-credits. `None`
+    /// when the quote is non-positive or the scale overflows `i64`.
+    #[must_use]
+    pub fn to_rate_micro(&self) -> Option<i64> {
+        if self.price <= 0 {
+            return None;
+        }
+        let shift = i64::from(self.expo).checked_add(6)?;
+        let scaled = if shift >= 0 {
+            self.price
+                .checked_mul(10_i64.checked_pow(u32::try_from(shift).ok()?)?)?
+        } else {
+            // Round toward zero — the seller's side: an inexact price floors
+            // the rate, never rounds a customer's cost up.
+            self.price
+                .checked_div(10_i64.checked_pow(u32::try_from(-shift).ok()?)?)?
+        };
+        if scaled <= 0 {
+            return None;
+        }
+        Some(scaled)
+    }
+
+    /// `conf/price` — the relative uncertainty the confidence gate checks.
+    /// `f64` is exact enough here: the bound is a ratio comparison, not a
+    /// money figure.
+    #[must_use]
+    pub fn conf_ratio(&self) -> f64 {
+        if self.price <= 0 {
+            return f64::INFINITY;
+        }
+        self.conf as f64 / self.price as f64
+    }
+}
+
+/// The seam the open path asks for a fresh price, mirroring `ChainLookup`'s
+/// object-safe shape so core stays HTTP-free and tests stub it in-process.
+/// `crates/integrations::pyth::PythClient` is the production impl.
+pub trait PriceOracle: std::fmt::Debug + Send + Sync {
+    /// The freshest quote the oracle holds for `feed_id` — `None` when the
+    /// oracle cannot answer (transport failure, unknown feed). A `None`
+    /// answer refuses the open exactly like a stale quote does: a `sol`
+    /// intent is priced by the oracle or not opened at all.
+    fn latest<'a>(
+        &'a self,
+        feed_id: &'a str,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Option<OracleQuote>> + Send + 'a>>;
+}
+
+/// What an open resolved for the intent's `rate_micro`: the figure plus the
+/// provenance `meta` records for audit.
+#[derive(Debug, Clone)]
+pub enum LockedRate {
+    /// A statically-priced rate — the configured devnet figure or a pegged
+    /// asset's fixed parity: `meta.rateSource = "config"`.
+    Static {
+        /// Minor-credits per whole asset unit.
+        rate_micro: i64,
+    },
+    /// An oracle-priced rate: `meta.rateSource = "pyth"` and the quote's own
+    /// `price`/`conf`/`expo`/`publish_time` ride in `meta` so the locked
+    /// figure can be re-derived and audited against what the oracle answered.
+    Oracle {
+        /// Minor-credits per whole asset, converted from the quote.
+        rate_micro: i64,
+        /// The quote the rate was priced from.
+        quote: OracleQuote,
+    },
+}
+
+impl LockedRate {
+    /// Minor-credits per whole asset unit — the figure `solLamports` and the
+    /// settle-side conversion price at.
+    #[must_use]
+    pub fn rate_micro(&self) -> i64 {
+        match self {
+            Self::Static { rate_micro } | Self::Oracle { rate_micro, .. } => *rate_micro,
+        }
+    }
+
+    /// The `rateSource` `meta` records — `"config"` for a static figure,
+    /// `"pyth"` for an oracle-priced one.
+    #[must_use]
+    pub fn source(&self) -> &'static str {
+        match self {
+            Self::Static { .. } => "config",
+            Self::Oracle { .. } => "pyth",
+        }
+    }
+}
+
 /// One payable asset's terms inside the whitelist (issue #1140): the key the
 /// open request names (`"sol"`, `"usdc"`, …), the SPL mint a top-up in it
 /// must pay (`None` for native SOL), its base-unit scale, and the rate its
 /// intents lock — minor-credits per whole asset, `10^asset_decimals` base
-/// units. `rate_micro` is the field an oracle-sourced figure plugs into when
-/// issue #1139 lands: the oracle resolves at intent-open and the answer
-/// locks, exactly like the config-sourced figure does today.
+/// units. For a volatile asset (native SOL) `rate_micro` is the static
+/// fallback the `SolanaPricing::Static` policy locks; under the oracle policy
+/// the open re-prices it through `SolanaRailVerifier::resolve_rate` and locks
+/// the quote-derived figure instead (issue #1139).
 #[derive(Debug, Clone)]
 pub struct AssetTerms {
     /// The asset's lowercase key — the `asset` an open request names and the
@@ -85,7 +239,9 @@ pub struct AssetTerms {
     /// Minor-credits per whole asset the intent locks. USD-pegged assets
     /// (every SPL mint on the whitelist that is not a volatile asset) hold
     /// [`USD_PEGGED_RATE_MICRO`]; a volatile asset holds the configured
-    /// `OXSUM_SOLANA_RATE_MICRO` until #1139's oracle replaces it at open.
+    /// `OXSUM_SOLANA_RATE_MICRO` the `Static` policy locks — under the oracle
+    /// policy the open re-prices it and locks the resolved figure instead
+    /// (issue #1139).
     pub rate_micro: i64,
 }
 
@@ -97,6 +253,15 @@ impl AssetTerms {
     #[must_use]
     pub fn usd_pegged(&self) -> bool {
         self.spl_token_mint.is_some()
+    }
+
+    /// Whether an intent in this asset resolves its rate through the
+    /// deployment's [`SolanaPricing`] policy at open — the inverse of
+    /// `usd_pegged`: a volatile asset (native SOL) prices from the oracle or
+    /// the devnet static rate, a pegged one never calls the oracle.
+    #[must_use]
+    pub fn needs_oracle(&self) -> bool {
+        self.spl_token_mint.is_none()
     }
 }
 
@@ -259,6 +424,14 @@ pub struct SolanaRailVerifier {
     chain: std::sync::Arc<dyn ChainLookup>,
     /// The deployment's acceptance criteria.
     terms: SolanaTerms,
+    /// How a volatile (`sol`) intent prices its `rate_micro` at open (issue
+    /// #1139) — the static devnet stand-in or the oracle policy. A pegged
+    /// intent never consults it.
+    pricing: SolanaPricing,
+    /// The price oracle the open path samples for a `sol` intent; `None`
+    /// under `SolanaPricing::Static` and whenever no oracle was bound — a
+    /// `sol` open then refuses rather than falling back (issue #1139).
+    oracle: Option<std::sync::Arc<dyn PriceOracle>>,
 }
 
 impl std::fmt::Debug for SolanaRailVerifier {
@@ -266,6 +439,7 @@ impl std::fmt::Debug for SolanaRailVerifier {
         f.debug_struct("SolanaRailVerifier")
             .field("pay_to", &self.terms.pay_to)
             .field("default_asset", &self.terms.default_asset)
+            .field("pricing", &self.pricing)
             .field(
                 "assets",
                 &self
@@ -359,10 +533,34 @@ pub struct ValidatedTransfer {
 }
 
 impl SolanaRailVerifier {
-    /// Builds the verifier around its chain lookup and terms.
+    /// Builds the verifier around its chain lookup and terms — the static-rate
+    /// shape, priced from each asset's `rate_micro`. Equivalent to
+    /// [`Self::with_pricing`] under `SolanaPricing::Static` and no oracle: the
+    /// devnet/test seam and the shape a verifier built before the rail's
+    /// oracle cut keeps.
     #[must_use]
     pub fn new(chain: std::sync::Arc<dyn ChainLookup>, terms: SolanaTerms) -> Self {
-        Self { chain, terms }
+        Self::with_pricing(chain, terms, SolanaPricing::Static, None)
+    }
+
+    /// Builds the verifier with its open-time pricing policy and oracle
+    /// (issue #1139): `SolanaPricing::Oracle` plus the `PriceOracle` a `sol`
+    /// intent samples, or `SolanaPricing::Static` (the `oracle` is then
+    /// unused). Each `AssetTerms::rate_micro` still carries the static figure
+    /// the `Static` arm locks and the pegged path always uses.
+    #[must_use]
+    pub fn with_pricing(
+        chain: std::sync::Arc<dyn ChainLookup>,
+        terms: SolanaTerms,
+        pricing: SolanaPricing,
+        oracle: Option<std::sync::Arc<dyn PriceOracle>>,
+    ) -> Self {
+        Self {
+            chain,
+            terms,
+            pricing,
+            oracle,
+        }
     }
 
     /// The deployment's acceptance terms — the `meta` an intent writes.
@@ -383,6 +581,85 @@ impl SolanaRailVerifier {
     /// Token-2022 mint (issue #1140). `None` when the lookup cannot answer.
     pub async fn mint_owner(&self, mint: &str) -> Option<String> {
         self.chain.mint_owner(mint).await
+    }
+
+    /// What an intent opened now locks as `rate_micro` for `asset` — the
+    /// whitelist entry the open request named (issue #1139).
+    ///
+    /// A USD-pegged asset prices statically — the parity `rate_micro` is a
+    /// constant of the deployment (a USDC rate does not float against an
+    /// oracle), so `LockedRate::Static` answers without an oracle call.
+    ///
+    /// A volatile (`sol`) asset prices by `self.pricing`: `Static` (the
+    /// legacy form or the devnet opt-in) locks its `AssetTerms::rate_micro`;
+    /// `Oracle` samples the oracle and gates the quote — refusing `Err`
+    /// rather than falling back — when the oracle cannot answer, the freshest
+    /// quote is older than `max_quote_age_secs`, or `conf/price` exceeds
+    /// `max_conf_ratio`. The quote itself rides in `LockedRate::Oracle` so
+    /// the intent's `meta` records what priced it.
+    ///
+    /// # Errors
+    ///
+    /// `WalletError::Forbidden` when a `sol` intent has no usable oracle
+    /// quote — the open must not mint a rate silently. `WalletError::
+    /// Misconfigured` when `pricing` is `Oracle` but no oracle was bound (a
+    /// server bug, not a market state).
+    pub async fn resolve_rate(&self, asset: &AssetTerms) -> Result<LockedRate, WalletError> {
+        // A USD-pegged asset prices at the fixed parity — no oracle is
+        // consulted for a token whose rate is a constant of the deployment.
+        if asset.usd_pegged() {
+            return Ok(LockedRate::Static {
+                rate_micro: asset.rate_micro,
+            });
+        }
+        match &self.pricing {
+            SolanaPricing::Static => Ok(LockedRate::Static {
+                rate_micro: asset.rate_micro,
+            }),
+            SolanaPricing::Oracle {
+                feed_id,
+                max_quote_age_secs,
+                max_conf_ratio,
+            } => {
+                let oracle = self.oracle.as_ref().ok_or_else(|| {
+                    WalletError::Misconfigured(
+                        "the solana rail is oracle-priced but no price oracle is bound".into(),
+                    )
+                })?;
+                let quote = oracle.latest(feed_id).await.ok_or_else(|| {
+                    WalletError::Forbidden(
+                        "no usable SOL/USD price: the oracle did not answer".into(),
+                    )
+                })?;
+                let now = time::OffsetDateTime::now_utc().unix_timestamp();
+                let age = now - quote.publish_time;
+                if age > *max_quote_age_secs {
+                    return Err(WalletError::Forbidden(format!(
+                        "the SOL/USD quote is stale: published {age}s ago, over the \
+                         {max_quote_age_secs}s bound"
+                    )));
+                }
+                // A quote from the future is a clock-skew symptom; treat it as
+                // unusable rather than trusting a publish_time ahead of now.
+                if age < -(*max_quote_age_secs) {
+                    return Err(WalletError::Forbidden(
+                        "the SOL/USD quote's publish_time is in the future".into(),
+                    ));
+                }
+                if quote.conf_ratio() > *max_conf_ratio {
+                    return Err(WalletError::Forbidden(format!(
+                        "the SOL/USD quote's confidence is too wide: conf/price {:.4} exceeds \
+                         the {:.4} bound",
+                        quote.conf_ratio(),
+                        max_conf_ratio
+                    )));
+                }
+                let rate_micro = quote.to_rate_micro().ok_or_else(|| {
+                    WalletError::Forbidden("the SOL/USD quote could not price a rate".into())
+                })?;
+                Ok(LockedRate::Oracle { rate_micro, quote })
+            }
+        }
     }
 
     /// The boot-time mint audit (issues #1129, #1140): every whitelisted SPL
@@ -693,8 +970,15 @@ impl Db {
     /// `meta` records what the intent declares: the `reference`, the `asset`
     /// key, the `payTo` address and `splToken` (null for SOL), the
     /// `solLamports` the payment must deliver at the locked rate, the
-    /// `rateSource`/`rateLockedAt` of the rate source, and the `expiresAt`
-    /// the poll honors.
+    /// `rateSource`/`rateLockedAt` of the lock — plus, for an oracle-priced
+    /// intent, the quote's `pythPrice`/`pythConf`/`pythExpo`/`pythPublishTime`
+    /// so the locked `rateMicro` can be re-derived and audited — and the
+    /// `expiresAt` the poll honors.
+    ///
+    /// `rate` is the [`LockedRate`] the verifier's `resolve_rate` just priced
+    /// for the resolved asset — the caller resolves it first because an
+    /// oracle sample must not ride inside the open's insert path (issue
+    /// #1139).
     pub async fn open_solana_deposit(
         &self,
         organization_id: Uuid,
@@ -702,6 +986,7 @@ impl Db {
         amount_minor: i64,
         terms: &SolanaTerms,
         asset: Option<&str>,
+        rate: &LockedRate,
     ) -> Result<Option<(String, i64, String)>, WalletError> {
         if amount_minor <= 0 {
             return Err(WalletError::InvalidInput(
@@ -745,8 +1030,42 @@ impl Db {
             WalletError::InvalidInput("the asset is not one the solana rail accepts".into())
         })?;
         let reference = new_reference();
-        let lamports = credits_to_asset_units(amount_minor, asset.rate_micro, asset.asset_decimals);
+        let lamports =
+            credits_to_asset_units(amount_minor, rate.rate_micro(), asset.asset_decimals);
         let expires_at = time::OffsetDateTime::now_utc() + time::Duration::seconds(terms.ttl());
+        // The quote's own figures ride in meta for an oracle-priced intent so
+        // the locked `rateMicro` is auditable against what the oracle answered;
+        // a static rate records only its `"config"` source (issue #1139).
+        let oracle_fields = match rate {
+            LockedRate::Oracle { quote, .. } => json!({
+                "pythPrice": quote.price.to_string(),
+                "pythConf": quote.conf.to_string(),
+                "pythExpo": quote.expo,
+                "pythPublishTime": quote.publish_time,
+            }),
+            LockedRate::Static { .. } => json!({}),
+        };
+        let mut meta = json!({
+            "reference": reference,
+            "asset": asset.key,
+            "payTo": terms.pay_to,
+            "splToken": asset.spl_token_mint,
+            "solLamports": lamports,
+            "rateMicro": rate.rate_micro(),
+            "assetDecimals": asset.asset_decimals,
+            "rateSource": rate.source(),
+            "rateLockedAt": time::OffsetDateTime::now_utc()
+                .format(&time::format_description::well_known::Rfc3339)
+                .unwrap_or_default(),
+            "expiresAt": expires_at
+                .format(&time::format_description::well_known::Rfc3339)
+                .unwrap_or_default(),
+        });
+        if let (Some(dst), Some(src)) = (meta.as_object_mut(), oracle_fields.as_object()) {
+            for (k, v) in src {
+                dst.insert(k.clone(), v.clone());
+            }
+        }
         let inserted = sqlx::query(
             "INSERT INTO oxsum.deposits \
                  (deposit_id, organization_id, rail, payment_ref, amount_minor, status, meta) \
@@ -758,22 +1077,7 @@ impl Db {
         .bind(RAIL_SOLANA)
         .bind(&reference)
         .bind(amount_minor)
-        .bind(json!({
-            "reference": reference,
-            "asset": asset.key,
-            "payTo": terms.pay_to,
-            "splToken": asset.spl_token_mint,
-            "solLamports": lamports,
-            "rateMicro": asset.rate_micro,
-            "assetDecimals": asset.asset_decimals,
-            "rateSource": "config",
-            "rateLockedAt": time::OffsetDateTime::now_utc()
-                .format(&time::format_description::well_known::Rfc3339)
-                .unwrap_or_default(),
-            "expiresAt": expires_at
-                .format(&time::format_description::well_known::Rfc3339)
-                .unwrap_or_default(),
-        }))
+        .bind(meta)
         .execute(self.pool())
         .await?
         .rows_affected();
@@ -1404,6 +1708,138 @@ mod tests {
         );
         let err = verifier.verify_mints().await.unwrap_err();
         assert!(err.contains("usdc"), "{err}");
+    }
+
+    /// The oracle stub `resolve_rate` tests sample — one scripted quote, or
+    /// `None` for "the oracle cannot answer".
+    #[derive(Debug)]
+    struct StubOracle(Option<OracleQuote>);
+
+    impl PriceOracle for StubOracle {
+        fn latest<'a>(
+            &'a self,
+            _feed_id: &'a str,
+        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Option<OracleQuote>> + Send + 'a>>
+        {
+            let quote = self.0;
+            Box::pin(async move { quote })
+        }
+    }
+
+    /// A fresh USD 204.93/SOL quote (expo -8): 204_930_000 minor-credits per
+    /// whole SOL at 1 USD = 1 credit.
+    fn fresh_quote() -> OracleQuote {
+        OracleQuote {
+            price: 20_493_000_000,
+            conf: 15_300_000,
+            expo: -8,
+            publish_time: time::OffsetDateTime::now_utc().unix_timestamp(),
+        }
+    }
+
+    /// The oracle pricing policy the `resolve_rate` tests carry.
+    fn oracle_pricing() -> SolanaPricing {
+        SolanaPricing::Oracle {
+            feed_id: "feed.sol.usd".to_owned(),
+            max_quote_age_secs: 60,
+            max_conf_ratio: 0.01,
+        }
+    }
+
+    /// Issue #1139: a USD-pegged asset answers its fixed parity without ever
+    /// sampling the oracle — the policy could be `Oracle` and the call still
+    /// never happens.
+    #[tokio::test]
+    async fn resolve_rate_prices_a_pegged_asset_statically() {
+        let usdc = terms().terms_for_asset(Some("usdc")).unwrap();
+        let verifier = SolanaRailVerifier::with_pricing(
+            std::sync::Arc::new(NoChain),
+            terms(),
+            oracle_pricing(),
+            Some(std::sync::Arc::new(StubOracle(Some(fresh_quote())))),
+        );
+        let locked = verifier.resolve_rate(&usdc).await.unwrap();
+        assert_eq!(locked.rate_micro(), USD_PEGGED_RATE_MICRO);
+        assert_eq!(locked.source(), "config");
+        // `needs_oracle` is the per-asset gate the route reads.
+        assert!(!usdc.needs_oracle());
+        assert!(terms().terms_for_asset(Some("sol")).unwrap().needs_oracle());
+    }
+
+    /// Issue #1139: under `SolanaPricing::Static` a `sol` intent locks its
+    /// `AssetTerms::rate_micro` verbatim — the devnet stand-in the oracle
+    /// policy replaces.
+    #[tokio::test]
+    async fn resolve_rate_static_locks_the_configured_figure() {
+        let sol = terms().terms_for_asset(Some("sol")).unwrap();
+        let verifier = SolanaRailVerifier::new(std::sync::Arc::new(NoChain), terms());
+        let locked = verifier.resolve_rate(&sol).await.unwrap();
+        assert_eq!(locked.rate_micro(), 200_000_000);
+        assert_eq!(locked.source(), "config");
+    }
+
+    /// Issue #1139: under `SolanaPricing::Oracle` a `sol` intent samples the
+    /// oracle, converts the quote and carries it in `LockedRate::Oracle` for
+    /// the meta to audit.
+    #[tokio::test]
+    async fn resolve_rate_oracle_converts_the_quote() {
+        let sol = terms().terms_for_asset(Some("sol")).unwrap();
+        let verifier = SolanaRailVerifier::with_pricing(
+            std::sync::Arc::new(NoChain),
+            terms(),
+            oracle_pricing(),
+            Some(std::sync::Arc::new(StubOracle(Some(fresh_quote())))),
+        );
+        let locked = verifier.resolve_rate(&sol).await.unwrap();
+        assert_eq!(locked.rate_micro(), 204_930_000);
+        assert_eq!(locked.source(), "pyth");
+        match locked {
+            LockedRate::Oracle { quote, .. } => assert_eq!(quote.price, 20_493_000_000),
+            LockedRate::Static { .. } => panic!("an oracle-priced open carries the quote"),
+        }
+    }
+
+    /// Issue #1139: the refusal is the point — a stale quote, a
+    /// too-wide-confidence quote, an absent answer and an oracle the policy
+    /// never bound all refuse `Err`, never fall back to a static figure.
+    #[tokio::test]
+    async fn resolve_rate_oracle_refuses_stale_wide_and_absent() {
+        let sol = terms().terms_for_asset(Some("sol")).unwrap();
+        let build = |quote| {
+            SolanaRailVerifier::with_pricing(
+                std::sync::Arc::new(NoChain),
+                terms(),
+                oracle_pricing(),
+                Some(std::sync::Arc::new(StubOracle(quote))),
+            )
+        };
+        // Stale: published 300 s ago, over the 60 s bound.
+        let stale = OracleQuote {
+            publish_time: fresh_quote().publish_time - 300,
+            ..fresh_quote()
+        };
+        let err = build(Some(stale)).resolve_rate(&sol).await.unwrap_err();
+        assert!(matches!(err, WalletError::Forbidden(_)), "{err:?}");
+        // Wide: conf/price = 1.0, over the 0.01 bound.
+        let wide = OracleQuote {
+            conf: 20_493_000_000,
+            ..fresh_quote()
+        };
+        let err = build(Some(wide)).resolve_rate(&sol).await.unwrap_err();
+        assert!(matches!(err, WalletError::Forbidden(_)), "{err:?}");
+        // The oracle answers nothing — refused, never static.
+        let err = build(None).resolve_rate(&sol).await.unwrap_err();
+        assert!(matches!(err, WalletError::Forbidden(_)), "{err:?}");
+        // `Oracle` pricing with no oracle bound is a server bug, not a market
+        // state: Misconfigured, still never a silent rate.
+        let unbound = SolanaRailVerifier::with_pricing(
+            std::sync::Arc::new(NoChain),
+            terms(),
+            oracle_pricing(),
+            None,
+        );
+        let err = unbound.resolve_rate(&sol).await.unwrap_err();
+        assert!(matches!(err, WalletError::Misconfigured(_)), "{err:?}");
     }
 
     /// The chain lookup the verifier tests need when no real lookup matters —
