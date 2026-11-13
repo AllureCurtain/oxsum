@@ -9,10 +9,14 @@ import {
   useHyperswitchTopup,
   useRedeemCode,
   useSolanaConfirm,
+  useSolanaDeposits,
+  useSolanaRefundAddress,
   useSolanaTopup,
   useStripeTopup,
+  type SolanaExceptionDeposit,
   type SolanaIntent,
 } from "../api/hooks";
+import { isSolanaAddress } from "../lib/solana";
 import { Button } from "../components/ui";
 import { TextInput } from "../components/ui";
 import {
@@ -503,6 +507,108 @@ function SolanaRail() {
             <Banner tone="success">{t("topup.solanaCredited")}</Banner>
           ) : null}
         </div>
+      ) : null}
+
+      <SolanaExceptionsPanel />
+    </div>
+  );
+}
+
+/**
+ * The customer's side of the solana exception queue (issue #1142): their own
+ * deposits the rail marked — `underpaid`, `overpaid`, `late`, `flagged` —
+ * and the pull-payment refund's `refund_pending` state, where the form below
+ * collects the base58 address the multisig payout will send to. The rail
+ * never derives the payer: the customer names where the money goes, before
+ * the operator's approval freezes it.
+ */
+function SolanaExceptionsPanel() {
+  const { t } = useTranslation();
+  const deposits = useSolanaDeposits();
+  const rows = deposits.data ?? [];
+  if (rows.length === 0) {
+    return null;
+  }
+  return (
+    <div className="flex flex-col gap-3 rounded border border-line bg-surface-raised p-3">
+      <p className="text-sm font-medium text-ink">{t("topup.solanaExceptionsTitle")}</p>
+      {rows.map((d) => (
+        <SolanaExceptionRow key={d.depositId} deposit={d} />
+      ))}
+    </div>
+  );
+}
+
+function SolanaExceptionRow({ deposit }: { deposit: SolanaExceptionDeposit }) {
+  const { t } = useTranslation();
+  const refundAddress = useSolanaRefundAddress();
+  const [address, setAddress] = useState("");
+  const awaitingAddress = deposit.status === "refund_pending" && !deposit.refund?.approvedAt;
+  const addressBad = address.trim() !== "" && !isSolanaAddress(address);
+  return (
+    <div className="flex flex-col gap-2 rounded border border-line bg-surface p-3">
+      <div className="flex items-center justify-between gap-3">
+        <div className="flex flex-col gap-0.5">
+          <span className="text-sm text-ink">
+            {t(`topup.solanaStatus.${deposit.status}`, { defaultValue: deposit.status })}
+            {deposit.asset ? (
+              <span className="ml-2 text-xs uppercase text-muted">{deposit.asset}</span>
+            ) : null}
+          </span>
+          <span className="text-xs text-muted">
+            {deposit.signature ? (
+              <code className="mono break-all">{deposit.signature}</code>
+            ) : (
+              deposit.paymentRef
+            )}
+          </span>
+        </div>
+        <span className="mono text-xs text-muted">{deposit.createdAt.slice(0, 10)}</span>
+      </div>
+      {deposit.refund?.reason ? (
+        <p className="text-xs text-muted">
+          {t("topup.solanaRefundReason", { reason: deposit.refund.reason })}
+        </p>
+      ) : null}
+      {awaitingAddress ? (
+        <form
+          className="flex flex-col gap-2"
+          onSubmit={(e) => {
+            e.preventDefault();
+            if (!isSolanaAddress(address)) return;
+            refundAddress.mutate({ depositId: deposit.depositId, address: address.trim() });
+          }}
+        >
+          <Field label={t("topup.solanaRefundAddress")} hint={t("topup.solanaRefundAddressHint")}>
+            <TextInput
+              value={address}
+              className="mono"
+              onChange={(e) => setAddress(e.target.value)}
+              required
+            />
+          </Field>
+          {addressBad ? (
+            <Banner tone="error">{t("topup.solanaRefundAddressBad")}</Banner>
+          ) : null}
+          <Button
+            type="submit"
+            isLoading={refundAddress.isPending}
+            disabled={!isSolanaAddress(address)}
+          >
+            {t("topup.solanaRefundAddressSubmit")}
+          </Button>
+          {refundAddress.error instanceof ApiError ? (
+            <Banner tone="error">{refundAddress.error.message}</Banner>
+          ) : null}
+        </form>
+      ) : null}
+      {deposit.status === "refund_pending" && deposit.refund?.approvedAt ? (
+        <Banner tone="info">{t("topup.solanaRefundApproved")}</Banner>
+      ) : null}
+      {deposit.status === "refunded" ? (
+        <Banner tone="success">
+          {t("topup.solanaRefunded", { signature: deposit.refundSignature ?? "" })}
+        </Banner>
       ) : null}
     </div>
   );

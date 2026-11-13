@@ -273,6 +273,71 @@ export function useSolanaConfirm() {
     onSuccess: () => {
       client.invalidateQueries({ queryKey: ["balance"] });
       client.invalidateQueries({ queryKey: ["bills"] });
+      client.invalidateQueries({ queryKey: ["solana-deposits"] });
+    },
+  });
+}
+
+/** One solana deposit on the exception queue, as the customer read answers
+ * it (issue #1142): `asset` is the whitelist key the intent locked — the
+ * denomination `delivered`/`expected` count in — `refundPending` is where
+ * the refund-address form writes, `refundSignature` the closed refund's
+ * on-chain proof. */
+export interface SolanaExceptionDeposit {
+  depositId: string;
+  organizationId: string;
+  organization: string;
+  status: string;
+  asset: string | null;
+  paymentRef: string;
+  amountMinor: number;
+  receivedMinor: number | null;
+  delivered: number | null;
+  expected: number | null;
+  splToken: string | null;
+  signature: string | null;
+  entryId: string | null;
+  refundAddress: string | null;
+  refund: {
+    requestedBy?: string;
+    requestedAt?: string;
+    reason?: string;
+    addressedAt?: string;
+    approvedBy?: string;
+    approvedAt?: string;
+    completedAt?: string;
+  } | null;
+  refundSignature: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+/** The organization's own solana exception deposits — the "your deposit
+ * needs attention" list on the Topup surface. Polls lightly while the rail
+ * may still walk a deposit onto the queue. */
+export function useSolanaDeposits(options?: { refetchInterval?: number | false }) {
+  return useQuery({
+    queryKey: ["solana-deposits"],
+    queryFn: () => api<SolanaExceptionDeposit[]>("/topups/solana/deposits"),
+    refetchInterval: options?.refetchInterval ?? 15_000,
+    // A deployment without the rail answers 503 — the rail tab already says
+    // so; the queue read stays quiet rather than doubling the banner.
+    retry: false,
+  });
+}
+
+/** The customer's leg of the pull-payment refund: names the base58 address
+ * the multisig payout sends to — the rail never derives the payer. */
+export function useSolanaRefundAddress() {
+  const client = useQueryClient();
+  return useMutation({
+    mutationFn: ({ depositId, address }: { depositId: string; address: string }) =>
+      api<SolanaExceptionDeposit>(`/topups/solana/${depositId}/refund-address`, {
+        method: "POST",
+        body: { address },
+      }),
+    onSuccess: () => {
+      client.invalidateQueries({ queryKey: ["solana-deposits"] });
     },
   });
 }
