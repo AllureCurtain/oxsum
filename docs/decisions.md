@@ -4118,6 +4118,11 @@ Stripe deposit-refund recovery is explicitly deferred: the Stripe arm returns
 differs in identity (`re_…` ids, charge-scoped) and has no queued demand; the
 adapter shape now makes it a single new arm when needed.
 
+> Superseded the same day: the Stripe refund rail landed in `1e4d5b2a`
+> (`feat: recover reversed Stripe deposits through the refund rail`, #1047),
+> and the order-refund `cs_…`→`pi_…` defect it surfaced is fixed in the
+> 2026-11-13 entry below.
+
 ## 2026-11-12 — Reload once when a lazy page's chunk is gone after a redeploy (#1092)
 
 Code splitting (#1100) moved the dashboard's pages into hashed chunks that
