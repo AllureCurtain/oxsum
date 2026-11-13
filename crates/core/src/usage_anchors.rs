@@ -12,14 +12,13 @@
 //! day with no usage-log rows leaves the organization unanchored — there is no
 //! customer head to commit, and a report over such a span does not exist.
 //!
-//! One organization's anchor lands inside a single transaction (issue #1088):
-//! the settle path rewrites a `(tenant, endUser, day)` leaf under a per-key
-//! `pg_advisory_xact_lock`, and the anchor transaction takes that same lock for
-//! every customer the day touches before it reads a leaf — so the root it
-//! computes covers either the leaf a settle already committed or no leaf at
-//! all, never one that lands between the read and the entry. The `DaySealed`
-//! refusal on the settle side closes the last window: a settle that observes
-//! the committed anchor row is refused rather than booking past the seal.
+//! One organization's anchor lands inside a single transaction (issue #1088).
+//! The leaf writers serialize with it twice over: a per-`(tenant, day)` lock
+//! pairs with one `record_usage_day` takes before it touches any leaf, so a
+//! customer whose first leaf the day has not seen yet is still covered, and
+//! the per-`(tenant, endUser, day)` locks the anchor then takes are the same
+//! ones the leaf rewrite holds while it recomputes — which re-checks the seal
+//! under its locks and refuses a sealed day instead of rewriting past it.
 
 use std::collections::BTreeMap;
 
@@ -58,6 +57,11 @@ pub struct UsageAnchorReport {
     /// still own open `request_operations` rows that could settle into `day`,
     /// so their anchor waits — the map a sealed day commits must be final.
     pub deferred: i64,
+    /// Organizations whose anchor attempt failed (issue #1088): one bad
+    /// organization no longer aborts the pass — the error is logged, counted
+    /// here, and the next organization's anchor still runs. The failed
+    /// organization leaves no row, so the next pass retries it.
+    pub failed: i64,
 }
 
 impl Db {
@@ -68,9 +72,11 @@ impl Db {
     ///
     /// # Errors
     ///
-    /// Storage and ledger failures surface as [`WalletError`]; one failing
-    /// organization aborts the pass, and the next run resumes from the skipped
-    /// rows because every organization already anchored is skipped.
+    /// The organization listing's own storage failure surfaces as
+    /// [`WalletError`]. One organization's anchor failing is captured instead:
+    /// the error is logged, the report counts it in [`UsageAnchorReport::failed`],
+    /// and the pass moves on — one bad organization must not starve the rest,
+    /// and the failed one leaves no row, so the next pass retries it.
     pub async fn anchor_usage_days(
         &self,
         day: time::Date,
@@ -85,14 +91,23 @@ impl Db {
         let tenants = Tenants::new(self.pool().clone());
         for (organization_id, tenant_id) in organizations {
             report.organizations += 1;
-            let anchored: bool = sqlx::query_scalar(
+            let anchored: bool = match sqlx::query_scalar(
                 "SELECT EXISTS (SELECT 1 FROM oxsum.usage_anchors \
                  WHERE organization_id = $1 AND day = $2)",
             )
             .bind(organization_id)
             .bind(day)
             .fetch_one(self.pool())
-            .await?;
+            .await
+            {
+                Ok(anchored) => anchored,
+                Err(error) => {
+                    tracing::error!(%error, %organization_id, day = %day,
+                        "checking the organization's anchor failed");
+                    report.failed += 1;
+                    continue;
+                }
+            };
             if anchored {
                 report.skipped += 1;
                 continue;
@@ -108,12 +123,17 @@ impl Db {
             let day_end = day.next_day().unwrap_or(day).midnight().assume_utc();
             match self
                 .anchor_one_organization(&tenants, organization_id, &tenant_id, day, day_end)
-                .await?
+                .await
             {
-                AnchorOutcome::Anchored => report.anchors += 1,
-                AnchorOutcome::Deferred => report.deferred += 1,
-                AnchorOutcome::WithoutUsage => report.without_usage += 1,
-                AnchorOutcome::Skipped => report.skipped += 1,
+                Ok(AnchorOutcome::Anchored) => report.anchors += 1,
+                Ok(AnchorOutcome::Deferred) => report.deferred += 1,
+                Ok(AnchorOutcome::WithoutUsage) => report.without_usage += 1,
+                Ok(AnchorOutcome::Skipped) => report.skipped += 1,
+                Err(error) => {
+                    tracing::error!(%error, %organization_id, day = %day,
+                        "the organization's anchor failed");
+                    report.failed += 1;
+                }
             }
         }
         Ok(report)
@@ -123,20 +143,25 @@ impl Db {
     /// leaf read, the map's ledger entry and the bookkeeping row commit
     /// together (issue #1088).
     ///
-    /// Two interlocks close the read-to-commit window the earlier pass left
+    /// Three interlocks close the read-to-commit window the earlier pass left
     /// open. First, the operation watermark is re-read *inside* the
-    /// transaction: every settle path that can still write a leaf goes
-    /// terminal on its `request_operations` row only after the leaf commits —
-    /// the gateway and sweeper write both in one transaction, the metered and
-    /// task paths write the leaf first — so `open = 0` here means no leaf can
-    /// still land for the day. Second, the transaction takes the same
-    /// per-customer `pg_advisory_xact_lock` `record_usage_day` holds while it
-    /// recomputes a leaf, so a settle that did slip between the two checks
-    /// blocks on the lock until the anchor commits — where its own
-    /// `day_is_anchored_in` re-check then refuses it.
+    /// transaction: the settle paths that track their write on a
+    /// `request_operations` row go terminal only with (gateway, sweeper) or
+    /// before (task) the leaf commit, so `open = 0` means none of them can
+    /// still land a leaf for the day. Second, the transaction takes the
+    /// per-`(tenant, day)` lock before any customer lock — the same lock
+    /// `record_usage_day` takes first — so a leaf writer already in flight,
+    /// for a customer the day has not seen yet included, is either finished
+    /// and visible to the leaf read or waits out the anchor. Third, the
+    /// per-customer locks the leaf rewrite holds while it recomputes — taken
+    /// on the anchored day only, in ledger-append order after the entry, so
+    /// every writer's lock order is append-then-customer — keep a writer that
+    /// slipped between the checks serialized until the anchor commits, where
+    /// its own seal re-check under the lock refuses it with `DaySealed`.
     ///
-    /// Returns `true` when the organization still owns an open operation and
-    /// the pass must defer; `false` when the anchor committed.
+    /// Answers the attempt's outcome: the anchor committed, a committed anchor
+    /// replayed (`Skipped`), open operations deferred the day, or the day held
+    /// no leaves to commit.
     async fn anchor_one_organization(
         &self,
         tenants: &Tenants,
@@ -180,13 +205,29 @@ impl Db {
             tx.rollback().await?;
             return Ok(AnchorOutcome::Deferred);
         }
-        // Every customer whose leaf the day holds — the lock set the settle
-        // path serializes on. `record_usage_day` takes this same lock before
-        // recomputing a leaf, so a writer that started between the watermark
-        // probe and here waits out this transaction instead of racing it.
+        // The per-(tenant, day) lock `record_usage_day` takes before it
+        // touches any leaf (issue #1088). Held from here to the commit, it
+        // covers customers the day has not seen yet: a writer whose first
+        // leaf is still unwritten either finished before this lock landed —
+        // and the leaf read below sees it — or waits out the anchor and then
+        // refuses the sealed day under its own seal check.
+        sqlx::query(
+            "SELECT pg_advisory_xact_lock(hashtextextended('oxsum/usage-anchor/v1' || $1 || ':' || $2, 0))",
+        )
+        .bind(tenant_id)
+        .bind(day.to_string())
+        .execute(&mut *tx)
+        .await?;
+        // Every customer with a leaf on the anchored day — the lock set the
+        // leaf rewrite serializes on. `record_usage_day` takes this same lock
+        // before recomputing a leaf, so a writer that started between the
+        // watermark probe and here waits out this transaction instead of
+        // racing it. The set is the anchored day's own customers, not the
+        // log's whole history: a leaf for an earlier day is already fixed in
+        // the map its own day's anchor committed.
         let customers: Vec<String> = sqlx::query_scalar(
             "SELECT DISTINCT end_user FROM oxsum.usage_day_log \
-             WHERE tenant_id = $1 AND day <= $2 \
+             WHERE tenant_id = $1 AND day = $2 \
              ORDER BY end_user",
         )
         .bind(tenant_id)
@@ -197,19 +238,10 @@ impl Db {
             tx.rollback().await?;
             return Ok(AnchorOutcome::WithoutUsage);
         }
-        for customer in &customers {
-            sqlx::query(
-                "SELECT pg_advisory_xact_lock(hashtextextended($1 || ':' || $2 || ':' || $3, 0))",
-            )
-            .bind(tenant_id)
-            .bind(customer)
-            .bind(day.to_string())
-            .execute(&mut *tx)
-            .await?;
-        }
         // Each customer's day leaves up to and including the anchor day, in
-        // day order; `BTreeMap` gives the map's sorted key order. Under the
-        // per-customer locks this read is the day's final state.
+        // day order; `BTreeMap` gives the map's sorted key order. The read
+        // precedes the customer locks because the per-day lock above already
+        // bars every leaf writer for the day: the rows it returns are final.
         let rows: Vec<(String, Vec<u8>)> = sqlx::query_as(
             "SELECT end_user, leaf_hash FROM oxsum.usage_day_log \
              WHERE tenant_id = $1 AND day <= $2 \
@@ -250,6 +282,26 @@ impl Db {
         let (entry_id, _) = wallet
             .anchor_usage_day_in(&mut tx, day, &description, map_root)
             .await?;
+        // The per-customer locks, taken after the ledger entry — append lock
+        // first, then customer locks, the order every leaf writer already
+        // keeps (`record_usage_day`'s lock follows its ledger append), so the
+        // anchor cannot hold a customer lock while waiting on the append lock
+        // a blocked writer holds. They run last so the entry's log position
+        // stops waiting on a slow writer: a customer the writer still holds
+        // shows up in the read above only once its leaf committed, and a
+        // writer still racing re-checks the seal under this lock after the
+        // commit and refuses with `DaySealed` rather than rewriting the leaf
+        // the map just fixed.
+        for customer in &customers {
+            sqlx::query(
+                "SELECT pg_advisory_xact_lock(hashtextextended($1 || ':' || $2 || ':' || $3, 0))",
+            )
+            .bind(tenant_id)
+            .bind(customer)
+            .bind(day.to_string())
+            .execute(&mut *tx)
+            .await?;
+        }
         sqlx::query(
             "INSERT INTO oxsum.usage_anchors \
                  (organization_id, day, entry_id, map_root, enduser_count) \
