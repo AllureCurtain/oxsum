@@ -15400,6 +15400,152 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/admin/solana/reconciliation/deposits.csv": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * The daily solana deposit export for vault reconciliation
+         * @description Every `solana` deposit created inside the window, oldest first, as
+         *     RFC-4180 UTF-8 CSV (issue #1149) — the file a daily reconciliation
+         *     job diffs against the multisig vault's own statement. `from`/`to`
+         *     are ISO calendar dates (`YYYY-MM-DD`) bounding the `createdAt`
+         *     window inclusively (`to` is a day, so the SQL bound is
+         *     `to + 1 day`); both or neither must be given — a lone bound is
+         *     `400`. Omitted, the window is the last complete UTC day
+         *     (yesterday). The export is bounded at 50_000 rows; over the cap it
+         *     answers `400` — never a truncated file a reconciler would read as
+         *     complete — and the operator narrows the window and retries.
+         *     `Content-Disposition` names `solana-deposits-<from>-<to>.csv`.
+         *
+         *     The column freeze — `depositId`, `organizationId`, `paymentRef`
+         *     (the intent's `reference` marker), `signature` (the paying
+         *     transaction — `facilitator_tx_hash`), `payer` (the attributed
+         *     payer: `meta.payerAddress` when a path recorded it, falling back
+         *     to `meta.screening.address` on a `flagged` row; empty when no path
+         *     recorded one — the verify context's `payerAddress` is not merged
+         *     into `meta` today), `asset` (the whitelist key the intent
+         *     locked), `amountMinor` (the credit figure opened for),
+         *     `delivered`/`expected` (the located transfer's delivery and the
+         *     intent's demand in that asset's own base units), `rateMicro`
+         *     (the locked rate — minor-credits per whole `asset`),
+         *     `receivedMinor` (the delivered figure converted back at the
+         *     locked rate), `status`, `createdAt` (RFC-3339),
+         *     `refundSignature` (the multisig payout's signature) and
+         *     `refundStatus` (`requested`/`approved`/`completed` across the
+         *     pull-payment lifecycle, empty otherwise). All statuses export —
+         *     not only the exception queue's — because a line-by-line vault
+         *     reconciliation wants the credited rows too.
+         */
+        get: {
+            parameters: {
+                query?: {
+                    /** @description the window's first UTC day; pairs with `to` */
+                    from?: string;
+                    /** @description the window's last UTC day (inclusive); pairs with `from` */
+                    to?: string;
+                };
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description The deposit CSV, `text/csv`, `Content-Disposition: attachment` */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "text/csv": string;
+                    };
+                };
+                400: components["responses"]["Error"];
+                401: components["responses"]["Error"];
+                500: components["responses"]["Error"];
+                503: components["responses"]["Error"];
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/admin/solana/reconciliation/scan": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Scan the vault for on-chain transfers no deposit recorded
+         * @description The unrecorded-deposit scan (issue #1149): walks `payTo`'s
+         *     `getSignaturesForAddress` history — newest first, paginated,
+         *     bounded at `limit` (default 200, max 1_000 — one `getTransaction`
+         *     per candidate, so the bound is the walk's RPC budget) — filters
+         *     to the transactions that actually delivered value into the vault
+         *     in a whitelisted asset (a positive lamport delta for `sol`, a
+         *     positive token-account delta owned by `payTo` for an SPL mint —
+         *     never a `payTo`-signed outbound send like a refund payout), and
+         *     reports each whose signature no `deposits.facilitator_tx_hash`
+         *     records: `matchedIntent: false` — money that arrived with no
+         *     intent, the row the operator investigates by hand on the vault
+         *     and walks the refund/intent path for.
+         *
+         *     Read-only by construction: the scan diffs the chain against the
+         *     table and *reports* — it never credits, never marks a deposit,
+         *     never moves money. Synchronous and bounded rather than a job: the
+         *     endpoint pool the walk runs over already fails over, and a POST
+         *     plus an audit row (`solana.reconcile.scan`) is how the operator's
+         *     run is recorded. A scan over a vault with more history than the
+         *     bound simply answers the newest `limit` — the operator runs again
+         *     after investigating.
+         */
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": components["schemas"]["SolanaScanRequest"];
+                };
+            };
+            responses: {
+                /** @description The scan report — scanned count plus the unmatched transfers */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            data: components["schemas"]["SolanaScanReport"];
+                        };
+                    };
+                };
+                400: components["responses"]["Error"];
+                401: components["responses"]["Error"];
+                500: components["responses"]["Error"];
+                503: components["responses"]["Error"];
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/admin/solana/{depositId}/refund": {
         parameters: {
             query?: never;
@@ -22422,8 +22568,15 @@ export interface components {
             expected?: number | null;
             /** @description the SPL mint the intent priced in; null for native SOL */
             splToken?: string | null;
+            /**
+             * Format: int64
+             * @description the rate the intent locked — minor-credits per whole `asset`; null on a row opened before the field was recorded
+             */
+            rateMicro?: number | null;
             /** @description the paying transaction's signature */
             signature?: string | null;
+            /** @description the attributed payer — `meta.payerAddress` when a path recorded it */
+            payer?: string | null;
             /**
              * Format: uuid
              * @description the ledger entry that credited the wallet — set on `overpaid`
@@ -22457,6 +22610,42 @@ export interface components {
         SolanaRefundAddressRequest: {
             /** @description the base58 Solana public key the pull-payment refund pays */
             address: string;
+        };
+        SolanaScanRequest: {
+            /**
+             * @description how many of `payTo`'s most recent signatures the scan walks — one `getTransaction` per candidate, so the bound is the RPC budget
+             * @default 200
+             */
+            limit: number;
+        };
+        SolanaScanReport: {
+            /** @description how many `payTo` signature-history entries the walk scanned */
+            scanned: number;
+            /** @description the transfers that paid `payTo` but match no recorded deposit — the "money arrived with no intent" rows */
+            unmatched: components["schemas"]["SolanaUnmatchedTransfer"][];
+        };
+        SolanaUnmatchedTransfer: {
+            /** @description the on-chain transaction's signature */
+            signature: string;
+            /**
+             * Format: int64
+             * @description the chain-recorded time (seconds since the Unix epoch)
+             */
+            blockTime?: number;
+            /** @description the whitelist asset key the delivered delta counted in (`sol` for a lamport delta */
+            asset?: string | null;
+            /**
+             * Format: int64
+             * @description what the transfer delivered to `payTo`
+             */
+            delivered: number;
+            /** @description the attributed payer — the debited signer or token-account owner — when the transaction's shape yields one */
+            payer?: string;
+            /**
+             * @description always `false` — the row exists precisely because no deposit recorded the signature
+             * @enum {boolean}
+             */
+            matchedIntent: false;
         };
         SettleRequest: {
             /** @description the idempotency key of the hold this settlement releases; the hold's amount is read from the ledger */
