@@ -131,20 +131,11 @@ async fn world(stub: SolanaStub) -> Option<(Router, Db)> {
 }
 
 /// The same world under explicit terms — the multi-asset suite passes its
-/// whitelist (issue #1140).
+/// whitelist (issue #1140). `SolanaRailVerifier::new` is the static-rate
+/// shape (issue #1139): `sol` intents lock the configured figure, pegged
+/// ones the parity.
 async fn world_with_terms(stub: SolanaStub, terms: SolanaTerms) -> Option<(Router, Db)> {
-    let u = oxsum_testkit::suite_url!()?;
-    let pool: PgPool = sqlx::postgres::PgPoolOptions::new()
-        .max_connections(5)
-        .connect(&u)
-        .await
-        .expect("connects to PostgreSQL");
-    let db = Db::from_pool(pool);
-    db.migrate().await.expect("migrates");
-    oxsum_testkit::set_registration_fixture(db.pool(), true).await;
-    let config =
-        Config::new(Signup::Open, None).with_solana(SolanaRailVerifier::new(Arc::new(stub), terms));
-    Some((oxsum_server::app(db.clone(), config), db))
+    world_with(SolanaRailVerifier::new(Arc::new(stub), terms)).await
 }
 
 /// One plain HTTP call; returns (status, json).
