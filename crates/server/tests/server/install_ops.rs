@@ -319,6 +319,69 @@ async fn check_config_validates_env_without_a_database() {
         "a pegged-only whitelist needs no rate source: {}",
         String::from_utf8_lossy(&ok.stderr)
     );
+    // The USDT opt-in (issue #1151): the flag is off by default, so either
+    // direction of a USDT config — a `usdt` whitelist entry or the mint
+    // alone — refuses at boot naming the flag. Enabled, the pair parses; a
+    // mint without the whitelist entry is the other half-config.
+    let bad = rail(&[
+        ("OXSUM_SOLANA_ASSETS", "sol,usdt"),
+        ("OXSUM_SOLANA_MINT_USDT", "usdtMint"),
+    ]);
+    assert!(!bad.status.success());
+    let err = format!(
+        "{}{}",
+        String::from_utf8_lossy(&bad.stderr),
+        String::from_utf8_lossy(&bad.stdout)
+    );
+    assert!(err.contains("OXSUM_SOLANA_USDT_ENABLED"), "{err}");
+    let bad = rail(&[("OXSUM_SOLANA_MINT_USDT", "usdtMint")]);
+    assert!(!bad.status.success());
+    let err = format!(
+        "{}{}",
+        String::from_utf8_lossy(&bad.stderr),
+        String::from_utf8_lossy(&bad.stdout)
+    );
+    assert!(err.contains("OXSUM_SOLANA_USDT_ENABLED"), "{err}");
+    // A malformed flag value names itself — never a silent off.
+    let bad = rail(&[
+        ("OXSUM_SOLANA_USDT_ENABLED", "yes"),
+        ("OXSUM_SOLANA_ASSETS", "usdc"),
+        ("OXSUM_SOLANA_MINT_USDC", "usdcMint"),
+    ]);
+    assert!(!bad.status.success());
+    let err = format!(
+        "{}{}",
+        String::from_utf8_lossy(&bad.stderr),
+        String::from_utf8_lossy(&bad.stdout)
+    );
+    assert!(err.contains("OXSUM_SOLANA_USDT_ENABLED"), "{err}");
+    // Enabled + the mint without the whitelist entry: the half-config names
+    // the missing `usdt` key.
+    let bad = rail(&[
+        ("OXSUM_SOLANA_USDT_ENABLED", "1"),
+        ("OXSUM_SOLANA_ASSETS", "usdc"),
+        ("OXSUM_SOLANA_MINT_USDC", "usdcMint"),
+        ("OXSUM_SOLANA_MINT_USDT", "usdtMint"),
+    ]);
+    assert!(!bad.status.success());
+    let err = format!(
+        "{}{}",
+        String::from_utf8_lossy(&bad.stderr),
+        String::from_utf8_lossy(&bad.stdout)
+    );
+    assert!(err.contains("OXSUM_SOLANA_MINT_USDT"), "{err}");
+    // Enabled + the complete pair: USDT joins the whitelist like USDC.
+    let ok = rail(&[
+        ("OXSUM_SOLANA_USDT_ENABLED", "1"),
+        ("OXSUM_SOLANA_ASSETS", "usdc,usdt"),
+        ("OXSUM_SOLANA_MINT_USDC", "usdcMint"),
+        ("OXSUM_SOLANA_MINT_USDT", "usdtMint"),
+    ]);
+    assert!(
+        ok.status.success(),
+        "the enabled usdt whitelist must pass: {}",
+        String::from_utf8_lossy(&ok.stderr)
+    );
     // The legacy single-mint form still parses: SPL_TOKEN_MINT +
     // DECIMALS, no ASSETS at all (issue #1140 backward-compat) — and it
     // still wants `RATE_MICRO`, the figure its one asset locks statically.

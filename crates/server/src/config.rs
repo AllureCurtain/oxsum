@@ -2825,6 +2825,61 @@ mod tests {
         let err = super::solana_custody_of(Some("not-base58!!!"), TEST_VAULT_0).unwrap_err();
         assert!(err.contains("OXSUM_SOLANA_MULTISIG_ACCOUNT"), "{err}");
     }
+
+    /// Issue #1151: the USDT flag parses like the sanctions gate's — `1`/
+    /// `true` on, unset/`0`/`false` off, anything else a startup error rather
+    /// than a silent off.
+    #[test]
+    fn the_usdt_flag_parses_booleans_and_refuses_garbage() {
+        assert_eq!(super::usdt_enabled_of(None), Ok(false));
+        assert_eq!(super::usdt_enabled_of(Some("0".to_owned())), Ok(false));
+        assert_eq!(super::usdt_enabled_of(Some("false".to_owned())), Ok(false));
+        assert_eq!(super::usdt_enabled_of(Some("1".to_owned())), Ok(true));
+        assert_eq!(super::usdt_enabled_of(Some("true".to_owned())), Ok(true));
+        let err = super::usdt_enabled_of(Some("yes".to_owned())).unwrap_err();
+        assert!(err.contains("OXSUM_SOLANA_USDT_ENABLED"), "{err}");
+        assert!(super::usdt_enabled_of(Some("2".to_owned())).is_err());
+    }
+
+    /// Issue #1151: `usdt` is "declared" by either a whitelist entry or the
+    /// mint variable alone — the raw-list scan trims and lowercases like the
+    /// real parse, so `USDT`, ` usdt ` and `sol,usdt` all reach for it.
+    #[test]
+    fn usdt_is_declared_by_the_whitelist_entry_or_the_mint_alone() {
+        assert!(!super::solana_usdt_declared(None, false));
+        assert!(!super::solana_usdt_declared(Some("sol,usdc"), false));
+        assert!(super::solana_usdt_declared(Some("usdt"), false));
+        assert!(super::solana_usdt_declared(Some("sol, usdt"), false));
+        assert!(super::solana_usdt_declared(Some("SOL,USDT"), false));
+        assert!(super::solana_usdt_declared(None, true));
+        assert!(super::solana_usdt_declared(Some("usdc"), true));
+    }
+
+    /// Issue #1151: the gate refuses both half-config directions — USDT
+    /// declared with the flag off, and `MINT_USDT` beside a whitelist (or
+    /// legacy form) that carries no `usdt` — and accepts the complete pair.
+    #[test]
+    fn the_usdt_gate_refuses_either_half_of_a_mismatch() {
+        // Off + declared: a startup error naming the flag — never silently
+        // accepted, never silently dropped.
+        for declared_by_mint in [true, false] {
+            let err = super::solana_usdt_gate(false, true, declared_by_mint).unwrap_err();
+            assert!(err.contains("OXSUM_SOLANA_USDT_ENABLED"), "{err}");
+        }
+        // Off + nothing declared: the usdc-only deployment today — unchanged.
+        assert!(super::solana_usdt_gate(false, false, false).is_ok());
+        // On + mint without the whitelist entry (or under the legacy form,
+        // which cannot carry it): the other half-config.
+        let err = super::solana_usdt_gate(true, true, false).unwrap_err();
+        assert!(err.contains("OXSUM_SOLANA_MINT_USDT"), "{err}");
+        assert!(err.contains("OXSUM_SOLANA_ASSETS"), "{err}");
+        // On + the complete pair: accepted — a `usdt` entry missing its mint
+        // already failed inside `solana_asset_specs` before the gate runs.
+        assert!(super::solana_usdt_gate(true, true, true).is_ok());
+        // On + nothing USDT at all: the flag alone is harmless.
+        assert!(super::solana_usdt_gate(true, false, false).is_ok());
+    }
+
     #[test]
     fn from_str_and_parse_agree() {
         for raw in ["invite", "open", " OPEN "] {
