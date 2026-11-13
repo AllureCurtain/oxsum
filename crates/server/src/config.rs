@@ -1789,15 +1789,36 @@ fn solana_of() -> Result<Option<Arc<oxsum_core::SolanaRailVerifier>>, String> {
     if rate_micro <= 0 {
         return Err("OXSUM_SOLANA_RATE_MICRO must be positive".into());
     }
-    let commitment = var("OXSUM_SOLANA_COMMITMENT").unwrap_or_else(|| "confirmed".to_owned());
+    // Default finalized for mainnet-grade finality; a devnet deployment sets
+    // `OXSUM_SOLANA_COMMITMENT=confirmed` explicitly for latency. The wrong
+    // direction is the dangerous one — a `confirmed` default would silently
+    // under-protect a mainnet cut (issue #1129).
+    let commitment = var("OXSUM_SOLANA_COMMITMENT").unwrap_or_else(|| "finalized".to_owned());
     if commitment != "confirmed" && commitment != "finalized" {
         return Err("OXSUM_SOLANA_COMMITMENT must be confirmed or finalized".into());
     }
-    let asset_decimals = var("OXSUM_SOLANA_DECIMALS")
-        .map(|v| v.parse::<u32>())
-        .transpose()
-        .map_err(|_| "OXSUM_SOLANA_DECIMALS must be a non-negative integer".to_owned())?
-        .unwrap_or(9);
+    // When an SPL mint is configured, decimals must be declared explicitly —
+    // silently defaulting to SOL's 9 would misprice a 6-decimal mint 1000×.
+    // The boot then verifies the declared figure against the mint's on-chain
+    // decimals in `main` (SolanaRpcClient::mint_decimals) and refuses to start
+    // on a mismatch. Native SOL keeps the 9 default.
+    let mint_configured = spl_token_mint
+        .as_deref()
+        .map(|m| !m.is_empty())
+        .unwrap_or(false);
+    let asset_decimals = match (var("OXSUM_SOLANA_DECIMALS"), mint_configured) {
+        (Some(v), _) => v
+            .parse::<u32>()
+            .map_err(|_| "OXSUM_SOLANA_DECIMALS must be a non-negative integer".to_owned())?,
+        (None, true) => {
+            return Err(
+                "OXSUM_SOLANA_DECIMALS must be set when OXSUM_SOLANA_SPL_TOKEN_MINT is — \
+                 it is checked against the mint's on-chain decimals at startup"
+                    .into(),
+            );
+        }
+        (None, false) => 9,
+    };
     let intent_ttl_secs = var("OXSUM_SOLANA_INTENT_TTL_SECS")
         .map(|v| v.parse::<i64>())
         .transpose()

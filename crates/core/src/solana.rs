@@ -136,6 +136,16 @@ pub trait ChainLookup: std::fmt::Debug + Send + Sync {
         signature: &'a str,
         expected: &'a ExpectedTransfer,
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Option<ValidatedTransfer>> + Send + 'a>>;
+
+    /// The configured SPL mint's on-chain decimals, when the rail is on a
+    /// token — `None` for native SOL (no mint to read) and for lookups that
+    /// cannot answer. The boot calls this once to refuse a `DECIMALS` figure
+    /// that disagrees with the real mint; it is never on the per-request path.
+    fn mint_decimals<'a>(
+        &'a self,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Option<u32>> + Send + 'a>> {
+        Box::pin(async { None })
+    }
 }
 
 /// The demand a `pending` intent places on the chain-side transfer, mirroring
@@ -176,6 +186,13 @@ impl SolanaRailVerifier {
     #[must_use]
     pub fn terms(&self) -> &SolanaTerms {
         &self.terms
+    }
+
+    /// The configured SPL mint's on-chain decimals via the chain lookup —
+    /// `None` for native SOL or a lookup that cannot answer. The boot calls
+    /// this once to refuse a `DECIMALS` that disagrees with the real mint.
+    pub async fn mint_decimals(&self) -> Option<u32> {
+        self.chain.mint_decimals().await
     }
 
     /// The terms an opened intent locked in its `meta` — the figures verify
