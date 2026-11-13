@@ -4941,3 +4941,30 @@ rail was already doing.
   not a startup error: an accelerator that cannot run is inert, not broken.
   The subscription itself is operator-side (`helius` CLI/dashboard); the
   server only ever receives.
+
+## 2026-11-14 — the Solana e2e builds its transactions by hand; still no solana-sdk (#1152)
+
+The local-validator e2e needed *some* way to pay: a `solana-sdk` +
+`solana-client` + `spl-token` dev-dependency set resolves ~250–575 packages
+(the SDK was designed to be linked by on-chain programs and CLIs, not as a
+test convenience), while bankrun/`solana-program-test` targets program
+testing — it runs an in-process bank, which cannot exercise the rail's real
+JSON-RPC calls (`getSignaturesForAddress`/`getTransaction`), the whole point
+of the suite. The chosen third path keeps the crate's existing stance — the
+rail deliberately speaks two JSON-RPC calls over reqwest and carries no SDK
+dependency (crates/integrations/src/solana.rs's header documents it) — and
+extends it to the test side: the suite's ~200-line builder serializes the
+legacy transaction wire format (header, privilege-ordered account table,
+shortvecs, Ed25519 signatures) with `ed25519-dalek`, `bs58`, `sha2` and
+`curve25519-dalek`, all already workspace dependencies, then submits through
+a four-call JSON-RPC submitter (`requestAirdrop`, `getLatestBlockhash`,
+`sendTransaction`, `getSignatureStatuses`). Zero new dependency packages.
+The trade is bounded on purpose: the builder covers only what the payments
+need (system transfer/createAccount, SPL InitializeMint/MintTo/
+TransferChecked, ATA Create, the ATA PDA derivation), and two quirks were
+recorded where they bit — `sendTransaction` runs `skipPreflight` (the
+validator's preflight bank can lag the `confirmed` blockhash queue into a
+spurious `BlockhashNotFound`) and a fresh-account transfer needs the
+rent-exempt minimum (noise transfers self-pay instead). If the suite ever
+needs instructions past that set, revisiting an SDK dev-dep is a one-line
+change — the wire builder is deliberately test-only, never library code.
