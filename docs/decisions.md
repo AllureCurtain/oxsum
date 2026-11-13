@@ -4899,3 +4899,45 @@ never copies `payTo` or the marker. Three choices shape it.
   to be invented. After send the page re-asks `POST /topups/solana/confirm`
   on the identical mutation "I've sent it" uses, so the signature settles
   on the existing poll/status path rather than a parallel one.
+
+## 2026-11-14 — The Helius webhook accelerates, it never trusts (#1150)
+
+Issue #1150 adds an *optional* inbound webhook to the Solana rail: a Helius
+subscription on the deployment's `PAY_TO` pushes each matched transaction, and
+the receiver runs the ordinary verify sooner than the 15 s poll tick would.
+The whole design is one posture — **a push is a scheduling hint, never a fact
+the ledger reads** — so the acceleration cannot weaken the verification the
+rail was already doing.
+
+- **The push only narrows the search; the server still proves.**
+  `POST /api/v1/webhooks/solana` never reads a claim of payment off the body.
+  Each entry's account keys — `accountData[].account` (enhanced) or
+  `transaction.message.accountKeys` (raw), the two documented Helius shapes —
+  are matched against `pending` intents' `payment_ref` markers, and every
+  intent that intersects runs the same `credit_solana_deposit` walk the poll
+  tick and the confirm route share. `findReference` + `validateTransfer` reads
+  the chain itself; the push's `signature`/`delivered`/`blockTime` claims are
+  never consulted. A forged or replayed body that names no real transfer
+  simply resolves nothing.
+- **The credential is a shared secret, not a signature.** Helius does not sign
+  payloads; its only delivery auth is the `authHeader` config value echoed
+  verbatim in `Authorization`. `OXSUM_SOLANA_HELIUS_WEBHOOK_SECRET` holds that
+  token, compared constant-time — a missing or wrong one is 401, exactly the
+  shape every other inbound webhook takes (the signature *is* the credential
+  on the `open` surface). No HMAC is invented where the provider documents
+  none.
+- **Dedup keys on the signature, before the walk.** Helius retries until it
+  hears a 2xx, so one transaction may arrive several times.
+  `oxsum.solana_webhook_deliveries` (migration 0138) claims each pushed
+  `signature` first; a replay is acknowledged `200` without re-running the
+  chain round-trips. The signature is the same idempotency anchor
+  `facilitator_tx_hash` records on the credit, so the dedup and the
+  double-spend guard agree on which transaction is spent — a claimed signature
+  can never schedule a second verify for money already booked.
+- **Off by default, additive only.** `OXSUM_SOLANA_HELIUS_WEBHOOK_SECRET`
+  unset mounts no receiver and the route 404s like every unconfigured
+  inbound webhook — polling stays the rail's only confirm path. A secret set
+  beside no configured rail is a half-config the boot warns about and drops,
+  not a startup error: an accelerator that cannot run is inert, not broken.
+  The subscription itself is operator-side (`helius` CLI/dashboard); the
+  server only ever receives.
