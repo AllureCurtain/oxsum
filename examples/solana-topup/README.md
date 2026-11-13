@@ -18,8 +18,10 @@ intent's `splToken` field automatically.
 `POST /api/v1/topups/solana` opens a `pending` deposit whose `payment_ref`
 is a freshly minted `reference` account key and answers
 `{reference, payTo, amountLamports, splToken, expiresAt}` — the terms the
-paying transaction must honor at the intent's locked
-`OXSUM_SOLANA_RATE_MICRO`. The customer's wallet transfers at least
+paying transaction must honor at the intent's locked rate. A `sol` intent is
+priced at open by the deployment's Pyth oracle (issue #1139); a devnet loop
+like this one pins the static `OXSUM_SOLANA_RATE_MICRO` instead, behind
+`OXSUM_SOLANA_DEVNET_STATIC_RATE=1`. The customer's wallet transfers at least
 `amountLamports` of native SOL (or the configured SPL mint's base units) to
 `payTo`, carrying `reference` as a **read-only non-signer** account — the
 marker `getSignaturesForAddress` indexes. `POST /api/v1/topups/solana/confirm`
@@ -36,6 +38,9 @@ a replayed confirm on a credited deposit answers `404`.
   OXSUM_SOLANA_RPC_URL=http://127.0.0.1:8899   # the local validator below
   OXSUM_SOLANA_PAY_TO=<payTo public key>       # keys.mjs prints it
   OXSUM_SOLANA_RATE_MICRO=200000000            # 200 credits per whole SOL
+  OXSUM_SOLANA_DEVNET_STATIC_RATE=1            # pin the static rate — the
+                                             # devnet opt-in a mainnet SOL
+                                             # deployment leaves unset
   # OXSUM_RAILS=solana                         # optional explicit declaration
   ```
 
