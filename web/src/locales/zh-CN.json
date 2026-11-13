@@ -929,6 +929,8 @@
     "invitationAs": "以 {{email}} 接受",
     "invitationAccept": "接受邀请",
     "invitationSignIn": "已有账户？登录后接受邀请",
+    "membershipRevoked": "没有可访问的组织",
+    "membershipRevokedNote": "{{email}} 既无客户成员身份也无员工席位，访问权限已被撤销——请退出登录，或改用其他账户登录。",
     "applicationLink": {
       "title": "关联应用计费账户",
       "missing": "请重新打开应用提供的邀请链接。",
