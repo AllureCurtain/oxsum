@@ -641,7 +641,10 @@ jobs:
         env:
           DOUBLEENTRY_DATABASE_URL: postgresql://postgres:postgres@localhost:5432/postgres
         run: |
-          bins=target/nextest/extracted-de/target/debug/deps
-          exe=$(find "$bins" -name "postgres-*" -type f | head -1)
+          # The archive can record the binary under `build/…/out/` rather than
+          # `debug/deps/` — resolve it through the shared metadata walk
+          # (run-shared-suites.py) so both layouts find it.
+          exe=$(python3 scripts/run-shared-suites.py \
+                  --resolve postgres target/nextest/extracted-de)
           echo "=== postgres -> $exe"
           "$exe" --test-threads=4
