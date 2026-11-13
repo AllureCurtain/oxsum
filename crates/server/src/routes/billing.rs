@@ -246,6 +246,109 @@ pub(crate) async fn subscription_checkout(
     ))
 }
 
+/// The body of `POST /api/v1/topups/solana`: the credit amount the intent
+/// should book. The rail converts it to the lamports (or SPL base units) the
+/// payment must deliver at the intent's locked rate.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(crate) struct SolanaTopupReq {
+    amount_minor: i64,
+}
+
+/// `POST /api/v1/topups/solana`: the Solana deposit rail (issue #1117). Opens
+/// a `pending` deposit intent and answers the `reference`, `payTo`,
+/// `amountLamports` and `expiresAt` a wallet needs to pay it — native SOL
+/// unless `OXSUM_SOLANA_SPL_TOKEN_MINT` names an SPL mint. `payment_ref`
+/// anchors on the per-intent `reference` marker, so the intent is unique by
+/// construction. A deployment without `OXSUM_SOLANA_*` answers 503 — the rail
+/// is configured or it is not.
+pub(crate) async fn solana_topup(
+    State(state): State<AppState>,
+    Extension(principal): Extension<Principal>,
+    ApiJson(r): ApiJson<SolanaTopupReq>,
+) -> ApiResult<serde_json::Value> {
+    let verifier = state.config.solana().ok_or_else(|| {
+        ApiError::ServiceUnavailable("the solana deposit rail is not configured".into())
+    })?;
+    let deposit_id = Uuid::new_v4();
+    let opened = state
+        .db
+        .open_solana_deposit(
+            principal.organization().id,
+            deposit_id,
+            r.amount_minor,
+            verifier.terms(),
+        )
+        .await?;
+    let Some((reference, lamports, ttl_secs)) = opened else {
+        // `payment_ref` is a freshly-minted reference; a conflict is a random
+        // collision, never a client replay — the caller retries with a new
+        // intent rather than resuming one.
+        return Err(ApiError::Conflict(
+            "the deposit intent could not be opened".into(),
+        ));
+    };
+    ok(serde_json::json!({
+        "reference": reference,
+        "payTo": verifier.terms().pay_to,
+        "amountLamports": lamports,
+        "splToken": verifier.terms().spl_token_mint,
+        "expiresAt": (time::OffsetDateTime::now_utc()
+            + time::Duration::seconds(ttl_secs))
+            .format(&time::format_description::well_known::Rfc3339)
+            .unwrap_or_default(),
+    }))
+}
+
+/// The body of `POST /api/v1/topups/solana/confirm`: the intent's `reference`,
+/// which the rail locates and validates on-chain itself — the caller never
+/// names the signature, because the rail trusts only what it reads from the
+/// chain.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(crate) struct SolanaConfirmReq {
+    reference: String,
+}
+
+/// `POST /api/v1/topups/solana/confirm`: the rail's on-demand settle (issue
+/// #1117). Submits the intent's `reference` and runs the findReference +
+/// validateTransfer check against the chain now, instead of waiting for the
+/// `solana-deposits` poll tick. The located transaction's signature lands in
+/// `facilitator_tx_hash` and keys the `solana:<signature>` ledger credit, so a
+/// raced poll or a replayed confirm credits nothing twice. `403` means no
+/// honoring transfer has landed yet — or the found one does not honor the
+/// intent (wrong recipient, underpayment, wrong mint, missing marker); a
+/// deployment without `OXSUM_SOLANA_*` answers 503.
+pub(crate) async fn solana_confirm(
+    State(state): State<AppState>,
+    Extension(principal): Extension<Principal>,
+    ApiJson(r): ApiJson<SolanaConfirmReq>,
+) -> ApiResult<oxsum_core::Receipt> {
+    let verifier = state.config.solana().ok_or_else(|| {
+        ApiError::ServiceUnavailable("the solana deposit rail is not configured".into())
+    })?;
+    let Some((deposit_id, _organization_id, _amount)) = state
+        .db
+        .find_solana_deposit(principal.organization().id, &r.reference)
+        .await?
+    else {
+        return Err(ApiError::NotFound("the deposit intent is not known".into()));
+    };
+    let w = wallet(&state.tenants, principal.organization()).await?;
+    let receipt = state
+        .db
+        .credit_solana_deposit(&w, deposit_id, verifier, today())
+        .await?
+        .ok_or_else(|| ApiError::NotFound("the deposit intent is not known".into()))?;
+    // The credit repaid counts against the statement book, like every rail:
+    // open statements are repaid oldest first (issue #124).
+    state
+        .db
+        .reconcile_statements(principal.organization().id, &w, today())
+        .await?;
+    ok(receipt)
+}
+
 /// The body of `POST /api/v1/topups/stripe`: the amount to charge and the
 /// idempotency key that anchors the deposit.
 #[derive(Deserialize)]

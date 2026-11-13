@@ -66,6 +66,10 @@ pub struct JobContext {
     /// plus the sealing key `billable_channels` opens `bill_key_sealed` under.
     /// `None` — no provider impl or no sealing key — schedules no bill pass.
     pub bill_provider: Option<(Arc<dyn oxsum_core::UpstreamBillProvider>, SecretKey)>,
+    /// The Solana deposit rail's verifier (issue #1117): the poll pass asks it
+    /// to find-and-validate each `pending` intent's paying transaction. `None`
+    /// — the rail unconfigured — schedules no `solana-deposits` runs.
+    pub solana: Option<Arc<oxsum_core::SolanaRailVerifier>>,
 }
 
 /// The background task: startup enqueues whatever periodic kinds have nothing
@@ -104,6 +108,9 @@ pub fn spawn_worker(db: Db, ctx: JobContext) -> tokio::task::JoinHandle<()> {
         }
         if ctx.bill_provider.is_some() {
             periodic.push(kinds::UPSTREAM_BILL_SYNC);
+        }
+        if ctx.solana.is_some() {
+            periodic.push(kinds::SOLANA_DEPOSITS);
         }
         for kind in periodic {
             match db.enqueue_job(kind, OffsetDateTime::now_utc()).await {
@@ -489,6 +496,26 @@ async fn run_one(
                     still_failing = report.still_failing,
                     exhausted = report.exhausted,
                     "the x402 credit-recovery pass ran"
+                );
+            }
+        }
+        kinds::SOLANA_DEPOSITS => {
+            let Some(verifier) = &ctx.solana else {
+                return Err(oxsum_core::WalletError::Misconfigured(
+                    "solana-deposits has no solana rail configured".into(),
+                ));
+            };
+            let (checked, credited, expired) = db
+                .poll_solana_deposits(
+                    verifier.as_ref(),
+                    &tenants,
+                    OffsetDateTime::now_utc().date(),
+                )
+                .await?;
+            if checked > 0 || expired > 0 {
+                info!(
+                    checked,
+                    credited, expired, "the solana deposit-poll pass ran"
                 );
             }
         }

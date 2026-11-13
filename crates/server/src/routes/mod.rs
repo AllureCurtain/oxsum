@@ -184,6 +184,8 @@ pub fn router(state: AppState) -> Router {
         .route("/topups/airwallex", post(billing::airwallex_topup))
         .route("/topups/hyperswitch", post(billing::hyperswitch_topup))
         .route("/topups/x402", post(billing::x402_topup))
+        .route("/topups/solana", post(billing::solana_topup))
+        .route("/topups/solana/confirm", post(billing::solana_confirm))
         .route("/redemptions", post(billing::redeem))
         .route("/bundles", get(bundles::catalog))
         .route("/checkout-options", get(merchants::checkout_options))

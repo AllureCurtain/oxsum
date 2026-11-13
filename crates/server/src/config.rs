@@ -361,6 +361,11 @@ pub struct Config {
     /// `None` — the default — runs no rail and `POST /api/v1/topups/x402`
     /// answers 503.
     x402: Option<Arc<dyn oxsum_core::RailVerifier>>,
+    /// The Solana deposit rail's verifier (issue #1117): a `SolanaRpcClient`
+    /// bound to the deployment's `OXSUM_SOLANA_*` terms, wrapped in the
+    /// `SolanaRailVerifier` that answers the `RailVerifier` seam. `None` — the
+    /// default — runs no rail and the solana endpoints answer 503.
+    solana: Option<Arc<oxsum_core::SolanaRailVerifier>>,
     /// The provider the `upstream-bill-sync` job asks for each channel's daily
     /// billed cost (issue #283): the OpenAI Costs impl when
     /// `OXSUM_UPSTREAM_BILL_SYNC` is enabled (and `OXSUM_SECRET_KEY` present to
@@ -413,6 +418,7 @@ impl Config {
             witness_serve: None,
             display_currency: None,
             x402: None,
+            solana: None,
             bill_provider: None,
             branding: Branding::default(),
             evidence_upstream_cost: false,
@@ -558,6 +564,7 @@ impl Config {
         // env flag and the sealing key's presence, not the struct itself.
         let bill_provider = bill_provider_of(secret.as_ref())?;
         let x402 = x402_of()?;
+        let solana = solana_of()?;
         // Operator-intent cross-checks (issue #619): `OXSUM_RAILS` declares the
         // deposit rails the operator means to run and `OXSUM_CUSTOMER_SELF_REGISTER`
         // the registration shape — both validated against what the rest of the
@@ -569,6 +576,7 @@ impl Config {
             airwallex.as_ref(),
             hyperswitch.as_ref(),
             x402.as_ref(),
+            solana.as_ref(),
         )?;
         self_register_intent_of(
             var("OXSUM_CUSTOMER_SELF_REGISTER").as_deref(),
@@ -601,6 +609,7 @@ impl Config {
             witness_serve,
             display_currency,
             x402,
+            solana,
             bill_provider,
             branding: branding_of()?,
             evidence_upstream_cost: evidence_upstream_cost_of()?,
@@ -769,6 +778,24 @@ impl Config {
     #[must_use]
     pub fn with_x402(mut self, verifier: impl oxsum_core::RailVerifier + 'static) -> Self {
         self.x402 = Some(Arc::new(verifier));
+        self
+    }
+
+    /// The Solana deposit rail's verifier (issue #1117), or `None` when the
+    /// `OXSUM_SOLANA_*` set is not complete — in which case the solana top-up
+    /// endpoints answer 503. The returned verifier is the `RailVerifier` seam
+    /// *and* the deployment's terms (`SolanaRailVerifier::terms`) the intent
+    /// route writes into `meta`.
+    #[must_use]
+    pub fn solana(&self) -> Option<&oxsum_core::SolanaRailVerifier> {
+        self.solana.as_ref().map(|v| v.as_ref())
+    }
+
+    /// Sets the Solana rail's verifier. Tests use this; the server reads the
+    /// `OXSUM_SOLANA_*` environment.
+    #[must_use]
+    pub fn with_solana(mut self, verifier: oxsum_core::SolanaRailVerifier) -> Self {
+        self.solana = Some(Arc::new(verifier));
         self
     }
 
@@ -1727,6 +1754,82 @@ fn x402_of() -> Result<Option<Arc<dyn oxsum_core::RailVerifier>>, String> {
         .map_err(|error| error.to_string())
 }
 
+/// Parses the Solana deposit rail (issue #1117). The complete set:
+/// `OXSUM_SOLANA_RPC_URL` + `OXSUM_SOLANA_PAY_TO` + `OXSUM_SOLANA_RATE_MICRO`,
+/// with `OXSUM_SOLANA_SPL_TOKEN_MINT` / `OXSUM_SOLANA_COMMITMENT` /
+/// `OXSUM_SOLANA_MIN_CONFIRMATIONS` / `OXSUM_SOLANA_INTENT_TTL_SECS` optional —
+/// the three requireds or none, a subset is a startup error like the Stripe
+/// trio. Unset and the rail is absent: `POST /api/v1/topups/solana` answers
+/// 503 and the `solana-deposits` job schedules nothing.
+fn solana_of() -> Result<Option<Arc<oxsum_core::SolanaRailVerifier>>, String> {
+    let rpc_url = var("OXSUM_SOLANA_RPC_URL");
+    let pay_to = var("OXSUM_SOLANA_PAY_TO");
+    let rate_micro = var("OXSUM_SOLANA_RATE_MICRO");
+    let spl_token_mint = var("OXSUM_SOLANA_SPL_TOKEN_MINT");
+    let present = [&rpc_url, &pay_to, &rate_micro]
+        .iter()
+        .filter(|v| v.is_some())
+        .count();
+    if present == 0 && spl_token_mint.is_none() {
+        return Ok(None);
+    }
+    if present < 3 {
+        return Err(
+            "OXSUM_SOLANA_RPC_URL, OXSUM_SOLANA_PAY_TO and OXSUM_SOLANA_RATE_MICRO \
+             are set together, or none"
+                .into(),
+        );
+    }
+    let (Some(rpc_url), Some(pay_to), Some(rate_micro)) = (rpc_url, pay_to, rate_micro) else {
+        return Ok(None);
+    };
+    let rate_micro: i64 = rate_micro
+        .parse()
+        .map_err(|_| "OXSUM_SOLANA_RATE_MICRO must be an integer".to_owned())?;
+    if rate_micro <= 0 {
+        return Err("OXSUM_SOLANA_RATE_MICRO must be positive".into());
+    }
+    let commitment = var("OXSUM_SOLANA_COMMITMENT").unwrap_or_else(|| "confirmed".to_owned());
+    if commitment != "confirmed" && commitment != "finalized" {
+        return Err("OXSUM_SOLANA_COMMITMENT must be confirmed or finalized".into());
+    }
+    let min_confirmations = var("OXSUM_SOLANA_MIN_CONFIRMATIONS")
+        .map(|v| v.parse::<u32>())
+        .transpose()
+        .map_err(|_| "OXSUM_SOLANA_MIN_CONFIRMATIONS must be an integer".to_owned())?
+        .unwrap_or(1);
+    let intent_ttl_secs = var("OXSUM_SOLANA_INTENT_TTL_SECS")
+        .map(|v| v.parse::<i64>())
+        .transpose()
+        .map_err(|_| "OXSUM_SOLANA_INTENT_TTL_SECS must be an integer".to_owned())?
+        .unwrap_or(600);
+    let config = oxsum_integrations::solana::SolanaConfig {
+        rpc_url: rpc_url.clone(),
+        pay_to: pay_to.clone(),
+        spl_token_mint: spl_token_mint.clone().filter(|s| !s.is_empty()),
+        commitment,
+        rate_micro,
+        min_confirmations,
+        intent_ttl_secs,
+    };
+    let client = oxsum_integrations::solana::SolanaRpcClient::new(
+        rpc_url,
+        crate::jobs::http_client(),
+        config,
+    );
+    let terms = oxsum_core::SolanaTerms {
+        pay_to,
+        spl_token_mint,
+        rate_micro,
+        min_confirmations,
+        intent_ttl_secs,
+    };
+    Ok(Some(Arc::new(oxsum_core::SolanaRailVerifier::new(
+        Arc::new(client),
+        terms,
+    ))))
+}
+
 /// Cross-checks `OXSUM_RAILS` (issue #619): the comma-separated deposit rails
 /// the operator declares — `stripe`, `airwallex`, `hyperswitch`, `x402` — must
 /// match the rails the environment actually completes. Naming a rail whose
@@ -1741,15 +1844,17 @@ fn rails_intent_of(
     airwallex: Option<&Airwallex>,
     hyperswitch: Option<&Hyperswitch>,
     x402: Option<&Arc<dyn oxsum_core::RailVerifier>>,
+    solana: Option<&Arc<oxsum_core::SolanaRailVerifier>>,
 ) -> Result<(), String> {
     let Some(raw) = raw else {
         return Ok(());
     };
-    let configured: [(&str, bool); 4] = [
+    let configured: [(&str, bool); 5] = [
         ("stripe", stripe.is_some()),
         ("airwallex", airwallex.is_some()),
         ("hyperswitch", hyperswitch.is_some()),
         ("x402", x402.is_some()),
+        ("solana", solana.is_some()),
     ];
     let declared: Vec<&str> = raw
         .split(',')
@@ -1760,7 +1865,7 @@ fn rails_intent_of(
         let Some((_, on)) = configured.iter().find(|(name, _)| name == rail) else {
             return Err(format!(
                 "OXSUM_RAILS entry {rail:?} is not a deposit rail: \
-                 expected stripe, airwallex, hyperswitch or x402"
+                 expected stripe, airwallex, hyperswitch, x402 or solana"
             ));
         };
         if !on {
@@ -2008,16 +2113,16 @@ mod tests {
     #[test]
     fn the_rails_declaration_must_match_the_configured_rails() {
         // Undeclared intent: any configured set is fine — the default.
-        assert!(super::rails_intent_of(None, None, None, None, None).is_ok());
+        assert!(super::rails_intent_of(None, None, None, None, None, None).is_ok());
 
         // A declared rail without credentials names the rail.
-        let err = super::rails_intent_of(Some("stripe"), None, None, None, None).unwrap_err();
+        let err = super::rails_intent_of(Some("stripe"), None, None, None, None, None).unwrap_err();
         assert!(err.contains("stripe"), "{err}");
         assert!(err.contains("OXSUM_STRIPE"), "{err}");
 
         // A rail that is not a rail is a typo, not a config.
         assert!(
-            super::rails_intent_of(Some("paypal"), None, None, None, None)
+            super::rails_intent_of(Some("paypal"), None, None, None, None, None)
                 .unwrap_err()
                 .contains("not a deposit rail")
         );
