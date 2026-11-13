@@ -433,6 +433,28 @@ impl Db {
             .settle(&payment)
             .await
             .map_err(|refusal| WalletError::Forbidden(refusal.reason.clone()))?;
+        // One signature credits one deposit ever: a transaction carrying two
+        // references pays once, so a second intent naming an already-used
+        // signature must be refused, not credited in a second organization's
+        // ledger (issue #1124). The pre-check gives a clean refusal; the
+        // `deposits_solana_tx_hash` partial unique index is the backstop for
+        // the race where two intents claim the same signature at once.
+        let already_used = sqlx::query_scalar::<_, i64>(
+            "SELECT 1 FROM oxsum.deposits \
+             WHERE rail = $1 AND facilitator_tx_hash = $2 AND deposit_id <> $3 \
+             LIMIT 1",
+        )
+        .bind(RAIL_SOLANA)
+        .bind(&settlement.tx_hash)
+        .bind(deposit_id)
+        .fetch_optional(&mut *tx)
+        .await?
+        .is_some();
+        if already_used {
+            return Err(WalletError::Forbidden(
+                "the paying transaction already credited another deposit".into(),
+            ));
+        }
         sqlx::query(
             "UPDATE oxsum.deposits \
              SET status = 'confirmed', facilitator_tx_hash = $1, \
@@ -443,7 +465,20 @@ impl Db {
         .bind(payment.context["receivedCredits"].as_i64())
         .bind(deposit_id)
         .execute(&mut *tx)
-        .await?;
+        .await
+        .map_err(|e| {
+            // A unique violation on deposits_solana_tx_hash means a concurrent
+            // intent claimed this signature first — a double-spend refusal,
+            // not a storage fault.
+            if let sqlx::Error::Database(ref db) = e
+                && db.code().as_deref() == Some("23505")
+            {
+                return WalletError::Forbidden(
+                    "the paying transaction already credited another deposit".into(),
+                );
+            }
+            WalletError::from(e)
+        })?;
         // The credit replays under the signature-derived key: a retried or
         // raced call answers the standing receipt (`is_new: false`), never a
         // second credit.

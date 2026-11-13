@@ -268,6 +268,74 @@ async fn solana_confirm_refuses_an_unknown_reference() {
     assert_eq!(status, StatusCode::NOT_FOUND, "{body}");
 }
 
+/// Issue #1124: a transaction carrying two references pays one transfer but
+/// must credit only one deposit. Two intents — whether in one organization or
+/// two — that resolve to the same signature credit the first and refuse the
+/// second; the second's ledger never books the spend. The per-organization
+/// ledger key `solana:<sig>` is not the guard (each org's ledger is its own
+/// scope); the global `deposits_solana_tx_hash` index is.
+#[tokio::test]
+async fn solana_signature_credits_once_across_organizations() {
+    let stub = SolanaStub::default();
+    let Some((app, _db)) = world(stub.clone()).await else {
+        return;
+    };
+    // Two organizations — two ledgers — each open an intent for 1000 credits.
+    let key_a = register_session(&app).await;
+    let key_b = register_session(&app).await;
+    let mut references = Vec::new();
+    for key in [&key_a, &key_b] {
+        let (status, intent) = call(
+            &app,
+            "POST",
+            "/api/v1/topups/solana",
+            Some(json!({"amountMinor": 1000})),
+            Some(key),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{intent}");
+        references.push(intent["data"]["reference"].as_str().unwrap().to_owned());
+    }
+    // One paying transaction carries both references — the attack shape.
+    let signature = "sigDblSpend0000000000000000000000000000000000000000000000000000";
+    for reference in &references {
+        stub.located
+            .lock()
+            .unwrap()
+            .insert(reference.clone(), signature.to_owned());
+    }
+    stub.validated.lock().unwrap().insert(
+        signature.to_owned(),
+        ValidatedTransfer {
+            signature: signature.to_owned(),
+            delivered: 5_000,
+        },
+    );
+    // The first organization's confirm settles and credits.
+    let (status_a, _) = call(
+        &app,
+        "POST",
+        "/api/v1/topups/solana/confirm",
+        Some(json!({"reference": references[0]})),
+        Some(&key_a),
+    )
+    .await;
+    assert_eq!(status_a, StatusCode::OK);
+    assert_eq!(balance(&app, &key_a).await, 1000);
+    // The second organization's intent resolves to the *same* signature —
+    // already spent — and must be refused, never double-credited.
+    let (status_b, refusal) = call(
+        &app,
+        "POST",
+        "/api/v1/topups/solana/confirm",
+        Some(json!({"reference": references[1]})),
+        Some(&key_b),
+    )
+    .await;
+    assert_eq!(status_b, StatusCode::FORBIDDEN, "{refusal}");
+    assert_eq!(balance(&app, &key_b).await, 0, "{refusal}");
+}
+
 #[tokio::test]
 async fn solana_unconfigured_answers_503() {
     // No SolanaRailVerifier on the config — the rail is absent.
