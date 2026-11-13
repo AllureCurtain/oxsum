@@ -23,7 +23,9 @@ import {
 } from "../components/ui";
 import { CodeBlock } from "../components/ui";
 import { Banner, Card, Cr, Field, StatChip, credits, creditsWithDisplay } from "../components/ui";
+import { QRCodeSVG } from "qrcode.react";
 import { decimalMinor } from "../lib/money";
+import { solanaPayUrl } from "../lib/solanaPay";
 
 /** The consequence line a consequential form owes its submit button — what
  *  pressing it actually does, stated plainly before the commit. */
@@ -343,6 +345,51 @@ function IntentField({ label, value }: { label: string; value: string }) {
 }
 
 /**
+ * The Solana Pay block (issue #1141): the opened intent as a scan-able
+ * `solana:` transfer-request URL plus a copyable link — the fast path for a
+ * wallet that reads QR. The manual `payTo`/amount/`reference` fields stay as
+ * the fallback a wallet that cannot scan still needs. `spl-token` rides the
+ * same URL the moment the intent names a mint, so #1140's `asset` field slots
+ * in without a rewrite.
+ */
+function SolanaPayBlock({ intent }: { intent: SolanaIntent }) {
+  const { t } = useTranslation();
+  const url = solanaPayUrl({
+    recipient: intent.payTo,
+    baseUnits: intent.amountLamports,
+    assetDecimals: intent.assetDecimals,
+    reference: intent.reference,
+    splToken: intent.splToken,
+    label: t("topup.solanaPayLabel"),
+    memo: intent.depositId,
+  });
+  if (url === null) return null;
+  return (
+    <div className="flex flex-col items-start gap-2">
+      <p className="text-xs font-medium text-ink">{t("topup.solanaPayScan")}</p>
+      <div className="rounded border border-line bg-surface p-3">
+        {/* A wallet's camera needs the QR's own quiet zone on a light pad —
+            `bgColor`/`fgColor` pin the contrast the scan requires, never a
+            palette token that could shift under it. */}
+        <QRCodeSVG
+          value={url}
+          size={168}
+          bgColor="#ffffff"
+          fgColor="#121a2b"
+          level="M"
+          title={t("topup.solanaPayScan")}
+        />
+      </div>
+      <p className="text-xs text-muted">{t("topup.solanaPayOrCopy")}</p>
+      <IntentField label={t("topup.solanaPayWith")} value={url} />
+      <p className="text-[11px] font-medium uppercase tracking-wider text-muted">
+        {t("topup.solanaManualTitle")}
+      </p>
+    </div>
+  );
+}
+
+/**
  * The Solana rail (issue #1117): open an intent, the wallet pays `payTo` the
  * `amountLamports` of SOL (or the configured SPL token) carrying `reference`
  * as a read-only marker, then either "I've sent it" confirms on demand or the
@@ -417,6 +464,7 @@ function SolanaRail() {
               ? t("topup.solanaSendSpl", { amount: opened.amountLamports })
               : t("topup.solanaSendSol", { amount: opened.amountLamports })}
           </p>
+          <SolanaPayBlock intent={opened} />
           <IntentField label={t("topup.solanaPayTo")} value={opened.payTo} />
           <IntentField label={t("topup.solanaAmount")} value={String(opened.amountLamports)} />
           <IntentField label={t("topup.solanaReference")} value={opened.reference} />

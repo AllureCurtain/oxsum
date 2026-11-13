@@ -285,6 +285,11 @@
     "solanaVerifying": "Verifying on-chain…",
     "solanaNotYet": "No honoring transfer found yet — if you just sent it, wait a few seconds; the poll will credit it automatically.",
     "solanaCredited": "Credited — the poll picked up your transfer.",
+    "solanaPayScan": "Scan with a Solana wallet",
+    "solanaPayOrCopy": "or copy the payment link",
+    "solanaPayWith": "Pay with Solana Pay",
+    "solanaPayLabel": "oxsum top-up",
+    "solanaManualTitle": "Manual transfer",
     "copy": "Copy",
     "copied": "Copied"
   },
