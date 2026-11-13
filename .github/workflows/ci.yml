@@ -648,3 +648,102 @@ jobs:
                   --resolve postgres target/nextest/extracted-de)
           echo "=== postgres -> $exe"
           "$exe" --test-threads=4
+
+  # The Solana end-to-end suite (issue #1152): the archived `e2e` test binary
+  # runs the real SolanaRpcClient against a local solana-test-validator and the
+  # credit path on the service postgres. The tests skip cleanly without a
+  # reachable validator, so a toolchain failure degrades the job to a
+  # validator-health check rather than a false green — the job therefore fails
+  # explicitly when the validator never comes up, instead of letting the skips
+  # mask a broken install.
+  solana-e2e:
+    name: solana-e2e
+    needs: [filter, build-tests]
+    # Heavy tier like the shards: pushes to main, the nightly full run and
+    # manual dispatch (issues #552, #549).
+    if: needs.filter.outputs.rust == 'true' && (github.event_name == 'push' || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch')
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: oxsum
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 2s
+          --health-timeout 5s
+          --health-retries 15
+    env:
+      DATABASE_URL: postgresql://postgres:postgres@localhost:5432/oxsum
+      OXSUM_SOLANA_E2E_RPC: http://127.0.0.1:8899
+      # The pinned agave toolchain the validator binary comes from — bump
+      # deliberately; the cache key below follows it.
+      SOLANA_RELEASE: v4.4.1
+    steps:
+      - uses: actions/checkout@v7
+      - name: Cache the agave toolchain
+        uses: actions/cache@v6
+        id: agave-cache
+        with:
+          path: ~/agave-release
+          key: agave-${{ env.SOLANA_RELEASE }}-x86_64-unknown-linux-gnu
+      - name: Install solana-test-validator
+        if: steps.agave-cache.outputs.cache-hit != 'true'
+        run: |
+          # Prebuilt release tarball — the same artifact solana-install
+          # downloads, pinned and verified by hand rather than piping a
+          # version-checking installer through the runner.
+          curl -fL --retry 3 \
+            -o /tmp/solana-release.tar.bz2 \
+            "https://github.com/anza-xyz/agave/releases/download/${SOLANA_RELEASE}/solana-release-x86_64-unknown-linux-gnu.tar.bz2"
+          mkdir -p ~/agave-release
+          tar -xjf /tmp/solana-release.tar.bz2 -C ~/agave-release --strip-components=1
+          ~/agave-release/bin/solana-test-validator --version
+      - name: Start the test validator
+        run: |
+          ~/agave-release/bin/solana-test-validator --reset --quiet \
+            --ledger /tmp/solana-test-ledger --rpc-port 8899 --faucet-port 9900 \
+            > /tmp/solana-validator.log 2>&1 &
+          echo $! > /tmp/solana-validator.pid
+          for i in $(seq 1 60); do
+            if curl -sf http://127.0.0.1:8899 \
+              -X POST -H 'content-type: application/json' \
+              -d '{"jsonrpc":"2.0","id":1,"method":"getHealth"}' \
+              | grep -q '"ok"'; then
+              echo "validator healthy after ${i}s"
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "the validator never became healthy:"
+          cat /tmp/solana-validator.log
+          exit 1
+      - name: Sweep stale test scratch databases
+        run: |
+          psql "postgresql://postgres:postgres@127.0.0.1:5432/postgres" -f scripts/drop-test-scratch.sql
+      - uses: actions/download-artifact@v8
+        with:
+          name: nextest-archive
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Install nextest
+        uses: taiki-e/install-action@v2
+        with:
+          tool: nextest
+      # The suite reads OXSUM_SOLANA_E2E_RPC from the job env. A validator
+      # outage fails the health step above rather than letting the tests
+      # skip green.
+      - name: Run the solana e2e suite
+        run: >-
+          cargo nextest run --archive-file nextest-archive.tar.zst
+          -E 'package(=oxsum-integrations) and binary(=e2e)'
+      - name: Stop the test validator
+        if: always()
+        run: |
+          if [ -f /tmp/solana-validator.pid ]; then
+            kill "$(cat /tmp/solana-validator.pid)" 2>/dev/null || true
+          fi
