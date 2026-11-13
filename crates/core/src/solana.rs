@@ -432,7 +432,7 @@ impl Db {
         deposit_id: Uuid,
         amount_minor: i64,
         terms: &SolanaTerms,
-    ) -> Result<Option<(String, i64, i64)>, WalletError> {
+    ) -> Result<Option<(String, i64, String)>, WalletError> {
         if amount_minor <= 0 {
             return Err(WalletError::InvalidInput(
                 "a deposit's amount must be positive".into(),
@@ -503,7 +503,13 @@ impl Db {
         if inserted == 0 {
             return Ok(None);
         }
-        Ok(Some((reference, lamports, terms.ttl())))
+        // Answer the stored expiresAt, not a recomputed now+ttl — the figure
+        // the poll honors is the one written into meta, so the caller sees
+        // the same deadline the rail enforces (issue #1131).
+        let stored_expiry = expires_at
+            .format(&time::format_description::well_known::Rfc3339)
+            .unwrap_or_default();
+        Ok(Some((reference, lamports, stored_expiry)))
     }
 
     /// Finds the pending intent a `reference` names — the lookup the confirm

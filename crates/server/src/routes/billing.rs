@@ -280,7 +280,7 @@ pub(crate) async fn solana_topup(
             verifier.terms(),
         )
         .await?;
-    let Some((reference, lamports, ttl_secs)) = opened else {
+    let Some((reference, lamports, expires_at)) = opened else {
         // `payment_ref` is a freshly-minted reference; a conflict is a random
         // collision, never a client replay — the caller retries with a new
         // intent rather than resuming one.
@@ -293,10 +293,10 @@ pub(crate) async fn solana_topup(
         "payTo": verifier.terms().pay_to,
         "amountLamports": lamports,
         "splToken": verifier.terms().spl_token_mint,
-        "expiresAt": (time::OffsetDateTime::now_utc()
-            + time::Duration::seconds(ttl_secs))
-            .format(&time::format_description::well_known::Rfc3339)
-            .unwrap_or_default(),
+        // The stored expiresAt from the intent's meta — the same deadline the
+        // poll honors — not a recomputed now+ttl that could drift (issue
+        // #1131).
+        "expiresAt": expires_at,
     }))
 }
 
