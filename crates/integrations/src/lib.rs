@@ -16,6 +16,8 @@
 //! - [`squads`]: the Squads v4 multisig vault-PDA derivation that proves the
 //!   rail's `payTo` is a multisig's receiving vault, not a hot wallet
 //!   (issue #1143).
+//! - [`pyth`]: the Pyth Hermes price-oracle client a native-SOL deposit intent
+//!   prices against at open (issue #1139).
 //! - [`x402_facilitator`]: the facilitator-delegated `RailVerifier` (issue #282).
 //! - [`openai_costs`]: the OpenAI Costs admin-API bill provider (issue #283).
 //! - [`anthropic_costs`]: the Anthropic Usage & Cost admin-API bill provider (issue #367).
@@ -36,6 +38,7 @@ pub mod oauth;
 pub mod oidc;
 pub mod openai_costs;
 pub mod provider_http;
+pub mod pyth;
 pub mod solana;
 pub mod squads;
 pub mod stripe;
