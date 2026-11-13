@@ -16,7 +16,8 @@ use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use http_body_util::BodyExt;
 use oxsum_core::{
-    ChainLookup, Db, ExpectedTransfer, SolanaRailVerifier, SolanaTerms, ValidatedTransfer,
+    ChainLookup, Db, ExpectedTransfer, OracleQuote, PriceOracle, SolanaPricing, SolanaRailVerifier,
+    SolanaTerms, ValidatedTransfer,
 };
 use oxsum_server::{Config, Signup};
 use serde_json::{Value, json};
@@ -92,8 +93,32 @@ impl ChainLookup for SolanaStub {
     }
 }
 
-/// A configured world: the Solana rail is on, with the stubbed chain.
+/// A configured world: the Solana rail is on, with the stubbed chain and the
+/// static devnet pricing `SolanaRailVerifier::new` defaults to.
 async fn world(stub: SolanaStub) -> Option<(Router, Db)> {
+    world_with(SolanaRailVerifier::new(Arc::new(stub), terms())).await
+}
+
+/// The oracle-stubbed world behind issue #1139: a `PriceOracle` that answers
+/// one scripted `OracleQuote` (or `None`), so a native-SOL open prices the
+/// intent at the quote rather than the static `terms().rate_micro`.
+#[derive(Debug, Default)]
+struct OracleStub {
+    quote: Mutex<Option<OracleQuote>>,
+}
+
+impl PriceOracle for OracleStub {
+    fn latest<'a>(
+        &'a self,
+        _feed_id: &'a str,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Option<OracleQuote>> + Send + 'a>> {
+        Box::pin(async move { *self.quote.lock().unwrap() })
+    }
+}
+
+/// A configured world around an already-built verifier — the oracle-priced
+/// tests build `with_pricing` themselves; the static ones go through `world`.
+async fn world_with(verifier: SolanaRailVerifier) -> Option<(Router, Db)> {
     let u = oxsum_testkit::suite_url!()?;
     let pool: PgPool = sqlx::postgres::PgPoolOptions::new()
         .max_connections(5)
@@ -103,8 +128,7 @@ async fn world(stub: SolanaStub) -> Option<(Router, Db)> {
     let db = Db::from_pool(pool);
     db.migrate().await.expect("migrates");
     oxsum_testkit::set_registration_fixture(db.pool(), true).await;
-    let config = Config::new(Signup::Open, None)
-        .with_solana(SolanaRailVerifier::new(Arc::new(stub), terms()));
+    let config = Config::new(Signup::Open, None).with_solana(verifier);
     Some((oxsum_server::app(db.clone(), config), db))
 }
 
@@ -388,4 +412,129 @@ async fn solana_unconfigured_answers_503() {
     )
     .await;
     assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+}
+
+/// Issue #1139: a native-SOL open is oracle-priced. The verifier carries
+/// `SolanaPricing::Oracle` over a stubbed `PriceOracle`; the opened intent's
+/// `meta` locks the quote-derived `rateMicro`, records `rateSource: "pyth"`
+/// and the quote's own `pythPrice`/`pythPublishTime`, and the answered
+/// `amountLamports` converts at that rate — not the static `terms` figure.
+#[tokio::test]
+async fn solana_open_locks_the_oracle_rate_into_meta() {
+    let stub = SolanaStub::default();
+    // USD 204.93/SOL at expo -8 → 204_930_000 minor-credits per whole SOL.
+    let oracle = Arc::new(OracleStub {
+        quote: Mutex::new(Some(OracleQuote {
+            price: 20_493_000_000,
+            conf: 15_300_000,
+            expo: -8,
+            publish_time: time::OffsetDateTime::now_utc().unix_timestamp(),
+        })),
+    });
+    let verifier = SolanaRailVerifier::with_pricing(
+        Arc::new(stub),
+        terms(),
+        SolanaPricing::Oracle {
+            feed_id: "feed.sol.usd".to_owned(),
+            max_quote_age_secs: 60,
+            max_conf_ratio: 0.01,
+        },
+        Some(oracle),
+    );
+    let Some((app, db)) = world_with(verifier).await else {
+        return;
+    };
+    let key = register_session(&app).await;
+    // 1000 minor-credits at 204_930_000 minor/SOL ≈ 4_880 lamports (ceil).
+    let (status, intent) = call(
+        &app,
+        "POST",
+        "/api/v1/topups/solana",
+        Some(json!({"amountMinor": 1000})),
+        Some(&key),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{intent}");
+    let lamports = intent["data"]["amountLamports"].as_i64().unwrap();
+    assert_eq!(lamports, 4_880, "{intent}");
+    // The intent's own meta locked the oracle figure and its provenance.
+    let reference = intent["data"]["reference"].as_str().unwrap().to_owned();
+    let meta: Value = sqlx::query_scalar(
+        "SELECT meta FROM oxsum.deposits WHERE payment_ref = $1 AND rail = 'solana'",
+    )
+    .bind(&reference)
+    .fetch_one(db.pool())
+    .await
+    .unwrap();
+    assert_eq!(meta["rateSource"].as_str().unwrap(), "pyth");
+    assert_eq!(meta["rateMicro"].as_i64().unwrap(), 204_930_000);
+    assert_eq!(meta["pythPrice"].as_str().unwrap(), "20493000000");
+    assert!(meta["pythPublishTime"].as_i64().unwrap() > 0);
+}
+
+/// Issue #1139: an oracle open refuses — with the API's 403 envelope, never a
+/// silent static fallback — when the freshest quote is stale or its
+/// confidence is too wide, and when the oracle answers nothing at all.
+#[tokio::test]
+async fn solana_open_refuses_a_stale_or_wide_quote() {
+    let stub = SolanaStub::default();
+    // A quote published 300 s ago — over the 60 s bound.
+    let oracle = Arc::new(OracleStub {
+        quote: Mutex::new(Some(OracleQuote {
+            price: 20_493_000_000,
+            conf: 15_300_000,
+            expo: -8,
+            publish_time: time::OffsetDateTime::now_utc().unix_timestamp() - 300,
+        })),
+    });
+    let verifier = SolanaRailVerifier::with_pricing(
+        Arc::new(stub.clone()),
+        terms(),
+        SolanaPricing::Oracle {
+            feed_id: "feed.sol.usd".to_owned(),
+            max_quote_age_secs: 60,
+            max_conf_ratio: 0.01,
+        },
+        Some(oracle.clone()),
+    );
+    let Some((app, _db)) = world_with(verifier).await else {
+        return;
+    };
+    let key = register_session(&app).await;
+    let (status, refusal) = call(
+        &app,
+        "POST",
+        "/api/v1/topups/solana",
+        Some(json!({"amountMinor": 1000})),
+        Some(&key),
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "{refusal}");
+    // A fresh-but-wide quote refuses the same way.
+    *oracle.quote.lock().unwrap() = Some(OracleQuote {
+        price: 20_493_000_000,
+        conf: 20_493_000_000, // conf/price = 1.0, over the 0.01 bound
+        expo: -8,
+        publish_time: time::OffsetDateTime::now_utc().unix_timestamp(),
+    });
+    let (status, refusal) = call(
+        &app,
+        "POST",
+        "/api/v1/topups/solana",
+        Some(json!({"amountMinor": 1000})),
+        Some(&key),
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "{refusal}");
+    // The oracle answering nothing refuses too — never a static fallback.
+    *oracle.quote.lock().unwrap() = None;
+    let (status, refusal) = call(
+        &app,
+        "POST",
+        "/api/v1/topups/solana",
+        Some(json!({"amountMinor": 1000})),
+        Some(&key),
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "{refusal}");
 }

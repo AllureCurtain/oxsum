@@ -4,8 +4,8 @@
 //! `expired`, and neither misbehaves on a replayed or mis-priced open.
 //! Skips without DATABASE_URL.
 use oxsum_core::{
-    ChainLookup, Db, ExpectedTransfer, NewUser, SolanaRailVerifier, SolanaTerms, ValidatedTransfer,
-    WalletError,
+    ChainLookup, Db, ExpectedTransfer, LockedRate, NewUser, SolanaRailVerifier, SolanaTerms,
+    ValidatedTransfer, WalletError,
 };
 use sqlx::Row;
 use std::sync::{Arc, Mutex};
@@ -33,6 +33,14 @@ fn terms() -> SolanaTerms {
     }
 }
 
+/// The static rate every test's open resolves at — the `LockedRate` an
+/// `open_solana_deposit` now carries, matching `terms().rate_micro`.
+fn rate() -> LockedRate {
+    LockedRate::Static {
+        rate_micro: 200_000_000,
+    }
+}
+
 /// A fresh organization's id; `deposits.organization_id` references it.
 async fn organization(db: &Db, slug: &str) -> Uuid {
     let registration = db
@@ -57,7 +65,7 @@ async fn open_solana_deposit_inserts_pending_with_locked_terms() {
     let org = organization(&db, "open").await;
     let deposit_id = Uuid::new_v4();
     let (reference, lamports, expires_at) = db
-        .open_solana_deposit(org, deposit_id, 1000, &terms())
+        .open_solana_deposit(org, deposit_id, 1000, &terms(), &rate())
         .await
         .unwrap()
         .expect("a fresh deposit inserts");
@@ -99,7 +107,7 @@ async fn open_solana_deposit_refuses_a_nonpositive_amount() {
     let org = organization(&db, "open-refuse").await;
     for amount in [0_i64, -5] {
         let result = db
-            .open_solana_deposit(org, Uuid::new_v4(), amount, &terms())
+            .open_solana_deposit(org, Uuid::new_v4(), amount, &terms(), &rate())
             .await;
         assert!(
             matches!(result, Err(WalletError::InvalidInput(_))),
@@ -125,7 +133,7 @@ async fn open_solana_deposit_replays_the_unique_anchor() {
     let org = organization(&db, "open-replay").await;
     let deposit_id = Uuid::new_v4();
     let first = db
-        .open_solana_deposit(org, deposit_id, 100, &terms())
+        .open_solana_deposit(org, deposit_id, 100, &terms(), &rate())
         .await
         .unwrap()
         .expect("the first open inserts");
@@ -156,7 +164,7 @@ async fn expire_solana_deposit_walks_pending_and_confirmed_only() {
     };
     let org = organization(&db, "expire").await;
     let pending = Uuid::new_v4();
-    db.open_solana_deposit(org, pending, 100, &terms())
+    db.open_solana_deposit(org, pending, 100, &terms(), &rate())
         .await
         .unwrap()
         .expect("inserts");
@@ -319,7 +327,7 @@ async fn verify_walks_past_dishonoring_transactions_to_find_the_payment() {
     };
     let org = organization(&db, "many").await;
     let deposit_id = Uuid::new_v4();
-    db.open_solana_deposit(org, deposit_id, 1000, &terms())
+    db.open_solana_deposit(org, deposit_id, 1000, &terms(), &rate())
         .await
         .unwrap()
         .expect("inserts");
@@ -384,7 +392,7 @@ async fn expiry_is_judged_on_block_time_not_the_confirm_clock() {
     // Edge 1: on-chain before expiry (block_time < expiresAt), confirm after
     // the TTL — must credit.
     let on_time = Uuid::new_v4();
-    db.open_solana_deposit(org, on_time, 1000, &short)
+    db.open_solana_deposit(org, on_time, 1000, &short, &rate())
         .await
         .unwrap()
         .expect("inserts");
@@ -408,7 +416,7 @@ async fn expiry_is_judged_on_block_time_not_the_confirm_clock() {
     // Edge 2: on-chain after expiry (block_time >= expiresAt) — refused,
     // never credited.
     let late = Uuid::new_v4();
-    db.open_solana_deposit(org, late, 1000, &short)
+    db.open_solana_deposit(org, late, 1000, &short, &rate())
         .await
         .unwrap()
         .expect("inserts");
@@ -451,7 +459,7 @@ async fn a_second_organizations_intent_on_a_spent_signature_is_forbidden() {
     for (i, org) in [org_a, org_b].iter().enumerate() {
         let deposit_id = Uuid::new_v4();
         let (reference, _, _) = db
-            .open_solana_deposit(*org, deposit_id, 1000, &terms())
+            .open_solana_deposit(*org, deposit_id, 1000, &terms(), &rate())
             .await
             .unwrap()
             .expect("inserts");
@@ -520,7 +528,7 @@ async fn open_solana_deposit_enforces_amount_bounds_and_open_rate() {
     // Below the floor and above the cap are refused.
     for amount in [50_i64, 5_000] {
         let result = db
-            .open_solana_deposit(org, Uuid::new_v4(), amount, &bounded)
+            .open_solana_deposit(org, Uuid::new_v4(), amount, &bounded, &rate())
             .await;
         assert!(
             matches!(result, Err(WalletError::InvalidInput(_))),
@@ -529,13 +537,13 @@ async fn open_solana_deposit_enforces_amount_bounds_and_open_rate() {
     }
     // Two opens inside the bounds land; the third trips the per-minute cap.
     for _ in 0..2 {
-        db.open_solana_deposit(org, Uuid::new_v4(), 1000, &bounded)
+        db.open_solana_deposit(org, Uuid::new_v4(), 1000, &bounded, &rate())
             .await
             .unwrap()
             .expect("in-bounds opens insert");
     }
     let throttled = db
-        .open_solana_deposit(org, Uuid::new_v4(), 1000, &bounded)
+        .open_solana_deposit(org, Uuid::new_v4(), 1000, &bounded, &rate())
         .await;
     assert!(
         matches!(throttled, Err(WalletError::Forbidden(_))),
@@ -553,7 +561,7 @@ async fn verify_locked_settles_at_the_intents_terms_not_the_live_config() {
     // 5_000 lamports, locked into meta with payTo and the mint.
     let deposit_id = Uuid::new_v4();
     let (_reference, lamports, _ttl) = db
-        .open_solana_deposit(org, deposit_id, 1000, &terms())
+        .open_solana_deposit(org, deposit_id, 1000, &terms(), &rate())
         .await
         .unwrap()
         .expect("inserts");
@@ -601,5 +609,77 @@ async fn verify_locked_settles_at_the_intents_terms_not_the_live_config() {
     assert!(receipt.is_new, "the credit ran fresh, not a replay");
     // The wallet now holds exactly the opened 1000 minor-credits — the locked
     // amount, not a repriced figure.
+    assert_eq!(wallet.available().await.unwrap(), 1000);
+}
+
+/// Issue #1139: an oracle-priced open locks the resolved `rateMicro` into
+/// `meta` alongside the quote's own figures — `rateSource: "pyth"`, the
+/// `pythPrice`/`pythPublishTime` — and `credit_solana_deposit` still settles
+/// at the locked figure even when the verifier's live terms drift. The quote
+/// conversion is `resolve_rate`'s job (unit-tested in core); this test feeds
+/// the `LockedRate` `resolve_rate` would produce and proves the intent
+/// records it and verifies under it.
+#[tokio::test]
+async fn oracle_priced_intent_locks_and_verifies_the_quote_rate() {
+    let Some(db) = database("solana_oracle").await else {
+        return;
+    };
+    let org = organization(&db, "oracle").await;
+    // The `LockedRate::Oracle` resolve_rate answers for a USD 204.93/SOL
+    // quote — the rate the open must lock, not the static 200_000_000.
+    let oracle_rate = LockedRate::Oracle {
+        rate_micro: 204_930_000,
+        quote: oxsum_core::OracleQuote {
+            price: 20_493_000_000,
+            conf: 15_300_000,
+            expo: -8,
+            publish_time: 1_763_000_000,
+        },
+    };
+    let deposit_id = Uuid::new_v4();
+    let (_reference, lamports, _e) = db
+        .open_solana_deposit(org, deposit_id, 1000, &terms(), &oracle_rate)
+        .await
+        .unwrap()
+        .expect("inserts");
+    // 1000 minor-credits at 204_930_000 minor/SOL = ceil(1000 * 1e9 /
+    // 204_930_000) = 4_880 lamports — the oracle figure, not the static 5_000.
+    assert_eq!(lamports, 4_880);
+    let meta: serde_json::Value =
+        sqlx::query_scalar("SELECT meta FROM oxsum.deposits WHERE deposit_id = $1")
+            .bind(deposit_id)
+            .fetch_one(db.pool())
+            .await
+            .unwrap();
+    assert_eq!(meta["rateSource"].as_str().unwrap(), "pyth");
+    assert_eq!(meta["rateMicro"].as_i64().unwrap(), 204_930_000);
+    assert_eq!(meta["pythPrice"].as_str().unwrap(), "20493000000");
+    // The settle side reads only the locked rate: a verifier whose live terms
+    // carry the static 200_000_000 still demands the oracle-priced 4_880
+    // lamports the intent promised.
+    let verifier = SolanaRailVerifier::new(
+        Arc::new(OneSig {
+            reference: Mutex::new(String::new()),
+            signature: "sigOracle0000000000000000000000000000000000000000000000".to_owned(),
+            delivered: 4_880,
+            block_time: 0,
+        }),
+        terms(),
+    );
+    let tenant_id: String =
+        sqlx::query_scalar("SELECT tenant_id FROM oxsum.organizations WHERE organization_id = $1")
+            .bind(org)
+            .fetch_one(db.pool())
+            .await
+            .unwrap();
+    let wallet = oxsum_core::Wallet::open(db.pool().clone(), &tenant_id)
+        .await
+        .unwrap();
+    let receipt = db
+        .credit_solana_deposit(&wallet, deposit_id, &verifier, time::Date::MAX)
+        .await
+        .unwrap()
+        .expect("the locked oracle rate credits");
+    assert!(receipt.is_new);
     assert_eq!(wallet.available().await.unwrap(), 1000);
 }
