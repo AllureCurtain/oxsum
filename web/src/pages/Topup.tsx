@@ -29,7 +29,14 @@ import { CodeBlock } from "../components/ui";
 import { Banner, Card, Cr, Field, StatChip, credits, creditsWithDisplay } from "../components/ui";
 import { QRCodeSVG } from "qrcode.react";
 import { decimalMinor } from "../lib/money";
-import { solanaPayUrl } from "../lib/solanaPay";
+import { baseUnitsDecimal, solanaPayUrl } from "../lib/solanaPay";
+import {
+  solanaCountdown,
+  solanaExpired,
+  solanaStatus,
+  solanaUrgent,
+  type SolanaStatusLine,
+} from "../lib/solanaStatus";
 
 /** The consequence line a consequential form owes its submit button — what
  *  pressing it actually does, stated plainly before the commit. */
@@ -393,13 +400,87 @@ function SolanaPayBlock({ intent }: { intent: SolanaIntent }) {
   );
 }
 
+/** The locked terms as a human amount — "5.00 USDC" — from the intent's own
+ * `amountLamports`/`assetDecimals`/`asset`, never a float. `baseUnitsDecimal`
+ * strips trailing zeros, so the display pads the fraction back to at least
+ * two places for an amount that reads like money. */
+function solanaLockedAmount(intent: SolanaIntent): string | null {
+  const decimal = baseUnitsDecimal(intent.amountLamports, intent.assetDecimals);
+  if (decimal === null) return null;
+  const padded = decimal.includes(".")
+    ? decimal.replace(/(\.\d)$/, "$10")
+    : `${decimal}.00`;
+  const asset = (intent.asset ?? (intent.splToken ? "" : "SOL")).toUpperCase();
+  return asset === "" ? padded : `${padded} ${asset}`;
+}
+
+/** The countdown to `expiresAt`, ticking once a second; under
+ * `SOLANA_URGENT_SECS` it turns danger — and at zero it is what flips the
+ * panel to the expired state. */
+function SolanaCountdown({ expiresAt, now }: { expiresAt: string; now: number }) {
+  const { t } = useTranslation();
+  const remaining = solanaCountdown(expiresAt, now);
+  if (remaining === null) {
+    return (
+      <p className="text-xs text-muted">
+        {t("topup.solanaExpires", { at: new Date(expiresAt).toLocaleTimeString() })}
+      </p>
+    );
+  }
+  return (
+    <p className="text-xs text-muted">
+      {t("topup.solanaExpiresIn")}{" "}
+      <span
+        className={`mono tnum ${solanaUrgent(expiresAt, now) ? "font-semibold text-danger" : "text-ink"}`}
+      >
+        {remaining}
+      </span>
+    </p>
+  );
+}
+
+/**
+ * The status line the open intent's poll arrives at (issue #1148). Priority:
+ * the confirm mutation's own answer (a receipt is `credited`; its error maps
+ * through `solanaStatus`), then the balance watcher's bump (the 15 s server
+ * poll credited it — the same success a manual confirm shows), then the
+ * countdown's expiry, then "waiting". A confirm `404` maps to `settling` —
+ * the poll-race the issue calls out — and stays informational unless the
+ * balance never moved.
+ */
+function solanaPanelLine(input: {
+  credited: boolean;
+  receipt: boolean;
+  confirmError: ApiError | null;
+  expired: boolean;
+}): SolanaStatusLine {
+  if (input.receipt || input.credited) {
+    return solanaStatus({ status: 200 });
+  }
+  if (input.confirmError) {
+    return solanaStatus({
+      status: input.confirmError.status,
+      code: input.confirmError.code,
+      message: input.confirmError.message,
+      expired: input.expired,
+    });
+  }
+  if (input.expired) {
+    return solanaStatus({ expired: true });
+  }
+  return solanaStatus({ status: undefined });
+}
+
 /**
  * The Solana rail (issue #1117): open an intent, the wallet pays `payTo` the
- * `amountLamports` of SOL (or the configured SPL token) carrying `reference`
- * as a read-only marker, then either "I've sent it" confirms on demand or the
- * 15 s poll credits it automatically. The chain is the source of truth — the
- * rail locates and validates the transaction itself, so the caller pastes
- * nothing but the intent's own `reference`.
+ * `amountLamports` of the locked `asset` carrying `reference` as a read-only
+ * marker, then either "I've sent it" confirms on demand or the 15 s poll
+ * credits it automatically. While the intent stands open the page polls the
+ * confirm endpoint every 8 s (issue #1148) — the same answer the button
+ * reads, so a found transfer surfaces without a click — and watches the
+ * balance on its own 4 s cadence for the credit the server poll may land
+ * first. The chain is the source of truth: the caller pastes nothing but
+ * the intent's own `reference`.
  */
 function SolanaRail() {
   const { t } = useTranslation();
@@ -408,6 +489,42 @@ function SolanaRail() {
   const balance = useBalance({ refetchInterval: 4_000 });
   const [amount, setAmount] = useState("");
   const baselineRef = useRef<number | null>(null);
+  const [now, setNow] = useState(() => Date.now());
+
+  const opened: SolanaIntent | undefined = intent.data;
+  const expired = opened !== undefined && solanaExpired(opened.expiresAt, now);
+  const credited =
+    opened !== undefined &&
+    baselineRef.current !== null &&
+    balance.data !== undefined &&
+    balance.data.availableMinor > baselineRef.current;
+
+  // The countdown's heartbeat — it runs only while an intent stands open,
+  // and stops by itself once `expiresAt` passes.
+  useEffect(() => {
+    if (opened === undefined) return;
+    const tick = setInterval(() => setNow(Date.now()), 1_000);
+    return () => clearInterval(tick);
+  }, [opened === undefined]);
+
+  // The intent's status poll (issue #1148): while it stands unpaid and
+  // unexpired, ask the confirm endpoint every 8 s — under the 10 s ceiling
+  // the issue sets, and cheaper than the 15 s server poll is slow. Each
+  // answer feeds the status line: 403/404 keep waiting, 409 names the
+  // exception, a receipt credits. The poll stops the moment anything
+  // terminal answers — the `confirm` mutation's settled `data`/`error`
+  // state is the same signal the button shows. #1142's deposits list plugs
+  // in here: a queue row for this intent's `reference` would feed
+  // `solanaStatus({code: row.status})` the same mapping.
+  useEffect(() => {
+    if (opened === undefined || expired || credited || confirm.data !== undefined) return;
+    // An exception already named is terminal — no re-asking.
+    if (confirm.error instanceof ApiError && confirm.error.status === 409) return;
+    const poll = setInterval(() => {
+      if (!confirm.isPending) confirm.mutate(opened.reference);
+    }, 8_000);
+    return () => clearInterval(poll);
+  }, [opened === undefined, opened?.reference, expired, credited, confirm.data !== undefined, confirm.error]);
 
   const submit = (e: FormEvent) => {
     e.preventDefault();
@@ -415,6 +532,7 @@ function SolanaRail() {
     if (minor === null) return;
     baselineRef.current = balance.data?.availableMinor ?? null;
     confirm.reset();
+    setNow(Date.now());
     intent.mutate(minor);
   };
 
@@ -423,12 +541,12 @@ function SolanaRail() {
     confirm.reset();
   };
 
-  const opened: SolanaIntent | undefined = intent.data;
-  const credited =
-    opened !== undefined &&
-    baselineRef.current !== null &&
-    balance.data !== undefined &&
-    balance.data.availableMinor > baselineRef.current;
+  const line = solanaPanelLine({
+    credited,
+    receipt: confirm.data !== undefined,
+    confirmError: confirm.error instanceof ApiError ? confirm.error : null,
+    expired,
+  });
 
   return (
     <div className="flex flex-col gap-3">
@@ -463,49 +581,62 @@ function SolanaRail() {
 
       {opened ? (
         <div className="flex flex-col gap-3 rounded border border-line bg-surface-raised p-3">
-          <p className="text-sm text-ink">
-            {opened.splToken
-              ? t("topup.solanaSendSpl", { amount: opened.amountLamports })
-              : t("topup.solanaSendSol", { amount: opened.amountLamports })}
-          </p>
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <p className="text-sm text-ink">
+              {opened.splToken
+                ? t("topup.solanaSendSpl", {
+                    asset: solanaLockedAmount(opened) ?? String(opened.amountLamports),
+                  })
+                : t("topup.solanaSendSol", {
+                    amount: solanaLockedAmount(opened) ?? String(opened.amountLamports),
+                  })}
+            </p>
+            <SolanaCountdown expiresAt={opened.expiresAt} now={now} />
+          </div>
           <SolanaPayBlock intent={opened} />
           <IntentField label={t("topup.solanaPayTo")} value={opened.payTo} />
-          <IntentField label={t("topup.solanaAmount")} value={String(opened.amountLamports)} />
+          <IntentField
+            label={t("topup.solanaLockedAmount")}
+            value={solanaLockedAmount(opened) ?? String(opened.amountLamports)}
+          />
           <IntentField label={t("topup.solanaReference")} value={opened.reference} />
           {opened.splToken ? (
             <IntentField label={t("topup.solanaSplToken")} value={opened.splToken} />
           ) : null}
-          <p className="text-xs text-muted">
-            {t("topup.solanaExpires", { at: new Date(opened.expiresAt).toLocaleTimeString() })}
-          </p>
-          <div className="flex items-center gap-3">
-            <Button
-              type="button"
-              onClick={() => confirm.mutate(opened.reference)}
-              isLoading={confirm.isPending}
-              loadingText={t("topup.solanaVerifying")}
-            >
-              {t("topup.solanaConfirm")}
-            </Button>
-            <button
-              type="button"
-              className="text-xs text-muted underline underline-offset-2"
-              onClick={reset}
-            >
-              {t("topup.startOver")}
-            </button>
-          </div>
-          {confirm.error instanceof ApiError ? (
-            <Banner tone="info">
-              {confirm.error.status === 403
-                ? t("topup.solanaNotYet")
-                : confirm.error.message}
-            </Banner>
-          ) : null}
+          {/* The status line reads the poll's answer; an `exception` phase
+              keeps the server's own message because no canned copy names it. */}
+          <Banner tone={line.tone} role="status">
+            {line.phase === "exception" && confirm.error instanceof ApiError
+              ? confirm.error.message
+              : t(line.key)}
+          </Banner>
+          {line.phase === "expired" ? (
+            <div className="flex items-center gap-3">
+              <Button type="button" onClick={reset}>
+                {t("topup.solanaNewIntent")}
+              </Button>
+            </div>
+          ) : (
+            <div className="flex items-center gap-3">
+              <Button
+                type="button"
+                onClick={() => confirm.mutate(opened.reference)}
+                isLoading={confirm.isPending}
+                loadingText={t("topup.solanaVerifying")}
+                disabled={line.phase === "credited"}
+              >
+                {t("topup.solanaConfirm")}
+              </Button>
+              <button
+                type="button"
+                className="text-xs text-muted underline underline-offset-2"
+                onClick={reset}
+              >
+                {t("topup.startOver")}
+              </button>
+            </div>
+          )}
           {confirm.data ? <ReceiptView receipt={confirm.data} /> : null}
-          {credited && !confirm.data ? (
-            <Banner tone="success">{t("topup.solanaCredited")}</Banner>
-          ) : null}
         </div>
       ) : null}
 
