@@ -1490,9 +1490,11 @@ async fn solana_screening_flagged_parks_the_deposit() {
             payer: Some("hitPayerAddr2222222222222222222222222222".to_owned()),
         },
     );
-    // The confirm does not credit — the deposit parked at `flagged` reads as
-    // "no open intent" to the caller, and the wallet never moves.
-    let (_status, _body) = call(
+    // The confirm does not credit — the deposit parked at `flagged` answers
+    // the named 409 the customer's status line reads as held-for-review,
+    // never the "unknown intent" 404 that would misread as settling (issue
+    // #1184) — and the wallet never moves.
+    let (status, body) = call(
         &app,
         "POST",
         "/api/v1/topups/solana/confirm",
@@ -1500,7 +1502,25 @@ async fn solana_screening_flagged_parks_the_deposit() {
         Some(&key),
     )
     .await;
+    assert_eq!(status, StatusCode::CONFLICT, "{body}");
+    assert!(
+        body["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("flagged"),
+        "{body}"
+    );
     assert_eq!(balance(&app, &key).await, 0);
+    // A replayed confirm answers the same flagged hold — still not a 404.
+    let (status, _) = call(
+        &app,
+        "POST",
+        "/api/v1/topups/solana/confirm",
+        Some(json!({"reference": reference})),
+        Some(&key),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CONFLICT);
     let row = sqlx::query(
         "SELECT status, meta, facilitator_tx_hash FROM oxsum.deposits WHERE payment_ref = $1",
     )
@@ -1630,7 +1650,7 @@ async fn solana_screening_flagged_parks_a_usdc_deposit() {
             payer: Some("usdcHitPayerAddr6666666666666666666666666".to_owned()),
         },
     );
-    let (_status, _body) = call(
+    let (status, _body) = call(
         &app,
         "POST",
         "/api/v1/topups/solana/confirm",
@@ -1638,6 +1658,7 @@ async fn solana_screening_flagged_parks_a_usdc_deposit() {
         Some(&key),
     )
     .await;
+    assert_eq!(status, StatusCode::CONFLICT);
     assert_eq!(balance(&app, &key).await, 0);
     let row = sqlx::query("SELECT status, meta FROM oxsum.deposits WHERE payment_ref = $1")
         .bind(&reference)
@@ -1746,6 +1767,317 @@ async fn solana_screening_absent_payer_is_unavailable_but_disabled_credits() {
     .await;
     assert_eq!(status, StatusCode::OK, "{receipt}");
     assert_eq!(balance(&app2, &key2).await, 1000);
+}
+
+/// Issue #1184: the operator's review-then-credit — a `flagged` deposit the
+/// `screening-clear` call releases credits exactly once under the paying
+/// transaction's own `solana:<signature>` key, a replayed clear answers the
+/// standing credited row, and a non-`flagged` deposit refuses. The flag's
+/// own verdict stays on `meta.screening` beside the recorded clear.
+#[tokio::test]
+async fn solana_screening_clear_credits_a_flagged_deposit_once() {
+    let stub = SolanaStub::default();
+    let screen = ScreenStub::default();
+    screen.verdicts.lock().unwrap().insert(
+        "clearPayerAddr7777777777777777777777777777".to_owned(),
+        ScreenVerdict::Flagged {
+            source: "ofac-sdn".to_owned(),
+            reason: "the payer is on the OFAC SDN list".to_owned(),
+        },
+    );
+    let Some((app, db)) = world_with_screen_and_terms(stub.clone(), terms(), Some(screen)).await
+    else {
+        return;
+    };
+    let key = register_session(&app).await;
+    let (status, intent) = call(
+        &app,
+        "POST",
+        "/api/v1/topups/solana",
+        Some(json!({"amountMinor": 1000})),
+        Some(&key),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{intent}");
+    let reference = intent["data"]["reference"].as_str().unwrap().to_owned();
+    let deposit_id = intent["data"]["depositId"].as_str().unwrap().to_owned();
+    let signature = "sigClearHttp0000000000000000000000000000000000000000000000";
+    stub.located
+        .lock()
+        .unwrap()
+        .insert(reference.clone(), vec![signature.to_owned()]);
+    stub.validated.lock().unwrap().insert(
+        signature.to_owned(),
+        ValidatedTransfer {
+            signature: signature.to_owned(),
+            delivered: 5_000,
+            block_time: Some(0),
+            payer: Some("clearPayerAddr7777777777777777777777777777".to_owned()),
+        },
+    );
+    // The flag parks the row.
+    let (status, _) = call(
+        &app,
+        "POST",
+        "/api/v1/topups/solana/confirm",
+        Some(json!({"reference": reference})),
+        Some(&key),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CONFLICT);
+    assert_eq!(balance(&app, &key).await, 0);
+    // The operator's clear needs its review reason.
+    let (status, body) = call(
+        &app,
+        "POST",
+        &format!("/api/v1/admin/solana/{deposit_id}/screening-clear"),
+        Some(json!({"reason": "  "})),
+        Some(ADMIN_TOKEN),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    // The clear credits once — the deposit reads `credited` with its entry.
+    let (status, cleared) = call(
+        &app,
+        "POST",
+        &format!("/api/v1/admin/solana/{deposit_id}/screening-clear"),
+        Some(json!({"reason": "manual review: the payer is not the listed entity"})),
+        Some(ADMIN_TOKEN),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{cleared}");
+    assert_eq!(cleared["data"]["status"].as_str().unwrap(), "credited");
+    assert!(cleared["data"]["entryId"].is_string(), "{cleared}");
+    assert_eq!(balance(&app, &key).await, 1000);
+    // `meta.screening` attributes the review beside the flag's verdict.
+    let meta: Value =
+        sqlx::query_scalar("SELECT meta FROM oxsum.deposits WHERE deposit_id = $1::uuid")
+            .bind(&deposit_id)
+            .fetch_one(db.pool())
+            .await
+            .unwrap();
+    let screening = &meta["screening"];
+    assert_eq!(screening["verdict"].as_str().unwrap(), "flagged");
+    assert_eq!(screening["clearedBy"].as_str().unwrap(), "operator");
+    assert_eq!(
+        screening["clearReason"].as_str().unwrap(),
+        "manual review: the payer is not the listed entity"
+    );
+    // The audit trail recorded the operator's action.
+    let audit: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM oxsum.admin_audit \
+         WHERE action = 'solana.screening.clear' AND target = $1",
+    )
+    .bind(&deposit_id)
+    .fetch_one(db.pool())
+    .await
+    .unwrap();
+    assert_eq!(audit, 1);
+    // A replayed clear answers the standing credited row — never a second
+    // credit, never a refusal.
+    let (status, replay) = call(
+        &app,
+        "POST",
+        &format!("/api/v1/admin/solana/{deposit_id}/screening-clear"),
+        Some(json!({"reason": "manual review: the payer is not the listed entity"})),
+        Some(ADMIN_TOKEN),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{replay}");
+    assert_eq!(balance(&app, &key).await, 1000);
+}
+
+/// A `pending` or `credited` deposit has no screening hold to clear —
+/// `409`, and an unknown id is `404`. The customer surface cannot clear its
+/// own flag either: the route answers to the operator token alone.
+#[tokio::test]
+async fn solana_screening_clear_refuses_a_non_flagged_deposit() {
+    let stub = SolanaStub::default();
+    let Some((app, _db)) = world(stub.clone()).await else {
+        return;
+    };
+    let key = register_session(&app).await;
+    let (status, intent) = call(
+        &app,
+        "POST",
+        "/api/v1/topups/solana",
+        Some(json!({"amountMinor": 1000})),
+        Some(&key),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{intent}");
+    let deposit_id = intent["data"]["depositId"].as_str().unwrap().to_owned();
+    // `pending` — nothing flagged yet.
+    let (status, _) = call(
+        &app,
+        "POST",
+        &format!("/api/v1/admin/solana/{deposit_id}/screening-clear"),
+        Some(json!({"reason": "reviewed"})),
+        Some(ADMIN_TOKEN),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CONFLICT);
+    // Unknown id — 404.
+    let (status, _) = call(
+        &app,
+        "POST",
+        &format!("/api/v1/admin/solana/{}/screening-clear", Uuid::new_v4()),
+        Some(json!({"reason": "reviewed"})),
+        Some(ADMIN_TOKEN),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    // The customer credential is not the operator's — 401, never a clear.
+    let (status, _) = call(
+        &app,
+        "POST",
+        &format!("/api/v1/admin/solana/{deposit_id}/screening-clear"),
+        Some(json!({"reason": "reviewed"})),
+        Some(&key),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+}
+
+/// Issue #1184: a sanctioned `refundAddress` cannot be approved — the
+/// approve screens the standing address through the same gate the payer
+/// check runs and a `Flagged` verdict refuses `409`, so a refund can never
+/// point its payout at a listed destination. A screen that cannot answer
+/// refuses `403` — deny-until-cleared, like the pre-credit check.
+#[tokio::test]
+async fn solana_refund_approve_screens_the_refund_address() {
+    let stub = SolanaStub::default();
+    let screen = ScreenStub::default();
+    // A well-formed base58 key the screen lists — the address validates as a
+    // pubkey, so it records, and only the approval's screen refuses it.
+    let sanctioned = "4uQeVj5tqViQh7yWWGStvkEG1Zmhx6uasJtWCJziofM";
+    screen.verdicts.lock().unwrap().insert(
+        sanctioned.to_owned(),
+        ScreenVerdict::Flagged {
+            source: "ofac-sdn".to_owned(),
+            reason: "the refund address is on the OFAC SDN list".to_owned(),
+        },
+    );
+    let Some((app, _db)) =
+        world_with_screen_and_terms(stub.clone(), terms(), Some(screen.clone())).await
+    else {
+        return;
+    };
+    let key = register_session(&app).await;
+    // An underpaid deposit — the refundable exception.
+    let deposit_id = open_exception(&app, &stub, &key, 500, 1, 0).await;
+    let (status, _) = call(
+        &app,
+        "POST",
+        &format!("/api/v1/admin/solana/{deposit_id}/refund"),
+        Some(json!({"reason": "the transfer underpaid the intent"})),
+        Some(ADMIN_TOKEN),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    // The customer names a refund address the screen flags — the address
+    // itself is a well-formed base58 key, so it records.
+    let (status, addressed) = call(
+        &app,
+        "POST",
+        &format!("/api/v1/topups/solana/{deposit_id}/refund-address"),
+        Some(json!({"address": sanctioned})),
+        Some(&key),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{addressed}");
+    // Approving to pay a sanctioned destination refuses — the refund stays
+    // `refund_pending`.
+    let (status, refusal) = call(
+        &app,
+        "POST",
+        &format!("/api/v1/admin/solana/{deposit_id}/refund-approve"),
+        None,
+        Some(ADMIN_TOKEN),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CONFLICT, "{refusal}");
+    // A screen that cannot answer refuses too — the approval waits rather
+    // than pointing the payout at an unscreened address.
+    screen
+        .verdicts
+        .lock()
+        .unwrap()
+        .insert(sanctioned.to_owned(), ScreenVerdict::TemporarilyUnavailable);
+    let (status, _) = call(
+        &app,
+        "POST",
+        &format!("/api/v1/admin/solana/{deposit_id}/refund-approve"),
+        None,
+        Some(ADMIN_TOKEN),
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    // Once the address clears — the list updated, the address re-proved —
+    // the approval lands and records its screen verdict.
+    screen.verdicts.lock().unwrap().remove(sanctioned);
+    let (status, approved) = call(
+        &app,
+        "POST",
+        &format!("/api/v1/admin/solana/{deposit_id}/refund-approve"),
+        None,
+        Some(ADMIN_TOKEN),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{approved}");
+    assert_eq!(
+        approved["data"]["refund"]["addressScreening"]["verdict"]
+            .as_str()
+            .unwrap(),
+        "clear"
+    );
+}
+
+/// A refund approval stays exactly as before when the deployment has no
+/// sanctions gate configured — the screen is a no-op and nothing about the
+/// lifecycle changes (issue #1184's gate is opt-in, like #1144's).
+#[tokio::test]
+async fn solana_refund_approve_without_a_screen_approves_as_before() {
+    let stub = SolanaStub::default();
+    let Some((app, _db)) = world(stub.clone()).await else {
+        return;
+    };
+    let key = register_session(&app).await;
+    let deposit_id = open_exception(&app, &stub, &key, 500, 1, 0).await;
+    let (status, _) = call(
+        &app,
+        "POST",
+        &format!("/api/v1/admin/solana/{deposit_id}/refund"),
+        Some(json!({"reason": "the transfer underpaid the intent"})),
+        Some(ADMIN_TOKEN),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let (status, _) = call(
+        &app,
+        "POST",
+        &format!("/api/v1/topups/solana/{deposit_id}/refund-address"),
+        Some(json!({"address": "4uQeVj5tqViQh7yWWGStvkEG1Zmhx6uasJtWCJziofM"})),
+        Some(&key),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let (status, approved) = call(
+        &app,
+        "POST",
+        &format!("/api/v1/admin/solana/{deposit_id}/refund-approve"),
+        None,
+        Some(ADMIN_TOKEN),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{approved}");
+    // No screen ran — the approval carries no verdict, only the standing
+    // `approvedBy`/`approvedAt` the lifecycle always recorded.
+    assert!(approved["data"]["refund"]["approvedAt"].is_string());
+    assert!(
+        approved["data"]["refund"]["addressScreening"].is_null(),
+        "{approved}"
+    );
 }
 
 /// Issue #1153: a burst of concurrent opens on one organization lands every
