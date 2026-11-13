@@ -21903,6 +21903,16 @@ export interface components {
             /** @description the SPL mint a top-up must pay; null for native SOL */
             splToken?: string | null;
             /**
+             * Format: int32
+             * @description the asset's decimals (9 for SOL, the mint's for an SPL token) — what converts `amountLamports` into the `amount` a Solana Pay request names
+             */
+            assetDecimals: number;
+            /**
+             * Format: uuid
+             * @description the deposit this intent settles — the memo a Solana Pay request pins
+             */
+            depositId: string;
+            /**
              * Format: date-time
              * @description when the unpaid intent lapses
              */

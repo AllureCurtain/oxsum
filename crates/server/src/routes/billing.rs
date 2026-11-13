@@ -293,6 +293,14 @@ pub(crate) async fn solana_topup(
         "payTo": verifier.terms().pay_to,
         "amountLamports": lamports,
         "splToken": verifier.terms().spl_token_mint,
+        // The asset's decimals (9 for SOL, the mint's for an SPL token) so the
+        // caller can render `amountLamports` — lamports/base units — as a
+        // Solana Pay `amount` decimal without assuming 1e9 (issue #1141).
+        // #1140's `asset` field rides the same addition when it lands.
+        "assetDecimals": verifier.terms().asset_decimals,
+        // The intent's deposit id — the memo a Solana Pay URL pins so the
+        // paying transaction names the deposit it settles.
+        "depositId": deposit_id,
         // The stored expiresAt from the intent's meta — the same deadline the
         // poll honors — not a recomputed now+ttl that could drift (issue
         // #1131).
