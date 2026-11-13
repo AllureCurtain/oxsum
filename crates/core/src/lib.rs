@@ -342,7 +342,8 @@ pub use sessions::{
     SessionPrincipal,
 };
 pub use solana::{
-    ChainLookup, ExpectedTransfer, RAIL_SOLANA, SolanaRailVerifier, SolanaTerms, ValidatedTransfer,
+    AssetTerms, ChainLookup, ExpectedTransfer, RAIL_SOLANA, SolanaRailVerifier, SolanaTerms,
+    TOKEN_2022_PROGRAM_ID, USD_PEGGED_RATE_MICRO, ValidatedTransfer,
 };
 pub use staff_invitations::{StaffInvitationPage, StaffInvitationSummary, StaffMailTarget};
 pub use statement_pdf::render_statement_pdf;

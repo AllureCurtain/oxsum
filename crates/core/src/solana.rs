@@ -1,6 +1,9 @@
-//! The Solana deposit rail (issue #1117): a top-up paid in native SOL or the
-//! configured SPL token to the deployment's deposit address, credited once the
-//! transfer is found and validated on-chain.
+//! The Solana deposit rail (issue #1117): a top-up paid in native SOL or a
+//! whitelisted SPL token to the deployment's deposit address, credited once
+//! the transfer is found and validated on-chain. Issue #1140 widened the rail
+//! from one configured asset to a mint whitelist: `sol` and `usdc` are always
+//! available, the customer picks one at intent-open, and the intent's `meta`
+//! locks that asset's mint, decimals and rate.
 //!
 //! The flow follows the Solana Pay recipe: `POST /api/v1/topups/solana` opens
 //! a `pending` deposit whose `meta` carries a unique `reference` account — a
@@ -21,8 +24,10 @@
 //! the `balance.low` latch-clear are the ones every rail shares.
 //!
 //! Devnet in this cut: `OXSUM_SOLANA_RATE_MICRO` is the static rate the
-//! intent locks in minor-credits per SOL — the stand-in a mainnet deployment
-//! swaps for a price oracle recorded per intent. No real funds, no mainnet.
+//! intent locks in minor-credits per whole volatile asset (SOL) — the
+//! stand-in a mainnet deployment swaps for a price oracle recorded per intent
+//! (issue #1139). USD-pegged assets like USDC lock the fixed `1_000_000`. No
+//! real funds, no mainnet.
 
 use rand::Rng;
 use serde_json::json;
@@ -38,32 +43,102 @@ use crate::x402::{RailSettlement, RailVerifier, SettleRefusal, VerifiedPayment};
 /// The rail `POST /api/v1/topups/solana` writes under.
 pub const RAIL_SOLANA: &str = "solana";
 
+/// The fixed `rate_micro` a USD-pegged asset locks: one whole asset unit (a
+/// dollar's worth of USDC) buys one whole credit — `1_000_000` minor units.
+/// Every asset with `usd_pegged()` set prices at parity; volatile assets like
+/// SOL take their rate from `OXSUM_SOLANA_RATE_MICRO` until the #1139 oracle
+/// lands.
+pub const USD_PEGGED_RATE_MICRO: i64 = 1_000_000;
+
 /// One Solana deposit-intent `open` may quote an intent this many seconds
 /// before the poll expires it (default when the config omits it): Solana
 /// Pay's own unbounded-poll guard, so a never-paid intent does not poll
 /// forever.
 const DEFAULT_INTENT_TTL_SECS: i64 = 600;
 
+/// The SPL Token-2022 program id: a mint whose owner is this program is
+/// refused at boot (issue #1140). Token-2022 mints carry extensions —
+/// transfer fees, hooks, memo enforcement — the `token_delta` validation does
+/// not model, so the whitelist rejects them before they can misprice or
+/// mis-credit a deposit.
+pub const TOKEN_2022_PROGRAM_ID: &str = "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb";
+
+/// One payable asset's terms inside the whitelist (issue #1140): the key the
+/// open request names (`"sol"`, `"usdc"`, …), the SPL mint a top-up in it
+/// must pay (`None` for native SOL), its base-unit scale, and the rate its
+/// intents lock — minor-credits per whole asset, `10^asset_decimals` base
+/// units. `rate_micro` is the field an oracle-sourced figure plugs into when
+/// issue #1139 lands: the oracle resolves at intent-open and the answer
+/// locks, exactly like the config-sourced figure does today.
+#[derive(Debug, Clone)]
+pub struct AssetTerms {
+    /// The asset's lowercase key — the `asset` an open request names and the
+    /// `OXSUM_SOLANA_ASSETS` entry / `OXSUM_SOLANA_MINT_<KEY>` suffix.
+    pub key: String,
+    /// The SPL mint a top-up in this asset must pay, or `None` for native
+    /// SOL — a whitelist entry named `sol` always has `None`.
+    pub spl_token_mint: Option<String>,
+    /// Base units per whole asset (`10^asset_decimals`, 9 for SOL / 6 for
+    /// USDC). For an SPL asset the boot reads the figure from the mint's
+    /// on-chain account rather than trusting an operator's declaration.
+    pub asset_decimals: u32,
+    /// Minor-credits per whole asset the intent locks. USD-pegged assets
+    /// (every SPL mint on the whitelist that is not a volatile asset) hold
+    /// [`USD_PEGGED_RATE_MICRO`]; a volatile asset holds the configured
+    /// `OXSUM_SOLANA_RATE_MICRO` until #1139's oracle replaces it at open.
+    pub rate_micro: i64,
+}
+
+impl AssetTerms {
+    /// Whether the asset prices at the fixed USD parity — every SPL mint on
+    /// the whitelist today: native SOL is the only volatile asset, and
+    /// `sol` is the only key with a `None` mint. A non-`sol` key without a
+    /// mint is a config error, so this reads off the mint's presence alone.
+    #[must_use]
+    pub fn usd_pegged(&self) -> bool {
+        self.spl_token_mint.is_some()
+    }
+}
+
 /// The rail's deployment: everything `verify` needs to decide whether a
 /// transaction honors an intent, and everything `open_solana_deposit` needs
 /// to write the intent's `meta`. Mirrors `SolanaConfig` in integrations so
 /// core stays free of the HTTP type — the server hands the verifier one
 /// already built from the environment.
+///
+/// `assets` is the whitelist `OXSUM_SOLANA_ASSETS` declares, in display
+/// order; the flat `spl_token_mint`/`asset_decimals`/`rate_micro` fields
+/// mirror the default asset's terms so an older caller (and an intent whose
+/// `meta` predates the whitelist) keeps working — `terms_for_asset` is the
+/// lookup a new caller takes.
 #[derive(Clone)]
 pub struct SolanaTerms {
-    /// The deposit address every intent pays (`OXSUM_SOLANA_PAY_TO`).
+    /// The deposit address every intent pays (`OXSUM_SOLANA_PAY_TO`) — one
+    /// vault receives every asset; an SPL top-up lands in its ATA for the
+    /// intent's mint.
     pub pay_to: String,
-    /// The SPL mint a top-up must pay, or `None` for native SOL.
+    /// The default asset's SPL mint — `None` when the default is native SOL.
+    /// Kept for intents opened before the whitelist existed; new code reads
+    /// [`SolanaTerms::terms_for_asset`].
     pub spl_token_mint: Option<String>,
-    /// Base units per whole asset the rail prices in (`OXSUM_SOLANA_DECIMALS`,
-    /// 9 for SOL / 6 for USDC). `rate_micro` is per `10^asset_decimals` units —
-    /// the conversion is mint-aware so a 6-decimal mint does not misprice by
-    /// 1000× the way a fixed-1e9 SOL scale would.
+    /// The default asset's base units per whole asset. `rate_micro` is per
+    /// `10^asset_decimals` units — the conversion is mint-aware so a
+    /// 6-decimal mint does not misprice by 1000× the way a fixed-1e9 SOL
+    /// scale would.
     pub asset_decimals: u32,
-    /// Minor-credits per whole asset unit the intent locks
-    /// (`OXSUM_SOLANA_RATE_MICRO`) — one whole SOL (10^asset_decimals base
-    /// units) buys `rate_micro` minor-credits.
+    /// The default asset's locked rate: minor-credits per whole asset
+    /// (`OXSUM_SOLANA_RATE_MICRO` for a volatile default,
+    /// [`USD_PEGGED_RATE_MICRO`] for a pegged one).
     pub rate_micro: i64,
+    /// The whitelist of payable assets (`OXSUM_SOLANA_ASSETS`, order =
+    /// display order). `sol` and `usdc` are always present; `usdt` arrives
+    /// with issue #1152. Never empty — `sol` alone is the floor.
+    pub assets: Vec<AssetTerms>,
+    /// The asset an open request that names no `asset` resolves —
+    /// `OXSUM_SOLANA_DEFAULT_ASSET`, or the whitelist's first entry.
+    /// `usdc` is the recommended mainnet default: its rate is fixed, so an
+    /// intent that did not pick a side cannot be under-priced by SOL's drift.
+    pub default_asset: String,
     /// Seconds a `pending` intent stays payable before the poll expires it.
     pub intent_ttl_secs: i64,
     /// The smallest `amount_minor` an intent may open for
@@ -86,6 +161,79 @@ impl SolanaTerms {
             self.intent_ttl_secs
         } else {
             DEFAULT_INTENT_TTL_SECS
+        }
+    }
+
+    /// The asset an open request named — `None` resolves the deployment's
+    /// `default_asset` (never user input, so always resolvable); an unknown
+    /// key resolves `None` so the route answers 400 rather than silently
+    /// pricing a whitelist miss under the default.
+    #[must_use]
+    pub fn terms_for_asset(&self, key: Option<&str>) -> Option<AssetTerms> {
+        let key = key.unwrap_or(&self.default_asset);
+        self.assets.iter().find(|asset| asset.key == key).cloned()
+    }
+
+    /// Whether `mint` is a mint the whitelist accepts — the defensive half of
+    /// verify: a locked intent `meta.splToken` naming a mint no configured
+    /// asset carries is refused (issue #1140). `None` — native SOL — is
+    /// always acceptable.
+    #[must_use]
+    pub fn mint_accepted(&self, mint: Option<&str>) -> bool {
+        match mint {
+            None => true,
+            Some(mint) => self
+                .assets
+                .iter()
+                .any(|asset| asset.spl_token_mint.as_deref() == Some(mint)),
+        }
+    }
+
+    /// Builds the deployment terms around the whitelist — the constructor the
+    /// config layer and tests share. `default_asset` falls back to the first
+    /// entry when empty; the flat fields mirror the resolved default asset so
+    /// pre-whitelist intents keep verifying under them.
+    ///
+    /// # Panics
+    ///
+    /// `assets` must not be empty — a rail with nothing payable is a config
+    /// error `solana_of` refuses before this is ever built; tests build a
+    /// one-asset `sol` whitelist for the legacy shape.
+    #[must_use]
+    pub fn new(
+        pay_to: String,
+        mut assets: Vec<AssetTerms>,
+        mut default_asset: String,
+        intent_ttl_secs: i64,
+        min_amount_minor: i64,
+        max_amount_minor: i64,
+        opens_per_minute: i64,
+    ) -> Self {
+        assert!(!assets.is_empty(), "a solana rail needs at least one asset");
+        if default_asset.is_empty() {
+            default_asset = assets[0].key.clone();
+        }
+        let default = assets
+            .iter()
+            .find(|asset| asset.key == default_asset)
+            .unwrap_or_else(|| {
+                panic!("OXSUM_SOLANA_DEFAULT_ASSET {default_asset:?} is not in OXSUM_SOLANA_ASSETS")
+            })
+            .clone();
+        Self {
+            pay_to,
+            spl_token_mint: default.spl_token_mint.clone(),
+            asset_decimals: default.asset_decimals,
+            rate_micro: default.rate_micro,
+            assets: {
+                assets.shrink_to_fit();
+                assets
+            },
+            default_asset,
+            intent_ttl_secs,
+            min_amount_minor,
+            max_amount_minor,
+            opens_per_minute,
         }
     }
 }
@@ -117,8 +265,16 @@ impl std::fmt::Debug for SolanaRailVerifier {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("SolanaRailVerifier")
             .field("pay_to", &self.terms.pay_to)
-            .field("spl_token_mint", &self.terms.spl_token_mint)
-            .field("commitment_rate", &self.terms.rate_micro)
+            .field("default_asset", &self.terms.default_asset)
+            .field(
+                "assets",
+                &self
+                    .terms
+                    .assets
+                    .iter()
+                    .map(|asset| asset.key.as_str())
+                    .collect::<Vec<_>>(),
+            )
             .finish_non_exhaustive()
     }
 }
@@ -147,13 +303,30 @@ pub trait ChainLookup: std::fmt::Debug + Send + Sync {
         expected: &'a ExpectedTransfer,
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Option<ValidatedTransfer>> + Send + 'a>>;
 
-    /// The configured SPL mint's on-chain decimals, when the rail is on a
-    /// token — `None` for native SOL (no mint to read) and for lookups that
-    /// cannot answer. The boot calls this once to refuse a `DECIMALS` figure
-    /// that disagrees with the real mint; it is never on the per-request path.
+    /// A whitelisted SPL mint's on-chain decimals — `getAccountInfo(mint)`
+    /// read once per mint at boot so a declared figure that disagrees with
+    /// the real mint refuses startup (issue #1129); with the multi-asset
+    /// whitelist the figure is authoritative, never operator-declared
+    /// (issue #1140). `None` when the lookup cannot answer; never called for
+    /// native SOL (there is no mint to read). It is never on the per-request
+    /// path.
     fn mint_decimals<'a>(
         &'a self,
+        _mint: &'a str,
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Option<u32>> + Send + 'a>> {
+        Box::pin(async { None })
+    }
+
+    /// The program that owns the mint account — the Token or Token-2022
+    /// program id `getAccountInfo` reports as `owner`. The boot reads it once
+    /// per whitelisted SPL mint and refuses a Token-2022 mint: extensions the
+    /// rail does not model (transfer fees, hooks, required memos) could
+    /// misprice or mis-credit a deposit (issue #1140). `None` when the lookup
+    /// cannot answer.
+    fn mint_owner<'a>(
+        &'a self,
+        _mint: &'a str,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Option<String>> + Send + 'a>> {
         Box::pin(async { None })
     }
 }
@@ -198,45 +371,121 @@ impl SolanaRailVerifier {
         &self.terms
     }
 
-    /// The configured SPL mint's on-chain decimals via the chain lookup —
-    /// `None` for native SOL or a lookup that cannot answer. The boot calls
-    /// this once to refuse a `DECIMALS` that disagrees with the real mint.
-    pub async fn mint_decimals(&self) -> Option<u32> {
-        self.chain.mint_decimals().await
+    /// A whitelisted mint's on-chain decimals via the chain lookup — `None`
+    /// when the lookup cannot answer. The boot calls this once per
+    /// whitelisted SPL mint so a mint's own account, not an operator's
+    /// declaration, sets `asset_decimals` (issues #1129, #1140).
+    pub async fn mint_decimals(&self, mint: &str) -> Option<u32> {
+        self.chain.mint_decimals(mint).await
     }
 
-    /// The terms an opened intent locked in its `meta` — the figures verify
-    /// must honor. Falls back to the deployment's current terms for any field
-    /// an older intent did not record, so a deposit opened before a config
-    /// change still verifies under what it promised. `meta` is the deposit's
-    /// own column, not caller input, so a poisoned field simply does not
-    /// override — it was written by `open_solana_deposit` itself.
-    fn locked_terms(&self, meta: &serde_json::Value) -> SolanaTerms {
+    /// The program owning a whitelisted mint account — the boot refuses a
+    /// Token-2022 mint (issue #1140). `None` when the lookup cannot answer.
+    pub async fn mint_owner(&self, mint: &str) -> Option<String> {
+        self.chain.mint_owner(mint).await
+    }
+
+    /// The boot-time mint audit (issues #1129, #1140): every whitelisted SPL
+    /// mint is read on-chain once — its `decimals` replaces the config's
+    /// placeholder so the mint's own figure prices deposits, and its `owner`
+    /// program must be the classic SPL Token program, never Token-2022
+    /// (whose transfer-fee and hook extensions the rail does not model). A
+    /// native-SOL-only whitelist reads nothing. `Err` names the mint and the
+    /// fault — the boot refuses to start rather than misprice or accept an
+    /// extension-laden mint. `Ok(false)` would mean a mint read failed and
+    /// the caller should refuse too; the function returns `Err` in that case
+    /// so there is only one refusal shape.
+    pub async fn verify_mints(&mut self) -> Result<(), String> {
+        for asset in &mut self.terms.assets {
+            let Some(mint) = asset.spl_token_mint.clone() else {
+                continue;
+            };
+            let key = asset.key.clone();
+            let owner = self.chain.mint_owner(&mint).await.ok_or_else(|| {
+                format!("could not read the {key:?} mint's owner program on-chain")
+            })?;
+            if owner == TOKEN_2022_PROGRAM_ID {
+                return Err(format!(
+                    "the {key:?} mint {mint} is owned by Token-2022 — the rail only \
+                     accepts classic SPL Token mints (its transfer-fee and hook \
+                     extensions are not modelled)"
+                ));
+            }
+            let decimals =
+                self.chain.mint_decimals(&mint).await.ok_or_else(|| {
+                    format!("could not read the {key:?} mint's decimals on-chain")
+                })?;
+            // The mint's own figure is authoritative — under the whitelist
+            // the spec's 0 placeholder just fills. The legacy single-mint
+            // form carries the declared `OXSUM_SOLANA_DECIMALS` here instead,
+            // so the same line cross-checks the operator's figure on-chain
+            // the way the #1129 boot check did.
+            if asset.asset_decimals != 0 && asset.asset_decimals != decimals {
+                return Err(format!(
+                    "the {key:?} asset declares {} decimals but its mint reports \
+                     {decimals} on-chain — refusing to start on a 10^{} mispricing",
+                    asset.asset_decimals,
+                    (asset.asset_decimals as i64 - decimals as i64).abs()
+                ));
+            }
+            asset.asset_decimals = decimals;
+        }
+        // The flat fields mirror the default asset — refresh them once the
+        // audit filled the real decimals.
+        let default = self
+            .terms
+            .assets
+            .iter()
+            .find(|asset| asset.key == self.terms.default_asset)
+            .cloned()
+            .unwrap_or_else(|| self.terms.assets[0].clone());
+        self.terms.spl_token_mint = default.spl_token_mint;
+        self.terms.asset_decimals = default.asset_decimals;
+        self.terms.rate_micro = default.rate_micro;
+        Ok(())
+    }
+
+    /// The asset figures an opened intent locked in its `meta` — what verify
+    /// must honor. `asset` names the whitelist key the intent opened under;
+    /// the figures fall back to that asset's *whitelist* terms for any field
+    /// the meta did not record, so a deposit opened before a config change —
+    /// or before the whitelist existed (no `asset` at all — the deployment's
+    /// `default_asset` stands in, and the flat legacy fields keep their
+    /// pre-whitelist meaning) — still verifies under what it promised.
+    /// `meta` is the deposit's own column, not caller input, so a poisoned
+    /// field simply does not override — it was written by
+    /// `open_solana_deposit` itself.
+    fn locked_asset_terms(&self, meta: &serde_json::Value) -> AssetTerms {
         let get = |key: &str| meta.get(key);
-        SolanaTerms {
-            pay_to: get("payTo")
+        // The figures the meta omits fall back to the whitelist entry the
+        // locked `asset` names — or, for an intent that predates the
+        // whitelist, the flat deployment terms (the default asset's figures,
+        // which is what the legacy fields held).
+        let fallback = meta
+            .get("asset")
+            .and_then(serde_json::Value::as_str)
+            .and_then(|key| self.terms.terms_for_asset(Some(key)))
+            .unwrap_or_else(|| AssetTerms {
+                key: self.terms.default_asset.clone(),
+                spl_token_mint: self.terms.spl_token_mint.clone(),
+                asset_decimals: self.terms.asset_decimals,
+                rate_micro: self.terms.rate_micro,
+            });
+        AssetTerms {
+            key: get("asset")
                 .and_then(serde_json::Value::as_str)
-                .map_or_else(|| self.terms.pay_to.clone(), str::to_owned),
+                .map_or(fallback.key, str::to_owned),
             spl_token_mint: match meta.get("splToken") {
                 Some(serde_json::Value::Null) => None,
-                Some(v) => v
-                    .as_str()
-                    .map(str::to_owned)
-                    .or_else(|| self.terms.spl_token_mint.clone()),
-                None => self.terms.spl_token_mint.clone(),
+                Some(v) => v.as_str().map(str::to_owned).or(fallback.spl_token_mint),
+                None => fallback.spl_token_mint,
             },
             asset_decimals: get("assetDecimals")
                 .and_then(serde_json::Value::as_u64)
-                .map_or(self.terms.asset_decimals, |d| d as u32),
+                .map_or(fallback.asset_decimals, |d| d as u32),
             rate_micro: get("rateMicro")
                 .and_then(serde_json::Value::as_i64)
-                .unwrap_or(self.terms.rate_micro),
-            intent_ttl_secs: self.terms.intent_ttl_secs,
-            // The open-surface bounds are deployment policy, not per-intent
-            // terms — they read the live config always.
-            min_amount_minor: self.terms.min_amount_minor,
-            max_amount_minor: self.terms.max_amount_minor,
-            opens_per_minute: self.terms.opens_per_minute,
+                .unwrap_or(fallback.rate_micro),
         }
     }
 
@@ -244,25 +493,38 @@ impl SolanaRailVerifier {
     /// `meta` — the intent's own promise, not the deployment's live config.
     /// This is what `credit_solana_deposit` calls once it holds the row's
     /// `meta`; a mid-flight `OXSUM_SOLANA_*` change cannot retro-price or
-    /// re-target a pending deposit.
+    /// re-target a pending deposit. A `meta.splToken` off the deployment's
+    /// whitelist is refused outright — the stored mint was never payable, so
+    /// the intent cannot settle (issue #1140, defensive).
     pub async fn verify_locked<'a>(
         &'a self,
         payload: &'a [u8],
         amount_minor: Option<i64>,
         meta: &'a serde_json::Value,
     ) -> Option<VerifiedPayment> {
-        let locked = self.locked_terms(meta);
-        self.verify_with(payload, amount_minor, &locked).await
+        let locked = self.locked_asset_terms(meta);
+        if !self.terms.mint_accepted(locked.spl_token_mint.as_deref()) {
+            return None;
+        }
+        let pay_to = meta
+            .get("payTo")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or(&self.terms.pay_to)
+            .to_owned();
+        self.verify_with(payload, amount_minor, &pay_to, &locked)
+            .await
     }
 
-    /// The shared verify body: `terms` is either the deployment's live
-    /// `SolanaTerms` (the `verify` seam, used wherever no locked intent is in
-    /// hand) or the intent's own `locked_terms` (the credit path).
+    /// The shared verify body: `terms` is either the deployment's default
+    /// asset's `AssetTerms` (the `verify` seam, used wherever no locked intent
+    /// is in hand) or the intent's own locked asset figures (the credit
+    /// path); `pay_to` is the recipient the terms demand.
     async fn verify_with(
         &self,
         payload: &[u8],
         amount_minor: Option<i64>,
-        terms: &SolanaTerms,
+        pay_to: &str,
+        terms: &AssetTerms,
     ) -> Option<VerifiedPayment> {
         let reference = std::str::from_utf8(payload).ok()?.trim();
         if reference.is_empty() {
@@ -286,7 +548,7 @@ impl SolanaRailVerifier {
                 .validate_transfer(
                     signature,
                     &ExpectedTransfer {
-                        recipient: terms.pay_to.clone(),
+                        recipient: pay_to.to_owned(),
                         amount: expected,
                         spl_token_mint: terms.spl_token_mint.clone(),
                         reference: reference.to_owned(),
@@ -335,10 +597,13 @@ impl RailVerifier for SolanaRailVerifier {
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Option<VerifiedPayment>> + Send + 'a>>
     {
         Box::pin(async move {
-            // The generic seam verifies under the deployment's live terms —
-            // the credit path overrides with the intent's locked meta via
-            // `verify_locked` so a pending deposit can never be retro-priced.
-            self.verify_with(payload, amount_minor, &self.terms.clone())
+            // The generic seam verifies under the deployment's live default
+            // asset — the credit path overrides with the intent's locked meta
+            // via `verify_locked` so a pending deposit can never be
+            // retro-priced or re-targeted to another mint.
+            let default = self.terms.terms_for_asset(None)?;
+            let pay_to = self.terms.pay_to.clone();
+            self.verify_with(payload, amount_minor, &pay_to, &default)
                 .await
         })
     }
@@ -418,20 +683,25 @@ impl Db {
     /// Opens a Solana-rail deposit intent: `pending`, keyed by `payment_ref =
     /// <reference>` — the per-intent marker address the paying transaction
     /// must carry, minted here so the UNIQUE anchor is a value only this
-    /// intent could name. Returns the `(deposit_id, reference, amount_sol)` the
-    /// caller needs to pay, or `None`'s `false` on a `payment_ref` collision —
-    /// the same replay-safe insert every `open_*` rail makes.
+    /// intent could name. `asset` is the whitelist key the customer picked at
+    /// open (`None` resolves the deployment's `default_asset`); an unknown
+    /// key is `InvalidInput`, never silently priced under another asset
+    /// (issue #1140). Returns the `(reference, asset_units, expires_at)` the
+    /// caller needs to pay, or `None` on a `payment_ref` collision — the same
+    /// replay-safe insert every `open_*` rail makes.
     ///
-    /// `meta` records what the intent declares: the `reference`, the `payTo`
-    /// address and `splToken` (null for SOL), the `solLamports` the payment
-    /// must deliver at the locked rate, the `rateSource`/`rateLockedAt` of the
-    /// static devnet rate, and the `expiresAt` the poll honors.
+    /// `meta` records what the intent declares: the `reference`, the `asset`
+    /// key, the `payTo` address and `splToken` (null for SOL), the
+    /// `solLamports` the payment must deliver at the locked rate, the
+    /// `rateSource`/`rateLockedAt` of the rate source, and the `expiresAt`
+    /// the poll honors.
     pub async fn open_solana_deposit(
         &self,
         organization_id: Uuid,
         deposit_id: Uuid,
         amount_minor: i64,
         terms: &SolanaTerms,
+        asset: Option<&str>,
     ) -> Result<Option<(String, i64, String)>, WalletError> {
         if amount_minor <= 0 {
             return Err(WalletError::InvalidInput(
@@ -468,8 +738,14 @@ impl Db {
                 )));
             }
         }
+        // The asset the customer picked — `None` resolves the deployment's
+        // default; a key off the whitelist is a 400, never a silent re-price
+        // under another asset (issue #1140).
+        let asset = terms.terms_for_asset(asset).ok_or_else(|| {
+            WalletError::InvalidInput("the asset is not one the solana rail accepts".into())
+        })?;
         let reference = new_reference();
-        let lamports = credits_to_asset_units(amount_minor, terms.rate_micro, terms.asset_decimals);
+        let lamports = credits_to_asset_units(amount_minor, asset.rate_micro, asset.asset_decimals);
         let expires_at = time::OffsetDateTime::now_utc() + time::Duration::seconds(terms.ttl());
         let inserted = sqlx::query(
             "INSERT INTO oxsum.deposits \
@@ -484,11 +760,12 @@ impl Db {
         .bind(amount_minor)
         .bind(json!({
             "reference": reference,
+            "asset": asset.key,
             "payTo": terms.pay_to,
-            "splToken": terms.spl_token_mint,
+            "splToken": asset.spl_token_mint,
             "solLamports": lamports,
-            "rateMicro": terms.rate_micro,
-            "assetDecimals": terms.asset_decimals,
+            "rateMicro": asset.rate_micro,
+            "assetDecimals": asset.asset_decimals,
             "rateSource": "config",
             "rateLockedAt": time::OffsetDateTime::now_utc()
                 .format(&time::format_description::well_known::Rfc3339)
@@ -836,7 +1113,38 @@ impl Db {
 
 #[cfg(test)]
 mod tests {
+    // The tests may unwrap: a panic here is a failing test, which is what a
+    // test is for.
+    #![allow(clippy::unwrap_used, clippy::expect_used)]
     use super::*;
+
+    /// The whitelist every lookup test resolves: SOL (the volatile native
+    /// asset, `sol`) plus a 6-decimal USDC mint — the two assets issue #1140
+    /// ships.
+    fn terms() -> SolanaTerms {
+        SolanaTerms::new(
+            "payToAddr".to_owned(),
+            vec![
+                AssetTerms {
+                    key: "sol".to_owned(),
+                    spl_token_mint: None,
+                    asset_decimals: 9,
+                    rate_micro: 200_000_000,
+                },
+                AssetTerms {
+                    key: "usdc".to_owned(),
+                    spl_token_mint: Some("usdcMint".to_owned()),
+                    asset_decimals: 6,
+                    rate_micro: USD_PEGGED_RATE_MICRO,
+                },
+            ],
+            "usdc".to_owned(),
+            600,
+            1,
+            i64::MAX,
+            0,
+        )
+    }
 
     /// The conversion is mint-aware: `rate_micro` minor-credits buy one whole
     /// asset, and the mint's decimals — not a hardcoded 1e9 — set the base
@@ -865,5 +1173,260 @@ mod tests {
         assert_eq!(asset_units_to_credits(5, 200_000_000, 6), 1000);
         // The remainder drops toward zero (seller's side of the rail).
         assert_eq!(asset_units_to_credits(4_999, 200_000_000, 9), 999);
+    }
+
+    /// The USDC peg: one whole USDC buys exactly one credit, so its rate is
+    /// the fixed `USD_PEGGED_RATE_MICRO` whatever `RATE_MICRO` says — the
+    /// parity the whitelist locks for a stablecoin (issue #1140).
+    #[test]
+    fn a_usd_pegged_asset_prices_at_parity() {
+        let usdc = terms().terms_for_asset(Some("usdc")).unwrap();
+        assert!(usdc.usd_pegged());
+        assert_eq!(usdc.rate_micro, USD_PEGGED_RATE_MICRO);
+        // 1_000_000 minor-credits (1 credit) needs 1_000_000 base units
+        // (1 USDC) — dollar for dollar.
+        assert_eq!(
+            credits_to_asset_units(1_000_000, usdc.rate_micro, usdc.asset_decimals),
+            1_000_000
+        );
+        // SOL is the volatile side: not pegged, configured rate.
+        let sol = terms().terms_for_asset(Some("sol")).unwrap();
+        assert!(!sol.usd_pegged());
+        assert_eq!(sol.rate_micro, 200_000_000);
+    }
+
+    /// The whitelist lookup: `None` resolves the deployment's declared
+    /// default (here `usdc`), a known key resolves its entry, an unknown key
+    /// is `None` so the route refuses it rather than repricing silently.
+    #[test]
+    fn terms_for_asset_resolves_named_default_and_refuses_unknown() {
+        let terms = terms();
+        assert_eq!(terms.terms_for_asset(None).unwrap().key, "usdc");
+        assert_eq!(terms.terms_for_asset(Some("sol")).unwrap().key, "sol");
+        assert!(
+            terms.terms_for_asset(Some("doge")).is_none(),
+            "a key off the whitelist is a refusal, not a default"
+        );
+        // The flat fields mirror the default asset — a pre-whitelist intent
+        // verifies against them.
+        assert_eq!(terms.spl_token_mint.as_deref(), Some("usdcMint"));
+        assert_eq!(terms.asset_decimals, 6);
+        assert_eq!(terms.rate_micro, USD_PEGGED_RATE_MICRO);
+    }
+
+    /// `mint_accepted`: native SOL always stands; a whitelisted mint stands;
+    /// a mint no asset carries is refused — the defensive check that keeps a
+    /// stored `meta.splToken` from settling a mint the deployment never
+    /// accepted (issue #1140).
+    #[test]
+    fn mint_accepted_covers_only_the_whitelist() {
+        let terms = terms();
+        assert!(terms.mint_accepted(None));
+        assert!(terms.mint_accepted(Some("usdcMint")));
+        assert!(!terms.mint_accepted(Some("someRandomMint")));
+    }
+
+    /// An empty default resolves the whitelist's first entry; a default that
+    /// is not on the whitelist is a build-time panic — the config refuses it
+    /// before this ever runs.
+    #[test]
+    fn an_empty_default_resolves_the_first_asset() {
+        let terms = SolanaTerms::new(
+            "payTo".to_owned(),
+            vec![AssetTerms {
+                key: "sol".to_owned(),
+                spl_token_mint: None,
+                asset_decimals: 9,
+                rate_micro: 200_000_000,
+            }],
+            String::new(),
+            600,
+            1,
+            i64::MAX,
+            0,
+        );
+        assert_eq!(terms.default_asset, "sol");
+        assert_eq!(terms.terms_for_asset(None).unwrap().key, "sol");
+    }
+
+    #[test]
+    #[should_panic(expected = "OXSUM_SOLANA_DEFAULT_ASSET")]
+    fn a_default_off_the_whitelist_is_a_build_error() {
+        let _ = SolanaTerms::new(
+            "payTo".to_owned(),
+            vec![AssetTerms {
+                key: "sol".to_owned(),
+                spl_token_mint: None,
+                asset_decimals: 9,
+                rate_micro: 1,
+            }],
+            "doge".to_owned(),
+            600,
+            1,
+            i64::MAX,
+            0,
+        );
+    }
+
+    /// The locked-meta fallback: an intent carrying `asset` locks that
+    /// asset's figures; one that predates the whitelist (no `asset`, only the
+    /// flat `splToken`/`assetDecimals`/`rateMicro` fields) falls back to the
+    /// deployment's default asset — exactly what those legacy fields held.
+    #[test]
+    fn locked_asset_terms_reads_the_intents_meta() {
+        let terms = terms();
+        let verifier = SolanaRailVerifier::new(std::sync::Arc::new(NoChain), terms.clone());
+        // A whitelist-era intent: `asset` names the entry, and a meta that
+        // omits the figures falls back to the whitelist's, not the caller's.
+        let usdc = verifier.locked_asset_terms(&json!({"asset": "usdc"}));
+        assert_eq!(usdc.key, "usdc");
+        assert_eq!(usdc.spl_token_mint.as_deref(), Some("usdcMint"));
+        assert_eq!(usdc.asset_decimals, 6);
+        assert_eq!(usdc.rate_micro, USD_PEGGED_RATE_MICRO);
+        // The same intent with explicit figures locks them — the promise the
+        // open recorded stands over the live whitelist.
+        let locked = verifier.locked_asset_terms(&json!({
+            "asset": "usdc",
+            "splToken": "usdcMint",
+            "assetDecimals": 6,
+            "rateMicro": 900_000
+        }));
+        assert_eq!(locked.rate_micro, 900_000);
+        // A pre-whitelist intent: no `asset`, flat fields — the deployment's
+        // own flat terms (the default asset) fill what the meta omits.
+        let legacy = verifier.locked_asset_terms(&json!({
+            "splToken": "legacyMint",
+            "assetDecimals": 8,
+            "rateMicro": 123
+        }));
+        assert_eq!(legacy.spl_token_mint.as_deref(), Some("legacyMint"));
+        assert_eq!(legacy.asset_decimals, 8);
+        assert_eq!(legacy.rate_micro, 123);
+        // No fields at all: the default asset's terms, untouched.
+        let bare = verifier.locked_asset_terms(&json!({}));
+        assert_eq!(bare.key, terms.default_asset);
+    }
+
+    /// The boot's mint audit: a mint owned by Token-2022 is refused —
+    /// extensions the rail does not model must never price a deposit — and a
+    /// classic SPL mint's on-chain decimals replace the config placeholder
+    /// (issue #1140).
+    #[derive(Debug)]
+    struct MintAudit {
+        owner: Option<String>,
+        decimals: Option<u32>,
+    }
+
+    impl ChainLookup for MintAudit {
+        fn find_reference<'a>(
+            &'a self,
+            _reference: &'a str,
+        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Vec<String>> + Send + 'a>> {
+            Box::pin(async { Vec::new() })
+        }
+        fn validate_transfer<'a>(
+            &'a self,
+            _signature: &'a str,
+            _expected: &'a ExpectedTransfer,
+        ) -> std::pin::Pin<
+            Box<dyn std::future::Future<Output = Option<ValidatedTransfer>> + Send + 'a>,
+        > {
+            Box::pin(async { None })
+        }
+        fn mint_decimals<'a>(
+            &'a self,
+            _mint: &'a str,
+        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Option<u32>> + Send + 'a>> {
+            let decimals = self.decimals;
+            Box::pin(async move { decimals })
+        }
+        fn mint_owner<'a>(
+            &'a self,
+            _mint: &'a str,
+        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Option<String>> + Send + 'a>>
+        {
+            let owner = self.owner.clone();
+            Box::pin(async move { owner })
+        }
+    }
+
+    /// The Token-2022 program id is the audit's refusal key.
+    #[test]
+    fn token_2022_is_the_refused_owner() {
+        assert_eq!(
+            TOKEN_2022_PROGRAM_ID, "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+            "the pinned Token-2022 program id"
+        );
+    }
+
+    #[tokio::test]
+    async fn verify_mints_refuses_a_token_2022_mint() {
+        let terms = terms();
+        let mut verifier = SolanaRailVerifier::new(
+            std::sync::Arc::new(MintAudit {
+                owner: Some(TOKEN_2022_PROGRAM_ID.to_owned()),
+                decimals: Some(6),
+            }),
+            terms,
+        );
+        let err = verifier.verify_mints().await.unwrap_err();
+        assert!(err.contains("Token-2022"), "{err}");
+        assert!(err.contains("usdc"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn verify_mints_fills_the_onchain_decimals() {
+        // The config placeholder (0, or the legacy declared figure) is
+        // replaced by the mint's own decimals; the flat fields follow the
+        // default asset.
+        let mut t = terms();
+        t.assets[1].asset_decimals = 0; // the whitelist placeholder
+        let mut verifier = SolanaRailVerifier::new(
+            std::sync::Arc::new(MintAudit {
+                owner: Some("TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA".to_owned()),
+                decimals: Some(6),
+            }),
+            t,
+        );
+        verifier.verify_mints().await.unwrap();
+        assert_eq!(verifier.terms().assets[1].asset_decimals, 6);
+        assert_eq!(verifier.terms().asset_decimals, 6, "default asset mirrors");
+    }
+
+    #[tokio::test]
+    async fn verify_mints_refuses_an_unreadable_mint() {
+        let mut verifier = SolanaRailVerifier::new(
+            std::sync::Arc::new(MintAudit {
+                owner: None,
+                decimals: None,
+            }),
+            terms(),
+        );
+        let err = verifier.verify_mints().await.unwrap_err();
+        assert!(err.contains("usdc"), "{err}");
+    }
+
+    /// The chain lookup the verifier tests need when no real lookup matters —
+    /// `find_reference`/`validate_transfer` are never called in these cases;
+    /// only the trait's presence is required to build a verifier.
+    #[derive(Debug)]
+    struct NoChain;
+
+    impl ChainLookup for NoChain {
+        fn find_reference<'a>(
+            &'a self,
+            _reference: &'a str,
+        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Vec<String>> + Send + 'a>> {
+            Box::pin(async { Vec::new() })
+        }
+        fn validate_transfer<'a>(
+            &'a self,
+            _signature: &'a str,
+            _expected: &'a ExpectedTransfer,
+        ) -> std::pin::Pin<
+            Box<dyn std::future::Future<Output = Option<ValidatedTransfer>> + Send + 'a>,
+        > {
+            Box::pin(async { None })
+        }
     }
 }
