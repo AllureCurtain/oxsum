@@ -141,8 +141,10 @@ the books and the chain reconcile.
 
 ## What this runbook does not cover
 
-Price-oracle selection and lock timing, dual SOL+USDC support, and the wallet
-adapter that removes the manual reference step — the follow-ups tracked on
-#1117, not this rail's current scope. Key custody — receiving `payTo` into a
-Squads v4 multisig vault and who signs a spend — is the operator-side setup
-in `docs/self-hosted-solana-multisig.md` (issue #1143).
+Price-oracle lock timing and the wallet adapter that removes the manual
+reference step — the follow-ups tracked on #1117, not this rail's current
+scope. Key custody — receiving `payTo` into a Squads v4 multisig vault and
+who signs a spend — is the operator-side setup in
+`docs/self-hosted-solana-multisig.md` (issue #1143). Dual SOL+USDC deposits
+shipped with #1140: an intent's `meta.asset` names the asset its refund
+must move, and a stablecoin's `rateMicro` is the fixed 1_000_000 parity.
