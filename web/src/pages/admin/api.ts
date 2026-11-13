@@ -44,11 +44,20 @@ export async function adminApi<T>(token: string, path: string, init?: { method?:
 // Rides React Query like the customer hooks: `token`/`path`/`deps` form the
 // key, so two components asking for the same resource share one fetch and a
 // write's `refresh()` refetches from cache rather than re-mounting state.
-export function useAdmin<T>(token: string, path: string, deps: unknown[] = [], enabled = true) {
+// `poll` maps the latest data to a refetch interval in ms (`false` stops) —
+// the console polls a background job this way while it runs.
+export function useAdmin<T>(
+  token: string,
+  path: string,
+  deps: unknown[] = [],
+  enabled = true,
+  poll?: (data: T | undefined) => number | false,
+) {
   const query = useQuery<T, ApiError>({
     queryKey: ["admin", token, path, ...deps],
     queryFn: () => adminApi<T>(token, path),
     enabled,
+    refetchInterval: poll ? (query) => poll(query.state.data) : undefined,
     // A POST the caller drives (a form save, an action) lands outside this
     // hook, so the list it should re-read gets a `refresh()` that bypasses any
     // dedup window — `staleTime: 0` keeps every `refresh` a real fetch.

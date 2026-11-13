@@ -67,28 +67,31 @@ pub(crate) struct CloseReq {
     month: String,
 }
 
-/// The queued close the endpoint answers: `202` — the month's seal runs as a
-/// claimed job, not inside this request, so a deployment of any size reads the
-/// same immediate response.
+/// The queued close the endpoint answers with `200`: the month's seal runs as
+/// a claimed job, not inside this request, so a deployment of any size reads
+/// the same immediate response.
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct CloseAccepted {
+    /// The queued run; `GET /admin/closings/jobs/{jobId}` reports its progress.
+    job_id: Uuid,
     /// The month the queued run will seal, `YYYY-MM`.
     month: String,
-    /// `queued` for a newly-enqueued run, `already-queued` when a pending or
-    /// running close of this kind is still claimed — a retry of the same call
-    /// never duplicates the pass.
+    /// `queued` for a newly-enqueued run, `already-queued` when a run for the
+    /// same month is still pending or running — a retry of the same call never
+    /// duplicates the pass, and `job_id` names that run.
     status: &'static str,
 }
 
 /// Queues one month-close across every organization's ledger and answers the
-/// queued state — the pass runs as the `close-month` job off the request path,
+/// queued run — the pass runs as the `close-month` job off the request path,
 /// so a deployment whose close outlives the request timeout still seals fully.
 ///
-/// The month must have fully ended, which `Wallet::close_month` enforces inside
-/// the run; closing an already-sealed month answers the record it holds, so a
-/// re-queued pass seals only what an earlier partial run left. `GET` the
-/// closings endpoint for the resulting seals.
+/// The month must have fully ended; closing an already-sealed month answers
+/// the record it holds, so a re-queued pass seals only what an earlier partial
+/// run left. One close runs at a time: while a run for another month is
+/// pending or running the call answers `409`. `GET` the closings endpoint for
+/// the resulting seals, and the job endpoint for the run's progress.
 pub(crate) async fn close_month(
     State(state): State<AppState>,
     ApiJson(request): ApiJson<CloseReq>,
@@ -97,27 +100,41 @@ pub(crate) async fn close_month(
     // malformed YYYY-MM and a month that has not fully ended alike, refusing
     // here as `400` rather than as a queued job that dead-letters inside the
     // worker.
-    oxsum_core::statement_period(&request.month)?;
-    let queued = state
-        .db
-        .enqueue_job_payload(
-            oxsum_core::kinds::CLOSE_MONTH,
-            time::OffsetDateTime::now_utc(),
-            serde_json::json!({ "month": request.month }),
-        )
-        .await?;
+    let period = oxsum_core::statement_period(&request.month)?;
+    let queued = state.db.enqueue_close_month(&period).await?;
+    let month = period.label();
     record(
         &state,
         audit_action::CLOSING_CLOSE,
-        Some(request.month.clone()),
-        serde_json::json!({ "queued": queued }),
+        Some(month.clone()),
+        serde_json::json!({ "jobId": queued.job_id, "queued": queued.queued }),
         None,
     )
     .await?;
     ok(CloseAccepted {
-        month: request.month,
-        status: if queued { "queued" } else { "already-queued" },
+        job_id: queued.job_id,
+        month,
+        status: if queued.queued {
+            "queued"
+        } else {
+            "already-queued"
+        },
     })
+}
+
+/// One queued month-close and its progress, as the console polls it. An id
+/// that names no close-month run — unknown, malformed or another job kind's —
+/// answers `404`, so the path tells a caller nothing about other jobs.
+pub(crate) async fn close_month_job(
+    State(state): State<AppState>,
+    Path(job_id): Path<String>,
+) -> ApiResult<oxsum_core::CloseMonthJob> {
+    let job_id = Uuid::parse_str(&job_id).map_err(|_| ApiError::not_found())?;
+    ok(state
+        .db
+        .close_month_job(job_id)
+        .await?
+        .ok_or_else(ApiError::not_found)?)
 }
 
 /// The optional filters of `GET /admin/statements`.

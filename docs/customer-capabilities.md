@@ -193,6 +193,7 @@ The following inventory covers every remaining OpenAPI operation. A listed token
 | `POST /api/v1/admin/redemption-codes` | Deployment operator token; no customer/session authority |
 | `GET /api/v1/admin/closings` | Deployment operator token; no customer/session authority |
 | `POST /api/v1/admin/closings` | Deployment operator token; no customer/session authority |
+| `GET /api/v1/admin/closings/jobs/{jobId}` | Deployment operator token; no customer/session authority |
 | `GET /api/v1/admin/statements` | Deployment operator token; no customer/session authority |
 | `POST /api/v1/admin/statements` | Deployment operator token; no customer/session authority |
 | `GET /api/v1/admin/statements/{statementId}` | Deployment operator token; no customer/session authority |
