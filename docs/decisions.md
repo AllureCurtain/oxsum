@@ -4296,9 +4296,12 @@ a wallet that pays without confirming still credits; the unleadered job is
 safe because the credit's ledger key is the signature it just validated.
 
 `confirmed` commitment is the default: devnet top-ups are low-value and the
-~13 s `finalized` wait buys little against a reorg window a `payment_ref`
-uniqueness violation would catch anyway. `OXSUM_SOLANA_COMMITMENT=finalized`
-is one flag for a high-value deployment. `OXSUM_SOLANA_RATE_MICRO` is the
+~13 s `finalized` wait buys little against the residual reorg window — a
+deployment that cannot accept that window sets
+`OXSUM_SOLANA_COMMITMENT=finalized`, which *is* the mitigation (there is no
+post-credit re-validation: once a signature credits, a later reorg does not
+un-credit it, so the commitment choice is where the trade-off is made, not
+a recovered check). `OXSUM_SOLANA_RATE_MICRO` is the
 devnet stand-in for a price oracle — minor-credits per whole SOL, locked into
 the intent's `meta` at open so a mid-flight rate change cannot retro-price a
 pending deposit; a mainnet rail replaces the config value with an oracle
