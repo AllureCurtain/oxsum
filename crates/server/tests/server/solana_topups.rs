@@ -16,12 +16,13 @@ use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use http_body_util::BodyExt;
 use oxsum_core::{
-    AssetTerms, ChainLookup, Db, ExpectedTransfer, OracleQuote, PriceOracle, SolanaPricing,
-    SolanaRailVerifier, SolanaTerms, USD_PEGGED_RATE_MICRO, ValidatedTransfer,
+    AssetTerms, ChainLookup, Db, ExpectedTransfer, OracleQuote, PriceOracle, SanctionsScreen,
+    ScreenVerdict, SolanaPricing, SolanaRailVerifier, SolanaTerms, USD_PEGGED_RATE_MICRO,
+    ValidatedTransfer,
 };
 use oxsum_server::{Config, Signup};
 use serde_json::{Value, json};
-use sqlx::PgPool;
+use sqlx::{PgPool, Row};
 use tower::ServiceExt;
 use uuid::Uuid;
 
@@ -125,6 +126,47 @@ impl ChainLookup for SolanaStub {
     }
 }
 
+/// The stubbed sanctions screen (issue #1144): `verdicts` maps a payer
+/// address to the verdict `screen` answers; an unmapped address answers the
+/// `fallback` — `Clear` by default, so a test arms only the address it means
+/// to flag.
+#[derive(Clone)]
+struct ScreenStub {
+    verdicts: Arc<Mutex<std::collections::HashMap<String, ScreenVerdict>>>,
+    fallback: ScreenVerdict,
+}
+
+impl Default for ScreenStub {
+    fn default() -> Self {
+        Self {
+            verdicts: Arc::new(Mutex::new(std::collections::HashMap::new())),
+            fallback: ScreenVerdict::Clear,
+        }
+    }
+}
+
+impl std::fmt::Debug for ScreenStub {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ScreenStub").finish_non_exhaustive()
+    }
+}
+
+impl SanctionsScreen for ScreenStub {
+    fn screen<'a>(
+        &'a self,
+        address: &'a str,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ScreenVerdict> + Send + 'a>> {
+        Box::pin(async move {
+            self.verdicts
+                .lock()
+                .unwrap()
+                .get(address)
+                .cloned()
+                .unwrap_or_else(|| self.fallback.clone())
+        })
+    }
+}
+
 /// A configured world: the Solana rail is on, with the stubbed chain.
 async fn world(stub: SolanaStub) -> Option<(Router, Db)> {
     world_with_terms(stub, terms()).await
@@ -135,7 +177,22 @@ async fn world(stub: SolanaStub) -> Option<(Router, Db)> {
 /// shape (issue #1139): `sol` intents lock the configured figure, pegged
 /// ones the parity.
 async fn world_with_terms(stub: SolanaStub, terms: SolanaTerms) -> Option<(Router, Db)> {
-    world_with(SolanaRailVerifier::new(Arc::new(stub), terms)).await
+    world_with_screen_and_terms(stub, terms, None).await
+}
+
+/// The same world with an optional sanctions screen attached — `None` runs
+/// the rail exactly as `OXSUM_SOLANA_SANCTIONS_ENABLED` unset would (issue
+/// #1144).
+async fn world_with_screen_and_terms(
+    stub: SolanaStub,
+    terms: SolanaTerms,
+    screen: Option<ScreenStub>,
+) -> Option<(Router, Db)> {
+    let mut verifier = SolanaRailVerifier::new(Arc::new(stub), terms);
+    if let Some(screen) = screen {
+        verifier = verifier.with_sanctions(Arc::new(screen));
+    }
+    world_with(verifier).await
 }
 
 /// One plain HTTP call; returns (status, json).
@@ -233,6 +290,7 @@ async fn solana_intent_pays_once() {
             signature: signature.to_owned(),
             delivered: 5_000,
             block_time: Some(0),
+            payer: None,
         },
     );
     // Confirm: the credit lands once.
@@ -289,6 +347,7 @@ async fn solana_confirm_refuses_an_unpaying_transfer() {
             signature: signature.to_owned(),
             delivered: 1, // far below the asked 500-credit lamports
             block_time: Some(0),
+            payer: None,
         },
     );
     let (status, _) = call(
@@ -363,6 +422,7 @@ async fn solana_signature_credits_once_across_organizations() {
             signature: signature.to_owned(),
             delivered: 5_000,
             block_time: Some(0),
+            payer: None,
         },
     );
     // The first organization's confirm settles and credits.
@@ -712,4 +772,352 @@ async fn solana_open_refuses_a_stale_wide_or_absent_quote() {
     *oracle.quote.lock().unwrap() = None;
     let (status, refusal) = sol_open().await;
     assert_eq!(status, StatusCode::FORBIDDEN, "{refusal}");
+}
+
+/// Issue #1144: the payer screen runs before credit. `Clear` credits exactly
+/// as an unscreened rail would — the happy path the screen must not slow.
+#[tokio::test]
+async fn solana_screening_clear_credits() {
+    let stub = SolanaStub::default();
+    let screen = ScreenStub::default();
+    let Some((app, _db)) = world_with_screen_and_terms(stub.clone(), terms(), Some(screen)).await
+    else {
+        return;
+    };
+    let key = register_session(&app).await;
+    let (status, intent) = call(
+        &app,
+        "POST",
+        "/api/v1/topups/solana",
+        Some(json!({"amountMinor": 1000})),
+        Some(&key),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{intent}");
+    let reference = intent["data"]["reference"].as_str().unwrap().to_owned();
+    let signature = "sigClear00000000000000000000000000000000000000000000000000";
+    stub.located
+        .lock()
+        .unwrap()
+        .insert(reference.clone(), vec![signature.to_owned()]);
+    stub.validated.lock().unwrap().insert(
+        signature.to_owned(),
+        ValidatedTransfer {
+            signature: signature.to_owned(),
+            delivered: 5_000,
+            block_time: Some(0),
+            payer: Some("cleanPayerAddr1111111111111111111111111111".to_owned()),
+        },
+    );
+    let (status, receipt) = call(
+        &app,
+        "POST",
+        "/api/v1/topups/solana/confirm",
+        Some(json!({"reference": reference})),
+        Some(&key),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{receipt}");
+    assert_eq!(balance(&app, &key).await, 1000);
+}
+
+/// A `Flagged` verdict parks the deposit: status `flagged`, no credit, no
+/// refund, `meta.screening` recording the verdict — the operator queue's
+/// row, never a silent credit.
+#[tokio::test]
+async fn solana_screening_flagged_parks_the_deposit() {
+    let stub = SolanaStub::default();
+    let screen = ScreenStub::default();
+    screen.verdicts.lock().unwrap().insert(
+        "hitPayerAddr2222222222222222222222222222".to_owned(),
+        ScreenVerdict::Flagged {
+            source: "ofac-sdn".to_owned(),
+            reason: "the payer is on the OFAC SDN list".to_owned(),
+        },
+    );
+    let Some((app, db)) = world_with_screen_and_terms(stub.clone(), terms(), Some(screen)).await
+    else {
+        return;
+    };
+    let key = register_session(&app).await;
+    let (status, intent) = call(
+        &app,
+        "POST",
+        "/api/v1/topups/solana",
+        Some(json!({"amountMinor": 1000})),
+        Some(&key),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{intent}");
+    let reference = intent["data"]["reference"].as_str().unwrap().to_owned();
+    let signature = "sigFlag00000000000000000000000000000000000000000000000000";
+    stub.located
+        .lock()
+        .unwrap()
+        .insert(reference.clone(), vec![signature.to_owned()]);
+    stub.validated.lock().unwrap().insert(
+        signature.to_owned(),
+        ValidatedTransfer {
+            signature: signature.to_owned(),
+            delivered: 5_000,
+            block_time: Some(0),
+            payer: Some("hitPayerAddr2222222222222222222222222222".to_owned()),
+        },
+    );
+    // The confirm does not credit — the deposit parked at `flagged` reads as
+    // "no open intent" to the caller, and the wallet never moves.
+    let (_status, _body) = call(
+        &app,
+        "POST",
+        "/api/v1/topups/solana/confirm",
+        Some(json!({"reference": reference})),
+        Some(&key),
+    )
+    .await;
+    assert_eq!(balance(&app, &key).await, 0);
+    let row = sqlx::query(
+        "SELECT status, meta, facilitator_tx_hash FROM oxsum.deposits WHERE payment_ref = $1",
+    )
+    .bind(&reference)
+    .fetch_one(db.pool())
+    .await
+    .unwrap();
+    let status: String = row.try_get("status").unwrap();
+    assert_eq!(status, "flagged");
+    let tx_hash: Option<String> = row.try_get("facilitator_tx_hash").unwrap();
+    assert_eq!(tx_hash.as_deref(), Some(signature));
+    let meta: Value = row.try_get("meta").unwrap();
+    let screening = &meta["screening"];
+    assert_eq!(screening["verdict"].as_str().unwrap(), "flagged");
+    assert_eq!(screening["source"].as_str().unwrap(), "ofac-sdn");
+    assert_eq!(
+        screening["address"].as_str().unwrap(),
+        "hitPayerAddr2222222222222222222222222222"
+    );
+    assert!(screening["at"].as_str().is_some(), "{screening}");
+}
+
+/// A `TemporarilyUnavailable` screen fails closed: the row stays `pending`,
+/// the confirm is refused, and nothing credits — the next pass retries the
+/// screen rather than booking unscreened money.
+#[tokio::test]
+async fn solana_screening_unavailable_stays_pending() {
+    let stub = SolanaStub::default();
+    let screen = ScreenStub {
+        fallback: ScreenVerdict::TemporarilyUnavailable,
+        ..Default::default()
+    };
+    let Some((app, db)) = world_with_screen_and_terms(stub.clone(), terms(), Some(screen)).await
+    else {
+        return;
+    };
+    let key = register_session(&app).await;
+    let (status, intent) = call(
+        &app,
+        "POST",
+        "/api/v1/topups/solana",
+        Some(json!({"amountMinor": 1000})),
+        Some(&key),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{intent}");
+    let reference = intent["data"]["reference"].as_str().unwrap().to_owned();
+    let signature = "sigUnav00000000000000000000000000000000000000000000000000";
+    stub.located
+        .lock()
+        .unwrap()
+        .insert(reference.clone(), vec![signature.to_owned()]);
+    stub.validated.lock().unwrap().insert(
+        signature.to_owned(),
+        ValidatedTransfer {
+            signature: signature.to_owned(),
+            delivered: 5_000,
+            block_time: Some(0),
+            payer: Some("unavailPayerAddr333333333333333333333333333".to_owned()),
+        },
+    );
+    let (status, _body) = call(
+        &app,
+        "POST",
+        "/api/v1/topups/solana/confirm",
+        Some(json!({"reference": reference})),
+        Some(&key),
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    assert_eq!(balance(&app, &key).await, 0);
+    let status: String =
+        sqlx::query_scalar("SELECT status FROM oxsum.deposits WHERE payment_ref = $1")
+            .bind(&reference)
+            .fetch_one(db.pool())
+            .await
+            .unwrap();
+    assert_eq!(status, "pending");
+}
+
+/// The multi-asset dimension of the same screen (issues #1140, #1144): the
+/// payer `verify_locked` records comes from the validated transfer on the
+/// intent's *locked* mint — a `usdc` intent's SPL debited-owner — and a hit
+/// parks that row exactly as a `sol` one does. The stub chain answers the
+/// SPL payer the client's `spl_payer` arm derives; the screen runs on it.
+#[tokio::test]
+async fn solana_screening_flagged_parks_a_usdc_deposit() {
+    let stub = SolanaStub::default();
+    let screen = ScreenStub::default();
+    screen.verdicts.lock().unwrap().insert(
+        "usdcHitPayerAddr6666666666666666666666666".to_owned(),
+        ScreenVerdict::Flagged {
+            source: "chainalysis".to_owned(),
+            reason: "chainalysis listed the address (2 identifications)".to_owned(),
+        },
+    );
+    let Some((app, db)) =
+        world_with_screen_and_terms(stub.clone(), multi_asset_terms(), Some(screen)).await
+    else {
+        return;
+    };
+    let key = register_session(&app).await;
+    // A `usdc` intent: 1000 minor-credits at parity asks 1_000 USDC base
+    // units on the whitelisted mint.
+    let (status, intent) = call(
+        &app,
+        "POST",
+        "/api/v1/topups/solana",
+        Some(json!({"amountMinor": 1000, "asset": "usdc"})),
+        Some(&key),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{intent}");
+    let reference = intent["data"]["reference"].as_str().unwrap().to_owned();
+    let signature = "sigUsdcFlag000000000000000000000000000000000000000000000000";
+    stub.located
+        .lock()
+        .unwrap()
+        .insert(reference.clone(), vec![signature.to_owned()]);
+    stub.validated.lock().unwrap().insert(
+        signature.to_owned(),
+        ValidatedTransfer {
+            signature: signature.to_owned(),
+            delivered: 1_000, // 1_000 USDC base units at parity
+            block_time: Some(0),
+            // The SPL arm's answer — the debited token account's owner.
+            payer: Some("usdcHitPayerAddr6666666666666666666666666".to_owned()),
+        },
+    );
+    let (_status, _body) = call(
+        &app,
+        "POST",
+        "/api/v1/topups/solana/confirm",
+        Some(json!({"reference": reference})),
+        Some(&key),
+    )
+    .await;
+    assert_eq!(balance(&app, &key).await, 0);
+    let row = sqlx::query("SELECT status, meta FROM oxsum.deposits WHERE payment_ref = $1")
+        .bind(&reference)
+        .fetch_one(db.pool())
+        .await
+        .unwrap();
+    assert_eq!(row.get::<String, _>("status"), "flagged");
+    let meta: Value = row.try_get("meta").unwrap();
+    // The locked asset stayed `usdc` through the flag — the parked row reads
+    // back the mint it asked for, and the verdict names the SPL payer.
+    assert_eq!(meta["asset"].as_str().unwrap(), "usdc");
+    assert_eq!(meta["screening"]["verdict"].as_str().unwrap(), "flagged");
+    assert_eq!(meta["screening"]["source"].as_str().unwrap(), "chainalysis");
+    assert_eq!(
+        meta["screening"]["address"].as_str().unwrap(),
+        "usdcHitPayerAddr6666666666666666666666666"
+    );
+}
+
+/// A transfer that yields no payer screens as `TemporarilyUnavailable` —
+/// deny-until-cleared means an unnameable address is not a clear — while a
+/// deployment that never enabled screening (no `with_sanctions`) still
+/// credits the same shape: the gate is opt-in, never a silent default.
+#[tokio::test]
+async fn solana_screening_absent_payer_is_unavailable_but_disabled_credits() {
+    // Enabled screen + no payer: stays pending.
+    let stub = SolanaStub::default();
+    let screen = ScreenStub::default();
+    let Some((app, _db)) = world_with_screen_and_terms(stub.clone(), terms(), Some(screen)).await
+    else {
+        return;
+    };
+    let key = register_session(&app).await;
+    let (status, intent) = call(
+        &app,
+        "POST",
+        "/api/v1/topups/solana",
+        Some(json!({"amountMinor": 1000})),
+        Some(&key),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{intent}");
+    let reference = intent["data"]["reference"].as_str().unwrap().to_owned();
+    let signature = "sigNoPayer0000000000000000000000000000000000000000000000";
+    stub.located
+        .lock()
+        .unwrap()
+        .insert(reference.clone(), vec![signature.to_owned()]);
+    stub.validated.lock().unwrap().insert(
+        signature.to_owned(),
+        ValidatedTransfer {
+            signature: signature.to_owned(),
+            delivered: 5_000,
+            block_time: Some(0),
+            payer: None,
+        },
+    );
+    let (status, _body) = call(
+        &app,
+        "POST",
+        "/api/v1/topups/solana/confirm",
+        Some(json!({"reference": reference})),
+        Some(&key),
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    assert_eq!(balance(&app, &key).await, 0);
+
+    // Disabled screen (no with_sanctions) + no payer: credits as before.
+    let stub2 = SolanaStub::default();
+    let Some((app2, _db2)) = world(stub2.clone()).await else {
+        return;
+    };
+    let key2 = register_session(&app2).await;
+    let (status, intent2) = call(
+        &app2,
+        "POST",
+        "/api/v1/topups/solana",
+        Some(json!({"amountMinor": 1000})),
+        Some(&key2),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{intent2}");
+    let reference2 = intent2["data"]["reference"].as_str().unwrap().to_owned();
+    stub2
+        .located
+        .lock()
+        .unwrap()
+        .insert(reference2.clone(), vec![signature.to_owned()]);
+    stub2.validated.lock().unwrap().insert(
+        signature.to_owned(),
+        ValidatedTransfer {
+            signature: signature.to_owned(),
+            delivered: 5_000,
+            block_time: Some(0),
+            payer: None,
+        },
+    );
+    let (status, receipt) = call(
+        &app2,
+        "POST",
+        "/api/v1/topups/solana/confirm",
+        Some(json!({"reference": reference2})),
+        Some(&key2),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{receipt}");
+    assert_eq!(balance(&app2, &key2).await, 1000);
 }

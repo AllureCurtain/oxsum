@@ -432,6 +432,11 @@ pub struct SolanaRailVerifier {
     /// under `SolanaPricing::Static` and whenever no oracle was bound — a
     /// `sol` open then refuses rather than falling back (issue #1139).
     oracle: Option<std::sync::Arc<dyn PriceOracle>>,
+    /// The sanctions screen the credit path runs on the located transfer's
+    /// payer (issue #1144). `None` — the default — screens nothing: a
+    /// deployment that never enabled `OXSUM_SOLANA_SANCTIONS_*` credits
+    /// exactly as before.
+    sanctions: Option<std::sync::Arc<dyn SanctionsScreen>>,
 }
 
 impl std::fmt::Debug for SolanaRailVerifier {
@@ -449,6 +454,7 @@ impl std::fmt::Debug for SolanaRailVerifier {
                     .map(|asset| asset.key.as_str())
                     .collect::<Vec<_>>(),
             )
+            .field("sanctions", &self.sanctions.is_some())
             .finish_non_exhaustive()
     }
 }
@@ -530,6 +536,51 @@ pub struct ValidatedTransfer {
     /// The on-chain `blockTime` — when the chain recorded the transfer.
     /// Expiry is judged against this, not the server's clock.
     pub block_time: Option<i64>,
+    /// The payer's address — the account whose balance was debited to pay the
+    /// recipient (issue #1144). `None` when the transaction's shape does not
+    /// yield one; the screening seam treats `None` as unscreenable and the
+    /// credit path then decides by the deployment's fail policy.
+    pub payer: Option<String>,
+}
+
+/// The verdict a [`SanctionsScreen`] returns for one payer address (issue
+/// #1144). `Clear` credits; `Flagged` parks the deposit for operator review;
+/// `TemporarilyUnavailable` is *not* clear — a screening service that cannot
+/// answer must not open the gate (deny-until-cleared), so the deposit stays
+/// `pending` and the next pass retries.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ScreenVerdict {
+    /// No screen flagged the address.
+    Clear,
+    /// A screening source named the address: `source` says which (`ofac-sdn`
+    /// for the local list, `chainalysis` for the external API), `reason` the
+    /// human-readable hit detail a reviewer reads.
+    Flagged {
+        /// Which screening source produced the hit (`ofac-sdn`,
+        /// `chainalysis`).
+        source: String,
+        /// The hit's detail — the SDN entry, the Chainalysis identifications
+        /// count — so an operator reviewing the queue sees why it flagged.
+        reason: String,
+    },
+    /// The external screen could not answer (transport error, non-200,
+    /// unreadable body). Deliberately not `Clear`: a deployment that requires
+    /// screening keeps the deposit `pending` until a screen answers.
+    TemporarilyUnavailable,
+}
+
+/// The seam the rail screens a payer address through before crediting (issue
+/// #1144): object-safe boxed futures like [`ChainLookup`], so `Config` holds
+/// `Arc<dyn SanctionsScreen>` and tests stub it in-process.
+/// `crates/integrations::sanctions::CompositeSanctions` is the production
+/// impl — the local OFAC list plus the Chainalysis API behind one TTL cache.
+pub trait SanctionsScreen: std::fmt::Debug + Send + Sync {
+    /// Screens one payer address. Implementations combine their sources
+    /// internally; the caller only ever sees one verdict.
+    fn screen<'a>(
+        &'a self,
+        address: &'a str,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ScreenVerdict> + Send + 'a>>;
 }
 
 impl SolanaRailVerifier {
@@ -560,7 +611,18 @@ impl SolanaRailVerifier {
             terms,
             pricing,
             oracle,
+            sanctions: None,
         }
+    }
+
+    /// Attaches the sanctions screen the credit path runs on every located
+    /// transfer's payer (issue #1144). `SolanaRailVerifier::new` leaves the
+    /// screen off — a deployment that never configures `OXSUM_SOLANA_
+    /// SANCTIONS_*` sees no change at all.
+    #[must_use]
+    pub fn with_sanctions(mut self, sanctions: std::sync::Arc<dyn SanctionsScreen>) -> Self {
+        self.sanctions = Some(sanctions);
+        self
     }
 
     /// The deployment's acceptance terms — the `meta` an intent writes.
@@ -850,6 +912,7 @@ impl SolanaRailVerifier {
                 "signature": validated.signature,
                 "delivered": validated.delivered,
                 "blockTime": validated.block_time,
+                "payerAddress": validated.payer,
                 "receivedCredits": asset_units_to_credits(
                     validated.delivered,
                     terms.rate_micro,
@@ -857,6 +920,29 @@ impl SolanaRailVerifier {
                 ),
             }),
         })
+    }
+
+    /// Screens the payer address `verify` recorded in the payment's context
+    /// (issue #1144). With no screen configured — a deployment that never
+    /// enabled `OXSUM_SOLANA_SANCTIONS_*` — the verdict is `Clear` and the
+    /// credit path is exactly as before. When screening *is* on but the
+    /// transfer's shape yielded no payer, the verdict is
+    /// `TemporarilyUnavailable`, never `Clear`: an address the rail cannot
+    /// name is an address it cannot clear, and deny-until-cleared refuses to
+    /// book unscreened money (the row stays `pending` for an operator, the
+    /// same posture an unreachable screening API takes).
+    pub async fn screen_payer(&self, payment: &VerifiedPayment) -> ScreenVerdict {
+        let Some(sanctions) = &self.sanctions else {
+            return ScreenVerdict::Clear;
+        };
+        let Some(payer) = payment.context["payerAddress"].as_str() else {
+            tracing::warn!(
+                signature = %payment.context["signature"].as_str().unwrap_or_default(),
+                "the validated transfer carried no payer; screening cannot clear it"
+            );
+            return ScreenVerdict::TemporarilyUnavailable;
+        };
+        sanctions.screen(payer).await
     }
 }
 
@@ -1210,6 +1296,34 @@ impl Db {
             }
             _ => {}
         }
+        // Pre-credit sanctions screening on the payer (issue #1144): the
+        // transfer's debited address is checked once the payment is otherwise
+        // creditable — a late or mistimed transfer is refused above before the
+        // screen ever runs, so the review queue only ever parks payments that
+        // *would* have credited. `Flagged` parks the row at `flagged` — never
+        // credited, never auto-refunded — with `meta.screening` recording the
+        // verdict. `TemporarilyUnavailable` leaves the row `pending`: a
+        // screening service that cannot answer is not a clear, and
+        // deny-until-cleared refuses to book unscreened money, so the next
+        // pass retries. The screen runs outside any row lock, the same
+        // read-only footing the chain RPCs already take.
+        match verifier.screen_payer(&payment).await {
+            ScreenVerdict::Clear => {}
+            ScreenVerdict::Flagged { source, reason } => {
+                self.flag_solana_deposit(deposit_id, &meta, &payment, &source, &reason)
+                    .await?;
+                // The confirm route reads `Ok(None)` as "nothing credited" —
+                // the same shape a deposit that already settled answers,
+                // because the caller never learns the screening detail; the
+                // operator's queue is where a flag belongs.
+                return Ok(None);
+            }
+            ScreenVerdict::TemporarilyUnavailable => {
+                return Err(WalletError::Forbidden(
+                    "the payer could not be screened; the deposit stays pending".into(),
+                ));
+            }
+        }
         // Record the located signature before the credit runs — the chain's
         // own idempotency anchor, durable whether the credit lands this pass.
         let settlement = verifier
@@ -1316,6 +1430,118 @@ impl Db {
         }
         tx.commit().await?;
         Ok(Some(receipt))
+    }
+
+    /// Parks a verified-but-flagged deposit at `flagged` (issue #1144): the
+    /// transfer honored the intent's terms but the payer hit a sanctions
+    /// screen, so the money is held for the operator queue — never credited,
+    /// never auto-refunded. `meta.screening` records what the screen answered
+    /// (`verdict`, `source`, `reason`, the screened `address` and `at`, plus
+    /// the located `signature`) so a reviewer reads why the row is parked
+    /// without re-deriving it; `facilitator_tx_hash` takes the signature too,
+    /// so the flag and the double-spend index agree on which transaction is
+    /// held. The write is status-guarded `pending`-only — a raced credit that
+    /// already landed keeps its row, and a second flagging pass is a no-op.
+    async fn flag_solana_deposit(
+        &self,
+        deposit_id: Uuid,
+        meta: &serde_json::Value,
+        payment: &crate::x402::VerifiedPayment,
+        source: &str,
+        reason: &str,
+    ) -> Result<(), WalletError> {
+        let signature = payment.context["signature"].as_str().unwrap_or_default();
+        let payer = payment.context["payerAddress"].as_str().unwrap_or_default();
+        let at = time::OffsetDateTime::now_utc()
+            .format(&time::format_description::well_known::Rfc3339)
+            .unwrap_or_default();
+        let mut flag_meta = meta.clone();
+        flag_meta["screening"] = json!({
+            "verdict": "flagged",
+            "source": source,
+            "reason": reason,
+            "address": payer,
+            "at": at,
+        });
+        flag_meta["signature"] = json!(signature);
+        sqlx::query(
+            "UPDATE oxsum.deposits \
+             SET status = 'flagged', facilitator_tx_hash = $1, meta = $2, \
+                 updated_at = now() \
+             WHERE deposit_id = $3 AND rail = $4 AND status = 'pending'",
+        )
+        .bind(signature)
+        .bind(&flag_meta)
+        .bind(deposit_id)
+        .bind(RAIL_SOLANA)
+        .execute(self.pool())
+        .await
+        .map_err(|e| {
+            // The signature may already sit on another deposit — flagged or
+            // credited: one on-chain transaction still pays at most one
+            // deposit (issue #1124's rule holds under screening), and a
+            // `deposits_solana_tx_hash` violation is the same Forbidden the
+            // credit arm raises, never a storage 500.
+            if let sqlx::Error::Database(ref db) = e
+                && db.code().as_deref() == Some("23505")
+            {
+                return WalletError::Forbidden(
+                    "the paying transaction already settled another deposit".into(),
+                );
+            }
+            WalletError::from(e)
+        })?;
+        Ok(())
+    }
+
+    /// The operator's screening queue (issue #1144): every `flagged` solana
+    /// deposit, newest first — the deposits a payer hit parked before credit.
+    /// The row shape is the same [`AdminDeposit`] the money-in view lists;
+    /// `meta.screening` carries the verdict detail a reviewer reads. #1142's
+    /// broader exception queue lands on this same `flagged` status — this is
+    /// the deposit-level half, shipped ahead of the queue's filters.
+    pub async fn admin_flagged_solana_deposits(
+        &self,
+        limit: i64,
+    ) -> Result<Vec<crate::AdminDeposit>, WalletError> {
+        let rows = sqlx::query(
+            "SELECT d.deposit_id, d.organization_id, o.name AS organization, d.rail, \
+                    d.payment_ref, d.amount_minor, d.received_minor, d.status, \
+                    d.entry_id, d.reversal_entry_id, d.reversed_at, d.created_at, \
+                    d.meta->>'refundStatus' AS refund_status, \
+                    (d.meta->>'disputedAt')::timestamptz AS disputed_at, \
+                    d.meta->'screening' AS screening \
+             FROM oxsum.deposits d \
+             JOIN oxsum.organizations o ON o.organization_id = d.organization_id \
+             WHERE d.rail = $1 AND d.status = 'flagged' \
+             ORDER BY d.created_at DESC, d.deposit_id DESC \
+             LIMIT $2",
+        )
+        .bind(RAIL_SOLANA)
+        .bind(limit)
+        .fetch_all(self.pool())
+        .await?;
+        rows.iter()
+            .map(|row| {
+                Ok(crate::AdminDeposit {
+                    deposit_id: row.try_get("deposit_id")?,
+                    organization_id: row.try_get("organization_id")?,
+                    organization: row.try_get("organization")?,
+                    rail: row.try_get("rail")?,
+                    payment_ref: row.try_get("payment_ref")?,
+                    amount_minor: row.try_get("amount_minor")?,
+                    received_minor: row.try_get("received_minor")?,
+                    status: row.try_get("status")?,
+                    entry_id: row.try_get("entry_id")?,
+                    reversal_entry_id: row.try_get("reversal_entry_id")?,
+                    reversed_at: row.try_get("reversed_at")?,
+                    refund_status: row.try_get("refund_status")?,
+                    disputed_at: row.try_get("disputed_at")?,
+                    screening: row.try_get("screening")?,
+                    created_at: row.try_get("created_at")?,
+                })
+            })
+            .collect()
     }
 
     /// Moves a Solana deposit to `expired` — the poll's outcome once

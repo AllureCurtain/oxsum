@@ -1201,7 +1201,8 @@ pub struct AdminDeposit {
     pub amount_minor: i64,
     /// What the rail reported paying, when it reported a different figure.
     pub received_minor: Option<i64>,
-    /// `pending`, `confirmed`, `credited`, `reversed` or `expired`.
+    /// `pending`, `confirmed`, `credited`, `reversed`, `expired` or `flagged`
+    /// (the solana rail's screening park — issue #1144).
     pub status: String,
     /// The ledger entry that credited the wallet, once `credited`.
     pub entry_id: Option<Uuid>,
@@ -1218,6 +1219,10 @@ pub struct AdminDeposit {
     /// When a dispute opened on the payment, read off `meta.disputedAt`
     /// (issue #360). `None` means the rail never reported one.
     pub disputed_at: Option<OffsetDateTime>,
+    /// The screening verdict a `flagged` solana deposit parked on
+    /// (issue #1144), read off `meta.screening` — `{verdict, source, reason,
+    /// address, at}`. `None` on every other row.
+    pub screening: Option<serde_json::Value>,
     /// When the deposit row opened.
     pub created_at: OffsetDateTime,
 }
@@ -1241,7 +1246,8 @@ impl Db {
                     d.payment_ref, d.amount_minor, d.received_minor, d.status, \
                     d.entry_id, d.reversal_entry_id, d.reversed_at, d.created_at, \
                     CASE WHEN d.rail IN ('hyperswitch','airwallex','stripe') AND d.status='reversed' THEN COALESCE((SELECT f.state FROM oxsum.deposit_refunds f WHERE f.deposit_id=d.deposit_id), 'unknown') ELSE d.meta->>'refundStatus' END AS refund_status, \
-                    (d.meta->>'disputedAt')::timestamptz AS disputed_at \
+                    (d.meta->>'disputedAt')::timestamptz AS disputed_at, \
+                    d.meta->'screening' AS screening \
              FROM oxsum.deposits d \
              JOIN oxsum.organizations o ON o.organization_id = d.organization_id \
              WHERE ($1::uuid IS NULL OR d.organization_id = $1) \
@@ -1268,6 +1274,7 @@ impl Db {
                     reversed_at: row.try_get("reversed_at")?,
                     refund_status: row.try_get("refund_status")?,
                     disputed_at: row.try_get("disputed_at")?,
+                    screening: row.try_get("screening")?,
                     created_at: row.try_get("created_at")?,
                 })
             })
@@ -1407,7 +1414,8 @@ impl Db {
                     d.payment_ref, d.amount_minor, d.received_minor, d.status, \
                     d.entry_id, d.reversal_entry_id, d.reversed_at, d.created_at, \
                     CASE WHEN d.rail IN ('hyperswitch','airwallex','stripe') AND d.status='reversed' THEN COALESCE((SELECT f.state FROM oxsum.deposit_refunds f WHERE f.deposit_id=d.deposit_id), 'unknown') ELSE d.meta->>'refundStatus' END AS refund_status, \
-                    (d.meta->>'disputedAt')::timestamptz AS disputed_at \
+                    (d.meta->>'disputedAt')::timestamptz AS disputed_at, \
+                    d.meta->'screening' AS screening \
              FROM oxsum.deposits d \
              JOIN oxsum.organizations o ON o.organization_id = d.organization_id \
              WHERE d.deposit_id = $1",
@@ -1430,6 +1438,7 @@ impl Db {
                 reversed_at: row.try_get("reversed_at")?,
                 refund_status: row.try_get("refund_status")?,
                 disputed_at: row.try_get("disputed_at")?,
+                screening: row.try_get("screening")?,
                 created_at: row.try_get("created_at")?,
             })
         })

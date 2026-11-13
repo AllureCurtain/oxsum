@@ -4194,8 +4194,14 @@ paths:
         not spend twice. `404` means no `pending` intent answers to that
         `reference` — including the race where the `solana-deposits` poll
         already credited it (the money arrived; the `404` is "no open intent",
-        not "the deposit is missing"). A deployment without `OXSUM_SOLANA_*`
-        answers 503.
+        not "the deposit is missing") and the same `404` when the screen
+        already parked the deposit `flagged`. With
+        `OXSUM_SOLANA_SANCTIONS_ENABLED=1` the located transfer's payer is
+        screened before credit: a hit parks the row `flagged` for operator
+        review (never credited, never auto-refunded), and a screening source
+        that cannot answer refuses `403` and leaves the intent `pending` —
+        the rail never books unscreened money. A deployment without
+        `OXSUM_SOLANA_*` answers 503.
       requestBody:
         required: true
         content:
@@ -10927,6 +10933,46 @@ paths:
         "401": { $ref: "#/components/responses/Error" }
         "404": { $ref: "#/components/responses/Error" }
         "500": { $ref: "#/components/responses/Error" }
+  /api/v1/admin/deposits/solana/flagged:
+    get:
+      summary: The Solana rail's sanctions-screening queue
+      description: |
+        The deposits a payer screen parked (issue #1144): every `flagged`
+        solana deposit, newest first. A flagged row means the transfer
+        *did* honor the intent's terms — recipient, amount, mint, marker —
+        but the account it debited hit a screening source (the local OFAC
+        SDN list or the Chainalysis API), so the ledger never credited and
+        the money was never auto-refunded; it waits on the operator's
+        review.
+
+        `meta.screening` on each row records `{verdict, source, reason,
+        address, at}` — which source flagged, the screened payer address and
+        when — and `facilitator_tx_hash` names the held transaction, so a
+        reviewer reads the whole case from the row. Read-only: the review
+        action that resolves a flagged deposit is #1142's exception-queue
+        work, which lands on this same `flagged` status.
+      security:
+        - adminToken: []
+      parameters:
+        - name: limit
+          in: query
+          required: false
+          schema: { type: integer, minimum: 1, maximum: 200, default: 50 }
+      responses:
+        "200":
+          description: The flagged deposits, newest first
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    type: array
+                    items: { $ref: "#/components/schemas/AdminDeposit" }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
   /api/v1/admin/deposits/{depositId}/reverse:
     post:
       summary: Reverse a credited deposit — refund through the rail when it offers one
@@ -16504,12 +16550,14 @@ components:
           description: what the rail reported paid, when it differs from `amountMinor`
         status:
           type: string
-          enum: [pending, confirmed, credited, reversed, expired]
+          enum: [pending, confirmed, credited, reversed, expired, flagged]
           description: |
             `pending` (opened, not paid), `confirmed` (the rail says paid, the
             ledger has not credited yet), `credited` (the wallet moved, `entryId`
-            names the entry), `reversed` (a refund/chargeback outcome) or
-            `expired` (never paid in time)
+            names the entry), `reversed` (a refund/chargeback outcome),
+            `expired` (never paid in time) or `flagged` (the solana rail's
+            screening park — the payer hit a sanctions source before credit,
+            issue #1144)
         entryId: { type: string, format: uuid, nullable: true, description: the ledger entry that credited the wallet, once credited }
         reversalEntryId: { type: string, format: uuid, nullable: true, description: the ledger entry that reversed the credit (Wallet debited, Cash credited), once reversed }
         reversedAt: { type: string, format: date-time, nullable: true, description: when the deposit reversed }
@@ -16526,6 +16574,14 @@ components:
             never allocates another external identity. `null` means no reversal
             refund has been requested or the rail has no external refund path.
         disputedAt: { type: string, format: date-time, nullable: true, description: "when a dispute opened on the payment, when the rail reported one (issue #360)" }
+        screening:
+          type: object
+          nullable: true
+          description: |
+            The screening verdict a `flagged` solana deposit parked on
+            (issue #1144): `{verdict, source, reason, address, at}` — which
+            source flagged (`ofac-sdn` or `chainalysis`), the screened payer
+            address and when the screen ran. `null` on every other row.
         createdAt: { type: string, format: date-time }
     ReverseDepositRequest:
       type: object

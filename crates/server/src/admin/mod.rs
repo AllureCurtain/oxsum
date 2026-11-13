@@ -124,6 +124,7 @@ pub fn router(state: AppState) -> Router<AppState> {
             put(groups::set_group).delete(groups::delete_group),
         )
         .route("/deposits", get(ops::deposits))
+        .route("/deposits/solana/flagged", get(ops::solana_flagged))
         .route("/deposits/{deposit_id}/reverse", post(ops::reverse_deposit))
         .route("/anomalies", get(ops::anomalies))
         .route("/margin", get(ops::margin))

@@ -4601,3 +4601,53 @@ whitelist that carries no `sol` entry needs no rate source at all.
 `ChainLookup`) so core stays HTTP-free and tests stub the quote in-process;
 the route resolves the rate before `open_solana_deposit` runs because an
 oracle sample must not ride inside the intent's insert path.
+
+## 2026-11-14 — The Solana rail screens the payer before credit (#1144)
+
+A transfer that honors the intent's terms can still be money the deployment
+must not book: the account it *debited* may sit on a sanctions list. The rail
+now extracts the payer at validate time and screens it before
+`credit_solana_deposit` runs the ledger `top_up`.
+
+- **The payer is the debited account, derived from the transaction's own
+  balances.** `ValidatedTransfer` gains `payer`. For native SOL it is the
+  first signer whose `pre/postBalances` figure fell — the wallet the
+  transfer left — falling back to `accountKeys[0]` (the fee payer) when the
+  balance arrays do not isolate a debited signer; the two are the same
+  wallet in the ordinary transfer. For SPL it is the `owner` of the
+  `preTokenBalances` row on the paid mint that decreased, falling back to
+  the first signer when the token rows name no owner. The documented
+  residual: a fee-payer-distinct-from-source shape (a relayer pays the fee
+  for another wallet's transfer) names the fee payer under v1 — still a
+  party to the payment, and a future cut can disambiguate by instruction
+  introspection if the residual ever matters.
+- **The seam is `SanctionsScreen`, a `ChainLookup`-shaped trait** —
+  object-safe boxed futures, `Arc<dyn SanctionsScreen>` on
+  `SolanaRailVerifier` via `with_sanctions`, stubbed in tests. The verdict is
+  three-way: `Clear`, `Flagged{source, reason}`, `TemporarilyUnavailable`.
+- **Two sources, asymmetric.** `crates/integrations/src/sanctions.rs`
+  checks the local OFAC SDN Solana list first — embedded
+  (`data/ofac-solana-sdn.txt`, `include_str!`'d so the binary ships a floor)
+  plus `OXSUM_SOLANA_SDN_LIST_PATH` for a refreshed file — then the
+  Chainalysis free sanctions API (`public.chainalysis.com`, the
+  `OXSUM_SOLANA_SANCTIONS_API_KEY` public-signup key): `200` + non-empty
+  `identifications` flags, empty clears. A local hit flags without a network
+  call; a local miss still asks, so the API's coverage adds to the list's.
+  Results cache in-memory by address — flags for a day, clears for five
+  minutes, and **an API failure is never cached as a clear**.
+- **Fail closed.** `OXSUM_SOLANA_SANCTIONS_ENABLED=1` is the gate. A
+  `Flagged` verdict walks the row `pending → flagged` — never credited,
+  never auto-refunded — with `meta.screening {verdict, source, reason,
+  address, at}` and `facilitator_tx_hash` recording the case; the deposit
+  `status` CHECK widens (migration 0136) and a partial index backs the
+  queue read at `GET /api/v1/admin/deposits/solana/flagged`. A
+  `TemporarilyUnavailable` — the configured API unreachable or non-200, or
+  a validated transfer whose shape yields no payer — leaves the row
+  `pending` and the poll retries: an unscreenable deposit is not a cleared
+  one (deny-until-cleared). Screening off is unchanged behavior; a
+  mainnet-shaped RPC endpoint without the flag warns at boot.
+- **`flagged` is shared with #1142**, which builds the broader exception
+  queue (`underpaid`/`overpaid`/`late`/`refund_pending`/…) on the same
+  status vocabulary; this lands the status, the park write and a minimal
+  read-only list so #1142's queue lands on a status that already exists
+  rather than inventing a parallel one.

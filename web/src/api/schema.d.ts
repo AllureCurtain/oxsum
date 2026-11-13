@@ -5505,8 +5505,14 @@ export interface paths {
          *     not spend twice. `404` means no `pending` intent answers to that
          *     `reference` — including the race where the `solana-deposits` poll
          *     already credited it (the money arrived; the `404` is "no open intent",
-         *     not "the deposit is missing"). A deployment without `OXSUM_SOLANA_*`
-         *     answers 503.
+         *     not "the deposit is missing") and the same `404` when the screen
+         *     already parked the deposit `flagged`. With
+         *     `OXSUM_SOLANA_SANCTIONS_ENABLED=1` the located transfer's payer is
+         *     screened before credit: a hit parks the row `flagged` for operator
+         *     review (never credited, never auto-refunded), and a screening source
+         *     that cannot answer refuses `403` and leaves the intent `pending` —
+         *     the rail never books unscreened money. A deployment without
+         *     `OXSUM_SOLANA_*` answers 503.
          */
         post: {
             parameters: {
@@ -15069,6 +15075,65 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/admin/deposits/solana/flagged": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * The Solana rail's sanctions-screening queue
+         * @description The deposits a payer screen parked (issue #1144): every `flagged`
+         *     solana deposit, newest first. A flagged row means the transfer
+         *     *did* honor the intent's terms — recipient, amount, mint, marker —
+         *     but the account it debited hit a screening source (the local OFAC
+         *     SDN list or the Chainalysis API), so the ledger never credited and
+         *     the money was never auto-refunded; it waits on the operator's
+         *     review.
+         *
+         *     `meta.screening` on each row records `{verdict, source, reason,
+         *     address, at}` — which source flagged, the screened payer address and
+         *     when — and `facilitator_tx_hash` names the held transaction, so a
+         *     reviewer reads the whole case from the row. Read-only: the review
+         *     action that resolves a flagged deposit is #1142's exception-queue
+         *     work, which lands on this same `flagged` status.
+         */
+        get: {
+            parameters: {
+                query?: {
+                    limit?: number;
+                };
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description The flagged deposits, newest first */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            data: components["schemas"]["AdminDeposit"][];
+                        };
+                    };
+                };
+                400: components["responses"]["Error"];
+                401: components["responses"]["Error"];
+                500: components["responses"]["Error"];
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/admin/deposits/{depositId}/reverse": {
         parameters: {
             query?: never;
@@ -21409,11 +21474,13 @@ export interface components {
             /**
              * @description `pending` (opened, not paid), `confirmed` (the rail says paid, the
              *     ledger has not credited yet), `credited` (the wallet moved, `entryId`
-             *     names the entry), `reversed` (a refund/chargeback outcome) or
-             *     `expired` (never paid in time)
+             *     names the entry), `reversed` (a refund/chargeback outcome),
+             *     `expired` (never paid in time) or `flagged` (the solana rail's
+             *     screening park — the payer hit a sanctions source before credit,
+             *     issue #1144)
              * @enum {string}
              */
-            status: "pending" | "confirmed" | "credited" | "reversed" | "expired";
+            status: "pending" | "confirmed" | "credited" | "reversed" | "expired" | "flagged";
             /**
              * Format: uuid
              * @description the ledger entry that credited the wallet
@@ -21445,6 +21512,13 @@ export interface components {
              * @description when a dispute opened on the payment, when the rail reported one (issue #360)
              */
             disputedAt?: string | null;
+            /**
+             * @description The screening verdict a `flagged` solana deposit parked on
+             *     (issue #1144): `{verdict, source, reason, address, at}` — which
+             *     source flagged (`ofac-sdn` or `chainalysis`), the screened payer
+             *     address and when the screen ran. `null` on every other row.
+             */
+            screening?: Record<string, never> | null;
             /** Format: date-time */
             createdAt: string;
         };

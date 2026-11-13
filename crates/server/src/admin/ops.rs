@@ -102,6 +102,10 @@ pub(crate) struct DepositRes {
     /// When a dispute opened on the payment, when the rail reported one.
     #[serde(with = "time::serde::rfc3339::option")]
     disputed_at: Option<OffsetDateTime>,
+    /// The screening verdict a `flagged` solana deposit parked on
+    /// (issue #1144): `{verdict, source, reason, address, at}`. `null` on
+    /// every other row.
+    screening: Option<serde_json::Value>,
     #[serde(with = "time::serde::rfc3339")]
     created_at: OffsetDateTime,
 }
@@ -122,6 +126,7 @@ impl From<oxsum_core::AdminDeposit> for DepositRes {
             reversed_at: deposit.reversed_at,
             refund_status: deposit.refund_status,
             disputed_at: deposit.disputed_at,
+            screening: deposit.screening,
             created_at: deposit.created_at,
         }
     }
@@ -145,6 +150,27 @@ pub(crate) async fn deposits(
         .db
         .admin_deposits(query.organization_id, limit)
         .await?;
+    ok(rows.into_iter().map(DepositRes::from).collect())
+}
+
+/// The flagged-queue query string: how many rows, at most.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(crate) struct FlaggedQuery {
+    limit: Option<i64>,
+}
+
+/// The Solana rail's screening queue (issue #1144): every `flagged` deposit,
+/// newest first — the rows whose payer hit a sanctions source and parked
+/// before credit. Read-only like `/deposits`; the review action that clears
+/// or refunds one is #1142's queue work, which lands on this same `flagged`
+/// status.
+pub(crate) async fn solana_flagged(
+    State(state): State<AppState>,
+    ApiQuery(query): ApiQuery<FlaggedQuery>,
+) -> ApiResult<Vec<DepositRes>> {
+    let limit = query.limit.unwrap_or(50).clamp(1, 200);
+    let rows = state.db.admin_flagged_solana_deposits(limit).await?;
     ok(rows.into_iter().map(DepositRes::from).collect())
 }
 

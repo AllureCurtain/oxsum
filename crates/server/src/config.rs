@@ -2138,7 +2138,7 @@ fn solana_of() -> Result<Option<Arc<oxsum_core::SolanaRailVerifier>>, String> {
         commitment,
     };
     let client = oxsum_integrations::solana::SolanaRpcClient::new(
-        rpc_url,
+        rpc_url.clone(),
         crate::jobs::http_client(),
         config,
     );
@@ -2199,9 +2199,68 @@ fn solana_of() -> Result<Option<Arc<oxsum_core::SolanaRailVerifier>>, String> {
             Some(Arc::new(pyth) as Arc<dyn oxsum_core::PriceOracle>),
         )
     };
-    Ok(Some(Arc::new(
-        oxsum_core::SolanaRailVerifier::with_pricing(Arc::new(client), terms, pricing, oracle),
-    )))
+    let mut verifier =
+        oxsum_core::SolanaRailVerifier::with_pricing(Arc::new(client), terms, pricing, oracle);
+    // Pre-credit sanctions screening (issue #1144): `OXSUM_SOLANA_SANCTIONS_
+    // ENABLED=1` turns the gate on — the local SDN list always, Chainalysis
+    // when `OXSUM_SOLANA_SANCTIONS_API_KEY` is set, and a verdict the credit
+    // path honors (`flagged` parks, an API outage stays `pending`). On a
+    // mainnet-shaped RPC endpoint with the gate off, warn: screening is the
+    // documented mainnet posture and its absence is a deliberate choice, not
+    // a silent default. Devnet stays quiet.
+    if sanctions_enabled(&rpc_url)? {
+        let screen = oxsum_integrations::sanctions::CompositeSanctions::try_new(
+            crate::jobs::http_client(),
+            var("OXSUM_SOLANA_SANCTIONS_API_KEY"),
+            var("OXSUM_SOLANA_SDN_LIST_PATH").as_deref(),
+        )?;
+        verifier = verifier.with_sanctions(Arc::new(screen));
+    } else if var("OXSUM_SOLANA_SANCTIONS_API_KEY").is_some()
+        || var("OXSUM_SOLANA_SDN_LIST_PATH").is_some()
+    {
+        // A key or list path without the gate is a half-config: the operator
+        // meant screening to run, and a silent ignore would mask it.
+        tracing::warn!(
+            "OXSUM_SOLANA_SANCTIONS_API_KEY / _SDN_LIST_PATH is set but \
+             OXSUM_SOLANA_SANCTIONS_ENABLED is off — the payer screen is not \
+             running"
+        );
+    }
+    Ok(Some(Arc::new(verifier)))
+}
+
+/// The `OXSUM_SOLANA_SANCTIONS_*` gate (issue #1144). `ENABLED` is the
+/// boolean: `1`/`true` turns the payer screen on, `0`/`false`/unset off —
+/// off is the default so a devnet loop screens nothing, and an unparseable
+/// value is a startup error rather than a silent off (the operator meant
+/// *something* by setting it). A mainnet-shaped endpoint — the RPC URL names
+/// neither `devnet` nor `testnet` nor a localhost-style host — with the gate
+/// off warns that screening is not running: the recommended mainnet posture
+/// is on, and the warning is how the operator knows it was never a silent
+/// skip.
+fn sanctions_enabled(rpc_url: &str) -> Result<bool, String> {
+    let enabled = match var("OXSUM_SOLANA_SANCTIONS_ENABLED").as_deref() {
+        Some("1") | Some("true") => true,
+        None | Some("0") | Some("false") => false,
+        Some(_) => {
+            return Err("OXSUM_SOLANA_SANCTIONS_ENABLED must be 1/true or 0/false".into());
+        }
+    };
+    if enabled {
+        return Ok(true);
+    }
+    let devnet_shaped = rpc_url.contains("devnet")
+        || rpc_url.contains("testnet")
+        || rpc_url.contains("localhost")
+        || rpc_url.contains("127.0.0.1");
+    if !devnet_shaped {
+        tracing::warn!(
+            "the solana rail points at a mainnet-shaped endpoint but \
+             OXSUM_SOLANA_SANCTIONS_ENABLED is off — payer screening is not \
+             running (recommended on mainnet)"
+        );
+    }
+    Ok(false)
 }
 
 /// Cross-checks `OXSUM_RAILS` (issue #619): the comma-separated deposit rails

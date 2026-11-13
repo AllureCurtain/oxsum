@@ -4,8 +4,9 @@
 //! `expired`, and neither misbehaves on a replayed or mis-priced open.
 //! Skips without DATABASE_URL.
 use oxsum_core::{
-    AssetTerms, ChainLookup, Db, ExpectedTransfer, LockedRate, NewUser, SolanaRailVerifier,
-    SolanaTerms, USD_PEGGED_RATE_MICRO, ValidatedTransfer, WalletError,
+    AssetTerms, ChainLookup, Db, ExpectedTransfer, LockedRate, NewUser, SanctionsScreen,
+    ScreenVerdict, SolanaRailVerifier, SolanaTerms, USD_PEGGED_RATE_MICRO, ValidatedTransfer,
+    WalletError,
 };
 use sqlx::Row;
 use std::sync::{Arc, Mutex};
@@ -305,6 +306,7 @@ impl ChainLookup for OneSig {
                 signature: signature.to_owned(),
                 delivered: self.delivered,
                 block_time: Some(self.block_time),
+                payer: None,
             })
         })
     }
@@ -358,6 +360,7 @@ impl ChainLookup for ManySigs {
                 signature: signature.to_owned(),
                 delivered: self.delivered,
                 block_time: Some(0),
+                payer: None,
             })
         })
     }
@@ -838,6 +841,7 @@ async fn verify_locked_honors_the_locked_asset_and_refuses_off_whitelist() {
                     signature: signature.to_owned(),
                     delivered: self.delivered,
                     block_time: Some(0),
+                    payer: None,
                 })
             })
         }
@@ -972,4 +976,194 @@ async fn oracle_priced_intent_locks_and_verifies_the_quote_rate() {
         .expect("the locked oracle rate credits");
     assert!(receipt.is_new);
     assert_eq!(wallet.available().await.unwrap(), 1000);
+}
+
+/// Issue #1144: a `Flagged` verdict parks the deposit — `pending → flagged`,
+/// `meta.screening` records the case, the wallet never credits, and the row
+/// lands on the operator's `admin_flagged_solana_deposits` queue. The stub
+/// screen names the verdict by address the way the production composite does.
+#[derive(Debug)]
+struct FixedScreen {
+    verdict: ScreenVerdict,
+}
+
+impl SanctionsScreen for FixedScreen {
+    fn screen<'a>(
+        &'a self,
+        _address: &'a str,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ScreenVerdict> + Send + 'a>> {
+        let verdict = self.verdict.clone();
+        Box::pin(async move { verdict })
+    }
+}
+
+/// A `OneSig` that answers a `ValidatedTransfer` carrying a payer — the shape
+/// the screening path needs. `validate_transfer` honors the same terms the
+/// deposit's stub does.
+#[derive(Debug)]
+struct PayingSig {
+    signature: String,
+    delivered: i64,
+    payer: Option<String>,
+}
+
+impl ChainLookup for PayingSig {
+    fn find_reference<'a>(
+        &'a self,
+        _reference: &'a str,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Vec<String>> + Send + 'a>> {
+        Box::pin(async move { vec![self.signature.clone()] })
+    }
+    fn validate_transfer<'a>(
+        &'a self,
+        signature: &'a str,
+        expected: &'a ExpectedTransfer,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Option<ValidatedTransfer>> + Send + 'a>>
+    {
+        Box::pin(async move {
+            if signature != self.signature || expected.amount != self.delivered {
+                return None;
+            }
+            Some(ValidatedTransfer {
+                signature: signature.to_owned(),
+                delivered: self.delivered,
+                block_time: Some(0),
+                payer: self.payer.clone(),
+            })
+        })
+    }
+}
+
+#[tokio::test]
+async fn a_flagged_payer_parks_the_deposit_for_review() {
+    let Some(db) = database("solana_flagged").await else {
+        return;
+    };
+    let org = organization(&db, "flagged").await;
+    let deposit_id = Uuid::new_v4();
+    db.open_solana_deposit(org, deposit_id, 1000, &terms(), None, &rate(&terms(), None))
+        .await
+        .unwrap()
+        .expect("inserts");
+    let verifier = SolanaRailVerifier::new(
+        Arc::new(PayingSig {
+            signature: "sigFlagCore000000000000000000000000000000000000000000".to_owned(),
+            delivered: 5_000,
+            payer: Some("sanctionedPayerAddr444444444444444444444444".to_owned()),
+        }),
+        terms(),
+    )
+    .with_sanctions(Arc::new(FixedScreen {
+        verdict: ScreenVerdict::Flagged {
+            source: "ofac-sdn".to_owned(),
+            reason: "the payer is on the OFAC SDN list".to_owned(),
+        },
+    }));
+    let tenant_id: String =
+        sqlx::query_scalar("SELECT tenant_id FROM oxsum.organizations WHERE organization_id = $1")
+            .bind(org)
+            .fetch_one(db.pool())
+            .await
+            .unwrap();
+    let wallet = oxsum_core::Wallet::open(db.pool().clone(), &tenant_id)
+        .await
+        .unwrap();
+    // The flag parks: no credit, `Ok(None)` — the same shape "already
+    // settled" takes, because the caller never learns the screening detail.
+    let result = db
+        .credit_solana_deposit(&wallet, deposit_id, &verifier, time::Date::MAX)
+        .await
+        .unwrap();
+    assert!(result.is_none(), "a flagged deposit never credits");
+    assert_eq!(wallet.available().await.unwrap(), 0);
+    let row = sqlx::query(
+        "SELECT status, facilitator_tx_hash, meta FROM oxsum.deposits WHERE deposit_id = $1",
+    )
+    .bind(deposit_id)
+    .fetch_one(db.pool())
+    .await
+    .unwrap();
+    assert_eq!(row.get::<String, _>("status"), "flagged");
+    assert_eq!(
+        row.get::<Option<String>, _>("facilitator_tx_hash")
+            .as_deref(),
+        Some("sigFlagCore000000000000000000000000000000000000000000")
+    );
+    let meta = row.get::<serde_json::Value, _>("meta");
+    assert_eq!(meta["screening"]["verdict"].as_str().unwrap(), "flagged");
+    assert_eq!(meta["screening"]["source"].as_str().unwrap(), "ofac-sdn");
+    assert_eq!(
+        meta["screening"]["address"].as_str().unwrap(),
+        "sanctionedPayerAddr444444444444444444444444"
+    );
+    // The operator queue reads it back — the DB-level half #1142's fuller
+    // exception queue lands on.
+    let queue = db.admin_flagged_solana_deposits(50).await.unwrap();
+    let listed = queue.iter().find(|d| d.deposit_id == deposit_id);
+    let listed = listed.expect("the flagged row is on the queue");
+    assert_eq!(listed.status, "flagged");
+    let screening = listed
+        .screening
+        .as_ref()
+        .expect("the row carries its verdict");
+    assert_eq!(
+        screening["address"].as_str().unwrap(),
+        "sanctionedPayerAddr444444444444444444444444"
+    );
+    // The queue never leaks a pending or credited row.
+    assert!(
+        queue
+            .iter()
+            .all(|d| d.status == "flagged" && d.rail == "solana")
+    );
+}
+
+#[tokio::test]
+async fn an_unavailable_screen_leaves_the_deposit_pending() {
+    let Some(db) = database("solana_screen_unavail").await else {
+        return;
+    };
+    let org = organization(&db, "unavail").await;
+    let deposit_id = Uuid::new_v4();
+    db.open_solana_deposit(org, deposit_id, 1000, &terms(), None, &rate(&terms(), None))
+        .await
+        .unwrap()
+        .expect("inserts");
+    let verifier = SolanaRailVerifier::new(
+        Arc::new(PayingSig {
+            signature: "sigUnavCore00000000000000000000000000000000000000000".to_owned(),
+            delivered: 5_000,
+            payer: Some("retryPayerAddr55555555555555555555555555".to_owned()),
+        }),
+        terms(),
+    )
+    .with_sanctions(Arc::new(FixedScreen {
+        verdict: ScreenVerdict::TemporarilyUnavailable,
+    }));
+    let tenant_id: String =
+        sqlx::query_scalar("SELECT tenant_id FROM oxsum.organizations WHERE organization_id = $1")
+            .bind(org)
+            .fetch_one(db.pool())
+            .await
+            .unwrap();
+    let wallet = oxsum_core::Wallet::open(db.pool().clone(), &tenant_id)
+        .await
+        .unwrap();
+    // Deny-until-cleared: the deposit refuses Forbidden and stays pending —
+    // the next pass retries the screen rather than crediting unscreened.
+    let result = db
+        .credit_solana_deposit(&wallet, deposit_id, &verifier, time::Date::MAX)
+        .await;
+    assert!(
+        matches!(result, Err(WalletError::Forbidden(_))),
+        "an unavailable screen refuses the credit: {result:?}"
+    );
+    let status: String =
+        sqlx::query_scalar("SELECT status FROM oxsum.deposits WHERE deposit_id = $1")
+            .bind(deposit_id)
+            .fetch_one(db.pool())
+            .await
+            .unwrap();
+    assert_eq!(status, "pending");
+    assert_eq!(wallet.available().await.unwrap(), 0);
 }

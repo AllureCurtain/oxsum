@@ -96,6 +96,32 @@ job log and stay `pending` until expiry.
 **Find it:** the job's warn lines carry `deposit_id` + the refusal reason;
 the row's `meta.settleRefusal`/`signature` names what the chain saw.
 
+### 5. Flagged — the payer hit a sanctions screen
+
+With `OXSUM_SOLANA_SANCTIONS_ENABLED=1` (issue #1144), a transfer that
+honored the intent but whose payer a screen named walks `pending → flagged`
+instead of crediting — the money sits in `payTo`, the ledger never moved,
+and the row waits on the operator queue. `meta.screening` records
+`{verdict, source, reason, address, at}` — which source flagged
+(`ofac-sdn` for the local list, `chainalysis` for the API), the screened
+payer address and when — and `facilitator_tx_hash` names the held
+transaction.
+
+**Find it:** `GET /api/v1/admin/deposits/solana/flagged` lists every parked
+row newest-first, or:
+
+```sql
+SELECT deposit_id, payment_ref, facilitator_tx_hash,
+       meta->'screening' AS screening
+FROM oxsum.deposits
+WHERE rail = 'solana' AND status = 'flagged';
+```
+
+A flagged deposit is **never** auto-refunded — the refund decision is a
+compliance call, not a bookkeeping one. When review clears it, return the
+funds on-chain per the flow below; #1142's exception queue lands the
+clear/credit action on this same `flagged` status.
+
 ## Recording the refund
 
 A refund is two separate, deliberately unlinked acts — keep them honest:
@@ -130,6 +156,10 @@ A refund is two separate, deliberately unlinked acts — keep them honest:
   -off, never a unilateral credit.
 - **Overpayment** — routine: refund the surplus on-chain; no credit decision
   needed unless the business chooses to grant the overage.
+- **Flagged** — a compliance decision, never routine: the deposit parked
+  because its payer hit a sanctions source, so the choice to release (credit)
+  or return (refund) is the operator's documented review — never automatic
+  either way.
 - **Cross-organization** (a signature that credited one org and was refused
   in another) — escalate: the second org's customer paid into a deposit the
   first org already consumed. That is always a real refund owed to the second
