@@ -21,7 +21,6 @@ fn terms() -> SolanaTerms {
         pay_to: "oxsumDepositAddr111111111111111111111111111".to_owned(),
         spl_token_mint: None,
         rate_micro: 200_000_000,
-        min_confirmations: 1,
         intent_ttl_secs: 600,
     }
 }
@@ -54,9 +53,9 @@ async fn open_solana_deposit_inserts_pending_with_locked_terms() {
         .await
         .unwrap()
         .expect("a fresh deposit inserts");
-    // 1000 minor-credits at 200_000_000 minor/SOL = 5 whole SOL = 5e9 lamports
-    // (ceil toward the asked amount).
-    assert_eq!(lamports, 5_000_000_000);
+    // 1000 minor-credits at 200_000_000 minor-credits/SOL = 0.000005 SOL
+    // = 5_000 lamports (lamports = credits_minor * 1e9 / rate_micro).
+    assert_eq!(lamports, 5_000);
     assert_eq!(ttl, 600);
     assert!(!reference.is_empty());
     let row = sqlx::query(
@@ -72,7 +71,7 @@ async fn open_solana_deposit_inserts_pending_with_locked_terms() {
     assert_eq!(row.get::<i64, _>("amount_minor"), 1000);
     assert_eq!(row.get::<String, _>("payment_ref"), reference);
     let meta = row.get::<serde_json::Value, _>("meta");
-    assert_eq!(meta["solLamports"].as_i64().unwrap(), 5_000_000_000);
+    assert_eq!(meta["solLamports"].as_i64().unwrap(), 5_000);
     assert_eq!(meta["rateMicro"].as_i64().unwrap(), 200_000_000);
     assert_eq!(meta["rateSource"].as_str().unwrap(), "config");
     assert!(meta["expiresAt"].is_string());

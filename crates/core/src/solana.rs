@@ -57,8 +57,6 @@ pub struct SolanaTerms {
     pub spl_token_mint: Option<String>,
     /// Minor-credits per whole SOL the intent locks (`OXSUM_SOLANA_RATE_MICRO`).
     pub rate_micro: i64,
-    /// Confirmations the verifier waits behind (`OXSUM_SOLANA_MIN_CONFIRMATIONS`).
-    pub min_confirmations: u32,
     /// Seconds a `pending` intent stays payable before the poll expires it.
     pub intent_ttl_secs: i64,
 }
@@ -251,35 +249,33 @@ impl RailVerifier for SolanaRailVerifier {
 /// Converts a credit amount in minor units to the asset units the payment
 /// must deliver at the locked rate, rounding *up* (the customer's direction —
 /// a fraction of a lamport charges the buyer the whole lamport so the seller
-/// is never underpaid). `rate_micro` is minor-credits per whole SOL, so
-/// lamports = ceil(credits * 1e6 / rate_micro) * 1e9 / 1e6 — computed in
-/// integer minor-lamports first to stay in `i64`.
+/// is never underpaid). `rate_micro` is minor-credits per whole SOL (1e9
+/// lamports), so `lamports = ceil(credits_minor * 1e9 / rate_micro)`.
+/// Multiplication precedes division and the product saturates, so a huge
+/// intent clamps rather than wrapping negative.
 fn credits_to_asset_units(credits_minor: i64, rate_micro: i64) -> i64 {
-    // credits_minor (minor-credits) → whole-SOL → lamports, ceiling. Divide
-    // the credit figure by the rate in whole-SOL first (rate_micro is minor
-    // per SOL), then scale by 1e9 lamports/SOL. Ceil on the lamport total.
     if rate_micro <= 0 {
         return 0;
     }
-    // ceil(credits / rate): the customer's direction — a fraction of a SOL
-    // charges the buyer the whole nano-SOL so the seller is never underpaid.
-    let sol_nanos = credits_minor.saturating_add(rate_micro - 1) / rate_micro;
-    sol_nanos.saturating_mul(1_000_000_000)
+    // ceil(n / d) for positive integers = (n + d - 1) / d. Scale the credit
+    // figure by 1e9 lamports/SOL first so the ceil lands on lamports, not on
+    // whole SOL — a fraction of a SOL still charges the next lamport up.
+    let numerator = credits_minor.saturating_mul(1_000_000_000);
+    numerator.saturating_add(rate_micro - 1) / rate_micro
 }
 
 /// The inverse of [`credits_to_asset_units`]: the credit minor-units a
 /// delivered amount of lamports (or SPL base units) is worth at the locked
-/// rate — `received_minor`'s figure. Integer arithmetic; the remainder drops
-/// toward zero, the customer's direction on the seller's side of the rail.
+/// rate — `received_minor`'s figure. `credits = delivered * rate_micro /
+/// 1e9`, the remainder dropping toward zero (the customer's direction on the
+/// seller's side of the rail).
 fn asset_units_to_credits(asset_units: i64, rate_micro: i64) -> i64 {
     if rate_micro <= 0 {
         return 0;
     }
-    // lamports → whole-SOL → credits: delivered * rate_micro / 1e9 / 1e6,
-    // kept in integer form as delivered * rate_micro / 1e15.
     asset_units
         .saturating_mul(rate_micro)
-        .saturating_div(1_000_000_000_000_000)
+        .saturating_div(1_000_000_000)
 }
 
 /// Generates a fresh `reference` marker: 32 random bytes base58-encoded, the

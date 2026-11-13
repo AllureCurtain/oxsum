@@ -30,7 +30,6 @@ fn terms() -> SolanaTerms {
         pay_to: "oxsumDepositAddr111111111111111111111111111".to_owned(),
         spl_token_mint: None,
         rate_micro: 200_000_000, // 200 credits per SOL, in minor units
-        min_confirmations: 1,
         intent_ttl_secs: 600,
     }
 }
@@ -156,8 +155,8 @@ async fn solana_intent_pays_once() {
         return;
     };
     let key = register_session(&app).await;
-    // Open the intent: 1000 minor-credits at 200 credits/SOL = 5 lamports'
-    // worth of SOL (5 * 1e9 lamports after the whole-SOL ceiling).
+    // Open the intent: 1000 minor-credits at 200_000_000 minor/SOL =
+    // 5_000 lamports (lamports = credits_minor * 1e9 / rate_micro).
     let (status, intent) = call(
         &app,
         "POST",
@@ -169,10 +168,7 @@ async fn solana_intent_pays_once() {
     assert_eq!(status, StatusCode::OK, "{intent}");
     let reference = intent["data"]["reference"].as_str().unwrap().to_owned();
     assert!(!reference.is_empty(), "{intent}");
-    assert_eq!(
-        intent["data"]["amountLamports"].as_i64().unwrap(),
-        5_000_000_000
-    );
+    assert_eq!(intent["data"]["amountLamports"].as_i64().unwrap(), 5_000);
     // Arm the stub: the paying transaction lands, delivering exactly the
     // asked lamports.
     let signature = "sig1111111111111111111111111111111111111111111111111111111111111111";
@@ -184,7 +180,7 @@ async fn solana_intent_pays_once() {
         signature.to_owned(),
         ValidatedTransfer {
             signature: signature.to_owned(),
-            delivered: 5_000_000_000,
+            delivered: 5_000,
         },
     );
     // Confirm: the credit lands once.

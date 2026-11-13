@@ -1757,7 +1757,7 @@ fn x402_of() -> Result<Option<Arc<dyn oxsum_core::RailVerifier>>, String> {
 /// Parses the Solana deposit rail (issue #1117). The complete set:
 /// `OXSUM_SOLANA_RPC_URL` + `OXSUM_SOLANA_PAY_TO` + `OXSUM_SOLANA_RATE_MICRO`,
 /// with `OXSUM_SOLANA_SPL_TOKEN_MINT` / `OXSUM_SOLANA_COMMITMENT` /
-/// `OXSUM_SOLANA_MIN_CONFIRMATIONS` / `OXSUM_SOLANA_INTENT_TTL_SECS` optional —
+/// `OXSUM_SOLANA_INTENT_TTL_SECS` optional —
 /// the three requireds or none, a subset is a startup error like the Stripe
 /// trio. Unset and the rail is absent: `POST /api/v1/topups/solana` answers
 /// 503 and the `solana-deposits` job schedules nothing.
@@ -1793,11 +1793,6 @@ fn solana_of() -> Result<Option<Arc<oxsum_core::SolanaRailVerifier>>, String> {
     if commitment != "confirmed" && commitment != "finalized" {
         return Err("OXSUM_SOLANA_COMMITMENT must be confirmed or finalized".into());
     }
-    let min_confirmations = var("OXSUM_SOLANA_MIN_CONFIRMATIONS")
-        .map(|v| v.parse::<u32>())
-        .transpose()
-        .map_err(|_| "OXSUM_SOLANA_MIN_CONFIRMATIONS must be an integer".to_owned())?
-        .unwrap_or(1);
     let intent_ttl_secs = var("OXSUM_SOLANA_INTENT_TTL_SECS")
         .map(|v| v.parse::<i64>())
         .transpose()
@@ -1809,7 +1804,6 @@ fn solana_of() -> Result<Option<Arc<oxsum_core::SolanaRailVerifier>>, String> {
         spl_token_mint: spl_token_mint.clone().filter(|s| !s.is_empty()),
         commitment,
         rate_micro,
-        min_confirmations,
         intent_ttl_secs,
     };
     let client = oxsum_integrations::solana::SolanaRpcClient::new(
@@ -1821,7 +1815,6 @@ fn solana_of() -> Result<Option<Arc<oxsum_core::SolanaRailVerifier>>, String> {
         pay_to,
         spl_token_mint,
         rate_micro,
-        min_confirmations,
         intent_ttl_secs,
     };
     Ok(Some(Arc::new(oxsum_core::SolanaRailVerifier::new(

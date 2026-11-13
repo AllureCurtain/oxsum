@@ -49,10 +49,6 @@ pub struct SolanaConfig {
     /// for a price oracle: 1 SOL buys `rate_micro` minor-credits. A mainnet
     /// rail replaces this with an oracle lookup recorded per intent.
     pub rate_micro: i64,
-    /// How many confirmations `getSignaturesForAddress` should wait behind,
-    /// `OXSUM_SOLANA_MIN_CONFIRMATIONS` (default 1). Kept as a knob rather
-    /// than baked so a deployment can demand deeper confirmation on mainnet.
-    pub min_confirmations: u32,
     /// How long a `pending` intent stays payable before the poll expires it,
     /// `OXSUM_SOLANA_INTENT_TTL_SECS` (default 600 — Solana Pay's own
     /// unbounded-poll guard).
@@ -67,7 +63,6 @@ impl std::fmt::Debug for SolanaConfig {
             .field("spl_token_mint", &self.spl_token_mint)
             .field("commitment", &self.commitment)
             .field("rate_micro", &self.rate_micro)
-            .field("min_confirmations", &self.min_confirmations)
             .field("intent_ttl_secs", &self.intent_ttl_secs)
             .finish()
     }
