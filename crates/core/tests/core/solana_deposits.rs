@@ -1068,13 +1068,16 @@ async fn a_flagged_payer_parks_the_deposit_for_review() {
     let wallet = oxsum_core::Wallet::open(db.pool().clone(), &tenant_id)
         .await
         .unwrap();
-    // The flag parks: no credit, `Ok(None)` — the same shape "already
+    // The flag parks: no credit, `Settled` — the same shape "already
     // settled" takes, because the caller never learns the screening detail.
     let result = db
         .credit_solana_deposit(&wallet, deposit_id, &verifier, time::Date::MAX)
         .await
         .unwrap();
-    assert!(result.is_none(), "a flagged deposit never credits");
+    assert!(
+        matches!(result, SolanaCredit::Settled),
+        "a flagged deposit never credits: {result:?}"
+    );
     assert_eq!(wallet.available().await.unwrap(), 0);
     let row = sqlx::query(
         "SELECT status, facilitator_tx_hash, meta FROM oxsum.deposits WHERE deposit_id = $1",

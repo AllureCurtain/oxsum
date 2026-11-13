@@ -921,7 +921,9 @@ impl SolanaRailVerifier {
             }),
         })
     }
+}
 
+impl SolanaRailVerifier {
     /// Screens the payer address `verify` recorded in the payment's context
     /// (issue #1144). With no screen configured — a deployment that never
     /// enabled `OXSUM_SOLANA_SANCTIONS_*` — the verdict is `Clear` and the
@@ -1312,11 +1314,11 @@ impl Db {
             ScreenVerdict::Flagged { source, reason } => {
                 self.flag_solana_deposit(deposit_id, &meta, &payment, &source, &reason)
                     .await?;
-                // The confirm route reads `Ok(None)` as "nothing credited" —
-                // the same shape a deposit that already settled answers,
-                // because the caller never learns the screening detail; the
+                // The flag reads as "nothing credited" to the caller — the
+                // same shape a deposit that already settled answers, because
+                // the caller never learns the screening detail; the
                 // operator's queue is where a flag belongs.
-                return Ok(None);
+                return Ok(SolanaCredit::Settled);
             }
             ScreenVerdict::TemporarilyUnavailable => {
                 return Err(WalletError::Forbidden(
