@@ -13,6 +13,12 @@ path = "src/lib.rs"
 [dependencies]
 oxsum-core.workspace = true
 base64.workspace = true
+# base58 for decoding the multisig/vault addresses the Squads PDA check
+# derives (issue #1143).
+bs58.workspace = true
+# The Edwards-curve check a Solana PDA derivation needs — a valid PDA is a
+# digest that is *not* a curve point (issue #1143).
+curve25519-dalek.workspace = true
 hmac.workspace = true
 jsonwebtoken.workspace = true
 lettre.workspace = true

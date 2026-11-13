@@ -13,6 +13,9 @@
 //! - [`facilitator`]: the x402-rs facilitator's verify/settle client (issue #282).
 //! - [`solana`]: the Solana JSON-RPC client the deposit rail verifies transfers
 //!   against (issue #1117).
+//! - [`squads`]: the Squads v4 multisig vault-PDA derivation that proves the
+//!   rail's `payTo` is a multisig's receiving vault, not a hot wallet
+//!   (issue #1143).
 //! - [`x402_facilitator`]: the facilitator-delegated `RailVerifier` (issue #282).
 //! - [`openai_costs`]: the OpenAI Costs admin-API bill provider (issue #283).
 //! - [`anthropic_costs`]: the Anthropic Usage & Cost admin-API bill provider (issue #367).
@@ -34,5 +37,6 @@ pub mod oidc;
 pub mod openai_costs;
 pub mod provider_http;
 pub mod solana;
+pub mod squads;
 pub mod stripe;
 pub mod x402_facilitator;
