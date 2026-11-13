@@ -929,6 +929,8 @@
     "invitationAs": "Accept as {{email}}",
     "invitationAccept": "Accept invitation",
     "invitationSignIn": "Already have an account? Sign in to accept",
+    "membershipRevoked": "No accessible organization",
+    "membershipRevokedNote": "{{email}} holds no customer membership and no staff seat. Its access was revoked — sign out, or sign in with a different account.",
     "applicationLink": {
       "title": "Link application billing account",
       "missing": "Open the invitation link from your application again.",

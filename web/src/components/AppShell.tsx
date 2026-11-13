@@ -38,9 +38,10 @@ import {
 import { ApiError } from "../api/client";
 import { BusinessContact } from "./BusinessContact";
 import { applyBranding } from "../lib/branding";
+import { surfaceForContext } from "../lib/session-surface";
 import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { Banner, Button, IconButton, TextInput } from "./ui";
+import { Banner, Button, IconButton, PageState, TextInput } from "./ui";
 import { LanguageSwitcher } from "./LanguageSwitcher";
 import { LiveIsland } from "./LiveIsland";
 import { BillingSocketProvider } from "../api/ws";
@@ -276,17 +277,54 @@ export function AppShell() {
   const navigate = useNavigate();
   const location = useLocation();
   const { t } = useTranslation();
-  const business = context.data?.context === "business" ||
-    (context.data?.organizationId === null && context.data?.business != null);
+  const surface = context.data ? surfaceForContext(context.data) : undefined;
   useEffect(() => {
     if (context.error instanceof ApiError && context.error.status === 401) {
       navigate("/login", { replace: true });
-    } else if (business && location.pathname !== "/business") {
+    } else if (surface === "business" && location.pathname !== "/business") {
       navigate("/business", { replace: true });
     }
-  }, [context.error, business, location.pathname, navigate]);
+  }, [context.error, surface, location.pathname, navigate]);
   if (!context.data) return <p className="p-8 text-muted">{t("common.loading")}</p>;
-  return business ? <BusinessShell /> : <CustomerShell />;
+  if (surface === "revoked") return <RevokedShell email={context.data.user.email} />;
+  return surface === "business" ? <BusinessShell /> : <CustomerShell />;
+}
+
+/**
+ * The fully-revoked landing: `organizationId` and `business` are both null, so
+ * the identity holds neither a customer membership nor a staff seat and no
+ * surface can serve it. Routing it into `CustomerShell` would 401 on
+ * `GET /session` and bounce `/` back to `/login` in a loop (issue #1072), so
+ * it gets a terminal state with only the way out.
+ */
+function RevokedShell({ email }: { email: string }) {
+  const { t } = useTranslation();
+  const logout = useLogout();
+  const navigate = useNavigate();
+  const branding = useBranding();
+  useEffect(() => applyBranding(branding.data), [branding.data]);
+  return (
+    <div className="flex min-h-screen flex-col items-center justify-center bg-canvas px-4">
+      {branding.data?.name ? (
+        <p className="mb-6 text-xl font-bold tracking-tight text-ink">{branding.data.name}</p>
+      ) : null}
+      <div className="w-full max-w-sm rounded-xl border border-line bg-surface p-8 text-center shadow-sm">
+        <PageState icon={<ShieldCheck className="mx-auto h-8 w-8" strokeWidth={1.5} />}>
+          <span className="font-medium text-ink">{t("auth.membershipRevoked")}</span>
+        </PageState>
+        <p className="mt-1 text-sm text-muted">{t("auth.membershipRevokedNote", { email })}</p>
+        <Button
+          className="mt-5 w-full"
+          isLoading={logout.isPending}
+          onClick={() =>
+            logout.mutate(undefined, { onSettled: () => navigate("/login", { replace: true }) })
+          }
+        >
+          {t("nav.logout")}
+        </Button>
+      </div>
+    </div>
+  );
 }
 
 function BusinessShell() {
