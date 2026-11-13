@@ -589,6 +589,16 @@ top-up page, which watches the balance until the switch's webhook credits it;
 cancelling returns the same way and credits nothing. Programmatic callers use
 the same handles with the SDK of their choice.
 
+The Solana rail (`OXSUM_SOLANA_*`; issues #1117/#1141) is the on-chain path:
+`POST /api/v1/topups/solana` opens a `pending` intent and answers the terms
+the paying transaction must honor. In the dashboard the **Solana** tab renders
+that intent as a Solana Pay transfer-request URL plus a QR code — scan it with
+a Solana wallet, or copy the link, and the wallet fills in the recipient,
+amount and `reference` marker itself. The manual `payTo` / amount /
+`reference` fields stay beneath the QR for a wallet that cannot scan. The
+deposit credits when the transfer is found and validated on-chain — the
+15-second poll picks it up even without the "I've sent it" confirm button.
+
 On a deployment that promotes a rail's environment credentials to an explicit
 merchant (`OXSUM_<RAIL>_MERCHANT_ACCOUNT_ID` + `OXSUM_<RAIL>_MERCHANT_MODE`), the
 checkout and its signed webhook run through scoped intake instead (issue #649):

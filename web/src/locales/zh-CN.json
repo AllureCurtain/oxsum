@@ -285,6 +285,11 @@
     "solanaVerifying": "正在链上校验…",
     "solanaNotYet": "尚未找到符合条件的转账 —— 若你刚转出，请稍等几秒；轮询会自动入账。",
     "solanaCredited": "已入账 —— 轮询捕获了你的转账。",
+    "solanaPayScan": "用 Solana 钱包扫码",
+    "solanaPayOrCopy": "或复制支付链接",
+    "solanaPayWith": "使用 Solana Pay 支付",
+    "solanaPayLabel": "oxsum 充值",
+    "solanaManualTitle": "手动转账",
     "copy": "复制",
     "copied": "已复制"
   },
