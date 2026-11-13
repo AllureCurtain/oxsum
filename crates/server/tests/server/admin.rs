@@ -68,6 +68,20 @@ fn fresh(name: &str) -> String {
     format!("{name}-{}", &uuid::Uuid::new_v4().simple().to_string()[..8])
 }
 
+/// The worker context `run_due` needs — the same shape `x402.rs` and
+/// `tasks.rs` build, every optional pass off.
+fn jobs_ctx() -> JobContext {
+    JobContext {
+        hold_timeout: std::time::Duration::from_secs(60),
+        metrics: Metrics::new(),
+        webhook: None,
+        retention: oxsum_core::Retention::default(),
+        upstream_price_sync: false,
+        witness: None,
+        bill_provider: None,
+    }
+}
+
 /// One call against the app, with the operator token unless another credential is given.
 async fn call(app: &Router, method: &str, path: &str, body: Option<Value>) -> (StatusCode, Value) {
     call_with(app, method, path, body, Some(TOKEN)).await
@@ -1153,14 +1167,23 @@ async fn the_margin_view_sums_charges_against_upstream_costs() {
     assert_eq!(status, StatusCode::UNAUTHORIZED);
 }
 
-/// `GET`/`POST /api/v1/admin/closings`: closing a month seals it in every
-/// organization's ledger — the seal is the closing record — and a sealed month
-/// accepts no new entries. Only a month that has fully ended can close, and
-/// closing one twice answers the same record.
+/// `GET`/`POST /api/v1/admin/closings` plus `GET …/jobs/{jobId}`: the close is
+/// queued as a `close-month` run whose progress the console polls; a done run
+/// seals the month in every organization's ledger — the seal is the closing
+/// record — and a sealed month accepts no new entries. Only a month that has
+/// fully ended can close; a different month in flight conflicts.
 #[tokio::test]
 async fn closing_a_month_seals_it_everywhere() {
     let (app, pool) = app_or_skip!();
     let (id, key, _session) = register(&app, "closing").await;
+    let db = oxsum_core::Db::from_pool(pool.clone());
+
+    // The close-month kind holds one pending or running run at a time, so a
+    // leftover from another suite would make every enqueue here conflict.
+    sqlx::query("DELETE FROM oxsum.jobs WHERE kind = 'close-month'")
+        .execute(&pool)
+        .await
+        .unwrap();
 
     // The organization has something in its ledger to close over.
     let (status, body) = call_with(
@@ -1173,10 +1196,13 @@ async fn closing_a_month_seals_it_everywhere() {
     .await;
     assert_eq!(status, StatusCode::OK, "{body}");
 
-    // The month before today's always exists and has always fully ended.
+    // The month before today's always exists and has always fully ended; the
+    // one behind it stands in for "a different month".
     let today = time::OffsetDateTime::now_utc().date();
     let previous = today.replace_day(1).unwrap() - time::Duration::days(1);
     let month = format!("{:04}-{:02}", previous.year(), u8::from(previous.month()));
+    let before = previous.replace_day(1).unwrap() - time::Duration::days(1);
+    let earlier = format!("{:04}-{:02}", before.year(), u8::from(before.month()));
 
     // The month still running, and a malformed one, are refused.
     let current = format!("{:04}-{:02}", today.year(), u8::from(today.month()));
@@ -1205,8 +1231,7 @@ async fn closing_a_month_seals_it_everywhere() {
         "a malformed month is refused"
     );
 
-    // Close last month: the route queues the pass and answers the queued state
-    // — the seal itself lands when the claimed job runs.
+    // Close last month: the route queues the pass and answers its run.
     let (status, body) = call(
         &app,
         "POST",
@@ -1217,21 +1242,81 @@ async fn closing_a_month_seals_it_everywhere() {
     assert_eq!(status, StatusCode::OK, "{body}");
     assert_eq!(body["data"]["month"], month);
     assert_eq!(body["data"]["status"], "queued");
+    let job_id = body["data"]["jobId"]
+        .as_str()
+        .expect("the answer names the queued run");
 
-    // Running the claimed job seals the month in every organization's ledger.
-    run_due(
-        &oxsum_core::Db::from_pool(pool.clone()),
-        &JobContext {
-            hold_timeout: std::time::Duration::from_secs(60),
-            metrics: Metrics::new(),
-            webhook: None,
-            retention: oxsum_core::Retention::default(),
-            upstream_price_sync: false,
-            witness: None,
-            bill_provider: None,
-        },
+    // A retry of the same month names the same run instead of duplicating it.
+    let (status, body) = call(
+        &app,
+        "POST",
+        "/api/v1/admin/closings",
+        Some(json!({"month": &month})),
     )
     .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["data"]["status"], "already-queued");
+    assert_eq!(body["data"]["jobId"], job_id);
+
+    // A different month cannot queue while this one is in flight.
+    let (status, body) = call(
+        &app,
+        "POST",
+        "/api/v1/admin/closings",
+        Some(json!({"month": earlier})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CONFLICT, "{body}");
+    assert_eq!(body["error"]["code"], "CONFLICT");
+
+    // Pending, the run answers its own progress endpoint: no attempt yet.
+    let job_path = format!("/api/v1/admin/closings/jobs/{job_id}");
+    let (status, body) = call(&app, "GET", &job_path, None).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["data"]["jobId"], job_id);
+    assert_eq!(body["data"]["month"], month);
+    assert_eq!(body["data"]["status"], "pending");
+    assert_eq!(body["data"]["attempts"], 0);
+    assert!(body["data"]["finishedAt"].is_null());
+
+    // The audit entry the queue wrote names the run.
+    let (status, body) = call(
+        &app,
+        "GET",
+        "/api/v1/admin/audit?action=closing.close",
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let entries = body["data"]["entries"].as_array().expect("audit rows");
+    assert!(
+        entries.iter().any(|row| row["detail"]["jobId"] == job_id),
+        "the queue is audited with its run: {entries:?}"
+    );
+
+    // Running the claimed job seals the month in every organization's ledger,
+    // and the run's row carries the same progress the endpoint answers.
+    run_due(&db, &jobs_ctx()).await;
+    let (status, body) = call(&app, "GET", &job_path, None).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["data"]["status"], "done");
+    let organizations = body["data"]["organizations"]
+        .as_i64()
+        .expect("the pass counted its organizations");
+    assert_eq!(
+        body["data"]["processed"].as_i64(),
+        Some(organizations),
+        "every organization was visited: {body}"
+    );
+    assert!(
+        body["data"]["sealed"].as_i64().unwrap() >= 1,
+        "at least the registered organization sealed: {body}"
+    );
+    assert_eq!(
+        body["data"]["sealed"].as_i64().unwrap() + body["data"]["failed"].as_i64().unwrap(),
+        organizations
+    );
+    assert!(body["data"]["finishedAt"].is_string());
 
     // GET lists what the ledgers hold — the same record, newest first.
     let (status, body) = call(&app, "GET", "/api/v1/admin/closings", None).await;
@@ -1242,17 +1327,19 @@ async fn closing_a_month_seals_it_everywhere() {
         "the closed month is listed: {closings:?}"
     );
 
-    // A close already running answers already-queued — the same kind's run is
-    // still claimed, so a retry never duplicates the pass.
+    // With the run done, the earlier month queues a run of its own; draining
+    // it leaves the slot free for the next caller.
     let (status, body) = call(
         &app,
         "POST",
         "/api/v1/admin/closings",
-        Some(json!({"month": &month})),
+        Some(json!({"month": earlier})),
     )
     .await;
     assert_eq!(status, StatusCode::OK, "{body}");
-    assert!(["queued", "already-queued"].contains(&body["data"]["status"].as_str().unwrap()));
+    assert_eq!(body["data"]["status"], "queued");
+    assert_ne!(body["data"]["jobId"], job_id);
+    run_due(&db, &jobs_ctx()).await;
 
     // And the month really is closed: an entry dated into it is refused by the
     // ledger itself — the sealed watermark, not a route-layer convention.
@@ -1286,7 +1373,44 @@ async fn closing_a_month_seals_it_everywhere() {
         "the open month still writes: {body}"
     );
 
-    // A wrong token and an organization's own credential stay out.
+    // An id that names no close-month run answers 404 — unknown, malformed,
+    // and another kind's row alike.
+    for id in [uuid::Uuid::new_v4().to_string(), "not-a-uuid".to_owned()] {
+        let (status, _) = call(
+            &app,
+            "GET",
+            &format!("/api/v1/admin/closings/jobs/{id}"),
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::NOT_FOUND, "{id}");
+    }
+    let (other_id,): (uuid::Uuid,) = sqlx::query_as(
+        "INSERT INTO oxsum.jobs (kind, run_at, status, finished_at) \
+         VALUES ('retention', now(), 'done', now()) RETURNING job_id",
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    let (status, _) = call(
+        &app,
+        "GET",
+        &format!("/api/v1/admin/closings/jobs/{other_id}"),
+        None,
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::NOT_FOUND,
+        "another kind's row is invisible on this path"
+    );
+    sqlx::query("DELETE FROM oxsum.jobs WHERE job_id = $1")
+        .bind(other_id)
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    // A wrong token, an organization's own credential and no token stay out.
     for body in [None, Some(json!({"month": &month}))] {
         let (status, _) = call_with(
             &app,
@@ -1305,6 +1429,10 @@ async fn closing_a_month_seals_it_everywhere() {
             Some(&key),
         )
         .await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED);
+    }
+    for token in [None, Some("not-the-token"), Some(key.as_str())] {
+        let (status, _) = call_with(&app, "GET", &job_path, None, token).await;
         assert_eq!(status, StatusCode::UNAUTHORIZED);
     }
 }

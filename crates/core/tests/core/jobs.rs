@@ -3,8 +3,8 @@
 //! and the `jobs_dead` drift class. Needs DATABASE_URL, skips without it.
 
 use oxsum_core::{
-    Db, JobOutcome, MAX_ATTEMPTS, NewUser, Retention, SecretKey, SettlementKind, UsageRecord,
-    UsageRow, kinds, next_run,
+    CloseMonthProgress, Db, JobOutcome, JobStatus, MAX_ATTEMPTS, NewUser, Retention, SecretKey,
+    SettlementKind, Tenants, UsageRecord, UsageRow, WalletError, kinds, next_run,
 };
 use serde_json::json;
 use sqlx::PgPool;
@@ -652,4 +652,240 @@ async fn a_reclaimed_leader_row_yields_while_the_lock_is_held() {
         .execute(db.pool())
         .await
         .unwrap();
+}
+
+// --- The manual close-month run (issue #1090) ---
+
+/// Removes every close-month row: the kind holds one pending or running run at
+/// a time, so a leftover would make the next enqueue a same-slot conflict.
+async fn clear_close_month(db: &Db) {
+    sqlx::query("DELETE FROM oxsum.jobs WHERE kind = 'close-month'")
+        .execute(db.pool())
+        .await
+        .unwrap();
+}
+
+/// The months immediately before the running one — `prev` is the newest
+/// closeable, `earlier` the month behind it, as `YYYY-MM` labels.
+fn ended_months() -> (String, String) {
+    let today = OffsetDateTime::now_utc().date();
+    let label = |date: time::Date| format!("{:04}-{:02}", date.year(), u8::from(date.month()));
+    let previous_first = today.replace_day(1).unwrap() - Duration::days(1);
+    let earlier_first = previous_first.replace_day(1).unwrap() - Duration::days(1);
+    (label(previous_first), label(earlier_first))
+}
+
+/// The first of a `YYYY-MM` label as a date — the worker's `month_first`.
+fn first_of(month: &str) -> time::Date {
+    let (year, month) = month.split_once('-').unwrap();
+    time::Date::from_calendar_date(
+        year.parse().unwrap(),
+        time::Month::try_from(month.parse::<u8>().unwrap()).unwrap(),
+        1,
+    )
+    .unwrap()
+}
+
+#[tokio::test]
+async fn a_close_month_run_answers_its_progress_and_gates_a_second_month() {
+    let _guard = JOBS_LOCK.lock().await;
+    let url = db_or_skip!();
+    let (db, _, _) = world(&url).await;
+    clear_close_month(&db).await;
+    let (month, earlier) = ended_months();
+    let period = |m: &str| oxsum_core::statement_period(m).unwrap();
+
+    // The first queue claims the slot; a retry of the same month names the
+    // same run rather than a duplicate.
+    let queued = db.enqueue_close_month(&period(&month)).await.unwrap();
+    assert!(queued.queued);
+    let retry = db.enqueue_close_month(&period(&month)).await.unwrap();
+    assert!(!retry.queued);
+    assert_eq!(retry.job_id, queued.job_id);
+
+    // A different month cannot queue while one is in flight — the conflict
+    // names the month holding the slot and the refused one.
+    match db.enqueue_close_month(&period(&earlier)).await {
+        Err(WalletError::Conflict(message)) => {
+            assert!(message.contains(&month), "{message}");
+            assert!(message.contains(&earlier), "{message}");
+        }
+        other => panic!("a different month in flight conflicts, got {other:?}"),
+    }
+
+    // The queued row reads back: pending, no attempt yet, empty progress.
+    let job = db
+        .close_month_job(queued.job_id)
+        .await
+        .unwrap()
+        .expect("the queued run answers");
+    assert_eq!(job.month, month);
+    assert_eq!(job.status, JobStatus::Pending);
+    assert_eq!(job.attempts, 0);
+    assert_eq!(job.progress, CloseMonthProgress::default());
+    assert!(job.finished_at.is_none());
+
+    // An id that names no close-month run is invisible: unknown, and another
+    // kind's row alike.
+    assert!(db.close_month_job(Uuid::new_v4()).await.unwrap().is_none());
+    let other = enqueued(&db, "deliver-webhooks").await;
+    assert!(db.close_month_job(other).await.unwrap().is_none());
+    sqlx::query("DELETE FROM oxsum.jobs WHERE job_id = $1")
+        .bind(other)
+        .execute(db.pool())
+        .await
+        .unwrap();
+
+    // Finished, the run keeps answering — done, stamped — and the slot frees.
+    sqlx::query("UPDATE oxsum.jobs SET status = 'done', finished_at = now() WHERE job_id = $1")
+        .bind(queued.job_id)
+        .execute(db.pool())
+        .await
+        .unwrap();
+    let job = db
+        .close_month_job(queued.job_id)
+        .await
+        .unwrap()
+        .expect("a finished run still answers");
+    assert_eq!(job.status, JobStatus::Done);
+    assert!(job.finished_at.is_some());
+    assert!(
+        db.enqueue_close_month(&period(&earlier))
+            .await
+            .unwrap()
+            .queued,
+        "the earlier month queues once the slot frees"
+    );
+    clear_close_month(&db).await;
+}
+
+#[tokio::test]
+async fn a_close_month_pass_records_each_organizations_outcome() {
+    let _guard = JOBS_LOCK.lock().await;
+    let url = db_or_skip!();
+    // Two registrations on the same suite database share one `Db` — the second
+    // adds the healthy organization next to the victim.
+    let (db, victim, victim_tenant) = world(&url).await;
+    let (_, _, _) = world(&url).await;
+    clear_close_month(&db).await;
+    let (month, earlier) = ended_months();
+    let tenants = Tenants::new(db.pool().clone());
+    let today = OffsetDateTime::now_utc().date();
+
+    // Two organizations, each with a dated entry so the earlier month's seal
+    // has a trial balance to commit.
+    for organization in db.organizations().await.unwrap() {
+        tenants
+            .get(&organization.tenant_id)
+            .await
+            .unwrap()
+            .top_up("seed", 1_000_000, today)
+            .await
+            .unwrap();
+    }
+    let count = db.organizations().await.unwrap().len();
+    assert!(count >= 2, "the pass needs at least two organizations");
+
+    // The victim seals the newest closeable month first: the calendar then
+    // refuses the earlier one — sealing runs in date order.
+    tenants
+        .get(&victim_tenant)
+        .await
+        .unwrap()
+        .close_month(first_of(&month))
+        .await
+        .unwrap();
+
+    let queued = db
+        .enqueue_close_month(&oxsum_core::statement_period(&earlier).unwrap())
+        .await
+        .unwrap();
+    let claimed_at: OffsetDateTime = sqlx::query_scalar(
+        "UPDATE oxsum.jobs SET status = 'running', claimed_at = now() \
+         WHERE job_id = $1 RETURNING claimed_at",
+    )
+    .bind(queued.job_id)
+    .fetch_one(db.pool())
+    .await
+    .unwrap();
+
+    // A stale claim stamp writes nothing: the pass fails fenced at its first
+    // progress write, and no organization's month sealed.
+    assert!(matches!(
+        db.close_month_organizations(
+            &tenants,
+            first_of(&earlier),
+            queued.job_id,
+            claimed_at - Duration::seconds(1)
+        )
+        .await,
+        Err(WalletError::Conflict(_))
+    ));
+    let sealed_after_stale: i64 = sqlx::query_scalar(&format!(
+        "SELECT count(*) FROM ledger_{victim_tenant}.seals WHERE period_id = $1"
+    ))
+    .bind(&earlier)
+    .fetch_one(db.pool())
+    .await
+    .unwrap();
+    assert_eq!(sealed_after_stale, 0);
+
+    // The real claim walks every organization: each is sealed or named a
+    // failure, and the progress row carries the same counts the return does.
+    let progress = db
+        .close_month_organizations(&tenants, first_of(&earlier), queued.job_id, claimed_at)
+        .await
+        .unwrap();
+    assert_eq!(progress.processed, progress.organizations);
+    assert_eq!(
+        progress.organizations,
+        i64::try_from(count).unwrap(),
+        "every organization the database holds is walked"
+    );
+    assert_eq!(progress.sealed + progress.failed, progress.organizations);
+    assert!(progress.sealed >= 1);
+    assert_eq!(progress.failed, 1, "only the victim fails");
+
+    // The failure names the organization and the calendar's refusal — no
+    // tenant id or schema spelling ever reaches the stored reason.
+    let failure = &progress.failures[0];
+    assert_eq!(failure.organization_id, victim);
+    assert!(failure.reason.contains(&earlier), "{}", failure.reason);
+    assert!(
+        failure.reason.contains("sealed watermark"),
+        "{}",
+        failure.reason
+    );
+    assert!(!failure.reason.contains(&victim_tenant));
+    assert!(!failure.reason.contains("ledger_"));
+
+    // The healthy ledger really did seal the earlier month.
+    let healthy = db
+        .organizations()
+        .await
+        .unwrap()
+        .into_iter()
+        .find(|o| o.id != victim)
+        .expect("a second organization");
+    let seals = tenants
+        .get(&healthy.tenant_id)
+        .await
+        .unwrap()
+        .seals()
+        .await
+        .unwrap();
+    assert!(
+        seals.iter().any(|s| s.period.to_string() == earlier),
+        "the earlier month sealed in the healthy ledger"
+    );
+
+    // The job endpoint answers the attempt's stored progress verbatim.
+    let job = db
+        .close_month_job(queued.job_id)
+        .await
+        .unwrap()
+        .expect("the run answers");
+    assert_eq!(job.status, JobStatus::Running);
+    assert_eq!(job.progress, progress);
+    clear_close_month(&db).await;
 }
