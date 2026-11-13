@@ -111,6 +111,13 @@ pub mod kinds {
     /// the retry replays under the same `x402:<nonce>` key, so a second
     /// runner's attempt is a replay, never a second credit.
     pub const RECOVER_DEPOSIT_CREDITS: &str = "recover-deposit-credits";
+    /// The Solana deposit-poll pass (issue #1117): walks the rail's `pending`
+    /// intents, runs the Solana Pay findReference + validateTransfer check
+    /// against the chain, credits the confirmed ones and expires the lapsed
+    /// ones. Unleadered — each deposit is claimed `FOR UPDATE` and the credit
+    /// replays under `solana:<signature>`, so two workers racing one intent
+    /// produce a wasted RPC call, never a second credit.
+    pub const SOLANA_DEPOSITS: &str = "solana-deposits";
 }
 
 /// How long a claimed run may take before another worker's claim assumes the
@@ -269,6 +276,10 @@ pub fn next_run(kind: &str) -> Option<Duration> {
         // Stuck x402 credits should heal promptly once whatever broke the
         // ledger credit clears; a no-op pass is one indexed SELECT.
         RECOVER_DEPOSIT_CREDITS => Duration::seconds(30),
+        // A pending solana intent is payable for a bounded window; a ~15 s
+        // cadence lands a just-confirmed transfer within a few seconds without
+        // hammering the RPC.
+        SOLANA_DEPOSITS => Duration::seconds(15),
         // The receivable marks past-due promptly once its terms lapse: the
         // scan is one indexed UPDATE bounded per pass, so a minute cadence
         // costs nothing and a backlog still drains over ticks.
