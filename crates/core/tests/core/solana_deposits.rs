@@ -4,8 +4,8 @@
 //! `expired`, and neither misbehaves on a replayed or mis-priced open.
 //! Skips without DATABASE_URL.
 use oxsum_core::{
-    ChainLookup, Db, ExpectedTransfer, NewUser, SolanaRailVerifier, SolanaTerms, ValidatedTransfer,
-    WalletError,
+    AssetTerms, ChainLookup, Db, ExpectedTransfer, NewUser, SolanaRailVerifier, SolanaTerms,
+    USD_PEGGED_RATE_MICRO, ValidatedTransfer, WalletError,
 };
 use sqlx::Row;
 use std::sync::{Arc, Mutex};
@@ -21,16 +21,47 @@ async fn database(slug: &str) -> Option<Db> {
 
 /// The deployment's terms every test here opens under.
 fn terms() -> SolanaTerms {
-    SolanaTerms {
-        pay_to: "oxsumDepositAddr111111111111111111111111111".to_owned(),
-        spl_token_mint: None,
-        asset_decimals: 9,
-        rate_micro: 200_000_000,
-        intent_ttl_secs: 600,
-        min_amount_minor: 1,
-        max_amount_minor: i64::MAX,
-        opens_per_minute: 0,
-    }
+    SolanaTerms::new(
+        "oxsumDepositAddr111111111111111111111111111".to_owned(),
+        vec![AssetTerms {
+            key: "sol".to_owned(),
+            spl_token_mint: None,
+            asset_decimals: 9,
+            rate_micro: 200_000_000,
+        }],
+        "sol".to_owned(),
+        600,
+        1,
+        i64::MAX,
+        0,
+    )
+}
+
+/// The two-asset whitelist (issue #1140): SOL plus a 6-decimal USDC mint at
+/// the fixed USD parity rate, with `usdc` the deployment default.
+fn multi_asset_terms() -> SolanaTerms {
+    SolanaTerms::new(
+        "oxsumDepositAddr111111111111111111111111111".to_owned(),
+        vec![
+            AssetTerms {
+                key: "sol".to_owned(),
+                spl_token_mint: None,
+                asset_decimals: 9,
+                rate_micro: 200_000_000,
+            },
+            AssetTerms {
+                key: "usdc".to_owned(),
+                spl_token_mint: Some("usdcMint11111111111111111111111111111111".to_owned()),
+                asset_decimals: 6,
+                rate_micro: USD_PEGGED_RATE_MICRO,
+            },
+        ],
+        "usdc".to_owned(),
+        600,
+        1,
+        i64::MAX,
+        0,
+    )
 }
 
 /// A fresh organization's id; `deposits.organization_id` references it.
@@ -57,7 +88,7 @@ async fn open_solana_deposit_inserts_pending_with_locked_terms() {
     let org = organization(&db, "open").await;
     let deposit_id = Uuid::new_v4();
     let (reference, lamports, expires_at) = db
-        .open_solana_deposit(org, deposit_id, 1000, &terms())
+        .open_solana_deposit(org, deposit_id, 1000, &terms(), None)
         .await
         .unwrap()
         .expect("a fresh deposit inserts");
@@ -99,7 +130,7 @@ async fn open_solana_deposit_refuses_a_nonpositive_amount() {
     let org = organization(&db, "open-refuse").await;
     for amount in [0_i64, -5] {
         let result = db
-            .open_solana_deposit(org, Uuid::new_v4(), amount, &terms())
+            .open_solana_deposit(org, Uuid::new_v4(), amount, &terms(), None)
             .await;
         assert!(
             matches!(result, Err(WalletError::InvalidInput(_))),
@@ -125,7 +156,7 @@ async fn open_solana_deposit_replays_the_unique_anchor() {
     let org = organization(&db, "open-replay").await;
     let deposit_id = Uuid::new_v4();
     let first = db
-        .open_solana_deposit(org, deposit_id, 100, &terms())
+        .open_solana_deposit(org, deposit_id, 100, &terms(), None)
         .await
         .unwrap()
         .expect("the first open inserts");
@@ -156,7 +187,7 @@ async fn expire_solana_deposit_walks_pending_and_confirmed_only() {
     };
     let org = organization(&db, "expire").await;
     let pending = Uuid::new_v4();
-    db.open_solana_deposit(org, pending, 100, &terms())
+    db.open_solana_deposit(org, pending, 100, &terms(), None)
         .await
         .unwrap()
         .expect("inserts");
@@ -319,7 +350,7 @@ async fn verify_walks_past_dishonoring_transactions_to_find_the_payment() {
     };
     let org = organization(&db, "many").await;
     let deposit_id = Uuid::new_v4();
-    db.open_solana_deposit(org, deposit_id, 1000, &terms())
+    db.open_solana_deposit(org, deposit_id, 1000, &terms(), None)
         .await
         .unwrap()
         .expect("inserts");
@@ -384,7 +415,7 @@ async fn expiry_is_judged_on_block_time_not_the_confirm_clock() {
     // Edge 1: on-chain before expiry (block_time < expiresAt), confirm after
     // the TTL — must credit.
     let on_time = Uuid::new_v4();
-    db.open_solana_deposit(org, on_time, 1000, &short)
+    db.open_solana_deposit(org, on_time, 1000, &short, None)
         .await
         .unwrap()
         .expect("inserts");
@@ -408,7 +439,7 @@ async fn expiry_is_judged_on_block_time_not_the_confirm_clock() {
     // Edge 2: on-chain after expiry (block_time >= expiresAt) — refused,
     // never credited.
     let late = Uuid::new_v4();
-    db.open_solana_deposit(org, late, 1000, &short)
+    db.open_solana_deposit(org, late, 1000, &short, None)
         .await
         .unwrap()
         .expect("inserts");
@@ -451,7 +482,7 @@ async fn a_second_organizations_intent_on_a_spent_signature_is_forbidden() {
     for (i, org) in [org_a, org_b].iter().enumerate() {
         let deposit_id = Uuid::new_v4();
         let (reference, _, _) = db
-            .open_solana_deposit(*org, deposit_id, 1000, &terms())
+            .open_solana_deposit(*org, deposit_id, 1000, &terms(), None)
             .await
             .unwrap()
             .expect("inserts");
@@ -520,7 +551,7 @@ async fn open_solana_deposit_enforces_amount_bounds_and_open_rate() {
     // Below the floor and above the cap are refused.
     for amount in [50_i64, 5_000] {
         let result = db
-            .open_solana_deposit(org, Uuid::new_v4(), amount, &bounded)
+            .open_solana_deposit(org, Uuid::new_v4(), amount, &bounded, None)
             .await;
         assert!(
             matches!(result, Err(WalletError::InvalidInput(_))),
@@ -529,13 +560,13 @@ async fn open_solana_deposit_enforces_amount_bounds_and_open_rate() {
     }
     // Two opens inside the bounds land; the third trips the per-minute cap.
     for _ in 0..2 {
-        db.open_solana_deposit(org, Uuid::new_v4(), 1000, &bounded)
+        db.open_solana_deposit(org, Uuid::new_v4(), 1000, &bounded, None)
             .await
             .unwrap()
             .expect("in-bounds opens insert");
     }
     let throttled = db
-        .open_solana_deposit(org, Uuid::new_v4(), 1000, &bounded)
+        .open_solana_deposit(org, Uuid::new_v4(), 1000, &bounded, None)
         .await;
     assert!(
         matches!(throttled, Err(WalletError::Forbidden(_))),
@@ -553,7 +584,7 @@ async fn verify_locked_settles_at_the_intents_terms_not_the_live_config() {
     // 5_000 lamports, locked into meta with payTo and the mint.
     let deposit_id = Uuid::new_v4();
     let (_reference, lamports, _ttl) = db
-        .open_solana_deposit(org, deposit_id, 1000, &terms())
+        .open_solana_deposit(org, deposit_id, 1000, &terms(), None)
         .await
         .unwrap()
         .expect("inserts");
@@ -562,16 +593,20 @@ async fn verify_locked_settles_at_the_intents_terms_not_the_live_config() {
     // doubled rate, a different payTo, a different decimals. A verify that
     // re-read live terms would demand 10_000 lamports to the new address;
     // the locked intent must still settle at 5_000 to the locked address.
-    let live = SolanaTerms {
-        pay_to: "aDifferentLivePayTo00000000000000000000000000".to_owned(),
-        spl_token_mint: Some("aLiveMintThatWasNeverLocked".to_owned()),
-        asset_decimals: 6,
-        rate_micro: 400_000_000,
-        intent_ttl_secs: 600,
-        min_amount_minor: 1,
-        max_amount_minor: i64::MAX,
-        opens_per_minute: 0,
-    };
+    let live = SolanaTerms::new(
+        "aDifferentLivePayTo00000000000000000000000000".to_owned(),
+        vec![AssetTerms {
+            key: "usdc".to_owned(),
+            spl_token_mint: Some("aLiveMintThatWasNeverLocked".to_owned()),
+            asset_decimals: 6,
+            rate_micro: 400_000_000,
+        }],
+        "usdc".to_owned(),
+        600,
+        1,
+        i64::MAX,
+        0,
+    );
     let verifier = SolanaRailVerifier::new(
         Arc::new(OneSig {
             reference: Mutex::new(String::new()),
@@ -601,5 +636,182 @@ async fn verify_locked_settles_at_the_intents_terms_not_the_live_config() {
     assert!(receipt.is_new, "the credit ran fresh, not a replay");
     // The wallet now holds exactly the opened 1000 minor-credits — the locked
     // amount, not a repriced figure.
+    assert_eq!(wallet.available().await.unwrap(), 1000);
+}
+
+/// Issue #1140: the customer picks the asset at open. `open_solana_deposit`
+/// resolves the named whitelist key and locks *that asset's* mint, decimals
+/// and rate into `meta` — the same `amount_minor` asks for 5_000 lamports
+/// under `sol` but 1_000 USDC base units under `usdc`.
+#[tokio::test]
+async fn open_solana_deposit_locks_the_picked_asset() {
+    let Some(db) = database("solana_asset_lock").await else {
+        return;
+    };
+    let org = organization(&db, "asset-lock").await;
+    let terms = multi_asset_terms();
+    // USDC: 1000 minor-credits at parity = 1000 base units of the 6-decimal
+    // mint — the meta locks the mint and the parity rate.
+    let usdc_id = Uuid::new_v4();
+    let (_, usdc_units, _) = db
+        .open_solana_deposit(org, usdc_id, 1000, &terms, Some("usdc"))
+        .await
+        .unwrap()
+        .expect("inserts");
+    assert_eq!(usdc_units, 1_000);
+    let meta: serde_json::Value =
+        sqlx::query_scalar("SELECT meta FROM oxsum.deposits WHERE deposit_id = $1")
+            .bind(usdc_id)
+            .fetch_one(db.pool())
+            .await
+            .unwrap();
+    assert_eq!(meta["asset"].as_str().unwrap(), "usdc");
+    assert_eq!(
+        meta["splToken"].as_str().unwrap(),
+        "usdcMint11111111111111111111111111111111"
+    );
+    assert_eq!(meta["assetDecimals"].as_i64().unwrap(), 6);
+    assert_eq!(meta["rateMicro"].as_i64().unwrap(), USD_PEGGED_RATE_MICRO);
+    assert_eq!(meta["solLamports"].as_i64().unwrap(), 1_000);
+    // SOL: the same credit amount asks for 5_000 lamports, `splToken` null.
+    let sol_id = Uuid::new_v4();
+    let (_, lamports, _) = db
+        .open_solana_deposit(org, sol_id, 1000, &terms, Some("sol"))
+        .await
+        .unwrap()
+        .expect("inserts");
+    assert_eq!(lamports, 5_000);
+    let meta: serde_json::Value =
+        sqlx::query_scalar("SELECT meta FROM oxsum.deposits WHERE deposit_id = $1")
+            .bind(sol_id)
+            .fetch_one(db.pool())
+            .await
+            .unwrap();
+    assert_eq!(meta["asset"].as_str().unwrap(), "sol");
+    assert!(meta["splToken"].is_null());
+    // The deployment default (`usdc` here) resolves an `asset`-less open.
+    let default_id = Uuid::new_v4();
+    let (_, default_units, _) = db
+        .open_solana_deposit(org, default_id, 1000, &terms, None)
+        .await
+        .unwrap()
+        .expect("inserts");
+    assert_eq!(default_units, 1_000);
+    // An unknown key is InvalidInput — a whitelist miss never reprices
+    // silently under another asset.
+    let refused = db
+        .open_solana_deposit(org, Uuid::new_v4(), 1000, &terms, Some("doge"))
+        .await;
+    assert!(
+        matches!(refused, Err(WalletError::InvalidInput(_))),
+        "an off-whitelist asset must refuse: {refused:?}"
+    );
+}
+
+/// Issue #1140: verify honors the asset the intent locked — a USDC intent
+/// demands the USDC mint's base units on the USDC mint, not SOL lamports,
+/// and a `meta.splToken` the whitelist does not carry is refused outright.
+#[tokio::test]
+async fn verify_locked_honors_the_locked_asset_and_refuses_off_whitelist() {
+    let Some(db) = database("solana_asset_verify").await else {
+        return;
+    };
+    let org = organization(&db, "asset-verify").await;
+    let terms = multi_asset_terms();
+    // A USDC intent: 1000 minor-credits at parity asks for 1_000 USDC base
+    // units on the whitelisted mint.
+    let deposit_id = Uuid::new_v4();
+    let (reference, units, _) = db
+        .open_solana_deposit(org, deposit_id, 1000, &terms, Some("usdc"))
+        .await
+        .unwrap()
+        .expect("inserts");
+    assert_eq!(units, 1_000);
+    // The stub honors only a transfer that matches the locked mint — a SOL
+    // lamport delta could never satisfy the SPL demand.
+    #[derive(Debug)]
+    struct UsdcSig {
+        signature: String,
+        delivered: i64,
+    }
+    impl ChainLookup for UsdcSig {
+        fn find_reference<'a>(
+            &'a self,
+            _reference: &'a str,
+        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Vec<String>> + Send + 'a>> {
+            Box::pin(async move { vec![self.signature.clone()] })
+        }
+        fn validate_transfer<'a>(
+            &'a self,
+            signature: &'a str,
+            expected: &'a ExpectedTransfer,
+        ) -> std::pin::Pin<
+            Box<dyn std::future::Future<Output = Option<ValidatedTransfer>> + Send + 'a>,
+        > {
+            Box::pin(async move {
+                if signature != self.signature
+                    || expected.spl_token_mint.as_deref()
+                        != Some("usdcMint11111111111111111111111111111111")
+                    || expected.amount != self.delivered
+                {
+                    return None;
+                }
+                Some(ValidatedTransfer {
+                    signature: signature.to_owned(),
+                    delivered: self.delivered,
+                    block_time: Some(0),
+                })
+            })
+        }
+    }
+    let verifier = SolanaRailVerifier::new(
+        Arc::new(UsdcSig {
+            signature: "sigUsdc000000000000000000000000000000000000000000000000000".to_owned(),
+            delivered: 1_000,
+        }),
+        terms.clone(),
+    );
+    let tenant_id: String =
+        sqlx::query_scalar("SELECT tenant_id FROM oxsum.organizations WHERE organization_id = $1")
+            .bind(org)
+            .fetch_one(db.pool())
+            .await
+            .unwrap();
+    let wallet = oxsum_core::Wallet::open(db.pool().clone(), &tenant_id)
+        .await
+        .unwrap();
+    let receipt = db
+        .credit_solana_deposit(&wallet, deposit_id, &verifier, time::Date::MAX)
+        .await
+        .unwrap()
+        .expect("the locked USDC intent credits");
+    assert!(receipt.is_new);
+    assert_eq!(wallet.available().await.unwrap(), 1000);
+    let _ = reference;
+
+    // The defensive half: a stored meta whose `splToken` no configured asset
+    // carries must refuse — the mint was never payable, so the intent cannot
+    // settle. Written straight into a pending row's meta to simulate an
+    // intent opened before the mint left the whitelist.
+    let poisoned = Uuid::new_v4();
+    db.open_solana_deposit(org, poisoned, 1000, &terms, Some("usdc"))
+        .await
+        .unwrap()
+        .expect("inserts");
+    sqlx::query(
+        "UPDATE oxsum.deposits SET meta = meta || jsonb_build_object('splToken', 'aRogueMint') \
+         WHERE deposit_id = $1",
+    )
+    .bind(poisoned)
+    .execute(db.pool())
+    .await
+    .unwrap();
+    let refused = db
+        .credit_solana_deposit(&wallet, poisoned, &verifier, time::Date::MAX)
+        .await;
+    assert!(
+        matches!(refused, Err(WalletError::Forbidden(_))),
+        "an off-whitelist splToken must refuse: {refused:?}"
+    );
     assert_eq!(wallet.available().await.unwrap(), 1000);
 }
