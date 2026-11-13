@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type FormEvent, type ReactNode } from "react";
+import { Suspense, lazy, useEffect, useRef, useState, type FormEvent, type ReactNode } from "react";
 import { useSearchParams } from "react-router-dom";
 import { Trans, useTranslation } from "react-i18next";
 import {
@@ -355,15 +355,24 @@ function IntentField({ label, value }: { label: string; value: string }) {
   );
 }
 
+// The wallet-adapter pay button (issue #1147) mounts only while an intent
+// stands open, and its chunk — web3.js plus the adapter stack — is what the
+// `lazy()` boundary keeps out of every non-Solana top-up. A browser with no
+// injected wallet renders the component's one-line hint and falls back to the
+// QR/manual path unchanged; `null` fallback keeps the suspense quiet while
+// the chunk lands.
+const SolanaWalletPay = lazy(() => import("../components/SolanaWalletPay"));
+
 /**
  * The Solana Pay block (issue #1141): the opened intent as a scan-able
  * `solana:` transfer-request URL plus a copyable link — the fast path for a
  * wallet that reads QR. The manual `payTo`/amount/`reference` fields stay as
  * the fallback a wallet that cannot scan still needs. `spl-token` rides the
  * same URL the moment the intent names a mint, so #1140's `asset` field slots
- * in without a rewrite.
+ * in without a rewrite. Issue #1147's adapter button sits above the QR for a
+ * browser that carries an injected wallet — one click replaces the scan.
  */
-function SolanaPayBlock({ intent }: { intent: SolanaIntent }) {
+function SolanaPayBlock({ intent, onWalletSent }: { intent: SolanaIntent; onWalletSent: (signature: string) => void }) {
   const { t } = useTranslation();
   const url = solanaPayUrl({
     recipient: intent.payTo,
@@ -374,9 +383,13 @@ function SolanaPayBlock({ intent }: { intent: SolanaIntent }) {
     label: t("topup.solanaPayLabel"),
     memo: intent.depositId,
   });
-  if (url === null) return null;
   return (
     <div className="flex flex-col items-start gap-2">
+      <Suspense fallback={null}>
+        <SolanaWalletPay intent={intent} onSent={onWalletSent} />
+      </Suspense>
+      {url === null ? null : (
+        <>
       <p className="text-xs font-medium text-ink">{t("topup.solanaPayScan")}</p>
       <div className="rounded border border-line bg-surface p-3">
         {/* A wallet's camera needs the QR's own quiet zone on a light pad —
@@ -396,6 +409,8 @@ function SolanaPayBlock({ intent }: { intent: SolanaIntent }) {
       <p className="text-[11px] font-medium uppercase tracking-wider text-muted">
         {t("topup.solanaManualTitle")}
       </p>
+        </>
+      )}
     </div>
   );
 }
@@ -593,7 +608,15 @@ function SolanaRail() {
             </p>
             <SolanaCountdown expiresAt={opened.expiresAt} now={now} />
           </div>
-          <SolanaPayBlock intent={opened} />
+          <SolanaPayBlock
+            intent={opened}
+            onWalletSent={() => {
+              // The wallet's signature landed — re-ask the confirm endpoint the
+              // same way "I've sent it" does, so the status line and the poll
+              // pick the transfer up on the existing path.
+              if (!confirm.isPending) confirm.mutate(opened.reference);
+            }}
+          />
           <IntentField label={t("topup.solanaPayTo")} value={opened.payTo} />
           <IntentField
             label={t("topup.solanaLockedAmount")}
