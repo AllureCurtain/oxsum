@@ -1459,6 +1459,33 @@ pub struct Margin {
     pub untracked_turns: i64,
 }
 
+/// Whether `day` is sealed for `tenant_id` — the check `record_usage_day`
+/// runs under its advisory locks (issue #1088). Mirrors the wallet's
+/// `day_is_anchored_in`: free-standing because this leaf writer is the one
+/// place outside the wallet that needs it, and the `to_regclass` guard keeps
+/// a synthetic tenant whose `usage_anchors` table an old schema lacks from
+/// failing the write.
+async fn day_is_anchored_for_tenant(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    tenant_id: &str,
+    day: time::Date,
+) -> Result<bool, WalletError> {
+    let exists: bool = sqlx::query_scalar("SELECT to_regclass('oxsum.usage_anchors') IS NOT NULL")
+        .fetch_one(&mut **tx)
+        .await?;
+    if !exists {
+        return Ok(false);
+    }
+    Ok(sqlx::query_scalar(
+        "SELECT EXISTS(SELECT 1 FROM oxsum.usage_anchors a \
+         JOIN oxsum.organizations o USING(organization_id) WHERE o.tenant_id=$1 AND a.day=$2)",
+    )
+    .bind(tenant_id)
+    .bind(day)
+    .fetch_one(&mut **tx)
+    .await?)
+}
+
 /// Rewrites one customer's leaf for the UTC day `entry_id` booked on (issue
 /// #337): reads that day's settled rows in log order, folds their content
 /// hashes with the ledger's own Merkle accumulator, and upserts the day row
@@ -1485,18 +1512,41 @@ async fn record_usage_day(
     else {
         return Ok(());
     };
+    // The anchor pass's per-(tenant, day) lock first (issue #1088): the anchor
+    // holds it across its leaf read and entry, so a leaf writer either
+    // finished before the anchor began — its leaf already in the day's map —
+    // or waits here until the anchor commits and the seal check below refuses
+    // the sealed day. It precedes the customer lock so a customer with no
+    // leaf yet is covered the same as one the day already holds.
+    sqlx::query(
+        "SELECT pg_advisory_xact_lock(hashtextextended('oxsum/usage-anchor/v1' || $1 || ':' || $2, 0))",
+    )
+    .bind(tenant_id)
+    .bind(day.to_string())
+    .execute(&mut **tx)
+    .await?;
     // Two settles for the same customer and day can run concurrently, and each
     // recomputes the day's rows inside its own transaction: without
     // serialization the last commit's root would miss the other's row. The
     // advisory lock is per (tenant, endUser, day) — different customers and days
     // still proceed in parallel — and it is taken before the read that decides
-    // the root.
+    // the root. The anchor takes this same lock for every customer the day
+    // holds, so a settle racing the pass waits it out here.
     sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1 || ':' || $2 || ':' || $3, 0))")
         .bind(tenant_id)
         .bind(end_user)
         .bind(day.to_string())
         .execute(&mut **tx)
         .await?;
+    // The seal re-check the anchor's commit waits on (issue #1088): a writer
+    // the anchor blocked — on either lock — sees the anchored row here and is
+    // refused, so the committed `map_root` covers every leaf the day holds.
+    // The settle entry points check the seal before booking (issue #340);
+    // this one runs under the locks, where a settle that booked before the
+    // anchor existed still cannot rewrite the day's leaf past its commit.
+    if day_is_anchored_for_tenant(tx, tenant_id, day).await? {
+        return Err(WalletError::DaySealed);
+    }
     let hashes: Vec<Vec<u8>> = sqlx::query_scalar(&format!(
         "SELECT e.content_hash FROM oxsum.usage_records u \
          JOIN \"{ledger}\".entries e ON e.entry_id = u.entry_id \

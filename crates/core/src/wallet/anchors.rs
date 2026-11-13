@@ -183,10 +183,14 @@ impl Wallet {
     /// Appends `day`'s usage anchor inside the caller's transaction
     /// (issue #1088): the pass reads the day's leaves and inserts the
     /// bookkeeping row on the same transaction, so the committed `map_root`
-    /// provably covers every leaf the day holds — a late settle either holds
-    /// the per-customer advisory lock this transaction already took, or blocks
-    /// on it until the anchor commits, where `day_is_anchored_in` then refuses
-    /// it.
+    /// provably covers every leaf the day holds — a late settle either
+    /// committed its leaf before the pass's per-day lock landed, or blocks on
+    /// the per-day or per-customer locks until the anchor commits, where its
+    /// seal re-check under the lock refuses it with `DaySealed`. The caller
+    /// takes those customer locks *after* this append: the entry rides the
+    /// ledger's append lock, and keeping append-then-customer order on both
+    /// sides is what keeps the pass from deadlocking a settle it is meant to
+    /// serialize against.
     ///
     /// The entry carries the same idempotency key as the standalone form, so
     /// a replay inside the transaction answers the standing entry rather than
