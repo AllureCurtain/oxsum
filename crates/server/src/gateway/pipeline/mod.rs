@@ -28,6 +28,8 @@ use crate::gateway::models;
 use crate::gateway::relay::{self, Charge, Turn};
 use crate::gateway::request::{GatewayRequest, Surface};
 
+mod cache;
+
 /// How long the connection to upstream may take to establish.
 ///
 /// There is deliberately no read timeout: the gaps between stream chunks are upstream's guarantee,
@@ -1251,10 +1253,10 @@ async fn run(
                 forwarded_request.upstream_model = model_routes[0].upstream_model.clone();
                 forwarded_request.forwarded(output_bound)
             };
-            let semantic_headers = cache_semantic_headers(surface, headers);
-            let key_constraints = cache_key_constraints(key);
-            let experiment = experiment.as_ref().map_or(Value::Null, cache_experiment);
-            let mandate = cache_mandate(mandate.as_ref());
+            let semantic_headers = cache::cache_semantic_headers(surface, headers);
+            let key_constraints = cache::cache_key_constraints(key);
+            let experiment = experiment.as_ref().map_or(Value::Null, cache::cache_experiment);
+            let mandate = cache::cache_mandate(mandate.as_ref());
             let routes: Vec<Value> = model_routes
                 .iter()
                 .map(|routes| {
@@ -1266,7 +1268,7 @@ async fn run(
                     json!({
                         "model": routes.model,
                         "upstreamModel": routes.upstream_model,
-                        "channels": configured.into_iter().map(cache_route).collect::<Vec<_>>(),
+                        "channels": configured.into_iter().map(cache::cache_route).collect::<Vec<_>>(),
                     })
                 })
                 .collect();
@@ -2206,83 +2208,9 @@ fn retry_after(response: &reqwest::Response) -> Option<Duration> {
         .map(Duration::from_secs)
 }
 
-/// The caller headers an upstream answer depends on, in the protocol's own
-/// spelling. Only the Anthropic surface forwards a version (with a default
-/// when the caller omitted it) and an optional beta set; every other surface's
-/// request is fully described by its body.
-fn cache_semantic_headers(surface: Surface, headers: &HeaderMap) -> Value {
-    match surface {
-        Surface::Anthropic => {
-            let mut map = serde_json::Map::new();
-            map.insert("version".to_owned(), json!(anthropic_version(headers)));
-            if let Some(beta) = headers.get("anthropic-beta").and_then(|v| v.to_str().ok()) {
-                map.insert("beta".to_owned(), json!(beta));
-            }
-            Value::Object(map)
-        }
-        _ => Value::Object(serde_json::Map::new()),
-    }
-}
-
-/// The key's admission constraints as they stood for this request: authority
-/// state the answer was admitted under, not part of the prompt.
-fn cache_key_constraints(key: &ActingKey) -> Value {
-    json!({
-        "keyId": key.key_id,
-        "spendLimitMinor": key.spend_limit_minor,
-        "requestsPerMinute": key.requests_per_minute,
-        "tokensPerMinute": key.tokens_per_minute,
-        "tokensPerMinuteScopes": key.tokens_per_minute_scopes,
-        "requiredPolicies": key.required_policies,
-    })
-}
-
-/// The experiment binding that selected the served model, if any. Two variants
-/// of the same experiment never share an answer even when they resolve to the
-/// same upstream name: the settlement and usage row name the variant.
-fn cache_experiment(binding: &oxsum_core::ExperimentBinding) -> Value {
-    json!({
-        "experimentId": binding.experiment_id,
-        "variant": binding.variant,
-    })
-}
-
-/// The spend mandate the turn presented, if any: the authority it delegated
-/// under, not part of the prompt. Two mandates with different identities never
-/// share an answer, so a cache hit cannot reuse a turn admitted under a
-/// different delegated authority.
-fn cache_mandate(mandate: Option<&oxsum_core::PresentedMandate>) -> Value {
-    mandate.map_or(Value::Null, |mandate| {
-        json!({
-            "mandateId": mandate.verified.mandate_id,
-            "hash": mandate.verified.hash,
-            "models": mandate.verified.models,
-            "requiredPolicies": mandate.verified.required_policies,
-        })
-    })
-}
-
-/// Private route configuration enters only the keyed digest. Every admitted
-/// route participates, including fallback aliases and their provider targets.
-fn cache_route(route: &Serving) -> Value {
-    json!({
-        "channelId": route.channel_id,
-        "channel": &route.channel,
-        "protocol": &route.protocol,
-        "baseUrl": &route.base_url,
-        "settings": &route.settings,
-        "credentialConfiguration": &route.credential_configuration,
-        "version": route.version,
-        "weight": route.weight,
-        "configurationUpdatedAt":
-            route.configuration_updated_at.unix_timestamp_nanos().to_string(),
-        "price": &route.price,
-    })
-}
-
 /// The `anthropic-version` upstream is told: the caller's when it sent one, the version
 /// this deployment speaks when it did not — Anthropic refuses a request without one.
-fn anthropic_version(headers: &HeaderMap) -> &str {
+pub(super) fn anthropic_version(headers: &HeaderMap) -> &str {
     headers
         .get("anthropic-version")
         .and_then(|value| value.to_str().ok())
