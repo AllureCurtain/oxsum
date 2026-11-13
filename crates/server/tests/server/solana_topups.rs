@@ -78,6 +78,40 @@ fn multi_asset_terms() -> SolanaTerms {
     )
 }
 
+/// The #1151 shape: `multi_asset_terms` plus the opt-in `usdt` entry — the
+/// same 6-decimal USD parity as `usdc`, on its own mint. The default stays
+/// `usdc`; a `usdt` open names the key explicitly.
+fn multi_asset_terms_with_usdt() -> SolanaTerms {
+    SolanaTerms::new(
+        "oxsumDepositAddr111111111111111111111111111".to_owned(),
+        vec![
+            AssetTerms {
+                key: "sol".to_owned(),
+                spl_token_mint: None,
+                asset_decimals: 9,
+                rate_micro: 200_000_000,
+            },
+            AssetTerms {
+                key: "usdc".to_owned(),
+                spl_token_mint: Some("usdcMint11111111111111111111111111111111".to_owned()),
+                asset_decimals: 6,
+                rate_micro: USD_PEGGED_RATE_MICRO,
+            },
+            AssetTerms {
+                key: "usdt".to_owned(),
+                spl_token_mint: Some("usdtMint2222222222222222222222222222222222".to_owned()),
+                asset_decimals: 6,
+                rate_micro: USD_PEGGED_RATE_MICRO,
+            },
+        ],
+        "usdc".to_owned(),
+        600,
+        1,
+        i64::MAX,
+        0,
+    )
+}
+
 /// The stubbed chain: maps `reference -> [signatures]` (newest first, like
 /// `getSignaturesForAddress`) and validates the expected transfer's
 /// `amount`/`recipient`/`reference` against a scripted answer. `paid` arms
@@ -1066,6 +1100,82 @@ async fn solana_open_refuses_an_unknown_asset() {
             .await
             .unwrap();
     assert_eq!(count, 0);
+}
+
+/// Issue #1151: `usdt` deposits run the same path `usdc` does — the open
+/// locks the USDT mint, its 6 decimals and the USD parity, and a transfer
+/// delivering the asked base units confirms and credits once. The whitelist
+/// carries all three assets; the opt-in flag is a config-time gate, so the
+/// serving path needs nothing new.
+#[tokio::test]
+async fn solana_usdt_open_and_confirm_credits() {
+    let stub = SolanaStub::default();
+    let Some((app, db)) = world_with_terms(stub.clone(), multi_asset_terms_with_usdt()).await
+    else {
+        return;
+    };
+    let key = register_session(&app).await;
+
+    // `{"asset":"usdt"}`: the whitelist's USDT entry prices the intent —
+    // 1000 minor-credits at parity = 1000 USDT base units (6 decimals).
+    let (status, intent) = call(
+        &app,
+        "POST",
+        "/api/v1/topups/solana",
+        Some(json!({"amountMinor": 1000, "asset": "usdt"})),
+        Some(&key),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{intent}");
+    assert_eq!(intent["data"]["asset"].as_str().unwrap(), "usdt");
+    assert_eq!(intent["data"]["amountLamports"].as_i64().unwrap(), 1_000);
+    assert_eq!(
+        intent["data"]["splToken"].as_str().unwrap(),
+        "usdtMint2222222222222222222222222222222222"
+    );
+    assert_eq!(intent["data"]["assetDecimals"].as_u64().unwrap(), 6);
+    let reference = intent["data"]["reference"].as_str().unwrap().to_owned();
+
+    // The intent's meta locked the usdt figures the confirm honors.
+    let meta: Value = sqlx::query_scalar(
+        "SELECT meta FROM oxsum.deposits WHERE payment_ref = $1 AND rail = 'solana'",
+    )
+    .bind(&reference)
+    .fetch_one(db.pool())
+    .await
+    .unwrap();
+    assert_eq!(meta["asset"].as_str().unwrap(), "usdt");
+    assert_eq!(
+        meta["splToken"].as_str().unwrap(),
+        "usdtMint2222222222222222222222222222222222"
+    );
+    assert_eq!(meta["rateMicro"].as_i64().unwrap(), USD_PEGGED_RATE_MICRO);
+
+    // Arm the stub: the paying transfer delivers the asked USDT base units.
+    let signature = "sigUsdtPaid0000000000000000000000000000000000000000000000000";
+    stub.located
+        .lock()
+        .unwrap()
+        .insert(reference.clone(), vec![signature.to_owned()]);
+    stub.validated.lock().unwrap().insert(
+        signature.to_owned(),
+        ValidatedTransfer {
+            signature: signature.to_owned(),
+            delivered: 1_000,
+            block_time: Some(0),
+            payer: None,
+        },
+    );
+    let (status, receipt) = call(
+        &app,
+        "POST",
+        "/api/v1/topups/solana/confirm",
+        Some(json!({"reference": reference})),
+        Some(&key),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{receipt}");
+    assert_eq!(balance(&app, &key).await, 1000);
 }
 
 /// A configured world around an already-built verifier — the oracle-priced

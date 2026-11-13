@@ -4773,3 +4773,32 @@ lifecycle reads. **The confirm surface splits its answers**: `403` keeps its
 double-spend), the terminal verdicts `underpaid`/`late` answer `409` — the
 deposit is queued, not open for retries — and an already-settled reference
 keeps answering `404`.
+
+## 2026-11-14 — USDT joins the whitelist behind its own opt-in flag (#1151)
+
+The #1140 whitelist mechanism already accepts arbitrary SPL keys, so "USDT
+deposits alongside USDC" is mostly a question of how the asset is admitted,
+not how it settles: a `usdt` entry behaves exactly like `usdc` — its mint
+rides in `OXSUM_SOLANA_MINT_USDT`, the boot audits decimals and owner
+program on-chain, and the asset locks the fixed 1_000_000 USD parity,
+never an oracle quote.
+
+- **A dedicated flag, not "just don't list it".**
+  `OXSUM_SOLANA_USDT_ENABLED` (`1`/`true` on, unset/`0`/`false` off, any
+  other value a startup error — the same parse shape
+  `OXSUM_SOLANA_SANCTIONS_ENABLED` holds) gates the `usdt` key. The mint is
+  the highest-value wrong-config a mainnet operator can paste: a look-alike
+  USDT mint would settle worthless tokens at full parity, so enablement is
+  deliberate and the boot refuses the half-config in **both** directions —
+  a `usdt` `ASSETS` entry or `MINT_USDT` set at all with the flag off is a
+  startup error naming the flag (it fires even when `MINT_USDT` is the
+  rail's only variable, before the rail-presence early return), and
+  `MINT_USDT` beside a whitelist — or the legacy single-asset form — that
+  does not carry `usdt` is the opposite refusal.
+- **Zero change for existing configs.** A `usdc`-only whitelist with the
+  flag unset parses exactly as before; a `usdt` entry missing its mint
+  fails inside the same per-key `MINT_<KEY>` requirement every SPL key
+  already answers to.
+- **Serving needs nothing.** The open, confirm and poll paths key off the
+  whitelist entry's locked `meta` like any other asset; the flag is a
+  config-time gate only.
