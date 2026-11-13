@@ -1949,19 +1949,52 @@ fn solana_asset_specs(
     }
 }
 
-/// Parses the Solana deposit rail (issues #1117, #1139, #1140). The complete
-/// set: `OXSUM_SOLANA_RPC_URL` + `OXSUM_SOLANA_PAY_TO`, plus a rate source —
-/// a Pyth oracle a `sol` whitelist intent prices at open (issue #1139) or
-/// the static `OXSUM_SOLANA_RATE_MICRO` a devnet deployment pins behind
+/// The endpoint list `solana_of` builds the client pool from (issue #1145):
+/// `OXSUM_SOLANA_RPC_URLS` wins when both variables are set — a deployment
+/// migrating to the plural name must not silently double its pool — and
+/// `OXSUM_SOLANA_RPC_URL` stays as the single-endpoint fallback, its own
+/// commas splitting too so an operator can upgrade in place. Either variable
+/// is a comma-separated list of full JSON-RPC URLs; blank entries drop.
+fn solana_rpc_urls_of(plural: Option<&str>, singular: Option<&str>) -> Vec<String> {
+    plural
+        .or(singular)
+        .map(|raw| {
+            raw.split(',')
+                .map(str::trim)
+                .filter(|entry| !entry.is_empty())
+                .map(str::to_owned)
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// Parses the Solana deposit rail (issues #1117, #1139, #1140, #1145). The
+/// complete set: `OXSUM_SOLANA_RPC_URLS` (or `OXSUM_SOLANA_RPC_URL`) +
+/// `OXSUM_SOLANA_PAY_TO`, plus a rate source — a Pyth oracle a `sol`
+/// whitelist intent prices at open (issue #1139) or the static
+/// `OXSUM_SOLANA_RATE_MICRO` a devnet deployment pins behind
 /// `OXSUM_SOLANA_DEVNET_STATIC_RATE=1` (and the figure the legacy
 /// single-asset form always locks). `OXSUM_SOLANA_ASSETS` +
 /// `OXSUM_SOLANA_MINT_<KEY>` / `OXSUM_SOLANA_DEFAULT_ASSET` /
-/// `OXSUM_SOLANA_COMMITMENT` / `OXSUM_SOLANA_INTENT_TTL_SECS` optional — the
-/// requireds or none, a subset is a startup error like the Stripe trio.
-/// Unset and the rail is absent: `POST /api/v1/topups/solana` answers 503
-/// and the `solana-deposits` job schedules nothing.
+/// `OXSUM_SOLANA_COMMITMENT` / `OXSUM_SOLANA_INTENT_TTL_SECS` /
+/// `OXSUM_SOLANA_RPC_AUTH_HEADER` optional — the requireds or none, a subset
+/// is a startup error like the Stripe trio. Unset and the rail is absent:
+/// `POST /api/v1/topups/solana` answers 503 and the `solana-deposits` job
+/// schedules nothing.
+///
+/// The endpoint set is a pool (issue #1145): `OXSUM_SOLANA_RPC_URLS` is the
+/// comma-separated list a mainnet deployment fills with its authenticated
+/// providers — Helius (`https://mainnet.helius-rpc.com/?api-key=…`), Triton
+/// or any JSON-RPC origin, the API key inside each URL so no bespoke auth
+/// header is needed. `OXSUM_SOLANA_RPC_URL` stays as the single-endpoint
+/// spelling and also accepts a comma-separated list; when both are set the
+/// plural wins and the singular is ignored (a deployment migrating variable
+/// names must not silently double its pool).
 fn solana_of() -> Result<Option<Arc<oxsum_core::SolanaRailVerifier>>, String> {
-    let rpc_url = var("OXSUM_SOLANA_RPC_URL");
+    let rpc_urls = solana_rpc_urls_of(
+        var("OXSUM_SOLANA_RPC_URLS").as_deref(),
+        var("OXSUM_SOLANA_RPC_URL").as_deref(),
+    );
     let pay_to = var("OXSUM_SOLANA_PAY_TO");
     let rate_micro = var("OXSUM_SOLANA_RATE_MICRO");
     let spl_token_mint = var("OXSUM_SOLANA_SPL_TOKEN_MINT");
@@ -1969,10 +2002,13 @@ fn solana_of() -> Result<Option<Arc<oxsum_core::SolanaRailVerifier>>, String> {
     let devnet_static = var("OXSUM_SOLANA_DEVNET_STATIC_RATE")
         .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
         .unwrap_or(false);
-    let present = [&rpc_url, &pay_to, &rate_micro]
-        .iter()
-        .filter(|v| v.is_some())
-        .count();
+    let present = [
+        usize::from(!rpc_urls.is_empty()),
+        usize::from(pay_to.is_some()),
+        usize::from(rate_micro.is_some()),
+    ]
+    .iter()
+    .sum::<usize>();
     // Any PYTH_* knob or the devnet flag also counts as "the operator meant
     // the rail" — a lone `OXSUM_SOLANA_PYTH_*` must not be silently ignored.
     let pyth_touched = [
@@ -1993,12 +2029,17 @@ fn solana_of() -> Result<Option<Arc<oxsum_core::SolanaRailVerifier>>, String> {
     }
     if present < 2 {
         return Err(
-            "OXSUM_SOLANA_RPC_URL and OXSUM_SOLANA_PAY_TO are set together, or none".into(),
+            "OXSUM_SOLANA_RPC_URLS (or OXSUM_SOLANA_RPC_URL) and OXSUM_SOLANA_PAY_TO are set \
+             together, or none"
+                .into(),
         );
     }
-    let (Some(rpc_url), Some(pay_to)) = (rpc_url, pay_to) else {
+    let Some(pay_to) = pay_to else {
         return Ok(None);
     };
+    if rpc_urls.is_empty() {
+        return Ok(None);
+    }
     // The rate source (issue #1139): a `sol` whitelist intent is oracle-priced
     // by default — `RATE_MICRO` is the devnet stand-in and is only read
     // behind the explicit `OXSUM_SOLANA_DEVNET_STATIC_RATE=1` opt-in. The
@@ -2124,6 +2165,17 @@ fn solana_of() -> Result<Option<Arc<oxsum_core::SolanaRailVerifier>>, String> {
     // marks `payTo` as a hot wallet the operator chose not to pin.
     solana_custody_of(var("OXSUM_SOLANA_MULTISIG_ACCOUNT").as_deref(), &pay_to)?;
 
+    // A provider whose credential cannot ride inside the URL (rare — Helius
+    // and Triton both key auth in the URL) sets the verbatim `Name: value`
+    // header applied to every endpoint's calls (issue #1145). A value with no
+    // `Name: ` colon can never parse into a header — refuse it at boot rather
+    // than silently sending nothing on every call.
+    let rpc_auth_header = var("OXSUM_SOLANA_RPC_AUTH_HEADER");
+    if let Some(header) = &rpc_auth_header
+        && !header.contains(':')
+    {
+        return Err("OXSUM_SOLANA_RPC_AUTH_HEADER must be a `Name: value` header".into());
+    }
     let whitelist: Vec<oxsum_integrations::solana::MintWhitelistEntry> = specs
         .iter()
         .map(|s| oxsum_integrations::solana::MintWhitelistEntry {
@@ -2132,16 +2184,18 @@ fn solana_of() -> Result<Option<Arc<oxsum_core::SolanaRailVerifier>>, String> {
         })
         .collect();
     let config = oxsum_integrations::solana::SolanaConfig {
-        rpc_url: rpc_url.clone(),
+        rpc_urls: rpc_urls.clone(),
         pay_to: pay_to.clone(),
         mints: whitelist.clone(),
         commitment,
+        rpc_auth_header,
     };
-    let client = oxsum_integrations::solana::SolanaRpcClient::new(
-        rpc_url.clone(),
+    let client = oxsum_integrations::solana::SolanaRpcClient::try_new(
+        rpc_urls,
         crate::jobs::http_client(),
         config,
-    );
+    )
+    .map_err(|error| format!("OXSUM_SOLANA_RPC_URLS: {}", error.0))?;
     // Under the whitelist the boot still must verify each mint's decimals —
     // but the declared figure is gone, so the on-chain value fills the spec
     // in `main` (the verifier's `verify_mints` audit). The terms are built
@@ -2208,7 +2262,7 @@ fn solana_of() -> Result<Option<Arc<oxsum_core::SolanaRailVerifier>>, String> {
     // mainnet-shaped RPC endpoint with the gate off, warn: screening is the
     // documented mainnet posture and its absence is a deliberate choice, not
     // a silent default. Devnet stays quiet.
-    if sanctions_enabled(&rpc_url)? {
+    if sanctions_enabled(&rpc_urls)? {
         let screen = oxsum_integrations::sanctions::CompositeSanctions::try_new(
             crate::jobs::http_client(),
             var("OXSUM_SOLANA_SANCTIONS_API_KEY"),
@@ -2238,7 +2292,7 @@ fn solana_of() -> Result<Option<Arc<oxsum_core::SolanaRailVerifier>>, String> {
 /// off warns that screening is not running: the recommended mainnet posture
 /// is on, and the warning is how the operator knows it was never a silent
 /// skip.
-fn sanctions_enabled(rpc_url: &str) -> Result<bool, String> {
+fn sanctions_enabled(rpc_urls: &[String]) -> Result<bool, String> {
     let enabled = match var("OXSUM_SOLANA_SANCTIONS_ENABLED").as_deref() {
         Some("1") | Some("true") => true,
         None | Some("0") | Some("false") => false,
@@ -2249,10 +2303,12 @@ fn sanctions_enabled(rpc_url: &str) -> Result<bool, String> {
     if enabled {
         return Ok(true);
     }
-    let devnet_shaped = rpc_url.contains("devnet")
-        || rpc_url.contains("testnet")
-        || rpc_url.contains("localhost")
-        || rpc_url.contains("127.0.0.1");
+    let devnet_shaped = rpc_urls.iter().all(|rpc_url| {
+        rpc_url.contains("devnet")
+            || rpc_url.contains("testnet")
+            || rpc_url.contains("localhost")
+            || rpc_url.contains("127.0.0.1")
+    });
     if !devnet_shaped {
         tracing::warn!(
             "the solana rail points at a mainnet-shaped endpoint but \
@@ -2601,6 +2657,39 @@ mod tests {
         // Anything else refuses to start rather than guess.
         assert!(super::session_cookie_secure_of("yes".to_owned()).is_err());
         assert!(super::session_cookie_secure_of("".to_owned()).is_err());
+    }
+
+    #[test]
+    fn the_solana_endpoint_list_prefers_the_plural_and_splits_commas() {
+        // Neither variable: no endpoints — the rail stays absent.
+        assert!(super::solana_rpc_urls_of(None, None).is_empty());
+        // The singular alone is the pre-#1145 shape, still accepted.
+        assert_eq!(
+            super::solana_rpc_urls_of(None, Some("https://api.devnet.solana.com")),
+            vec!["https://api.devnet.solana.com".to_owned()]
+        );
+        // A comma-separated singular upgrades in place.
+        assert_eq!(
+            super::solana_rpc_urls_of(None, Some("https://a.example.com , https://b.example.com")),
+            vec![
+                "https://a.example.com".to_owned(),
+                "https://b.example.com".to_owned()
+            ]
+        );
+        // The plural wins when both are set — a migration must not double
+        // the pool.
+        assert_eq!(
+            super::solana_rpc_urls_of(
+                Some("https://plural.example.com"),
+                Some("https://singular.example.com")
+            ),
+            vec!["https://plural.example.com".to_owned()]
+        );
+        // Blank entries drop rather than reaching the client's host check.
+        assert_eq!(
+            super::solana_rpc_urls_of(Some(" , https://only.example.com,,"), None),
+            vec!["https://only.example.com".to_owned()]
+        );
     }
 
     /// The Squads v4 multisig/vault pair `getVaultPda` pins (issue #1143):

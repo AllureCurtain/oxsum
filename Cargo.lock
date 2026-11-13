@@ -3436,6 +3436,7 @@ dependencies = [
  "jsonwebtoken",
  "lettre",
  "metrics",
+ "metrics-exporter-prometheus",
  "oxsum-core",
  "rand 0.10.3",
  "reqwest 0.12.28",

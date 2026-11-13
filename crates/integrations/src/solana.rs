@@ -18,10 +18,27 @@
 //! handful of response fields; the binary keeps its single-process-plus-
 //! Postgres shape.
 //!
+//! The client is a pool, not a point (issue #1145): `OXSUM_SOLANA_RPC_URLS`
+//! names one or more endpoints (comma-separated, or the singular
+//! `OXSUM_SOLANA_RPC_URL` spelled the same way) and every RPC call walks them
+//! starting at a round-robin cursor. A transport failure, a non-2xx or an
+//! RPC-level `error` marks the endpoint down for a short cooldown and the
+//! call retries the next endpoint, so a dead provider does not eat the
+//! per-call timeout on every pass; when the pool has a second endpoint the
+//! failover is counted under `solana_rpc_failovers_total`. Providers that key
+//! auth in the URL (Helius, Triton) need no further credential — the key
+//! never leaves the URL, and the metrics label only ever carries the
+//! endpoint's host. A provider that authenticates by header sets
+//! `OXSUM_SOLANA_RPC_AUTH_HEADER`, applied to every endpoint's calls.
+//!
 //! What is *not* verified here, on the record: `confirmed` is the default
 //! commitment because devnet top-ups are low-value and latency matters more
 //! than the residual reorg window; `finalized` is one config flag away. No
 //! watcher holds a subscription open — the periodic job polls.
+
+use std::sync::Mutex;
+use std::sync::atomic::{AtomicU32, AtomicUsize, Ordering};
+use std::time::{Duration, Instant};
 
 use serde_json::{Value, json};
 
@@ -51,17 +68,20 @@ pub struct MintWhitelistEntry {
 
 /// The deployment's Solana acceptance criteria, read from the
 /// `OXSUM_SOLANA_*` environment set. `Config` holds it; the client reads only
-/// what its RPC calls need — the endpoint, commitment, the `payTo` reference
-/// and `mints`, the whitelist the boot audits on-chain. The per-asset
-/// figures the intents lock (`asset_decimals`, `rate_micro`, the open
-/// bounds) live on `oxsum_core::SolanaTerms`, which the server hands the
+/// what its RPC calls need — the endpoint pool, commitment, the `payTo`
+/// reference and `mints`, the whitelist the boot audits on-chain. The
+/// per-asset figures the intents lock (`asset_decimals`, `rate_micro`, the
+/// open bounds) live on `oxsum_core::SolanaTerms`, which the server hands the
 /// verifier beside this client.
 #[derive(Clone)]
 pub struct SolanaConfig {
-    /// The JSON-RPC endpoint, `OXSUM_SOLANA_RPC_URL` — devnet
-    /// (`https://api.devnet.solana.com`) in the first cut; the variable is the
-    /// seam a mainnet deployment flips later.
-    pub rpc_url: String,
+    /// The JSON-RPC endpoints the client pools over,
+    /// `OXSUM_SOLANA_RPC_URLS` (or `OXSUM_SOLANA_RPC_URL` comma-separated) —
+    /// devnet (`https://api.devnet.solana.com`) in the first cut; a mainnet
+    /// deployment names its authenticated providers (Helius, Triton) here,
+    /// with the API key inside each URL. Order is a preference hint, not a
+    /// guarantee — failover order starts at the round-robin cursor.
+    pub rpc_urls: Vec<String>,
     /// The deposit address every intent pays, `OXSUM_SOLANA_PAY_TO` (base58
     /// public key). For an SPL top-up this is the owner whose associated token
     /// account receives the mint — one vault receives every asset.
@@ -74,12 +94,17 @@ pub struct SolanaConfig {
     /// The commitment `find_reference` / `validate_transfer` ask the RPC for:
     /// `confirmed` (default) or `finalized` (`OXSUM_SOLANA_COMMITMENT`).
     pub commitment: String,
+    /// An auth header applied to every endpoint's calls
+    /// (`OXSUM_SOLANA_RPC_AUTH_HEADER`, e.g. `Authorization: Bearer …`) — for
+    /// providers that cannot carry the credential in the URL. `None` for the
+    /// common URL-keyed providers and for public endpoints.
+    pub rpc_auth_header: Option<String>,
 }
 
 impl std::fmt::Debug for SolanaConfig {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("SolanaConfig")
-            .field("rpc_url", &self.rpc_url)
+            .field("rpc_urls", &endpoint_hosts(&self.rpc_urls))
             .field("pay_to", &self.pay_to)
             .field(
                 "mints",
@@ -153,15 +178,143 @@ pub struct ValidatedTransfer {
     pub payer: Option<String>,
 }
 
+/// How long an endpoint sits out after enough consecutive failures: the
+/// circuit-breaker half of the failover (issue #1145). Thirty seconds is a
+/// poll-cycle granularity — long enough that a dead provider stops eating the
+/// per-call timeout every pass, short enough that a provider recovering under
+/// the same tick never looks dead for a human minute. Attempts against a
+/// single-endpoint pool never cooldown-skip it — there is nowhere else to
+/// send the call.
+const ENDPOINT_COOLDOWN: Duration = Duration::from_secs(30);
+
+/// The consecutive failures that open the cooldown. Two: one bad answer might
+/// be a blip (a transient 429 or a dropped connection); a second in a row is
+/// the endpoint's own problem worth routing around.
+const ENDPOINT_FAILURE_THRESHOLD: u32 = 2;
+
+/// One configured RPC target: the URL it posts to (which may carry the
+/// provider's API key inside it — Helius, Triton and the public endpoints all
+/// key auth this way), its `endpoint` metric-label spelling (host only, the
+/// key never leaves the URL), and the health the failover loop reads.
+struct RpcEndpoint {
+    /// The endpoint's full URL, API key included when the provider keys auth
+    /// that way.
+    url: String,
+    /// What `solana_rpc_errors_total{endpoint}` and the failover gauge label
+    /// report: the host (plus port), never the URL's query — the API key must
+    /// never appear on a metric.
+    host: String,
+    /// Consecutive failed calls — the counter the cooldown opens on. Relaxed
+    /// ordering: a poll thread only ever needs the approximate figure.
+    consecutive_failures: AtomicU32,
+    /// Until this instant the endpoint is skipped; `None` is serving traffic.
+    /// A `Mutex` because the cooldown is written under the call loop's single
+    /// thread anyway and `Instant` has no atomic.
+    unhealthy_until: Mutex<Option<Instant>>,
+}
+
+impl RpcEndpoint {
+    /// Builds the endpoint from its configured URL: the metric-safe host is
+    /// derived once at construction so a malformed URL fails loudly at boot
+    /// rather than silently labeling a metric with an API key.
+    fn new(raw: &str) -> Result<Self, SolanaError> {
+        let url = raw.trim().trim_end_matches('/').to_owned();
+        let host = endpoint_host(&url)
+            .ok_or_else(|| SolanaError(format!("an RPC endpoint has no host: {url}")))?;
+        Ok(Self {
+            url,
+            host,
+            consecutive_failures: AtomicU32::new(0),
+            unhealthy_until: Mutex::new(None),
+        })
+    }
+
+    /// Whether the endpoint is inside its cooldown right now.
+    fn cooling_down(&self) -> bool {
+        let guard = self
+            .unhealthy_until
+            .lock()
+            .expect("the endpoint cooldown lock is poisoned");
+        matches!(*guard, Some(until) if until > Instant::now())
+    }
+
+    /// A call answered — the endpoint is healthy: reset the streak, close any
+    /// open cooldown and report `solana_rpc_endpoint_healthy{endpoint}=1`.
+    fn note_ok(&self) {
+        self.consecutive_failures.store(0, Ordering::Relaxed);
+        let mut guard = self
+            .unhealthy_until
+            .lock()
+            .expect("the endpoint cooldown lock is poisoned");
+        if guard.is_some() {
+            *guard = None;
+            tracing::info!(endpoint = %self.host, "the solana RPC endpoint recovered");
+        }
+        metrics::gauge!("solana_rpc_endpoint_healthy", "endpoint" => self.host.clone()).set(1.0);
+    }
+
+    /// A call failed: grow the streak and, past the threshold, open the
+    /// cooldown and report `solana_rpc_endpoint_healthy{endpoint}=0`.
+    fn note_failure(&self) {
+        let streak = self.consecutive_failures.fetch_add(1, Ordering::Relaxed) + 1;
+        if streak >= ENDPOINT_FAILURE_THRESHOLD {
+            let mut guard = self
+                .unhealthy_until
+                .lock()
+                .expect("the endpoint cooldown lock is poisoned");
+            *guard = Some(Instant::now() + ENDPOINT_COOLDOWN);
+            metrics::gauge!("solana_rpc_endpoint_healthy", "endpoint" => self.host.clone())
+                .set(0.0);
+            tracing::warn!(
+                endpoint = %self.host,
+                streak,
+                cooldown_secs = ENDPOINT_COOLDOWN.as_secs(),
+                "the solana RPC endpoint is cooling down after consecutive failures"
+            );
+        }
+    }
+}
+
+/// The host (plus non-default port) an endpoint URL reports on its metric
+/// labels — the API-key-carrying query is deliberately dropped, so the
+/// `endpoint` label can never carry a secret. `None` when the URL does not
+/// parse to a host at all.
+fn endpoint_host(raw: &str) -> Option<String> {
+    let url = url::Url::parse(raw).ok()?;
+    let host = url.host_str()?.to_owned();
+    Some(match url.port() {
+        Some(port) => format!("{host}:{port}"),
+        None => host,
+    })
+}
+
+/// The same mapping applied to a list of configured URLs — `Debug` prints
+/// and log lines label endpoints the same way metrics do.
+fn endpoint_hosts(urls: &[String]) -> Vec<String> {
+    urls.iter()
+        .map(|u| endpoint_host(u).unwrap_or_else(|| "<unparseable>".to_owned()))
+        .collect()
+}
+
 /// The narrow JSON-RPC client the rail talks to, bound to the deployment's
-/// [`SolanaConfig`]: `base_url` is the RPC endpoint, and `config` carries the
-/// `pay_to`/`mints`/`commitment` terms the two Solana Pay calls and the
-/// boot's mint audit are asked under. Binding the config in (rather than
-/// passing it per call) is what lets the client be a `ChainLookup` — the
-/// verifier's seam hands it only the intent's `reference`/`amount`.
+/// [`SolanaConfig`]: `endpoints` is the configured RPC pool the calls fail
+/// over across, and `config` carries the `pay_to`/`mints`/`commitment` terms
+/// the two Solana Pay calls and the boot's mint audit are asked under.
+/// Binding the config in (rather than passing it per call) is what lets the
+/// client be a `ChainLookup` — the verifier's seam hands it only the intent's
+/// `reference`/`amount`, and the failover stays inside `call` where the trait
+/// never sees it.
+///
+/// `Clone` shares the pool, not copies it: the endpoint health, the
+/// round-robin cursor and the HTTP pool are `Arc`-inside, so the `ChainLookup`
+/// the verifier holds and any second handle observe the same circuit state.
 #[derive(Clone)]
 pub struct SolanaRpcClient {
-    base_url: String,
+    endpoints: std::sync::Arc<Vec<RpcEndpoint>>,
+    /// Where the next call starts its endpoint walk — round-robin so a
+    /// single-endpoint pool is unaffected but a multi-endpoint pool spreads
+    /// the poll's load across providers rather than always hitting the first.
+    next: std::sync::Arc<AtomicUsize>,
     http: reqwest::Client,
     config: SolanaConfig,
 }
@@ -169,25 +322,50 @@ pub struct SolanaRpcClient {
 impl std::fmt::Debug for SolanaRpcClient {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("SolanaRpcClient")
-            .field("base_url", &self.base_url)
+            .field(
+                "endpoints",
+                &self
+                    .endpoints
+                    .iter()
+                    .map(|endpoint| endpoint.host.as_str())
+                    .collect::<Vec<_>>(),
+            )
             .field("config", &self.config)
             .finish()
     }
 }
 
 impl SolanaRpcClient {
-    /// Builds the client around the RPC endpoint, the shared HTTP pool and
-    /// the deployment's terms.
-    #[must_use]
-    pub fn new(base_url: String, http: reqwest::Client, config: SolanaConfig) -> Self {
-        Self {
-            base_url: base_url.trim_end_matches('/').to_owned(),
+    /// Builds the client around the configured RPC endpoints, the shared HTTP
+    /// pool and the deployment's terms. `urls` is the parsed
+    /// `OXSUM_SOLANA_RPC_URLS`/`_RPC_URL` list — every entry must carry a host
+    /// (the check runs here, at boot, so a malformed endpoint fails loudly
+    /// rather than silently mislabeling a metric). `Err` on an empty list or
+    /// a hostless entry — `solana_of` only builds the client when at least
+    /// one URL is set, so the error is a misconfiguration, never a panic.
+    pub fn try_new(
+        urls: Vec<String>,
+        http: reqwest::Client,
+        config: SolanaConfig,
+    ) -> Result<Self, SolanaError> {
+        if urls.is_empty() {
+            return Err(SolanaError(
+                "the solana rail needs at least one RPC endpoint".into(),
+            ));
+        }
+        let endpoints = urls
+            .iter()
+            .map(|raw| RpcEndpoint::new(raw))
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(Self {
+            endpoints: std::sync::Arc::new(endpoints),
+            next: std::sync::Arc::new(AtomicUsize::new(0)),
             http,
             config,
-        }
+        })
     }
 
-    /// The deployment's chain-side config — endpoint, `payTo`, the mint
+    /// The deployment's chain-side config — endpoint pool, `payTo`, the mint
     /// whitelist and the commitment the calls ask for.
     #[must_use]
     pub fn config(&self) -> &SolanaConfig {
@@ -205,7 +383,11 @@ impl SolanaRpcClient {
     /// `Err` when the RPC fails or the mint account is missing/unparseable.
     pub async fn mint_decimals(&self, mint: &str) -> Result<u32, SolanaError> {
         let result = self
-            .call("getAccountInfo", json!([mint, {"encoding": "base64"}]))
+            .call(
+                "mint_decimals",
+                "getAccountInfo",
+                json!([mint, {"encoding": "base64"}]),
+            )
             .await?;
         let data_b64 = result["value"]["data"][0]
             .as_str()
@@ -230,7 +412,11 @@ impl SolanaRpcClient {
     /// `Err` when the RPC fails or the account is missing/unparseable.
     pub async fn mint_owner(&self, mint: &str) -> Result<String, SolanaError> {
         let result = self
-            .call("getAccountInfo", json!([mint, {"encoding": "base64"}]))
+            .call(
+                "mint_owner",
+                "getAccountInfo",
+                json!([mint, {"encoding": "base64"}]),
+            )
             .await?;
         result["value"]["owner"]
             .as_str()
@@ -238,27 +424,161 @@ impl SolanaRpcClient {
             .ok_or_else(|| SolanaError("getAccountInfo returned no owner".into()))
     }
 
-    /// One JSON-RPC call. Returns the `result` field; a transport failure, a
-    /// non-200 or an RPC-level `error` object are all `Err`.
-    async fn call(&self, method: &str, params: Value) -> Result<Value, SolanaError> {
+    /// One JSON-RPC call over the endpoint pool (issue #1145): walk the
+    /// endpoints starting at the round-robin cursor, skipping any inside its
+    /// failure cooldown. A transport failure, a non-2xx or an RPC-level
+    /// `error` object counts a failure on that endpoint and — while another
+    /// endpoint remains — retries on the next one; `Err` only when every
+    /// candidate failed (or the only configured endpoint did). Each failed
+    /// attempt counts `solana_rpc_errors_total{call,endpoint}` on the host
+    /// label, and each move onto a different endpoint counts
+    /// `solana_rpc_failovers_total{from,to}`, so the dashboard sees every
+    /// hop, not just the errors.
+    async fn call(
+        &self,
+        call_name: &'static str,
+        method: &str,
+        params: Value,
+    ) -> Result<Value, SolanaError> {
         let body = json!({
             "jsonrpc": "2.0",
             "id": 1,
             "method": method,
             "params": params,
         });
-        let response = self
+        let endpoints = &self.endpoints;
+        // The start of the walk: round-robin across the pool, so the poll's
+        // calls spread across providers rather than hammering the first.
+        let start = self.next.fetch_add(1, Ordering::Relaxed) % endpoints.len();
+        // A single-endpoint pool is never cooldown-skipped — there is nowhere
+        // else the call could go, so the attempt must run anyway; the health
+        // metric still reports the failure streak.
+        let single = endpoints.len() == 1;
+        let mut last_error = String::new();
+        // The endpoint the previous attempt ran on: every attempt on a
+        // *different* endpoint counts one failover hop `prev → current`, so a
+        // call that walked two failures into a healthy third counts both
+        // moves.
+        let mut previous: Option<&RpcEndpoint> = None;
+        let mut tried = false;
+        for offset in 0..endpoints.len() {
+            let endpoint = &endpoints[(start + offset) % endpoints.len()];
+            if !single && endpoint.cooling_down() {
+                continue;
+            }
+            tried = true;
+            if let Some(from) = previous
+                && !std::ptr::eq(from, endpoint)
+            {
+                metrics::counter!(
+                    "solana_rpc_failovers_total",
+                    "from" => from.host.clone(),
+                    "to" => endpoint.host.clone()
+                )
+                .increment(1);
+            }
+            previous = Some(endpoint);
+            let result = self.call_once(endpoint, method, &body).await;
+            match result {
+                Ok(value) => {
+                    endpoint.note_ok();
+                    return Ok(value);
+                }
+                Err(e) => {
+                    endpoint.note_failure();
+                    // Per-endpoint error accounting: the `endpoint` label is
+                    // the host only — the API key inside the URL can never
+                    // reach a metric.
+                    metrics::counter!(
+                        "solana_rpc_errors_total",
+                        "call" => call_name,
+                        "endpoint" => endpoint.host.clone()
+                    )
+                    .increment(1);
+                    last_error = e.0;
+                }
+            }
+        }
+        // Every attempted endpoint failed — or every candidate sat inside its
+        // cooldown and none ran at all: fall through the whole pool once more
+        // ignoring the skip, so a call never dies on a shared cooldown window
+        // alone.
+        if !tried {
+            for endpoint in endpoints.iter() {
+                if let Some(from) = previous
+                    && !std::ptr::eq(from, endpoint)
+                {
+                    metrics::counter!(
+                        "solana_rpc_failovers_total",
+                        "from" => from.host.clone(),
+                        "to" => endpoint.host.clone()
+                    )
+                    .increment(1);
+                }
+                previous = Some(endpoint);
+                let result = self.call_once(endpoint, method, &body).await;
+                match result {
+                    Ok(value) => {
+                        endpoint.note_ok();
+                        return Ok(value);
+                    }
+                    Err(e) => {
+                        endpoint.note_failure();
+                        metrics::counter!(
+                            "solana_rpc_errors_total",
+                            "call" => call_name,
+                            "endpoint" => endpoint.host.clone()
+                        )
+                        .increment(1);
+                        last_error = e.0;
+                    }
+                }
+            }
+        }
+        Err(SolanaError(last_error))
+    }
+
+    /// The single-endpoint attempt `call` fails over across: POST the prepared
+    /// JSON-RPC body to one URL, applying the configured auth header when the
+    /// deployment set one. `Ok` is the `result` field; `Err` is what failed —
+    /// transport, non-2xx or an RPC-level refusal — and is what `call` counts
+    /// against this endpoint.
+    async fn call_once(
+        &self,
+        endpoint: &RpcEndpoint,
+        method: &str,
+        body: &Value,
+    ) -> Result<Value, SolanaError> {
+        let mut request = self
             .http
-            .post(&self.base_url)
-            .json(&body)
-            .timeout(std::time::Duration::from_secs(15))
+            .post(&endpoint.url)
+            .json(body)
+            .timeout(Duration::from_secs(15));
+        if let Some(header) = &self.config.rpc_auth_header {
+            // `OXSUM_SOLANA_RPC_AUTH_HEADER` is the verbatim `Name: value`
+            // header — `solana_of` refuses a colon-less value at boot, so a
+            // missing split here is defensive only.
+            if let Some((name, value)) = header.split_once(':') {
+                request = request.header(name.trim(), value.trim());
+            }
+        }
+        // `without_url`: a reqwest error's Display carries the request URL —
+        // which for an authenticated endpoint holds the API key inside its
+        // query (issue #1145). The error text must stay key-free: the warn
+        // log at the ChainLookup seam and `SolanaError` both surface it.
+        let response = request
             .send()
             .await
-            .map_err(|e| SolanaError(format!("{method} request failed: {e}")))?;
-        let value: Value = response
-            .json()
-            .await
-            .map_err(|e| SolanaError(format!("{method} response unreadable: {e}")))?;
+            .map_err(|e| SolanaError(format!("{method} request failed: {}", e.without_url())))?;
+        if !response.status().is_success() {
+            return Err(SolanaError(format!(
+                "{method} answered HTTP {}",
+                response.status()
+            )));
+        }
+        let value: Value = response.json().await.map_err(|e| {
+            SolanaError(format!("{method} response unreadable: {}", e.without_url()))
+        })?;
         if let Some(error) = value.get("error") {
             return Err(SolanaError(format!("{method} refused: {error}")));
         }
@@ -288,6 +608,7 @@ impl SolanaRpcClient {
             }
             let result = self
                 .call(
+                    "find_reference",
                     "getSignaturesForAddress",
                     json!([reference, Value::Object(opts)]),
                 )
@@ -330,6 +651,7 @@ impl SolanaRpcClient {
     ) -> Result<Option<ValidatedTransfer>, SolanaError> {
         let result = self
             .call(
+                "validate_transfer",
                 "getTransaction",
                 json!([
                     signature,
@@ -426,8 +748,8 @@ impl SolanaRpcClient {
 }
 
 /// The `core` verifier's `ChainLookup` over this JSON-RPC client: the two
-/// Solana Pay calls on the deployment's configured endpoint. `Err` from the
-/// RPC surfaces as `None` at the seam — an unreachable endpoint or an RPC
+/// Solana Pay calls on the deployment's configured endpoint pool. `Err` from
+/// the RPC surfaces as `None` at the seam — an unreachable endpoint or an RPC
 /// refusal is indistinguishable from "no matching transfer yet", which is how
 /// the rail treats every non-answer.
 impl oxsum_core::ChainLookup for SolanaRpcClient {
@@ -439,17 +761,17 @@ impl oxsum_core::ChainLookup for SolanaRpcClient {
             match self.find_reference(reference).await {
                 Ok(signatures) => signatures,
                 // A transport/RPC failure is *not* "not paid yet" — log it as
-                // an error and count it, so an unreachable endpoint never
-                // masquerades as an unpaid intent. The empty Vec still reads
-                // "no matching transfer" upstream, but now it is a loud miss.
+                // an error so an unreachable endpoint never masquerades as an
+                // unpaid intent. The per-endpoint count already landed inside
+                // `call` (`solana_rpc_errors_total{call,endpoint}`); the empty
+                // Vec still reads "no matching transfer" upstream, but it is
+                // a loud miss.
                 Err(e) => {
                     tracing::warn!(
                         reference,
                         error = %e.0,
                         "solana find_reference RPC failed; treating as unlocated"
                     );
-                    metrics::counter!("solana_rpc_errors_total", "call" => "find_reference")
-                        .increment(1);
                     Vec::new()
                 }
             }
@@ -476,14 +798,13 @@ impl oxsum_core::ChainLookup for SolanaRpcClient {
             .await
             .inspect_err(|e| {
                 // Same distinction as find_reference: a transport failure is
-                // not "the transfer does not honor" — warn and count it.
+                // not "the transfer does not honor" — warn it; the per-endpoint
+                // count already landed inside `call`.
                 tracing::warn!(
                     signature,
                     error = %e.0,
                     "solana validate_transfer RPC failed; treating as unvalidated"
                 );
-                metrics::counter!("solana_rpc_errors_total", "call" => "validate_transfer")
-                    .increment(1);
             })
             .ok()
             .flatten()
@@ -1126,5 +1447,359 @@ mod tests {
             "usdcMint",
         );
         assert_eq!(delta, None);
+    }
+
+    /// The `endpoint` metric label's spelling: host (plus a non-default
+    /// port), with the URL's query — where an API key lives — dropped. This
+    /// is the only place a label is derived, so the key can never reach a
+    /// metric.
+    #[test]
+    fn the_endpoint_label_is_the_host_never_the_url() {
+        assert_eq!(
+            endpoint_host("https://mainnet.helius-rpc.com/?api-key=SECRET123"),
+            Some("mainnet.helius-rpc.com".to_owned())
+        );
+        assert_eq!(
+            endpoint_host("https://api.devnet.solana.com"),
+            Some("api.devnet.solana.com".to_owned())
+        );
+        // A non-default port survives — a local validator's label stays
+        // distinct from the public endpoint's.
+        assert_eq!(
+            endpoint_host("http://127.0.0.1:8899"),
+            Some("127.0.0.1:8899".to_owned())
+        );
+        assert_eq!(endpoint_host("not a url"), None);
+        // The query — and so any key inside it — is never in the label.
+        let label = endpoint_host("https://rpc.example.com/?api-key=LEAKME&x=1").unwrap();
+        assert!(!label.contains("LEAKME"), "{label}");
+    }
+
+    /// A test deployment's config: the endpoints the harness stands up, a
+    /// native-SOL-only whitelist, everything else at its default.
+    fn test_config(urls: &[String], auth_header: Option<&str>) -> SolanaConfig {
+        SolanaConfig {
+            rpc_urls: urls.to_vec(),
+            pay_to: "payTo".into(),
+            mints: vec![MintWhitelistEntry {
+                key: "sol".to_owned(),
+                mint: None,
+            }],
+            commitment: "finalized".into(),
+            rpc_auth_header: auth_header.map(str::to_owned),
+        }
+    }
+
+    /// A stub JSON-RPC server answering every POST the same body. Returns
+    /// the base URL plus a hit count.
+    async fn stub_rpc(
+        answer: serde_json::Value,
+    ) -> (String, std::sync::Arc<std::sync::atomic::AtomicUsize>) {
+        use axum::routing::post;
+        use axum::{Json, Router};
+        let hits = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let hits2 = hits.clone();
+        let app = Router::new().route(
+            "/",
+            post(move |Json(_body): Json<serde_json::Value>| {
+                let hits = hits2.clone();
+                let answer = answer.clone();
+                async move {
+                    hits.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                    Json(answer)
+                }
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+        (format!("http://127.0.0.1:{port}"), hits)
+    }
+
+    /// The client the failover tests build: one `try_new` call over the
+    /// listed endpoints.
+    fn client(urls: &[String], auth_header: Option<&str>) -> SolanaRpcClient {
+        SolanaRpcClient::try_new(
+            urls.to_vec(),
+            reqwest::Client::new(),
+            test_config(urls, auth_header),
+        )
+        .expect("the test's endpoints all carry hosts")
+    }
+
+    /// A `getSignaturesForAddress`-shaped answer carrying one signature — the
+    /// body `find_reference` walks.
+    fn signatures_result(signatures: &[&str]) -> serde_json::Value {
+        json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "result": signatures.iter()
+                .map(|s| json!({"signature": s}))
+                .collect::<Vec<_>>()
+        })
+    }
+
+    /// First-healthy-wins: endpoint A answers, endpoint B is never asked —
+    /// the walk stops at the first working answer.
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_healthy_first_endpoint_answers_without_asking_the_second() {
+        let (url_a, hits_a) = stub_rpc(signatures_result(&["sig1"])).await;
+        let (url_b, hits_b) = stub_rpc(signatures_result(&["sig2"])).await;
+        let client = client(&[url_a, url_b], None);
+        let found = client.find_reference("marker").await.unwrap();
+        assert_eq!(found, vec!["sig1".to_owned()]);
+        assert_eq!(
+            hits_a.load(std::sync::atomic::Ordering::SeqCst),
+            1,
+            "the first endpoint served the call"
+        );
+        assert_eq!(
+            hits_b.load(std::sync::atomic::Ordering::SeqCst),
+            0,
+            "the second endpoint was never asked"
+        );
+    }
+
+    /// A transport failure on the first endpoint fails the call over to the
+    /// second — the round-robin cursor lands the call on whichever endpoint
+    /// the walk starts at, so the test drives the cursor explicitly.
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_transport_failure_fails_over_to_the_next_endpoint() {
+        let (url_a, hits_a) = stub_rpc(signatures_result(&["sigA"])).await;
+        let (url_b, hits_b) = stub_rpc(signatures_result(&["sigB"])).await;
+        let urls = vec![url_a, url_b];
+        let client = client(&urls, None);
+        // Kill endpoint 0's streak so the call skips it and lands on
+        // endpoint 1 — the dead-provider shape a real outage takes.
+        client.endpoints[0]
+            .consecutive_failures
+            .store(ENDPOINT_FAILURE_THRESHOLD, Ordering::Relaxed);
+        *client.endpoints[0].unhealthy_until.lock().unwrap() =
+            Some(Instant::now() + ENDPOINT_COOLDOWN);
+        let found = client.find_reference("marker").await.unwrap();
+        assert_eq!(found, vec!["sigB".to_owned()]);
+        assert_eq!(hits_a.load(std::sync::atomic::Ordering::SeqCst), 0);
+        assert_eq!(hits_b.load(std::sync::atomic::Ordering::SeqCst), 1);
+    }
+
+    /// The circuit breaker: after `ENDPOINT_FAILURE_THRESHOLD` consecutive
+    /// failures an endpoint sits out the cooldown — the walk skips it even
+    /// when it would have been next — so a dead provider stops eating the
+    /// per-call timeout every pass. Round-robin alternates the walk's start,
+    /// so endpoint A's second failure lands on the third call, not the
+    /// second.
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_failing_endpoint_opens_its_cooldown_after_the_threshold() {
+        // Endpoint A always refuses (an RPC-level error is a failure like a
+        // transport one); endpoint B answers.
+        let (url_a, hits_a) = stub_rpc(json!({
+            "jsonrpc": "2.0", "id": 1,
+            "error": {"code": -32000, "message": "boom"}
+        }))
+        .await;
+        let (url_b, _hits_b) = stub_rpc(signatures_result(&["sigB"])).await;
+        let urls = vec![url_a, url_b];
+        let client = client(&urls, None);
+        // Call 1 starts on A (cursor 0): A fails once, B answers. One failure
+        // is below the threshold — no cooldown yet.
+        let found = client.find_reference("marker").await.unwrap();
+        assert_eq!(found, vec!["sigB".to_owned()]);
+        assert!(!client.endpoints[0].cooling_down());
+        // Call 2 starts on B (cursor 1) and succeeds without asking A.
+        let _ = client.find_reference("marker").await;
+        // Call 3 starts on A again: the second consecutive failure crosses
+        // the threshold and the cooldown opens.
+        let _ = client.find_reference("marker").await;
+        assert!(client.endpoints[0].cooling_down());
+        assert_eq!(
+            hits_a.load(std::sync::atomic::Ordering::SeqCst),
+            2,
+            "endpoint A failed exactly the threshold times"
+        );
+        // Calls 4 and 5: B answers; call 5's walk starts on A's slot but the
+        // cooldown skips it, so A is never asked again inside its window.
+        let _ = client.find_reference("marker").await;
+        let found = client.find_reference("marker").await.unwrap();
+        assert_eq!(found, vec!["sigB".to_owned()]);
+        assert_eq!(
+            hits_a.load(std::sync::atomic::Ordering::SeqCst),
+            2,
+            "the cooling-down endpoint is not asked again"
+        );
+    }
+
+    /// An RPC-level `error` on one endpoint fails over exactly like a
+    /// transport failure — the walk lands on the next endpoint's answer.
+    #[tokio::test(flavor = "current_thread")]
+    async fn an_rpc_level_refusal_fails_over_to_the_next_endpoint() {
+        let (url_bad, _bad) = stub_rpc(json!({
+            "jsonrpc": "2.0", "id": 1, "error": {"code": -1, "message": "no"}
+        }))
+        .await;
+        let (url_good, _good) = stub_rpc(signatures_result(&["sigGood"])).await;
+        let client = client(&[url_bad, url_good], None);
+        let found = client.find_reference("marker").await.unwrap();
+        assert_eq!(found, vec!["sigGood".to_owned()]);
+    }
+
+    /// `OXSUM_SOLANA_RPC_AUTH_HEADER` rides every endpoint's calls — the
+    /// verbatim `Name: value` the provider documented.
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_configured_auth_header_is_sent_to_every_endpoint() {
+        use axum::http::HeaderMap;
+        use axum::{Json, Router};
+        let seen = std::sync::Arc::new(std::sync::Mutex::new(HeaderMap::new()));
+        let seen2 = seen.clone();
+        let app = Router::new().route(
+            "/",
+            axum::routing::post(
+                move |headers: HeaderMap, Json(_b): Json<serde_json::Value>| {
+                    *seen2.lock().unwrap() = headers.clone();
+                    std::future::ready(Json(signatures_result(&["sig1"])))
+                },
+            ),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+        let url = format!("http://127.0.0.1:{port}");
+        let client = client(
+            std::slice::from_ref(&url),
+            Some("Authorization: Bearer test-secret"),
+        );
+        let _ = client.find_reference("marker").await.unwrap();
+        let headers = seen.lock().unwrap();
+        assert_eq!(headers["authorization"], "Bearer test-secret");
+    }
+
+    /// Every endpoint inside its cooldown still answers rather than refusing
+    /// the call outright — the shared-cooldown fallback walks the whole pool
+    /// once, so a transient window never kills a call outright.
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_shared_cooldown_window_still_answers_via_the_fallback() {
+        let (url_a, _a) = stub_rpc(signatures_result(&["sigA"])).await;
+        let (url_b, _b) = stub_rpc(signatures_result(&["sigB"])).await;
+        let client = client(&[url_a, url_b], None);
+        for endpoint in client.endpoints.iter() {
+            endpoint
+                .consecutive_failures
+                .store(ENDPOINT_FAILURE_THRESHOLD, Ordering::Relaxed);
+            *endpoint.unhealthy_until.lock().unwrap() = Some(Instant::now() + ENDPOINT_COOLDOWN);
+        }
+        let found = client.find_reference("marker").await.unwrap();
+        // The fallback tried the whole pool — one of them answered.
+        assert!(found == vec!["sigA".to_owned()] || found == vec!["sigB".to_owned()]);
+    }
+
+    /// A single-endpoint pool never skips its only endpoint — the cooldown
+    /// records the failure streak but the call still runs (there is nowhere
+    /// else to send it).
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_single_endpoint_pool_never_skips_its_only_endpoint() {
+        let (url, hits) = stub_rpc(signatures_result(&["sig"])).await;
+        let client = client(std::slice::from_ref(&url), None);
+        client.endpoints[0]
+            .consecutive_failures
+            .store(ENDPOINT_FAILURE_THRESHOLD, Ordering::Relaxed);
+        *client.endpoints[0].unhealthy_until.lock().unwrap() =
+            Some(Instant::now() + ENDPOINT_COOLDOWN);
+        let found = client.find_reference("marker").await.unwrap();
+        assert_eq!(found, vec!["sig".to_owned()]);
+        assert_eq!(hits.load(std::sync::atomic::Ordering::SeqCst), 1);
+    }
+
+    /// The mint audit's reads fail over the same way the verification calls
+    /// do — `mint_decimals` and `mint_owner` run through the same `call`
+    /// pool, so a dead endpoint never stalls the boot on the per-call
+    /// timeout while a healthy sibling sits idle.
+    #[tokio::test(flavor = "current_thread")]
+    async fn the_mint_audit_fails_over_to_the_next_endpoint() {
+        let (url_bad, hits_bad) = stub_rpc(json!({
+            "jsonrpc": "2.0", "id": 1, "error": {"code": -1, "message": "no"}
+        }))
+        .await;
+        // A `getAccountInfo` answer: value.owner is the classic SPL Token
+        // program; value.data[0] is a base64 SPL mint layout whose byte 44
+        // (decimals) is 6 — 68 zero bytes would read 0, so craft it.
+        use base64::Engine as _;
+        let mut mint_layout = vec![0u8; 68];
+        mint_layout[44] = 6;
+        let mint_b64 = base64::engine::general_purpose::STANDARD.encode(mint_layout);
+        let (url_good, _good) = stub_rpc(json!({
+            "jsonrpc": "2.0", "id": 1,
+            "result": {"value": {"owner": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA", "data": [mint_b64, "base64"]}}
+        }))
+        .await;
+        let client = client(&[url_bad, url_good], None);
+        let decimals = client.mint_decimals("someMint").await.unwrap();
+        assert_eq!(decimals, 6);
+        let owner = client.mint_owner("someMint").await.unwrap();
+        assert_eq!(owner, "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA");
+        // The first audit read started on the bad endpoint and failed over;
+        // the round-robin cursor started the second on the good one, so the
+        // bad endpoint saw exactly one hit — the failover worked.
+        assert_eq!(
+            hits_bad.load(std::sync::atomic::Ordering::SeqCst),
+            1,
+            "the bad endpoint was tried once then failed over"
+        );
+    }
+
+    /// The failover's metric shape, read back off a local Prometheus
+    /// recorder: `solana_rpc_errors_total{call,endpoint}` counts each failed
+    /// attempt against the endpoint's host label, `solana_rpc_failovers_
+    /// total{from,to}` the hop the call took, and `solana_rpc_endpoint_
+    /// healthy{endpoint}` the cooldown's 0. Every label is a host — never the
+    /// API-key-carrying URL.
+    #[tokio::test(flavor = "current_thread")]
+    async fn failover_metrics_label_hosts_never_keys() {
+        let recorder = metrics_exporter_prometheus::PrometheusBuilder::new().build_recorder();
+        let handle = recorder.handle();
+        let _guard = metrics::set_default_local_recorder(&recorder);
+        // Endpoint A refuses on an RPC-level error; its URL carries an API
+        // key the labels must never spell. Endpoint B answers.
+        let (url_a, _a) = stub_rpc(json!({
+            "jsonrpc": "2.0", "id": 1,
+            "error": {"code": -32000, "message": "boom"}
+        }))
+        .await;
+        let url_a = format!("{url_a}/?api-key=TOPSECRET");
+        let (url_b, _b) = stub_rpc(signatures_result(&["sigB"])).await;
+        let client = client(&[url_a, url_b], None);
+        let found = client.find_reference("marker").await.unwrap();
+        assert_eq!(found, vec!["sigB".to_owned()]);
+        let rendered = handle.render();
+        // The error counted against endpoint A's host — key-free — and the
+        // failover hop A→B was counted once.
+        assert!(
+            rendered
+                .lines()
+                .any(|line| line.starts_with("solana_rpc_errors_total")
+                    && line.contains("call=\"find_reference\"")
+                    && line.contains("endpoint=\"127.0.0.1:")),
+            "the per-endpoint error counted:\n{rendered}"
+        );
+        assert!(
+            rendered
+                .lines()
+                .any(|line| line.starts_with("solana_rpc_failovers_total")
+                    && line.contains("from=\"127.0.0.1:")
+                    && line.contains("to=\"127.0.0.1:")),
+            "the failover hop was counted:\n{rendered}"
+        );
+        assert!(
+            rendered
+                .lines()
+                .any(|line| line.starts_with("solana_rpc_endpoint_healthy")
+                    && line.contains("endpoint=\"127.0.0.1:")),
+            "the endpoint health gauge moved:\n{rendered}"
+        );
+        // The API key appears nowhere in the exposition document.
+        assert!(!rendered.contains("TOPSECRET"), "{rendered}");
+        drop(_guard);
     }
 }
