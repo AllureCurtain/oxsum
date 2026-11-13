@@ -4305,6 +4305,16 @@ pending deposit; a mainnet rail replaces the config value with an oracle
 lookup recorded the same way. `received_minor` records what the transfer
 actually delivered for human review; nothing auto-patches the opened amount.
 
+`OXSUM_SOLANA_SPL_TOKEN_MINT` turns the same rail onto an SPL token
+(#1121): the intent then prices in the mint's base units and the validator
+reads the recipient's `postTokenBalances`/`preTokenBalances` delta for that
+mint instead of lamport deltas — a worthless-token stand-in is refused by
+the mint match, and a pre-funded recipient ATA can't claim prior holdings
+because the delta is post-minus-pre. The unit tests in
+`crates/integrations/src/solana.rs` pin the `getTransaction` `jsonParsed`
+shape the delta relies on. `examples/solana-topup/` walks the SPL path on a
+scratch-minted token exactly as it does native SOL.
+
 The rail was verified end to end against a **local `solana-test-validator`**,
 not the public devnet — the devnet faucet now answers HTTP 410 to
 `requestAirdrop`, and a local validator's unlimited airdrop is the

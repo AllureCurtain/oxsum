@@ -230,7 +230,7 @@ endpoints serve; none fetches anything.
 | [examples/scoped-management](../examples/scoped-management/README.md) | mint an `oxs-int-` credential, read its selected customer, bill one event through `/api/v1/metering/settlements`, replay it idempotently, and read the operation back under deployment authority — asserting the scope's own refusals | a running deployment |
 | [examples/consumption](../examples/consumption/README.md) | the full customer journey over the documented endpoints: invite → register → manual-receipt top-up → metered call → usage/bill read-back → evidence bundle → offline verify | a running deployment |
 | [examples/webhook-tools](../examples/webhook-tools/README.md) | merchant webhook signature, replay dedup and retry-storm single-credit semantics | a running deployment |
-| [examples/solana-topup](../examples/solana-topup/README.md) | the Solana rail end to end on a real chain: intent → reference-marked transfer → on-demand confirm, replay 404, and unattended credit by the `solana-deposits` poll | a running deployment plus a `solana-test-validator` (or devnet) |
+| [examples/solana-topup](../examples/solana-topup/README.md) | the Solana rail end to end on a real chain — native SOL and an SPL mint: intent → reference-marked transfer → on-demand confirm, replay 404, and unattended credit by the `solana-deposits` poll | a running deployment plus a `solana-test-validator` (or devnet) |
 | `scripts/verify-examples.sh` | every example above, end-to-end, on an owned scratch database and loopback listener | [isolated runner prerequisites and artifact options](development.md#developer-examples-and-the-fresh-install-gate-617) |
 
 The evidence endpoints the examples and SDK consume:

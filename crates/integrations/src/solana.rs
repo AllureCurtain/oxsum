@@ -386,3 +386,143 @@ fn token_delta(
     }
     None
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A `getTransaction(signature, jsonParsed)` payload for an SPL
+    /// `TransferChecked` — the shape `token_delta` reads. `accountKeys` are
+    /// `{pubkey, signer, writable, source}` objects under `jsonParsed`;
+    /// `postTokenBalances` rows expose `owner`, `mint`, `accountIndex` and
+    /// `uiTokenAmount.amount` (a base-unit string). `preTokenBalances` is the
+    /// same shape before the transfer, so a pre-funded ATA can't claim its
+    /// prior holdings.
+    fn spl_tx(post_amount: &str, pre_amount: Option<&str>, mint: &str, owner: &str) -> Value {
+        let pre_row = pre_amount.map(|amount| {
+            json!({
+                "accountIndex": 3, "mint": mint, "owner": owner,
+                "uiTokenAmount": {"amount": amount, "decimals": 6, "uiAmountString": "0"}
+            })
+        });
+        json!({
+            "meta": {
+                "err": null,
+                "preBalances": [],
+                "postBalances": [],
+                "preTokenBalances": pre_row.map_or_else(|| json!([]), |r| json!([r])),
+                "postTokenBalances": [{
+                    "accountIndex": 3, "mint": mint, "owner": owner,
+                    "uiTokenAmount": {"amount": post_amount, "decimals": 6, "uiAmountString": "0"}
+                }]
+            },
+            "transaction": {
+                "message": {
+                    "accountKeys": [
+                        {"pubkey": "PAYER_WALLET", "signer": true, "writable": true, "source": "transaction"},
+                        {"pubkey": "MINT_ATA_FROM", "signer": false, "writable": true, "source": "transaction"},
+                        {"pubkey": mint, "signer": false, "writable": false, "source": "transaction"},
+                        {"pubkey": "MINT_ATA_TO", "signer": false, "writable": true, "source": "transaction"},
+                        {"pubkey": owner, "signer": false, "writable": false, "source": "transaction"},
+                        {"pubkey": "REFERENCE_MARKER", "signer": false, "writable": false, "source": "transaction"}
+                    ]
+                }
+            }
+        })
+    }
+
+    /// The `accountKeys` array the delta walks (same JSON shape the RPC
+    /// answer carries) — index 3 is the recipient's ATA, index 4 its owner.
+    fn keys() -> Vec<Value> {
+        spl_tx("0", None, "m", "o")["transaction"]["message"]["accountKeys"]
+            .as_array()
+            .unwrap()
+            .clone()
+    }
+
+    #[test]
+    fn token_delta_pays_the_recipient_mint() {
+        let tx = spl_tx("5000000", None, "usdcMint", "payToAddr");
+        let delta = token_delta(
+            tx["meta"]["postTokenBalances"].as_array(),
+            tx["meta"]["preTokenBalances"].as_array(),
+            &keys(),
+            "payToAddr",
+            "usdcMint",
+        );
+        assert_eq!(delta, Some(5_000_000));
+    }
+
+    #[test]
+    fn token_delta_subtracts_a_prefunded_ata() {
+        // The recipient's ATA already held tokens; the deposit only counts
+        // what this transfer added, not the closing balance.
+        let tx = spl_tx("7500000", Some("2500000"), "usdcMint", "payToAddr");
+        let delta = token_delta(
+            tx["meta"]["postTokenBalances"].as_array(),
+            tx["meta"]["preTokenBalances"].as_array(),
+            &keys(),
+            "payToAddr",
+            "usdcMint",
+        );
+        assert_eq!(delta, Some(5_000_000));
+    }
+
+    #[test]
+    fn token_delta_refuses_a_wrong_mint() {
+        let tx = spl_tx("5000000", None, "worthlessMint", "payToAddr");
+        let delta = token_delta(
+            tx["meta"]["postTokenBalances"].as_array(),
+            tx["meta"]["preTokenBalances"].as_array(),
+            &keys(),
+            "payToAddr",
+            "usdcMint",
+        );
+        assert_eq!(delta, None);
+    }
+
+    #[test]
+    fn token_delta_refuses_a_different_owner() {
+        // A postTokenBalances row on the right mint but owned by someone
+        // else — the payment went to a different wallet's ATA.
+        let tx = spl_tx("5000000", None, "usdcMint", "anotherWallet");
+        let delta = token_delta(
+            tx["meta"]["postTokenBalances"].as_array(),
+            tx["meta"]["preTokenBalances"].as_array(),
+            &keys(),
+            "payToAddr",
+            "usdcMint",
+        );
+        assert_eq!(delta, None);
+    }
+
+    #[test]
+    fn token_delta_matches_the_ata_address_too() {
+        // When the recipient *is* the ATA address (not the owner), the
+        // accountIndex fallback still matches — a deployment can name an ATA
+        // as `pay_to` and the row is still attributed.
+        let tx = spl_tx("5000000", None, "usdcMint", "someOwner");
+        let delta = token_delta(
+            tx["meta"]["postTokenBalances"].as_array(),
+            tx["meta"]["preTokenBalances"].as_array(),
+            &keys(),
+            "MINT_ATA_TO",
+            "usdcMint",
+        );
+        assert_eq!(delta, Some(5_000_000));
+    }
+
+    #[test]
+    fn token_delta_is_none_without_post_token_balances() {
+        let mut tx = spl_tx("0", None, "m", "o");
+        tx["meta"]["postTokenBalances"] = json!([]);
+        let delta = token_delta(
+            tx["meta"]["postTokenBalances"].as_array(),
+            None,
+            &keys(),
+            "payToAddr",
+            "usdcMint",
+        );
+        assert_eq!(delta, None);
+    }
+}

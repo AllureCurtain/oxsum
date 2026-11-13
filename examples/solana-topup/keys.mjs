@@ -3,7 +3,7 @@
  * Generate the two Solana keypairs the walkthrough uses and airdrop them
  * on a local `solana-test-validator` (or devnet, when one is reachable).
  *
- *   node keys.mjs [--rpc http://127.0.0.1:8899] [--out .]
+ *   node keys.mjs [--rpc http://127.0.0.1:8899] [--out .] [--mint]
  *
  * Writes `payto.json` (the deployment's receiving address — point
  * `OXSUM_SOLANA_PAY_TO` at its public key) and `payer.json` (the customer's
@@ -12,8 +12,16 @@
  * deposit or the payer's transfer is refused (`insufficient funds for
  * rent`), so the script airdrops a small amount to it too. Keypairs are
  * throwaway — never reuse them outside a scratch validator/devnet.
+ *
+ * `--mint` also creates an SPL mint and a payer ATA, and prints `MINT=` for
+ * `OXSUM_SOLANA_SPL_TOKEN_MINT` — the SPL half of the walkthrough needs it.
+ * The payer keeps the mint authority, so there is no separate mint keypair to
+ * save. Devnet already has a public USDC mint
+ * (`4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU`) if you'd rather not mint
+ * your own; this flag is for a scratch validator where nothing exists yet.
  */
 import { Keypair, Connection, LAMPORTS_PER_SOL } from '@solana/web3.js';
+import { createMint, getOrCreateAssociatedTokenAccount, mintTo } from '@solana/spl-token';
 import fs from 'node:fs';
 import path from 'node:path';
 
@@ -22,6 +30,7 @@ const flag = (name, fallback) => {
   const i = args.indexOf(name);
   return i >= 0 ? args[i + 1] : fallback;
 };
+const has = (name) => args.includes(name);
 const RPC = flag('--rpc', 'http://127.0.0.1:8899');
 const OUT = flag('--out', '.');
 
@@ -52,4 +61,15 @@ try {
   console.log(`AIRDROP_FAIL=${e.message}`);
   console.log('On devnet, fund PAYER at https://faucet.solana.com and retry.');
   process.exitCode = 1;
+}
+
+if (has('--mint')) {
+  // An SPL mint on a scratch validator: 6 decimals (USDC's convention). The
+  // payer keeps the mint authority, so `mintTo` can top up its own ATA later
+  // — there is no separate mint keypair file to save.
+  const mint = await createMint(conn, payer, payer.publicKey, null, 6);
+  const ata = await getOrCreateAssociatedTokenAccount(conn, payer, mint, payer.publicKey);
+  await mintTo(conn, payer, mint, ata.address, payer, 1_000_000_000); // 1000 tokens
+  console.log(`MINT=${mint.toBase58()}`);
+  console.log(`PAYER_ATA=${ata.address.toBase58()}`);
 }
