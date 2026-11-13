@@ -3,8 +3,12 @@
 //! terms in `meta`, `expire_solana_deposit` walks `pending`/`confirmed` to
 //! `expired`, and neither misbehaves on a replayed or mis-priced open.
 //! Skips without DATABASE_URL.
-use oxsum_core::{Db, NewUser, SolanaTerms, WalletError};
+use oxsum_core::{
+    ChainLookup, Db, ExpectedTransfer, NewUser, SolanaRailVerifier, SolanaTerms, ValidatedTransfer,
+    WalletError,
+};
 use sqlx::Row;
+use std::sync::{Arc, Mutex};
 use uuid::Uuid;
 
 async fn database(slug: &str) -> Option<Db> {
@@ -194,4 +198,113 @@ async fn expire_solana_deposit_walks_pending_and_confirmed_only() {
         };
         assert_eq!(status, expected, "{st} row after expire");
     }
+}
+
+/// Issue #1127: an intent verifies under the terms it locked in `meta`, not
+/// the deployment's live config. The stub answers whatever signature a
+/// `validate_transfer` probes — the test opens an intent at one rate, builds
+/// the verifier under a *different* live rate, and proves the credit settles
+/// at the locked amount the intent promised, not the repriced figure the
+/// live terms would demand.
+#[derive(Debug)]
+struct OneSig {
+    reference: Mutex<String>,
+    signature: String,
+    delivered: i64,
+}
+
+impl ChainLookup for OneSig {
+    fn find_reference<'a>(
+        &'a self,
+        reference: &'a str,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Vec<String>> + Send + 'a>> {
+        Box::pin(async move {
+            *self.reference.lock().unwrap() = reference.to_owned();
+            vec![self.signature.clone()]
+        })
+    }
+    fn validate_transfer<'a>(
+        &'a self,
+        signature: &'a str,
+        expected: &'a ExpectedTransfer,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Option<ValidatedTransfer>> + Send + 'a>>
+    {
+        Box::pin(async move {
+            if signature != self.signature {
+                return None;
+            }
+            // Honor only the terms the intent locked — the live-rate figure a
+            // repriced verify would demand is deliberately not this.
+            if expected.amount != self.delivered || expected.recipient != self.pay_to() {
+                return None;
+            }
+            Some(ValidatedTransfer {
+                signature: signature.to_owned(),
+                delivered: self.delivered,
+            })
+        })
+    }
+}
+
+impl OneSig {
+    fn pay_to(&self) -> String {
+        "oxsumDepositAddr111111111111111111111111111".to_owned()
+    }
+}
+
+#[tokio::test]
+async fn verify_locked_settles_at_the_intents_terms_not_the_live_config() {
+    let Some(db) = database("solana_locked").await else {
+        return;
+    };
+    let org = organization(&db, "locked").await;
+    // Open at the opening rate: 1000 minor-credits at 200_000_000 minor/SOL =
+    // 5_000 lamports, locked into meta with payTo and the mint.
+    let deposit_id = Uuid::new_v4();
+    let (_reference, lamports, _ttl) = db
+        .open_solana_deposit(org, deposit_id, 1000, &terms())
+        .await
+        .unwrap()
+        .expect("inserts");
+    assert_eq!(lamports, 5_000);
+    // The deployment's live terms shift before the payment confirms: a
+    // doubled rate, a different payTo, a different decimals. A verify that
+    // re-read live terms would demand 10_000 lamports to the new address;
+    // the locked intent must still settle at 5_000 to the locked address.
+    let live = SolanaTerms {
+        pay_to: "aDifferentLivePayTo00000000000000000000000000".to_owned(),
+        spl_token_mint: Some("aLiveMintThatWasNeverLocked".to_owned()),
+        asset_decimals: 6,
+        rate_micro: 400_000_000,
+        intent_ttl_secs: 600,
+    };
+    let verifier = SolanaRailVerifier::new(
+        Arc::new(OneSig {
+            reference: Mutex::new(String::new()),
+            signature: "sigLocked0000000000000000000000000000000000000000000000000".to_owned(),
+            delivered: 5_000,
+        }),
+        live,
+    );
+    // Drive credit_solana_deposit through the verifier. The stub honors only
+    // the locked 5_000-to-payTo figure; had verify used the live terms it
+    // would have demanded the repriced amount and returned None.
+    let tenant_id: String =
+        sqlx::query_scalar("SELECT tenant_id FROM oxsum.organizations WHERE organization_id = $1")
+            .bind(org)
+            .fetch_one(db.pool())
+            .await
+            .unwrap();
+    let wallet = oxsum_core::Wallet::open(db.pool().clone(), &tenant_id)
+        .await
+        .unwrap();
+    let receipt = db
+        .credit_solana_deposit(&wallet, deposit_id, &verifier, time::Date::MAX)
+        .await
+        .unwrap()
+        .expect("the locked intent credits");
+    assert!(receipt.is_new, "the credit ran fresh, not a replay");
+    // The wallet now holds exactly the opened 1000 minor-credits — the locked
+    // amount, not a repriced figure.
+    assert_eq!(wallet.available().await.unwrap(), 1000);
 }

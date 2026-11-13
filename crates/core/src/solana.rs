@@ -174,6 +174,115 @@ impl SolanaRailVerifier {
     pub fn terms(&self) -> &SolanaTerms {
         &self.terms
     }
+
+    /// The terms an opened intent locked in its `meta` — the figures verify
+    /// must honor. Falls back to the deployment's current terms for any field
+    /// an older intent did not record, so a deposit opened before a config
+    /// change still verifies under what it promised. `meta` is the deposit's
+    /// own column, not caller input, so a poisoned field simply does not
+    /// override — it was written by `open_solana_deposit` itself.
+    fn locked_terms(&self, meta: &serde_json::Value) -> SolanaTerms {
+        let get = |key: &str| meta.get(key);
+        SolanaTerms {
+            pay_to: get("payTo")
+                .and_then(serde_json::Value::as_str)
+                .map_or_else(|| self.terms.pay_to.clone(), str::to_owned),
+            spl_token_mint: match meta.get("splToken") {
+                Some(serde_json::Value::Null) => None,
+                Some(v) => v
+                    .as_str()
+                    .map(str::to_owned)
+                    .or_else(|| self.terms.spl_token_mint.clone()),
+                None => self.terms.spl_token_mint.clone(),
+            },
+            asset_decimals: get("assetDecimals")
+                .and_then(serde_json::Value::as_u64)
+                .map_or(self.terms.asset_decimals, |d| d as u32),
+            rate_micro: get("rateMicro")
+                .and_then(serde_json::Value::as_i64)
+                .unwrap_or(self.terms.rate_micro),
+            intent_ttl_secs: self.terms.intent_ttl_secs,
+        }
+    }
+
+    /// Verifies a presented intent `payload` against the terms locked in
+    /// `meta` — the intent's own promise, not the deployment's live config.
+    /// This is what `credit_solana_deposit` calls once it holds the row's
+    /// `meta`; a mid-flight `OXSUM_SOLANA_*` change cannot retro-price or
+    /// re-target a pending deposit.
+    pub async fn verify_locked<'a>(
+        &'a self,
+        payload: &'a [u8],
+        amount_minor: Option<i64>,
+        meta: &'a serde_json::Value,
+    ) -> Option<VerifiedPayment> {
+        let locked = self.locked_terms(meta);
+        self.verify_with(payload, amount_minor, &locked).await
+    }
+
+    /// The shared verify body: `terms` is either the deployment's live
+    /// `SolanaTerms` (the `verify` seam, used wherever no locked intent is in
+    /// hand) or the intent's own `locked_terms` (the credit path).
+    async fn verify_with(
+        &self,
+        payload: &[u8],
+        amount_minor: Option<i64>,
+        terms: &SolanaTerms,
+    ) -> Option<VerifiedPayment> {
+        let reference = std::str::from_utf8(payload).ok()?.trim();
+        if reference.is_empty() {
+            return None;
+        }
+        let signatures = self.chain.find_reference(reference).await;
+        // The intent's declared credit amount is what the deposit opened
+        // for — `amount_minor` is the caller's claim, the opened deposit's
+        // `amount_minor` is authoritative. Convert it to the base units the
+        // payment had to deliver at the locked rate and decimals.
+        let opened = amount_minor?;
+        let expected = credits_to_asset_units(opened, terms.rate_micro, terms.asset_decimals);
+        // Walk every signature the marker indexed, newest first, and take the
+        // first that honors the intent — a later failed or dishonoring
+        // transaction on the same marker must not stall the earlier paying
+        // one.
+        let mut validated = None;
+        for signature in &signatures {
+            validated = self
+                .chain
+                .validate_transfer(
+                    signature,
+                    &ExpectedTransfer {
+                        recipient: terms.pay_to.clone(),
+                        amount: expected,
+                        spl_token_mint: terms.spl_token_mint.clone(),
+                        reference: reference.to_owned(),
+                    },
+                )
+                .await;
+            if validated.is_some() {
+                break;
+            }
+        }
+        let validated = validated?;
+        Some(VerifiedPayment {
+            // The credit the ledger books is the opened amount — the payment
+            // met its terms. `receivedCredits` converts the delivered asset
+            // units back at the locked rate so the deposit records what the
+            // chain paid in the ledger's own units; an over/under lands there
+            // for a human, never auto-patched.
+            amount_minor: opened,
+            payment_ref: reference.to_owned(),
+            payer: validated.signature.clone(),
+            context: json!({
+                "signature": validated.signature,
+                "delivered": validated.delivered,
+                "receivedCredits": asset_units_to_credits(
+                    validated.delivered,
+                    terms.rate_micro,
+                    terms.asset_decimals,
+                ),
+            }),
+        })
+    }
 }
 
 impl RailVerifier for SolanaRailVerifier {
@@ -190,61 +299,11 @@ impl RailVerifier for SolanaRailVerifier {
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Option<VerifiedPayment>> + Send + 'a>>
     {
         Box::pin(async move {
-            let reference = std::str::from_utf8(payload).ok()?.trim();
-            if reference.is_empty() {
-                return None;
-            }
-            let signatures = self.chain.find_reference(reference).await;
-            // The intent's declared credit amount is what the deposit opened
-            // for — `amount_minor` is the caller's claim, the opened deposit's
-            // `amount_minor` is authoritative. Convert it to the lamports (or
-            // SPL base units) the payment had to deliver at the locked rate.
-            let opened = amount_minor?;
-            let expected_lamports =
-                credits_to_asset_units(opened, self.terms.rate_micro, self.terms.asset_decimals);
-            // Walk every signature the marker indexed, newest first, and take
-            // the first that honors the intent — a later failed or dishonoring
-            // transaction on the same marker must not stall the earlier paying
-            // one.
-            let mut validated = None;
-            for signature in &signatures {
-                validated = self
-                    .chain
-                    .validate_transfer(
-                        signature,
-                        &ExpectedTransfer {
-                            recipient: self.terms.pay_to.clone(),
-                            amount: expected_lamports,
-                            spl_token_mint: self.terms.spl_token_mint.clone(),
-                            reference: reference.to_owned(),
-                        },
-                    )
-                    .await;
-                if validated.is_some() {
-                    break;
-                }
-            }
-            let validated = validated?;
-            Some(VerifiedPayment {
-                // The credit the ledger books is the opened amount — the
-                // payment met its terms. `receivedCredits` converts the
-                // delivered asset units back at the locked rate so the
-                // deposit records what the chain paid in the ledger's own
-                // units; an over/under lands there for a human, never
-                // auto-patched.
-                amount_minor: opened,
-                payment_ref: reference.to_owned(),
-                payer: validated.signature.clone(),
-                context: json!({
-                    "signature": validated.signature,
-                    "delivered": validated.delivered,
-                    "receivedCredits": asset_units_to_credits(
-                        validated.delivered,
-                        self.terms.rate_micro,
-                        self.terms.asset_decimals,
-                    ),
-                }),
-            })
+            // The generic seam verifies under the deployment's live terms —
+            // the credit path overrides with the intent's locked meta via
+            // `verify_locked` so a pending deposit can never be retro-priced.
+            self.verify_with(payload, amount_minor, &self.terms.clone())
+                .await
         })
     }
 
@@ -363,6 +422,7 @@ impl Db {
             "splToken": terms.spl_token_mint,
             "solLamports": lamports,
             "rateMicro": terms.rate_micro,
+            "assetDecimals": terms.asset_decimals,
             "rateSource": "config",
             "rateLockedAt": time::OffsetDateTime::now_utc()
                 .format(&time::format_description::well_known::Rfc3339)
@@ -432,7 +492,7 @@ impl Db {
         &self,
         wallet: &Wallet,
         deposit_id: Uuid,
-        verifier: &dyn RailVerifier,
+        verifier: &SolanaRailVerifier,
         on: time::Date,
     ) -> Result<Option<crate::wallet::Receipt>, WalletError> {
         let mut tx = self.pool().begin().await?;
@@ -454,14 +514,18 @@ impl Db {
         let amount_minor: i64 = row.try_get("amount_minor")?;
         let status: String = row.try_get("status")?;
         let payment_ref: String = row.try_get("payment_ref")?;
+        let meta: serde_json::Value = row.try_get("meta")?;
         // Only a `pending` intent proceeds — `confirmed`/`credited` is done,
         // `expired` lapsed.
         if status != "pending" {
             tx.commit().await?;
             return Ok(None);
         }
+        // Verify under the terms this intent locked in `meta` — its own
+        // promise, not the deployment's live config, so a mid-flight
+        // OXSUM_SOLANA_* change cannot reprice or re-target it (issue #1127).
         let payment = verifier
-            .verify(payment_ref.as_bytes(), Some(amount_minor))
+            .verify_locked(payment_ref.as_bytes(), Some(amount_minor), &meta)
             .await
             .ok_or_else(|| WalletError::Forbidden("the payment is not verified".into()))?;
         // Record the located signature before the credit runs — the chain's
@@ -582,7 +646,7 @@ impl Db {
     /// the same pattern `recover_x402_credits` uses.
     pub async fn poll_solana_deposits(
         &self,
-        verifier: &dyn RailVerifier,
+        verifier: &SolanaRailVerifier,
         tenants: &crate::Tenants,
         on: time::Date,
     ) -> Result<(u64, u64, u64), WalletError> {
