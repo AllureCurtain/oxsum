@@ -1,11 +1,27 @@
 openapi: 3.1.0
 info:
   title: oxsum API
-  version: 0.123.0
+  version: 0.124.0
   x-consumption-cache: Response cache v2 binds the exact complete request, concrete endpoint and semantic headers, customer/key permissions, selected experiment/mandate, alias targets, and every admitted route's price, destination, settings and credential configuration. A primary route without an available credential cannot serve a cache hit. Text case and whitespace are significant; old digests miss. Legacy excludeSystem is accepted but ignored.
   x-ledger-description: Ledger descriptions contain at most 16384 Unicode scalar values (at most 65536 UTF-8 bytes before JSON escaping). Settlement v14 and canonical hashes are unchanged; full subscription/cache provenance is retained. Writers and offline/browser verifiers must support this bound. Older 512-character readers cannot read longer new entries even with the same database schema. Arbitrary guardrail-output budgeting remains issue 875.
   description: |
     Common conventions (auth, idempotency, error format, money units) are documented in docs/api.md.
+
+    0.124.0 adds the solana rail's operator exception queue and pull-payment
+    refund flow (issue #1142). Deposits whose located paying transfer cannot
+    settle no longer masquerade as `pending`: an under-delivery marks
+    `underpaid`, a transfer landing at/after `expiresAt` marks `late`, an
+    over-delivery credits the opened amount and marks `overpaid`, and
+    `flagged` is held for review — all judged in the locked asset's own base
+    units (lamports for `sol`, the mint's units for SPL, issue #1140).
+    `GET /api/v1/admin/solana/exceptions` lists the queue; the refund
+    lifecycle is a pull payment — the operator opens it
+    (`POST /api/v1/admin/solana/{depositId}/refund`), the customer names the
+    refund address (`POST /api/v1/topups/solana/{depositId}/refund-address`),
+    the operator approves (`…/refund-approve`), the multisig pays out-of-band
+    in the locked asset, and the recorded payout signature closes the deposit
+    `refunded` (`…/refund-complete`). The server holds no spend key: nothing
+    auto-sends, and no ledger entry posts on the refund path.
 
     0.123.0 makes the manual month-close's progress observable (issue #1090):
     `POST /api/v1/admin/closings` answers `{jobId, month, status}` — the
@@ -4186,12 +4202,17 @@ paths:
         The located transaction's signature lands in `facilitator_tx_hash` and
         keys the `solana:<signature>` ledger credit, so a raced poll or a
         replayed confirm credits nothing twice. `403` means no honoring
-        transfer has landed yet — or the found one does not honor the intent
-        (wrong recipient, underpayment, wrong mint, missing marker) — **or the
+        transfer has landed yet — or the found one is not the intent's
+        payment (wrong recipient, wrong mint, missing marker) — **or the
         paying transaction already credited another deposit**: one on-chain
         signature credits at most one deposit ever, whatever organization
         opened it, so a transaction carrying two markers pays once but does
-        not spend twice. `404` means no `pending` intent answers to that
+        not spend twice. A located transfer that *is* the intent's payment
+        but cannot settle is `409` (issue #1142): an under-delivery in the
+        locked asset's base units marks `underpaid`, a `blockTime` at/after
+        `expiresAt` marks `late`, and the deposit sits on the operator's
+        exception queue rather than looping `pending` forever. `404` means no
+        `pending` intent answers to that
         `reference` — including the race where the `solana-deposits` poll
         already credited it (the money arrived; the `404` is "no open intent",
         not "the deposit is missing") and the same `404` when the screen
@@ -4213,6 +4234,77 @@ paths:
         "401": { $ref: "#/components/responses/Error" }
         "403": { $ref: "#/components/responses/Error" }
         "404": { $ref: "#/components/responses/Error" }
+        "409": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
+        "503": { $ref: "#/components/responses/Error" }
+  /api/v1/topups/solana/deposits:
+    get:
+      x-consumption-key-access: denied
+      security: [{ sessionCookie: [] }]
+      summary: The organization's own solana exception deposits
+      description: |
+        The customer side of the exception queue (issue #1142): the
+        organization's `solana` deposits in `underpaid`/`overpaid`/`late`/
+        `flagged`/`refund_pending`/`refunded`, newest first — the Topup
+        surface's "your deposit needs attention" list. A `refund_pending`
+        row is where `POST /topups/solana/{depositId}/refund-address`
+        writes; `refund.approvedAt` means the payout is cleared for signing,
+        `refundSignature` is the closed refund's on-chain proof. A
+        deployment without `OXSUM_SOLANA_*` answers 503.
+      responses:
+        "200":
+          description: The organization's solana exception deposits, newest first
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    type: array
+                    items: { $ref: "#/components/schemas/SolanaExceptionDeposit" }
+        "401": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
+        "503": { $ref: "#/components/responses/Error" }
+  /api/v1/topups/solana/{depositId}/refund-address:
+    post:
+      x-consumption-key-access: denied
+      security: [{ sessionCookie: [] }]
+      summary: Supply the pull-payment refund address
+      description: |
+        The customer's leg of the pull-payment refund (issue #1142): names
+        the base58 Solana public key the refund pays — the rail never
+        derives the payer, so the customer supplies where the money goes.
+        Only a `refund_pending` deposit of the caller's own organization
+        accepts it, and only before the operator's approval freezes the
+        address: a post-approval edit could redirect the payout. `400` on a
+        malformed address, `404` on a deposit that is not the
+        organization's, `409` on one not awaiting an address or already
+        approved. A deployment without `OXSUM_SOLANA_*` answers 503.
+      parameters:
+        - name: depositId
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/SolanaRefundAddressRequest" }
+      responses:
+        "200":
+          description: The deposit, carrying its recorded refund address
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data: { $ref: "#/components/schemas/SolanaExceptionDeposit" }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "409": { $ref: "#/components/responses/Error" }
         "500": { $ref: "#/components/responses/Error" }
         "503": { $ref: "#/components/responses/Error" }
   /api/v1/webhooks/stripe:
@@ -11035,6 +11127,174 @@ paths:
         "404": { $ref: "#/components/responses/Error" }
         "409": { $ref: "#/components/responses/Error" }
         "500": { $ref: "#/components/responses/Error" }
+  /api/v1/admin/solana/exceptions:
+    get:
+      summary: The solana rail's exception queue
+      description: |
+        The operator's exception queue for the `solana` deposit rail (issue
+        #1142): deposits the verify path marked — `underpaid` (a located
+        transfer delivered under the asked amount in the locked asset's base
+        units), `overpaid` (it over-delivered; the opened amount still
+        credited and `entryId` proves it), `late` (the paying transaction's
+        `blockTime` is at/after the intent's `expiresAt`) and `flagged` (held
+        for review) — plus the refund lifecycle's `refund_pending` and
+        `refunded` states. `status` narrows to one; an unknown status is
+        `400`. Each row names its `asset` — the whitelist key the intent
+        locked — so the operator reads which denomination
+        `delivered`/`expected` count in. Read-only: nothing here moves money
+        — a refund is a pull payment paid by the multisig out-of-band, never
+        sent by this server.
+      security:
+        - adminToken: []
+      parameters:
+        - name: status
+          in: query
+          required: false
+          schema:
+            type: string
+            enum: [underpaid, overpaid, late, flagged, refund_pending, refunded]
+          description: narrow to one exception status
+        - name: limit
+          in: query
+          required: false
+          schema: { type: integer, minimum: 1, maximum: 200, default: 50 }
+        - name: cursor
+          in: query
+          required: false
+          schema: { type: string }
+          description: the `nextCursor` a previous page answered — opaque, echoed
+      responses:
+        "200":
+          description: A page of exception-queue rows, newest first
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    type: object
+                    required: [entries]
+                    properties:
+                      entries:
+                        type: array
+                        items: { $ref: "#/components/schemas/SolanaExceptionDeposit" }
+                      nextCursor: { type: string, description: present when another page follows }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
+  /api/v1/admin/solana/{depositId}/refund:
+    post:
+      summary: Open a pull-payment refund on an exception deposit
+      description: |
+        Opens a refund on an `underpaid`/`overpaid`/`late`/`flagged` solana
+        deposit (issue #1142): the row moves to `refund_pending` and
+        `meta.refund` records the operator, the time and the reason. The
+        flow is a pull payment — the customer supplies the refund address on
+        their own surface, the operator approves, the multisig pays
+        out-of-band, and `refund-complete` records the payout signature.
+        Re-requesting an open refund replays the standing row; a `refunded`
+        or non-refundable deposit is `409`, an unknown one `404`. Nothing
+        moves on-chain: the server holds no spend key and never auto-sends.
+      security:
+        - adminToken: []
+      parameters:
+        - name: depositId
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/SolanaRefundRequest" }
+      responses:
+        "200":
+          description: The deposit, now `refund_pending`
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data: { $ref: "#/components/schemas/SolanaExceptionDeposit" }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "409": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
+  /api/v1/admin/solana/{depositId}/refund-approve:
+    post:
+      summary: Approve an opened solana refund for the multisig payout
+      description: |
+        Records the operator's approval on a `refund_pending` deposit
+        (issue #1142): `meta.refund.approvedBy`/`approvedAt` mark the refund
+        cleared for signing. The customer must have supplied their refund
+        address first — an approval with nowhere to pay is `409`, and the
+        address freezes at approval so a later edit cannot redirect the
+        payout. Approving an already-approved refund replays it.
+      security:
+        - adminToken: []
+      parameters:
+        - name: depositId
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        "200":
+          description: The deposit, approved for payout
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data: { $ref: "#/components/schemas/SolanaExceptionDeposit" }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "409": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
+  /api/v1/admin/solana/{depositId}/refund-complete:
+    post:
+      summary: Record the multisig payout's signature and close the refund
+      description: |
+        Closes an approved refund (issue #1142): records the payout
+        transaction's base58 signature — the refund's on-chain proof — in
+        `meta.refundSignature` and lands the deposit `refunded`, terminal.
+        The payout already happened: the multisig signed it off-server in
+        the asset the intent locked, so this is bookkeeping and audit, never
+        a send, and no ledger entry posts. A replayed complete with the
+        standing signature answers the closed row; a contradicting signature
+        on a `refunded` row and a complete before approval are `409`; a
+        malformed signature is `400`.
+      security:
+        - adminToken: []
+      parameters:
+        - name: depositId
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/SolanaRefundCompleteRequest" }
+      responses:
+        "200":
+          description: The deposit, now `refunded`
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data: { $ref: "#/components/schemas/SolanaExceptionDeposit" }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "409": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
   /api/v1/admin/margin:
     get:
       summary: What the platform charged versus what upstream cost it, per channel and model
@@ -16550,14 +16810,18 @@ components:
           description: what the rail reported paid, when it differs from `amountMinor`
         status:
           type: string
-          enum: [pending, confirmed, credited, reversed, expired, flagged]
+          enum: [pending, confirmed, credited, reversed, expired, underpaid, overpaid, late, flagged, refund_pending, refunded]
           description: |
             `pending` (opened, not paid), `confirmed` (the rail says paid, the
             ledger has not credited yet), `credited` (the wallet moved, `entryId`
-            names the entry), `reversed` (a refund/chargeback outcome),
-            `expired` (never paid in time) or `flagged` (the solana rail's
-            screening park — the payer hit a sanctions source before credit,
-            issue #1144)
+            names the entry), `reversed` (a refund/chargeback outcome) or
+            `expired` (never paid in time). The `solana` rail adds its
+            exception-queue statuses (issue #1142): `underpaid` (a located
+            transfer delivered under the asked amount in the locked asset's
+            base units), `overpaid` (it over-delivered — the opened amount
+            credited, `entryId` proves it), `late` (the paying transaction's
+            `blockTime` is at/after `expiresAt`), `flagged` (held for review — the solana rail's screening park, the payer hit a sanctions source before credit, issue #1144),
+            and the pull-payment refund lifecycle `refund_pending`/`refunded`.
         entryId: { type: string, format: uuid, nullable: true, description: the ledger entry that credited the wallet, once credited }
         reversalEntryId: { type: string, format: uuid, nullable: true, description: the ledger entry that reversed the credit (Wallet debited, Cash credited), once reversed }
         reversedAt: { type: string, format: date-time, nullable: true, description: when the deposit reversed }
@@ -16950,6 +17214,63 @@ components:
           type: string
           minLength: 1
           description: the intent's `reference` marker — the caller's copy of the intent it opened, not the chain signature; the rail locates and validates the paying transaction itself
+    SolanaExceptionDeposit:
+      type: object
+      description: |
+        One solana deposit as the exception queue and the customer's own view
+        read it (issue #1142). `asset` is the whitelist key the intent
+        locked; `delivered`/`expected` are that asset's own base units —
+        lamports for `sol`, the mint's units for SPL — while `receivedMinor`
+        is the delivered figure converted back to minor-credits at the
+        intent's locked rate.
+      required: [depositId, organizationId, organization, status, paymentRef, amountMinor, createdAt, updatedAt]
+      properties:
+        depositId: { type: string, format: uuid }
+        organizationId: { type: string, format: uuid }
+        organization: { type: string, description: the organization's display name }
+        status:
+          type: string
+          description: the deposit's status — an exception status on the queue, or a shared-walk one while it still moves
+        asset: { type: string, nullable: true, description: the whitelist asset the intent locked (sol, usdc, …) — the denomination `delivered`/`expected` count in and the refund repays }
+        paymentRef: { type: string, description: the intent's `reference` marker }
+        amountMinor: { type: integer, format: int64, description: the credit amount the intent opened for }
+        receivedMinor: { type: integer, format: int64, nullable: true, description: what the located transfer was worth in minor-credits at the locked rate }
+        delivered: { type: integer, format: int64, nullable: true, description: what the transfer delivered, in the locked asset's own base units }
+        expected: { type: integer, format: int64, nullable: true, description: what the intent demanded, in the locked asset's own base units }
+        splToken: { type: string, nullable: true, description: the SPL mint the intent priced in; null for native SOL }
+        signature: { type: string, nullable: true, description: the paying transaction's signature }
+        entryId: { type: string, format: uuid, nullable: true, description: the ledger entry that credited the wallet — set on `overpaid`, whose opened amount still credited }
+        refundAddress: { type: string, nullable: true, description: the customer's refund address — supplied, never derived }
+        refund:
+          type: object
+          nullable: true
+          description: |
+            The refund record `meta.refund` walks: `requestedBy`,
+            `requestedAt` and `reason` at open, `addressedAt` once the
+            customer names the address, `approvedBy`/`approvedAt` at the
+            operator's verdict, `completedAt` when the payout signature
+            lands.
+        refundSignature: { type: string, nullable: true, description: the multisig payout's on-chain signature — the refund's proof }
+        createdAt: { type: string, format: date-time }
+        updatedAt: { type: string, format: date-time }
+    SolanaRefundRequest:
+      type: object
+      additionalProperties: false
+      required: [reason]
+      properties:
+        reason: { type: string, minLength: 1, description: why the refund is opened — the reason the queue row and the audit entry carry }
+    SolanaRefundCompleteRequest:
+      type: object
+      additionalProperties: false
+      required: [signature]
+      properties:
+        signature: { type: string, minLength: 1, description: the multisig payout transaction's base58 signature — the refund's on-chain proof }
+    SolanaRefundAddressRequest:
+      type: object
+      additionalProperties: false
+      required: [address]
+      properties:
+        address: { type: string, minLength: 1, description: the base58 Solana public key the pull-payment refund pays }
     SettleRequest:
       type: object
       required: [holdKey, actualMinor]

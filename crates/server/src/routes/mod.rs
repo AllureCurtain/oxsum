@@ -186,6 +186,13 @@ pub fn router(state: AppState) -> Router {
         .route("/topups/x402", post(billing::x402_topup))
         .route("/topups/solana", post(billing::solana_topup))
         .route("/topups/solana/confirm", post(billing::solana_confirm))
+        // The customer's side of the exception queue (issue #1142): their
+        // own solana exception deposits, and the pull-payment refund address.
+        .route("/topups/solana/deposits", get(billing::solana_deposits))
+        .route(
+            "/topups/solana/{deposit_id}/refund-address",
+            post(billing::solana_refund_address),
+        )
         .route("/redemptions", post(billing::redeem))
         .route("/bundles", get(bundles::catalog))
         .route("/checkout-options", get(merchants::checkout_options))

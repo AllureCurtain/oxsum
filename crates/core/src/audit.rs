@@ -154,6 +154,12 @@ pub mod action {
     pub const GROUP_SET: &str = "group.set";
     /// A group was deleted.
     pub const GROUP_DELETE: &str = "group.delete";
+    /// A pull-payment refund was opened on a solana exception deposit.
+    pub const SOLANA_REFUND_REQUEST: &str = "solana.refund.request";
+    /// An opened solana refund was approved for the multisig payout.
+    pub const SOLANA_REFUND_APPROVE: &str = "solana.refund.approve";
+    /// A solana refund's payout signature was recorded, closing the deposit.
+    pub const SOLANA_REFUND_COMPLETE: &str = "solana.refund.complete";
 
     /// Every action the surface writes — the `action` filter's vocabulary.
     pub const ALL: &[&str] = &[
@@ -209,6 +215,9 @@ pub mod action {
         MODEL_FALLBACK_DELETE,
         GROUP_SET,
         GROUP_DELETE,
+        SOLANA_REFUND_REQUEST,
+        SOLANA_REFUND_APPROVE,
+        SOLANA_REFUND_COMPLETE,
     ];
 }
 
