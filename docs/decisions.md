@@ -4222,3 +4222,30 @@ outside the lock set entirely.
   is captured into `UsageAnchorReport::failed` and logged, and the next
   organization still anchors; the failed one leaves no row, so the next pass
   retries it.
+
+## 2026-11-13 — Close-month progress rides the job row (#1090)
+
+The manual month-close already ran as a claimed `close-month` job (#1096), but
+the request answered only `{month, status}` — the console could not tell a
+slow pass from a stuck one, and a second month's request was silently
+absorbed by the kind's singleton index. The run now writes its walk to the
+row itself: migration 0132 adds `oxsum.jobs.result` (jsonb, objects only),
+the attempt's `CloseMonthProgress` (`organizations`/`processed`/`sealed`/
+`failed`/`failures`, the first fifty failures named) written fenced on
+`(job_id, claimed_at)` after every organization, and `GET
+/api/v1/admin/closings/jobs/{jobId}` answers it. `POST /admin/closings`
+answers `{jobId, month, status}`; a retry of the same month answers
+`already-queued` naming the live run, while a *different* month in flight
+answers `409` instead of being dropped.
+
+Progress writes fence on the claim stamp like `finish_job`/`fail_job` do: a
+pass that outlives its lease is reclaimed by another worker, and the first
+walk stops at its next write with a `Conflict` rather than two walkers
+interleaving `processed` counts. Failure reasons are minimized to what the
+console may show — a `PostgresError::Period` message (period ids and dates)
+or an `InvalidInput` string, both verified safe on this path; everything
+else collapses to a fixed generic reason with the real error in the server
+log, because storage errors can embed tenant ids or schema names. An attempt
+that seals nothing while every visited organization failed still fails the
+run (the `last_error` carries counts only), so a wholly-broken pass retries
+on the backoff instead of reading as a successful no-op.

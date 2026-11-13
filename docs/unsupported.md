@@ -51,6 +51,7 @@ changed terms conflicts.
 | `POST /api/v1/webhooks/merchants/{id}/versions/{vid}` with a provider `event_id` already received under different bytes | `409` — "merchant event ID was reused with different content" | the payload digest pins what the id first claimed; a mutation cannot rewrite the intake record (`crates/core/src/merchant_events.rs`) |
 | Any write endpoint's `idempotencyKey` replayed with changed terms (order create, metering settle, integration-credential mint, manual receipt) | `409` | a key names one operation; identical terms return the original result, changed ones conflict — the original bytes win |
 | A settled metering hold settled again, or a hold that is not outstanding | `409` / `404` | the settlement is derived from the hold's key and lands at most once |
+| `POST /api/v1/admin/closings` for one month while a close of a different month is pending or running | `409` | the `close-month` kind holds one live run at a time — the kind's partial unique index makes the concurrency real, and a same-month retry instead answers `already-queued` naming that run (issue #1090) |
 
 ## Manual receipt provider refunds — 409 `CONFLICT`
 
