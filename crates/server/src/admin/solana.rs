@@ -149,16 +149,61 @@ pub(crate) async fn request_refund(
     ok(deposit)
 }
 
-/// `POST /api/v1/admin/solana/{depositId}/refund-approve` (issue #1142):
-/// approves an open refund — the review verdict that tells the multisig
-/// signer the payout may be signed. The customer must have named their
-/// refund address first: an approval with nowhere to pay is `409`, an
+/// `POST /api/v1/admin/solana/{depositId}/refund-approve` (issues #1142,
+/// #1184): approves an open refund — the review verdict that tells the
+/// multisig signer the payout may be signed. The customer must have named
+/// their refund address first: an approval with nowhere to pay is `409`, an
 /// already-approved refund replays.
+///
+/// Before the approval is recorded the standing `refundAddress` is screened
+/// through the same `SanctionsScreen` the payer check runs (issue #1184): a
+/// `Flagged` hit refuses `409` — the refund cannot pay a sanctioned address,
+/// so the operator's options are the deposit staying `refund_pending` or a
+/// separately documented compliance exception, never an approve-and-hope.
+/// A `TemporarilyUnavailable` screen refuses `403` — deny-until-cleared,
+/// the same posture the pre-credit screen takes. When the deployment has no
+/// `OXSUM_SOLANA_SANCTIONS_*` gate the screen is a no-op `Clear` and the
+/// approve is exactly as before.
 pub(crate) async fn approve_refund(
     State(state): State<AppState>,
     Path(deposit_id): Path<Uuid>,
 ) -> ApiResult<oxsum_core::SolanaExceptionDeposit> {
-    let deposit = state.db.solana_approve_refund(deposit_id, OPERATOR).await?;
+    // Read the standing refund address, screen it, then approve bound to
+    // that same address — a customer edit landing between the screen and
+    // the approval is a `Conflict` inside `solana_approve_refund`, never a
+    // silently redirected payout. An already-approved refund replays without
+    // a screen — the freeze already happened; re-screening the replay would
+    // refuse what the first approval legitimately stands behind.
+    let standing = state.db.solana_exception_deposit(deposit_id).await?;
+    let already_approved = standing
+        .refund
+        .as_ref()
+        .is_some_and(|r| r["approvedAt"].is_string());
+    let screened = if !already_approved && let Some(address) = standing.refund_address.as_deref() {
+        if let Some(verifier) = state.config.solana() {
+            match verifier.screen_address(address).await {
+                oxsum_core::ScreenVerdict::Clear => Some(address.to_owned()),
+                oxsum_core::ScreenVerdict::Flagged { source, reason } => {
+                    return Err(ApiError::Conflict(format!(
+                        "the refund address is flagged by {source} ({reason}); the refund cannot be approved"
+                    )));
+                }
+                oxsum_core::ScreenVerdict::TemporarilyUnavailable => {
+                    return Err(ApiError::Forbidden(
+                        "the refund address could not be screened; the approval waits".into(),
+                    ));
+                }
+            }
+        } else {
+            None
+        }
+    } else {
+        None
+    };
+    let deposit = state
+        .db
+        .solana_approve_refund(deposit_id, OPERATOR, screened.as_deref())
+        .await?;
     record(
         &state,
         oxsum_core::audit_action::SOLANA_REFUND_APPROVE,
@@ -169,6 +214,65 @@ pub(crate) async fn approve_refund(
             "refundAddress": deposit.refund_address,
         }),
         Some(&format!("solana-refund-approve/{deposit_id}")),
+    )
+    .await?;
+    ok(deposit)
+}
+
+/// The body of `POST …/solana/{depositId}/screening-clear`: why the operator
+/// cleared the flagged deposit — the review note the audit entry and
+/// `meta.screening.clearReason` carry. Required: a clear with no recorded
+/// reasoning is not a review.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(crate) struct ScreeningClearReq {
+    reason: String,
+}
+
+/// `POST /api/v1/admin/solana/{depositId}/screening-clear` (issue #1184):
+/// the review-then-credit path for a `flagged` deposit — the operator's
+/// manual-review verdict that the parked payment may credit after all.
+/// This is manual review, never a bypass: only a `flagged` row answers, the
+/// credit books the already-verified transfer under the same
+/// `solana:<signature>` idempotency key and the same `FOR UPDATE` row
+/// discipline the ordinary credit path takes, and `meta.screening`
+/// attributes the clear (`clearedBy`/`clearedAt`/`clearReason`) beside the
+/// flag's own verdict. A replayed clear answers the standing credited row;
+/// a non-`flagged` deposit is `409`, an unknown one `404`, and a flagged
+/// row that never recorded its paying signature cannot credit — `409`, the
+/// refund path is how that row unwinds. A deployment without
+/// `OXSUM_SOLANA_*` answers 503: the rail's admin surface is the rail's.
+pub(crate) async fn screening_clear(
+    State(state): State<AppState>,
+    Path(deposit_id): Path<Uuid>,
+    ApiJson(request): ApiJson<ScreeningClearReq>,
+) -> ApiResult<oxsum_core::SolanaExceptionDeposit> {
+    state.config.solana().ok_or_else(|| {
+        ApiError::ServiceUnavailable("the solana deposit rail is not configured".into())
+    })?;
+    let deposit = state
+        .db
+        .solana_screening_clear(
+            &state.tenants,
+            deposit_id,
+            OPERATOR,
+            &request.reason,
+            crate::today(),
+        )
+        .await?;
+    record(
+        &state,
+        oxsum_core::audit_action::SOLANA_SCREENING_CLEAR,
+        Some(deposit_id.to_string()),
+        serde_json::json!({
+            "organizationId": deposit.organization_id,
+            "asset": deposit.asset,
+            "status": deposit.status,
+            "signature": deposit.signature,
+            "entryId": deposit.entry_id,
+            "reason": request.reason,
+        }),
+        Some(&format!("solana-screening-clear/{deposit_id}")),
     )
     .await?;
     ok(deposit)
