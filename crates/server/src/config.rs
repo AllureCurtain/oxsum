@@ -1754,6 +1754,68 @@ fn x402_of() -> Result<Option<Arc<dyn oxsum_core::RailVerifier>>, String> {
         .map_err(|error| error.to_string())
 }
 
+/// What the boot proved about where the rail's `payTo` lives — the custody
+/// half of issue #1143. The server holds no spend key; this records whether
+/// the receiving address was verified to be the multisig vault it should be.
+#[derive(Debug, PartialEq, Eq)]
+enum SolanaCustody {
+    /// `OXSUM_SOLANA_MULTISIG_ACCOUNT` was set and `payTo` *is* the multisig's
+    /// `vault index 0` PDA — the strongest statement the boot can make
+    /// without on-chain introspection.
+    VerifiedMultisigVault,
+    /// `OXSUM_SOLANA_MULTISIG_ACCOUNT` was unset — `payTo` is unverified and
+    /// is treated as a hot wallet (allowed on a devnet loop, warned loudly).
+    UnverifiedHotWallet,
+}
+
+/// Validates `OXSUM_SOLANA_PAY_TO` against the Squads v4 multisig
+/// `OXSUM_SOLANA_MULTISIG_ACCOUNT` names (issue #1143). When the multisig is
+/// configured, the boot derives its `vault index 0` PDA and requires `payTo`
+/// to equal it — a mismatch means the receiving address is not the vault the
+/// multisig implies (a pasted hot-wallet, a vault of another index, or a
+/// multisig that was re-created), and startup refuses. When the multisig is
+/// unset the rail still boots — a plain wallet is a legitimate devnet
+/// `payTo` — but the warn marks it as unverified custody, never silently.
+///
+/// This is a derivation check only, deliberately: it proves `payTo` equals
+/// the PDA the multisig account implies, not that the multisig's
+/// threshold/members are the intended signers. Reading the multisig's policy
+/// on-chain is the residual `docs/self-hosted-solana-multisig.md` records.
+fn solana_custody_of(
+    multisig_account: Option<&str>,
+    pay_to: &str,
+) -> Result<SolanaCustody, String> {
+    let Some(multisig_account) = multisig_account else {
+        tracing::warn!(
+            pay_to,
+            "OXSUM_SOLANA_MULTISIG_ACCOUNT is unset: the Solana rail's payTo is \
+             NOT verified as a multisig vault — it is a hot wallet. A devnet loop \
+             may keep this, but a production deployment should receive into a \
+             Squads v4 multisig's vault PDA; set OXSUM_SOLANA_MULTISIG_ACCOUNT to \
+             the multisig account so the boot can prove payTo is its vault index 0"
+        );
+        return Ok(SolanaCustody::UnverifiedHotWallet);
+    };
+    let vault = oxsum_integrations::squads::MultisigVault {
+        multisig_account,
+        vault_index: 0,
+    };
+    oxsum_integrations::squads::check_pay_to_is_vault(vault, pay_to).map_err(|e| match e {
+        oxsum_integrations::squads::VaultCheckError::PayToIsNotVault {
+            derived,
+            configured,
+        } => {
+            format!(
+                "OXSUM_SOLANA_PAY_TO ({configured}) is not the vault OXSUM_SOLANA_MULTISIG_ACCOUNT \
+                 implies — the multisig's vault index 0 derives to {derived}. Point PAY_TO at that \
+                 vault, or unset OXSUM_SOLANA_MULTISIG_ACCOUNT to run an unverified hot wallet"
+            )
+        }
+        other => format!("OXSUM_SOLANA_MULTISIG_ACCOUNT could not be verified: {other}"),
+    })?;
+    Ok(SolanaCustody::VerifiedMultisigVault)
+}
+
 /// Parses the Solana deposit rail (issue #1117). The complete set:
 /// `OXSUM_SOLANA_RPC_URL` + `OXSUM_SOLANA_PAY_TO` + `OXSUM_SOLANA_RATE_MICRO`,
 /// with `OXSUM_SOLANA_SPL_TOKEN_MINT` / `OXSUM_SOLANA_COMMITMENT` /
@@ -1843,6 +1905,13 @@ fn solana_of() -> Result<Option<Arc<oxsum_core::SolanaRailVerifier>>, String> {
         .transpose()
         .map_err(|_| "OXSUM_SOLANA_OPENS_PER_MINUTE must be an integer".to_owned())?
         .unwrap_or(0);
+    // Custody check (issue #1143): when `OXSUM_SOLANA_MULTISIG_ACCOUNT` names
+    // the Squads v4 multisig the deployment receives into, `PAY_TO` must be
+    // that multisig's `vault index 0` PDA — the derivation is run offline and
+    // a mismatch is a startup error, so a pasted hot-wallet can never
+    // masquerade as the vault. Unset, the rail is unverified: a loud warn
+    // marks `payTo` as a hot wallet the operator chose not to pin.
+    solana_custody_of(var("OXSUM_SOLANA_MULTISIG_ACCOUNT").as_deref(), &pay_to)?;
     let config = oxsum_integrations::solana::SolanaConfig {
         rpc_url: rpc_url.clone(),
         pay_to: pay_to.clone(),
@@ -2214,6 +2283,45 @@ mod tests {
         // Anything else refuses to start rather than guess.
         assert!(super::session_cookie_secure_of("yes".to_owned()).is_err());
         assert!(super::session_cookie_secure_of("".to_owned()).is_err());
+    }
+
+    /// The Squads v4 multisig/vault pair `getVaultPda` pins (issue #1143):
+    /// multisig `C46NEXuBLRJjJhfAsKBUxUYdxSBQUPc3SXQFRBTXfupC` derives vault
+    /// index 0 = `65kaU3KWZJCEz11vrCQfUZMc5AWSTzkFybwKD5BckLH8`.
+    const TEST_MULTISIG: &str = "C46NEXuBLRJjJhfAsKBUxUYdxSBQUPc3SXQFRBTXfupC";
+    const TEST_VAULT_0: &str = "65kaU3KWZJCEz11vrCQfUZMc5AWSTzkFybwKD5BckLH8";
+
+    #[test]
+    fn solana_custody_accepts_a_matching_vault() {
+        assert_eq!(
+            super::solana_custody_of(Some(TEST_MULTISIG), TEST_VAULT_0).unwrap(),
+            super::SolanaCustody::VerifiedMultisigVault
+        );
+    }
+
+    #[test]
+    fn solana_custody_refuses_a_mismatched_pay_to() {
+        // A payTo that is not the derived vault is a startup error naming
+        // both halves — a pasted hot-wallet can never masquerade as the vault.
+        let err = super::solana_custody_of(Some(TEST_MULTISIG), TEST_MULTISIG).unwrap_err();
+        assert!(err.contains("OXSUM_SOLANA_PAY_TO"), "{err}");
+        assert!(err.contains(TEST_VAULT_0), "{err}");
+    }
+
+    #[test]
+    fn solana_custody_marks_an_unset_multisig_as_unverified() {
+        // Unset multisig is not an error — a devnet hot wallet is allowed —
+        // but the answer records the unverified branch so it is never silent.
+        assert_eq!(
+            super::solana_custody_of(None, TEST_VAULT_0).unwrap(),
+            super::SolanaCustody::UnverifiedHotWallet
+        );
+    }
+
+    #[test]
+    fn solana_custody_refuses_a_malformed_multisig() {
+        let err = super::solana_custody_of(Some("not-base58!!!"), TEST_VAULT_0).unwrap_err();
+        assert!(err.contains("OXSUM_SOLANA_MULTISIG_ACCOUNT"), "{err}");
     }
 
     #[test]
