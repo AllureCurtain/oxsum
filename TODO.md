@@ -10,6 +10,7 @@ Open GitHub issues are the queue. This file is only the index. One row per open 
 
 | Issue | Title |
 | --- | --- |
+| [#1142](https://github.com/AllureCurtain/oxsum/issues/1142) | feat(solana): deposit exception statuses, admin queue and pull-payment refunds |
 | [#1141](https://github.com/AllureCurtain/oxsum/issues/1141) | feat(solana): Solana Pay transfer-request URL + QR on the Topup page |
 | [#1144](https://github.com/AllureCurtain/oxsum/issues/1144) | feat(solana): pre-credit sanctions screening on the payer address |
 | [#1146](https://github.com/AllureCurtain/oxsum/issues/1146) | docs(solana): mainnet small-amount rehearsal runbook |

@@ -4696,3 +4696,80 @@ oxsum-integrations) now reach `/metrics` because `main` installs the app's
 own recorder into the metrics facade's global slot — previously those calls
 landed nowhere; per-app registries in tests are untouched. Alert thresholds
 are documented in `docs/operator-solana-refunds.md`'s monitoring section.
+
+## 2026-11-14 — Verified-but-unsettlable transfers are statuses, not endless `pending`; refunds are pull payments (#1142)
+
+The rail's refusal model had a hole: a located paying transfer that could not
+settle — under-delivered, or landed after the intent's `expiresAt` — surfaced
+the same `Forbidden` as "no payment yet", so the deposit polled `pending`
+until the expiry sweep buried it as `expired` and the money sat in `payTo`
+unaccounted. Migration 0135 gives each of those outcomes its own terminal
+status on `deposits_status_check`, and the exception queue
+(`GET /api/v1/admin/solana/exceptions`) is where they wait for a decision.
+Every figure the queue reports counts in the intent's *locked* asset — the
+verifier reads `locked_asset_terms(meta)` for the `expected`, so a short USDC
+intent is judged in USDC base units, never lamports:
+
+- **`underpaid`** — a located transfer honored the intent but delivered under
+  the asked amount in that asset's base units. The decision that made this
+  reachable: `validate_transfer` no longer judges the amount — the
+  `ChainLookup` seam proves "this is the intent's paying transfer"
+  (recipient, the locked `meta.splToken` mint, marker, succeeded) and reports
+  `delivered`, while the verifier classifies `delivered < expected` as a
+  `Short` verdict distinct from `Unpaid`. Before this split a short transfer
+  was indistinguishable from "not the payment at all" — the seam returned
+  `None` and the deposit stayed `pending` forever. `verify_locked` walks
+  every located signature for an honoring transfer first (a later short or
+  dishonoring transaction still cannot mask a full payment), and when
+  nothing honors, the *largest* short delivery names the queue row.
+- **`overpaid`** — a located transfer over-delivered. The opened amount
+  credits under `solana:<signature>` exactly once and the row lands
+  `overpaid`, not `credited` — a real status, not a meta flag, so the surplus
+  is visible on the queue without a meta dig. The money-in correctness this
+  creates: `entry_id IS NOT NULL`, not `status = 'credited'`, is now what
+  proves a deposit net-credited the purchased pool — the cash-in predicate in
+  `financial_facts` and the `deposits_unbooked`/`deposits_mismatched`
+  reconciliation queries all read `entry_id IS NOT NULL AND status <>
+  'reversed'`, and the deposit's `meta` records `overpaid: true` beside
+  `delivered`/`expected`/`receivedCredits` for the human. The generic admin
+  deposits list reports the row under its `overpaid` status.
+- **`late`** — the paying transaction's `blockTime` is at/after `expiresAt`.
+  Same verdict the rail always enforced; it just has a name now — the refusal
+  that used to poll forever marks the row and queues it. `late` is checked
+  before `short`: a late transfer is refundable whatever it delivered.
+- **`flagged`** — reserved for pre-credit screening (issue #1144): the status
+  and its queue surface ship now, the writer lands later.
+
+The refund lifecycle follows BTCPay's pull-payment shape, by design never an
+auto-send to the payment source (the server holds no spend key — the multisig
+pays out-of-band): operator `POST …/admin/solana/{id}/refund` marks
+`refund_pending` and records `{requestedBy, requestedAt, reason}` in
+`meta.refund`; the customer names the refund address on their own surface
+(`POST …/topups/solana/{id}/refund-address`, org-scoped, base58-32 validated
+server-side); the operator approves (`refund-approve`, which freezes the
+address — a post-approval edit could redirect the payout the multisig is
+about to sign); and `refund-complete` records the payout signature and lands
+`refunded`, terminal. The payout repays in the deposit's locked `asset` at
+that asset's base units — the `SolanaExceptionDeposit.asset` field the queue
+and the customer's list carry is the denomination, and the audit detail names
+it. Only `underpaid`/`overpaid`/`late`/`flagged` are refundable;
+`refund_pending` replays rather than re-entering; `refunded` refuses a
+contradicting signature. **No ledger entry ever posts on this path**: an
+`underpaid`/`late`/`flagged` deposit never credited, so the refund returns
+what sits in `payTo`; an `overpaid` one's `entry_id` still proves the opened
+credit while the surplus returns the same way. The three lifecycle writes
+audit as `solana.refund.request`/`.approve`/`.complete` under idempotency
+anchors keyed on the deposit id.
+
+Two structural notes on how the statuses were reached. **The poll now credits
+before it sweeps**: `poll_solana_deposits` runs `credit_solana_deposit` over
+every `pending` row first — including intents past their `expiresAt`, because
+the lapse verdict belongs to the paying transaction's `blockTime` — and only
+then expires the intents that located nothing. Sweeping first would have
+expired a paid-on-time intent before its credit could run, and would have
+marked a late payment `expired` instead of `late` — the queue the refund
+lifecycle reads. **The confirm surface splits its answers**: `403` keeps its
+"not paid yet / dishonored" meaning (including the spent-signature
+double-spend), the terminal verdicts `underpaid`/`late` answer `409` — the
+deposit is queued, not open for retries — and an already-settled reference
+keeps answering `404`.
