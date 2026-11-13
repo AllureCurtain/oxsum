@@ -15303,10 +15303,14 @@ export interface paths {
          *
          *     The close runs as a claimed background job across every organization's
          *     ledger, off the request path — a deployment whose month-close would outlive
-         *     a request timeout still seals fully. This call answers the queued state, not
-         *     the records: `GET` on the same path returns the seals once the pass lands.
-         *     A `status` of `already-queued` means a pending or running close of the same
-         *     kind is still claimed — a retry never duplicates the pass.
+         *     a request timeout still seals fully. This call answers the queued run, not
+         *     the records: `jobId` names it, `GET /api/v1/admin/closings/jobs/{jobId}`
+         *     reports its progress, and `GET` on this path returns the seals once the
+         *     pass lands. A `status` of `already-queued` means a run for the same month
+         *     is still pending or running — a retry never duplicates the pass, and
+         *     `jobId` names that run. One close runs at a time: while a run for a
+         *     different month is pending or running the call answers `409`, and the
+         *     month can be queued once that run finishes.
          */
         post: {
             parameters: {
@@ -15334,9 +15338,76 @@ export interface paths {
                 };
                 400: components["responses"]["Error"];
                 401: components["responses"]["Error"];
+                409: components["responses"]["Error"];
                 500: components["responses"]["Error"];
             };
         };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/admin/closings/jobs/{jobId}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * One queued month-close's progress
+         * @description The run `POST /api/v1/admin/closings` queued, as the console polls it:
+         *     its `status` — `pending` until the jobs worker claims it, and again
+         *     while a failed or interrupted attempt waits to retry, `running` while it
+         *     walks the organizations, `done` once the pass finished, `dead` once five
+         *     attempts failed — and the latest attempt's progress: how many
+         *     organizations it walks, how many it has processed, sealed and failed,
+         *     and the first fifty failures, each naming the organization and why its
+         *     seal failed.
+         *
+         *     A pass that seals at least one organization finishes `done` even when
+         *     others failed; queue the month again once the cause is fixed and the
+         *     re-run seals only what is left. An attempt in which every organization
+         *     failed fails and retries on the backoff; a pass over no organizations
+         *     finishes `done`. A reason is the ledger calendar's own refusal (an
+         *     earlier month defined but not sealed, a month at or before the sealed
+         *     watermark) or a validation message; any other failure answers a fixed
+         *     generic reason, and the server log carries the detail.
+         *
+         *     An id that names no close-month run — unknown, malformed, another job
+         *     kind's, or removed by the jobs retention window
+         *     (`OXSUM_RETENTION_JOBS_DAYS`) — answers `404`.
+         */
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    jobId: string;
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description The run and its progress */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            data: components["schemas"]["CloseMonthJob"];
+                        };
+                    };
+                };
+                401: components["responses"]["Error"];
+                404: components["responses"]["Error"];
+                500: components["responses"]["Error"];
+            };
+        };
+        put?: never;
+        post?: never;
         delete?: never;
         options?: never;
         head?: never;
@@ -21314,13 +21385,80 @@ export interface components {
             month: string;
         };
         CloseMonthAccepted: {
+            /**
+             * Format: uuid
+             * @description the queued run; `GET /api/v1/admin/closings/jobs/{jobId}` reports its progress
+             */
+            jobId: string;
             /** @description the month the queued run will seal, `YYYY-MM` */
             month: string;
             /**
-             * @description queued for a newly-enqueued run; already-queued when a pending or running close of the same kind is still claimed — a retry never duplicates the pass
+             * @description queued for a newly-enqueued run; already-queued when a run for the same month is still pending or running — a retry never duplicates the pass, and jobId names that run
              * @enum {string}
              */
             status: "queued" | "already-queued";
+        };
+        CloseMonthJob: {
+            /**
+             * Format: uuid
+             * @description the run's id, as `POST /api/v1/admin/closings` answered it
+             */
+            jobId: string;
+            /** @description the month the run seals, `YYYY-MM` */
+            month: string;
+            /**
+             * @description pending until the jobs worker claims the run, and again while a failed or interrupted attempt waits to retry; running while it walks the organizations; done once the pass finished; dead once five attempts failed
+             * @enum {string}
+             */
+            status: "pending" | "running" | "done" | "dead";
+            /**
+             * Format: int32
+             * @description failed attempts so far; the fifth lands the run dead
+             */
+            attempts: number;
+            /**
+             * Format: int64
+             * @description how many organizations the latest attempt walks; 0 before the first attempt starts
+             */
+            organizations: number;
+            /**
+             * Format: int64
+             * @description how many of those organizations the attempt has visited
+             */
+            processed: number;
+            /**
+             * Format: int64
+             * @description organizations whose month is sealed — an already-sealed month counts, its standing record answers
+             */
+            sealed: number;
+            /**
+             * Format: int64
+             * @description organizations whose seal failed in the latest attempt
+             */
+            failed: number;
+            /** @description the latest attempt's first fifty failures; `failed` counts all of them */
+            failures: components["schemas"]["CloseMonthFailure"][];
+            /**
+             * Format: date-time
+             * @description when the run was queued
+             */
+            createdAt: string;
+            /**
+             * Format: date-time
+             * @description when the run landed done or dead; null while it is pending or running
+             */
+            finishedAt: string | null;
+        };
+        CloseMonthFailure: {
+            /**
+             * Format: uuid
+             * @description the organization whose seal failed
+             */
+            organizationId: string;
+            /** @description the organization's display name */
+            name: string;
+            /** @description why the seal failed: the ledger calendar's refusal or a validation message; any other failure answers a fixed generic reason whose detail is in the server log */
+            reason: string;
         };
         GenerateStatementsRequest: {
             /** @description the month to bill, `YYYY-MM`; it must have fully ended */

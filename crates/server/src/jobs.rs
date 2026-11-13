@@ -493,8 +493,11 @@ async fn run_one(
             }
         }
         kinds::CLOSE_MONTH => {
-            // The operator's month rides the payload; a malformed one is a
-            // dead-letter, not a retry — the run cannot ever parse it.
+            // The operator's month rides the payload, validated when the
+            // request queued it. A missing or malformed one is a row this
+            // build did not queue: the attempt fails like any other, and once
+            // the attempts run out the row stays dead, because the kind has no
+            // cadence to resume on.
             let month = job
                 .payload
                 .get("month")
@@ -507,17 +510,20 @@ async fn run_one(
             let first = month_first(month).map_err(|error| {
                 oxsum_core::WalletError::InvalidInput(format!("close-month payload.month: {error}"))
             })?;
-            let report = db.close_month_organizations(&tenants, first).await?;
+            // The pass writes its progress to the row as it walks, fenced on
+            // this claim; the failures it names ride that progress, and the
+            // next queue of the month retries the whole set idempotently (a
+            // sealed month answers its record).
+            let progress = db
+                .close_month_organizations(&tenants, first, job.job_id, job.claimed_at)
+                .await?;
             info!(
                 month,
-                sealed = report.sealed,
-                failed = report.failed.len(),
+                organizations = progress.organizations,
+                sealed = progress.sealed,
+                failed = progress.failed,
                 "the manual close-month pass ran"
             );
-            // A partial pass is not silently successful: the failures ride the
-            // report so the worker's finish records which organizations the
-            // seal could not land for, and the next queue of the month retries
-            // the whole set idempotently (a sealed month answers its record).
         }
         other => {
             return Err(oxsum_core::WalletError::InvalidInput(format!(
@@ -528,9 +534,9 @@ async fn run_one(
     Ok(())
 }
 
-/// `YYYY-MM` as the month's first day — the same parse `admin::parse_month`
-/// applies to the request, kept local so the worker need not reach into the
-/// route layer for a string it owns in the payload.
+/// `YYYY-MM` as the month's first day — the shape `oxsum_core::statement_period`
+/// accepts when the request queues the run, kept local so the worker reads the
+/// payload it owns without re-running the request's ended check.
 fn month_first(month: &str) -> Result<time::Date, String> {
     let bad = || "month must be YYYY-MM".to_string();
     let (year, month) = month.split_once('-').ok_or_else(bad)?;

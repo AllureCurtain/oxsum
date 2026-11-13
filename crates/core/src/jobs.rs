@@ -15,6 +15,10 @@
 //! `webhook_deliveries` deliberately stays its own queue: it is a user-visible
 //! surface with per-endpoint state, not an internal job.
 
+use std::str::FromStr;
+
+use doubleentry::storage::postgres::PostgresError;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sqlx::Row;
 use time::{Date, Duration, OffsetDateTime};
@@ -22,7 +26,7 @@ use uuid::Uuid;
 
 use crate::error::WalletError;
 
-use crate::Db;
+use crate::{Db, StatementPeriod};
 
 /// The periodic kinds, as `oxsum.jobs.kind` spells them.
 pub mod kinds {
@@ -95,7 +99,10 @@ pub mod kinds {
     /// (`POST /admin/closings`). The payload carries `{month}`; the pass seals
     /// that month across every organization's ledger off the request path, so
     /// a large deployment's close is a claimed run, not a request that outlives
-    /// its timeout. Leader-required — a second runner would seal the same
+    /// its timeout. The run writes its progress to the row's `result` as it
+    /// walks, which `GET /admin/closings/jobs/{jobId}` answers (issue #1090).
+    /// The kind holds one pending or running run at a time, whatever its
+    /// month. Leader-required — a second runner would seal the same
     /// organizations at once.
     pub const CLOSE_MONTH: &str = "close-month";
     /// The x402 credit-recovery pass (issue #1089): retries the wallet credit
@@ -293,19 +300,151 @@ pub struct StatementReport {
     pub reinstated: i64,
 }
 
-/// What a manual close-month pass did: the seals it landed and the
-/// organizations whose close failed (each named with its error, so a partial
-/// pass reports exactly which ledger did not seal rather than aborting the
-/// rest).
-#[derive(Debug, Default)]
-pub struct CloseMonthReport {
-    /// Organizations whose month sealed — including an already-sealed month
-    /// answering its standing record (the pass is idempotent).
+/// How many failures a close-month run names; `failed` counts every one.
+const MAX_LISTED_FAILURES: usize = 50;
+/// How many inserts a close-month enqueue tries while the kind's slot keeps
+/// freeing between its insert and its read of the run holding it.
+const CLOSE_MONTH_ENQUEUE_ATTEMPTS: usize = 3;
+/// The reason a failure carries when its error may only reach the server log.
+const UNSHOWN_REASON: &str = "the seal failed; the server log has the detail";
+
+/// A job row's state, as `oxsum.jobs.status` spells it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum JobStatus {
+    /// Waiting for its `run_at`: not claimed yet, handed back by a leader
+    /// yield, or a failed attempt waiting on the retry backoff.
+    Pending,
+    /// Claimed by a worker that is running it.
+    Running,
+    /// Finished.
+    Done,
+    /// Failed [`MAX_ATTEMPTS`] times; the row stays as the evidence.
+    Dead,
+}
+
+impl FromStr for JobStatus {
+    type Err = WalletError;
+
+    fn from_str(stored: &str) -> Result<Self, Self::Err> {
+        Ok(match stored {
+            "pending" => Self::Pending,
+            "running" => Self::Running,
+            "done" => Self::Done,
+            "dead" => Self::Dead,
+            other => return Err(crate::orgs::malformed("jobs.status", other)),
+        })
+    }
+}
+
+/// The manual close [`Db::enqueue_close_month`] queued or found.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CloseMonthQueued {
+    /// The run: the row this call inserted, or the pending or running run of
+    /// the same month it found.
+    pub job_id: Uuid,
+    /// `true` when this call queued the run, `false` when a run for the month
+    /// was already pending or running.
+    pub queued: bool,
+}
+
+/// One organization whose month did not seal in a close-month run.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CloseMonthFailure {
+    /// The organization.
+    pub organization_id: Uuid,
+    /// Its display name.
+    pub name: String,
+    /// Why the seal failed: the ledger calendar's refusal or a validation
+    /// message, or a fixed generic reason when the error may only reach the
+    /// server log.
+    pub reason: String,
+}
+
+/// A close-month attempt's walk through the organizations, as the run's row
+/// stores it in `result`.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CloseMonthProgress {
+    /// How many organizations the attempt walks.
+    pub organizations: i64,
+    /// How many of them it has visited.
+    pub processed: i64,
+    /// Organizations whose month is sealed, an already-sealed month included.
     pub sealed: i64,
-    /// `(tenant_id, error)` per organization `close_month` returned `Err` for.
-    /// One bad ledger does not stop the pass — the others still seal, and the
-    /// next queue of the same month retries the whole set.
-    pub failed: Vec<(String, String)>,
+    /// Organizations whose seal failed.
+    pub failed: i64,
+    /// The first fifty failures; `failed` counts all of them.
+    pub failures: Vec<CloseMonthFailure>,
+}
+
+impl CloseMonthProgress {
+    /// Counts one organization whose seal failed, and names it while the list
+    /// has room.
+    fn record_failure(&mut self, organization_id: Uuid, name: &str, reason: String) {
+        self.failed += 1;
+        if self.failures.len() < MAX_LISTED_FAILURES {
+            self.failures.push(CloseMonthFailure {
+                organization_id,
+                name: name.to_owned(),
+                reason,
+            });
+        }
+    }
+
+    /// The finished walk as the attempt's result. An attempt in which every
+    /// organization failed is an error, so it retries on the backoff rather
+    /// than reading as done; the error carries the counts alone, because the
+    /// worker stores it in `last_error` and logs it.
+    fn outcome(self) -> Result<Self, WalletError> {
+        if self.sealed == 0 && self.failed > 0 {
+            return Err(WalletError::Misconfigured(format!(
+                "the close-month pass sealed none of {} organizations; {} failed",
+                self.organizations, self.failed
+            )));
+        }
+        Ok(self)
+    }
+}
+
+/// One manual close-month run, as `GET /admin/closings/jobs/{jobId}` answers
+/// it.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CloseMonthJob {
+    /// The run's id.
+    pub job_id: Uuid,
+    /// The month the run seals, `YYYY-MM`.
+    pub month: String,
+    /// Where the run stands.
+    pub status: JobStatus,
+    /// Failed attempts so far; the [`MAX_ATTEMPTS`]th lands the run dead.
+    pub attempts: i32,
+    /// The latest attempt's progress: zero counts and no failures before the
+    /// first attempt starts.
+    #[serde(flatten)]
+    pub progress: CloseMonthProgress,
+    /// When the run was queued.
+    #[serde(with = "time::serde::rfc3339")]
+    pub created_at: OffsetDateTime,
+    /// When the run landed done or dead; `None` while it is pending or running.
+    #[serde(with = "time::serde::rfc3339::option")]
+    pub finished_at: Option<OffsetDateTime>,
+}
+
+/// The part of a failed seal's error a response may carry, or `None` when
+/// only the server log may. The ledger calendar's refusals name period ids
+/// and dates. Every validation message on the `Wallet::close_month` path is
+/// fixed text, a date-range error or a period-label check. None of them names
+/// a tenant, a schema or a stored value. A storage or configuration failure
+/// can, so it is never shown.
+fn shown_reason(error: &WalletError) -> Option<String> {
+    match error {
+        WalletError::Storage(PostgresError::Period(refusal)) => Some(refusal.to_string()),
+        WalletError::InvalidInput(message) => Some(message.clone()),
+        _ => None,
+    }
 }
 
 /// The claimed row's columns, `j`-qualified: the claim's CTE exposes a `job_id`
@@ -336,25 +475,19 @@ impl Db {
         kind: &str,
         run_at: OffsetDateTime,
     ) -> Result<bool, WalletError> {
-        self.enqueue_job_payload(kind, run_at, Value::Null).await
+        Ok(self.insert_job(kind, run_at, Value::Null).await?.is_some())
     }
 
-    /// Enqueues one run of `kind` carrying kind-specific `payload` — the
-    /// manual close-month's `{month}` is the one caller today. The same
-    /// `(kind)` uniqueness applies, so a payload kind still holds at most one
-    /// pending or running run; a second request for the same kind answers
-    /// `false` whatever its payload.
-    ///
-    /// # Errors
-    ///
-    /// Storage failures surface as [`WalletError`].
-    pub async fn enqueue_job_payload(
+    /// Inserts one run of `kind` due at `run_at` carrying kind-specific
+    /// `payload`; `None` when the `(kind)` partial unique index refuses it,
+    /// because a pending or running run of the kind already holds the slot.
+    async fn insert_job(
         &self,
         kind: &str,
         run_at: OffsetDateTime,
         payload: Value,
-    ) -> Result<bool, WalletError> {
-        let inserted: Option<Uuid> = sqlx::query_scalar(
+    ) -> Result<Option<Uuid>, WalletError> {
+        Ok(sqlx::query_scalar(
             "INSERT INTO oxsum.jobs (kind, run_at, requires_leader, payload) \
              VALUES ($1, $2, $3, $4) \
              ON CONFLICT DO NOTHING RETURNING job_id",
@@ -364,8 +497,108 @@ impl Db {
         .bind(requires_leader(kind))
         .bind(payload)
         .fetch_optional(self.pool())
+        .await?)
+    }
+
+    /// Queues the manual close of `period` (`POST /admin/closings`), due now,
+    /// and names the run: the row this call inserted, or the pending or
+    /// running run of the same month a retry finds. The kind holds one
+    /// pending or running run at a time, so a different month in flight is a
+    /// conflict rather than a request silently dropped.
+    ///
+    /// # Errors
+    ///
+    /// [`WalletError::Conflict`] while a close of another month is pending or
+    /// running; storage failures surface as [`WalletError`].
+    pub async fn enqueue_close_month(
+        &self,
+        period: &StatementPeriod,
+    ) -> Result<CloseMonthQueued, WalletError> {
+        let month = period.label();
+        for _ in 0..CLOSE_MONTH_ENQUEUE_ATTEMPTS {
+            if let Some(job_id) = self
+                .insert_job(
+                    kinds::CLOSE_MONTH,
+                    OffsetDateTime::now_utc(),
+                    serde_json::json!({ "month": month }),
+                )
+                .await?
+            {
+                return Ok(CloseMonthQueued {
+                    job_id,
+                    queued: true,
+                });
+            }
+            let live = sqlx::query(
+                "SELECT job_id, payload->>'month' AS month FROM oxsum.jobs \
+                 WHERE kind = $1 AND status IN ('pending', 'running')",
+            )
+            .bind(kinds::CLOSE_MONTH)
+            .fetch_optional(self.pool())
+            .await?;
+            // The run holding the slot finished between the insert and this
+            // read: the slot is free again.
+            let Some(live) = live else {
+                continue;
+            };
+            let job_id: Uuid = live.try_get("job_id")?;
+            let other: Option<String> = live.try_get("month")?;
+            if other.as_deref() == Some(month.as_str()) {
+                return Ok(CloseMonthQueued {
+                    job_id,
+                    queued: false,
+                });
+            }
+            return Err(WalletError::Conflict(format!(
+                "a close of {} is still pending or running; queue {month} once it finishes",
+                other.as_deref().unwrap_or("another month")
+            )));
+        }
+        Err(WalletError::Conflict(format!(
+            "the close of {month} could not be queued while other closes kept starting \
+             and finishing; try again"
+        )))
+    }
+
+    /// One manual close-month run, as `GET /admin/closings/jobs/{jobId}`
+    /// answers it; `None` when no close-month row has the id — unknown,
+    /// another kind's, or removed by the jobs retention window.
+    ///
+    /// # Errors
+    ///
+    /// Storage failures surface as [`WalletError`]; so does a stored status,
+    /// month or progress this build cannot read.
+    pub async fn close_month_job(
+        &self,
+        job_id: Uuid,
+    ) -> Result<Option<CloseMonthJob>, WalletError> {
+        let row = sqlx::query(
+            "SELECT job_id, payload->>'month' AS month, status, attempts, result, \
+                    created_at, finished_at \
+             FROM oxsum.jobs WHERE job_id = $1 AND kind = $2",
+        )
+        .bind(job_id)
+        .bind(kinds::CLOSE_MONTH)
+        .fetch_optional(self.pool())
         .await?;
-        Ok(inserted.is_some())
+        let Some(row) = row else {
+            return Ok(None);
+        };
+        let month = row.try_get::<Option<String>, _>("month")?.ok_or_else(|| {
+            WalletError::Storage(PostgresError::Malformed(
+                "a close-month run's payload carries no month".to_owned(),
+            ))
+        })?;
+        let progress: Option<sqlx::types::Json<CloseMonthProgress>> = row.try_get("result")?;
+        Ok(Some(CloseMonthJob {
+            job_id: row.try_get("job_id")?,
+            month,
+            status: row.try_get::<String, _>("status")?.parse()?,
+            attempts: row.try_get("attempts")?,
+            progress: progress.map(|json| json.0).unwrap_or_default(),
+            created_at: row.try_get("created_at")?,
+            finished_at: row.try_get("finished_at")?,
+        }))
     }
 
     /// Moves up to `limit` due runs `pending` → `running` atomically. A row left
@@ -616,52 +849,224 @@ impl Db {
         Ok(report)
     }
 
-    /// Seals `first`'s month across every organization's ledger — the manual
-    /// `close-month` job's pass (the admin route used to run this loop inside
-    /// the request, unbounded over the tenant set and past any request
-    /// timeout). Each organization's `close_month` is independent: a failure is
-    /// recorded against its tenant in the report rather than aborting the
-    /// pass, so one bad ledger cannot hold every other organization's month
-    /// hostage. A sealed month answers its standing record, so a re-run of a
-    /// partially-failed pass closes only what was left.
+    /// Writes a close-month run's progress to its row, fenced on the claim
+    /// stamp like [`finish_job`](Self::finish_job).
     ///
     /// # Errors
     ///
-    /// The organizations list failing is the pass's own error; a per-ledger
-    /// `close_month` failure is data in [`CloseMonthReport::failed`], not the
-    /// return — only a report with zero sealed and at least one failure is
-    /// converted back into an `Err` so a wholly-broken pass still reads as
-    /// failed rather than "ran, sealed nothing".
+    /// [`WalletError::Conflict`] when the claim was lost: the row was handed
+    /// back or claimed again, so the walk must stop rather than write over the
+    /// next claimant's progress. Storage failures surface as [`WalletError`].
+    async fn write_close_month_progress(
+        &self,
+        job_id: Uuid,
+        claimed_at: OffsetDateTime,
+        progress: &CloseMonthProgress,
+    ) -> Result<(), WalletError> {
+        let written =
+            sqlx::query("UPDATE oxsum.jobs SET result = $3 WHERE job_id = $1 AND claimed_at = $2")
+                .bind(job_id)
+                .bind(claimed_at)
+                .bind(sqlx::types::Json(progress))
+                .execute(self.pool())
+                .await?;
+        if written.rows_affected() == 0 {
+            tracing::warn!(%job_id, "a close-month run lost its claim; its walk stops");
+            return Err(WalletError::Conflict(
+                "the close-month run lost its claim to another worker".to_owned(),
+            ));
+        }
+        Ok(())
+    }
+
+    /// Seals `first`'s month across every organization's ledger: the pass of
+    /// the manual `close-month` run claimed as `job_id` at `claimed_at`. Each
+    /// organization's `close_month` is independent. A failure is counted, and
+    /// the first fifty are named with a reason a response may carry, rather
+    /// than aborting the pass, so one bad ledger cannot hold every other
+    /// organization's month hostage. A sealed month answers its standing
+    /// record, so a re-run of a partially-failed pass closes only what was
+    /// left.
+    ///
+    /// The progress lands on the run's row once the organizations are listed
+    /// and after each one, fenced on the claim stamp, so the console's poll
+    /// reads the walk as it happens. A reason the response may not carry goes
+    /// to the server log with the organization's id.
+    ///
+    /// # Errors
+    ///
+    /// Listing the organizations or writing the progress failing is the
+    /// pass's own error, and so is a lost claim
+    /// ([`WalletError::Conflict`]): the walk stops there. An attempt in which
+    /// every organization failed is an error carrying only the counts, so it
+    /// retries on the backoff rather than reading as done.
     pub async fn close_month_organizations(
         &self,
         tenants: &crate::Tenants,
         first: Date,
-    ) -> Result<CloseMonthReport, WalletError> {
-        let mut report = CloseMonthReport::default();
-        for organization in self.organizations().await? {
-            match tenants.get(&organization.tenant_id).await {
+        job_id: Uuid,
+        claimed_at: OffsetDateTime,
+    ) -> Result<CloseMonthProgress, WalletError> {
+        let organizations = self.organizations().await?;
+        let mut progress = CloseMonthProgress {
+            organizations: i64::try_from(organizations.len()).unwrap_or(i64::MAX),
+            ..CloseMonthProgress::default()
+        };
+        self.write_close_month_progress(job_id, claimed_at, &progress)
+            .await?;
+        for organization in &organizations {
+            let failure = match tenants.get(&organization.tenant_id).await {
+                // Opening the ledger validates the tenant id, and that
+                // refusal names it, so no part of this error is shown.
+                Err(error) => {
+                    tracing::error!(
+                        organization_id = %organization.id, %error,
+                        "the close-month pass could not open an organization's ledger"
+                    );
+                    Some(UNSHOWN_REASON.to_owned())
+                }
                 Ok(wallet) => match wallet.close_month(first).await {
-                    Ok(_) => report.sealed += 1,
-                    Err(error) => report
-                        .failed
-                        .push((organization.tenant_id.clone(), error.to_string())),
+                    Ok(_) => None,
+                    Err(error) => Some(match shown_reason(&error) {
+                        Some(reason) => {
+                            tracing::warn!(
+                                organization_id = %organization.id, %error,
+                                "an organization's month did not seal"
+                            );
+                            reason
+                        }
+                        None => {
+                            tracing::error!(
+                                organization_id = %organization.id, %error,
+                                "an organization's month did not seal"
+                            );
+                            UNSHOWN_REASON.to_owned()
+                        }
+                    }),
                 },
-                Err(error) => report
-                    .failed
-                    .push((organization.tenant_id.clone(), error.to_string())),
+            };
+            match failure {
+                None => progress.sealed += 1,
+                Some(reason) => {
+                    progress.record_failure(organization.id, &organization.name, reason)
+                }
             }
+            progress.processed += 1;
+            self.write_close_month_progress(job_id, claimed_at, &progress)
+                .await?;
         }
-        if report.sealed == 0 && !report.failed.is_empty() {
-            return Err(WalletError::Misconfigured(format!(
-                "the close-month pass sealed no organization: {}",
-                report
-                    .failed
-                    .iter()
-                    .map(|(tenant, error)| format!("{tenant}: {error}"))
-                    .collect::<Vec<_>>()
-                    .join("; ")
-            )));
+        progress.outcome()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used)]
+
+    use doubleentry::{PeriodError, PeriodId};
+
+    use super::*;
+
+    fn failing(organizations: i64, sealed: i64, failed: usize) -> CloseMonthProgress {
+        let mut progress = CloseMonthProgress {
+            organizations,
+            sealed,
+            ..CloseMonthProgress::default()
+        };
+        for n in 0..failed {
+            progress.record_failure(
+                Uuid::new_v4(),
+                &format!("Organization {n}"),
+                format!("a reason naming ledger_{n}"),
+            );
         }
-        Ok(report)
+        progress.processed = sealed + i64::try_from(failed).unwrap();
+        progress
+    }
+
+    #[test]
+    fn an_attempt_in_which_every_organization_failed_errs_with_counts_only() {
+        let Err(WalletError::Misconfigured(message)) = failing(2, 0, 2).outcome() else {
+            panic!("an all-failed attempt is an error");
+        };
+        assert_eq!(
+            message,
+            "the close-month pass sealed none of 2 organizations; 2 failed"
+        );
+    }
+
+    #[test]
+    fn an_attempt_that_sealed_one_organization_finishes_with_its_failures() {
+        let progress = failing(3, 1, 2)
+            .outcome()
+            .expect("one seal finishes the run");
+        assert_eq!((progress.sealed, progress.failed), (1, 2));
+        assert_eq!(progress.failures.len(), 2);
+    }
+
+    #[test]
+    fn an_attempt_with_no_organizations_finishes() {
+        assert_eq!(
+            failing(0, 0, 0).outcome().expect("nothing to seal is done"),
+            CloseMonthProgress::default()
+        );
+    }
+
+    #[test]
+    fn the_failure_list_names_the_first_fifty_and_counts_the_rest() {
+        let progress = failing(60, 0, 60);
+        assert_eq!(progress.failed, 60);
+        assert_eq!(progress.failures.len(), MAX_LISTED_FAILURES);
+        assert_eq!(progress.failures[0].name, "Organization 0");
+        assert_eq!(progress.failures[49].name, "Organization 49");
+    }
+
+    #[test]
+    fn only_calendar_refusals_and_validation_messages_are_shown() {
+        let refusal = PeriodError::Unknown {
+            id: PeriodId::new("2026-09").unwrap(),
+        };
+        assert_eq!(
+            shown_reason(&WalletError::Storage(PostgresError::Period(
+                refusal.clone()
+            ))),
+            Some(refusal.to_string())
+        );
+        assert_eq!(
+            shown_reason(&WalletError::InvalidInput(
+                "only a month that has fully ended can be closed".to_owned()
+            )),
+            Some("only a month that has fully ended can be closed".to_owned())
+        );
+        for hidden in [
+            WalletError::Storage(PostgresError::Malformed(
+                "ledger_0123 holds an unknown value".to_owned(),
+            )),
+            WalletError::Misconfigured("ledger_0123".to_owned()),
+            WalletError::Conflict("ledger_0123".to_owned()),
+            WalletError::PoolBusy,
+        ] {
+            assert_eq!(shown_reason(&hidden), None, "{hidden:?} is not shown");
+        }
+    }
+
+    #[test]
+    fn a_stored_status_parses_and_an_unknown_one_is_malformed() {
+        for (stored, status) in [
+            ("pending", JobStatus::Pending),
+            ("running", JobStatus::Running),
+            ("done", JobStatus::Done),
+            ("dead", JobStatus::Dead),
+        ] {
+            assert_eq!(stored.parse::<JobStatus>().unwrap(), status);
+            assert_eq!(
+                serde_json::to_value(status).unwrap(),
+                serde_json::json!(stored)
+            );
+        }
+        assert!(matches!(
+            "paused".parse::<JobStatus>(),
+            Err(WalletError::Storage(PostgresError::Malformed(_)))
+        ));
     }
 }

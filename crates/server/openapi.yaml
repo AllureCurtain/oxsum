@@ -1,11 +1,20 @@
 openapi: 3.1.0
 info:
   title: oxsum API
-  version: 0.122.0
+  version: 0.123.0
   x-consumption-cache: Response cache v2 binds the exact complete request, concrete endpoint and semantic headers, customer/key permissions, selected experiment/mandate, alias targets, and every admitted route's price, destination, settings and credential configuration. A primary route without an available credential cannot serve a cache hit. Text case and whitespace are significant; old digests miss. Legacy excludeSystem is accepted but ignored.
   x-ledger-description: Ledger descriptions contain at most 16384 Unicode scalar values (at most 65536 UTF-8 bytes before JSON escaping). Settlement v14 and canonical hashes are unchanged; full subscription/cache provenance is retained. Writers and offline/browser verifiers must support this bound. Older 512-character readers cannot read longer new entries even with the same database schema. Arbitrary guardrail-output budgeting remains issue 875.
   description: |
     Common conventions (auth, idempotency, error format, money units) are documented in docs/api.md.
+
+    0.123.0 makes the manual month-close's progress observable (issue #1090):
+    `POST /api/v1/admin/closings` answers `{jobId, month, status}` — the
+    `close-month` run it queued, or the live run of the same month a retry
+    found (`already-queued`) — and `GET /api/v1/admin/closings/jobs/{jobId}`
+    reports the run's status, attempt count and latest attempt's progress
+    (organizations walked, processed, sealed, failed, the first fifty
+    failures with reasons) as the worker writes it to the row's `result`.
+    One close runs at a time: a different month in flight answers `409`.
 
     0.122.0 adds the version-2 evidence bundle (issue #616): a whole-period
     customer-verifiable export — `POST /api/v1/org/evidence-bundles` mints a
@@ -11070,10 +11079,14 @@ paths:
 
         The close runs as a claimed background job across every organization's
         ledger, off the request path — a deployment whose month-close would outlive
-        a request timeout still seals fully. This call answers the queued state, not
-        the records: `GET` on the same path returns the seals once the pass lands.
-        A `status` of `already-queued` means a pending or running close of the same
-        kind is still claimed — a retry never duplicates the pass.
+        a request timeout still seals fully. This call answers the queued run, not
+        the records: `jobId` names it, `GET /api/v1/admin/closings/jobs/{jobId}`
+        reports its progress, and `GET` on this path returns the seals once the
+        pass lands. A `status` of `already-queued` means a run for the same month
+        is still pending or running — a retry never duplicates the pass, and
+        `jobId` names that run. One close runs at a time: while a run for a
+        different month is pending or running the call answers `409`, and the
+        month can be queued once that run finishes.
       security:
         - adminToken: []
       requestBody:
@@ -11094,6 +11107,52 @@ paths:
                     $ref: "#/components/schemas/CloseMonthAccepted"
         "400": { $ref: "#/components/responses/Error" }
         "401": { $ref: "#/components/responses/Error" }
+        "409": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
+  /api/v1/admin/closings/jobs/{jobId}:
+    get:
+      summary: One queued month-close's progress
+      description: |
+        The run `POST /api/v1/admin/closings` queued, as the console polls it:
+        its `status` — `pending` until the jobs worker claims it, and again
+        while a failed or interrupted attempt waits to retry, `running` while it
+        walks the organizations, `done` once the pass finished, `dead` once five
+        attempts failed — and the latest attempt's progress: how many
+        organizations it walks, how many it has processed, sealed and failed,
+        and the first fifty failures, each naming the organization and why its
+        seal failed.
+
+        A pass that seals at least one organization finishes `done` even when
+        others failed; queue the month again once the cause is fixed and the
+        re-run seals only what is left. An attempt in which every organization
+        failed fails and retries on the backoff; a pass over no organizations
+        finishes `done`. A reason is the ledger calendar's own refusal (an
+        earlier month defined but not sealed, a month at or before the sealed
+        watermark) or a validation message; any other failure answers a fixed
+        generic reason, and the server log carries the detail.
+
+        An id that names no close-month run — unknown, malformed, another job
+        kind's, or removed by the jobs retention window
+        (`OXSUM_RETENTION_JOBS_DAYS`) — answers `404`.
+      security:
+        - adminToken: []
+      parameters:
+        - name: jobId
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        "200":
+          description: The run and its progress
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data: { $ref: "#/components/schemas/CloseMonthJob" }
+        "401": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
         "500": { $ref: "#/components/responses/Error" }
   /api/v1/admin/statements:
     get:
@@ -16440,13 +16499,43 @@ components:
         month: { type: string, pattern: "^[0-9]{4}-(0[1-9]|1[0-2])$", description: "the month to close, `YYYY-MM`; it must have fully ended" }
     CloseMonthAccepted:
       type: object
-      required: [month, status]
+      required: [jobId, month, status]
       properties:
+        jobId: { type: string, format: uuid, description: "the queued run; `GET /api/v1/admin/closings/jobs/{jobId}` reports its progress" }
         month: { type: string, description: "the month the queued run will seal, `YYYY-MM`" }
         status:
           type: string
           enum: [queued, already-queued]
-          description: "queued for a newly-enqueued run; already-queued when a pending or running close of the same kind is still claimed — a retry never duplicates the pass"
+          description: "queued for a newly-enqueued run; already-queued when a run for the same month is still pending or running — a retry never duplicates the pass, and jobId names that run"
+    CloseMonthJob:
+      type: object
+      required: [jobId, month, status, attempts, organizations, processed, sealed, failed, failures, createdAt, finishedAt]
+      properties:
+        jobId: { type: string, format: uuid, description: "the run's id, as `POST /api/v1/admin/closings` answered it" }
+        month: { type: string, description: "the month the run seals, `YYYY-MM`" }
+        status:
+          type: string
+          enum: [pending, running, done, dead]
+          description: "pending until the jobs worker claims the run, and again while a failed or interrupted attempt waits to retry; running while it walks the organizations; done once the pass finished; dead once five attempts failed"
+        attempts: { type: integer, format: int32, minimum: 0, description: "failed attempts so far; the fifth lands the run dead" }
+        organizations: { type: integer, format: int64, minimum: 0, description: "how many organizations the latest attempt walks; 0 before the first attempt starts" }
+        processed: { type: integer, format: int64, minimum: 0, description: "how many of those organizations the attempt has visited" }
+        sealed: { type: integer, format: int64, minimum: 0, description: "organizations whose month is sealed — an already-sealed month counts, its standing record answers" }
+        failed: { type: integer, format: int64, minimum: 0, description: "organizations whose seal failed in the latest attempt" }
+        failures:
+          type: array
+          maxItems: 50
+          description: "the latest attempt's first fifty failures; `failed` counts all of them"
+          items: { $ref: "#/components/schemas/CloseMonthFailure" }
+        createdAt: { type: string, format: date-time, description: "when the run was queued" }
+        finishedAt: { type: [string, "null"], format: date-time, description: "when the run landed done or dead; null while it is pending or running" }
+    CloseMonthFailure:
+      type: object
+      required: [organizationId, name, reason]
+      properties:
+        organizationId: { type: string, format: uuid, description: "the organization whose seal failed" }
+        name: { type: string, description: "the organization's display name" }
+        reason: { type: string, description: "why the seal failed: the ledger calendar's refusal or a validation message; any other failure answers a fixed generic reason whose detail is in the server log" }
     GenerateStatementsRequest:
       type: object
       additionalProperties: false

@@ -158,6 +158,7 @@ pub fn router(state: AppState) -> Router<AppState> {
             "/closings",
             get(statements::closings).post(statements::close_month),
         )
+        .route("/closings/jobs/{job_id}", get(statements::close_month_job))
         .route(
             "/statements",
             get(statements::statements).post(statements::generate_statements),

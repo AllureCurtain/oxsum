@@ -259,8 +259,9 @@ pub use invoice_corrections::{
     InvoiceCorrectionResult,
 };
 pub use jobs::{
-    CLAIM_LEASE_SECS, CloseMonthReport, DEAD_RESCHEDULE, Job, JobOutcome, MAX_ATTEMPTS, Retention,
-    RetentionReport, StatementReport, kinds, leader_lock_key, next_run, requires_leader,
+    CLAIM_LEASE_SECS, CloseMonthFailure, CloseMonthJob, CloseMonthProgress, CloseMonthQueued,
+    DEAD_RESCHEDULE, Job, JobOutcome, JobStatus, MAX_ATTEMPTS, Retention, RetentionReport,
+    StatementReport, kinds, leader_lock_key, next_run, requires_leader,
 };
 pub use journals::{
     InvoiceJournal, InvoiceJournalDetail, InvoiceJournalLine, InvoiceJournalPage, JournalLineKind,
