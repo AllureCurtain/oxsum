@@ -657,17 +657,17 @@ impl Db {
         // ledger (issue #1124). The pre-check gives a clean refusal; the
         // `deposits_solana_tx_hash` partial unique index is the backstop for
         // the race where two intents claim the same signature at once.
-        let already_used = sqlx::query_scalar::<_, i64>(
-            "SELECT 1 FROM oxsum.deposits \
-             WHERE rail = $1 AND facilitator_tx_hash = $2 AND deposit_id <> $3 \
-             LIMIT 1",
+        // `SELECT EXISTS` answers bool — a bare `SELECT 1` decodes as INT4 and
+        // the i64 scalar read it under would 500 the refusal.
+        let already_used: bool = sqlx::query_scalar(
+            "SELECT EXISTS (SELECT 1 FROM oxsum.deposits \
+             WHERE rail = $1 AND facilitator_tx_hash = $2 AND deposit_id <> $3)",
         )
         .bind(RAIL_SOLANA)
         .bind(&settlement.tx_hash)
         .bind(deposit_id)
-        .fetch_optional(&mut *tx)
-        .await?
-        .is_some();
+        .fetch_one(&mut *tx)
+        .await?;
         if already_used {
             return Err(WalletError::Forbidden(
                 "the paying transaction already credited another deposit".into(),
