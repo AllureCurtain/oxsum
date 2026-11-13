@@ -4304,3 +4304,13 @@ the intent's `meta` at open so a mid-flight rate change cannot retro-price a
 pending deposit; a mainnet rail replaces the config value with an oracle
 lookup recorded the same way. `received_minor` records what the transfer
 actually delivered for human review; nothing auto-patches the opened amount.
+
+The rail was verified end to end against a **local `solana-test-validator`**,
+not the public devnet — the devnet faucet now answers HTTP 410 to
+`requestAirdrop`, and a local validator's unlimited airdrop is the
+reproducible harness. That verification is committed as
+`examples/solana-topup/` (`@solana/web3.js` pinned to 1.98.4 — the 3.x line
+renames the transaction APIs the scripts use), kept out of
+`scripts/verify-examples.sh` because that gate stays chain-free; the walkthrough
+documents the one scratch-loop caveat a fresh `payTo` hits (rent-exempt
+minimum — a bare few-thousand-lamport first deposit is refused).

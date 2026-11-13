@@ -1223,6 +1223,12 @@ walkthroughs live beside the existing examples:
   its customer, bill an event, read the operation back.
 - `examples/webhook-tools/` — `sign-and-replay`, `dedup-check` and
   `retry-storm` against the versioned merchant intake.
+- `examples/solana-topup/` — the Solana rail on a real chain
+  (issue #1117): intent → reference-marked transfer → confirm and the
+  unattended `solana-deposits` poll path. Needs a Solana RPC endpoint — a
+  local `solana-test-validator` is the reproducible choice (the devnet
+  faucet answers HTTP 410) — and is deliberately **not** in
+  `scripts/verify-examples.sh`, whose gate stays chain-free.
 
 `scripts/verify-examples.sh` builds the server and SDK, provisions a random scratch
 PostgreSQL database through the explicitly selected admin connection, and runs
