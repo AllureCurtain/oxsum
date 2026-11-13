@@ -4527,3 +4527,36 @@ changes. Reading the multisig's policy on-chain would take an RPC read at
 boot the rail deliberately does not do; signer review stays an operator act
 recorded in `docs/self-hosted-solana-multisig.md`. Refunds and consolidation
 are manual multisig ops in every case — the server never signs.
+
+## 2026-11-14 — SOL intents are oracle-priced at open; the static rate is devnet-only (#1139)
+
+A native-SOL intent no longer locks `OXSUM_SOLANA_RATE_MICRO` verbatim: the
+open samples the deployment's `PriceOracle` — `crates/integrations::pyth`, a
+narrow Pyth Hermes client (`GET /v2/updates/price/latest`, one call, the
+`parsed` block's `price`/`conf`/`expo`/`publish_time` — no `pyth-sdk`, the
+same thin-client shape as the rail's JSON-RPC one) — converts the
+`Crypto.SOL/USD` figure to `rate_micro` at 1 USD = 1 credit, and locks it
+into `meta` with `rateSource: "pyth"` and the quote's own
+`pythPrice`/`pythConf`/`pythPublishTime` so the locked figure can be
+re-derived and audited. `verify_locked` already reads only `meta`, so the
+settle needs no new locking — an oracle drift or `OXSUM_SOLANA_*` change
+cannot retro-price a pending deposit.
+
+The refusal is the point: an open whose freshest quote is older than
+`OXSUM_SOLANA_PYTH_MAX_AGE_SECS` (default 60), whose `conf/price` exceeds
+`OXSUM_SOLANA_PYTH_MAX_CONF_RATIO` (default 0.01), or whose oracle cannot
+answer is refused `403 FORBIDDEN` — never priced off a stale or static
+figure. `OXSUM_SOLANA_RATE_MICRO` survives only behind
+`OXSUM_SOLANA_DEVNET_STATIC_RATE=1` for a devnet/test deployment, and for an
+SPL mint where the rate is the fixed unit conversion (no oracle is consulted
+— a USDC price is a constant of the deployment). Set `RATE_MICRO` on a
+native-SOL deployment without the flag and the boot refuses: the dangerous
+direction is a mainnet silently pricing intents at a hand-set figure.
+
+`PriceOracle` is the seam (`oxsum-core`, object-safe boxed futures like
+`ChainLookup`) so core stays HTTP-free and tests stub the quote in-process;
+`SolanaPricing` (`Static` | `Oracle{feed_id, max_quote_age_secs,
+max_conf_ratio}`) is the policy the verifier carries, resolved once at open
+into a `LockedRate` the insert path records. The route resolves the rate
+before `open_solana_deposit` runs because an oracle sample must not ride
+inside the intent's insert path.
