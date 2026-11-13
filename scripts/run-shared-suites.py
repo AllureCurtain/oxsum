@@ -58,13 +58,20 @@ def _metadata_binary(extract_root, binary):
 
 
 def _resolve(bins, binary):
-    """The aggregate test executable for `binary`, whichever layout archived it."""
+    """The aggregate test executable for `binary`, whichever layout archived it.
+
+    `bins` may be the `deps/` dir, the extraction root, or any path inside the
+    archive — `_extract_root` walks up to the `target/nextest/` marker, then the
+    metadata names the binary wherever the archive recorded it. The glob
+    fallback sweeps the whole extraction root so a metadata-missing archive
+    still finds `build/…/out/` placements too.
+    """
     root = _extract_root(bins)
     if root is not None:
         resolved = _metadata_binary(root, binary)
         if resolved is not None:
             return resolved.resolve()
-    matches = sorted(p for p in bins.glob(f"{binary}-*")
+    matches = sorted(p for p in (root or bins).rglob(f"{binary}-*")
                      if re.fullmatch(rf"{binary}-[0-9a-f]+", p.name)
                      and p.is_file() and os.access(p, os.X_OK))
     if len(matches) != 1:
@@ -107,11 +114,32 @@ def run(bins, check_only=False):
             raise ValueError(f"incomplete execution: {exe.name}/{prefix}")
 
 
+def resolve(bins, binary):
+    """Print the one executable that answers `binary`, whichever layout archived it.
+
+    The doubleentry conformance step in ci.yml uses this so the
+    `build/<pkg>/<hash>/out/` layout resolves through the metadata the same
+    way the aggregate suites do — a bare `find deps/ -name 'postgres-*'`
+    finds nothing there and fails with a silent `command not found`.
+    """
+    try:
+        print(_resolve(bins, binary))
+    except ValueError as error:
+        sys.exit(f"resolve failed: {error}")
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("bins", type=Path)
+    parser.add_argument("bins", type=Path,
+                        help="the deps dir the archive was extracted under, or any path "
+                             "inside the extraction root (the metadata walk finds the root)")
     parser.add_argument("--check-only", action="store_true")
+    parser.add_argument("--resolve", metavar="BINARY",
+                        help="print the single executable for BINARY and exit")
     args = parser.parse_args()
+    if args.resolve:
+        resolve(args.bins, args.resolve)
+        return
     try:
         run(args.bins, args.check_only)
     except (ValueError, OSError, subprocess.SubprocessError) as error:
