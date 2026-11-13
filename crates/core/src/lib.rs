@@ -343,9 +343,9 @@ pub use sessions::{
 };
 pub use solana::{
     AssetTerms, ChainLookup, ExpectedTransfer, LockedRate, OracleQuote, PriceOracle, RAIL_SOLANA,
-    SanctionsScreen, ScannedTransfer, ScreenVerdict, SolanaCredit, SolanaExceptionDeposit,
-    SolanaPricing, SolanaRailVerifier, SolanaTerms, SolanaVerification, TOKEN_2022_PROGRAM_ID,
-    USD_PEGGED_RATE_MICRO, ValidatedTransfer, status as solana_status,
+    SPL_TOKEN_PROGRAM_ID, SanctionsScreen, ScannedTransfer, ScreenVerdict, SolanaCredit,
+    SolanaExceptionDeposit, SolanaPricing, SolanaRailVerifier, SolanaTerms, SolanaVerification,
+    TOKEN_2022_PROGRAM_ID, USD_PEGGED_RATE_MICRO, ValidatedTransfer, status as solana_status,
 };
 pub use staff_invitations::{StaffInvitationPage, StaffInvitationSummary, StaffMailTarget};
 pub use statement_pdf::render_statement_pdf;
