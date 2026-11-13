@@ -56,7 +56,7 @@ async fn open_solana_deposit_inserts_pending_with_locked_terms() {
     };
     let org = organization(&db, "open").await;
     let deposit_id = Uuid::new_v4();
-    let (reference, lamports, ttl) = db
+    let (reference, lamports, expires_at) = db
         .open_solana_deposit(org, deposit_id, 1000, &terms())
         .await
         .unwrap()
@@ -64,7 +64,12 @@ async fn open_solana_deposit_inserts_pending_with_locked_terms() {
     // 1000 minor-credits at 200_000_000 minor-credits/SOL = 0.000005 SOL
     // = 5_000 lamports (lamports = credits_minor * 1e9 / rate_micro).
     assert_eq!(lamports, 5_000);
-    assert_eq!(ttl, 600);
+    // The returned deadline is the stored RFC3339 expiresAt, not a ttl the
+    // caller would re-add to its own clock (issue #1131).
+    let parsed_expiry =
+        time::OffsetDateTime::parse(&expires_at, &time::format_description::well_known::Rfc3339)
+            .expect("expiresAt parses as RFC3339");
+    assert!(parsed_expiry > time::OffsetDateTime::now_utc());
     assert!(!reference.is_empty());
     let row = sqlx::query(
         "SELECT rail, status, amount_minor, payment_ref, meta FROM oxsum.deposits \
@@ -82,7 +87,8 @@ async fn open_solana_deposit_inserts_pending_with_locked_terms() {
     assert_eq!(meta["solLamports"].as_i64().unwrap(), 5_000);
     assert_eq!(meta["rateMicro"].as_i64().unwrap(), 200_000_000);
     assert_eq!(meta["rateSource"].as_str().unwrap(), "config");
-    assert!(meta["expiresAt"].is_string());
+    // The answered deadline is exactly the one persisted on the intent.
+    assert_eq!(meta["expiresAt"].as_str().unwrap(), expires_at);
 }
 
 #[tokio::test]
