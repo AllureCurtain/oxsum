@@ -582,6 +582,12 @@ impl Db {
     /// Credited deposits whose entry is missing — or was never recorded. A
     /// deposit on an organization whose ledger is absent counts as unbooked
     /// too: `entry_id` names an entry that cannot exist.
+    ///
+    /// "The deposit claims a credit" reads `entry_id`, not the status name:
+    /// the solana exception statuses `overpaid`/`refund_pending`/`refunded`
+    /// still carry the entry when the opened amount credited (issue #1142),
+    /// so a missing entry on one of them is the same drift a `credited` row
+    /// with no entry is.
     async fn deposits_unbooked(
         &self,
         tenants: &[Tenant],
@@ -605,7 +611,9 @@ impl Db {
             let sql = format!(
                 "SELECT d.rail || ':' || d.payment_ref AS detail, count(*) OVER() AS total \
                  FROM oxsum.deposits d \
-                 WHERE d.organization_id = $1 AND d.status = 'credited' AND ({missing}) \
+                 WHERE d.organization_id = $1 \
+                   AND (d.status = 'credited' OR d.entry_id IS NOT NULL) \
+                   AND d.status <> 'reversed' AND ({missing}) \
                  ORDER BY d.created_at DESC LIMIT $2"
             );
             let rows = sqlx::query(&sql)
@@ -620,6 +628,11 @@ impl Db {
 
     /// Credited deposits where the rail reported a different amount than the
     /// deposit expected — the under/over-payment the deposits table records.
+    ///
+    /// The solana exception statuses `underpaid`/`late`/`overpaid` carry the
+    /// same `received_minor` mismatch — they *are* the mismatch, now named
+    /// and queued (issue #1142) — so the class counts them too; `refunded`
+    /// closes the mismatch and drops out.
     async fn deposits_mismatched(&self, classes: &mut Classes) -> Result<(), WalletError> {
         let rows = sqlx::query(
             "SELECT o.name AS organization, \
@@ -628,7 +641,7 @@ impl Db {
                     AS detail, count(*) OVER() AS total \
              FROM oxsum.deposits d JOIN oxsum.organizations o \
                ON o.organization_id = d.organization_id \
-             WHERE d.status = 'credited' \
+             WHERE d.status IN ('credited', 'underpaid', 'late', 'overpaid', 'refund_pending') \
                AND d.received_minor IS NOT NULL AND d.received_minor <> d.amount_minor \
              ORDER BY d.created_at DESC LIMIT $1",
         )

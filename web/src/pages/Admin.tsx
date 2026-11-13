@@ -26,6 +26,7 @@ import { adminApi, useAdminToken } from "./admin/api";
 import { Channels } from "./admin/channels";
 import { Organizations } from "./admin/organizations";
 import { Deposits } from "./admin/deposits";
+import { SolanaExceptions } from "./admin/solana";
 import { InFlight } from "./admin/in-flight";
 import { AdminRequests } from "./admin/requests";
 import { Anomalies } from "./admin/anomalies";
@@ -53,6 +54,7 @@ const SECTION_GROUPS: { group: string; items: { key: string; labelKey: string; I
     group: "money",
     items: [
       { key: "deposits", labelKey: "deposits", Icon: Landmark },
+      { key: "solana-exceptions", labelKey: "solanaExceptions", Icon: Landmark },
       { key: "margin", labelKey: "margin", Icon: Scale },
       { key: "statements", labelKey: "statements", Icon: FileCheck },
       { key: "redemptions", labelKey: "redemptions", Icon: Ticket },
@@ -246,6 +248,8 @@ function Section({ token, name }: { token: string; name: SectionKey }) {
       return <Organizations token={token} />;
     case "deposits":
       return <Deposits token={token} />;
+    case "solana-exceptions":
+      return <SolanaExceptions token={token} />;
     case "in-flight":
       return <InFlight token={token} />;
     case "requests":

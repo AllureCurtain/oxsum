@@ -346,9 +346,11 @@ pub(crate) struct SolanaConfirmReq {
 /// `solana-deposits` poll tick. The located transaction's signature lands in
 /// `facilitator_tx_hash` and keys the `solana:<signature>` ledger credit, so a
 /// raced poll or a replayed confirm credits nothing twice. `403` means no
-/// honoring transfer has landed yet — or the found one does not honor the
-/// intent (wrong recipient, underpayment, wrong mint, missing marker); a
-/// deployment without `OXSUM_SOLANA_*` answers 503.
+/// honoring transfer has landed yet — or the found one is not the intent's
+/// payment (wrong recipient, wrong mint, missing marker). A located transfer
+/// that underpays or landed after the intent expired is `409` — the deposit
+/// is on the operator's exception queue (`underpaid`/`late`), not open for
+/// retries (issue #1142). A deployment without `OXSUM_SOLANA_*` answers 503.
 pub(crate) async fn solana_confirm(
     State(state): State<AppState>,
     Extension(principal): Extension<Principal>,
@@ -365,11 +367,29 @@ pub(crate) async fn solana_confirm(
         return Err(ApiError::NotFound("the deposit intent is not known".into()));
     };
     let w = wallet(&state.tenants, principal.organization()).await?;
-    let receipt = state
+    let outcome = state
         .db
         .credit_solana_deposit(&w, deposit_id, verifier, today())
-        .await?
-        .ok_or_else(|| ApiError::NotFound("the deposit intent is not known".into()))?;
+        .await?;
+    let receipt = match outcome {
+        oxsum_core::SolanaCredit::Credited(receipt) => receipt,
+        // Terminal verdicts, not "not paid yet": the deposit entered the
+        // exception queue and the rail's part is done — 409 names it.
+        oxsum_core::SolanaCredit::Underpaid => {
+            return Err(ApiError::Conflict(
+                "the paying transfer underpaid the intent; the deposit is queued for review".into(),
+            ));
+        }
+        oxsum_core::SolanaCredit::Late => {
+            return Err(ApiError::Conflict(
+                "the paying transaction landed after the intent expired; the deposit is queued for review"
+                    .into(),
+            ));
+        }
+        oxsum_core::SolanaCredit::Settled => {
+            return Err(ApiError::NotFound("the deposit intent is not known".into()));
+        }
+    };
     // The credit repaid counts against the statement book, like every rail:
     // open statements are repaid oldest first (issue #124).
     state
@@ -377,6 +397,56 @@ pub(crate) async fn solana_confirm(
         .reconcile_statements(principal.organization().id, &w, today())
         .await?;
     ok(receipt)
+}
+
+/// The organization's own solana deposits on the exception queue (issue
+/// #1142): the Topup surface's "your deposit needs attention" list — an
+/// `underpaid`/`late`/`overpaid`/`flagged` row the operator may refund, a
+/// `refund_pending` one waiting on the customer's refund address, a
+/// `refunded` one closed with its payout signature. A deployment without
+/// `OXSUM_SOLANA_*` answers 503.
+pub(crate) async fn solana_deposits(
+    State(state): State<AppState>,
+    Extension(principal): Extension<Principal>,
+) -> ApiResult<Vec<oxsum_core::SolanaExceptionDeposit>> {
+    state.config.solana().ok_or_else(|| {
+        ApiError::ServiceUnavailable("the solana deposit rail is not configured".into())
+    })?;
+    ok(state
+        .db
+        .solana_exception_deposits_for(principal.organization().id, 50)
+        .await?)
+}
+
+/// The body of `POST /api/v1/topups/solana/{depositId}/refund-address`: the
+/// base58 Solana public key the pull-payment refund should pay. The rail
+/// never derives the payer — the customer names where the money goes.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(crate) struct SolanaRefundAddressReq {
+    address: String,
+}
+
+/// `POST /api/v1/topups/solana/{depositId}/refund-address` (issue #1142): the
+/// customer's leg of the pull-payment refund — supplies the base58 address
+/// the multisig payout will send to. Only a `refund_pending` deposit of the
+/// caller's own organization accepts it, and only before the operator's
+/// approval freezes it: a post-approval edit could redirect the payout.
+/// `400` on a malformed address, `404` on a deposit that is not the
+/// organization's, `409` on one not awaiting an address.
+pub(crate) async fn solana_refund_address(
+    State(state): State<AppState>,
+    Extension(principal): Extension<Principal>,
+    Path(deposit_id): Path<Uuid>,
+    ApiJson(r): ApiJson<SolanaRefundAddressReq>,
+) -> ApiResult<oxsum_core::SolanaExceptionDeposit> {
+    state.config.solana().ok_or_else(|| {
+        ApiError::ServiceUnavailable("the solana deposit rail is not configured".into())
+    })?;
+    ok(state
+        .db
+        .solana_set_refund_address(principal.organization().id, deposit_id, &r.address)
+        .await?)
 }
 
 /// The body of `POST /api/v1/topups/stripe`: the amount to charge and the

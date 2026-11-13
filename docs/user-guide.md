@@ -597,7 +597,14 @@ a Solana wallet, or copy the link, and the wallet fills in the recipient,
 amount and `reference` marker itself. The manual `payTo` / amount /
 `reference` fields stay beneath the QR for a wallet that cannot scan. The
 deposit credits when the transfer is found and validated on-chain — the
-15-second poll picks it up even without the "I've sent it" confirm button.
+15-second poll picks it up even without the "I've sent it" confirm button. If a
+transfer arrives that cannot settle — under-delivered, over-delivered, or landed
+after the intent's `expiresAt` — the page lists it under the top-up form with its
+status and the asset it locked (issue #1142). When an operator opens a refund on
+one, the row asks for your refund address: paste the base58 Solana address the
+payout should send to — the rail never guesses it from the paying transaction —
+and after the operator approves and the multisig pays, the row closes with the
+payout's signature as proof.
 
 On a deployment that promotes a rail's environment credentials to an explicit
 merchant (`OXSUM_<RAIL>_MERCHANT_ACCOUNT_ID` + `OXSUM_<RAIL>_MERCHANT_MODE`), the

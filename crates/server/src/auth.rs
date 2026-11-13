@@ -306,6 +306,7 @@ fn customer_route_capability(method: &str, path: &str) -> oxsum_core::CustomerCa
             | "/org/subscription/periods"
             | "/org/plan"
             | "/org/plan/payment-quote"
+            | "/topups/solana/deposits"
             | "/org/plan/journals"
             | "/org/plan/journals/{journal_id}"
             | "/org/statements"
@@ -341,6 +342,7 @@ fn customer_route_capability(method: &str, path: &str) -> oxsum_core::CustomerCa
             | "/topups/x402"
             | "/topups/solana"
             | "/topups/solana/confirm"
+            | "/topups/solana/{deposit_id}/refund-address"
             | "/orders"
             | "/orders/{order_id}/refund-request"
             | "/redemptions",

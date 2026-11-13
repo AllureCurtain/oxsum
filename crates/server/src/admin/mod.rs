@@ -39,6 +39,7 @@ mod groups;
 mod guardrails;
 mod ops;
 mod organizations;
+mod solana;
 mod statements;
 mod subscriptions;
 
@@ -126,6 +127,18 @@ pub fn router(state: AppState) -> Router<AppState> {
         .route("/deposits", get(ops::deposits))
         .route("/deposits/solana/flagged", get(ops::solana_flagged))
         .route("/deposits/{deposit_id}/reverse", post(ops::reverse_deposit))
+        // The solana rail's exception queue and pull-payment refund
+        // lifecycle (issue #1142).
+        .route("/solana/exceptions", get(solana::exceptions))
+        .route("/solana/{deposit_id}/refund", post(solana::request_refund))
+        .route(
+            "/solana/{deposit_id}/refund-approve",
+            post(solana::approve_refund),
+        )
+        .route(
+            "/solana/{deposit_id}/refund-complete",
+            post(solana::complete_refund),
+        )
         .route("/anomalies", get(ops::anomalies))
         .route("/margin", get(ops::margin))
         .route("/reconciliation", get(ops::reconciliation))

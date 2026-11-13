@@ -1,4 +1,4 @@
-//! HTTP tests for the Solana deposit rail (issue #1117).
+//! HTTP tests for the Solana deposit rail (issues #1117, #1142).
 //!
 //! `POST /api/v1/topups/solana` opens a `pending` intent carrying a unique
 //! `reference` marker; `POST /api/v1/topups/solana/confirm` submits it and
@@ -6,6 +6,12 @@
 //! lookup — `credit_solana_deposit` walks the same pending → confirmed →
 //! credited path every rail shares. A replayed confirm credits once, a
 //! mismatched transfer refuses, and an unconfigured deployment 503s.
+//!
+//! Issue #1142's queue: a located-but-short transfer marks `underpaid`, a
+//! late one `late`, and an over-delivery credits and marks `overpaid` — each
+//! readable on `/api/v1/admin/solana/exceptions`, and each refundable
+//! through the pull-payment lifecycle (`refund` → the customer's
+//! `refund-address` → `refund-approve` → `refund-complete` → `refunded`).
 //!
 //! The tests need DATABASE_URL and skip without it.
 
@@ -114,13 +120,15 @@ impl ChainLookup for SolanaStub {
     {
         Box::pin(async move {
             let answer = self.validated.lock().unwrap().get(signature).cloned()?;
-            // Honor only a transfer that meets the intent's terms — the same
-            // gates `SolanaRpcClient::validate_transfer` runs against the
-            // chain (recipient, amount, mint, marker). The stub answers `None`
-            // when any term fails, the same shape a dishonoring tx earns.
-            if answer.delivered < expected.amount {
-                return None;
-            }
+            // The armed transfer is the intent's payment — the same answer
+            // `SolanaRpcClient::validate_transfer` gives once the recipient,
+            // mint and marker prove out (issue #1142): the delivered figure
+            // rides up unjudged, and the verifier classifies an under-
+            // delivery `underpaid` rather than masquerading as "not paid".
+            // `None` here is "not the payment at all", which the stub reaches
+            // only for an unarmed signature — a wrong recipient/mint/marker
+            // would dishonor the same way on-chain.
+            let _ = expected;
             Some(answer)
         })
     }
@@ -167,7 +175,12 @@ impl SanctionsScreen for ScreenStub {
     }
 }
 
-/// A configured world: the Solana rail is on, with the stubbed chain.
+/// The operator token the exception-queue and refund lifecycle tests use
+/// (issue #1142).
+const ADMIN_TOKEN: &str = "solana-operator-token-0123456789";
+
+/// A configured world: the Solana rail is on, with the stubbed chain, and
+/// the operator admin surface is on for the exception-queue tests.
 async fn world(stub: SolanaStub) -> Option<(Router, Db)> {
     world_with_terms(stub, terms()).await
 }
@@ -318,8 +331,13 @@ async fn solana_intent_pays_once() {
     assert_eq!(balance(&app, &key).await, 1000, "{replay}");
 }
 
+/// Issue #1142: a located transfer that delivers under the asked amount is
+/// not "not paid yet" — the deposit marks `underpaid` and lands on the
+/// operator's exception queue, never silently `pending` forever. The confirm
+/// answers `409`, the ledger moves nothing, and a second confirm is the
+/// terminal `404` the queue's settled state earns.
 #[tokio::test]
-async fn solana_confirm_refuses_an_unpaying_transfer() {
+async fn solana_confirm_marks_an_underpaid_transfer() {
     let stub = SolanaStub::default();
     let Some((app, _db)) = world(stub.clone()).await else {
         return;
@@ -335,7 +353,8 @@ async fn solana_confirm_refuses_an_unpaying_transfer() {
     .await;
     assert_eq!(status, StatusCode::OK, "{intent}");
     let reference = intent["data"]["reference"].as_str().unwrap().to_owned();
-    // Arm the stub with a transfer that underpays — validate refuses it.
+    // Arm the stub with a transfer that underpays — it is the intent's
+    // payment (recipient, mint, marker all honor) but delivers far short.
     let signature = "sig2222222222222222222222222222222222222222222222222222222222222222";
     stub.located
         .lock()
@@ -350,6 +369,35 @@ async fn solana_confirm_refuses_an_unpaying_transfer() {
             payer: None,
         },
     );
+    let (status, body) = call(
+        &app,
+        "POST",
+        "/api/v1/topups/solana/confirm",
+        Some(json!({"reference": reference})),
+        Some(&key),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CONFLICT, "{body}");
+    assert_eq!(balance(&app, &key).await, 0);
+    // The deposit is on the admin exception queue as `underpaid`, carrying
+    // the delivered figure, the locked asset and the spent signature.
+    let (status, queue) = call(
+        &app,
+        "GET",
+        "/api/v1/admin/solana/exceptions?status=underpaid",
+        None,
+        Some(ADMIN_TOKEN),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{queue}");
+    let entries = queue["data"]["entries"].as_array().unwrap();
+    assert_eq!(entries.len(), 1, "{queue}");
+    let deposit = &entries[0];
+    assert_eq!(deposit["status"].as_str().unwrap(), "underpaid");
+    assert_eq!(deposit["signature"].as_str().unwrap(), signature);
+    assert_eq!(deposit["delivered"].as_i64().unwrap(), 1);
+    assert_eq!(deposit["asset"].as_str().unwrap(), "sol");
+    // A second confirm is the settled terminal answer, not a second walk.
     let (status, _) = call(
         &app,
         "POST",
@@ -358,8 +406,7 @@ async fn solana_confirm_refuses_an_unpaying_transfer() {
         Some(&key),
     )
     .await;
-    assert_eq!(status, StatusCode::FORBIDDEN);
-    assert_eq!(balance(&app, &key).await, 0);
+    assert_eq!(status, StatusCode::NOT_FOUND);
 }
 
 #[tokio::test]
@@ -448,6 +495,445 @@ async fn solana_signature_credits_once_across_organizations() {
     .await;
     assert_eq!(status_b, StatusCode::FORBIDDEN, "{refusal}");
     assert_eq!(balance(&app, &key_b).await, 0, "{refusal}");
+}
+
+/// Issue #1142: a transfer that honors the intent but lands after
+/// `expiresAt` marks `late` — the refusal that used to loop `pending` every
+/// pass now has a name and a queue.
+#[tokio::test]
+async fn solana_confirm_marks_a_late_transfer() {
+    let stub = SolanaStub::default();
+    let Some((app, _db)) = world(stub.clone()).await else {
+        return;
+    };
+    let key = register_session(&app).await;
+    let (status, intent) = call(
+        &app,
+        "POST",
+        "/api/v1/topups/solana",
+        Some(json!({"amountMinor": 1000})),
+        Some(&key),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{intent}");
+    let reference = intent["data"]["reference"].as_str().unwrap().to_owned();
+    // Arm the stub with a fully-paying transfer whose blockTime is far in the
+    // future — at/after any expiresAt the intent could have written.
+    let signature = "sigLate00000000000000000000000000000000000000000000000000000000000000";
+    stub.located
+        .lock()
+        .unwrap()
+        .insert(reference.clone(), vec![signature.to_owned()]);
+    stub.validated.lock().unwrap().insert(
+        signature.to_owned(),
+        ValidatedTransfer {
+            signature: signature.to_owned(),
+            delivered: 5_000,
+            block_time: Some(4_102_444_800), // 2100-01-01 — past every TTL
+            payer: None,
+        },
+    );
+    let (status, body) = call(
+        &app,
+        "POST",
+        "/api/v1/topups/solana/confirm",
+        Some(json!({"reference": reference})),
+        Some(&key),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CONFLICT, "{body}");
+    assert_eq!(balance(&app, &key).await, 0);
+    let (status, queue) = call(
+        &app,
+        "GET",
+        "/api/v1/admin/solana/exceptions?status=late",
+        None,
+        Some(ADMIN_TOKEN),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{queue}");
+    let entries = queue["data"]["entries"].as_array().unwrap();
+    assert_eq!(entries.len(), 1, "{queue}");
+    assert_eq!(entries[0]["status"].as_str().unwrap(), "late");
+    assert_eq!(entries[0]["signature"].as_str().unwrap(), signature);
+}
+
+/// Issue #1142 × #1140: an over-delivery still credits the opened amount
+/// exactly once — the row marks `overpaid`, `entryId` proves the credit, and
+/// the surplus figure is what the queue shows for a possible refund. On a
+/// USDC intent the over/under verdict reads USDC base units — a 9_000-unit
+/// over-delivery on the mint is overpaid exactly like a lamport surplus.
+#[tokio::test]
+async fn solana_overpay_credits_once_and_marks_overpaid() {
+    let stub = SolanaStub::default();
+    let Some((app, _db)) = world_with_terms(stub.clone(), multi_asset_terms()).await else {
+        return;
+    };
+    let key = register_session(&app).await;
+    let (status, intent) = call(
+        &app,
+        "POST",
+        "/api/v1/topups/solana",
+        Some(json!({"amountMinor": 1000, "asset": "usdc"})),
+        Some(&key),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{intent}");
+    let reference = intent["data"]["reference"].as_str().unwrap().to_owned();
+    let signature = "sigOver00000000000000000000000000000000000000000000000000000000000000";
+    stub.located
+        .lock()
+        .unwrap()
+        .insert(reference.clone(), vec![signature.to_owned()]);
+    stub.validated.lock().unwrap().insert(
+        signature.to_owned(),
+        ValidatedTransfer {
+            signature: signature.to_owned(),
+            delivered: 9_000, // over the asked 1_000 USDC base units
+            block_time: Some(0),
+            payer: None,
+        },
+    );
+    let (status, receipt) = call(
+        &app,
+        "POST",
+        "/api/v1/topups/solana/confirm",
+        Some(json!({"reference": reference})),
+        Some(&key),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{receipt}");
+    // The opened amount credits — never the surplus — exactly once.
+    assert_eq!(balance(&app, &key).await, 1000);
+    let (status, queue) = call(
+        &app,
+        "GET",
+        "/api/v1/admin/solana/exceptions?status=overpaid",
+        None,
+        Some(ADMIN_TOKEN),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{queue}");
+    let entries = queue["data"]["entries"].as_array().unwrap();
+    assert_eq!(entries.len(), 1, "{queue}");
+    let deposit = &entries[0];
+    assert_eq!(deposit["status"].as_str().unwrap(), "overpaid");
+    assert!(deposit["entryId"].is_string(), "{deposit}");
+    assert_eq!(deposit["asset"].as_str().unwrap(), "usdc");
+    assert_eq!(deposit["delivered"].as_i64().unwrap(), 9_000);
+    assert_eq!(deposit["expected"].as_i64().unwrap(), 1_000);
+    // A replayed confirm is the settled answer, and the balance never moves
+    // a second time.
+    let (_status, _) = call(
+        &app,
+        "POST",
+        "/api/v1/topups/solana/confirm",
+        Some(json!({"reference": reference})),
+        Some(&key),
+    )
+    .await;
+    assert_eq!(balance(&app, &key).await, 1000);
+}
+
+/// Drives a deposit onto the named exception status through the stubbed
+/// chain and returns its queue row's `depositId`. `delivered`/`block_time`
+/// decide the verdict: short → `underpaid`, on-time full → credit, late →
+/// `late` (checked before the short verdict, matching the rail).
+async fn open_exception(
+    app: &Router,
+    stub: &SolanaStub,
+    key: &str,
+    amount_minor: i64,
+    delivered: i64,
+    block_time: i64,
+) -> String {
+    let (status, intent) = call(
+        app,
+        "POST",
+        "/api/v1/topups/solana",
+        Some(json!({"amountMinor": amount_minor})),
+        Some(key),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{intent}");
+    let reference = intent["data"]["reference"].as_str().unwrap().to_owned();
+    let signature = format!("sig{}", &uuid::Uuid::new_v4().simple().to_string()[..24]);
+    stub.located
+        .lock()
+        .unwrap()
+        .insert(reference.clone(), vec![signature.clone()]);
+    stub.validated.lock().unwrap().insert(
+        signature.clone(),
+        ValidatedTransfer {
+            signature: signature.clone(),
+            delivered,
+            block_time: Some(block_time),
+            payer: None,
+        },
+    );
+    let _ = call(
+        app,
+        "POST",
+        "/api/v1/topups/solana/confirm",
+        Some(json!({"reference": reference})),
+        Some(key),
+    )
+    .await;
+    let (status, queue) = call(
+        app,
+        "GET",
+        "/api/v1/admin/solana/exceptions",
+        None,
+        Some(ADMIN_TOKEN),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{queue}");
+    queue["data"]["entries"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|row| row["signature"].as_str() == Some(&signature))
+        .expect("the marked deposit is on the queue")["depositId"]
+        .as_str()
+        .unwrap()
+        .to_owned()
+}
+
+/// The pull-payment lifecycle end to end (issue #1142): the operator opens
+/// the refund (`refund_pending`), the customer names their refund address on
+/// their own surface, the operator approves, and the payout signature closes
+/// the row `refunded` — never an auto-send, never a ledger re-entry.
+#[tokio::test]
+async fn solana_refund_walks_the_pull_payment_lifecycle() {
+    let stub = SolanaStub::default();
+    let Some((app, _db)) = world(stub.clone()).await else {
+        return;
+    };
+    let key = register_session(&app).await;
+    // An underpaid deposit: 500 credits opened, the transfer delivered 1
+    // lamport (well short of the asked 2_500).
+    let deposit_id = open_exception(&app, &stub, &key, 500, 1, 0).await;
+    // The customer's own list sees the `underpaid` row.
+    let (status, mine) = call(
+        &app,
+        "GET",
+        "/api/v1/topups/solana/deposits",
+        None,
+        Some(&key),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{mine}");
+    assert_eq!(mine["data"].as_array().unwrap().len(), 1, "{mine}");
+    assert_eq!(mine["data"][0]["asset"].as_str().unwrap(), "sol", "{mine}");
+    // The operator opens the refund.
+    let (status, opened) = call(
+        &app,
+        "POST",
+        &format!("/api/v1/admin/solana/{deposit_id}/refund"),
+        Some(json!({"reason": "the transfer underpaid the intent"})),
+        Some(ADMIN_TOKEN),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{opened}");
+    assert_eq!(opened["data"]["status"].as_str().unwrap(), "refund_pending");
+    // Approval before the customer names the address is refused — there is
+    // nowhere to pay yet.
+    let (status, _) = call(
+        &app,
+        "POST",
+        &format!("/api/v1/admin/solana/{deposit_id}/refund-approve"),
+        None,
+        Some(ADMIN_TOKEN),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CONFLICT);
+    // The customer names their refund address — a real 32-byte key.
+    let refund_address = "4uQeVj5tqViQh7yWWGStvkEG1Zmhx6uasJtWCJziofM";
+    let (status, addressed) = call(
+        &app,
+        "POST",
+        &format!("/api/v1/topups/solana/{deposit_id}/refund-address"),
+        Some(json!({"address": refund_address})),
+        Some(&key),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{addressed}");
+    assert_eq!(
+        addressed["data"]["refundAddress"].as_str().unwrap(),
+        refund_address
+    );
+    // Complete before approval is refused — the order is the point.
+    let payout =
+        "299xJhoRJCHgYo6xxU78Joi8sY7uXrsp7kzXMxbVFZVLKHqVAfV1R3dA864pwEhe6z1wYWy1BXDzyvzNZDKHfdMd";
+    let (status, _) = call(
+        &app,
+        "POST",
+        &format!("/api/v1/admin/solana/{deposit_id}/refund-complete"),
+        Some(json!({"signature": payout})),
+        Some(ADMIN_TOKEN),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CONFLICT);
+    // Approve, then complete: the row lands `refunded` with the payout
+    // signature recorded — and no credit ever ran.
+    let (status, approved) = call(
+        &app,
+        "POST",
+        &format!("/api/v1/admin/solana/{deposit_id}/refund-approve"),
+        None,
+        Some(ADMIN_TOKEN),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{approved}");
+    // A post-approval address edit is refused — it could redirect the
+    // payout the multisig is about to sign.
+    let (status, _) = call(
+        &app,
+        "POST",
+        &format!("/api/v1/topups/solana/{deposit_id}/refund-address"),
+        Some(json!({"address": "11111111111111111111111111111111"})),
+        Some(&key),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CONFLICT);
+    let (status, closed) = call(
+        &app,
+        "POST",
+        &format!("/api/v1/admin/solana/{deposit_id}/refund-complete"),
+        Some(json!({"signature": payout})),
+        Some(ADMIN_TOKEN),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{closed}");
+    assert_eq!(closed["data"]["status"].as_str().unwrap(), "refunded");
+    assert_eq!(closed["data"]["refundSignature"].as_str().unwrap(), payout);
+    assert_eq!(balance(&app, &key).await, 0);
+    // A replayed complete with the standing signature answers the closed
+    // row; a contradicting one is the conflict the audit protects against.
+    let (status, _) = call(
+        &app,
+        "POST",
+        &format!("/api/v1/admin/solana/{deposit_id}/refund-complete"),
+        Some(json!({"signature": payout})),
+        Some(ADMIN_TOKEN),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let (status, _) = call(
+        &app,
+        "POST",
+        &format!("/api/v1/admin/solana/{deposit_id}/refund-complete"),
+        Some(json!({"signature": "1111111111111111111111111111111111111111111111111111111111111111"})),
+        Some(ADMIN_TOKEN),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CONFLICT);
+}
+
+/// A refund cannot open on a deposit that owes nothing: `pending`,
+/// `credited` (without an overpay), `expired` and `refunded` are all
+/// non-refundable — `409`, never a silent accept.
+#[tokio::test]
+async fn solana_refund_refuses_a_non_refundable_status() {
+    let stub = SolanaStub::default();
+    let Some((app, db)) = world(stub.clone()).await else {
+        return;
+    };
+    let key = register_session(&app).await;
+    // A deposit that credited cleanly: `credited` owes no refund.
+    let (status, intent) = call(
+        &app,
+        "POST",
+        "/api/v1/topups/solana",
+        Some(json!({"amountMinor": 1000})),
+        Some(&key),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{intent}");
+    let reference = intent["data"]["reference"].as_str().unwrap().to_owned();
+    let signature = "sigClean0000000000000000000000000000000000000000000000000000000000000";
+    stub.located
+        .lock()
+        .unwrap()
+        .insert(reference.clone(), vec![signature.to_owned()]);
+    stub.validated.lock().unwrap().insert(
+        signature.to_owned(),
+        ValidatedTransfer {
+            signature: signature.to_owned(),
+            delivered: 5_000,
+            block_time: Some(0),
+            payer: None,
+        },
+    );
+    let (status, _) = call(
+        &app,
+        "POST",
+        "/api/v1/topups/solana/confirm",
+        Some(json!({"reference": reference})),
+        Some(&key),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let deposit_id: Uuid = sqlx::query_scalar(
+        "SELECT deposit_id FROM oxsum.deposits WHERE rail = 'solana' AND payment_ref = $1",
+    )
+    .bind(&reference)
+    .fetch_one(db.pool())
+    .await
+    .unwrap();
+    let (status, _) = call(
+        &app,
+        "POST",
+        &format!("/api/v1/admin/solana/{deposit_id}/refund"),
+        Some(json!({"reason": "should refuse"})),
+        Some(ADMIN_TOKEN),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CONFLICT);
+}
+
+/// The refund address is validated on the server: a malformed paste is a
+/// `400`, not a recorded string the payout could be signed against.
+#[tokio::test]
+async fn solana_refund_address_must_be_a_base58_pubkey() {
+    let stub = SolanaStub::default();
+    let Some((app, _db)) = world(stub.clone()).await else {
+        return;
+    };
+    let key = register_session(&app).await;
+    let deposit_id = open_exception(&app, &stub, &key, 500, 1, 0).await;
+    let (status, _) = call(
+        &app,
+        "POST",
+        &format!("/api/v1/admin/solana/{deposit_id}/refund"),
+        Some(json!({"reason": "underpaid"})),
+        Some(ADMIN_TOKEN),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    for bad in ["not-an-address", "0OIl", ""] {
+        let (status, _) = call(
+            &app,
+            "POST",
+            &format!("/api/v1/topups/solana/{deposit_id}/refund-address"),
+            Some(json!({"address": bad})),
+            Some(&key),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{bad}");
+    }
+    // Another organization cannot write the address — the deposit is not
+    // theirs to see.
+    let other = register_session(&app).await;
+    let (status, _) = call(
+        &app,
+        "POST",
+        &format!("/api/v1/topups/solana/{deposit_id}/refund-address"),
+        Some(json!({"address": "4uQeVj5tqViQh7yWWGStvkEG1Zmhx6uasJtWCJziofM"})),
+        Some(&other),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
 }
 
 #[tokio::test]
@@ -595,7 +1081,9 @@ async fn world_with(verifier: SolanaRailVerifier) -> Option<(Router, Db)> {
     let db = Db::from_pool(pool);
     db.migrate().await.expect("migrates");
     oxsum_testkit::set_registration_fixture(db.pool(), true).await;
-    let config = Config::new(Signup::Open, None).with_solana(verifier);
+    let config = Config::new(Signup::Open, None)
+        .with_solana(verifier)
+        .with_admin_token(ADMIN_TOKEN);
     Some((oxsum_server::app(db.clone(), config), db))
 }
 

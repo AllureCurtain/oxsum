@@ -1,15 +1,112 @@
-# Operator runbook: Solana top-up refunds
+# Operator runbook: Solana top-up exceptions and refunds
 
-How an operator finds a Solana deposit that needs a manual refund, decides
-whether to refund it, and records the decision. This runbook is deliberately
-**manual** — the rail does not auto-refund, because a refund is a business
-decision (was the underpayment a customer mistake or a bad quote?) plus a
-key-signing act the service should not automate.
+How an operator finds a Solana deposit that needs a refund, walks the
+pull-payment lifecycle, and records the decision. Since issue #1142 the rail
+names its unsettlable outcomes instead of leaving them `pending` — the
+exception queue is the work list — and a refund is still a **deliberately
+manual** business decision plus a key-signing act: the server holds no spend
+key, the multisig pays out-of-band, and the endpoints only record what was
+decided and what was paid. There is never an auto-refund to the payment
+source.
 
-## The four shapes a refund problem takes
+## The exception queue
 
-Every anomaly surfaces on one `oxsum.deposits` row (`rail = 'solana'`) or in
-the `solana-deposits` job's log line. Read the row first:
+`GET /api/v1/admin/solana/exceptions?status=&limit=&cursor=` lists every
+deposit the rail marked, newest first; the dashboard's
+**Admin → Solana exceptions** section renders it with a status filter and
+inline refund actions. The statuses:
+
+- `underpaid` — a located transfer honored the intent but delivered under the
+  asked amount. No credit ran; the shortfall sits in `payTo`.
+- `overpaid` — the transfer over-delivered. The opened amount **did** credit
+  (`entryId` is set — the money-in record stands); the surplus in `payTo` is
+  the figure a refund returns.
+- `late` — the paying transaction's on-chain `blockTime` is at/after the
+  intent's `expiresAt`. No credit ran.
+- `flagged` — held for review by pre-credit screening (issue #1144): the
+  payer hit a sanctions source and the row parked before the ledger credited;
+  `meta.screening` records `{verdict, source, reason, address, at}` and
+  `facilitator_tx_hash` names the held transaction. Review is a compliance
+  call — refund on-chain or clear it, never an auto-send.
+- `refund_pending` — a refund was opened; the row is mid-lifecycle.
+- `refunded` — the payout signature is recorded; the deposit is closed.
+
+Each row carries the figures a decision needs without a chain lookup: `asset`
+(the whitelist key the intent locked — `sol` or an SPL key like `usdc` — the
+denomination every delivered/expected figure counts in and the refund
+repays), `amountMinor`/`receivedMinor` (opened vs. delivered, in credits),
+`delivered`/`expected` (the same figures in the locked asset's base units —
+lamports for `sol`, the mint's own base units for an SPL asset),
+`signature` (the paying transaction), `paymentRef` (the intent's marker), and
+the `refund` record (`requestedBy`/`requestedAt`/`reason`, `addressedAt`,
+`approvedBy`/`approvedAt`, `completedAt`) once the lifecycle is walking.
+
+The customer's own view — `GET /api/v1/topups/solana/deposits`, rendered on
+the Topup page — shows the same rows scoped to their organization, which is
+where they learn their deposit needs attention and where the refund-address
+form lives.
+
+## The refund lifecycle
+
+The refund is a pull payment in the BTCPay shape — four steps, each recorded
+on `meta.refund`, each audited (`solana.refund.request` / `.approve` /
+`.complete`):
+
+1. **Open** — `POST /api/v1/admin/solana/{depositId}/refund {"reason"}` on an
+   `underpaid`/`overpaid`/`late`/`flagged` deposit marks it `refund_pending`.
+   Re-requesting an open refund replays the standing row; a non-refundable or
+   `refunded` deposit is `409`.
+2. **Address** — the customer supplies where the money goes:
+   `POST /api/v1/topups/solana/{depositId}/refund-address {"address"}` on
+   their own surface, validated as a base58 32-byte public key. The rail
+   never derives the payer — the customer's paste is the destination.
+3. **Approve** — `POST /api/v1/admin/solana/{depositId}/refund-approve`
+   records the review verdict and **freezes the address** (a post-approval
+   edit could redirect the payout the multisig is about to sign). Approving
+   with no address yet is `409`.
+4. **Pay + record** — the multisig sends the refund out-of-band **in the
+   deposit's locked asset**: a plain `SystemProgram.transfer` of lamports for
+   `sol`, or an SPL `TransferChecked` of `delivered − expected` (or the agreed
+   refund figure) base units into the customer's ATA for `meta.splToken`
+   otherwise — always from `payTo` to the recorded address, never reusing the
+   deposit's `reference`. Then
+   `POST /api/v1/admin/solana/{depositId}/refund-complete {"signature"}`
+   records the payout's signature and closes the row `refunded`. A replayed
+   complete with the same signature answers the standing row; a contradicting
+   one is `409` — the audit-protecting refusal.
+
+No ledger entry ever posts on this path: an `underpaid`/`late`/`flagged`
+deposit never credited, so the refund simply returns what sits in `payTo`; an
+`overpaid` one's `entry_id` still proves the opened credit while the surplus
+returns on-chain.
+
+## Deciding which shape the refund takes
+
+- **Underpayment** — a business decision, never automatic: refund the
+  shortfall on-chain through the lifecycle, or — when the customer meant well
+  — grant the delivered figure as a manual receipt
+  (`POST /api/v1/admin/organizations/{id}/manual-receipts`, `payment_ref`
+  naming the original deposit) and leave the row `underpaid` with a note in
+  the reason. Requires the business owner's sign-off, not a unilateral
+  credit.
+- **Overpayment** — routine: refund the surplus (`delivered − expected` base
+  units of the locked asset) through the lifecycle; the customer's opened
+  credit already stands.
+- **Late** — refund through the lifecycle, or credit manually when the
+  lateness was not the customer's fault.
+- **Cross-organization** (a signature that credited one org and was refused
+  in another — the `deposits_solana_tx_hash` double-spend refusal) —
+  escalate: the second org's customer paid into a deposit the first org
+  already consumed. That is always a real refund owed, and it wants an
+  incident note on both deposits.
+
+In every case the approving operator is named in `meta.refund` and the audit
+log, and the payout signature on the closed row is what the books and the
+chain reconcile against.
+
+## Reading a row directly
+
+When the queue's answer is not enough, the row itself is the record:
 
 ```sql
 SELECT deposit_id, organization_id, status, payment_ref,
@@ -18,156 +115,11 @@ FROM oxsum.deposits
 WHERE rail = 'solana' AND deposit_id = '<id>';
 ```
 
-- `amount_minor` is the credit the intent opened for; `received_minor` is what
-  the chain actually delivered converted back at the locked rate.
-- `facilitator_tx_hash` is the paying transaction's signature; `meta` carries
-  `signature`, `solLamports`, `rateMicro`, `assetDecimals`, `expiresAt`,
-  `delivered` and `receivedCredits`.
-
-### 1. Expired-but-paid — the customer paid after `expiresAt`
-
-The payment's on-chain `blockTime` is at/after `meta.expiresAt`, so the rail
-refused to credit (a payment before the TTL credits even when confirmed
-late — this is only the genuinely-late case). The deposit stays `pending`
-until the poll's expiry sweep marks it `expired`; the money sits in `payTo`.
-
-**Find it:**
-
-```sql
-SELECT deposit_id, payment_ref, meta->>'expiresAt' AS expiry,
-       meta->>'signature' AS signature
-FROM oxsum.deposits
-WHERE rail = 'solana' AND status = 'expired'
-  AND meta ? 'signature';
-```
-
-An `expired` row that still carries a `signature` in meta — or one whose
-`getTransaction` blockTime postdates `expiresAt` — is money in `payTo` the
-customer was never credited for. Decide whether to refund on-chain or to
-credit the account manually (a manual receipt, see below) when the lateness
-was not the customer's fault.
-
-### 2. Underpayment — the transfer was short
-
-`delivered`/`received_minor` < the asked `solLamports`/`amount_minor`. The
-rail refused the intent; the partial payment is in `payTo`.
-
-**Find it:**
-
-```sql
-SELECT deposit_id, meta->>'solLamports' AS asked,
-       meta->>'delivered' AS delivered, meta->>'signature' AS signature
-FROM oxsum.deposits
-WHERE rail = 'solana'
-  AND (meta->>'delivered')::bigint < (meta->>'solLamports')::bigint;
-```
-
-Either refund the shortfall on-chain, or — when the customer meant well —
-open a manual receipt for the delivered figure and treat the gap as a
-write-off the business accepts.
-
-### 3. Overpayment — the transfer over-delivered
-
-`delivered`/`received_minor` > `amount_minor`. The rail credited the *opened*
-amount, not the surplus — the surplus stays in `payTo` and is the figure to
-refund or to grant as extra credit.
-
-**Find it:**
-
-```sql
-SELECT deposit_id, amount_minor, received_minor, meta->>'signature' AS signature
-FROM oxsum.deposits
-WHERE rail = 'solana' AND status = 'credited'
-  AND received_minor > amount_minor;
-```
-
-The surplus in `payTo` is `(delivered − solLamports)` asset units. Refund it
-on-chain, or grant it as a manual top-up if the business chooses to honor the
-overpayment.
-
-### 4. Refused — the transaction did not honor the intent
-
-Wrong recipient, wrong mint, missing marker, a failed transaction, or a
-signature that already credited another deposit (the cross-organization
-double-spend the global `deposits_solana_tx_hash` index refuses with `403`).
-These land as `solana deposit credit failed` warnings in the `solana-deposits`
-job log and stay `pending` until expiry.
-
-**Find it:** the job's warn lines carry `deposit_id` + the refusal reason;
-the row's `meta.settleRefusal`/`signature` names what the chain saw.
-
-### 5. Flagged — the payer hit a sanctions screen
-
-With `OXSUM_SOLANA_SANCTIONS_ENABLED=1` (issue #1144), a transfer that
-honored the intent but whose payer a screen named walks `pending → flagged`
-instead of crediting — the money sits in `payTo`, the ledger never moved,
-and the row waits on the operator queue. `meta.screening` records
-`{verdict, source, reason, address, at}` — which source flagged
-(`ofac-sdn` for the local list, `chainalysis` for the API), the screened
-payer address and when — and `facilitator_tx_hash` names the held
-transaction.
-
-**Find it:** `GET /api/v1/admin/deposits/solana/flagged` lists every parked
-row newest-first, or:
-
-```sql
-SELECT deposit_id, payment_ref, facilitator_tx_hash,
-       meta->'screening' AS screening
-FROM oxsum.deposits
-WHERE rail = 'solana' AND status = 'flagged';
-```
-
-A flagged deposit is **never** auto-refunded — the refund decision is a
-compliance call, not a bookkeeping one. When review clears it, return the
-funds on-chain per the flow below; #1142's exception queue lands the
-clear/credit action on this same `flagged` status.
-
-## Recording the refund
-
-A refund is two separate, deliberately unlinked acts — keep them honest:
-
-1. **The on-chain return.** The operator (or a delegated signer) sends the
-   refund from `payTo` back to the customer's wallet — a plain
-   `SystemProgram.transfer` / SPL `TransferChecked` for the figure being
-   returned. When `payTo` is a Squads v4 multisig vault
-   (`docs/self-hosted-solana-multisig.md`) this is a multisig operation: a
-   signer proposes the spend, the threshold approves it — the server never
-   signs. Record that transaction's signature: it is the refund's proof.
-   Never reuse the deposit's `reference` — the refund is a new transfer.
-
-2. **The ledger note.** On the deployment, post a **manual receipt** (`POST
-   /api/v1/admin/organizations/{organizationId}/manual-receipts`) *only* when
-   the decision is to credit the customer's account rather than return the
-   funds — for example an underpayment the business accepts, or an
-   expired-but-paid deposit the customer should keep. Give the manual receipt
-   a `payment_ref` that names the original deposit (`solana-refund:<signature>`
-   or the deposit id) and a `reason` that records the refund's on-chain
-   signature, so the ledger line and the chain transaction point at each
-   other. When the decision is to return funds on-chain with no credit, no
-   ledger write is needed — the deposit simply stays `expired`/`refused`.
-
-## Who approves
-
-- **Expired-paid and refused** — a support/operator decision: refund the
-  customer to be safe, or hold for the customer to re-pay with a fresh
-  intent. Document the call on the deposit row's audit note.
-- **Underpayment** — a business decision: the merchant accepts the short
-  figure (manual receipt) or refunds it. Requires the business owner's sign
-  -off, never a unilateral credit.
-- **Overpayment** — routine: refund the surplus on-chain; no credit decision
-  needed unless the business chooses to grant the overage.
-- **Flagged** — a compliance decision, never routine: the deposit parked
-  because its payer hit a sanctions source, so the choice to release (credit)
-  or return (refund) is the operator's documented review — never automatic
-  either way.
-- **Cross-organization** (a signature that credited one org and was refused
-  in another) — escalate: the second org's customer paid into a deposit the
-  first org already consumed. That is always a real refund owed to the second
-  customer, and it wants an incident note on both deposits.
-
-In every case the approving actor is named in the deposit's audit trail and
-the refund's on-chain signature is recorded on the deposit row (`meta`), so
-the books and the chain reconcile.
+`meta` carries `signature`, `asset`, `splToken`, `rateMicro`, `assetDecimals`,
+`expiresAt`, `delivered`, `expected`, `receivedCredits`, `blockTime`,
+`exception`, `refundAddress`, `refundSignature` and the `refund` record —
+every figure the queue row serializes, with `asset`/`splToken`/`assetDecimals`
+naming which whitelist asset and decimals the intent locked.
 
 ## Monitoring and alerts (issue #1145)
 
@@ -199,10 +151,6 @@ Tuning notes:
 
 ## What this runbook does not cover
 
-Price-oracle lock timing and the wallet adapter that removes the manual
-reference step — the follow-ups tracked on #1117, not this rail's current
-scope. Key custody — receiving `payTo` into a Squads v4 multisig vault and
-who signs a spend — is the operator-side setup in
-`docs/self-hosted-solana-multisig.md` (issue #1143). Dual SOL+USDC deposits
-shipped with #1140: an intent's `meta.asset` names the asset its refund
-must move, and a stablecoin's `rateMicro` is the fixed 1_000_000 parity.
+The wallet adapter that removes the manual reference step, and hot-wallet key
+custody / consolidation / withdrawal — the follow-ups tracked on #1117, not
+this rail's current scope.

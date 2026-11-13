@@ -623,8 +623,15 @@ impl Db {
         };
         let mut w2 = Where::new();
         let mut binds2: Vec<Bind<'_>> = Vec::new();
+        // Money-in is "the deposit net-credited the purchased pool": the
+        // `entry_id` proves the credit ran, and a `reversed` deposit's
+        // reversal took it back. The solana exception statuses — `overpaid`,
+        // `refund_pending`, `refunded` — still carry that `entry_id` when the
+        // opened amount credited (issue #1142); a `status='credited'`
+        // predicate would silently drop them from cash-in.
         let mut sql2 = "SELECT COALESCE(sum(d.amount_minor),0)::bigint \
-             FROM oxsum.deposits d WHERE d.status = 'credited'"
+             FROM oxsum.deposits d \
+             WHERE d.entry_id IS NOT NULL AND d.status <> 'reversed'"
             .to_string();
         if let Some(org) = filter.organization_id {
             sql2.push_str(&w2.clause(" AND d.organization_id = ?"));

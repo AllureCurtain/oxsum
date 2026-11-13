@@ -634,16 +634,21 @@ impl SolanaRpcClient {
     }
 
     /// `getTransaction(signature, jsonParsed)` — the `validateTransfer` half:
-    /// prove the located transaction pays this intent's terms. `Ok(None)`
-    /// means the transaction exists but does not satisfy the transfer — wrong
-    /// recipient, underpayment, wrong mint, missing reference — which the rail
-    /// treats as "not the payment" exactly like Solana Pay's validator does.
+    /// prove the located transaction is this intent's paying transfer.
+    /// `Ok(None)` means the transaction exists but is not the payment — a
+    /// failed transaction, wrong recipient, wrong mint or missing reference —
+    /// which the rail treats as "not paid yet" exactly like Solana Pay's
+    /// validator does.
     ///
     /// The checks are deliberately strict in the customer's favor: `err` must
     /// be null, the `reference` account must appear among the transaction's
     /// `accountKeys` (non-signer), and the recipient's balance delta must be
-    /// at least the asked amount — overpayment is honored, underpayment is
-    /// refused, never silently accepted.
+    /// computable on the locked mint — SOL's lamport delta for a native
+    /// intent, the SPL token-account delta for a minted one. The delivered
+    /// amount is *reported*, not judged here (issue #1142): the verifier
+    /// compares `delivered` against `expected.amount` — the locked asset's
+    /// base units — so an under-delivery marks the deposit `underpaid` in the
+    /// operator queue rather than masquerading as "no payment yet".
     pub async fn validate_transfer(
         &self,
         signature: &str,
@@ -722,9 +727,10 @@ impl SolanaRpcClient {
                 }
             }
         };
-        if delivered < expected.amount {
-            return Ok(None);
-        }
+        // The delivered figure rides up unjudged: `expected.amount` is the
+        // verifier's comparison, not this proof's — an under-delivery is the
+        // intent's paying transfer too, and it is what `underpaid` records
+        // (issue #1142).
         let payer = match expected.spl_token_mint.as_deref() {
             None => sol_payer(
                 account_keys,

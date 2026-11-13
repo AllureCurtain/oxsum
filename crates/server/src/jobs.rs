@@ -505,7 +505,7 @@ async fn run_one(
                     "solana-deposits has no solana rail configured".into(),
                 ));
             };
-            let (checked, credited, expired) = db
+            let (checked, credited, expired, queued) = db
                 .poll_solana_deposits(
                     verifier.as_ref(),
                     &tenants,
@@ -532,10 +532,10 @@ async fn run_one(
                     warn!(%error, "the solana deposit-health read failed; gauges not refreshed")
                 }
             }
-            if checked > 0 || expired > 0 {
+            if checked > 0 || expired > 0 || queued > 0 {
                 info!(
                     checked,
-                    credited, expired, "the solana deposit-poll pass ran"
+                    credited, expired, queued, "the solana deposit-poll pass ran"
                 );
             }
         }

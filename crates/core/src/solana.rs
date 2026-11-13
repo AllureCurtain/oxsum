@@ -37,6 +37,21 @@
 //! whitelist entry behind the explicit devnet opt-in (`SolanaPricing::
 //! Static`, wired by `OXSUM_SOLANA_DEVNET_STATIC_RATE=1`) — never a silent
 //! mainnet fallback.
+//!
+//! Verified-but-unsettlable transfers no longer masquerade as `pending`
+//! (issue #1142): a located transfer that underpays marks the deposit
+//! `underpaid`, one that lands at/after the intent's `expiresAt` marks it
+//! `late`, one that over-delivers credits the opened amount and marks the
+//! row `overpaid` (`entry_id` still proves the credit), and `flagged` is the
+//! status pre-credit screening (issue #1144) writes — all of them the
+//! operator exception queue `GET /api/v1/admin/solana/exceptions` lists. The
+//! expected figure is per-asset: `verify_locked` compares the delivered
+//! amount against the intent's locked base units — lamports for `sol`, the
+//! locked mint's units for an SPL asset. A refund is a pull payment, never
+//! an auto-send: the operator opens it (`refund_pending`), the customer
+//! names the refund address, the operator approves, the multisig pays
+//! out-of-band in the asset the intent locked, and the recorded payout
+//! signature closes the row (`refunded`).
 
 use rand::Rng;
 use serde_json::json;
@@ -474,9 +489,15 @@ pub trait ChainLookup: std::fmt::Debug + Send + Sync {
         reference: &'a str,
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Vec<String>> + Send + 'a>>;
 
-    /// `getTransaction(signature)`: prove the located transaction pays the
-    /// `ExpectedTransfer`'s terms — recipient, delivered amount, mint, and
-    /// the `reference` marker present. `None` means it does not.
+    /// `getTransaction(signature)`: prove the located transaction is the
+    /// intent's paying transfer — the `reference` marker present, the
+    /// transaction succeeded, the recipient's balance delta computable on
+    /// the locked mint. `None` means it is not this intent's payment
+    /// (failed transaction, wrong recipient, wrong mint, missing marker).
+    /// The delivered amount is *reported*, not judged: the verifier compares
+    /// `ValidatedTransfer.delivered` against `ExpectedTransfer.amount` — the
+    /// locked asset's base units — so an under-delivery can be told apart
+    /// from "no payment yet" (issue #1142).
     fn validate_transfer<'a>(
         &'a self,
         signature: &'a str,
@@ -581,6 +602,181 @@ pub trait SanctionsScreen: std::fmt::Debug + Send + Sync {
         &'a self,
         address: &'a str,
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ScreenVerdict> + Send + 'a>>;
+}
+
+/// What `verify_locked` found on the intent's marker (issue #1142): the
+/// credit path's three-way verdict, so a located-but-short transfer and "no
+/// payment yet" no longer share one answer.
+#[derive(Debug)]
+pub enum SolanaVerification {
+    /// A transfer that honors the intent was located — `delivered ≥ expected`
+    /// in the locked asset's base units. The [`VerifiedPayment`]'s context
+    /// carries `signature`, `delivered`, `expected` (base units),
+    /// `receivedCredits` and `blockTime`; `delivered > expected` is the
+    /// overpayment the credit path marks `overpaid` after the credit runs.
+    Honoring(VerifiedPayment),
+    /// Paying transfers were located on the marker but every one delivered
+    /// under the asked amount. The [`VerifiedPayment`] names the best of them
+    /// — the largest `delivered` — in its `payer`/`context.signature`, and
+    /// its context carries the same fields as the honoring arm's, so the
+    /// queue row records what the chain actually sent. The deposit marks
+    /// `underpaid` rather than looping forever.
+    Short(VerifiedPayment),
+    /// No paying transfer was located — the normal "not paid yet" answer,
+    /// indistinguishable from an RPC non-answer at the seam.
+    Unpaid,
+}
+
+/// What `credit_solana_deposit` did with the deposit it was handed (issue
+/// #1142) — the confirm route maps each arm onto an HTTP answer and the poll
+/// counts them.
+#[derive(Debug)]
+pub enum SolanaCredit {
+    /// The ledger credit ran — fresh or replayed under `solana:<signature>`.
+    /// The deposit reads `credited`, or `overpaid` when the located transfer
+    /// over-delivered (the credit still booked the opened amount).
+    Credited(crate::wallet::Receipt),
+    /// A paying transfer was located but delivered under the asked amount —
+    /// the deposit is now `underpaid`, queued for the operator.
+    Underpaid,
+    /// A paying transfer was located whose on-chain `blockTime` is at/after
+    /// the intent's `expiresAt` — the deposit is now `late`.
+    Late,
+    /// The deposit was no longer `pending` — a raced poll or confirm already
+    /// walked it. The no-op replay `Ok(None)` used to mean.
+    Settled,
+}
+
+/// The statuses the Solana rail writes beyond every rail's shared walk
+/// (issue #1142, migration 0135). `flagged` is reserved for pre-credit
+/// sanctions screening (issue #1144): the status and its queue surface exist
+/// now, the screening writes it later.
+pub mod status {
+    /// A located transfer delivered under the intent's asked amount.
+    pub const UNDERPAID: &str = "underpaid";
+    /// A located transfer delivered over the asked amount — the opened
+    /// amount still credited (`entry_id` is set).
+    pub const OVERPAID: &str = "overpaid";
+    /// The paying transaction's `blockTime` is at/after `expiresAt`.
+    pub const LATE: &str = "late";
+    /// Held for operator review by pre-credit screening (issue #1144).
+    pub const FLAGGED: &str = "flagged";
+    /// An operator opened a pull-payment refund; the deposit awaits the
+    /// customer's refund address, approval or the recorded payout.
+    pub const REFUND_PENDING: &str = "refund_pending";
+    /// The refund's payout signature is recorded; the deposit is closed.
+    pub const REFUNDED: &str = "refunded";
+    /// Every status the exception queue lists — the refund lifecycle's own
+    /// states included.
+    pub const EXCEPTIONS: &[&str] = &[UNDERPAID, OVERPAID, LATE, FLAGGED, REFUND_PENDING, REFUNDED];
+    /// The statuses a refund may open on — the verified-but-owed states.
+    /// `refund_pending` is deliberately absent: re-requesting an open refund
+    /// replays it rather than re-entering the queue.
+    pub const REFUNDABLE: &[&str] = &[UNDERPAID, OVERPAID, LATE, FLAGGED];
+}
+
+/// One exception-queue row (issue #1142): what the operator list and the
+/// customer's own deposit view read. `asset` names the whitelist key the
+/// intent locked — the denomination `delivered`/`expected` count in — and
+/// the verification figures ride `meta`: `delivered`/`expected` are that
+/// asset's own base units, while `received_minor` is the delivered figure
+/// converted back to minor-credits at the intent's locked rate.
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SolanaExceptionDeposit {
+    /// The deposit's own id.
+    pub deposit_id: Uuid,
+    /// The organization the deposit belongs to.
+    pub organization_id: Uuid,
+    /// Its display name, so an operator row reads without a second lookup.
+    pub organization: String,
+    /// The deposit's status — one of [`status::EXCEPTIONS`] when it reached
+    /// the queue, `pending`/`credited`/… while it still walks the shared
+    /// path.
+    pub status: String,
+    /// The whitelist asset the intent locked (`meta.asset`, or the
+    /// deployment's default for a pre-whitelist row) — the denomination
+    /// `delivered`/`expected` count in and the refund repays.
+    pub asset: Option<String>,
+    /// The intent's `reference` marker (`payment_ref`).
+    pub payment_ref: String,
+    /// The credit amount the intent opened for, minor units.
+    pub amount_minor: i64,
+    /// What the located transfer was worth in minor-credits at the locked
+    /// rate — the shortfall or the surplus figure beside `amount_minor`.
+    pub received_minor: Option<i64>,
+    /// What the transfer delivered, in the locked asset's own base units.
+    pub delivered: Option<i64>,
+    /// What the intent demanded, in the locked asset's own base units.
+    pub expected: Option<i64>,
+    /// The SPL mint the intent priced in, or `None` for native SOL.
+    pub spl_token: Option<String>,
+    /// The paying transaction's signature — the spent anchor
+    /// `deposits_solana_tx_hash` guards.
+    pub signature: Option<String>,
+    /// The ledger entry that credited the wallet, when the deposit credited
+    /// (the `overpaid` case: the credit stands, the surplus is what a refund
+    /// returns).
+    pub entry_id: Option<Uuid>,
+    /// The customer's pull-payment refund address, once supplied — never
+    /// derived from the paying transaction.
+    pub refund_address: Option<String>,
+    /// The refund record `meta.refund` walks: `requestedBy`/`requestedAt`/
+    /// `reason` at open, `addressedAt`, `approvedBy`/`approvedAt` and
+    /// `completedAt` along the lifecycle.
+    pub refund: Option<serde_json::Value>,
+    /// The payout transaction's signature, once the operator records it —
+    /// the refund's on-chain proof.
+    pub refund_signature: Option<String>,
+    /// When the deposit row opened.
+    pub created_at: time::OffsetDateTime,
+    /// When it last changed state.
+    pub updated_at: time::OffsetDateTime,
+}
+
+/// Builds a [`SolanaExceptionDeposit`] off the shared queue query — the
+/// columns every row site selects in the same order.
+fn exception_from_row(row: &sqlx::postgres::PgRow) -> Result<SolanaExceptionDeposit, WalletError> {
+    let meta: serde_json::Value = row.try_get("meta")?;
+    Ok(SolanaExceptionDeposit {
+        deposit_id: row.try_get("deposit_id")?,
+        organization_id: row.try_get("organization_id")?,
+        organization: row.try_get("organization")?,
+        status: row.try_get("status")?,
+        asset: meta["asset"].as_str().map(str::to_owned),
+        payment_ref: row.try_get("payment_ref")?,
+        amount_minor: row.try_get("amount_minor")?,
+        received_minor: row.try_get("received_minor")?,
+        delivered: meta["delivered"].as_i64(),
+        expected: meta["expected"]
+            .as_i64()
+            .or_else(|| meta["solLamports"].as_i64()),
+        spl_token: meta["splToken"].as_str().map(str::to_owned),
+        signature: meta["signature"]
+            .as_str()
+            .map(str::to_owned)
+            .or_else(|| row.try_get("facilitator_tx_hash").ok().flatten()),
+        entry_id: row.try_get("entry_id")?,
+        refund_address: meta["refundAddress"].as_str().map(str::to_owned),
+        refund: meta.get("refund").cloned(),
+        refund_signature: meta["refundSignature"].as_str().map(str::to_owned),
+        created_at: row.try_get("created_at")?,
+        updated_at: row.try_get("updated_at")?,
+    })
+}
+
+/// Decodes a base58 string and requires the 32 bytes of a Solana public key —
+/// the refund address's shape check (`Some(())` on a well-formed pubkey).
+fn solana_pubkey(address: &str) -> Option<()> {
+    let decoded = bs58::decode(address.trim()).into_vec().ok()?;
+    (decoded.len() == 32).then_some(())
+}
+
+/// Decodes a base58 string and requires the 64 bytes of a Solana transaction
+/// signature — the payout proof's shape check.
+fn solana_signature(signature: &str) -> Option<()> {
+    let decoded = bs58::decode(signature.trim()).into_vec().ok()?;
+    (decoded.len() == 64).then_some(())
 }
 
 impl SolanaRailVerifier {
@@ -835,15 +1031,22 @@ impl SolanaRailVerifier {
     /// re-target a pending deposit. A `meta.splToken` off the deployment's
     /// whitelist is refused outright — the stored mint was never payable, so
     /// the intent cannot settle (issue #1140, defensive).
+    ///
+    /// The answer is the three-way [`SolanaVerification`]: a located paying
+    /// transfer that underpays is `Short`, not `Unpaid` — the distinction
+    /// that lets the credit path mark `underpaid` instead of leaving the row
+    /// `pending` forever (issue #1142). The comparison is per-asset:
+    /// `expected` is the locked mint's base units, so a short USDC payment
+    /// is judged in USDC units and a short SOL one in lamports.
     pub async fn verify_locked<'a>(
         &'a self,
         payload: &'a [u8],
         amount_minor: Option<i64>,
         meta: &'a serde_json::Value,
-    ) -> Option<VerifiedPayment> {
+    ) -> SolanaVerification {
         let locked = self.locked_asset_terms(meta);
         if !self.terms.mint_accepted(locked.spl_token_mint.as_deref()) {
-            return None;
+            return SolanaVerification::Unpaid;
         }
         let pay_to = meta
             .get("payTo")
@@ -857,32 +1060,44 @@ impl SolanaRailVerifier {
     /// The shared verify body: `terms` is either the deployment's default
     /// asset's `AssetTerms` (the `verify` seam, used wherever no locked intent
     /// is in hand) or the intent's own locked asset figures (the credit
-    /// path); `pay_to` is the recipient the terms demand.
+    /// path); `pay_to` is the recipient the terms demand. `expected` — the
+    /// base units the payment had to deliver — converts the opened credit
+    /// figure at `terms`' rate and decimals, so the under/over verdict is
+    /// always in the locked asset's own units (issue #1142).
     async fn verify_with(
         &self,
         payload: &[u8],
         amount_minor: Option<i64>,
         pay_to: &str,
         terms: &AssetTerms,
-    ) -> Option<VerifiedPayment> {
-        let reference = std::str::from_utf8(payload).ok()?.trim();
-        if reference.is_empty() {
-            return None;
-        }
+    ) -> SolanaVerification {
+        let Some(reference) = std::str::from_utf8(payload)
+            .ok()
+            .map(str::trim)
+            .filter(|r| !r.is_empty())
+        else {
+            return SolanaVerification::Unpaid;
+        };
         let signatures = self.chain.find_reference(reference).await;
         // The intent's declared credit amount is what the deposit opened
         // for — `amount_minor` is the caller's claim, the opened deposit's
         // `amount_minor` is authoritative. Convert it to the base units the
         // payment had to deliver at the locked rate and decimals.
-        let opened = amount_minor?;
+        let Some(opened) = amount_minor else {
+            return SolanaVerification::Unpaid;
+        };
         let expected = credits_to_asset_units(opened, terms.rate_micro, terms.asset_decimals);
-        // Walk every signature the marker indexed, newest first, and take the
-        // first that honors the intent — a later failed or dishonoring
-        // transaction on the same marker must not stall the earlier paying
-        // one.
-        let mut validated = None;
+        // Walk every signature the marker indexed, newest first. The first
+        // honoring transfer — `delivered ≥ expected` — is the payment, so a
+        // later short or dishonoring transaction on the same marker cannot
+        // mask it (issue #1128). A transfer that is the intent's payment but
+        // falls short is kept as the underpayment candidate: when nothing
+        // honors, the *largest* short delivery names the queue row — the
+        // closest attempt, and the one the operator reconciles against
+        // (issue #1142).
+        let mut short: Option<ValidatedTransfer> = None;
         for signature in &signatures {
-            validated = self
+            let Some(validated) = self
                 .chain
                 .validate_transfer(
                     signature,
@@ -893,35 +1108,69 @@ impl SolanaRailVerifier {
                         reference: reference.to_owned(),
                     },
                 )
-                .await;
-            if validated.is_some() {
-                break;
+                .await
+            else {
+                continue;
+            };
+            if validated.delivered >= expected {
+                return SolanaVerification::Honoring(verified_payment(
+                    opened, reference, validated, expected, terms,
+                ));
+            }
+            if short
+                .as_ref()
+                .is_none_or(|best| validated.delivered > best.delivered)
+            {
+                short = Some(validated);
             }
         }
-        let validated = validated?;
-        Some(VerifiedPayment {
-            // The credit the ledger books is the opened amount — the payment
-            // met its terms. `receivedCredits` converts the delivered asset
-            // units back at the locked rate so the deposit records what the
-            // chain paid in the ledger's own units; an over/under lands there
-            // for a human, never auto-patched.
-            amount_minor: opened,
-            payment_ref: reference.to_owned(),
-            payer: validated.signature.clone(),
-            context: json!({
-                "signature": validated.signature,
-                "delivered": validated.delivered,
-                "blockTime": validated.block_time,
-                "payerAddress": validated.payer,
-                "receivedCredits": asset_units_to_credits(
-                    validated.delivered,
-                    terms.rate_micro,
-                    terms.asset_decimals,
-                ),
-            }),
-        })
+        match short {
+            Some(validated) => SolanaVerification::Short(verified_payment(
+                opened, reference, validated, expected, terms,
+            )),
+            None => SolanaVerification::Unpaid,
+        }
     }
+}
 
+/// The [`VerifiedPayment`] a located transfer produces: `amount_minor` is the
+/// opened figure the ledger would book, `payer` the located signature, and
+/// `context` the record the deposit's `meta` merges — `delivered`/`expected`
+/// in the locked asset's base units beside the credit conversions, so the
+/// queue row reads what the chain actually sent against what the intent
+/// demanded (issue #1142).
+fn verified_payment(
+    opened: i64,
+    reference: &str,
+    validated: ValidatedTransfer,
+    expected: i64,
+    terms: &AssetTerms,
+) -> VerifiedPayment {
+    VerifiedPayment {
+        // The credit the ledger books is the opened amount — the payment
+        // met its terms. `receivedCredits` converts the delivered asset
+        // units back at the locked rate so the deposit records what the
+        // chain paid in the ledger's own units; an over/under lands there
+        // for a human, never auto-patched.
+        amount_minor: opened,
+        payment_ref: reference.to_owned(),
+        payer: validated.signature.clone(),
+        context: json!({
+            "signature": validated.signature,
+            "delivered": validated.delivered,
+            "expected": expected,
+            "blockTime": validated.block_time,
+            "payerAddress": validated.payer,
+            "receivedCredits": asset_units_to_credits(
+                validated.delivered,
+                terms.rate_micro,
+                terms.asset_decimals,
+            ),
+        }),
+    }
+}
+
+impl SolanaRailVerifier {
     /// Screens the payer address `verify` recorded in the payment's context
     /// (issue #1144). With no screen configured — a deployment that never
     /// enabled `OXSUM_SOLANA_SANCTIONS_*` — the verdict is `Clear` and the
@@ -963,11 +1212,19 @@ impl RailVerifier for SolanaRailVerifier {
             // The generic seam verifies under the deployment's live default
             // asset — the credit path overrides with the intent's locked meta
             // via `verify_locked` so a pending deposit can never be
-            // retro-priced or re-targeted to another mint.
+            // retro-priced or re-targeted to another mint. `Some` keeps the
+            // contract's honoring-only meaning: a located but short transfer
+            // is a `Short` verdict upstream, and the seam reports it the same
+            // `None` "not honored" as an absent payment.
             let default = self.terms.terms_for_asset(None)?;
             let pay_to = self.terms.pay_to.clone();
-            self.verify_with(payload, amount_minor, &pay_to, &default)
+            match self
+                .verify_with(payload, amount_minor, &pay_to, &default)
                 .await
+            {
+                SolanaVerification::Honoring(payment) => Some(payment),
+                SolanaVerification::Short(_) | SolanaVerification::Unpaid => None,
+            }
         })
     }
 
@@ -1213,27 +1470,40 @@ impl Db {
     }
 
     /// Verifies and credits a `pending` solana deposit: the poll pass and the
-    /// confirm route share this walk. The deposit row is taken `FOR UPDATE`,
-    /// the `reference` in `meta` drives `verifier.verify`, the located
-    /// transaction's signature is recorded in `facilitator_tx_hash`, and the
-    /// ledger credit runs under `solana:<signature>` — a replayed poll or a
-    /// raced confirm replays the standing receipt rather than crediting
-    /// twice. `received_minor` records the asset units the chain delivered
-    /// converted back at the locked rate; a mismatch with `amount_minor`
-    /// stays for a human.
+    /// confirm route share this walk. The deposit row is read unlocked, the
+    /// `reference` in `meta` drives `verifier.verify_locked`, and the verdict
+    /// writes inside a short transaction that re-claims the row `FOR UPDATE`:
     ///
-    /// Returns the receipt when a credit ran, `None` when the deposit was
-    /// already `credited` or is no longer `pending`. A verification failure
-    /// (no matching transfer yet, or a dishonoring one) is `Err(Forbidden)` —
-    /// the poll surfaces it as "not paid yet" and the confirm route refuses
-    /// the submission.
+    /// - **Honoring** — the located transaction's signature is recorded in
+    ///   `facilitator_tx_hash`, the ledger credit runs under
+    ///   `solana:<signature>`, and the row lands `credited` — or `overpaid`
+    ///   when `delivered > expected`, the exception marker that keeps the
+    ///   surplus visible in the queue while `entry_id` still proves the
+    ///   credit (issue #1142). A replayed poll or a raced confirm replays the
+    ///   standing receipt, never a second credit.
+    /// - **Short** — a paying transfer was located but delivered under the
+    ///   asked amount in the locked asset's base units: the row marks
+    ///   `underpaid` with the delivered figures, no credit runs, and the
+    ///   deposit waits for the exception queue's pull-payment refund instead
+    ///   of polling forever.
+    /// - **Late** — the located transfer's on-chain `blockTime` is at/after
+    ///   the intent's `expiresAt`: the row marks `late` the same way — the
+    ///   refusal that used to loop `pending` every pass now has a name.
+    ///
+    /// `received_minor` records the asset units the chain delivered converted
+    /// back at the locked rate; on `underpaid`/`late` it is the shortfall or
+    /// the refused figure for a human, never auto-patched.
+    ///
+    /// A verification failure (no matching transfer yet, or a dishonoring
+    /// one) is `Err(Forbidden)` — the poll surfaces it as "not paid yet" and
+    /// the confirm route refuses the submission.
     pub async fn credit_solana_deposit(
         &self,
         wallet: &Wallet,
         deposit_id: Uuid,
         verifier: &SolanaRailVerifier,
         on: time::Date,
-    ) -> Result<Option<crate::wallet::Receipt>, WalletError> {
+    ) -> Result<SolanaCredit, WalletError> {
         // Read the intent without a lock first — the chain round-trips the
         // verify needs (findReference + getTransaction) must not run inside a
         // `FOR UPDATE` window, where they would hold the deposit row's lock
@@ -1249,7 +1519,7 @@ impl Db {
         .fetch_optional(self.pool())
         .await?;
         let Some(row) = row else {
-            return Ok(None);
+            return Ok(SolanaCredit::Settled);
         };
         let organization_id: Uuid = row.try_get("organization_id")?;
         let amount_minor: i64 = row.try_get("amount_minor")?;
@@ -1257,44 +1527,65 @@ impl Db {
         let payment_ref: String = row.try_get("payment_ref")?;
         let meta: serde_json::Value = row.try_get("meta")?;
         // Only a `pending` intent proceeds — `confirmed`/`credited` is done,
-        // `expired` lapsed. The expiry is *not* gated on server `now()` here:
-        // whether the intent lapsed is judged on the paying transaction's own
-        // `blockTime` after verify, so a payment that landed on-chain before
-        // `expiresAt` still credits even when it is confirmed after.
+        // `expired` lapsed, the exception statuses are terminal queue markers.
+        // The expiry is *not* gated on server `now()` here: whether the intent
+        // lapsed is judged on the paying transaction's own `blockTime` after
+        // verify, so a payment that landed on-chain before `expiresAt` still
+        // credits even when it is confirmed after.
         if status != "pending" {
-            return Ok(None);
+            return Ok(SolanaCredit::Settled);
         }
         // Verify under the terms this intent locked in `meta` — its own
         // promise, not the deployment's live config, so a mid-flight
         // OXSUM_SOLANA_* change cannot reprice or re-target it (issue #1127).
-        let payment = verifier
+        let payment = match verifier
             .verify_locked(payment_ref.as_bytes(), Some(amount_minor), &meta)
             .await
-            .ok_or_else(|| WalletError::Forbidden("the payment is not verified".into()))?;
+        {
+            SolanaVerification::Honoring(payment) | SolanaVerification::Short(payment) => payment,
+            SolanaVerification::Unpaid => {
+                return Err(WalletError::Forbidden("the payment is not verified".into()));
+            }
+        };
+        // The under/over verdict is in the locked asset's base units —
+        // lamports for `sol`, the mint's units for SPL (issue #1142).
+        let short = payment.context["delivered"].as_i64() < payment.context["expected"].as_i64();
         // Expiry is the chain's clock, not the server's (issue #1128): a
         // payment is late only when its `blockTime` is at/after the intent's
-        // `expiresAt`. A `blockTime` the chain did not return is treated as
-        // unverifiable timing and refused — never silently accepted.
+        // `expiresAt`. A `blockTime` the chain did not report is treated as
+        // unverifiable timing and refused — never silently accepted. The
+        // `late` mark precedes the `underpaid` one: a late transfer is
+        // refundable whatever it delivered, and `meta` still records the
+        // shortfall for the queue.
         let expires_at = meta["expiresAt"].as_str().and_then(|s| {
             time::OffsetDateTime::parse(s, &time::format_description::well_known::Rfc3339).ok()
         });
         let block_time = payment.context["blockTime"].as_i64();
-        match (expires_at, block_time) {
-            (Some(expiry), Some(bt))
-                if time::OffsetDateTime::from_unix_timestamp(bt)
-                    .map(|b| b >= expiry)
-                    .unwrap_or(true) =>
-            {
-                return Err(WalletError::Forbidden(
-                    "the paying transaction landed after the intent expired".into(),
-                ));
-            }
+        let late = match (expires_at, block_time) {
+            (Some(expiry), Some(bt)) => time::OffsetDateTime::from_unix_timestamp(bt)
+                .map(|b| b >= expiry)
+                .unwrap_or(true),
             (Some(_), None) => {
                 return Err(WalletError::Forbidden(
                     "the chain did not report when the transaction landed".into(),
                 ));
             }
-            _ => {}
+            _ => false,
+        };
+        if late {
+            self.mark_solana_exception(deposit_id, status::LATE, &payment.payer, &payment.context)
+                .await?;
+            return Ok(SolanaCredit::Late);
+        }
+        if short {
+            self.mark_solana_exception(
+                deposit_id,
+                status::UNDERPAID,
+                &payment.payer,
+                &payment.context,
+            )
+            .await?;
+            return Ok(SolanaCredit::Underpaid);
         }
         // Pre-credit sanctions screening on the payer (issue #1144): the
         // transfer's debited address is checked once the payment is otherwise
@@ -1312,11 +1603,11 @@ impl Db {
             ScreenVerdict::Flagged { source, reason } => {
                 self.flag_solana_deposit(deposit_id, &meta, &payment, &source, &reason)
                     .await?;
-                // The confirm route reads `Ok(None)` as "nothing credited" —
-                // the same shape a deposit that already settled answers,
-                // because the caller never learns the screening detail; the
+                // The flag reads as "nothing credited" to the caller — the
+                // same shape a deposit that already settled answers, because
+                // the caller never learns the screening detail; the
                 // operator's queue is where a flag belongs.
-                return Ok(None);
+                return Ok(SolanaCredit::Settled);
             }
             ScreenVerdict::TemporarilyUnavailable => {
                 return Err(WalletError::Forbidden(
@@ -1344,7 +1635,7 @@ impl Db {
         .await?;
         if !still_pending {
             tx.commit().await?;
-            return Ok(None);
+            return Ok(SolanaCredit::Settled);
         }
         // One signature credits one deposit ever: a transaction carrying two
         // references pays once, so a second intent naming an already-used
@@ -1397,16 +1688,35 @@ impl Db {
         // second credit.
         let credit_key = format!("solana:{}", settlement.tx_hash);
         let receipt = wallet.top_up(&credit_key, payment.amount_minor, on).await?;
+        // An over-delivery credits the opened amount — never the surplus —
+        // and the row lands `overpaid`: the exception marker the queue reads
+        // while `entry_id` still proves the credit ran (issue #1142).
+        let overpaid = payment.context["delivered"].as_i64() > payment.context["expected"].as_i64();
+        let landing = if overpaid {
+            status::OVERPAID
+        } else {
+            "credited"
+        };
         let flipped = sqlx::query(
             "UPDATE oxsum.deposits \
-             SET status = 'credited', entry_id = $1, \
-                 meta = meta || jsonb_build_object('signature', $2::text), \
+             SET status = $4, entry_id = $1, \
+                 meta = meta || jsonb_build_object( \
+                     'signature', $2::text, \
+                     'delivered', $5::bigint, \
+                     'expected', $6::bigint, \
+                     'receivedCredits', $7::bigint, \
+                     'overpaid', $8::boolean), \
                  updated_at = now() \
              WHERE deposit_id = $3 AND status <> 'credited'",
         )
         .bind(*receipt.entry_id.as_uuid())
         .bind(&settlement.tx_hash)
         .bind(deposit_id)
+        .bind(landing)
+        .bind(payment.context["delivered"].as_i64())
+        .bind(payment.context["expected"].as_i64())
+        .bind(payment.context["receivedCredits"].as_i64())
+        .bind(overpaid)
         .execute(&mut *tx)
         .await?
         .rows_affected();
@@ -1429,7 +1739,88 @@ impl Db {
             }
         }
         tx.commit().await?;
-        Ok(Some(receipt))
+        Ok(SolanaCredit::Credited(receipt))
+    }
+
+    /// Marks a `pending` deposit's terminal exception (`underpaid` or
+    /// `late`): records the located signature as spent — the same
+    /// `deposits_solana_tx_hash` dedup the credit path relies on, so the
+    /// paying transaction cannot be claimed by a second intent — and merges
+    /// the verification facts into `meta` for the queue row. The write is
+    /// status-guarded so a raced pass that already settled the row simply
+    /// no-ops, and a signature already claimed elsewhere is the same
+    /// `Forbidden` double-spend refusal the credit path answers.
+    async fn mark_solana_exception(
+        &self,
+        deposit_id: Uuid,
+        marker: &'static str,
+        signature: &str,
+        context: &serde_json::Value,
+    ) -> Result<(), WalletError> {
+        let mut tx = self.pool().begin().await?;
+        let still_pending: bool = sqlx::query_scalar(
+            "SELECT status = 'pending' FROM oxsum.deposits \
+             WHERE deposit_id = $1 FOR UPDATE",
+        )
+        .bind(deposit_id)
+        .fetch_one(&mut *tx)
+        .await?;
+        if !still_pending {
+            // A raced pass already walked the row — the mark is a no-op, the
+            // deposit is where the other verdict left it.
+            tx.commit().await?;
+            return Ok(());
+        }
+        let already_used: bool = sqlx::query_scalar(
+            "SELECT EXISTS (SELECT 1 FROM oxsum.deposits \
+             WHERE rail = $1 AND facilitator_tx_hash = $2 AND deposit_id <> $3)",
+        )
+        .bind(RAIL_SOLANA)
+        .bind(signature)
+        .bind(deposit_id)
+        .fetch_one(&mut *tx)
+        .await?;
+        if already_used {
+            return Err(WalletError::Forbidden(
+                "the paying transaction already credited another deposit".into(),
+            ));
+        }
+        sqlx::query(
+            "UPDATE oxsum.deposits \
+             SET status = $1, facilitator_tx_hash = $2, received_minor = $3, \
+                 meta = meta || jsonb_build_object( \
+                     'signature', $2::text, \
+                     'delivered', $4::bigint, \
+                     'expected', $5::bigint, \
+                     'receivedCredits', $6::bigint, \
+                     'blockTime', $7::bigint, \
+                     'exception', $1::text), \
+                 updated_at = now() \
+             WHERE deposit_id = $8 AND status = 'pending'",
+        )
+        .bind(marker)
+        .bind(signature)
+        .bind(context["receivedCredits"].as_i64())
+        .bind(context["delivered"].as_i64())
+        .bind(context["expected"].as_i64())
+        .bind(context["receivedCredits"].as_i64())
+        .bind(context["blockTime"].as_i64())
+        .bind(deposit_id)
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| {
+            // The signature-claimed race's backstop — see the credit path.
+            if let sqlx::Error::Database(ref db) = e
+                && db.code().as_deref() == Some("23505")
+            {
+                return WalletError::Forbidden(
+                    "the paying transaction already credited another deposit".into(),
+                );
+            }
+            WalletError::from(e)
+        })?;
+        tx.commit().await?;
+        Ok(())
     }
 
     /// Parks a verified-but-flagged deposit at `flagged` (issue #1144): the
@@ -1596,28 +1987,413 @@ impl Db {
         Ok(())
     }
 
-    /// The periodic pass: walks every `pending` solana deposit whose
-    /// `meta.expiresAt` has not passed, runs `credit_solana_deposit` under a
-    /// `FOR UPDATE` claim, and expires the lapsed ones. Unleadered — each row
-    /// serializes on its own lock and the `solana:<signature>` credit key
-    /// makes a raced pass a replay, never a double credit.
+    /// The operator exception queue (issue #1142): solana deposits in the
+    /// exception statuses, newest first. `status` narrows to one of
+    /// [`status::EXCEPTIONS`]; `after` resumes the keyset walk at the cursor
+    /// the previous page answered.
     ///
-    /// Returns `(checked, credited, expired)` counts for the job's log line.
-    /// The `tenants` map resolves each deposit's organization to its wallet —
-    /// the same pattern `recover_x402_credits` uses.
+    /// Read-only: the queue is what the rail marked and the refund lifecycle
+    /// walked; nothing here moves money — the multisig payout is out-of-band
+    /// by design.
+    pub async fn solana_exception_deposits(
+        &self,
+        status: Option<&str>,
+        limit: i64,
+        after: Option<(time::OffsetDateTime, Uuid)>,
+    ) -> Result<Vec<SolanaExceptionDeposit>, WalletError> {
+        let rows = sqlx::query(
+            "SELECT d.deposit_id, d.organization_id, o.name AS organization, \
+                    d.status, d.payment_ref, d.amount_minor, d.received_minor, \
+                    d.entry_id, d.facilitator_tx_hash, d.meta, \
+                    d.created_at, d.updated_at \
+             FROM oxsum.deposits d \
+             JOIN oxsum.organizations o ON o.organization_id = d.organization_id \
+             WHERE d.rail = $1 \
+               AND ($2::text IS NULL AND d.status = ANY($3) OR d.status = $2) \
+               AND ($4::timestamptz IS NULL \
+                    OR (d.created_at, d.deposit_id) < ($4, $5)) \
+             ORDER BY d.created_at DESC, d.deposit_id DESC \
+             LIMIT $6",
+        )
+        .bind(RAIL_SOLANA)
+        .bind(status)
+        .bind(status::EXCEPTIONS)
+        .bind(after.map(|(at, _)| at))
+        .bind(after.map(|(_, id)| id))
+        .bind(limit)
+        .fetch_all(self.pool())
+        .await?;
+        rows.iter().map(exception_from_row).collect()
+    }
+
+    /// One solana deposit as its own organization sees it — the customer side
+    /// of the exception surface: a `refund_pending` row is where their
+    /// refund-address form writes. `None` when the deposit is not the
+    /// organization's to read.
+    pub async fn solana_deposit_for(
+        &self,
+        organization_id: Uuid,
+        deposit_id: Uuid,
+    ) -> Result<Option<SolanaExceptionDeposit>, WalletError> {
+        let row = sqlx::query(
+            "SELECT d.deposit_id, d.organization_id, o.name AS organization, \
+                    d.status, d.payment_ref, d.amount_minor, d.received_minor, \
+                    d.entry_id, d.facilitator_tx_hash, d.meta, \
+                    d.created_at, d.updated_at \
+             FROM oxsum.deposits d \
+             JOIN oxsum.organizations o ON o.organization_id = d.organization_id \
+             WHERE d.rail = $1 AND d.deposit_id = $2 AND d.organization_id = $3",
+        )
+        .bind(RAIL_SOLANA)
+        .bind(deposit_id)
+        .bind(organization_id)
+        .fetch_optional(self.pool())
+        .await?;
+        row.map(|row| exception_from_row(&row)).transpose()
+    }
+
+    /// The organization's own solana deposits in the exception statuses —
+    /// the customer Topup surface's "your deposit needs attention" list,
+    /// newest first.
+    pub async fn solana_exception_deposits_for(
+        &self,
+        organization_id: Uuid,
+        limit: i64,
+    ) -> Result<Vec<SolanaExceptionDeposit>, WalletError> {
+        let rows = sqlx::query(
+            "SELECT d.deposit_id, d.organization_id, o.name AS organization, \
+                    d.status, d.payment_ref, d.amount_minor, d.received_minor, \
+                    d.entry_id, d.facilitator_tx_hash, d.meta, \
+                    d.created_at, d.updated_at \
+             FROM oxsum.deposits d \
+             JOIN oxsum.organizations o ON o.organization_id = d.organization_id \
+             WHERE d.rail = $1 AND d.organization_id = $2 \
+               AND d.status = ANY($3) \
+             ORDER BY d.created_at DESC, d.deposit_id DESC \
+             LIMIT $4",
+        )
+        .bind(RAIL_SOLANA)
+        .bind(organization_id)
+        .bind(status::EXCEPTIONS)
+        .bind(limit)
+        .fetch_all(self.pool())
+        .await?;
+        rows.iter().map(exception_from_row).collect()
+    }
+
+    /// Opens a pull-payment refund on an exception deposit (issue #1142):
+    /// `underpaid`/`overpaid`/`late`/`flagged` → `refund_pending`, with
+    /// `meta.refund` recording who asked, when and why. Re-requesting an open
+    /// refund replays the standing row — the same idempotent answer a double
+    /// click expects — while a `refunded` deposit and every non-refundable
+    /// status is a `Conflict`, and an unknown one a `NotFound`.
+    ///
+    /// Nothing moves on-chain: the multisig pays out-of-band by design, and
+    /// the row only records that a refund was *opened*.
+    pub async fn solana_request_refund(
+        &self,
+        deposit_id: Uuid,
+        requested_by: &str,
+        reason: &str,
+    ) -> Result<SolanaExceptionDeposit, WalletError> {
+        if reason.trim().is_empty() {
+            return Err(WalletError::InvalidInput(
+                "a refund request needs a reason".into(),
+            ));
+        }
+        let mut tx = self.pool().begin().await?;
+        let row = sqlx::query(
+            "SELECT status FROM oxsum.deposits \
+             WHERE deposit_id = $1 AND rail = $2 FOR UPDATE",
+        )
+        .bind(deposit_id)
+        .bind(RAIL_SOLANA)
+        .fetch_optional(&mut *tx)
+        .await?;
+        let Some(row) = row else {
+            return Err(WalletError::NotFound("the deposit is not known".into()));
+        };
+        let current: String = row.try_get("status")?;
+        if current == status::REFUND_PENDING {
+            // A replayed request answers the standing refund.
+            tx.commit().await?;
+            return self.solana_exception_deposit(deposit_id).await;
+        }
+        if !status::REFUNDABLE.contains(&current.as_str()) {
+            return Err(WalletError::Conflict(format!(
+                "a {current} deposit is not refundable"
+            )));
+        }
+        sqlx::query(
+            "UPDATE oxsum.deposits \
+             SET status = 'refund_pending', \
+                 meta = meta || jsonb_build_object('refund', \
+                     jsonb_build_object( \
+                         'requestedBy', $2::text, \
+                         'requestedAt', now()::text, \
+                         'reason', $3::text)), \
+                 updated_at = now() \
+             WHERE deposit_id = $1 AND status = ANY($4)",
+        )
+        .bind(deposit_id)
+        .bind(requested_by)
+        .bind(reason)
+        .bind(status::REFUNDABLE)
+        .execute(&mut *tx)
+        .await?;
+        tx.commit().await?;
+        self.solana_exception_deposit(deposit_id).await
+    }
+
+    /// Records the customer's pull-payment refund address on a
+    /// `refund_pending` deposit (issue #1142): the rail never derives the
+    /// payer — the customer names where the refund goes, validated as a
+    /// base58-encoded 32-byte Solana public key. Once an operator approves
+    /// the refund the address is frozen — a post-approval edit could redirect
+    /// the payout the multisig is about to sign.
+    pub async fn solana_set_refund_address(
+        &self,
+        organization_id: Uuid,
+        deposit_id: Uuid,
+        address: &str,
+    ) -> Result<SolanaExceptionDeposit, WalletError> {
+        if solana_pubkey(address).is_none() {
+            return Err(WalletError::InvalidInput(
+                "the refund address is not a base58 Solana public key".into(),
+            ));
+        }
+        let mut tx = self.pool().begin().await?;
+        let row = sqlx::query(
+            "SELECT status, meta FROM oxsum.deposits \
+             WHERE deposit_id = $1 AND rail = $2 AND organization_id = $3 \
+             FOR UPDATE",
+        )
+        .bind(deposit_id)
+        .bind(RAIL_SOLANA)
+        .bind(organization_id)
+        .fetch_optional(&mut *tx)
+        .await?;
+        // One answer for "never existed" and "not yours" — the org scope is
+        // part of the lookup itself.
+        let Some(row) = row else {
+            return Err(WalletError::NotFound("the deposit is not known".into()));
+        };
+        let current: String = row.try_get("status")?;
+        if current != status::REFUND_PENDING {
+            return Err(WalletError::Conflict(format!(
+                "a {current} deposit is not awaiting a refund address"
+            )));
+        }
+        let meta: serde_json::Value = row.try_get("meta")?;
+        if meta["refund"]["approvedAt"].is_string() {
+            return Err(WalletError::Conflict(
+                "the refund is already approved; its address is frozen".into(),
+            ));
+        }
+        sqlx::query(
+            "UPDATE oxsum.deposits \
+             SET meta = meta || jsonb_build_object( \
+                     'refundAddress', $2::text, \
+                     'refund', COALESCE(meta->'refund', '{}'::jsonb) || \
+                         jsonb_build_object('addressedAt', now()::text)), \
+                 updated_at = now() \
+             WHERE deposit_id = $1 AND status = 'refund_pending'",
+        )
+        .bind(deposit_id)
+        .bind(address.trim())
+        .execute(&mut *tx)
+        .await?;
+        tx.commit().await?;
+        self.solana_exception_deposit(deposit_id).await
+    }
+
+    /// Approves an opened refund (issue #1142): records the approval in
+    /// `meta.refund` so the multisig operator knows this refund cleared
+    /// review and the payout may be signed. The customer must have named
+    /// their refund address first — an approval with nowhere to pay is a
+    /// `Conflict`. Approving an already-approved refund replays.
+    pub async fn solana_approve_refund(
+        &self,
+        deposit_id: Uuid,
+        approved_by: &str,
+    ) -> Result<SolanaExceptionDeposit, WalletError> {
+        let mut tx = self.pool().begin().await?;
+        let row = sqlx::query(
+            "SELECT status, meta FROM oxsum.deposits \
+             WHERE deposit_id = $1 AND rail = $2 FOR UPDATE",
+        )
+        .bind(deposit_id)
+        .bind(RAIL_SOLANA)
+        .fetch_optional(&mut *tx)
+        .await?;
+        let Some(row) = row else {
+            return Err(WalletError::NotFound("the deposit is not known".into()));
+        };
+        let current: String = row.try_get("status")?;
+        if current != status::REFUND_PENDING {
+            return Err(WalletError::Conflict(format!(
+                "a {current} deposit has no refund to approve"
+            )));
+        }
+        let meta: serde_json::Value = row.try_get("meta")?;
+        if !meta["refundAddress"].is_string() {
+            return Err(WalletError::Conflict(
+                "the customer has not supplied a refund address".into(),
+            ));
+        }
+        if meta["refund"]["approvedAt"].is_string() {
+            // The approval stands — a replayed approve answers it.
+            tx.commit().await?;
+            return self.solana_exception_deposit(deposit_id).await;
+        }
+        sqlx::query(
+            "UPDATE oxsum.deposits \
+             SET meta = meta || jsonb_build_object('refund', \
+                     COALESCE(meta->'refund', '{}'::jsonb) || \
+                         jsonb_build_object( \
+                             'approvedBy', $2::text, \
+                             'approvedAt', now()::text)), \
+                 updated_at = now() \
+             WHERE deposit_id = $1 AND status = 'refund_pending'",
+        )
+        .bind(deposit_id)
+        .bind(approved_by)
+        .execute(&mut *tx)
+        .await?;
+        tx.commit().await?;
+        self.solana_exception_deposit(deposit_id).await
+    }
+
+    /// Closes an approved refund with the payout's on-chain signature
+    /// (issue #1142): the multisig has already paid — the server holds no
+    /// spend key and never will — so this only records `meta.refundSignature`
+    /// and lands the row `refunded`, terminal. A replayed complete with the
+    /// same signature answers the standing row; a different signature on a
+    /// `refunded` row is a `Conflict`, as is completing before approval.
+    ///
+    /// No ledger entry posts: for an `underpaid`/`late`/`flagged` deposit the
+    /// customer's money never credited — the refund returns it on-chain in
+    /// the asset the intent locked (`meta.asset` + the recorded `delivered`
+    /// figure); for an `overpaid` one `entry_id` still proves the opened
+    /// credit while the surplus goes back the same way.
+    pub async fn solana_complete_refund(
+        &self,
+        deposit_id: Uuid,
+        signature: &str,
+    ) -> Result<SolanaExceptionDeposit, WalletError> {
+        if solana_signature(signature).is_none() {
+            return Err(WalletError::InvalidInput(
+                "the payout signature is not a base58 Solana signature".into(),
+            ));
+        }
+        let mut tx = self.pool().begin().await?;
+        let row = sqlx::query(
+            "SELECT status, meta FROM oxsum.deposits \
+             WHERE deposit_id = $1 AND rail = $2 FOR UPDATE",
+        )
+        .bind(deposit_id)
+        .bind(RAIL_SOLANA)
+        .fetch_optional(&mut *tx)
+        .await?;
+        let Some(row) = row else {
+            return Err(WalletError::NotFound("the deposit is not known".into()));
+        };
+        let current: String = row.try_get("status")?;
+        let meta: serde_json::Value = row.try_get("meta")?;
+        if current == status::REFUNDED {
+            // The refund closed — a replayed complete with the standing
+            // signature answers it; a different one contradicts the record.
+            return if meta["refundSignature"].as_str() == Some(signature.trim()) {
+                tx.commit().await?;
+                self.solana_exception_deposit(deposit_id).await
+            } else {
+                Err(WalletError::Conflict(
+                    "the refund already closed under a different payout signature".into(),
+                ))
+            };
+        }
+        if current != status::REFUND_PENDING {
+            return Err(WalletError::Conflict(format!(
+                "a {current} deposit has no refund to complete"
+            )));
+        }
+        if !meta["refund"]["approvedAt"].is_string() {
+            return Err(WalletError::Conflict(
+                "the refund has not been approved".into(),
+            ));
+        }
+        sqlx::query(
+            "UPDATE oxsum.deposits \
+             SET status = 'refunded', \
+                 meta = meta || jsonb_build_object( \
+                     'refundSignature', $2::text, \
+                     'refund', COALESCE(meta->'refund', '{}'::jsonb) || \
+                         jsonb_build_object('completedAt', now()::text)), \
+                 updated_at = now() \
+             WHERE deposit_id = $1 AND status = 'refund_pending'",
+        )
+        .bind(deposit_id)
+        .bind(signature.trim())
+        .execute(&mut *tx)
+        .await?;
+        tx.commit().await?;
+        self.solana_exception_deposit(deposit_id).await
+    }
+
+    /// One exception-queue row by deposit id — the shape the admin surface
+    /// and the refund lifecycle answer. `None` when the deposit does not
+    /// exist (whatever its status).
+    pub async fn solana_exception_deposit(
+        &self,
+        deposit_id: Uuid,
+    ) -> Result<SolanaExceptionDeposit, WalletError> {
+        let row = sqlx::query(
+            "SELECT d.deposit_id, d.organization_id, o.name AS organization, \
+                    d.status, d.payment_ref, d.amount_minor, d.received_minor, \
+                    d.entry_id, d.facilitator_tx_hash, d.meta, \
+                    d.created_at, d.updated_at \
+             FROM oxsum.deposits d \
+             JOIN oxsum.organizations o ON o.organization_id = d.organization_id \
+             WHERE d.rail = $1 AND d.deposit_id = $2",
+        )
+        .bind(RAIL_SOLANA)
+        .bind(deposit_id)
+        .fetch_optional(self.pool())
+        .await?;
+        row.map(|row| exception_from_row(&row))
+            .transpose()?
+            .ok_or_else(|| WalletError::NotFound("the deposit is not known".into()))
+    }
+
+    /// The periodic pass: walks every `pending` solana deposit, runs
+    /// `credit_solana_deposit` — whose verdict marks `underpaid`/`late`/
+    /// `overpaid` exceptions instead of silently refusing (issue #1142) — and
+    /// expires the intents that verified nothing by their `expiresAt`.
+    /// Unleadered — each row serializes on its own lock and the
+    /// `solana:<signature>` credit key makes a raced pass a replay, never a
+    /// double credit.
+    ///
+    /// The credit runs *before* the expiry sweep: an intent past its
+    /// `expiresAt` still gets one verify, because the lapse verdict belongs
+    /// to the paying transaction's `blockTime` — a payment on-chain before
+    /// the TTL credits, one after marks `late`, and only an intent that
+    /// located nothing expires (issue #1128). Sweeping first would expire a
+    /// paid-on-time intent before its credit could run.
+    ///
+    /// Returns `(checked, credited, expired, queued)` counts for the job's
+    /// log line — `queued` is the deposits this pass moved onto the exception
+    /// queue. The `tenants` map resolves each deposit's organization to its
+    /// wallet — the same pattern `recover_x402_credits` uses.
     pub async fn poll_solana_deposits(
         &self,
         verifier: &SolanaRailVerifier,
         tenants: &crate::Tenants,
         on: time::Date,
-    ) -> Result<(u64, u64, u64), WalletError> {
-        // Fetch the work list first: pending intents not yet expired, oldest
-        // first so a backlog drains in order. Expired rows are swept after.
-        // Every pending intent is a candidate, including ones past their
-        // meta.expiresAt — the expiry verdict belongs to the paying
-        // transaction's blockTime inside credit_solana_deposit, not to the
-        // server clock here, so a payment that landed on-chain before the
-        // TTL still credits on this pass.
+    ) -> Result<(u64, u64, u64, u64), WalletError> {
+        // Fetch the work list first: pending intents, oldest first so a
+        // backlog drains in order — every one a candidate, including those
+        // past their meta.expiresAt, because the expiry verdict belongs to
+        // the paying transaction's blockTime inside credit_solana_deposit.
         let rows: Vec<(Uuid, Uuid)> = sqlx::query_as(
             "SELECT d.deposit_id, d.organization_id \
              FROM oxsum.deposits d \
@@ -1628,21 +2404,9 @@ impl Db {
         .bind(RAIL_SOLANA)
         .fetch_all(self.pool())
         .await?;
-        // Expire lapsed intents in one statement — the same status-guarded
-        // sweep every `expire_*` variant makes: `WHERE status='pending'` skips
-        // a row mid-credit, which lands confirmed/credited under its own lock,
-        // so the sweep races a credit safely without holding a lock itself.
-        let expired_count = sqlx::query(
-            "UPDATE oxsum.deposits SET status = 'expired', updated_at = now() \
-             WHERE rail = $1 AND status = 'pending' \
-               AND (meta->>'expiresAt')::timestamptz <= now()",
-        )
-        .bind(RAIL_SOLANA)
-        .execute(self.pool())
-        .await?
-        .rows_affected();
 
         let mut credited: u64 = 0;
+        let mut queued: u64 = 0;
         for (deposit_id, organization_id) in &rows {
             // Resolve the organization to its wallet — same lookup the route
             // layer runs per request.
@@ -1657,10 +2421,12 @@ impl Db {
                 .credit_solana_deposit(&wallet, *deposit_id, verifier, on)
                 .await
             {
-                Ok(Some(_)) => credited += 1,
-                Ok(None) => {}
+                Ok(SolanaCredit::Credited(_)) => credited += 1,
+                Ok(SolanaCredit::Underpaid | SolanaCredit::Late) => queued += 1,
+                Ok(SolanaCredit::Settled) => {}
                 // A verification refusal is "not paid yet" — the row stays
-                // pending for the next pass.
+                // pending for the next pass (or for the expiry sweep below
+                // when its own TTL has lapsed).
                 Err(WalletError::Forbidden(_)) => {}
                 // Any other failure logs and moves to the next intent: one
                 // bad row must not stall every intent behind it for another
@@ -1674,7 +2440,21 @@ impl Db {
                 }
             }
         }
-        Ok((rows.len() as u64, credited, expired_count))
+        // Expire lapsed intents in one statement — after the credit walk, so
+        // an intent whose payment landed before the TTL credited above and
+        // one that located nothing is the only `pending` left for the sweep.
+        // The status guard skips a row mid-credit, which lands its own
+        // status under its own lock, so the sweep races safely.
+        let expired_count = sqlx::query(
+            "UPDATE oxsum.deposits SET status = 'expired', updated_at = now() \
+             WHERE rail = $1 AND status = 'pending' \
+               AND (meta->>'expiresAt')::timestamptz <= now()",
+        )
+        .bind(RAIL_SOLANA)
+        .execute(self.pool())
+        .await?
+        .rows_affected();
+        Ok((rows.len() as u64, credited, expired_count, queued))
     }
 }
 
