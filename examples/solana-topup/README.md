@@ -7,9 +7,11 @@ It is the scripted counterpart of the `/app` top-up page's Solana tab: same
 two endpoints, same Solana Pay recipe, driven from the command line instead
 of a wallet.
 
-Chain access needs `@solana/web3.js` 1.98.4 (the pinned version —
-`npm install` here first). The 3.x line renames the APIs these scripts use
-and is not a drop-in upgrade.
+Chain access needs `@solana/web3.js` 1.98.4 plus `@solana/spl-token` 0.4.x
+(both pinned — `npm install` here first). The web3.js 3.x line renames the
+APIs these scripts use and is not a drop-in upgrade. The rail handles both
+native-SOL and SPL-token intents; the scripts pick the transfer shape off the
+intent's `splToken` field automatically.
 
 ## The rail, in one paragraph
 
@@ -68,7 +70,13 @@ node keys.mjs
 # → PAY_TO=… PAYER=…   Point OXSUM_SOLANA_PAY_TO at PAY_TO and (re)start
 #   the deployment so the rail picks it up.
 
-# 2. Run the walkthrough — 1000 minor-credits by default.
+# 1b. SPL intent — mint a scratch token and fund the payer's ATA.
+node keys.mjs --mint
+# → MINT=…                Also point OXSUM_SOLANA_SPL_TOKEN_MINT at it.
+
+# 2. Run the walkthrough — 1000 minor-credits by default. It follows the
+#    deployment: a `splToken: null` intent pays native SOL, a configured
+#    `splToken` pays the SPL mint (via `TransferChecked`).
 OXSUM_BASE_URL=http://127.0.0.1:3000 \
 OXSUM_SOLANA_PAYER=customer@example.com:correct-horse-battery \
 node topup.mjs 1000
@@ -79,10 +87,13 @@ What it asserts, in order:
 1. **Login and balance.** Personal session for the customer; reads the
    starting `availableMinor`.
 2. **Open the intent.** `POST /api/v1/topups/solana` answers the terms; a
-   native-SOL deployment answers `splToken: null`.
+   native-SOL deployment answers `splToken: null`, an SPL deployment the
+   configured mint.
 3. **Pay it on chain.** A `SystemProgram.transfer` of `amountLamports` to
-   `payTo` with `reference` attached as a read-only non-signer key — the
-   same shape a `@solana/pay` wallet produces.
+   `payTo` — or, when `splToken` names a mint, an SPL `TransferChecked` of
+   `amountLamports` base units between the payer's and recipient's ATAs —
+   with `reference` attached as a read-only non-signer key either way.
+   Both are the shape a `@solana/pay` wallet produces.
 4. **Settle now.** `POST /api/v1/topups/solana/confirm` with the
    `reference` credits the wallet by exactly `amountMinor`.
 5. **Replay is a no-op.** The same confirm answers `404` and moves nothing —
@@ -94,7 +105,8 @@ What it asserts, in order:
 
 `pay.mjs` is the single-payment form for driving step 3 by hand (for
 example with a wallet-generated reference): `node pay.mjs payer.json <payTo>
-<reference> <lamports>`.
+<reference> <amount>` for native SOL, `… --spl <mint>` for SPL (amount is
+the mint's base units).
 
 ## Caveats worth knowing
 
@@ -110,10 +122,19 @@ example with a wallet-generated reference): `node pay.mjs payer.json <payTo>
 - **`confirmed` vs `finalized`.** The walkthrough uses `confirmed`, the
   rail's default. `OXSUM_SOLANA_COMMITMENT=finalized` is one flag for a
   high-value deployment; it only delays the same checks.
-- **SPL/USDC intents.** The scripts cover the native-SOL path. An SPL intent
-  (`OXSUM_SOLANA_SPL_TOKEN_MINT` set) needs a token transfer carrying the
-  same `reference` marker; the rail validates it through
-  `postTokenBalances` instead of lamport deltas.
+- **SPL/USDC intents.** The scripts cover the SPL path too — `keys.mjs
+  --mint` mints a scratch token on a local validator (or fund the payer's
+  ATA for a devnet mint), `OXSUM_SOLANA_SPL_TOKEN_MINT` makes the rail
+  expect that mint, and `topup.mjs`/`pay.mjs --spl` send a `TransferChecked`
+  carrying the same `reference` marker. The rail validates it through
+  `postTokenBalances` instead of lamport deltas, so the recipient's
+  associated token account must exist — `pay.mjs`/`topup.mjs` create it
+  idempotently in the same transaction.
+- **Devnet USDC.** Against real devnet, skip `--mint` and set
+  `OXSUM_SOLANA_SPL_TOKEN_MINT` to the public USDC mint
+  (`4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU`), funding the payer's ATA
+  from a devnet faucet. The rail validates any mint; the value is just which
+  one it must see in `postTokenBalances`.
 - **Throwaway keys.** `payer.json`/`payto.json` hold raw secret keys for a
   scratch validator or devnet. Never point the scripts at mainnet, and never
   reuse the keypairs.
