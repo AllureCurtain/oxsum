@@ -5420,14 +5420,22 @@ export interface paths {
         put?: never;
         /**
          * Open a Solana top-up intent
-         * @description The `solana` deposit rail (issue #1117): opens a `pending` deposit
-         *     intent and answers the `reference`, `payTo`, `amountLamports` and
-         *     `expiresAt` the caller's wallet needs to pay it — native SOL unless
-         *     `OXSUM_SOLANA_SPL_TOKEN_MINT` names an SPL mint. `payment_ref` anchors
-         *     on the per-intent `reference` marker account the paying transaction
-         *     must carry, so the intent is unique by construction; the amount books
-         *     at the intent's locked rate (`OXSUM_SOLANA_RATE_MICRO`, the devnet
-         *     stand-in a mainnet oracle replaces).
+         * @description The `solana` deposit rail (issues #1117, #1139): opens a `pending`
+         *     deposit intent and answers the `reference`, `payTo`, `amountLamports`
+         *     and `expiresAt` the caller's wallet needs to pay it — native SOL
+         *     unless `OXSUM_SOLANA_SPL_TOKEN_MINT` names an SPL mint. `payment_ref`
+         *     anchors on the per-intent `reference` marker account the paying
+         *     transaction must carry, so the intent is unique by construction.
+         *
+         *     The amount books at the rate the intent locks at open. A native-SOL
+         *     intent is oracle-priced: the open samples Pyth Hermes for the
+         *     `Crypto.SOL/USD` quote and converts it to `rateMicro` at 1 USD = 1
+         *     credit, refusing the open — `403`, never a silent fallback — when the
+         *     freshest quote is stale or its confidence is too wide. An SPL intent
+         *     locks the deployment's static `OXSUM_SOLANA_RATE_MICRO` (the fixed
+         *     conversion); so does a SOL devnet deployment opted in with
+         *     `OXSUM_SOLANA_DEVNET_STATIC_RATE=1`. Once locked, the rate reads only
+         *     from the intent's own `meta` — nothing re-prices a pending deposit.
          *
          *     A deployment without `OXSUM_SOLANA_*` answers 503: the rail is
          *     configured or it is not.
