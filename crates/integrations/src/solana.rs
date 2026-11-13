@@ -111,6 +111,12 @@ pub struct ValidatedTransfer {
     /// What the transaction delivered to `recipient`, in the asset's own
     /// minor units (lamports for SOL, base units for SPL).
     pub delivered: i64,
+    /// The transaction's on-chain `blockTime` (seconds since the Unix epoch)
+    /// — when the chain itself recorded the transfer. Expiry is judged on
+    /// this, not server `now()`: a payment on-chain before the intent lapsed
+    /// credits even when it is confirmed after; one that landed after never
+    /// does (issue #1128).
+    pub block_time: Option<i64>,
 }
 
 /// The narrow JSON-RPC client the rail talks to, bound to the deployment's
@@ -182,30 +188,50 @@ impl SolanaRpcClient {
         Ok(value["result"].clone())
     }
 
-    /// `getSignaturesForAddress(reference)` — the `findReference` half: the
-    /// recent confirmed transactions touching the per-intent marker account,
-    /// newest first. Several are returned (not just the newest) so a later
-    /// dishonoring or failed transaction on the same marker cannot mask an
-    /// earlier paying one — the verifier walks the list. `Ok(vec![])` means
-    /// nothing has landed yet — the normal "not paid yet" answer.
+    /// `getSignaturesForAddress(reference)` — the `findReference` half: every
+    /// confirmed transaction touching the per-intent marker account, newest
+    /// first, paginated through the `before` cursor so a burst of fresh
+    /// dishonoring transactions on the same marker cannot push the real
+    /// payment out of a fixed-size window (issue #1128). A per-intent marker
+    /// is a throwaway address, so its history is short in practice; the walk
+    /// stops at `MAX_REFERENCE_PAGES` pages anyway as a bound against an
+    /// abusive marker. `Ok(vec![])` means nothing has landed yet — the normal
+    /// "not paid yet" answer.
     pub async fn find_reference(&self, reference: &str) -> Result<Vec<String>, SolanaError> {
-        let result = self
-            .call(
-                "getSignaturesForAddress",
-                json!([
-                    reference,
-                    {"limit": 10, "commitment": self.config.commitment},
-                ]),
-            )
-            .await?;
-        let signatures = result
-            .as_array()
-            .map(|arr| {
-                arr.iter()
-                    .filter_map(|row| row["signature"].as_str().map(str::to_owned))
-                    .collect()
-            })
-            .unwrap_or_default();
+        const PAGE: usize = 100;
+        const MAX_REFERENCE_PAGES: usize = 10;
+        let mut signatures = Vec::new();
+        let mut before: Option<String> = None;
+        for _ in 0..MAX_REFERENCE_PAGES {
+            let mut opts = serde_json::Map::new();
+            opts.insert("limit".into(), json!(PAGE));
+            opts.insert("commitment".into(), json!(self.config.commitment));
+            if let Some(cursor) = &before {
+                opts.insert("before".into(), json!(cursor));
+            }
+            let result = self
+                .call(
+                    "getSignaturesForAddress",
+                    json!([reference, Value::Object(opts)]),
+                )
+                .await?;
+            let page = result.as_array().cloned().unwrap_or_default();
+            if page.is_empty() {
+                break;
+            }
+            before = page
+                .last()
+                .and_then(|row| row["signature"].as_str())
+                .map(str::to_owned);
+            signatures.extend(
+                page.iter()
+                    .filter_map(|row| row["signature"].as_str().map(str::to_owned)),
+            );
+            // A short page is the last page.
+            if page.len() < PAGE {
+                break;
+            }
+        }
         Ok(signatures)
     }
 
@@ -302,6 +328,7 @@ impl SolanaRpcClient {
         Ok(Some(ValidatedTransfer {
             signature: signature.to_owned(),
             delivered,
+            block_time: result["blockTime"].as_i64(),
         }))
     }
 }
@@ -342,6 +369,7 @@ impl oxsum_core::ChainLookup for SolanaRpcClient {
             .map(|v| oxsum_core::ValidatedTransfer {
                 signature: v.signature,
                 delivered: v.delivered,
+                block_time: v.block_time,
             })
         })
     }

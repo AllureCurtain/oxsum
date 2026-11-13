@@ -190,6 +190,7 @@ async fn solana_intent_pays_once() {
         ValidatedTransfer {
             signature: signature.to_owned(),
             delivered: 5_000,
+            block_time: Some(0),
         },
     );
     // Confirm: the credit lands once.
@@ -245,6 +246,7 @@ async fn solana_confirm_refuses_an_unpaying_transfer() {
         ValidatedTransfer {
             signature: signature.to_owned(),
             delivered: 1, // far below the asked 500-credit lamports
+            block_time: Some(0),
         },
     );
     let (status, _) = call(
@@ -318,6 +320,7 @@ async fn solana_signature_credits_once_across_organizations() {
         ValidatedTransfer {
             signature: signature.to_owned(),
             delivered: 5_000,
+            block_time: Some(0),
         },
     );
     // The first organization's confirm settles and credits.

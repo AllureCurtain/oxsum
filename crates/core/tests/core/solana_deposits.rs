@@ -211,6 +211,9 @@ struct OneSig {
     reference: Mutex<String>,
     signature: String,
     delivered: i64,
+    /// The on-chain `blockTime` the stub reports — far in the past so the
+    /// intent's `expiresAt` (now + ttl) is always in the transfer's future.
+    block_time: i64,
 }
 
 impl ChainLookup for OneSig {
@@ -241,6 +244,7 @@ impl ChainLookup for OneSig {
             Some(ValidatedTransfer {
                 signature: signature.to_owned(),
                 delivered: self.delivered,
+                block_time: Some(self.block_time),
             })
         })
     }
@@ -250,6 +254,172 @@ impl OneSig {
     fn pay_to(&self) -> String {
         "oxsumDepositAddr111111111111111111111111111".to_owned()
     }
+}
+
+/// Issue #1128: a flood of dishonoring transactions on the same marker does
+/// not mask the real payment. The verifier walks the whole located list —
+/// `find_reference` returns every signature newest-first — so the honoring
+/// transfer is found even when many others land on the marker after it.
+#[derive(Debug)]
+struct ManySigs {
+    paying: String,
+    noise: Vec<String>,
+    delivered: i64,
+}
+
+impl ChainLookup for ManySigs {
+    fn find_reference<'a>(
+        &'a self,
+        _reference: &'a str,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Vec<String>> + Send + 'a>> {
+        Box::pin(async move {
+            // Newest first: the noise landed after the paying transaction.
+            self.noise
+                .iter()
+                .cloned()
+                .chain(std::iter::once(self.paying.clone()))
+                .collect()
+        })
+    }
+    fn validate_transfer<'a>(
+        &'a self,
+        signature: &'a str,
+        expected: &'a ExpectedTransfer,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Option<ValidatedTransfer>> + Send + 'a>>
+    {
+        Box::pin(async move {
+            if signature != self.paying {
+                return None; // every noise signature dishonors
+            }
+            if expected.amount != self.delivered {
+                return None;
+            }
+            Some(ValidatedTransfer {
+                signature: signature.to_owned(),
+                delivered: self.delivered,
+                block_time: Some(0),
+            })
+        })
+    }
+}
+
+#[tokio::test]
+async fn verify_walks_past_dishonoring_transactions_to_find_the_payment() {
+    let Some(db) = database("solana_many").await else {
+        return;
+    };
+    let org = organization(&db, "many").await;
+    let deposit_id = Uuid::new_v4();
+    db.open_solana_deposit(org, deposit_id, 1000, &terms())
+        .await
+        .unwrap()
+        .expect("inserts");
+    // 25 dishonoring transactions land on the marker after the real payment —
+    // well past the old limit-10 window, which would have masked it entirely.
+    let noise: Vec<String> = (0..25)
+        .map(|i| format!("noiseSig{i:010}000000000000000000000000000000000000"))
+        .collect();
+    let verifier = SolanaRailVerifier::new(
+        Arc::new(ManySigs {
+            paying: "sigReal00000000000000000000000000000000000000000000000000".to_owned(),
+            noise,
+            delivered: 5_000,
+        }),
+        terms(),
+    );
+    let tenant_id: String =
+        sqlx::query_scalar("SELECT tenant_id FROM oxsum.organizations WHERE organization_id = $1")
+            .bind(org)
+            .fetch_one(db.pool())
+            .await
+            .unwrap();
+    let wallet = oxsum_core::Wallet::open(db.pool().clone(), &tenant_id)
+        .await
+        .unwrap();
+    let receipt = db
+        .credit_solana_deposit(&wallet, deposit_id, &verifier, time::Date::MAX)
+        .await
+        .unwrap()
+        .expect("the real payment is found and credits");
+    assert!(receipt.is_new);
+    assert_eq!(wallet.available().await.unwrap(), 1000);
+}
+
+/// Issue #1128: expiry is the chain's `blockTime`, not the server clock. A
+/// payment on-chain before `expiresAt` credits even when confirm runs after
+/// the TTL; one on-chain after never does — the two edges the documented
+/// 'a payment after expiry is not credited' needs.
+#[tokio::test]
+async fn expiry_is_judged_on_block_time_not_the_confirm_clock() {
+    let Some(db) = database("solana_expiry").await else {
+        return;
+    };
+    let org = organization(&db, "expiry").await;
+    // A 1-second-TTL intent: it is already lapsed by wall clock before either
+    // credit runs, isolating the blockTime verdict from the server clock.
+    let short = SolanaTerms {
+        intent_ttl_secs: 1,
+        ..terms()
+    };
+    let tenant_id: String =
+        sqlx::query_scalar("SELECT tenant_id FROM oxsum.organizations WHERE organization_id = $1")
+            .bind(org)
+            .fetch_one(db.pool())
+            .await
+            .unwrap();
+    let wallet = oxsum_core::Wallet::open(db.pool().clone(), &tenant_id)
+        .await
+        .unwrap();
+    let expires_at = time::OffsetDateTime::now_utc().unix_timestamp() + 1;
+
+    // Edge 1: on-chain before expiry (block_time < expiresAt), confirm after
+    // the TTL — must credit.
+    let on_time = Uuid::new_v4();
+    db.open_solana_deposit(org, on_time, 1000, &short)
+        .await
+        .unwrap()
+        .expect("inserts");
+    let early = SolanaRailVerifier::new(
+        Arc::new(OneSig {
+            reference: Mutex::new(String::new()),
+            signature: "sigEarly00000000000000000000000000000000000000000000000".to_owned(),
+            delivered: 5_000,
+            block_time: expires_at - 5,
+        }),
+        short.clone(),
+    );
+    let receipt = db
+        .credit_solana_deposit(&wallet, on_time, &early, time::Date::MAX)
+        .await
+        .unwrap()
+        .expect("a payment on-chain before expiry credits even when confirmed late");
+    assert!(receipt.is_new);
+    assert_eq!(wallet.available().await.unwrap(), 1000);
+
+    // Edge 2: on-chain after expiry (block_time >= expiresAt) — refused,
+    // never credited.
+    let late = Uuid::new_v4();
+    db.open_solana_deposit(org, late, 1000, &short)
+        .await
+        .unwrap()
+        .expect("inserts");
+    let late_verifier = SolanaRailVerifier::new(
+        Arc::new(OneSig {
+            reference: Mutex::new(String::new()),
+            signature: "sigLate000000000000000000000000000000000000000000000000".to_owned(),
+            delivered: 5_000,
+            block_time: expires_at + 60,
+        }),
+        short,
+    );
+    let refused = db
+        .credit_solana_deposit(&wallet, late, &late_verifier, time::Date::MAX)
+        .await;
+    assert!(
+        matches!(refused, Err(WalletError::Forbidden(_))),
+        "a payment on-chain after expiry must not credit: {refused:?}"
+    );
+    assert_eq!(wallet.available().await.unwrap(), 1000);
 }
 
 #[tokio::test]
@@ -283,6 +453,7 @@ async fn verify_locked_settles_at_the_intents_terms_not_the_live_config() {
             reference: Mutex::new(String::new()),
             signature: "sigLocked0000000000000000000000000000000000000000000000000".to_owned(),
             delivered: 5_000,
+            block_time: 0,
         }),
         live,
     );

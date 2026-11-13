@@ -160,6 +160,9 @@ pub struct ValidatedTransfer {
     pub signature: String,
     /// The amount it delivered, in the asset's own minor units.
     pub delivered: i64,
+    /// The on-chain `blockTime` — when the chain recorded the transfer.
+    /// Expiry is judged against this, not the server's clock.
+    pub block_time: Option<i64>,
 }
 
 impl SolanaRailVerifier {
@@ -275,6 +278,7 @@ impl SolanaRailVerifier {
             context: json!({
                 "signature": validated.signature,
                 "delivered": validated.delivered,
+                "blockTime": validated.block_time,
                 "receivedCredits": asset_units_to_credits(
                     validated.delivered,
                     terms.rate_micro,
@@ -443,9 +447,10 @@ impl Db {
     /// Finds the pending intent a `reference` names — the lookup the confirm
     /// route runs on a replayed submission, answering the same `(deposit_id,
     /// organization_id, amount_minor)` rather than opening a second intent.
-    /// An intent past its `meta.expiresAt` is not payable — the same gate the
-    /// poll's expiry sweep enforces — so a payment landing after expiry never
-    /// finds its intent here.
+    /// The expiry is deliberately *not* filtered here: it is judged on the
+    /// paying transaction's `blockTime` inside `credit_solana_deposit`, so a
+    /// payment that landed before `expiresAt` still finds its intent and
+    /// credits even when confirmed after the TTL (issue #1128).
     pub async fn find_solana_deposit(
         &self,
         organization_id: Uuid,
@@ -455,8 +460,7 @@ impl Db {
             "SELECT deposit_id, organization_id, amount_minor \
              FROM oxsum.deposits \
              WHERE rail = $1 AND organization_id = $2 AND payment_ref = $3 \
-               AND status = 'pending' \
-               AND (meta->>'expiresAt')::timestamptz > now()",
+               AND status = 'pending'",
         )
         .bind(RAIL_SOLANA)
         .bind(organization_id)
@@ -495,17 +499,19 @@ impl Db {
         verifier: &SolanaRailVerifier,
         on: time::Date,
     ) -> Result<Option<crate::wallet::Receipt>, WalletError> {
-        let mut tx = self.pool().begin().await?;
+        // Read the intent without a lock first — the chain round-trips the
+        // verify needs (findReference + getTransaction) must not run inside a
+        // `FOR UPDATE` window, where they would hold the deposit row's lock
+        // across two network calls (issue #1128). The verify is pure read; the
+        // state is re-checked under a short transaction before anything writes.
         let row = sqlx::query(
             "SELECT organization_id, amount_minor, status, payment_ref, meta \
              FROM oxsum.deposits \
-             WHERE deposit_id = $1 AND rail = $2 \
-               AND (meta->>'expiresAt')::timestamptz > now() \
-             FOR UPDATE",
+             WHERE deposit_id = $1 AND rail = $2",
         )
         .bind(deposit_id)
         .bind(RAIL_SOLANA)
-        .fetch_optional(&mut *tx)
+        .fetch_optional(self.pool())
         .await?;
         let Some(row) = row else {
             return Ok(None);
@@ -516,9 +522,11 @@ impl Db {
         let payment_ref: String = row.try_get("payment_ref")?;
         let meta: serde_json::Value = row.try_get("meta")?;
         // Only a `pending` intent proceeds — `confirmed`/`credited` is done,
-        // `expired` lapsed.
+        // `expired` lapsed. The expiry is *not* gated on server `now()` here:
+        // whether the intent lapsed is judged on the paying transaction's own
+        // `blockTime` after verify, so a payment that landed on-chain before
+        // `expiresAt` still credits even when it is confirmed after.
         if status != "pending" {
-            tx.commit().await?;
             return Ok(None);
         }
         // Verify under the terms this intent locked in `meta` — its own
@@ -528,12 +536,53 @@ impl Db {
             .verify_locked(payment_ref.as_bytes(), Some(amount_minor), &meta)
             .await
             .ok_or_else(|| WalletError::Forbidden("the payment is not verified".into()))?;
+        // Expiry is the chain's clock, not the server's (issue #1128): a
+        // payment is late only when its `blockTime` is at/after the intent's
+        // `expiresAt`. A `blockTime` the chain did not return is treated as
+        // unverifiable timing and refused — never silently accepted.
+        let expires_at = meta["expiresAt"].as_str().and_then(|s| {
+            time::OffsetDateTime::parse(s, &time::format_description::well_known::Rfc3339).ok()
+        });
+        let block_time = payment.context["blockTime"].as_i64();
+        match (expires_at, block_time) {
+            (Some(expiry), Some(bt))
+                if time::OffsetDateTime::from_unix_timestamp(bt)
+                    .map(|b| b >= expiry)
+                    .unwrap_or(true) =>
+            {
+                return Err(WalletError::Forbidden(
+                    "the paying transaction landed after the intent expired".into(),
+                ));
+            }
+            (Some(_), None) => {
+                return Err(WalletError::Forbidden(
+                    "the chain did not report when the transaction landed".into(),
+                ));
+            }
+            _ => {}
+        }
         // Record the located signature before the credit runs — the chain's
         // own idempotency anchor, durable whether the credit lands this pass.
         let settlement = verifier
             .settle(&payment)
             .await
             .map_err(|refusal| WalletError::Forbidden(refusal.reason.clone()))?;
+        // The write half: a short transaction re-claims the row FOR UPDATE,
+        // re-checks it is still `pending` (a raced poll or confirm may have
+        // settled it while the RPC ran), and walks pending → confirmed →
+        // credited.
+        let mut tx = self.pool().begin().await?;
+        let still_pending: bool = sqlx::query_scalar(
+            "SELECT status = 'pending' FROM oxsum.deposits \
+             WHERE deposit_id = $1 FOR UPDATE",
+        )
+        .bind(deposit_id)
+        .fetch_one(&mut *tx)
+        .await?;
+        if !still_pending {
+            tx.commit().await?;
+            return Ok(None);
+        }
         // One signature credits one deposit ever: a transaction carrying two
         // references pays once, so a second intent naming an already-used
         // signature must be refused, not credited in a second organization's
@@ -652,11 +701,15 @@ impl Db {
     ) -> Result<(u64, u64, u64), WalletError> {
         // Fetch the work list first: pending intents not yet expired, oldest
         // first so a backlog drains in order. Expired rows are swept after.
+        // Every pending intent is a candidate, including ones past their
+        // meta.expiresAt — the expiry verdict belongs to the paying
+        // transaction's blockTime inside credit_solana_deposit, not to the
+        // server clock here, so a payment that landed on-chain before the
+        // TTL still credits on this pass.
         let rows: Vec<(Uuid, Uuid)> = sqlx::query_as(
             "SELECT d.deposit_id, d.organization_id \
              FROM oxsum.deposits d \
              WHERE d.rail = $1 AND d.status = 'pending' \
-               AND (d.meta->>'expiresAt')::timestamptz > now() \
              ORDER BY d.created_at \
              LIMIT 256",
         )
