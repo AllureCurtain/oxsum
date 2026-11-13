@@ -431,6 +431,75 @@ async fn expiry_is_judged_on_block_time_not_the_confirm_clock() {
     assert_eq!(wallet.available().await.unwrap(), 1000);
 }
 
+/// The cross-organization double-spend: one on-chain signature credits the
+/// deposit it paid for and is refused — as `Forbidden`, never a storage
+/// error — when a second organization's intent resolves to it. The failure
+/// the shard caught is exactly this shape: a second confirm that should be
+/// refused surfacing as INTERNAL_ERROR instead.
+#[tokio::test]
+async fn a_second_organizations_intent_on_a_spent_signature_is_forbidden() {
+    let Some(db) = database("solana_dblspend").await else {
+        return;
+    };
+    let org_a = organization(&db, "org-a").await;
+    let org_b = organization(&db, "org-b").await;
+    let signature = "sigSpent00000000000000000000000000000000000000000000000000";
+    // Both organizations open an intent for 1000; one paying transaction
+    // carries both references.
+    let mut deposit_ids = Vec::new();
+    let mut wallets = Vec::new();
+    for (i, org) in [org_a, org_b].iter().enumerate() {
+        let deposit_id = Uuid::new_v4();
+        let (reference, _, _) = db
+            .open_solana_deposit(*org, deposit_id, 1000, &terms())
+            .await
+            .unwrap()
+            .expect("inserts");
+        let _ = reference;
+        deposit_ids.push(deposit_id);
+        let tenant_id: String = sqlx::query_scalar(
+            "SELECT tenant_id FROM oxsum.organizations WHERE organization_id = $1",
+        )
+        .bind(org)
+        .fetch_one(db.pool())
+        .await
+        .unwrap();
+        wallets.push(
+            oxsum_core::Wallet::open(db.pool().clone(), &tenant_id)
+                .await
+                .unwrap(),
+        );
+        let _ = i;
+    }
+    // The verifier answers the same signature for either reference.
+    let verifier = SolanaRailVerifier::new(
+        Arc::new(OneSig {
+            reference: Mutex::new(String::new()),
+            signature: signature.to_owned(),
+            delivered: 5_000,
+            block_time: 0,
+        }),
+        terms(),
+    );
+    // The first organization's credit lands.
+    let receipt = db
+        .credit_solana_deposit(&wallets[0], deposit_ids[0], &verifier, time::Date::MAX)
+        .await
+        .unwrap()
+        .expect("the first credit runs");
+    assert!(receipt.is_new);
+    // The second organization's confirm resolves to the same signature —
+    // already spent — and must be a clean Forbidden, never a storage fault.
+    let refusal = db
+        .credit_solana_deposit(&wallets[1], deposit_ids[1], &verifier, time::Date::MAX)
+        .await;
+    assert!(
+        matches!(refusal, Err(WalletError::Forbidden(_))),
+        "a spent signature must refuse Forbidden, got {refusal:?}"
+    );
+    assert_eq!(wallets[1].available().await.unwrap(), 0);
+}
+
 /// Issue #1130: the open surface is bounded. An intent below the floor or
 /// above the cap is refused, and an organization past its per-minute open
 /// rate is throttled — both before a `payment_ref` is ever minted.
