@@ -247,21 +247,26 @@ pub(crate) async fn subscription_checkout(
 }
 
 /// The body of `POST /api/v1/topups/solana`: the credit amount the intent
-/// should book. The rail converts it to the lamports (or SPL base units) the
-/// payment must deliver at the intent's locked rate.
+/// should book and the whitelist asset it pays in. `asset` picks the mint —
+/// omitted, the deployment's `OXSUM_SOLANA_DEFAULT_ASSET` resolves — and the
+/// rail converts the credit to the lamports (or SPL base units) the payment
+/// must deliver at that asset's locked rate.
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(crate) struct SolanaTopupReq {
     amount_minor: i64,
+    asset: Option<String>,
 }
 
-/// `POST /api/v1/topups/solana`: the Solana deposit rail (issue #1117). Opens
-/// a `pending` deposit intent and answers the `reference`, `payTo`,
-/// `amountLamports` and `expiresAt` a wallet needs to pay it — native SOL
-/// unless `OXSUM_SOLANA_SPL_TOKEN_MINT` names an SPL mint. `payment_ref`
-/// anchors on the per-intent `reference` marker, so the intent is unique by
-/// construction. A deployment without `OXSUM_SOLANA_*` answers 503 — the rail
-/// is configured or it is not.
+/// `POST /api/v1/topups/solana`: the Solana deposit rail (issues #1117,
+/// #1140). Opens a `pending` deposit intent and answers the `reference`,
+/// `payTo`, `asset`, `amountLamports` and `expiresAt` a wallet needs to pay
+/// it — the asset the body names (or the deployment default) off the
+/// `OXSUM_SOLANA_ASSETS` whitelist, native `sol` or a configured SPL mint.
+/// `payment_ref` anchors on the per-intent `reference` marker, so the intent
+/// is unique by construction. An `asset` off the whitelist is a 400; a
+/// deployment without `OXSUM_SOLANA_*` answers 503 — the rail is configured
+/// or it is not.
 pub(crate) async fn solana_topup(
     State(state): State<AppState>,
     Extension(principal): Extension<Principal>,
@@ -270,6 +275,14 @@ pub(crate) async fn solana_topup(
     let verifier = state.config.solana().ok_or_else(|| {
         ApiError::ServiceUnavailable("the solana deposit rail is not configured".into())
     })?;
+    // Resolve the asset before opening so the response answers the same key
+    // the meta locked — `terms_for_asset` is also the whitelist check.
+    let asset_terms = verifier
+        .terms()
+        .terms_for_asset(r.asset.as_deref())
+        .ok_or_else(|| {
+            ApiError::Validation("the asset is not one the solana rail accepts".into())
+        })?;
     let deposit_id = Uuid::new_v4();
     let opened = state
         .db
@@ -278,6 +291,7 @@ pub(crate) async fn solana_topup(
             deposit_id,
             r.amount_minor,
             verifier.terms(),
+            r.asset.as_deref(),
         )
         .await?;
     let Some((reference, lamports, expires_at)) = opened else {
@@ -290,14 +304,14 @@ pub(crate) async fn solana_topup(
     };
     ok(serde_json::json!({
         "reference": reference,
+        "asset": asset_terms.key,
         "payTo": verifier.terms().pay_to,
         "amountLamports": lamports,
-        "splToken": verifier.terms().spl_token_mint,
+        "splToken": asset_terms.spl_token_mint,
         // The asset's decimals (9 for SOL, the mint's for an SPL token) so the
         // caller can render `amountLamports` — lamports/base units — as a
         // Solana Pay `amount` decimal without assuming 1e9 (issue #1141).
-        // #1140's `asset` field rides the same addition when it lands.
-        "assetDecimals": verifier.terms().asset_decimals,
+        "assetDecimals": asset_terms.asset_decimals,
         // The intent's deposit id — the memo a Solana Pay URL pins so the
         // paying transaction names the deposit it settles.
         "depositId": deposit_id,

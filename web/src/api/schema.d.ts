@@ -5420,14 +5420,16 @@ export interface paths {
         put?: never;
         /**
          * Open a Solana top-up intent
-         * @description The `solana` deposit rail (issue #1117): opens a `pending` deposit
-         *     intent and answers the `reference`, `payTo`, `amountLamports` and
-         *     `expiresAt` the caller's wallet needs to pay it — native SOL unless
-         *     `OXSUM_SOLANA_SPL_TOKEN_MINT` names an SPL mint. `payment_ref` anchors
-         *     on the per-intent `reference` marker account the paying transaction
-         *     must carry, so the intent is unique by construction; the amount books
-         *     at the intent's locked rate (`OXSUM_SOLANA_RATE_MICRO`, the devnet
-         *     stand-in a mainnet oracle replaces).
+         * @description The `solana` deposit rail (issues #1117, #1140): opens a `pending`
+         *     deposit intent and answers the `reference`, `asset`, `payTo`,
+         *     `amountLamports` and `expiresAt` the caller's wallet needs to pay it —
+         *     the whitelist asset the body's `asset` names (`sol`, `usdc`, …) or
+         *     the deployment's `OXSUM_SOLANA_DEFAULT_ASSET` when omitted.
+         *     `payment_ref` anchors on the per-intent `reference` marker account
+         *     the paying transaction must carry, so the intent is unique by
+         *     construction; the amount books at the intent's locked rate
+         *     (`OXSUM_SOLANA_RATE_MICRO` for a volatile asset, fixed USD parity
+         *     for a stablecoin — the devnet stand-in a mainnet oracle replaces).
          *
          *     A deployment without `OXSUM_SOLANA_*` answers 503: the rail is
          *     configured or it is not.
@@ -21884,6 +21886,14 @@ export interface components {
              *     `expiresAt` if no matching transfer lands.
              */
             amountMinor: number;
+            /**
+             * @description The whitelist asset the intent pays in — a key from the
+             *     deployment's `OXSUM_SOLANA_ASSETS` (`sol`, `usdc`, …; issue
+             *     #1140). Omitted, the deployment's `OXSUM_SOLANA_DEFAULT_ASSET`
+             *     resolves. A key off the whitelist is a 400, never silently
+             *     repriced under another asset.
+             */
+            asset?: string;
         };
         /**
          * @description The opened intent: everything a wallet needs to pay it. `reference` is
@@ -21893,6 +21903,8 @@ export interface components {
         SolanaTopupResponse: {
             /** @description the per-intent marker address the transfer must carry */
             reference: string;
+            /** @description the whitelist asset the intent locked (sol */
+            asset: string;
             /** @description the deposit address the transfer must pay */
             payTo: string;
             /**
