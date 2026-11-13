@@ -16855,12 +16855,14 @@ components:
         The opened intent: everything a wallet needs to pay it. `reference` is
         the per-intent marker account the paying transaction must carry as a
         read-only, non-signer account key — the rail finds the transfer by it.
-      required: [reference, payTo, amountLamports, expiresAt]
+      required: [reference, payTo, amountLamports, assetDecimals, depositId, expiresAt]
       properties:
         reference: { type: string, description: the per-intent marker address the transfer must carry }
         payTo: { type: string, description: the deposit address the transfer must pay }
         amountLamports: { type: integer, format: int64, description: the lamports (or SPL base units) the payment must deliver }
         splToken: { type: string, nullable: true, description: the SPL mint a top-up must pay; null for native SOL }
+        assetDecimals: { type: integer, format: int32, minimum: 0, description: "the asset's decimals (9 for SOL, the mint's for an SPL token) — what converts `amountLamports` into the `amount` a Solana Pay request names" }
+        depositId: { type: string, format: uuid, description: the deposit this intent settles — the memo a Solana Pay request pins }
         expiresAt: { type: string, format: date-time, description: when the unpaid intent lapses }
     SolanaConfirmRequest:
       type: object

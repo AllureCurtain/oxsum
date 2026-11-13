@@ -230,12 +230,17 @@ export function useAirwallexTopup() {
 
 /** The Solana deposit rail's opened intent (issue #1117): the per-intent
  * marker the paying transaction must carry, the address and amount to send.
- * `splToken` is the configured SPL mint or `null` for native SOL. */
+ * `splToken` is the configured SPL mint or `null` for native SOL;
+ * `assetDecimals` converts `amountLamports` into the decimal `amount` a
+ * Solana Pay request names (issue #1141), and `depositId` is the memo it
+ * pins. */
 export interface SolanaIntent {
   reference: string;
   payTo: string;
   amountLamports: number;
   splToken?: string | null;
+  assetDecimals: number;
+  depositId: string;
   expiresAt: string;
 }
 

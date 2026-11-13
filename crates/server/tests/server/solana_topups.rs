@@ -181,6 +181,15 @@ async fn solana_intent_pays_once() {
     let reference = intent["data"]["reference"].as_str().unwrap().to_owned();
     assert!(!reference.is_empty(), "{intent}");
     assert_eq!(intent["data"]["amountLamports"].as_i64().unwrap(), 5_000);
+    // The Solana Pay terms the wallet needs to render the intent (issue
+    // #1141): the asset's decimals to write `amount` and the deposit id the
+    // `memo` pins.
+    assert_eq!(intent["data"]["assetDecimals"].as_u64().unwrap(), 9);
+    assert_eq!(
+        intent["data"]["depositId"].as_str().unwrap().len(),
+        36,
+        "{intent}"
+    );
     // Arm the stub: the paying transaction lands, delivering exactly the
     // asked lamports.
     let signature = "sig1111111111111111111111111111111111111111111111111111111111111111";
