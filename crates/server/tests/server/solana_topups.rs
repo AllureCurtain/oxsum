@@ -2191,3 +2191,280 @@ async fn solana_reconciliation_unconfigured_answers_503() {
     .await;
     assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
 }
+
+// ---------------------------------------------------------------------------
+// Issue #1150 — the optional Helius webhook receiver.
+//
+// `POST /api/v1/webhooks/solana` is the push that *accelerates* confirmation:
+// a verified `Authorization` shared secret is the credential, each entry's
+// account keys match `pending` intents' `payment_ref` markers, and every match
+// runs the same `credit_solana_deposit` walk the poll tick and the confirm
+// route share — the push never credits on its own claims. A replayed
+// signature dedups; a malformed payload is 400; a wrong secret is 401; an
+// unconfigured deployment is 404.
+// ---------------------------------------------------------------------------
+
+/// The shared secret the webhook world pins — Helius echoes it in
+/// `Authorization` on every delivery.
+const HELIUS_SECRET: &str = "helius-webhook-secret-0123456789abcdef";
+
+/// A configured world with the Helius webhook receiver armed: the rail is on
+/// and `solana_helius_webhook_secret` is set, so `POST /api/v1/webhooks/solana`
+/// is mounted.
+async fn world_with_webhook(stub: SolanaStub) -> Option<(Router, Db)> {
+    let u = oxsum_testkit::suite_url!()?;
+    let pool: PgPool = sqlx::postgres::PgPoolOptions::new()
+        .max_connections(5)
+        .connect(&u)
+        .await
+        .expect("connects to PostgreSQL");
+    let db = Db::from_pool(pool);
+    db.migrate().await.expect("migrates");
+    oxsum_testkit::set_registration_fixture(db.pool(), true).await;
+    let verifier = SolanaRailVerifier::new(Arc::new(stub), terms());
+    let config = Config::new(Signup::Open, None)
+        .with_solana(verifier)
+        .with_solana_helius_webhook_secret(HELIUS_SECRET)
+        .with_admin_token(ADMIN_TOKEN);
+    Some((oxsum_server::app(db.clone(), config), db))
+}
+
+/// One call to the webhook endpoint: posts `body` verbatim (so a malformed or
+/// non-array payload reaches the handler) with `Authorization` set to
+/// `auth` — `None` sends the header absent, `Some("")` sends it empty.
+async fn webhook_call(app: &Router, body: &str, auth: Option<&str>) -> StatusCode {
+    let mut req = Request::builder()
+        .method("POST")
+        .uri("/api/v1/webhooks/solana")
+        .header("content-type", "application/json");
+    if let Some(auth) = auth {
+        req = req.header("authorization", auth);
+    }
+    let req = req.body(Body::from(body.to_owned())).unwrap();
+    app.clone().oneshot(req).await.unwrap().status()
+}
+
+/// A Helius *enhanced* delivery entry: `signature` plus the `accountData[].account`
+/// set the paying transaction touched — the candidate `reference` markers.
+fn helius_enhanced(signature: &str, accounts: &[&str]) -> Value {
+    json!({
+        "signature": signature,
+        "timestamp": 1_700_000_000i64,
+        "type": "TRANSFER",
+        "accountData": accounts
+            .iter()
+            .map(|a| json!({"account": a, "nativeBalanceChange": 0}))
+            .collect::<Vec<_>>(),
+    })
+}
+
+/// Issue #1150's happy path: a verified Helius push names the intent's
+/// `reference` among its account keys, the match runs the ordinary
+/// `credit_solana_deposit` walk, and the ledger credits on the server's own
+/// on-chain check — the push's claims only narrowed which intent to look at.
+#[tokio::test]
+async fn solana_webhook_credits_a_matching_intent() {
+    let stub = SolanaStub::default();
+    let Some((app, _db)) = world_with_webhook(stub.clone()).await else {
+        return;
+    };
+    let key = register_session(&app).await;
+    let (status, intent) = call(
+        &app,
+        "POST",
+        "/api/v1/topups/solana",
+        Some(json!({"amountMinor": 1000})),
+        Some(&key),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{intent}");
+    let reference = intent["data"]["reference"].as_str().unwrap().to_owned();
+    // Arm the chain as though the paying transaction landed — the push does
+    // not prove it; the re-verify reads it from the stub.
+    let signature = "sigWebhook1111111111111111111111111111111111111111111111111";
+    stub.located
+        .lock()
+        .unwrap()
+        .insert(reference.clone(), vec![signature.to_owned()]);
+    stub.validated.lock().unwrap().insert(
+        signature.to_owned(),
+        ValidatedTransfer {
+            signature: signature.to_owned(),
+            delivered: 5_000,
+            block_time: Some(0),
+            payer: None,
+        },
+    );
+    // The push names the intent's reference among its account keys — the match
+    // is what schedules the re-verify; the credit is the rail's own verdict.
+    let payload = json!([helius_enhanced(
+        signature,
+        &[&reference, "someOtherAccount"]
+    )]);
+    let status = webhook_call(&app, &payload.to_string(), Some(HELIUS_SECRET)).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(balance(&app, &key).await, 1000);
+}
+
+/// A delivery carrying the wrong `Authorization` secret is a `401` — the
+/// shared secret is the only credential the open surface carries.
+#[tokio::test]
+async fn solana_webhook_refuses_a_wrong_secret() {
+    let stub = SolanaStub::default();
+    let Some((app, _db)) = world_with_webhook(stub.clone()).await else {
+        return;
+    };
+    let payload = json!([helius_enhanced("sig", &["ref"])]);
+    assert_eq!(
+        webhook_call(&app, &payload.to_string(), Some("not-the-secret")).await,
+        StatusCode::UNAUTHORIZED
+    );
+    // No header at all refuses the same way — a missing credential is not a
+    // different answer.
+    assert_eq!(
+        webhook_call(&app, &payload.to_string(), None).await,
+        StatusCode::UNAUTHORIZED
+    );
+}
+
+/// A replayed delivery — the same signature pushed twice — acknowledges `200`
+/// both times but the dedup means the re-verify runs once: the first delivery
+/// claims the signature, the second is a no-op, and the ledger never double
+/// credits.
+#[tokio::test]
+async fn solana_webhook_replays_dedupe_and_credit_once() {
+    let stub = SolanaStub::default();
+    let Some((app, _db)) = world_with_webhook(stub.clone()).await else {
+        return;
+    };
+    let key = register_session(&app).await;
+    let (status, intent) = call(
+        &app,
+        "POST",
+        "/api/v1/topups/solana",
+        Some(json!({"amountMinor": 1000})),
+        Some(&key),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{intent}");
+    let reference = intent["data"]["reference"].as_str().unwrap().to_owned();
+    let signature = "sigReplay2222222222222222222222222222222222222222222222222";
+    stub.located
+        .lock()
+        .unwrap()
+        .insert(reference.clone(), vec![signature.to_owned()]);
+    stub.validated.lock().unwrap().insert(
+        signature.to_owned(),
+        ValidatedTransfer {
+            signature: signature.to_owned(),
+            delivered: 5_000,
+            block_time: Some(0),
+            payer: None,
+        },
+    );
+    let payload = json!([helius_enhanced(signature, &[&reference])]);
+    assert_eq!(
+        webhook_call(&app, &payload.to_string(), Some(HELIUS_SECRET)).await,
+        StatusCode::OK
+    );
+    assert_eq!(balance(&app, &key).await, 1000);
+    // The retry — Helius redelivers until it hears a 2xx — is acknowledged
+    // without a second chain round-trip and credits nothing twice.
+    assert_eq!(
+        webhook_call(&app, &payload.to_string(), Some(HELIUS_SECRET)).await,
+        StatusCode::OK
+    );
+    assert_eq!(
+        balance(&app, &key).await,
+        1000,
+        "a replay never double-credits"
+    );
+}
+
+/// A deployment that never set `OXSUM_SOLANA_HELIUS_WEBHOOK_SECRET` mounts no
+/// receiver: `POST /api/v1/webhooks/solana` answers `404` like every
+/// unconfigured inbound webhook — polling stays the rail's only confirm path.
+#[tokio::test]
+async fn solana_webhook_unconfigured_is_not_mounted() {
+    let stub = SolanaStub::default();
+    // `world` builds the rail without the webhook secret — the push surface is
+    // absent even though the rail runs.
+    let Some((app, _db)) = world(stub.clone()).await else {
+        return;
+    };
+    let payload = json!([helius_enhanced("sig", &["ref"])]);
+    assert_eq!(
+        webhook_call(&app, &payload.to_string(), Some(HELIUS_SECRET)).await,
+        StatusCode::NOT_FOUND
+    );
+}
+
+/// A payload that is not the JSON array Helius delivers — an object, a scalar,
+/// or malformed JSON — is a `400`: the receiver reads a documented shape, and
+/// anything else is a contract violation, not "no intents matched".
+#[tokio::test]
+async fn solana_webhook_refuses_a_malformed_payload() {
+    let stub = SolanaStub::default();
+    let Some((app, _db)) = world_with_webhook(stub.clone()).await else {
+        return;
+    };
+    // An object, not the array — the contract violation is 400, not a silent
+    // "no entries".
+    assert_eq!(
+        webhook_call(&app, "{\"signature\":\"x\"}", Some(HELIUS_SECRET)).await,
+        StatusCode::BAD_REQUEST
+    );
+    // Malformed JSON entirely.
+    assert_eq!(
+        webhook_call(&app, "not json at all", Some(HELIUS_SECRET)).await,
+        StatusCode::BAD_REQUEST
+    );
+}
+
+/// A raw-envelope entry carries its account keys under
+/// `transaction.message.accountKeys` — the second documented shape resolves
+/// the same `pending` intent an enhanced entry would.
+#[tokio::test]
+async fn solana_webhook_matches_a_raw_envelope() {
+    let stub = SolanaStub::default();
+    let Some((app, _db)) = world_with_webhook(stub.clone()).await else {
+        return;
+    };
+    let key = register_session(&app).await;
+    let (status, intent) = call(
+        &app,
+        "POST",
+        "/api/v1/topups/solana",
+        Some(json!({"amountMinor": 1000})),
+        Some(&key),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{intent}");
+    let reference = intent["data"]["reference"].as_str().unwrap().to_owned();
+    let signature = "sigRaw33333333333333333333333333333333333333333333333333333";
+    stub.located
+        .lock()
+        .unwrap()
+        .insert(reference.clone(), vec![signature.to_owned()]);
+    stub.validated.lock().unwrap().insert(
+        signature.to_owned(),
+        ValidatedTransfer {
+            signature: signature.to_owned(),
+            delivered: 5_000,
+            block_time: Some(0),
+            payer: None,
+        },
+    );
+    // The raw getTransaction-shaped entry keys its account list under
+    // `transaction.message.accountKeys` — the marker still resolves.
+    let payload = json!([{
+        "signature": signature,
+        "blockTime": 1_700_000_000i64,
+        "transaction": {"message": {"accountKeys": [reference, "payerAddr"]}},
+    }]);
+    assert_eq!(
+        webhook_call(&app, &payload.to_string(), Some(HELIUS_SECRET)).await,
+        StatusCode::OK
+    );
+    assert_eq!(balance(&app, &key).await, 1000);
+}
