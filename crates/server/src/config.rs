@@ -2048,6 +2048,18 @@ fn solana_usdt_gate(enabled: bool, declared: bool, whitelisted: bool) -> Result<
     Ok(())
 }
 
+/// The `OXSUM_SOLANA_INTENT_TTL_SECS` parse: seconds a `pending` intent stays
+/// payable before the poll expires it. Unset defaults to 900 — the 15-minute
+/// window the mainnet-readiness decision (issue #1117) recorded; the code
+/// and `.env.example` long drifted to 600 under it (issue #1185). An explicit
+/// value passes through — deployments that pinned a TTL keep it.
+fn solana_intent_ttl_secs_of(raw: Option<String>) -> Result<i64, String> {
+    raw.map(|v| v.parse::<i64>())
+        .transpose()
+        .map_err(|_| "OXSUM_SOLANA_INTENT_TTL_SECS must be an integer".to_owned())
+        .map(|parsed| parsed.unwrap_or(900))
+}
+
 /// The endpoint list `solana_of` builds the client pool from (issue #1145):
 /// `OXSUM_SOLANA_RPC_URLS` wins when both variables are set — a deployment
 /// migrating to the plural name must not silently double its pool — and
@@ -2258,11 +2270,7 @@ fn solana_of() -> Result<Option<Arc<oxsum_core::SolanaRailVerifier>>, String> {
             .key
             .clone(),
     };
-    let intent_ttl_secs = var("OXSUM_SOLANA_INTENT_TTL_SECS")
-        .map(|v| v.parse::<i64>())
-        .transpose()
-        .map_err(|_| "OXSUM_SOLANA_INTENT_TTL_SECS must be an integer".to_owned())?
-        .unwrap_or(600);
+    let intent_ttl_secs = solana_intent_ttl_secs_of(var("OXSUM_SOLANA_INTENT_TTL_SECS"))?;
     // The open-intent surface's bounds (issue #1130): per-call amount limits
     // and a per-organization opens-per-minute cap. Defaults keep today's
     // behavior (min 1, unbounded max, unbounded rate) — a deployment tightens
@@ -2842,6 +2850,25 @@ mod tests {
             super::solana_rpc_urls_of(Some(" , https://only.example.com,,"), None),
             vec!["https://only.example.com".to_owned()]
         );
+    }
+
+    /// Issue #1185: the intent-TTL default is the 15-minute window the
+    /// mainnet-readiness decision recorded — unset resolves 900, an explicit
+    /// value stands, a non-integer is a startup error.
+    #[test]
+    fn the_solana_intent_ttl_defaults_to_fifteen_minutes() {
+        assert_eq!(super::solana_intent_ttl_secs_of(None).unwrap(), 900);
+        // An explicit deployment figure is its own — only the default moved.
+        assert_eq!(
+            super::solana_intent_ttl_secs_of(Some("600".to_owned())).unwrap(),
+            600
+        );
+        assert_eq!(
+            super::solana_intent_ttl_secs_of(Some("1800".to_owned())).unwrap(),
+            1800
+        );
+        let err = super::solana_intent_ttl_secs_of(Some("soon".to_owned())).unwrap_err();
+        assert!(err.contains("OXSUM_SOLANA_INTENT_TTL_SECS"), "{err}");
     }
 
     /// The Squads v4 multisig/vault pair `getVaultPda` pins (issue #1143):

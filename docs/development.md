@@ -538,7 +538,7 @@ Copy `.env.example` to `.env` and the server and the tests pick it up automatica
 | `OXSUM_SOLANA_SPL_TOKEN_MINT` | Optional legacy single-asset form; the SPL mint a top-up must pay when `ASSETS` is unset — requires `OXSUM_SOLANA_DECIMALS` beside it, and the boot cross-checks the figure on-chain. Unset (and no `ASSETS`), the rail expects native SOL, locked at `RATE_MICRO` |
 | `OXSUM_SOLANA_DECIMALS` | Required beside the legacy `SPL_TOKEN_MINT`; ignored under `ASSETS`, where each mint's own on-chain decimals are authoritative |
 | `OXSUM_SOLANA_COMMITMENT` | Optional; `finalized` (default) or `confirmed` — what `find_reference`/`validate_transfer` ask the RPC for |
-| `OXSUM_SOLANA_INTENT_TTL_SECS` | Optional; seconds a `pending` intent stays payable before the poll expires it, default 600 |
+| `OXSUM_SOLANA_INTENT_TTL_SECS` | Optional; seconds a `pending` intent stays payable before the poll expires it, default 900 (15 minutes) |
 | `OXSUM_SOLANA_MIN_MINOR` + `OXSUM_SOLANA_MAX_MINOR` | Optional; the credit amount a single intent may open, default `1` / unbounded (issue #1130) — the fat-finger bound on the rail's open surface |
 | `OXSUM_SOLANA_OPENS_PER_MINUTE` | Optional; how many intents one organization may open per minute, default `0` — unbounded (issue #1130) — the intent-spam throttle |
 | `OXSUM_SOLANA_MULTISIG_ACCOUNT` | Optional custody pin (issue #1143); the Squads v4 multisig *account* whose `vault index 0` PDA `PAY_TO` must equal — a mismatch is a startup error, unset boots with a loud hot-wallet warning. The derivation is offline (no on-chain introspection); see docs/self-hosted-solana-multisig.md |
