@@ -29,19 +29,21 @@ fn terms() -> SolanaTerms {
     SolanaTerms {
         pay_to: "oxsumDepositAddr111111111111111111111111111".to_owned(),
         spl_token_mint: None,
+        asset_decimals: 9,
         rate_micro: 200_000_000, // 200 credits per SOL, in minor units
         intent_ttl_secs: 600,
     }
 }
 
-/// The stubbed chain: maps `reference -> signature` and validates the
-/// expected transfer's `amount`/`recipient`/`reference` against a scripted
-/// answer. `paid` arms the lookup to find and validate; `wrong` arms it to
-/// answer a transfer that does not honor the intent.
+/// The stubbed chain: maps `reference -> [signatures]` (newest first, like
+/// `getSignaturesForAddress`) and validates the expected transfer's
+/// `amount`/`recipient`/`reference` against a scripted answer. `paid` arms
+/// the lookup to find and validate; `wrong` arms it to answer a transfer
+/// that does not honor the intent.
 #[derive(Clone, Default)]
 struct SolanaStub {
-    /// `reference` → the signature `find_reference` answers.
-    located: Arc<Mutex<std::collections::HashMap<String, String>>>,
+    /// `reference` → the signatures `find_reference` answers, newest first.
+    located: Arc<Mutex<std::collections::HashMap<String, Vec<String>>>>,
     /// `signature` → the `ValidatedTransfer` `validate_transfer` answers.
     validated: Arc<Mutex<std::collections::HashMap<String, ValidatedTransfer>>>,
 }
@@ -56,8 +58,15 @@ impl ChainLookup for SolanaStub {
     fn find_reference<'a>(
         &'a self,
         reference: &'a str,
-    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Option<String>> + Send + 'a>> {
-        Box::pin(async move { self.located.lock().unwrap().get(reference).cloned() })
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Vec<String>> + Send + 'a>> {
+        Box::pin(async move {
+            self.located
+                .lock()
+                .unwrap()
+                .get(reference)
+                .cloned()
+                .unwrap_or_default()
+        })
     }
 
     fn validate_transfer<'a>(
@@ -175,7 +184,7 @@ async fn solana_intent_pays_once() {
     stub.located
         .lock()
         .unwrap()
-        .insert(reference.clone(), signature.to_owned());
+        .insert(reference.clone(), vec![signature.to_owned()]);
     stub.validated.lock().unwrap().insert(
         signature.to_owned(),
         ValidatedTransfer {
@@ -230,7 +239,7 @@ async fn solana_confirm_refuses_an_unpaying_transfer() {
     stub.located
         .lock()
         .unwrap()
-        .insert(reference.clone(), signature.to_owned());
+        .insert(reference.clone(), vec![signature.to_owned()]);
     stub.validated.lock().unwrap().insert(
         signature.to_owned(),
         ValidatedTransfer {
@@ -266,6 +275,74 @@ async fn solana_confirm_refuses_an_unknown_reference() {
     )
     .await;
     assert_eq!(status, StatusCode::NOT_FOUND, "{body}");
+}
+
+/// Issue #1124: a transaction carrying two references pays one transfer but
+/// must credit only one deposit. Two intents — whether in one organization or
+/// two — that resolve to the same signature credit the first and refuse the
+/// second; the second's ledger never books the spend. The per-organization
+/// ledger key `solana:<sig>` is not the guard (each org's ledger is its own
+/// scope); the global `deposits_solana_tx_hash` index is.
+#[tokio::test]
+async fn solana_signature_credits_once_across_organizations() {
+    let stub = SolanaStub::default();
+    let Some((app, _db)) = world(stub.clone()).await else {
+        return;
+    };
+    // Two organizations — two ledgers — each open an intent for 1000 credits.
+    let key_a = register_session(&app).await;
+    let key_b = register_session(&app).await;
+    let mut references = Vec::new();
+    for key in [&key_a, &key_b] {
+        let (status, intent) = call(
+            &app,
+            "POST",
+            "/api/v1/topups/solana",
+            Some(json!({"amountMinor": 1000})),
+            Some(key),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{intent}");
+        references.push(intent["data"]["reference"].as_str().unwrap().to_owned());
+    }
+    // One paying transaction carries both references — the attack shape.
+    let signature = "sigDblSpend0000000000000000000000000000000000000000000000000000";
+    for reference in &references {
+        stub.located
+            .lock()
+            .unwrap()
+            .insert(reference.clone(), vec![signature.to_owned()]);
+    }
+    stub.validated.lock().unwrap().insert(
+        signature.to_owned(),
+        ValidatedTransfer {
+            signature: signature.to_owned(),
+            delivered: 5_000,
+        },
+    );
+    // The first organization's confirm settles and credits.
+    let (status_a, _) = call(
+        &app,
+        "POST",
+        "/api/v1/topups/solana/confirm",
+        Some(json!({"reference": references[0]})),
+        Some(&key_a),
+    )
+    .await;
+    assert_eq!(status_a, StatusCode::OK);
+    assert_eq!(balance(&app, &key_a).await, 1000);
+    // The second organization's intent resolves to the *same* signature —
+    // already spent — and must be refused, never double-credited.
+    let (status_b, refusal) = call(
+        &app,
+        "POST",
+        "/api/v1/topups/solana/confirm",
+        Some(json!({"reference": references[1]})),
+        Some(&key_b),
+    )
+    .await;
+    assert_eq!(status_b, StatusCode::FORBIDDEN, "{refusal}");
+    assert_eq!(balance(&app, &key_b).await, 0, "{refusal}");
 }
 
 #[tokio::test]

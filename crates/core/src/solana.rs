@@ -55,7 +55,14 @@ pub struct SolanaTerms {
     pub pay_to: String,
     /// The SPL mint a top-up must pay, or `None` for native SOL.
     pub spl_token_mint: Option<String>,
-    /// Minor-credits per whole SOL the intent locks (`OXSUM_SOLANA_RATE_MICRO`).
+    /// Base units per whole asset the rail prices in (`OXSUM_SOLANA_DECIMALS`,
+    /// 9 for SOL / 6 for USDC). `rate_micro` is per `10^asset_decimals` units —
+    /// the conversion is mint-aware so a 6-decimal mint does not misprice by
+    /// 1000× the way a fixed-1e9 SOL scale would.
+    pub asset_decimals: u32,
+    /// Minor-credits per whole asset unit the intent locks
+    /// (`OXSUM_SOLANA_RATE_MICRO`) — one whole SOL (10^asset_decimals base
+    /// units) buys `rate_micro` minor-credits.
     pub rate_micro: i64,
     /// Seconds a `pending` intent stays payable before the poll expires it.
     pub intent_ttl_secs: i64,
@@ -111,12 +118,15 @@ impl std::fmt::Debug for SolanaRailVerifier {
 /// solana::SolanaRpcClient` is the production impl; tests stub it in-process.
 /// Object-safe boxed futures so `Config` can hold `Arc<dyn ChainLookup>`.
 pub trait ChainLookup: std::fmt::Debug + Send + Sync {
-    /// `getSignaturesForAddress(reference)`: the newest confirmed transaction
-    /// touching the intent's marker, or `None` when none has landed yet.
+    /// `getSignaturesForAddress(reference)`: the newest confirmed
+    /// transactions touching the intent's marker, newest first — a Vec, not a
+    /// single hit, because a later dishonoring transaction on the same marker
+    /// must not mask an earlier honoring one (the verifier walks the list and
+    /// tries each until one validates). Empty when none has landed yet.
     fn find_reference<'a>(
         &'a self,
         reference: &'a str,
-    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Option<String>> + Send + 'a>>;
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Vec<String>> + Send + 'a>>;
 
     /// `getTransaction(signature)`: prove the located transaction pays the
     /// `ExpectedTransfer`'s terms — recipient, delivered amount, mint, and
@@ -184,25 +194,37 @@ impl RailVerifier for SolanaRailVerifier {
             if reference.is_empty() {
                 return None;
             }
-            let signature = self.chain.find_reference(reference).await?;
+            let signatures = self.chain.find_reference(reference).await;
             // The intent's declared credit amount is what the deposit opened
             // for — `amount_minor` is the caller's claim, the opened deposit's
             // `amount_minor` is authoritative. Convert it to the lamports (or
             // SPL base units) the payment had to deliver at the locked rate.
             let opened = amount_minor?;
-            let expected_lamports = credits_to_asset_units(opened, self.terms.rate_micro);
-            let validated = self
-                .chain
-                .validate_transfer(
-                    &signature,
-                    &ExpectedTransfer {
-                        recipient: self.terms.pay_to.clone(),
-                        amount: expected_lamports,
-                        spl_token_mint: self.terms.spl_token_mint.clone(),
-                        reference: reference.to_owned(),
-                    },
-                )
-                .await?;
+            let expected_lamports =
+                credits_to_asset_units(opened, self.terms.rate_micro, self.terms.asset_decimals);
+            // Walk every signature the marker indexed, newest first, and take
+            // the first that honors the intent — a later failed or dishonoring
+            // transaction on the same marker must not stall the earlier paying
+            // one.
+            let mut validated = None;
+            for signature in &signatures {
+                validated = self
+                    .chain
+                    .validate_transfer(
+                        signature,
+                        &ExpectedTransfer {
+                            recipient: self.terms.pay_to.clone(),
+                            amount: expected_lamports,
+                            spl_token_mint: self.terms.spl_token_mint.clone(),
+                            reference: reference.to_owned(),
+                        },
+                    )
+                    .await;
+                if validated.is_some() {
+                    break;
+                }
+            }
+            let validated = validated?;
             Some(VerifiedPayment {
                 // The credit the ledger books is the opened amount — the
                 // payment met its terms. `receivedCredits` converts the
@@ -219,6 +241,7 @@ impl RailVerifier for SolanaRailVerifier {
                     "receivedCredits": asset_units_to_credits(
                         validated.delivered,
                         self.terms.rate_micro,
+                        self.terms.asset_decimals,
                     ),
                 }),
             })
@@ -246,36 +269,45 @@ impl RailVerifier for SolanaRailVerifier {
     }
 }
 
+/// Base units per whole asset the rail prices in: `10^asset_decimals`, capped
+/// at `i64::MAX`'s range — a mint's decimals are at most 9 on Solana today,
+/// but the bound keeps the scale in `i64` whatever the config says.
+fn asset_scale(decimals: u32) -> i64 {
+    10_i64.saturating_pow(decimals.min(18))
+}
+
 /// Converts a credit amount in minor units to the asset units the payment
 /// must deliver at the locked rate, rounding *up* (the customer's direction —
-/// a fraction of a lamport charges the buyer the whole lamport so the seller
-/// is never underpaid). `rate_micro` is minor-credits per whole SOL (1e9
-/// lamports), so `lamports = ceil(credits_minor * 1e9 / rate_micro)`.
-/// Multiplication precedes division and the product saturates, so a huge
-/// intent clamps rather than wrapping negative.
-fn credits_to_asset_units(credits_minor: i64, rate_micro: i64) -> i64 {
+/// a fraction of a base unit charges the buyer the whole unit so the seller
+/// is never underpaid). `rate_micro` is minor-credits per whole asset
+/// (`10^asset_decimals` base units — 1e9 lamports for SOL, 1e6 for USDC), so
+/// `units = ceil(credits_minor * 10^decimals / rate_micro)`. Multiplication
+/// precedes division and the product saturates, so a huge intent clamps
+/// rather than wrapping negative.
+fn credits_to_asset_units(credits_minor: i64, rate_micro: i64, decimals: u32) -> i64 {
     if rate_micro <= 0 {
         return 0;
     }
     // ceil(n / d) for positive integers = (n + d - 1) / d. Scale the credit
-    // figure by 1e9 lamports/SOL first so the ceil lands on lamports, not on
-    // whole SOL — a fraction of a SOL still charges the next lamport up.
-    let numerator = credits_minor.saturating_mul(1_000_000_000);
+    // figure by the mint's units-per-whole first so the ceil lands on base
+    // units, not on whole units — a fraction of a unit still charges the next
+    // base unit up.
+    let numerator = credits_minor.saturating_mul(asset_scale(decimals));
     numerator.saturating_add(rate_micro - 1) / rate_micro
 }
 
 /// The inverse of [`credits_to_asset_units`]: the credit minor-units a
-/// delivered amount of lamports (or SPL base units) is worth at the locked
-/// rate — `received_minor`'s figure. `credits = delivered * rate_micro /
-/// 1e9`, the remainder dropping toward zero (the customer's direction on the
-/// seller's side of the rail).
-fn asset_units_to_credits(asset_units: i64, rate_micro: i64) -> i64 {
+/// delivered amount of base units is worth at the locked rate —
+/// `received_minor`'s figure. `credits = delivered * rate_micro /
+/// 10^decimals`, the remainder dropping toward zero (the customer's
+/// direction on the seller's side of the rail).
+fn asset_units_to_credits(asset_units: i64, rate_micro: i64, decimals: u32) -> i64 {
     if rate_micro <= 0 {
         return 0;
     }
     asset_units
         .saturating_mul(rate_micro)
-        .saturating_div(1_000_000_000)
+        .saturating_div(asset_scale(decimals))
 }
 
 /// Generates a fresh `reference` marker: 32 random bytes base58-encoded, the
@@ -312,7 +344,7 @@ impl Db {
             ));
         }
         let reference = new_reference();
-        let lamports = credits_to_asset_units(amount_minor, terms.rate_micro);
+        let lamports = credits_to_asset_units(amount_minor, terms.rate_micro, terms.asset_decimals);
         let expires_at = time::OffsetDateTime::now_utc() + time::Duration::seconds(terms.ttl());
         let inserted = sqlx::query(
             "INSERT INTO oxsum.deposits \
@@ -351,6 +383,9 @@ impl Db {
     /// Finds the pending intent a `reference` names — the lookup the confirm
     /// route runs on a replayed submission, answering the same `(deposit_id,
     /// organization_id, amount_minor)` rather than opening a second intent.
+    /// An intent past its `meta.expiresAt` is not payable — the same gate the
+    /// poll's expiry sweep enforces — so a payment landing after expiry never
+    /// finds its intent here.
     pub async fn find_solana_deposit(
         &self,
         organization_id: Uuid,
@@ -360,7 +395,8 @@ impl Db {
             "SELECT deposit_id, organization_id, amount_minor \
              FROM oxsum.deposits \
              WHERE rail = $1 AND organization_id = $2 AND payment_ref = $3 \
-               AND status = 'pending'",
+               AND status = 'pending' \
+               AND (meta->>'expiresAt')::timestamptz > now()",
         )
         .bind(RAIL_SOLANA)
         .bind(organization_id)
@@ -404,6 +440,7 @@ impl Db {
             "SELECT organization_id, amount_minor, status, payment_ref, meta \
              FROM oxsum.deposits \
              WHERE deposit_id = $1 AND rail = $2 \
+               AND (meta->>'expiresAt')::timestamptz > now() \
              FOR UPDATE",
         )
         .bind(deposit_id)
@@ -433,6 +470,28 @@ impl Db {
             .settle(&payment)
             .await
             .map_err(|refusal| WalletError::Forbidden(refusal.reason.clone()))?;
+        // One signature credits one deposit ever: a transaction carrying two
+        // references pays once, so a second intent naming an already-used
+        // signature must be refused, not credited in a second organization's
+        // ledger (issue #1124). The pre-check gives a clean refusal; the
+        // `deposits_solana_tx_hash` partial unique index is the backstop for
+        // the race where two intents claim the same signature at once.
+        let already_used = sqlx::query_scalar::<_, i64>(
+            "SELECT 1 FROM oxsum.deposits \
+             WHERE rail = $1 AND facilitator_tx_hash = $2 AND deposit_id <> $3 \
+             LIMIT 1",
+        )
+        .bind(RAIL_SOLANA)
+        .bind(&settlement.tx_hash)
+        .bind(deposit_id)
+        .fetch_optional(&mut *tx)
+        .await?
+        .is_some();
+        if already_used {
+            return Err(WalletError::Forbidden(
+                "the paying transaction already credited another deposit".into(),
+            ));
+        }
         sqlx::query(
             "UPDATE oxsum.deposits \
              SET status = 'confirmed', facilitator_tx_hash = $1, \
@@ -443,7 +502,20 @@ impl Db {
         .bind(payment.context["receivedCredits"].as_i64())
         .bind(deposit_id)
         .execute(&mut *tx)
-        .await?;
+        .await
+        .map_err(|e| {
+            // A unique violation on deposits_solana_tx_hash means a concurrent
+            // intent claimed this signature first — a double-spend refusal,
+            // not a storage fault.
+            if let sqlx::Error::Database(ref db) = e
+                && db.code().as_deref() == Some("23505")
+            {
+                return WalletError::Forbidden(
+                    "the paying transaction already credited another deposit".into(),
+                );
+            }
+            WalletError::from(e)
+        })?;
         // The credit replays under the signature-derived key: a retried or
         // raced call answers the standing receipt (`is_new: false`), never a
         // second credit.
@@ -559,11 +631,54 @@ impl Db {
                 Ok(Some(_)) => credited += 1,
                 Ok(None) => {}
                 // A verification refusal is "not paid yet" — the row stays
-                // pending for the next pass; only storage failures propagate.
+                // pending for the next pass.
                 Err(WalletError::Forbidden(_)) => {}
-                Err(error) => return Err(error),
+                // Any other failure logs and moves to the next intent: one
+                // bad row must not stall every intent behind it for another
+                // whole pass.
+                Err(error) => {
+                    tracing::warn!(
+                        deposit_id = %deposit_id,
+                        error = %error,
+                        "the solana deposit credit failed; the row stays pending"
+                    );
+                }
             }
         }
         Ok((rows.len() as u64, credited, expired_count))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The conversion is mint-aware: `rate_micro` minor-credits buy one whole
+    /// asset, and the mint's decimals — not a hardcoded 1e9 — set the base
+    /// units a whole asset divides into. SOL (9) and USDC (6) price the same
+    /// credit figure into very different base units.
+    #[test]
+    fn credits_to_asset_units_honors_the_mint_decimals() {
+        // 1000 minor-credits at 200_000_000 minor/whole unit.
+        // SOL (9 decimals): 1000 * 1e9 / 200e6 = 5_000 lamports.
+        assert_eq!(credits_to_asset_units(1000, 200_000_000, 9), 5_000);
+        // USDC (6 decimals): 1000 * 1e6 / 200e6 = 5 base units. A fixed-1e9
+        // scale would have priced this 1000× too high — the bug this fixes.
+        assert_eq!(credits_to_asset_units(1000, 200_000_000, 6), 5);
+    }
+
+    #[test]
+    fn credits_to_asset_units_rounds_up_for_the_seller() {
+        // A fraction of a base unit charges the next whole unit up.
+        assert_eq!(credits_to_asset_units(1, 200_000_000, 9), 5);
+        assert_eq!(credits_to_asset_units(1, 200_000_000, 6), 1);
+    }
+
+    #[test]
+    fn asset_units_to_credits_is_the_inverse() {
+        assert_eq!(asset_units_to_credits(5_000, 200_000_000, 9), 1000);
+        assert_eq!(asset_units_to_credits(5, 200_000_000, 6), 1000);
+        // The remainder drops toward zero (seller's side of the rail).
+        assert_eq!(asset_units_to_credits(4_999, 200_000_000, 9), 999);
     }
 }

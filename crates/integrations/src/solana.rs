@@ -44,10 +44,15 @@ pub struct SolanaConfig {
     /// The commitment `find_reference` / `validate_transfer` ask the RPC for:
     /// `confirmed` (default) or `finalized` (`OXSUM_SOLANA_COMMITMENT`).
     pub commitment: String,
-    /// The locked rate in minor-credits per whole SOL that intents quote and
-    /// credits settle at, `OXSUM_SOLANA_RATE_MICRO`. Devnet's static stand-in
-    /// for a price oracle: 1 SOL buys `rate_micro` minor-credits. A mainnet
-    /// rail replaces this with an oracle lookup recorded per intent.
+    /// Base units per whole asset the rail prices in (`OXSUM_SOLANA_DECIMALS`,
+    /// default 9 for native SOL / 6 for USDC). The conversion between credits
+    /// and base units is mint-aware so a 6-decimal mint does not misprice.
+    pub asset_decimals: u32,
+    /// The locked rate in minor-credits per whole asset that intents quote and
+    /// credits settle at, `OXSUM_SOLANA_RATE_MICRO` — one whole SOL
+    /// (`10^asset_decimals` base units) buys `rate_micro` minor-credits.
+    /// Devnet's static stand-in for a price oracle: a mainnet rail replaces
+    /// this with an oracle lookup recorded per intent.
     pub rate_micro: i64,
     /// How long a `pending` intent stays payable before the poll expires it,
     /// `OXSUM_SOLANA_INTENT_TTL_SECS` (default 600 — Solana Pay's own
@@ -178,25 +183,30 @@ impl SolanaRpcClient {
     }
 
     /// `getSignaturesForAddress(reference)` — the `findReference` half: the
-    /// newest confirmed transaction touching the per-intent marker account.
-    /// `Ok(None)` means nothing has landed for this intent yet — the normal
-    /// "not paid yet" answer, not a failure.
-    pub async fn find_reference(&self, reference: &str) -> Result<Option<String>, SolanaError> {
+    /// recent confirmed transactions touching the per-intent marker account,
+    /// newest first. Several are returned (not just the newest) so a later
+    /// dishonoring or failed transaction on the same marker cannot mask an
+    /// earlier paying one — the verifier walks the list. `Ok(vec![])` means
+    /// nothing has landed yet — the normal "not paid yet" answer.
+    pub async fn find_reference(&self, reference: &str) -> Result<Vec<String>, SolanaError> {
         let result = self
             .call(
                 "getSignaturesForAddress",
                 json!([
                     reference,
-                    {"limit": 1, "commitment": self.config.commitment},
+                    {"limit": 10, "commitment": self.config.commitment},
                 ]),
             )
             .await?;
-        let signature = result
+        let signatures = result
             .as_array()
-            .and_then(|arr| arr.first())
-            .and_then(|row| row["signature"].as_str())
-            .map(str::to_owned);
-        Ok(signature)
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|row| row["signature"].as_str().map(str::to_owned))
+                    .collect()
+            })
+            .unwrap_or_default();
+        Ok(signatures)
     }
 
     /// `getTransaction(signature, jsonParsed)` — the `validateTransfer` half:
@@ -257,16 +267,15 @@ impl SolanaRpcClient {
             // `postBalances`, which only cover static (non-lookup) keys — so
             // index the recipient's position within those keys.
             None => {
-                let position = account_keys.iter().position(|key| {
-                    let pubkey = key["pubkey"].as_str().or_else(|| key.as_str());
-                    pubkey == Some(expected.recipient.as_str())
-                });
-                let Some(index) = position else {
+                let Some(delta) = lamport_delta(
+                    account_keys,
+                    meta["preBalances"].as_array(),
+                    meta["postBalances"].as_array(),
+                    &expected.recipient,
+                ) else {
                     return Ok(None);
                 };
-                let pre = meta["preBalances"][index].as_i64().unwrap_or(0);
-                let post = meta["postBalances"][index].as_i64().unwrap_or(0);
-                post.saturating_sub(pre)
+                delta
             }
             // SPL: `postTokenBalances` carries `{accountIndex, mint,
             // uiTokenAmount:{amount}}`; find the row on the recipient's mint
@@ -306,8 +315,8 @@ impl oxsum_core::ChainLookup for SolanaRpcClient {
     fn find_reference<'a>(
         &'a self,
         reference: &'a str,
-    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Option<String>> + Send + 'a>> {
-        Box::pin(async move { self.find_reference(reference).await.ok().flatten() })
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Vec<String>> + Send + 'a>> {
+        Box::pin(async move { self.find_reference(reference).await.unwrap_or_default() })
     }
 
     fn validate_transfer<'a>(
@@ -336,6 +345,33 @@ impl oxsum_core::ChainLookup for SolanaRpcClient {
             })
         })
     }
+}
+
+/// The native-SOL counterpart of [`token_delta`]: the recipient's
+/// post-minus-pre lamport delta. `accountKeys` indexes the `preBalances` /
+/// `postBalances` arrays positionally (they cover the static, non-lookup keys
+/// `jsonParsed` returns), so the recipient's position within `accountKeys` is
+/// the index into both balance arrays. `None` when the recipient is not among
+/// the transaction's account keys — the payment never reached the deposit
+/// address.
+fn lamport_delta(
+    account_keys: &[Value],
+    pre_balances: Option<&Vec<Value>>,
+    post_balances: Option<&Vec<Value>>,
+    recipient: &str,
+) -> Option<i64> {
+    let index = account_keys
+        .iter()
+        .position(|key| key["pubkey"].as_str().or_else(|| key.as_str()) == Some(recipient))?;
+    let pre = pre_balances
+        .and_then(|b| b.get(index))
+        .and_then(Value::as_i64)
+        .unwrap_or(0);
+    let post = post_balances
+        .and_then(|b| b.get(index))
+        .and_then(Value::as_i64)
+        .unwrap_or(0);
+    Some(post.saturating_sub(pre))
 }
 
 /// The SPL-token counterpart of the native-balance delta: the difference
@@ -510,6 +546,79 @@ mod tests {
             "usdcMint",
         );
         assert_eq!(delta, Some(5_000_000));
+    }
+
+    /// A `getTransaction(signature, jsonParsed)` payload for a native-SOL
+    /// `SystemProgram.transfer` — the shape `lamport_delta` reads. The
+    /// recipient sits at `accountKeys[1]` and its lamport figure is the
+    /// post-minus-pre delta across `preBalances`/`postBalances` at index 1.
+    /// `REFERENCE_MARKER` rides as a read-only non-signer key.
+    fn sol_tx(pre_lamports: i64, post_lamports: i64, recipient: &str) -> Value {
+        json!({
+            "meta": {
+                "err": null,
+                "preBalances": [5_000_000_000_i64, pre_lamports, 1],
+                "postBalances": [4_999_995_000_i64, post_lamports, 1],
+                "preTokenBalances": [],
+                "postTokenBalances": []
+            },
+            "transaction": {
+                "message": {
+                    "accountKeys": [
+                        {"pubkey": "PAYER_WALLET", "signer": true, "writable": true, "source": "transaction"},
+                        {"pubkey": recipient, "signer": false, "writable": true, "source": "transaction"},
+                        {"pubkey": "REFERENCE_MARKER", "signer": false, "writable": false, "source": "transaction"}
+                    ]
+                }
+            }
+        })
+    }
+
+    #[test]
+    fn lamport_delta_pays_the_recipient() {
+        let tx = sol_tx(0, 5_000, "payToAddr");
+        let keys = tx["transaction"]["message"]["accountKeys"]
+            .as_array()
+            .unwrap();
+        let delta = lamport_delta(
+            keys,
+            tx["meta"]["preBalances"].as_array(),
+            tx["meta"]["postBalances"].as_array(),
+            "payToAddr",
+        );
+        assert_eq!(delta, Some(5_000));
+    }
+
+    #[test]
+    fn lamport_delta_subtracts_a_prefunded_recipient() {
+        // The deposit address already held lamports; the deposit counts only
+        // what this transfer added, not the closing balance.
+        let tx = sol_tx(10_000, 15_000, "payToAddr");
+        let keys = tx["transaction"]["message"]["accountKeys"]
+            .as_array()
+            .unwrap();
+        let delta = lamport_delta(
+            keys,
+            tx["meta"]["preBalances"].as_array(),
+            tx["meta"]["postBalances"].as_array(),
+            "payToAddr",
+        );
+        assert_eq!(delta, Some(5_000));
+    }
+
+    #[test]
+    fn lamport_delta_is_none_for_an_absent_recipient() {
+        let tx = sol_tx(0, 5_000, "otherAddr");
+        let keys = tx["transaction"]["message"]["accountKeys"]
+            .as_array()
+            .unwrap();
+        let delta = lamport_delta(
+            keys,
+            tx["meta"]["preBalances"].as_array(),
+            tx["meta"]["postBalances"].as_array(),
+            "payToAddr",
+        );
+        assert_eq!(delta, None);
     }
 
     #[test]
