@@ -195,7 +195,10 @@ export function Billing() {
   const { t } = useTranslation();
   return (
     <div className="flex flex-col gap-6">
-      <h1 className="text-2xl font-bold">{t("billing.title")}</h1>
+      <div>
+        <h1 className="text-2xl font-bold">{t("billing.title")}</h1>
+        <p className="text-sm text-muted">{t("billing.intro")}</p>
+      </div>
       <PlanStanding />
       <Card title={t("billing.statements")}>
         <StatementRows />

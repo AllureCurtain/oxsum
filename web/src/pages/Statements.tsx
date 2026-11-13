@@ -10,7 +10,10 @@ export function Statements() {
   const display = useDisplay();
   return (
     <div className="flex flex-col gap-4">
-      <h1 className="text-2xl font-bold">{t("statements.title")}</h1>
+      <div>
+        <h1 className="text-2xl font-bold">{t("statements.title")}</h1>
+        <p className="text-sm text-muted">{t("statements.intro")}</p>
+      </div>
       {statements.isError ? (
         <PageState>{t("statements.listError")}</PageState>
       ) : (
@@ -50,7 +53,10 @@ export function Statements() {
             ))}
           {!statements.isLoading && (statements.data?.length ?? 0) === 0 ? (
             <EmptyRows colSpan={8} icon={<FileText />}>
-              {t("statements.empty")}
+              <p>{t("statements.empty")}</p>
+              <Link to="/billing" className="mt-1 inline-block text-primary">
+                {t("statements.billingLink")}
+              </Link>
             </EmptyRows>
           ) : null}
         </TableShell>

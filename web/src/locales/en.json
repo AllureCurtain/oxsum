@@ -588,6 +588,8 @@
   },
   "statements": {
     "title": "Statements",
+    "intro": "Monthly usage periods. A plan's invoice or receivable lives under Billing.",
+    "billingLink": "Plan invoices live under Billing →",
     "listError": "The statements could not be read.",
     "detailError": "The statement could not be read.",
     "loading": "Loading…",
@@ -1519,6 +1521,7 @@
   },
   "billing": {
     "title": "Billing",
+    "intro": "Your plan, credit and the invoices it bills. Monthly usage periods are under Statements.",
     "plan": "Plan & credit",
     "loadError": "The billing summary could not be read.",
     "noPlan": "No live plan — statements appear once a plan bills.",
