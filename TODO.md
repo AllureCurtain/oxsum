@@ -10,6 +10,11 @@ Open GitHub issues are the queue. This file is only the index. One row per open 
 
 | Issue | Title |
 | --- | --- |
+| [#1131](https://github.com/AllureCurtain/oxsum/issues/1131) | docs(solana): align openapi/api/product; returns meta.expiresAt; add solana-refunds runbook |
+| [#1130](https://github.com/AllureCurtain/oxsum/issues/1130) | fix(solana): lossless balance parsing, error/metric distinction, open-intent limits, read-only marker check |
+| [#1129](https://github.com/AllureCurtain/oxsum/issues/1129) | fix(solana): startup validates SPL mint decimals; commitment defaults to finalized |
+| [#1128](https://github.com/AllureCurtain/oxsum/issues/1128) | fix(solana): expiry by on-chain blockTime; paginate find_reference; no RPC under row lock |
+| [#1127](https://github.com/AllureCurtain/oxsum/issues/1127) | fix(solana): verify deposits against the intent's locked meta terms |
 | [#1117](https://github.com/AllureCurtain/oxsum/issues/1117) | direction: crypto top-up rail first, full on-chain vault later (Solana) |
 | [#1048](https://github.com/AllureCurtain/oxsum/issues/1048) | Self-hosted Hyperswitch on the 82.* server — feasibility and deployment |
 | [#746](https://github.com/AllureCurtain/oxsum/issues/746) | ci: Publication and deployment, if selected (N20) |
