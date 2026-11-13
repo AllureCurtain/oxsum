@@ -4355,3 +4355,29 @@ path calls `verify_locked`, which resolves the intent's own locked terms
 rather than the process's current terms. The `RailVerifier::verify` seam
 keeps its signature — it verifies under live terms wherever no intent is in
 hand; the credit path is the one place the intent's own promise must win.
+
+## 2026-11-13 — The rail's clock is the chain's; the marker's history is fully walked (#1128)
+
+Three coupled rail fixes, all about which clock and which window an intent is
+judged inside. **Expiry is the transaction's `blockTime`, not the server's
+`now()`**: a payment recorded on-chain before `meta.expiresAt` credits even
+when the confirm or poll runs after the TTL, and one recorded after never
+does — `find_solana_deposit` and `credit_solana_deposit` no longer pre-filter
+on `now()`, the `blockTime` `getTransaction` returns is the verdict, and a
+transfer whose `blockTime` the chain did not report is refused rather than
+silently accepted. **`find_reference` paginates** the marker's whole
+signature list through `getSignaturesForAddress`'s `before` cursor (100/page,
+bounded at 10 pages) instead of a fixed limit-10 window, so a burst of
+dishonoring transactions on the same marker cannot push the paying one out of
+view; the per-intent marker is throwaway so its history is short, and the
+page bound only caps an abusive marker. The alternative — letting `confirm`
+take an explicit signature — was rejected: it hands the caller the signature
+the rail is supposed to be discovering and trusting the chain for, and the
+pagination walk covers the real attack (masking the paying tx) without a new
+caller-supplied input to validate. **The chain RPC moved out of the
+`FOR UPDATE` window**: `credit_solana_deposit` reads the row unlocked, runs
+verify/settle (the two `getTransaction`/`getSignaturesForAddress` calls)
+against the chain, then opens a short transaction that re-locks the row,
+re-checks `status='pending'`, and credits — a raced poll or confirm simply
+finds the row already settled, which the signature idempotency key makes a
+no-op anyway.
