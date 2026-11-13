@@ -4273,3 +4273,34 @@ fabricating an anchor. The order-refund arm resolves the reference first and
 sends the intent it returns; a `pi_…` order reference skips the lookup. A
 server-side test proves both — the refund POST carries `pi_test_123`, not the
 session, and a direct `pi_…` issues with no session read.
+
+## 2026-11-13 — The Solana rail verifies on-chain, not by caller claim (#1117)
+
+The first crypto deposit rail that reads a chain directly (x402 delegates to a
+facilitator sidecar). `POST /api/v1/topups/solana` opens a `pending` intent
+whose `payment_ref` is a freshly minted `reference` account key — Solana Pay's
+recipe: the paying transaction must carry that account as a read-only
+non-signer key, so `getSignaturesForAddress(reference)` indexes it and the
+caller never names the signature. `POST /api/v1/topups/solana/confirm` takes
+only the `reference`; the rail itself finds and validates the transaction
+(`getTransaction(signature, jsonParsed)` — `meta.err` null, marker present,
+recipient delta ≥ the asked amount, the configured SPL mint when one is set),
+then credits under `solana:<signature>` exactly once. The caller can ask for a
+confirm; only the chain can satisfy it.
+
+`ChainLookup` is the seam between the rail (`oxsum-core`) and the transport
+(`oxsum-integrations`' `SolanaRpcClient`, a narrow JSON-RPC client — no
+`solana-sdk`, because the rail needs exactly two calls). The `solana-deposits`
+poll sweeps unexpired `pending` intents every 15 s and expires lapsed ones, so
+a wallet that pays without confirming still credits; the unleadered job is
+safe because the credit's ledger key is the signature it just validated.
+
+`confirmed` commitment is the default: devnet top-ups are low-value and the
+~13 s `finalized` wait buys little against a reorg window a `payment_ref`
+uniqueness violation would catch anyway. `OXSUM_SOLANA_COMMITMENT=finalized`
+is one flag for a high-value deployment. `OXSUM_SOLANA_RATE_MICRO` is the
+devnet stand-in for a price oracle — minor-credits per whole SOL, locked into
+the intent's `meta` at open so a mid-flight rate change cannot retro-price a
+pending deposit; a mainnet rail replaces the config value with an oracle
+lookup recorded the same way. `received_minor` records what the transfer
+actually delivered for human review; nothing auto-patches the opened amount.
