@@ -27,6 +27,9 @@ fn terms() -> SolanaTerms {
         asset_decimals: 9,
         rate_micro: 200_000_000,
         intent_ttl_secs: 600,
+        min_amount_minor: 1,
+        max_amount_minor: i64::MAX,
+        opens_per_minute: 0,
     }
 }
 
@@ -422,6 +425,49 @@ async fn expiry_is_judged_on_block_time_not_the_confirm_clock() {
     assert_eq!(wallet.available().await.unwrap(), 1000);
 }
 
+/// Issue #1130: the open surface is bounded. An intent below the floor or
+/// above the cap is refused, and an organization past its per-minute open
+/// rate is throttled — both before a `payment_ref` is ever minted.
+#[tokio::test]
+async fn open_solana_deposit_enforces_amount_bounds_and_open_rate() {
+    let Some(db) = database("solana_bounds").await else {
+        return;
+    };
+    let org = organization(&db, "bounds").await;
+    // A deployment that opens between 100 and 2_000 minor-credits, at most 2
+    // intents per minute per organization.
+    let bounded = SolanaTerms {
+        min_amount_minor: 100,
+        max_amount_minor: 2_000,
+        opens_per_minute: 2,
+        ..terms()
+    };
+    // Below the floor and above the cap are refused.
+    for amount in [50_i64, 5_000] {
+        let result = db
+            .open_solana_deposit(org, Uuid::new_v4(), amount, &bounded)
+            .await;
+        assert!(
+            matches!(result, Err(WalletError::InvalidInput(_))),
+            "amount {amount} must be refused: {result:?}"
+        );
+    }
+    // Two opens inside the bounds land; the third trips the per-minute cap.
+    for _ in 0..2 {
+        db.open_solana_deposit(org, Uuid::new_v4(), 1000, &bounded)
+            .await
+            .unwrap()
+            .expect("in-bounds opens insert");
+    }
+    let throttled = db
+        .open_solana_deposit(org, Uuid::new_v4(), 1000, &bounded)
+        .await;
+    assert!(
+        matches!(throttled, Err(WalletError::Forbidden(_))),
+        "the third open inside a minute must be throttled: {throttled:?}"
+    );
+}
+
 #[tokio::test]
 async fn verify_locked_settles_at_the_intents_terms_not_the_live_config() {
     let Some(db) = database("solana_locked").await else {
@@ -447,6 +493,9 @@ async fn verify_locked_settles_at_the_intents_terms_not_the_live_config() {
         asset_decimals: 6,
         rate_micro: 400_000_000,
         intent_ttl_secs: 600,
+        min_amount_minor: 1,
+        max_amount_minor: i64::MAX,
+        opens_per_minute: 0,
     };
     let verifier = SolanaRailVerifier::new(
         Arc::new(OneSig {

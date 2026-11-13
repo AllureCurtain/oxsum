@@ -3433,6 +3433,7 @@ dependencies = [
  "hmac 0.13.0",
  "jsonwebtoken",
  "lettre",
+ "metrics",
  "oxsum-core",
  "rand 0.10.3",
  "reqwest 0.12.28",
@@ -3441,6 +3442,7 @@ dependencies = [
  "sha2 0.11.1",
  "time",
  "tokio",
+ "tracing",
  "url",
  "uuid",
 ]

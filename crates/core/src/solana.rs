@@ -66,6 +66,16 @@ pub struct SolanaTerms {
     pub rate_micro: i64,
     /// Seconds a `pending` intent stays payable before the poll expires it.
     pub intent_ttl_secs: i64,
+    /// The smallest `amount_minor` an intent may open for
+    /// (`OXSUM_SOLANA_MIN_MINOR`, default 1).
+    pub min_amount_minor: i64,
+    /// The largest `amount_minor` an intent may open for
+    /// (`OXSUM_SOLANA_MAX_MINOR`, default `i64::MAX` — unbounded).
+    pub max_amount_minor: i64,
+    /// The most intents one organization may open per minute
+    /// (`OXSUM_SOLANA_OPENS_PER_MINUTE`, default 0 — unbounded). A bound
+    /// against intent spam, applied per organization.
+    pub opens_per_minute: i64,
 }
 
 impl SolanaTerms {
@@ -222,6 +232,11 @@ impl SolanaRailVerifier {
                 .and_then(serde_json::Value::as_i64)
                 .unwrap_or(self.terms.rate_micro),
             intent_ttl_secs: self.terms.intent_ttl_secs,
+            // The open-surface bounds are deployment policy, not per-intent
+            // terms — they read the live config always.
+            min_amount_minor: self.terms.min_amount_minor,
+            max_amount_minor: self.terms.max_amount_minor,
+            opens_per_minute: self.terms.opens_per_minute,
         }
     }
 
@@ -422,6 +437,36 @@ impl Db {
             return Err(WalletError::InvalidInput(
                 "a deposit's amount must be positive".into(),
             ));
+        }
+        // Per-intent amount bounds (issue #1130): a deployment caps the
+        // credit a single intent may open, so a fat-fingered or abusive open
+        // cannot demand an unbounded on-chain transfer.
+        if amount_minor < terms.min_amount_minor || amount_minor > terms.max_amount_minor {
+            return Err(WalletError::InvalidInput(format!(
+                "a deposit's amount must be between {} and {} minor-credits",
+                terms.min_amount_minor, terms.max_amount_minor
+            )));
+        }
+        // Per-organization open rate (issue #1130): bound how many pending
+        // intents one organization may mint inside a minute — intent spam is
+        // a marker-address and poll-work exhaustion vector, not free.
+        if terms.opens_per_minute > 0 {
+            let recent: i64 = sqlx::query_scalar(
+                "SELECT count(*) FROM oxsum.deposits \
+                 WHERE rail = $1 AND organization_id = $2 \
+                   AND created_at > now() - interval '60 seconds'",
+            )
+            .bind(RAIL_SOLANA)
+            .bind(organization_id)
+            .fetch_one(self.pool())
+            .await?;
+            if recent >= terms.opens_per_minute {
+                return Err(WalletError::Forbidden(format!(
+                    "the organization opened too many solana intents; try again shortly \
+                     (limit {}/min)",
+                    terms.opens_per_minute
+                )));
+            }
         }
         let reference = new_reference();
         let lamports = credits_to_asset_units(amount_minor, terms.rate_micro, terms.asset_decimals);
