@@ -1,6 +1,6 @@
 # TODO
 
-Updated: 2026-11-13
+Updated: 2026-11-14
 
 Open GitHub issues are the queue. This file is only the index. One row per open issue, title copied from the issue. Do not append test transcripts, evidence paths, or a second row for the same issue. The narrative log that used to grow here is frozen at [docs/history/TODO-log.md](docs/history/TODO-log.md).
 
@@ -10,18 +10,11 @@ Open GitHub issues are the queue. This file is only the index. One row per open 
 
 | Issue | Title |
 | --- | --- |
-| [#1151](https://github.com/AllureCurtain/oxsum/issues/1151) | feat(solana): USDT deposits alongside USDC |
-| [#1153](https://github.com/AllureCurtain/oxsum/issues/1153) | test(solana): concurrency and rate-limit stress on the top-up rail |
+| [#1169](https://github.com/AllureCurtain/oxsum/issues/1169) | fix(solana): opens_per_minute count+insert is a TOCTOU under concurrent opens |
+| [#1152](https://github.com/AllureCurtain/oxsum/issues/1152) | test(solana): end-to-end deposits against a local test-validator |
+| [#1150](https://github.com/AllureCurtain/oxsum/issues/1150) | feat(solana): optional Helius webhook to accelerate verification |
 | [#1149](https://github.com/AllureCurtain/oxsum/issues/1149) | feat(solana): admin reconciliation — daily CSV + unrecorded-on-chain scan |
-| [#1141](https://github.com/AllureCurtain/oxsum/issues/1141) | feat(solana): Solana Pay transfer-request URL + QR on the Topup page |
-| [#1144](https://github.com/AllureCurtain/oxsum/issues/1144) | feat(solana): pre-credit sanctions screening on the payer address |
-| [#1146](https://github.com/AllureCurtain/oxsum/issues/1146) | docs(solana): mainnet small-amount rehearsal runbook |
-| [#1145](https://github.com/AllureCurtain/oxsum/issues/1145) | feat(solana): authenticated RPC endpoints with failover + rail metrics |
-| [#1131](https://github.com/AllureCurtain/oxsum/issues/1131) | docs(solana): align openapi/api/product; returns meta.expiresAt; add solana-refunds runbook |
-| [#1130](https://github.com/AllureCurtain/oxsum/issues/1130) | fix(solana): lossless balance parsing, error/metric distinction, open-intent limits, read-only marker check |
-| [#1129](https://github.com/AllureCurtain/oxsum/issues/1129) | fix(solana): startup validates SPL mint decimals; commitment defaults to finalized |
-| [#1128](https://github.com/AllureCurtain/oxsum/issues/1128) | fix(solana): expiry by on-chain blockTime; paginate find_reference; no RPC under row lock |
-| [#1127](https://github.com/AllureCurtain/oxsum/issues/1127) | fix(solana): verify deposits against the intent's locked meta terms |
+| [#1147](https://github.com/AllureCurtain/oxsum/issues/1147) | feat(solana): wallet-adapter pay button on the Topup page |
 | [#1117](https://github.com/AllureCurtain/oxsum/issues/1117) | direction: crypto top-up rail first, full on-chain vault later (Solana) |
 | [#1048](https://github.com/AllureCurtain/oxsum/issues/1048) | Self-hosted Hyperswitch on the 82.* server — feasibility and deployment |
 | [#746](https://github.com/AllureCurtain/oxsum/issues/746) | ci: Publication and deployment, if selected (N20) |
