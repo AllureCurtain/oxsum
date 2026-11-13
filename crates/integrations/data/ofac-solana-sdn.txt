@@ -1,0 +1,17 @@
+# OFAC SDN — Solana (SOL) currency addresses.
+#
+# The local half of the Solana rail's pre-credit sanctions screen (issue
+# #1144): any payer address listed here flags the deposit before credit.
+# One base58 address per line; `#` comments and blank lines are ignored.
+# Solana addresses are case-sensitive — entries match exactly, never
+# case-folded.
+#
+# Provenance: the U.S. Treasury OFAC Specially Designated Nationals list's
+# "Digital Currency Address - SOL" entries, as published in OFAC's sanctions
+# list data (https://sanctionslist.ofac.treas.gov/). The file ships minimal —
+# it is a floor, not the universe. A deployment refreshes it out-of-band via
+# OXSUM_SOLANA_SDN_LIST_PATH (point it at a regenerated copy of this format)
+# and adds API coverage via OXSUM_SOLANA_SANCTIONS_API_KEY; the file is
+# parsed at boot and a listed entry is `Flagged` without any network call.
+#
+# Addresses (append below; keep the format):

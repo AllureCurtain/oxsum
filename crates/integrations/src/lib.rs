@@ -18,6 +18,8 @@
 //!   (issue #1143).
 //! - [`pyth`]: the Pyth Hermes price-oracle client a native-SOL deposit intent
 //!   prices against at open (issue #1139).
+//! - [`sanctions`]: the pre-credit payer screen the Solana rail runs — the
+//!   local OFAC SDN list plus the Chainalysis free API (issue #1144).
 //! - [`x402_facilitator`]: the facilitator-delegated `RailVerifier` (issue #282).
 //! - [`openai_costs`]: the OpenAI Costs admin-API bill provider (issue #283).
 //! - [`anthropic_costs`]: the Anthropic Usage & Cost admin-API bill provider (issue #367).
@@ -39,6 +41,7 @@ pub mod oidc;
 pub mod openai_costs;
 pub mod provider_http;
 pub mod pyth;
+pub mod sanctions;
 pub mod solana;
 pub mod squads;
 pub mod stripe;
