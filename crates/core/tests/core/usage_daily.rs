@@ -626,3 +626,214 @@ async fn an_altered_day_leaf_is_reconciliation_drift() {
         class.samples
     );
 }
+
+/// A usage row built like `turn`'s but left unwritten — the seal tests need a
+/// settled entry id without the leaf write `record_usage` performs.
+fn unwritten_row(
+    f: &Fixture,
+    request: &str,
+    entry_id: Uuid,
+    charged: i64,
+    end_user: &str,
+) -> UsageRow {
+    let mut row = UsageRow {
+        request_id: format!("{request}-{}", Uuid::new_v4().simple()),
+        tenant_id: f.org.tenant_id.clone(),
+        key_id: None,
+        mandate_id: None,
+        model: "m-anchor".to_owned(),
+        channel: "chan".to_owned(),
+        price_version: 1,
+        kind: SettlementKind::Usage,
+        entry_id,
+        status: "settled".to_owned(),
+        failure_reason: None,
+        usage: UsageRecord {
+            input_tokens: 100,
+            output_tokens: 50,
+            ..Default::default()
+        },
+        counts: oxsum_core::CountsProvenance::Provider {
+            input: 100,
+            output: 50,
+        },
+        charged_minor: charged,
+        freeze_minor: charged,
+        upstream_cost_minor: None,
+        cost_basis: oxsum_core::CostBasis::Missing,
+        upstream_attempts: 1,
+    };
+    row.usage.end_user = Some(end_user.to_owned());
+    row
+}
+
+/// The writer-side seal (issue #1088): a leaf rewrite that lands after the
+/// anchor committed is refused with `DaySealed` instead of rewriting the leaf
+/// the day's `map_root` fixed — the half the entry-point `DaySealed` checks
+/// cannot reach, a settle that booked before the anchor existed.
+#[tokio::test]
+async fn a_leaf_rewrite_cannot_follow_the_anchor() {
+    let url = db_or_skip!();
+    let f = fixture(&url, "leafseal").await;
+    f.wallet
+        .top_up(&fresh("seed"), 20 * ONE, ANCHOR_DAY)
+        .await
+        .expect("the wallet funds");
+    customer_turn(&f, "l1", "leaf-customer", 2 * ONE, ANCHOR_DAY).await;
+    f.db.anchor_usage_days(ANCHOR_DAY)
+        .await
+        .expect("the pass anchors");
+
+    // A leaf write against the committed settle's entry: the usage row's own
+    // request id is fresh so the write is no replay — only the day it rolls
+    // into is sealed, which is what the re-check under the locks refuses.
+    let entry_id: Uuid = sqlx::query_scalar(
+        "SELECT entry_id FROM oxsum.usage_records WHERE tenant_id = $1 AND end_user = $2 LIMIT 1",
+    )
+    .bind(&f.org.tenant_id)
+    .bind("leaf-customer")
+    .fetch_one(f.db.pool())
+    .await
+    .expect("the settle's entry");
+    let row = unwritten_row(&f, "sealed-leaf", entry_id, ONE, "leaf-customer");
+    let err =
+        f.db.record_usage(&row)
+            .await
+            .expect_err("the sealed day's leaf rewrite is refused");
+    assert!(matches!(err, oxsum_core::WalletError::DaySealed), "{err:?}");
+}
+
+/// The anchor waits out an in-flight leaf write and still commits a root that
+/// covers it (issue #1088): the per-(tenant, day) lock the writer holds makes
+/// the pass's read the day's final state, so a settle the pass raced lands in
+/// the map rather than past it.
+#[tokio::test]
+async fn the_anchor_waits_for_an_in_flight_leaf_write() {
+    let url = db_or_skip!();
+    let f = fixture(&url, "anchorrace").await;
+    f.wallet
+        .top_up(&fresh("seed"), 20 * ONE, ANCHOR_DAY)
+        .await
+        .expect("the wallet funds");
+    customer_turn(&f, "r1", "race-customer", 2 * ONE, ANCHOR_DAY).await;
+
+    // A second leaf write holds the day's locks without committing them: its
+    // leaf is invisible to the pass's read, so the committed map must still
+    // name the customer once the write finishes — by waiting the writer out.
+    // The lock here stands in for that write's critical section: the point is
+    // the ordering the shared locks enforce, not the write's internals.
+    let mut holder = f.db.pool().begin().await.expect("the lock holder");
+    sqlx::query(
+        "SELECT pg_advisory_xact_lock(hashtextextended('oxsum/usage-anchor/v1' || $1 || ':' || $2, 0))",
+    )
+    .bind(&f.org.tenant_id)
+    .bind(ANCHOR_DAY.to_string())
+    .execute(&mut *holder)
+    .await
+    .expect("the day lock lands");
+
+    let db = f.db.clone();
+    let anchor = tokio::spawn(async move { db.anchor_usage_days(ANCHOR_DAY).await });
+    // The pass cannot commit while the holder keeps the locks; give it a beat
+    // to reach the lock wait, then release — the commit that follows must
+    // still have read the leaves the race could have hidden.
+    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+    assert!(!anchor.is_finished(), "the pass waits on the held locks");
+    holder.rollback().await.expect("the locks release");
+
+    let report = anchor
+        .await
+        .expect("the task joins")
+        .expect("the pass anchors");
+    assert_eq!(report.anchors, 1, "the raced pass still commits");
+    let count: i64 = sqlx::query_scalar(
+        "SELECT enduser_count FROM oxsum.usage_anchors \
+         WHERE organization_id = $1 AND day = $2",
+    )
+    .bind(f.org.id)
+    .bind(ANCHOR_DAY)
+    .fetch_one(f.db.pool())
+    .await
+    .expect("the anchor row");
+    assert_eq!(count, 1, "the map covers the day's customer");
+}
+
+/// A failed organization's anchor no longer aborts the pass (issue #1088):
+/// one bad row is logged and counted, the rest still commit, and the next run
+/// retries the organization that failed.
+#[tokio::test]
+async fn one_failed_organization_does_not_abort_the_pass() {
+    let url = db_or_skip!();
+    let f = fixture(&url, "anchorfail").await;
+    f.wallet
+        .top_up(&fresh("seed"), 20 * ONE, ANCHOR_DAY)
+        .await
+        .expect("the wallet funds");
+    customer_turn(&f, "f1", "fail-customer", 2 * ONE, ANCHOR_DAY).await;
+    // A second organization is the failure: an uppercase tenant id fails the
+    // wallet's `validate_tenant_id`, so `tenants.get` refuses it and the
+    // anchor attempt errors — which the pass must capture rather than abort
+    // on. The leaf row is inserted directly (no usage row behind it), the
+    // drift a bypassed writer leaves for the reconciler.
+    let broken =
+        f.db.register(NewUser {
+            email: format!("{}@example.com", fresh("broken")),
+            password: PASSWORD.to_owned(),
+            organization_name: None,
+        })
+        .await
+        .expect("the second organization registers");
+    sqlx::query("UPDATE oxsum.organizations SET tenant_id = 'BAD' WHERE organization_id = $1")
+        .bind(broken.organization.id)
+        .execute(f.db.pool())
+        .await
+        .expect("the tenant id is invalidated");
+    sqlx::query("INSERT INTO oxsum.usage_day_log \
+         (tenant_id, end_user, day, entry_count, rows_root, leaf_hash) \
+         VALUES ('BAD', 'ghost', $1, 1, decode(repeat('11', 32), 'hex'), decode(repeat('22', 32), 'hex'))")
+        .bind(ANCHOR_DAY)
+        .execute(f.db.pool())
+        .await
+        .expect("a day leaf stands for it");
+
+    let report =
+        f.db.anchor_usage_days(ANCHOR_DAY)
+            .await
+            .expect("the pass completes");
+    assert_eq!(report.failed, 1, "the broken organization is counted");
+    assert_eq!(report.anchors, 1, "the healthy organization still anchors");
+}
+
+/// The pass's deferred count still names an organization with an open
+/// operation (issue #603): a day-close that cannot be final waits rather than
+/// seal a map the settle path may still change.
+#[tokio::test]
+async fn an_open_operation_defers_the_anchor() {
+    let url = db_or_skip!();
+    let f = fixture(&url, "anchordefer").await;
+    f.wallet
+        .top_up(&fresh("seed"), 20 * ONE, ANCHOR_DAY)
+        .await
+        .expect("the wallet funds");
+    customer_turn(&f, "d1", "defer-customer", 2 * ONE, ANCHOR_DAY).await;
+    sqlx::query(
+        "INSERT INTO oxsum.request_operations \
+             (operation_id, organization_id, surface, fingerprint, state, \
+              bound_minor, model, created_at) \
+         VALUES ($1, $2, 'gateway', $3, 'running', 0, 'm-a', $4)",
+    )
+    .bind(Uuid::new_v4())
+    .bind(f.org.id)
+    .bind(fresh("op"))
+    .bind(ANCHOR_DAY.midnight().assume_utc())
+    .execute(f.db.pool())
+    .await
+    .expect("the open operation stands");
+
+    let report =
+        f.db.anchor_usage_days(ANCHOR_DAY)
+            .await
+            .expect("the pass completes");
+    assert_eq!(report.deferred, 1, "the open operation defers the org");
+    assert_eq!(report.anchors, 0);
+}
