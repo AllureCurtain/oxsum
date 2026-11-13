@@ -530,6 +530,55 @@ pub trait ChainLookup: std::fmt::Debug + Send + Sync {
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Option<String>> + Send + 'a>> {
         Box::pin(async { None })
     }
+
+    /// The reconciliation scan's on-chain half (issue #1149): walk the
+    /// deposit address's `getSignaturesForAddress` history — newest first,
+    /// paginated, bounded at `max_signatures` — and keep only the transactions
+    /// that actually *paid* the address: a positive balance delta in any
+    /// whitelisted asset (native lamports or a configured SPL mint), a
+    /// successful transaction, never judged against a `reference` marker
+    /// (the scan exists precisely to find the payments that carried none).
+    /// `getTransaction` is fetched once per candidate — the bound on
+    /// `max_signatures` is what keeps the walk polite on a busy vault.
+    /// A lookup that cannot answer returns an empty Vec: an unreachable
+    /// endpoint reads as "nothing found", exactly like `find_reference`'s
+    /// contract — the scan is a report, never a credit path, so a blind
+    /// answer is a quiet miss, not a wrong write. The default is the same
+    /// empty answer a `ChainLookup` without a scan impl gives.
+    fn scan_received<'a>(
+        &'a self,
+        _max_signatures: usize,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Vec<ScannedTransfer>> + Send + 'a>>
+    {
+        Box::pin(async { Vec::new() })
+    }
+}
+
+/// One on-chain transfer the reconciliation scan surfaced (issue #1149): a
+/// transaction in `payTo`'s signature history that delivered value to the
+/// deposit address — the row the operator diffs against the recorded
+/// deposits. `asset` names the whitelist key the delta counted in (`None`
+/// means the delta was native SOL — the `sol` arm of the whitelist always
+/// has no mint), `delivered` its base units.
+#[derive(Debug, Clone)]
+pub struct ScannedTransfer {
+    /// The transaction's signature.
+    pub signature: String,
+    /// The transaction's on-chain `blockTime` (seconds since the Unix epoch)
+    /// — when the chain itself recorded the transfer.
+    pub block_time: Option<i64>,
+    /// The whitelist asset key the delivered delta counts in — `sol` for a
+    /// lamport delta, an SPL key like `usdc` for a token one. `None` when the
+    /// delta could not be attributed to a configured asset (a shape the scan
+    /// still reports — the operator investigates it by hand).
+    pub asset: Option<String>,
+    /// What the transaction delivered to the deposit address, in `asset`'s
+    /// base units.
+    pub delivered: i64,
+    /// The payer's address when the transaction's shape yields one — the same
+    /// attribution `ValidatedTransfer.payer` makes (the debited signer or
+    /// token-account owner), `None` when it does not.
+    pub payer: Option<String>,
 }
 
 /// The demand a `pending` intent places on the chain-side transfer, mirroring
@@ -711,9 +760,19 @@ pub struct SolanaExceptionDeposit {
     pub expected: Option<i64>,
     /// The SPL mint the intent priced in, or `None` for native SOL.
     pub spl_token: Option<String>,
+    /// The rate the intent locked (`meta.rateMicro`): minor-credits per whole
+    /// `asset`. `None` on a row opened before the field was recorded — the
+    /// pre-whitelist legacy shape.
+    pub rate_micro: Option<i64>,
     /// The paying transaction's signature — the spent anchor
     /// `deposits_solana_tx_hash` guards.
     pub signature: Option<String>,
+    /// The payer address the rail attributed — `meta.payerAddress` on the
+    /// credit/exception rows that recorded it (today: none — the verify
+    /// context's `payerAddress` is logged but not merged), falling back to
+    /// `meta.screening.address` on a `flagged` row. `None` when no path
+    /// recorded one; the CSV column documents its provenance.
+    pub payer: Option<String>,
     /// The ledger entry that credited the wallet, when the deposit credited
     /// (the `overpaid` case: the credit stands, the surplus is what a refund
     /// returns).
@@ -752,10 +811,15 @@ fn exception_from_row(row: &sqlx::postgres::PgRow) -> Result<SolanaExceptionDepo
             .as_i64()
             .or_else(|| meta["solLamports"].as_i64()),
         spl_token: meta["splToken"].as_str().map(str::to_owned),
+        rate_micro: meta["rateMicro"].as_i64(),
         signature: meta["signature"]
             .as_str()
             .map(str::to_owned)
             .or_else(|| row.try_get("facilitator_tx_hash").ok().flatten()),
+        payer: meta["payerAddress"]
+            .as_str()
+            .or_else(|| meta["screening"]["address"].as_str())
+            .map(str::to_owned),
         entry_id: row.try_get("entry_id")?,
         refund_address: meta["refundAddress"].as_str().map(str::to_owned),
         refund: meta.get("refund").cloned(),
@@ -825,6 +889,16 @@ impl SolanaRailVerifier {
     #[must_use]
     pub fn terms(&self) -> &SolanaTerms {
         &self.terms
+    }
+
+    /// The reconciliation scan (issue #1149): the on-chain half delegated to
+    /// the rail's `ChainLookup` — `payTo`'s inbound transfers over the last
+    /// `max_signatures` of its signature history, each already filtered to a
+    /// real delivery into the vault in a whitelisted asset. The caller diffs
+    /// the answer against the recorded deposits; the scan itself never
+    /// writes — it reports.
+    pub async fn scan_received(&self, max_signatures: usize) -> Vec<ScannedTransfer> {
+        self.chain.scan_received(max_signatures).await
     }
 
     /// A whitelisted mint's on-chain decimals via the chain lookup — `None`
@@ -2024,6 +2098,58 @@ impl Db {
         .fetch_all(self.pool())
         .await?;
         rows.iter().map(exception_from_row).collect()
+    }
+
+    /// The reconciliation export's row set (issue #1149): every solana
+    /// deposit whose `created_at` falls inside `[from, to)` — all statuses,
+    /// not only the exception ones, because a line-by-line vault
+    /// reconciliation wants the credited rows too. Ordered oldest first so
+    /// the CSV reads chronologically; bounded at `limit` — the route layers
+    /// the truncation marker on top.
+    pub async fn solana_deposits_window(
+        &self,
+        from: time::OffsetDateTime,
+        to: time::OffsetDateTime,
+        limit: i64,
+    ) -> Result<Vec<SolanaExceptionDeposit>, WalletError> {
+        let rows = sqlx::query(
+            "SELECT d.deposit_id, d.organization_id, o.name AS organization, \
+                    d.status, d.payment_ref, d.amount_minor, d.received_minor, \
+                    d.entry_id, d.facilitator_tx_hash, d.meta, \
+                    d.created_at, d.updated_at \
+             FROM oxsum.deposits d \
+             JOIN oxsum.organizations o ON o.organization_id = d.organization_id \
+             WHERE d.rail = $1 AND d.created_at >= $2 AND d.created_at < $3 \
+             ORDER BY d.created_at, d.deposit_id \
+             LIMIT $4",
+        )
+        .bind(RAIL_SOLANA)
+        .bind(from)
+        .bind(to)
+        .bind(limit)
+        .fetch_all(self.pool())
+        .await?;
+        rows.iter().map(exception_from_row).collect()
+    }
+
+    /// Which of `signatures` already name a recorded solana deposit — the
+    /// scan's match set (issue #1149): an on-chain signature that paid
+    /// `payTo` but appears nowhere in `facilitator_tx_hash` is money that
+    /// arrived with no intent. The comparison is exact-string over the whole
+    /// rail — the `deposits_solana_tx_hash` index makes it cheap.
+    pub async fn solana_recorded_signatures(
+        &self,
+        signatures: &[String],
+    ) -> Result<std::collections::HashSet<String>, WalletError> {
+        let rows: Vec<String> = sqlx::query_scalar(
+            "SELECT facilitator_tx_hash FROM oxsum.deposits \
+             WHERE rail = $1 AND facilitator_tx_hash = ANY($2)",
+        )
+        .bind(RAIL_SOLANA)
+        .bind(signatures)
+        .fetch_all(self.pool())
+        .await?;
+        Ok(rows.into_iter().collect())
     }
 
     /// One solana deposit as its own organization sees it — the customer side
