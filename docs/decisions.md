@@ -4802,3 +4802,62 @@ never an oracle quote.
 - **Serving needs nothing.** The open, confirm and poll paths key off the
   whitelist entry's locked `meta` like any other asset; the flag is a
   config-time gate only.
+
+## 2026-11-14 — The vault reconciles by CSV export plus a read-only unrecorded-transfer scan (#1149)
+
+The rail's operator story had a gap between "the queue shows the exceptions"
+and "does the vault's statement match the books": nothing exported the
+deposits for a line-by-line reconciliation, and nothing surfaced a payment
+that arrived in `payTo` carrying no `reference` — money with no intent, the
+row an operator must investigate by hand. Issue #1149 adds the two read-only
+halves of that answer on `/api/v1/admin/solana/reconciliation/`.
+
+**The CSV column freeze.** `GET …/reconciliation/deposits.csv?from=&to=`
+exports every solana deposit created inside a `[from, to]` UTC-day window
+(both bounds or neither — the default is the last complete UTC day, the file
+a daily cron asks for), oldest first. The column set is frozen in
+`openapi.yaml` so a spreadsheet header keeps its meaning across releases:
+`depositId`, `organizationId`, `paymentRef` (the intent's `reference`
+marker), `signature` (`facilitator_tx_hash`), `payer`, `asset`,
+`amountMinor`, `delivered`, `expected`, `rateMicro`, `receivedMinor`,
+`status`, `createdAt`, `refundSignature`, `refundStatus`. The provenance
+that needed a ruling: `delivered`/`expected`/`rateMicro` come out of the
+intent's locked `meta` (the figures the verify judged against, not the live
+config), `payer` reads `meta.payerAddress` — which no write path merges
+today — falling back to `meta.screening.address` on a `flagged` row, so the
+column is honest about being empty rather than inventing an attribution,
+and `refundStatus` derives the pull-payment lifecycle (`requested`/
+`approved`/`completed`) from `status` + `meta.refund` rather than the
+PSP-rail `meta.refundStatus` key solana never writes. Every status exports —
+`credited` rows included — because a vault statement has them.
+
+**Truncation refuses, it does not mark.** The export is capped at 50_000
+rows; a window over the cap answers `400`, never a partial file. A truncated
+CSV reconciles as "some deposits never existed" — the worst lie an export
+can tell — so the bills-export precedent applies: refuse with guidance, let
+the operator narrow the window. A `truncated` marker row was the
+alternative and was rejected for exactly that reason: a machine reading the
+file treats every line as fact, and a sentinel line is easy to skip.
+
+**The scan is a synchronous bounded walk, never a job, and read-only by
+construction.** `POST …/reconciliation/scan {"limit"}` (default 200, max
+1_000) walks `payTo`'s `getSignaturesForAddress` history newest-first
+through the same endpoint pool every other call uses — failover and
+cooldown unchanged — fetches each candidate's `getTransaction` once, and
+keeps only transactions that *paid* the vault in a whitelisted asset: a
+positive lamport delta for `sol`, a positive token-account delta owned by
+`payTo` for an SPL mint. That filter is deliberately *not* `validate_transfer`:
+there is no `reference` to demand — the scan exists to find the payments
+that carried none — and no amount to meet; `payTo`-signed outbound
+transactions (a refund payout, a consolidation) report a negative-or-absent
+recipient delta and drop out on their own. The answer diffs the surviving
+signatures against `deposits.facilitator_tx_hash` and reports each
+unmatched `{signature, blockTime, asset, delivered, payer,
+matchedIntent: false}` — the "money arrived with no intent" list. A job
+plus a `GET` was the alternative and was rejected: the walk is bounded,
+the endpoint pool already fails over, and a POST under the admin token
+with a `solana.reconcile.scan` audit row records *who ran it* the way the
+queue's own writes are recorded — a job would have hidden the actor.
+Nothing on this path credits, marks or sends: an unmatched row is the
+manual-investigation trigger, and the refund/intent path stays a human
+decision.

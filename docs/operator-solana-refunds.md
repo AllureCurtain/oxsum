@@ -104,6 +104,45 @@ In every case the approving operator is named in `meta.refund` and the audit
 log, and the payout signature on the closed row is what the books and the
 chain reconcile against.
 
+## Reconciling against the vault (issue #1149)
+
+Two read-only surfaces answer "does the vault's statement match the books".
+
+**The daily CSV.** `GET /api/v1/admin/solana/reconciliation/deposits.csv
+?from=YYYY-MM-DD&to=YYYY-MM-DD` exports every solana deposit created inside
+the window, oldest first — all statuses, not only exceptions, because a vault
+statement carries the credited rows too. `from`/`to` are inclusive UTC days
+and come as a pair (a lone bound is `400`); omitted, the window is the last
+complete UTC day — the file a daily reconciliation cron pulls. Columns,
+frozen in `openapi.yaml`: `depositId`, `organizationId`, `paymentRef` (the
+intent's `reference` marker), `signature` (the paying transaction),
+`payer` (the attributed payer — `meta.payerAddress` when recorded, else
+`meta.screening.address` on a `flagged` row; empty when no path recorded
+one), `asset`, `amountMinor`, `delivered`/`expected` (the locked asset's
+base units), `rateMicro` (the locked rate), `receivedMinor`, `status`,
+`createdAt`, `refundSignature`, `refundStatus` (`requested`/`approved`/
+`completed`). The export is capped at 50_000 rows and *refuses* past it
+(`400`) rather than ship a truncated file a reconciler would read as
+complete — narrow the window and retry. Diff `signature`+`delivered` against
+the vault's own inbound rows: every CSV signature should appear on-chain,
+every on-chain inbound row should appear here.
+
+**The unrecorded-transfer scan.** `POST /api/v1/admin/solana/reconciliation/
+scan {"limit"}` (default 200, max 1_000) does the second half of that diff
+from the chain side: it walks `payTo`'s `getSignaturesForAddress` history —
+newest first, bounded — keeps each transaction that actually delivered value
+into the vault in a whitelisted asset (a `payTo`-signed outbound send like a
+refund payout drops out on its own), and reports each signature no
+`deposits.facilitator_tx_hash` records: `{signature, blockTime, asset,
+delivered, payer, matchedIntent: false}` — **money that arrived with no
+intent**. Read-only by construction: it never credits, never marks, never
+sends; each run audits as `solana.reconcile.scan`. An unmatched row is the
+manual-investigation trigger — confirm the transfer on the vault (a wallet
+that sent without opening an intent, a mis-`reference`d payment, a double
+send), then walk the pull-payment refund lifecycle or open an intent
+retroactively by hand. A vault with more history than `limit` answers its
+newest bound only — investigate, then run again.
+
 ## Reading a row directly
 
 When the queue's answer is not enough, the row itself is the record:

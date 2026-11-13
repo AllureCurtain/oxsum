@@ -12,6 +12,7 @@ Open GitHub issues are the queue. This file is only the index. One row per open 
 | --- | --- |
 | [#1151](https://github.com/AllureCurtain/oxsum/issues/1151) | feat(solana): USDT deposits alongside USDC |
 | [#1153](https://github.com/AllureCurtain/oxsum/issues/1153) | test(solana): concurrency and rate-limit stress on the top-up rail |
+| [#1149](https://github.com/AllureCurtain/oxsum/issues/1149) | feat(solana): admin reconciliation — daily CSV + unrecorded-on-chain scan |
 | [#1141](https://github.com/AllureCurtain/oxsum/issues/1141) | feat(solana): Solana Pay transfer-request URL + QR on the Topup page |
 | [#1144](https://github.com/AllureCurtain/oxsum/issues/1144) | feat(solana): pre-credit sanctions screening on the payer address |
 | [#1146](https://github.com/AllureCurtain/oxsum/issues/1146) | docs(solana): mainnet small-amount rehearsal runbook |
