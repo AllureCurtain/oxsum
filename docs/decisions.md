@@ -4165,8 +4165,9 @@ so it gets the same single reload and then the banner.
   stays online, and a reload then lands on the browser's error page, with no
   dashboard left to retry from. The check asks the server for the URL the
   reload would fetch, with `cache: "no-store"` and a 5-second timeout, and it
-  fails offline too. A failure the guard would refuse anyway skips the check,
-  so its prompt does not wait for the server. A failed check reloads nothing
+  fails offline too. A failure inside the guard's window, or with storage
+  that cannot be read, skips the check, so its prompt does not wait for the
+  server. A failed check reloads nothing
   and records nothing, so the guard stays armed for the next failure once the
   server answers. axum answers `HEAD` on every `GET` route, `spa.rs` included.
   A proxy that refused `HEAD` would cost only the automatic reload; the prompt

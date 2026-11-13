@@ -1091,8 +1091,9 @@ Tailwind v4 theme colors in `web/src/index.css`.
 `node --experimental-strip-types --test web/tests/chunk-reload.test.ts` runs
 the reload guard and the recovery around it against a fake window. It covers:
 
-- one automatic reload per 60-second window per tab; a failure the guard
-  refuses shows the prompt without checking the server;
+- one automatic reload per 60-second window per tab; a failure inside the
+  window, or with storage that cannot be read, shows the prompt without
+  checking the server;
 - no reload when the server does not answer the check before it, including a
   check still unanswered after 5 seconds, or when `sessionStorage` cannot be
   read or written;
