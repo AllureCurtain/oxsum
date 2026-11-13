@@ -4193,3 +4193,32 @@ so it gets the same single reload and then the banner.
 - **The Suspense fallback is unchanged.** It is the empty `PageState` inside
   the shell. DESIGN.md's `Skeleton` rule covers a data page's own loading
   state while it reads; the code-load wait is not data loading.
+
+## 2026-11-13 — The usage anchor's serialization closes the writer side (issue #1088)
+
+The daily `usage-anchors` pass already reads the day's leaves and appends its
+map entry inside one transaction, and it takes the settle path's per-customer
+`pg_advisory_xact_lock` — but a `record_usage_day` writer that blocked on it
+simply rewrote the leaf once the anchor committed, because nothing re-checked
+the seal inside the lock, and a customer with no leaf yet for the day was
+outside the lock set entirely.
+
+- **A seal re-check under the locks.** `record_usage_day` now answers
+  `DaySealed` after taking its locks, so a settle that booked before the
+  anchor existed cannot rewrite the day's leaf past the committed
+  `map_root`. The settle entry points' `DaySealed` checks stay; this one is
+  the half a raced write needs.
+- **A per-(tenant, day) lock pairs the writers.** The anchor takes
+  `oxsum/usage-anchor/v1 || tenant:day` before any customer lock and holds it
+  across the leaf read and entry; `record_usage_day` takes the same lock
+  first. A customer whose first leaf the day has not seen yet is covered the
+  same as one the day already holds, and the anchor's customer-lock set
+  narrows to the anchored day's own customers.
+- **Append-then-customer lock order on both sides.** The anchor's customer
+  locks move after its ledger append (which holds doubleentry's append lock),
+  matching the leaf writers — the pass cannot hold a customer lock while
+  waiting on the append lock a blocked writer holds.
+- **One bad organization does not abort the pass.** A per-organization error
+  is captured into `UsageAnchorReport::failed` and logged, and the next
+  organization still anchors; the failed one leaves no row, so the next pass
+  retries it.

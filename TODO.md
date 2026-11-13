@@ -10,6 +10,7 @@ Open GitHub issues are the queue. This file is only the index. One row per open 
 
 | Issue | Title |
 | --- | --- |
+| [#1088](https://github.com/AllureCurtain/oxsum/issues/1088) | Anchor usage days inside one ledger transaction against a serialization point |
 | [#1048](https://github.com/AllureCurtain/oxsum/issues/1048) | Self-hosted Hyperswitch on the 82.* server — feasibility and deployment |
 | [#984](https://github.com/AllureCurtain/oxsum/issues/984) | docs: reconcile integrated launch work and remaining acceptance |
 | [#969](https://github.com/AllureCurtain/oxsum/issues/969) | test: complete commercial browser journey evidence |
