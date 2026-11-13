@@ -84,6 +84,42 @@ else:
         runner.run(self.bins, check_only=True)
         self.assertFalse(self.log.exists())
 
+    def test_metadata_binary_path_is_used_when_deps_is_empty(self):
+        # A cache-warm archive can record the aggregate under a build-script
+        # `out/` path instead of `target/debug/deps/<name>-<hash>` — the layout
+        # that produced "expected one executable core aggregate, found 0".
+        root = self.bins
+        deps = root / "target" / "debug" / "deps"
+        deps.mkdir(parents=True)
+        for binary, modules in (("core", ("generative", "seed", "jobs")), ("server", ("jobs",))):
+            out = root / "target" / "debug" / "build" / f"oxsum-{binary}" / "ab" / "out"
+            out.mkdir(parents=True)
+            self._write_executable(out / f"{binary}-cd1234", modules)
+        (root / "target" / "nextest").mkdir(parents=True)
+        (root / "target" / "nextest" / "binaries-metadata.json").write_text(json.dumps({
+            "rust-binaries": {
+                "a": {"binary-id": "oxsum-core::core", "binary-path": "/ci/target/debug/build/oxsum-core/ab/out/core-cd1234"},
+                "b": {"binary-id": "oxsum-server::server", "binary-path": "/ci/target/debug/build/oxsum-server/ab/out/server-cd1234"},
+            }
+        }))
+        selected = runner.plan(deps)
+        # The suite resolved through the recorded build-script `out/` path, not
+        # the empty deps/ glob — one (exe, prefix) entry per suite module.
+        self.assertEqual([(exe.name, prefix) for exe, prefix, _ in selected],
+                         [("core-cd1234", "generative::"), ("core-cd1234", "seed::"),
+                          ("core-cd1234", "jobs::"), ("server-cd1234", "jobs::")])
+        self.assertTrue(all(exe.parent.name == "out" for exe, _, _ in selected))
+
+    def _write_executable(self, path, modules):
+        path.write_text(f'''#!/usr/bin/env python3
+import sys
+if "--list" in sys.argv:
+    for module in {list(modules)!r}:
+        if sys.argv[1] == module + "::":
+            print(module + "::case: test")
+''')
+        path.chmod(0o755)
+
 
 if __name__ == "__main__":
     unittest.main()
