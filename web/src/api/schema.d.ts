@@ -5409,6 +5409,113 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/topups/solana": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Open a Solana top-up intent
+         * @description The `solana` deposit rail (issue #1117): opens a `pending` deposit
+         *     intent and answers the `reference`, `payTo`, `amountLamports` and
+         *     `expiresAt` the caller's wallet needs to pay it — native SOL unless
+         *     `OXSUM_SOLANA_SPL_TOKEN_MINT` names an SPL mint. `payment_ref` anchors
+         *     on the per-intent `reference` marker account the paying transaction
+         *     must carry, so the intent is unique by construction; the amount books
+         *     at the intent's locked rate (`OXSUM_SOLANA_RATE_MICRO`, the devnet
+         *     stand-in a mainnet oracle replaces).
+         *
+         *     A deployment without `OXSUM_SOLANA_*` answers 503: the rail is
+         *     configured or it is not.
+         */
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": components["schemas"]["SolanaTopupRequest"];
+                };
+            };
+            responses: {
+                /** @description the opened intent */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            data?: components["schemas"]["SolanaTopupResponse"];
+                        };
+                    };
+                };
+                400: components["responses"]["Error"];
+                401: components["responses"]["Error"];
+                500: components["responses"]["Error"];
+                503: components["responses"]["Error"];
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/topups/solana/confirm": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Settle a Solana top-up now
+         * @description The `solana` rail's on-demand confirm: submits the intent's `reference`
+         *     and runs the findReference + validateTransfer check against the chain
+         *     immediately instead of waiting for the `solana-deposits` poll tick.
+         *     The located transaction's signature lands in `facilitator_tx_hash` and
+         *     keys the `solana:<signature>` ledger credit, so a raced poll or a
+         *     replayed confirm credits nothing twice. `403` means no honoring
+         *     transfer has landed yet — or the found one does not honor the intent
+         *     (wrong recipient, underpayment, wrong mint, missing marker); a
+         *     deployment without `OXSUM_SOLANA_*` answers 503.
+         */
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": components["schemas"]["SolanaConfirmRequest"];
+                };
+            };
+            responses: {
+                200: components["responses"]["Receipt"];
+                400: components["responses"]["Error"];
+                401: components["responses"]["Error"];
+                403: components["responses"]["Error"];
+                500: components["responses"]["Error"];
+                503: components["responses"]["Error"];
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/webhooks/stripe": {
         parameters: {
             query?: never;
@@ -21266,7 +21373,7 @@ export interface components {
              * @description the rail that carried the payment
              * @enum {string}
              */
-            rail: "manual" | "redemption" | "stripe" | "crypto-evm" | "x402" | "airwallex" | "hyperswitch";
+            rail: "manual" | "redemption" | "stripe" | "crypto-evm" | "x402" | "airwallex" | "hyperswitch" | "solana";
             /** @description the rail's reference — an idempotency key, a charge id, a code id */
             paymentRef: string;
             /**
@@ -21759,6 +21866,43 @@ export interface components {
              *     amount.
              */
             amountMinor?: number;
+        };
+        SolanaTopupRequest: {
+            /**
+             * Format: int64
+             * @description The credit amount the intent should book, in minor units. The rail
+             *     converts it to the SOL (or SPL token) amount the payment must
+             *     deliver at the intent's locked rate; the intent expires after
+             *     `expiresAt` if no matching transfer lands.
+             */
+            amountMinor: number;
+        };
+        /**
+         * @description The opened intent: everything a wallet needs to pay it. `reference` is
+         *     the per-intent marker account the paying transaction must carry as a
+         *     read-only, non-signer account key — the rail finds the transfer by it.
+         */
+        SolanaTopupResponse: {
+            /** @description the per-intent marker address the transfer must carry */
+            reference: string;
+            /** @description the deposit address the transfer must pay */
+            payTo: string;
+            /**
+             * Format: int64
+             * @description the lamports (or SPL base units) the payment must deliver
+             */
+            amountLamports: number;
+            /** @description the SPL mint a top-up must pay; null for native SOL */
+            splToken?: string | null;
+            /**
+             * Format: date-time
+             * @description when the unpaid intent lapses
+             */
+            expiresAt: string;
+        };
+        SolanaConfirmRequest: {
+            /** @description the intent's `reference` marker — the caller's copy of the intent it opened, not the chain signature; the rail locates and validates the paying transaction itself */
+            reference: string;
         };
         SettleRequest: {
             /** @description the idempotency key of the hold this settlement releases; the hold's amount is read from the ledger */

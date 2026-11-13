@@ -3395,6 +3395,7 @@ version = "0.1.0"
 dependencies = [
  "aes-gcm 0.11.1",
  "base64 0.23.1",
+ "bs58",
  "dotenvy",
  "doubleentry",
  "ed25519-dalek",

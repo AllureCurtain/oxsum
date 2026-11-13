@@ -339,6 +339,8 @@ fn customer_route_capability(method: &str, path: &str) -> oxsum_core::CustomerCa
             | "/topups/airwallex"
             | "/topups/hyperswitch"
             | "/topups/x402"
+            | "/topups/solana"
+            | "/topups/solana/confirm"
             | "/orders"
             | "/orders/{order_id}/refund-request"
             | "/redemptions",

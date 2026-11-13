@@ -195,6 +195,8 @@ mod serving;
 mod serving_catalog;
 #[path = "server/sessions.rs"]
 mod sessions;
+#[path = "server/solana_topups.rs"]
+mod solana_topups;
 #[path = "server/spa.rs"]
 mod spa;
 #[path = "server/staff_invitation_delivery.rs"]

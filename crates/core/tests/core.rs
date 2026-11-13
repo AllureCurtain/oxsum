@@ -190,6 +190,8 @@ mod sessions;
 mod settlement_capacity;
 #[path = "core/settlement_tx.rs"]
 mod settlement_tx;
+#[path = "core/solana_deposits.rs"]
+mod solana_deposits;
 #[path = "core/staff_invitations.rs"]
 mod staff_invitations;
 #[path = "core/statement_review_finance.rs"]
@@ -210,6 +212,7 @@ mod tpm_windows;
 mod upstream_sync;
 #[path = "core/usage_daily.rs"]
 mod usage_daily;
+
 #[path = "core/wallet.rs"]
 mod wallet;
 #[path = "core/webhooks.rs"]

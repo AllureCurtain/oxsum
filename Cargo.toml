@@ -28,6 +28,9 @@ dtor = "1.0"
 # Sealing channel credentials at rest: AES-256-GCM, and the base64 the stored record uses.
 aes-gcm = "0.11"
 base64 = "0.23"
+# Solana deposit rail (issue #1117): base58 for the per-intent `reference`
+# account address the paying transaction must carry.
+bs58 = "0.5"
 # Signed spend mandates (issue #262): Ed25519 over the mandate's canonical body.
 # Same crate doubleentry's witness feature already resolves; no `rand_core`, so
 # seeds stay caller-supplied and the signing path deterministic.

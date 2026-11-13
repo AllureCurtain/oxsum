@@ -1,6 +1,7 @@
 //! The `oxsum` binary: configuration, database open and the HTTP server.
 
 use std::net::SocketAddr;
+use std::sync::Arc;
 use std::time::Duration;
 
 use oxsum_core::Db;
@@ -167,6 +168,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 (Some(provider), Some(secret)) => Some((provider.clone(), secret.clone())),
                 _ => None,
             },
+            // The solana deposit-poll needs the rail's verifier; a missing
+            // `OXSUM_SOLANA_*` set schedules no `solana-deposits` runs.
+            solana: config.solana().map(|v| Arc::new(v.clone())),
         },
     );
     let listener = tokio::net::TcpListener::bind(addr).await?;

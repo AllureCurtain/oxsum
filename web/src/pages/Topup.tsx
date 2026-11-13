@@ -8,7 +8,10 @@ import {
   useDisplay,
   useHyperswitchTopup,
   useRedeemCode,
+  useSolanaConfirm,
+  useSolanaTopup,
   useStripeTopup,
+  type SolanaIntent,
 } from "../api/hooks";
 import { Button } from "../components/ui";
 import { TextInput } from "../components/ui";
@@ -311,6 +314,152 @@ function HyperswitchRail() {
   );
 }
 
+/** One copy-able row of the transfer terms the opened intent names. */
+function IntentField({ label, value }: { label: string; value: string }) {
+  const { t } = useTranslation();
+  const [copied, setCopied] = useState(false);
+  return (
+    <div className="flex flex-col gap-1">
+      <span className="text-[11px] font-medium uppercase tracking-wider text-muted">{label}</span>
+      <div className="flex items-center gap-2">
+        <code className="mono flex-1 break-all rounded border border-line bg-surface px-2 py-1.5 text-xs">
+          {value}
+        </code>
+        <button
+          type="button"
+          className="shrink-0 text-xs text-muted underline underline-offset-2"
+          onClick={() => {
+            void navigator.clipboard?.writeText(value).then(() => {
+              setCopied(true);
+              setTimeout(() => setCopied(false), 1500);
+            });
+          }}
+        >
+          {copied ? t("topup.copied") : t("topup.copy")}
+        </button>
+      </div>
+    </div>
+  );
+}
+
+/**
+ * The Solana rail (issue #1117): open an intent, the wallet pays `payTo` the
+ * `amountLamports` of SOL (or the configured SPL token) carrying `reference`
+ * as a read-only marker, then either "I've sent it" confirms on demand or the
+ * 15 s poll credits it automatically. The chain is the source of truth — the
+ * rail locates and validates the transaction itself, so the caller pastes
+ * nothing but the intent's own `reference`.
+ */
+function SolanaRail() {
+  const { t } = useTranslation();
+  const intent = useSolanaTopup();
+  const confirm = useSolanaConfirm();
+  const balance = useBalance({ refetchInterval: 4_000 });
+  const [amount, setAmount] = useState("");
+  const baselineRef = useRef<number | null>(null);
+
+  const submit = (e: FormEvent) => {
+    e.preventDefault();
+    const minor = decimalMinor(amount, 6);
+    if (minor === null) return;
+    baselineRef.current = balance.data?.availableMinor ?? null;
+    confirm.reset();
+    intent.mutate(minor);
+  };
+
+  const reset = () => {
+    intent.reset();
+    confirm.reset();
+  };
+
+  const opened: SolanaIntent | undefined = intent.data;
+  const credited =
+    opened !== undefined &&
+    baselineRef.current !== null &&
+    balance.data !== undefined &&
+    balance.data.availableMinor > baselineRef.current;
+
+  return (
+    <div className="flex flex-col gap-3">
+      <form className="flex flex-col gap-3" onSubmit={submit}>
+        <p className="text-sm text-muted">{t("topup.solanaIntro")}</p>
+        <Field label={t("topup.amountCredits")}>
+          <TextInput
+            type="number"
+            step="any"
+            value={amount}
+            onChange={(e) => setAmount(e.target.value)}
+            min="0.000001"
+            trailingSlot={<span className="text-xs text-muted-foreground">cr</span>}
+            required
+            disabled={opened !== undefined}
+          />
+        </Field>
+        {opened === undefined ? (
+          <>
+            <Consequence>{t("topup.solanaConsequence")}</Consequence>
+            <Button type="submit" isLoading={intent.isPending} loadingText={t("topup.solanaOpening")}>
+              {t("topup.solanaOpen")}
+            </Button>
+          </>
+        ) : null}
+        {intent.error instanceof ApiError ? (
+          <Banner tone="error">
+            {intent.error.status === 503 ? t("topup.noSolanaRail") : intent.error.message}
+          </Banner>
+        ) : null}
+      </form>
+
+      {opened ? (
+        <div className="flex flex-col gap-3 rounded border border-line bg-surface-raised p-3">
+          <p className="text-sm text-ink">
+            {opened.splToken
+              ? t("topup.solanaSendSpl", { amount: opened.amountLamports })
+              : t("topup.solanaSendSol", { amount: opened.amountLamports })}
+          </p>
+          <IntentField label={t("topup.solanaPayTo")} value={opened.payTo} />
+          <IntentField label={t("topup.solanaAmount")} value={String(opened.amountLamports)} />
+          <IntentField label={t("topup.solanaReference")} value={opened.reference} />
+          {opened.splToken ? (
+            <IntentField label={t("topup.solanaSplToken")} value={opened.splToken} />
+          ) : null}
+          <p className="text-xs text-muted">
+            {t("topup.solanaExpires", { at: new Date(opened.expiresAt).toLocaleTimeString() })}
+          </p>
+          <div className="flex items-center gap-3">
+            <Button
+              type="button"
+              onClick={() => confirm.mutate(opened.reference)}
+              isLoading={confirm.isPending}
+              loadingText={t("topup.solanaVerifying")}
+            >
+              {t("topup.solanaConfirm")}
+            </Button>
+            <button
+              type="button"
+              className="text-xs text-muted underline underline-offset-2"
+              onClick={reset}
+            >
+              {t("topup.startOver")}
+            </button>
+          </div>
+          {confirm.error instanceof ApiError ? (
+            <Banner tone="info">
+              {confirm.error.status === 403
+                ? t("topup.solanaNotYet")
+                : confirm.error.message}
+            </Banner>
+          ) : null}
+          {confirm.data ? <ReceiptView receipt={confirm.data} /> : null}
+          {credited && !confirm.data ? (
+            <Banner tone="success">{t("topup.solanaCredited")}</Banner>
+          ) : null}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
 function RedeemRail() {
   const { t } = useTranslation();
   const redeem = useRedeemCode();
@@ -458,6 +607,7 @@ export function Topup() {
           <TabsTrigger value="stripe">{t("topup.stripe")}</TabsTrigger>
           <TabsTrigger value="airwallex">{t("topup.airwallex")}</TabsTrigger>
           <TabsTrigger value="hyperswitch">{t("topup.hyperswitch")}</TabsTrigger>
+          <TabsTrigger value="solana">{t("topup.solana")}</TabsTrigger>
           <TabsTrigger value="redeem">{t("topup.redeemCode")}</TabsTrigger>
         </TabsList>
         <TabsContent value="stripe" className="mt-4">
@@ -473,6 +623,11 @@ export function Topup() {
         <TabsContent value="hyperswitch" className="mt-4">
           <Card title={t("topup.hyperswitchCheckout")}>
             <HyperswitchRail />
+          </Card>
+        </TabsContent>
+        <TabsContent value="solana" className="mt-4">
+          <Card title={t("topup.solanaCard")}>
+            <SolanaRail />
           </Card>
         </TabsContent>
         <TabsContent value="redeem" className="mt-4">

@@ -228,6 +228,49 @@ export function useAirwallexTopup() {
   }>("/topups/airwallex");
 }
 
+/** The Solana deposit rail's opened intent (issue #1117): the per-intent
+ * marker the paying transaction must carry, the address and amount to send.
+ * `splToken` is the configured SPL mint or `null` for native SOL. */
+export interface SolanaIntent {
+  reference: string;
+  payTo: string;
+  amountLamports: number;
+  splToken?: string | null;
+  expiresAt: string;
+}
+
+/** Opens a Solana top-up intent. Unlike the hosted rails the amount rides on
+ * `amountMinor` alone — `payment_ref` is the freshly minted `reference`, so no
+ * caller idempotency key is needed (the rail re-mints per call). */
+export function useSolanaTopup() {
+  return useMutation({
+    mutationFn: (amountMinor: number) =>
+      api<SolanaIntent>("/topups/solana", {
+        method: "POST",
+        body: { amountMinor },
+      }),
+  });
+}
+
+/** Settles an opened Solana intent now rather than waiting for the poll: the
+ * body is the intent's `reference`, never the chain signature — the rail finds
+ * and validates the paying transaction itself. 403 means no honoring transfer
+ * has landed yet; the balance still catches up on the next poll. */
+export function useSolanaConfirm() {
+  const client = useQueryClient();
+  return useMutation({
+    mutationFn: (reference: string) =>
+      api<Receipt>("/topups/solana/confirm", {
+        method: "POST",
+        body: { reference },
+      }),
+    onSuccess: () => {
+      client.invalidateQueries({ queryKey: ["balance"] });
+      client.invalidateQueries({ queryKey: ["bills"] });
+    },
+  });
+}
+
 export function useRedeemCode() {
   const client = useQueryClient();
   return useMutation({

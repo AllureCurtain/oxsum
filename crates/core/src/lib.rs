@@ -97,6 +97,7 @@ mod seed;
 mod service_credentials;
 mod serving_access;
 mod sessions;
+mod solana;
 mod staff_invitations;
 mod statement_payments;
 mod statement_pdf;
@@ -339,6 +340,9 @@ pub use serving_access::ServingAccess;
 pub use sessions::{
     CreatedSession, KeyPrincipal, KeyScope, Principal, SESSION_COOKIE, SESSION_LIFETIME, Session,
     SessionPrincipal,
+};
+pub use solana::{
+    ChainLookup, ExpectedTransfer, RAIL_SOLANA, SolanaRailVerifier, SolanaTerms, ValidatedTransfer,
 };
 pub use staff_invitations::{StaffInvitationPage, StaffInvitationSummary, StaffMailTarget};
 pub use statement_pdf::render_statement_pdf;
