@@ -4249,3 +4249,22 @@ log, because storage errors can embed tenant ids or schema names. An attempt
 that seals nothing while every visited organization failed still fails the
 run (the `last_error` carries counts only), so a wholly-broken pass retries
 on the backoff instead of reading as a successful no-op.
+
+## 2026-11-13 — The Stripe order-refund arm resolves `cs_…`→`pi_…` (#1041)
+
+`merchant_checkout::create_refund`'s Stripe arm POSTed
+`payment_intent=<provider_payment_id>` to `v1/refunds`, but a Stripe order's
+durable reference is the Checkout Session id `cs_…` — the session the charge
+resolved under, not the `pi_…` the refund API names its parent by. The call
+could never have succeeded; `docs/rails.md` already flagged it as a latent,
+unexercised defect.
+
+The same `cs_…`→`pi_…` resolution the deposit-refund arm landed in #1047 now
+serves both paths. `deposit_refund::resolve_stripe_payment_intent` is the
+shared resolver (`pub(crate)`): a `pi_…` passes through untouched, a `cs_…`
+resolves through `GET /v1/checkout/sessions/{id}` to its `payment_intent`, and
+a session that never paid answers the arm's unknown outcome rather than
+fabricating an anchor. The order-refund arm resolves the reference first and
+sends the intent it returns; a `pi_…` order reference skips the lookup. A
+server-side test proves both — the refund POST carries `pi_test_123`, not the
+session, and a direct `pi_…` issues with no session read.
