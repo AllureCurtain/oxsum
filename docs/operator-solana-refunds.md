@@ -169,6 +169,34 @@ In every case the approving actor is named in the deposit's audit trail and
 the refund's on-chain signature is recorded on the deposit row (`meta`), so
 the books and the chain reconcile.
 
+## Monitoring and alerts (issue #1145)
+
+The rail's health lands on `GET /metrics` beside the process metrics. Scrape
+it; alert on these:
+
+| Metric | Shape | Recommended alert |
+| --- | --- | --- |
+| `solana_rpc_errors_total{call,endpoint}` | Counter, per call (`find_reference`/`validate_transfer`/`mint_decimals`/`mint_owner`) and endpoint **host** — never the API-key-carrying URL | Rate over 5 min sustained > 0 on *every* configured endpoint — the rail is blind: deposits stop crediting. A single endpoint erroring is informational; `solana_rpc_failovers_total` shows traffic routing around it. |
+| `solana_rpc_failovers_total{from,to}` | Counter per endpoint hop | Sudden sustained rate — one provider is being routed around constantly; check its status page and quota. |
+| `solana_rpc_endpoint_healthy{endpoint}` | Gauge, 1 serving / 0 inside the ~30s failure cooldown | `== 0` on every configured endpoint for more than a minute — all providers are failing; the deposits poll is running dry. |
+| `solana_deposits_paid_uncredited` | Gauge — `confirmed` deposits (chain-verified, ledger credit never landed) | `> 0` for more than a few minutes — a credit write is failing after verification; page an operator, then check the `solana-deposits` job's warn lines. |
+| `solana_deposits_paid_uncredited_oldest_seconds` | Gauge — age of the oldest `confirmed` row | `> 900` (15 min) — the same alert's staleness figure; an uncredited deposit this old is a customer complaint waiting. |
+| `solana_exception_queue_depth{status}` | Gauge per deposit status (`confirmed`, `reversed`, `expired`, and the #1142 statuses — `underpaid`/`overpaid`/`late`/`flagged`/`refund_pending`/`refunded` — at zero until that issue lands) | Backlog growth on an exception status > a tolerable N — pick N per deployment volume; `flagged` `> 0` always wants eyes. |
+| `solana_screening_hits_total{result}` | Counter, `result="flagged"` — the series exists from boot; #1144's screening check increments it | `> 0` — a payer address hit a sanctions list; the deposit needs operator review, never an automatic refund. |
+| `solana_rpc_endpoint_healthy` + `solana_rpc_errors_total` together | — | All endpoints unhealthy AND rising errors = the rail cannot verify transfers at all; intents still open but nothing confirms. |
+
+Tuning notes:
+
+- The cooldown is deliberately short (~30s after 2 consecutive failures): a
+  flapping provider alternates `healthy`/`unhealthy` rather than stalling
+  calls, and the failover counter — not the error counter alone — shows the
+  pattern.
+- `solana_deposits_paid_uncredited` should almost always read 0: `confirmed`
+  is a momentary state inside one transaction, so a persistent nonzero means
+  a crash between writes, not normal operation.
+- Endpoint labels carry host only — a Helius API key in the URL can never
+  reach a metric, a log line or a `Debug` print.
+
 ## What this runbook does not cover
 
 Price-oracle lock timing and the wallet adapter that removes the manual

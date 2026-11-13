@@ -1542,6 +1542,7 @@ impl Db {
                 })
             })
             .collect()
+    }
 
     /// The rail's operator-health snapshot (issue #1145): the per-status
     /// deposit counts the `solana_exception_queue_depth{status}` gauge emits,

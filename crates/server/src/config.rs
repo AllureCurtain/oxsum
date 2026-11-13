@@ -2191,7 +2191,7 @@ fn solana_of() -> Result<Option<Arc<oxsum_core::SolanaRailVerifier>>, String> {
         rpc_auth_header,
     };
     let client = oxsum_integrations::solana::SolanaRpcClient::try_new(
-        rpc_urls,
+        rpc_urls.clone(),
         crate::jobs::http_client(),
         config,
     )
