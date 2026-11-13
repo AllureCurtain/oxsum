@@ -11,6 +11,7 @@ import {
   buildSolanaTransfer,
   intentTransferTerms,
   parsePublicKey,
+  solanaEndpointCluster,
   solanaRpcEndpoint,
 } from "../src/lib/solanaTx.ts";
 import { usableSolanaWallets } from "../src/lib/solanaWallets.ts";
@@ -108,7 +109,29 @@ test("usableSolanaWallets keeps installed/loadable, drops the rest, dedupes", ()
   assert.equal(usableSolanaWallets([]).length, 0);
 });
 
-test("solanaRpcEndpoint defaults to mainnet-beta when the env is unset", () => {
-  // `VITE_SOLANA_RPC_URL` is unset in the test run, so the default answers.
-  assert.equal(solanaRpcEndpoint(), "https://api.mainnet-beta.solana.com");
+test("solanaRpcEndpoint answers the public endpoint for a mainnet intent only", () => {
+  // `VITE_SOLANA_RPC_URL` is unset in the test run, so the defaults answer.
+  assert.deepEqual(solanaRpcEndpoint("mainnet-beta"), {
+    ok: "https://api.mainnet-beta.solana.com",
+  });
+  // Issue #1181: a non-mainnet intent without a configured endpoint refuses
+  // to send — never the old silent public-mainnet fallback, never a guessed
+  // private one. The QR carries `cluster=` and stays the payment path.
+  assert.deepEqual(solanaRpcEndpoint("devnet"), {
+    error: "unconfigured",
+    cluster: "devnet",
+  });
+  assert.deepEqual(solanaRpcEndpoint("testnet"), {
+    error: "unconfigured",
+    cluster: "testnet",
+  });
+});
+
+test("solanaEndpointCluster reads devnet/testnet/localhost shapes, else mainnet", () => {
+  assert.equal(solanaEndpointCluster("https://api.devnet.solana.com"), "devnet");
+  assert.equal(solanaEndpointCluster("http://127.0.0.1:8899"), "devnet");
+  assert.equal(solanaEndpointCluster("http://localhost:8899"), "devnet");
+  assert.equal(solanaEndpointCluster("https://api.testnet.solana.com"), "testnet");
+  assert.equal(solanaEndpointCluster("https://mainnet.helius-rpc.com/?api-key=x"), "mainnet-beta");
+  assert.equal(solanaEndpointCluster("https://api.mainnet-beta.solana.com"), "mainnet-beta");
 });
