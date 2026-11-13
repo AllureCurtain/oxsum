@@ -4342,3 +4342,16 @@ deployment shape the rail now supports: the JSON-RPC URL is the only
 cluster switch — `OXSUM_SOLANA_RPC_URL` flips devnet ↔ mainnet with no
 code change, `OXSUM_SOLANA_SPL_TOKEN_MINT` the USDC mainnet mint when a
 real deployment chooses it.
+
+## 2026-11-13 — The rail verifies against the intent's locked terms (#1127)
+
+`open_solana_deposit` already wrote `solLamports`, `rateMicro`, `payTo` and
+`splToken` into the intent's `meta`, but `verify` re-read the deployment's
+live `SolanaTerms` — a mid-flight `OXSUM_SOLANA_RATE_MICRO`, `DECIMALS` or
+`PAY_TO` change would have re-priced or re-targeted a `pending` deposit.
+`assetDecimals` is now locked in `meta` alongside the rest, and the credit
+path calls `verify_locked`, which resolves the intent's own locked terms
+(falling back to live config only for fields an older intent never recorded)
+rather than the process's current terms. The `RailVerifier::verify` seam
+keeps its signature — it verifies under live terms wherever no intent is in
+hand; the credit path is the one place the intent's own promise must win.
