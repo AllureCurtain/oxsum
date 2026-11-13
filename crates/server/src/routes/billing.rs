@@ -255,13 +255,16 @@ pub(crate) struct SolanaTopupReq {
     amount_minor: i64,
 }
 
-/// `POST /api/v1/topups/solana`: the Solana deposit rail (issue #1117). Opens
-/// a `pending` deposit intent and answers the `reference`, `payTo`,
-/// `amountLamports` and `expiresAt` a wallet needs to pay it — native SOL
-/// unless `OXSUM_SOLANA_SPL_TOKEN_MINT` names an SPL mint. `payment_ref`
-/// anchors on the per-intent `reference` marker, so the intent is unique by
-/// construction. A deployment without `OXSUM_SOLANA_*` answers 503 — the rail
-/// is configured or it is not.
+/// `POST /api/v1/topups/solana`: the Solana deposit rail (issues #1117,
+/// #1139). Opens a `pending` deposit intent and answers the `reference`,
+/// `payTo`, `amountLamports` and `expiresAt` a wallet needs to pay it —
+/// native SOL unless `OXSUM_SOLANA_SPL_TOKEN_MINT` names an SPL mint.
+/// `payment_ref` anchors on the per-intent `reference` marker, so the intent
+/// is unique by construction. A native-SOL intent is priced at open off the
+/// deployment's Pyth oracle: a stale, over-wide or missing quote refuses the
+/// open `403` rather than pinning a fallback rate; an SPL intent locks the
+/// fixed conversion without an oracle call. A deployment without
+/// `OXSUM_SOLANA_*` answers 503 — the rail is configured or it is not.
 pub(crate) async fn solana_topup(
     State(state): State<AppState>,
     Extension(principal): Extension<Principal>,
@@ -271,6 +274,10 @@ pub(crate) async fn solana_topup(
         ApiError::ServiceUnavailable("the solana deposit rail is not configured".into())
     })?;
     let deposit_id = Uuid::new_v4();
+    // Price the intent before the insert: a native-SOL open samples the
+    // oracle (or refuses when the quote is stale/wide or absent), an SPL open
+    // answers the fixed unit conversion without an oracle call (issue #1139).
+    let rate = verifier.resolve_rate().await?;
     let opened = state
         .db
         .open_solana_deposit(
@@ -278,6 +285,7 @@ pub(crate) async fn solana_topup(
             deposit_id,
             r.amount_minor,
             verifier.terms(),
+            &rate,
         )
         .await?;
     let Some((reference, lamports, expires_at)) = opened else {

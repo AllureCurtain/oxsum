@@ -1817,40 +1817,121 @@ fn solana_custody_of(
 }
 
 /// Parses the Solana deposit rail (issue #1117). The complete set:
-/// `OXSUM_SOLANA_RPC_URL` + `OXSUM_SOLANA_PAY_TO` + `OXSUM_SOLANA_RATE_MICRO`,
-/// with `OXSUM_SOLANA_SPL_TOKEN_MINT` / `OXSUM_SOLANA_COMMITMENT` /
-/// `OXSUM_SOLANA_INTENT_TTL_SECS` optional —
-/// the three requireds or none, a subset is a startup error like the Stripe
-/// trio. Unset and the rail is absent: `POST /api/v1/topups/solana` answers
-/// 503 and the `solana-deposits` job schedules nothing.
+/// `OXSUM_SOLANA_RPC_URL` + `OXSUM_SOLANA_PAY_TO`, plus a rate source — a
+/// Pyth oracle for a native-SOL intent (the default, issue #1139) or the
+/// static `OXSUM_SOLANA_RATE_MICRO` a devnet deployment pins behind
+/// `OXSUM_SOLANA_DEVNET_STATIC_RATE=1`. `OXSUM_SOLANA_SPL_TOKEN_MINT` /
+/// `OXSUM_SOLANA_COMMITMENT` / `OXSUM_SOLANA_INTENT_TTL_SECS` optional —
+/// the requireds or none, a subset is a startup error like the Stripe trio.
+/// Unset and the rail is absent: `POST /api/v1/topups/solana` answers 503 and
+/// the `solana-deposits` job schedules nothing.
 fn solana_of() -> Result<Option<Arc<oxsum_core::SolanaRailVerifier>>, String> {
     let rpc_url = var("OXSUM_SOLANA_RPC_URL");
     let pay_to = var("OXSUM_SOLANA_PAY_TO");
     let rate_micro = var("OXSUM_SOLANA_RATE_MICRO");
     let spl_token_mint = var("OXSUM_SOLANA_SPL_TOKEN_MINT");
-    let present = [&rpc_url, &pay_to, &rate_micro]
+    let devnet_static = var("OXSUM_SOLANA_DEVNET_STATIC_RATE")
+        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+        .unwrap_or(false);
+    let present = [&rpc_url, &pay_to, &rate_micro, &spl_token_mint]
         .iter()
         .filter(|v| v.is_some())
         .count();
-    if present == 0 && spl_token_mint.is_none() {
+    // Any PYTH_* knob or the devnet flag also counts as "the operator meant
+    // the rail" — a lone `OXSUM_SOLANA_PYTH_*` must not be silently ignored.
+    let pyth_touched = [
+        "OXSUM_SOLANA_PYTH_URL",
+        "OXSUM_SOLANA_PYTH_FEED_ID",
+        "OXSUM_SOLANA_PYTH_MAX_AGE_SECS",
+        "OXSUM_SOLANA_PYTH_MAX_CONF_RATIO",
+    ]
+    .iter()
+    .any(|k| var(k).is_some());
+    if present == 0 && !devnet_static && !pyth_touched {
         return Ok(None);
     }
-    if present < 3 {
+    let (Some(rpc_url), Some(pay_to)) = (rpc_url, pay_to) else {
         return Err(
-            "OXSUM_SOLANA_RPC_URL, OXSUM_SOLANA_PAY_TO and OXSUM_SOLANA_RATE_MICRO \
-             are set together, or none"
+            "OXSUM_SOLANA_RPC_URL and OXSUM_SOLANA_PAY_TO are set together, or none".into(),
+        );
+    };
+    let mint_configured = spl_token_mint
+        .as_deref()
+        .map(|m| !m.is_empty())
+        .unwrap_or(false);
+    // The rate source (issue #1139): an SPL intent always prices at the fixed
+    // static conversion — `RATE_MICRO` is required for it. A native-SOL intent
+    // is oracle-priced by default: `RATE_MICRO` is the devnet stand-in and is
+    // only read behind the explicit `OXSUM_SOLANA_DEVNET_STATIC_RATE=1` opt-in
+    // — set on a SOL deployment without the flag, it is a startup error, never
+    // a silent mainnet fallback.
+    let rate_micro: i64 = match rate_micro {
+        Some(raw) => {
+            let v: i64 = raw
+                .parse()
+                .map_err(|_| "OXSUM_SOLANA_RATE_MICRO must be an integer".to_owned())?;
+            if v <= 0 {
+                return Err("OXSUM_SOLANA_RATE_MICRO must be positive".into());
+            }
+            v
+        }
+        None => 0,
+    };
+    if mint_configured && rate_micro == 0 {
+        return Err(
+            "OXSUM_SOLANA_RATE_MICRO must be set when OXSUM_SOLANA_SPL_TOKEN_MINT is — \
+             an SPL intent prices at the fixed conversion, no oracle is consulted"
                 .into(),
         );
     }
-    let (Some(rpc_url), Some(pay_to), Some(rate_micro)) = (rpc_url, pay_to, rate_micro) else {
-        return Ok(None);
-    };
-    let rate_micro: i64 = rate_micro
-        .parse()
-        .map_err(|_| "OXSUM_SOLANA_RATE_MICRO must be an integer".to_owned())?;
-    if rate_micro <= 0 {
-        return Err("OXSUM_SOLANA_RATE_MICRO must be positive".into());
+    if !mint_configured && rate_micro != 0 && !devnet_static {
+        return Err(
+            "OXSUM_SOLANA_RATE_MICRO may only price a native-SOL intent behind \
+             OXSUM_SOLANA_DEVNET_STATIC_RATE=1 — a mainnet SOL intent is \
+             oracle-priced and this would silently pin a static rate"
+                .into(),
+        );
     }
+    if !mint_configured && devnet_static && rate_micro == 0 {
+        return Err(
+            "OXSUM_SOLANA_DEVNET_STATIC_RATE=1 pins a native-SOL intent to \
+             OXSUM_SOLANA_RATE_MICRO — set it too (a zero rate would open \
+             zero-amount intents)"
+                .into(),
+        );
+    }
+    // The pricing the verifier resolves at open: static for SPL or the devnet
+    // flag, the Pyth oracle otherwise. A SOL deployment needs no extra config
+    // to oracle-price — the Hermes endpoint and the SOL/USD feed default.
+    let (pricing, oracle) = if mint_configured || devnet_static {
+        (oxsum_core::SolanaPricing::Static, None)
+    } else {
+        let feed_id = var("OXSUM_SOLANA_PYTH_FEED_ID")
+            .filter(|s| !s.is_empty())
+            .unwrap_or_else(|| oxsum_integrations::pyth::DEFAULT_SOL_USD_FEED_ID.to_owned());
+        let max_quote_age_secs = var("OXSUM_SOLANA_PYTH_MAX_AGE_SECS")
+            .map(|v| v.parse::<i64>())
+            .transpose()
+            .map_err(|_| "OXSUM_SOLANA_PYTH_MAX_AGE_SECS must be an integer".to_owned())?
+            .unwrap_or(60);
+        let max_conf_ratio = var("OXSUM_SOLANA_PYTH_MAX_CONF_RATIO")
+            .map(|v| v.parse::<f64>())
+            .transpose()
+            .map_err(|_| "OXSUM_SOLANA_PYTH_MAX_CONF_RATIO must be a number".to_owned())?
+            .unwrap_or(0.01);
+        let pyth_url = var("OXSUM_SOLANA_PYTH_URL")
+            .filter(|s| !s.is_empty())
+            .unwrap_or_else(|| "https://hermes.pyth.network".to_owned());
+        let pyth = oxsum_integrations::pyth::PythClient::new(pyth_url, crate::jobs::http_client());
+        (
+            oxsum_core::SolanaPricing::Oracle {
+                feed_id,
+                max_quote_age_secs,
+                max_conf_ratio,
+            },
+            Some(Arc::new(pyth) as Arc<dyn oxsum_core::PriceOracle>),
+        )
+    };
     // Default finalized for mainnet-grade finality; a devnet deployment sets
     // `OXSUM_SOLANA_COMMITMENT=confirmed` explicitly for latency. The wrong
     // direction is the dangerous one — a `confirmed` default would silently
@@ -1864,10 +1945,6 @@ fn solana_of() -> Result<Option<Arc<oxsum_core::SolanaRailVerifier>>, String> {
     // The boot then verifies the declared figure against the mint's on-chain
     // decimals in `main` (SolanaRpcClient::mint_decimals) and refuses to start
     // on a mismatch. Native SOL keeps the 9 default.
-    let mint_configured = spl_token_mint
-        .as_deref()
-        .map(|m| !m.is_empty())
-        .unwrap_or(false);
     let asset_decimals = match (var("OXSUM_SOLANA_DECIMALS"), mint_configured) {
         (Some(v), _) => v
             .parse::<u32>()
@@ -1939,10 +2016,9 @@ fn solana_of() -> Result<Option<Arc<oxsum_core::SolanaRailVerifier>>, String> {
         max_amount_minor,
         opens_per_minute,
     };
-    Ok(Some(Arc::new(oxsum_core::SolanaRailVerifier::new(
-        Arc::new(client),
-        terms,
-    ))))
+    Ok(Some(Arc::new(
+        oxsum_core::SolanaRailVerifier::with_pricing(Arc::new(client), terms, pricing, oracle),
+    )))
 }
 
 /// Cross-checks `OXSUM_RAILS` (issue #619): the comma-separated deposit rails
