@@ -218,15 +218,16 @@ async fn check_config_validates_env_without_a_database() {
     assert!(err.contains("OXSUM_CUSTOMER_SELF_REGISTER"), "{err}");
     assert!(err.contains("OXSUM_SMTP_URL"), "{err}");
 
-    // The solana rail's asset whitelist (issue #1140): the required trio on,
-    // `OXSUM_SOLANA_ASSETS` + `OXSUM_SOLANA_MINT_<KEY>` parsing — a whitelist
-    // entry that is not `sol` must name its mint, a default off the
-    // whitelist names itself, and the complete whitelist passes.
+    // The solana rail's asset whitelist (issue #1140): `RPC_URL` + `PAY_TO`
+    // on, `OXSUM_SOLANA_ASSETS` + `OXSUM_SOLANA_MINT_<KEY>` parsing — a
+    // whitelist entry that is not `sol` must name its mint, a default off the
+    // whitelist names itself, and the complete whitelist passes. `RATE_MICRO`
+    // rides in the extras: a `sol` whitelist intent is oracle-priced, so the
+    // static figure is only legal behind `DEVNET_STATIC_RATE=1` (issue #1139).
     let rail = |extra: &[(&str, &str)]| {
         let mut vars = vec![
             ("OXSUM_SOLANA_RPC_URL", "http://127.0.0.1:9"),
             ("OXSUM_SOLANA_PAY_TO", "payToAddr"),
-            ("OXSUM_SOLANA_RATE_MICRO", "200000000"),
         ];
         vars.extend_from_slice(extra);
         run(&vars)
@@ -254,7 +255,8 @@ async fn check_config_validates_env_without_a_database() {
     );
     assert!(err.contains("OXSUM_SOLANA_DEFAULT_ASSET"), "{err}");
     // The complete whitelist parses — `--check-config` never opens the RPC,
-    // so the mint audit does not run here (boot-only).
+    // so the mint audit does not run here (boot-only). No `RATE_MICRO`: the
+    // `sol` entry prices off the oracle at open.
     let ok = rail(&[
         ("OXSUM_SOLANA_ASSETS", "sol,usdc"),
         ("OXSUM_SOLANA_MINT_USDC", "usdcMint"),
@@ -265,11 +267,65 @@ async fn check_config_validates_env_without_a_database() {
         "the whitelist env must pass: {}",
         String::from_utf8_lossy(&ok.stderr)
     );
+    // The oracle's env surface parses too — a `sol` whitelist priced off
+    // Pyth with its gates tuned (issue #1139).
+    let ok = rail(&[
+        ("OXSUM_SOLANA_ASSETS", "sol,usdc"),
+        ("OXSUM_SOLANA_MINT_USDC", "usdcMint"),
+        ("OXSUM_SOLANA_PYTH_URL", "http://127.0.0.1:9"),
+        ("OXSUM_SOLANA_PYTH_MAX_AGE_SECS", "30"),
+        ("OXSUM_SOLANA_PYTH_MAX_CONF_RATIO", "0.02"),
+    ]);
+    assert!(
+        ok.status.success(),
+        "the pyth env must pass: {}",
+        String::from_utf8_lossy(&ok.stderr)
+    );
+    // The rate-source gate (issue #1139): `RATE_MICRO` beside a `sol`
+    // whitelist entry without `DEVNET_STATIC_RATE=1` is a startup error —
+    // the dangerous direction is a mainnet silently pricing SOL at a hand
+    // figure. With the flag it passes (devnet); so does a whitelist whose
+    // only volatile asset is absent (a `usdc`-only whitelist needs no rate
+    // source at all).
+    let bad = rail(&[
+        ("OXSUM_SOLANA_ASSETS", "sol,usdc"),
+        ("OXSUM_SOLANA_MINT_USDC", "usdcMint"),
+        ("OXSUM_SOLANA_RATE_MICRO", "200000000"),
+    ]);
+    assert!(!bad.status.success());
+    let err = format!(
+        "{}{}",
+        String::from_utf8_lossy(&bad.stderr),
+        String::from_utf8_lossy(&bad.stdout)
+    );
+    assert!(err.contains("OXSUM_SOLANA_DEVNET_STATIC_RATE"), "{err}");
+    let ok = rail(&[
+        ("OXSUM_SOLANA_ASSETS", "sol,usdc"),
+        ("OXSUM_SOLANA_MINT_USDC", "usdcMint"),
+        ("OXSUM_SOLANA_RATE_MICRO", "200000000"),
+        ("OXSUM_SOLANA_DEVNET_STATIC_RATE", "1"),
+    ]);
+    assert!(
+        ok.status.success(),
+        "the devnet static-rate env must pass: {}",
+        String::from_utf8_lossy(&ok.stderr)
+    );
+    let ok = rail(&[
+        ("OXSUM_SOLANA_ASSETS", "usdc"),
+        ("OXSUM_SOLANA_MINT_USDC", "usdcMint"),
+    ]);
+    assert!(
+        ok.status.success(),
+        "a pegged-only whitelist needs no rate source: {}",
+        String::from_utf8_lossy(&ok.stderr)
+    );
     // The legacy single-mint form still parses: SPL_TOKEN_MINT +
-    // DECIMALS, no ASSETS at all (issue #1140 backward-compat).
+    // DECIMALS, no ASSETS at all (issue #1140 backward-compat) — and it
+    // still wants `RATE_MICRO`, the figure its one asset locks statically.
     let ok = rail(&[
         ("OXSUM_SOLANA_SPL_TOKEN_MINT", "legacyMint"),
         ("OXSUM_SOLANA_DECIMALS", "6"),
+        ("OXSUM_SOLANA_RATE_MICRO", "200000000"),
     ]);
     assert!(
         ok.status.success(),
@@ -277,7 +333,10 @@ async fn check_config_validates_env_without_a_database() {
         String::from_utf8_lossy(&ok.stderr)
     );
     // The legacy mint without its decimals names the requirement.
-    let bad = rail(&[("OXSUM_SOLANA_SPL_TOKEN_MINT", "legacyMint")]);
+    let bad = rail(&[
+        ("OXSUM_SOLANA_SPL_TOKEN_MINT", "legacyMint"),
+        ("OXSUM_SOLANA_RATE_MICRO", "200000000"),
+    ]);
     assert!(!bad.status.success());
     let err = format!(
         "{}{}",
@@ -285,6 +344,19 @@ async fn check_config_validates_env_without_a_database() {
         String::from_utf8_lossy(&bad.stdout)
     );
     assert!(err.contains("OXSUM_SOLANA_DECIMALS"), "{err}");
+    // A legacy form without `RATE_MICRO` names it — the legacy asset always
+    // locks statically.
+    let bad = rail(&[
+        ("OXSUM_SOLANA_SPL_TOKEN_MINT", "legacyMint"),
+        ("OXSUM_SOLANA_DECIMALS", "6"),
+    ]);
+    assert!(!bad.status.success());
+    let err = format!(
+        "{}{}",
+        String::from_utf8_lossy(&bad.stderr),
+        String::from_utf8_lossy(&bad.stdout)
+    );
+    assert!(err.contains("OXSUM_SOLANA_RATE_MICRO"), "{err}");
 
     // Missing DATABASE_URL names that instead of connecting to nothing.
     let missing = binary::oxsum()
