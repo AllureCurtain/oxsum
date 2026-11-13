@@ -3430,6 +3430,8 @@ version = "0.1.0"
 dependencies = [
  "axum",
  "base64 0.23.1",
+ "bs58",
+ "curve25519-dalek",
  "hmac 0.13.0",
  "jsonwebtoken",
  "lettre",

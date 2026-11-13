@@ -29,8 +29,15 @@ dtor = "1.0"
 aes-gcm = "0.11"
 base64 = "0.23"
 # Solana deposit rail (issue #1117): base58 for the per-intent `reference`
-# account address the paying transaction must carry.
+# account address the paying transaction must carry, and for decoding the
+# Squads multisig/vault addresses the rail's custody check derives (issue #1143).
 bs58 = "0.5"
+# The Edwards-curve point check a Solana PDA derivation needs: a valid PDA is a
+# SHA-256 digest that does *not* decompress to a curve point. Pulled in
+# directly (rather than through ed25519-dalek's private re-export) so the
+# Squads vault-PDA derivation is explicit about the curve check it relies on
+# (issue #1143). Version-locked to the line ed25519-dalek already resolves.
+curve25519-dalek = { version = "4", default-features = false, features = ["alloc"] }
 # Signed spend mandates (issue #262): Ed25519 over the mandate's canonical body.
 # Same crate doubleentry's witness feature already resolves; no `rand_core`, so
 # seeds stay caller-supplied and the signing path deterministic.
