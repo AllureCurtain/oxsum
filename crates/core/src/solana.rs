@@ -631,9 +631,18 @@ impl Db {
                 Ok(Some(_)) => credited += 1,
                 Ok(None) => {}
                 // A verification refusal is "not paid yet" — the row stays
-                // pending for the next pass; only storage failures propagate.
+                // pending for the next pass.
                 Err(WalletError::Forbidden(_)) => {}
-                Err(error) => return Err(error),
+                // Any other failure logs and moves to the next intent: one
+                // bad row must not stall every intent behind it for another
+                // whole pass.
+                Err(error) => {
+                    tracing::warn!(
+                        deposit_id = %deposit_id,
+                        error = %error,
+                        "the solana deposit credit failed; the row stays pending"
+                    );
+                }
             }
         }
         Ok((rows.len() as u64, credited, expired_count))
