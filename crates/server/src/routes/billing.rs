@@ -260,8 +260,8 @@ pub(crate) struct SolanaTopupReq {
 
 /// `POST /api/v1/topups/solana`: the Solana deposit rail (issues #1117,
 /// #1139, #1140). Opens a `pending` deposit intent and answers the
-/// `reference`, `payTo`, `asset`, `amountLamports` and `expiresAt` a wallet
-/// needs to pay it — the asset the body names (or the deployment default)
+/// `reference`, `payTo`, `asset`, `amountLamports`, `expiresAt` and `cluster`
+/// a wallet needs to pay it — the asset the body names (or the deployment default)
 /// off the `OXSUM_SOLANA_ASSETS` whitelist, native `sol` or a configured SPL
 /// mint. `payment_ref` anchors on the per-intent `reference` marker, so the
 /// intent is unique by construction. A `sol` intent is priced at open off the
@@ -314,6 +314,10 @@ pub(crate) async fn solana_topup(
         "reference": reference,
         "asset": asset_terms.key,
         "payTo": verifier.terms().pay_to,
+        // The network the rail pays on (issue #1181) — the `cluster` a Solana
+        // Pay URL carries and the wallet adapter's send path checks, because
+        // Solana addresses are identical across clusters.
+        "cluster": verifier.terms().cluster.as_str(),
         "amountLamports": lamports,
         "splToken": asset_terms.spl_token_mint,
         // The asset's decimals (9 for SOL, the mint's for an SPL token) so the

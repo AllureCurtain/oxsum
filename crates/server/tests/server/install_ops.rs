@@ -470,6 +470,80 @@ async fn check_config_validates_env_without_a_database() {
         String::from_utf8_lossy(&bad.stdout)
     );
     assert!(err.contains("OXSUM_SOLANA_RPC_URLS"), "{err}");
+    // The cluster pin (issue #1181): a declared `OXSUM_SOLANA_CLUSTER` that
+    // disagrees with the endpoints' shape is a startup error — never a
+    // warn-and-serve, because the intent's `cluster` is the page's only
+    // network hint and a wrong one sends wallets to a different network than
+    // the verifier reads. A matching declaration and an inferred one both
+    // pass; a mixed endpoint pool is refused outright.
+    let bad = run(&[
+        ("OXSUM_SOLANA_RPC_URLS", "https://api.devnet.solana.com"),
+        (
+            "OXSUM_SOLANA_PAY_TO",
+            "payToExample111111111111111111111111111",
+        ),
+        ("OXSUM_SOLANA_RATE_MICRO", "200000000"),
+        ("OXSUM_SOLANA_CLUSTER", "mainnet-beta"),
+    ]);
+    assert!(!bad.status.success());
+    let err = format!(
+        "{}{}",
+        String::from_utf8_lossy(&bad.stderr),
+        String::from_utf8_lossy(&bad.stdout)
+    );
+    assert!(err.contains("OXSUM_SOLANA_CLUSTER"), "{err}");
+    let bad = run(&[
+        (
+            "OXSUM_SOLANA_RPC_URLS",
+            "https://api.mainnet-beta.solana.com",
+        ),
+        (
+            "OXSUM_SOLANA_PAY_TO",
+            "payToExample111111111111111111111111111",
+        ),
+        ("OXSUM_SOLANA_RATE_MICRO", "200000000"),
+        ("OXSUM_SOLANA_CLUSTER", "devnet"),
+    ]);
+    assert!(!bad.status.success());
+    let err = format!(
+        "{}{}",
+        String::from_utf8_lossy(&bad.stderr),
+        String::from_utf8_lossy(&bad.stdout)
+    );
+    assert!(err.contains("OXSUM_SOLANA_CLUSTER"), "{err}");
+    let ok = run(&[
+        ("OXSUM_SOLANA_RPC_URLS", "https://api.devnet.solana.com"),
+        (
+            "OXSUM_SOLANA_PAY_TO",
+            "payToExample111111111111111111111111111",
+        ),
+        ("OXSUM_SOLANA_RATE_MICRO", "200000000"),
+        ("OXSUM_SOLANA_CLUSTER", "devnet"),
+    ]);
+    assert!(
+        ok.status.success(),
+        "a matching cluster declaration must pass: {}",
+        String::from_utf8_lossy(&ok.stderr)
+    );
+    let bad = run(&[
+        (
+            "OXSUM_SOLANA_RPC_URLS",
+            "https://api.devnet.solana.com,https://api.mainnet-beta.solana.com",
+        ),
+        (
+            "OXSUM_SOLANA_PAY_TO",
+            "payToExample111111111111111111111111111",
+        ),
+        ("OXSUM_SOLANA_RATE_MICRO", "200000000"),
+    ]);
+    assert!(!bad.status.success());
+    let err = format!(
+        "{}{}",
+        String::from_utf8_lossy(&bad.stderr),
+        String::from_utf8_lossy(&bad.stdout)
+    );
+    assert!(err.contains("OXSUM_SOLANA_RPC_URLS"), "{err}");
+
     // A colon-less auth header can never parse — refused at boot.
     let bad = run(&[
         ("OXSUM_SOLANA_RPC_URLS", "https://api.devnet.solana.com"),

@@ -2067,7 +2067,98 @@ fn solana_rpc_urls_of(plural: Option<&str>, singular: Option<&str>) -> Vec<Strin
         .unwrap_or_default()
 }
 
-/// Parses the Solana deposit rail (issues #1117, #1139, #1140, #1145, #1151).
+/// The cluster an endpoint list's *shape* implies (issue #1181): every URL
+/// that names `devnet` implies `devnet`, `testnet` implies `testnet`, and a
+/// localhost-style host (`localhost`, `127.0.0.1`, `[::1]`, or the e2e
+/// `http://*:8899` validator) implies `devnet` too — a local validator is a
+/// development network by construction. Anything else implies `mainnet-beta`:
+/// an unannotated provider (Helius `mainnet.helius-rpc.com`, Triton, a bare
+/// IP) is treated as production because assuming the safer cluster is never
+/// the failure the money needs. A *mixed* pool — one endpoint devnet-shaped
+/// and another mainnet-shaped — resolves `None`: the pool itself disagrees,
+/// and the caller turns that into a startup error rather than let one
+/// endpoint's word speak for all of them.
+fn solana_cluster_of_endpoints(rpc_urls: &[String]) -> Option<oxsum_core::SolanaCluster> {
+    let mut implied: Option<oxsum_core::SolanaCluster> = None;
+    for url in rpc_urls {
+        let lower = url.to_ascii_lowercase();
+        let endpoint = if lower.contains("devnet")
+            || lower.contains("localhost")
+            || lower.contains("127.0.0.1")
+            || lower.contains("[::1]")
+        {
+            oxsum_core::SolanaCluster::Devnet
+        } else if lower.contains("testnet") {
+            oxsum_core::SolanaCluster::Testnet
+        } else {
+            oxsum_core::SolanaCluster::MainnetBeta
+        };
+        match implied {
+            None => implied = Some(endpoint),
+            Some(known) if known == endpoint => {}
+            // A pool that mixes devnet and mainnet/testnet endpoints cannot
+            // name one cluster — the boot refuses it below rather than pin a
+            // `cluster` half the endpoints contradict.
+            Some(_) => return None,
+        }
+    }
+    implied
+}
+
+/// Resolves the cluster the rail pays on (issue #1181): `OXSUM_SOLANA_CLUSTER`
+/// when the operator declares it — `mainnet-beta`, `devnet` or `testnet` —
+/// else the shape the endpoint pool implies (`solana_cluster_of_endpoints`).
+/// A declared value that disagrees with the endpoints' shape is a startup
+/// error, never a warn-and-serve: the `cluster` the open intent answers is
+/// the page's only network hint, so a wrong declaration would send wallets
+/// to a different cluster than the verifier reads — the exact silent-mainnet
+/// failure the issue names.
+fn solana_cluster_of(
+    declared: Option<&str>,
+    rpc_urls: &[String],
+) -> Result<oxsum_core::SolanaCluster, String> {
+    let implied = solana_cluster_of_endpoints(rpc_urls);
+    let declared = declared.map(str::trim).filter(|v| !v.is_empty());
+    if implied.is_none() && !rpc_urls.is_empty() {
+        // A mixed pool has no shape to agree with — no declaration can pin
+        // a cluster half the endpoints contradict, and the failover would
+        // verify on both networks. Refused outright; a private mainnet fork
+        // on a local validator is served by listing *only* its endpoints.
+        return Err(
+            "OXSUM_SOLANA_RPC_URLS mixes devnet and mainnet/testnet endpoints — \
+             the pool cannot name one cluster; list only endpoints on the rail's \
+             own network"
+                .into(),
+        );
+    }
+    match declared {
+        Some(raw) => {
+            let declared_cluster = oxsum_core::SolanaCluster::parse(raw).ok_or_else(|| {
+                format!(
+                    "OXSUM_SOLANA_CLUSTER {raw:?} is not a Solana cluster — expected \
+                     mainnet-beta, devnet or testnet"
+                )
+            })?;
+            if let Some(implied_cluster) = implied
+                && implied_cluster != declared_cluster
+            {
+                return Err(format!(
+                    "OXSUM_SOLANA_CLUSTER={} disagrees with the RPC endpoints — \
+                     the URLs imply {}. Point OXSUM_SOLANA_RPC_URLS at the {} \
+                     network, or unset OXSUM_SOLANA_CLUSTER and let the endpoints \
+                     declare it",
+                    declared_cluster.as_str(),
+                    implied_cluster.as_str(),
+                    implied_cluster.as_str(),
+                ));
+            }
+            Ok(declared_cluster)
+        }
+        None => Ok(implied.unwrap_or(oxsum_core::SolanaCluster::MainnetBeta)),
+    }
+}
+
+/// Parses the Solana deposit rail (issues #1117, #1139, #1140, #1145, #1151, #1181).
 /// The complete set: `OXSUM_SOLANA_RPC_URLS` (or `OXSUM_SOLANA_RPC_URL`) +
 /// `OXSUM_SOLANA_PAY_TO`, plus a rate source — a Pyth oracle a `sol`
 /// whitelist intent prices at open (issue #1139) or the static
@@ -2290,6 +2381,12 @@ fn solana_of() -> Result<Option<Arc<oxsum_core::SolanaRailVerifier>>, String> {
     // marks `payTo` as a hot wallet the operator chose not to pin.
     solana_custody_of(var("OXSUM_SOLANA_MULTISIG_ACCOUNT").as_deref(), &pay_to)?;
 
+    // The cluster the rail pays on (issue #1181): `OXSUM_SOLANA_CLUSTER`
+    // explicit, else the endpoints' shape — validated consistent, so a
+    // `devnet` declaration over mainnet-shaped endpoints refuses to boot
+    // rather than answer intents wallets would send on the wrong network.
+    let cluster = solana_cluster_of(var("OXSUM_SOLANA_CLUSTER").as_deref(), &rpc_urls)?;
+
     // A provider whose credential cannot ride inside the URL (rare — Helius
     // and Triton both key auth in the URL) sets the verbatim `Name: value`
     // header applied to every endpoint's calls (issue #1145). A value with no
@@ -2342,7 +2439,8 @@ fn solana_of() -> Result<Option<Arc<oxsum_core::SolanaRailVerifier>>, String> {
         min_amount_minor,
         max_amount_minor,
         opens_per_minute,
-    );
+    )
+    .with_cluster(cluster);
     // The pricing the verifier resolves at open (issue #1139): `Static` for
     // the legacy single-asset form and for a `sol` whitelist behind
     // `DEVNET_STATIC_RATE=1`; the Pyth oracle for a `sol` whitelist entry
@@ -2896,6 +2994,140 @@ mod tests {
         let err = super::usdt_enabled_of(Some("yes".to_owned())).unwrap_err();
         assert!(err.contains("OXSUM_SOLANA_USDT_ENABLED"), "{err}");
         assert!(super::usdt_enabled_of(Some("2".to_owned())).is_err());
+    }
+
+    /// Issue #1181: the endpoint pool's *shape* implies a cluster — devnet
+    /// URLs, testnet URLs and localhost-style validators each name their own,
+    /// and an unannotated provider is mainnet because the money's danger is
+    /// the unmarked production direction, never the reverse.
+    #[test]
+    fn solana_endpoints_imply_their_cluster() {
+        use oxsum_core::SolanaCluster;
+        let urls = |raw: &[&str]| raw.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        // Devnet: the public cluster endpoint, plus a local validator's
+        // localhost/127.0.0.1/::1 spellings — a local validator is a dev
+        // network by construction.
+        assert_eq!(
+            super::solana_cluster_of_endpoints(&urls(&["https://api.devnet.solana.com"])),
+            Some(SolanaCluster::Devnet)
+        );
+        assert_eq!(
+            super::solana_cluster_of_endpoints(&urls(&["http://127.0.0.1:8899"])),
+            Some(SolanaCluster::Devnet)
+        );
+        assert_eq!(
+            super::solana_cluster_of_endpoints(&urls(&["http://localhost:8899"])),
+            Some(SolanaCluster::Devnet)
+        );
+        assert_eq!(
+            super::solana_cluster_of_endpoints(&urls(&["http://[::1]:8899"])),
+            Some(SolanaCluster::Devnet)
+        );
+        // Testnet names itself; mainnet is the else — an unannotated provider
+        // (Helius, Triton, a bare IP) is production by default.
+        assert_eq!(
+            super::solana_cluster_of_endpoints(&urls(&["https://api.testnet.solana.com"])),
+            Some(SolanaCluster::Testnet)
+        );
+        assert_eq!(
+            super::solana_cluster_of_endpoints(&urls(&[
+                "https://mainnet.helius-rpc.com/?api-key=x"
+            ])),
+            Some(SolanaCluster::MainnetBeta)
+        );
+        assert_eq!(
+            super::solana_cluster_of_endpoints(&urls(&["https://api.mainnet-beta.solana.com"])),
+            Some(SolanaCluster::MainnetBeta)
+        );
+        // A homogeneous pool resolves; a mixed one answers None — the boot
+        // refuses it rather than let one endpoint's shape speak for all.
+        assert_eq!(
+            super::solana_cluster_of_endpoints(&urls(&[
+                "https://a.example.com",
+                "https://b.example.com"
+            ])),
+            Some(SolanaCluster::MainnetBeta)
+        );
+        assert_eq!(
+            super::solana_cluster_of_endpoints(&urls(&[
+                "https://mainnet.helius-rpc.com/?api-key=x",
+                "https://api.devnet.solana.com"
+            ])),
+            None
+        );
+        assert_eq!(
+            super::solana_cluster_of_endpoints(&urls(&[
+                "https://api.devnet.solana.com",
+                "https://api.testnet.solana.com"
+            ])),
+            None
+        );
+        // An empty pool has no shape — `solana_of` never reaches here without
+        // endpoints, but the helper stays honest.
+        assert_eq!(super::solana_cluster_of_endpoints(&[]), None);
+    }
+
+    /// Issue #1181: `OXSUM_SOLANA_CLUSTER` wins when it agrees with the
+    /// endpoints, is a startup error when it disagrees — and a mixed pool
+    /// without a declaration is a startup error too, because the `cluster`
+    /// the intent answers must be the same network the rail verifies.
+    #[test]
+    fn solana_cluster_declared_must_match_the_endpoint_shape() {
+        use oxsum_core::SolanaCluster;
+        let urls = |raw: &[&str]| raw.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        let devnet = urls(&["https://api.devnet.solana.com"]);
+        let mainnet = urls(&["https://api.mainnet-beta.solana.com"]);
+        // A declaration consistent with the shape stands.
+        assert_eq!(
+            super::solana_cluster_of(Some("devnet"), &devnet),
+            Ok(SolanaCluster::Devnet)
+        );
+        assert_eq!(
+            super::solana_cluster_of(Some("mainnet-beta"), &mainnet),
+            Ok(SolanaCluster::MainnetBeta)
+        );
+        // Shorthand spellings parse — the operator writes `devnet`, never a
+        // constant only the code knows.
+        assert_eq!(
+            super::solana_cluster_of(Some("mainnet"), &mainnet),
+            Ok(SolanaCluster::MainnetBeta)
+        );
+        assert_eq!(
+            super::solana_cluster_of(Some(" devnet "), &devnet),
+            Ok(SolanaCluster::Devnet)
+        );
+        // A disagreement — either direction — is a startup error, never a
+        // warn-and-serve: the page's `cluster` is its only network hint.
+        let err = super::solana_cluster_of(Some("devnet"), &mainnet).unwrap_err();
+        assert!(err.contains("OXSUM_SOLANA_CLUSTER"), "{err}");
+        let err = super::solana_cluster_of(Some("mainnet-beta"), &devnet).unwrap_err();
+        assert!(err.contains("OXSUM_SOLANA_CLUSTER"), "{err}");
+        let err = super::solana_cluster_of(Some("testnet"), &devnet).unwrap_err();
+        assert!(err.contains("OXSUM_SOLANA_CLUSTER"), "{err}");
+        // An unparseable declaration names itself.
+        let err = super::solana_cluster_of(Some("eclipse"), &devnet).unwrap_err();
+        assert!(err.contains("OXSUM_SOLANA_CLUSTER"), "{err}");
+        // No declaration: the endpoints' own shape answers; a mixed pool
+        // refuses because it cannot name one cluster.
+        assert_eq!(
+            super::solana_cluster_of(None, &devnet),
+            Ok(SolanaCluster::Devnet)
+        );
+        assert_eq!(
+            super::solana_cluster_of(None, &mainnet),
+            Ok(SolanaCluster::MainnetBeta)
+        );
+        let mixed = urls(&[
+            "https://mainnet.helius-rpc.com/?api-key=x",
+            "https://api.devnet.solana.com",
+        ]);
+        let err = super::solana_cluster_of(None, &mixed).unwrap_err();
+        assert!(err.contains("OXSUM_SOLANA"), "{err}");
+        // A declared cluster cannot rescue a mixed pool either — the failover
+        // would still verify on both networks; only a homogeneous endpoint
+        // list stands.
+        let err = super::solana_cluster_of(Some("mainnet-beta"), &mixed).unwrap_err();
+        assert!(err.contains("OXSUM_SOLANA"), "{err}");
     }
 
     /// Issue #1151: `usdt` is "declared" by either a whitelist entry or the

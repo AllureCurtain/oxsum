@@ -280,6 +280,57 @@ impl AssetTerms {
     }
 }
 
+/// The Solana cluster the rail pays on (issue #1181). Solana addresses are
+/// identical across clusters — a devnet deposit address and a mainnet one
+/// are indistinguishable — so the intent's own `cluster` is what a wallet or
+/// page reads to know which network the payment must land on. The deployment
+/// declares it once: `OXSUM_SOLANA_CLUSTER` when set, else the config derives
+/// it from the RPC endpoints' shape and refuses the boot when an explicit
+/// value disagrees with them — a `devnet` declaration over mainnet-shaped
+/// endpoints would send the page's `cluster=devnet` while the rail's own
+/// verifier reads mainnet, which is the misdirection this field exists to
+/// prevent.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SolanaCluster {
+    /// The production cluster (`mainnet-beta`) — the default an
+    /// unannotated endpoint resolves to, matching Solana Pay's own
+    /// omission of `cluster` on mainnet URLs.
+    MainnetBeta,
+    /// The public devnet — local test-validators included (their RPC is a
+    /// localhost endpoint, which the config reads as non-mainnet-shaped).
+    Devnet,
+    /// The public testnet.
+    Testnet,
+}
+
+impl SolanaCluster {
+    /// The lowercase name the API and the Solana Pay `cluster` parameter
+    /// carry: `mainnet-beta`, `devnet`, `testnet`.
+    #[must_use]
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::MainnetBeta => "mainnet-beta",
+            Self::Devnet => "devnet",
+            Self::Testnet => "testnet",
+        }
+    }
+
+    /// Parses the `OXSUM_SOLANA_CLUSTER` spelling — `mainnet-beta`,
+    /// `devnet` or `testnet`, `mainnet`/`beta`/`main` tolerated as the
+    /// common shorthand for the production cluster. `None` on anything
+    /// else: the caller names the variable in its startup error, and this
+    /// keeps the list of accepted spellings in exactly one place.
+    #[must_use]
+    pub fn parse(raw: &str) -> Option<Self> {
+        match raw.trim().to_ascii_lowercase().as_str() {
+            "mainnet-beta" | "mainnet" | "main" | "beta" => Some(Self::MainnetBeta),
+            "devnet" | "dev" => Some(Self::Devnet),
+            "testnet" | "test" => Some(Self::Testnet),
+            _ => None,
+        }
+    }
+}
+
 /// The rail's deployment: everything `verify` needs to decide whether a
 /// transaction honors an intent, and everything `open_solana_deposit` needs
 /// to write the intent's `meta`. Mirrors `SolanaConfig` in integrations so
@@ -297,6 +348,11 @@ pub struct SolanaTerms {
     /// vault receives every asset; an SPL top-up lands in its ATA for the
     /// intent's mint.
     pub pay_to: String,
+    /// The cluster the rail pays on (issue #1181) — what the `open` intent
+    /// response answers so the wallet sends on the same network the rail's
+    /// RPC pool verifies against. `MainnetBeta` by default; the config
+    /// layer fills the validated figure, never a guessed one.
+    pub cluster: SolanaCluster,
     /// The default asset's SPL mint — `None` when the default is native SOL.
     /// Kept for intents opened before the whitelist existed; new code reads
     /// [`SolanaTerms::terms_for_asset`].
@@ -402,6 +458,7 @@ impl SolanaTerms {
             .clone();
         Self {
             pay_to,
+            cluster: SolanaCluster::MainnetBeta,
             spl_token_mint: default.spl_token_mint.clone(),
             asset_decimals: default.asset_decimals,
             rate_micro: default.rate_micro,
@@ -415,6 +472,16 @@ impl SolanaTerms {
             max_amount_minor,
             opens_per_minute,
         }
+    }
+
+    /// Sets the cluster the rail pays on (issue #1181). `SolanaTerms::new`
+    /// defaults to `MainnetBeta` — the production posture a devnet
+    /// deployment overrides explicitly, never implicitly from a hint the
+    /// config layer could not validate.
+    #[must_use]
+    pub fn with_cluster(mut self, cluster: SolanaCluster) -> Self {
+        self.cluster = cluster;
+        self
     }
 }
 
