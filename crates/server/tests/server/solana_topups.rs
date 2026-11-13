@@ -23,8 +23,8 @@ use axum::http::{Request, StatusCode};
 use http_body_util::BodyExt;
 use oxsum_core::{
     AssetTerms, ChainLookup, Db, ExpectedTransfer, OracleQuote, PriceOracle, SanctionsScreen,
-    ScreenVerdict, SolanaPricing, SolanaRailVerifier, SolanaTerms, USD_PEGGED_RATE_MICRO,
-    ValidatedTransfer,
+    ScannedTransfer, ScreenVerdict, SolanaPricing, SolanaRailVerifier, SolanaTerms,
+    USD_PEGGED_RATE_MICRO, ValidatedTransfer,
 };
 use oxsum_server::{Config, Signup};
 use serde_json::{Value, json};
@@ -116,13 +116,17 @@ fn multi_asset_terms_with_usdt() -> SolanaTerms {
 /// `getSignaturesForAddress`) and validates the expected transfer's
 /// `amount`/`recipient`/`reference` against a scripted answer. `paid` arms
 /// the lookup to find and validate; `wrong` arms it to answer a transfer
-/// that does not honor the intent.
+/// that does not honor the intent. `scanned` arms the reconciliation scan's
+/// answer (issue #1149) — the transfers `payTo`'s history reports.
 #[derive(Clone, Default)]
 struct SolanaStub {
     /// `reference` → the signatures `find_reference` answers, newest first.
     located: Arc<Mutex<std::collections::HashMap<String, Vec<String>>>>,
     /// `signature` → the `ValidatedTransfer` `validate_transfer` answers.
     validated: Arc<Mutex<std::collections::HashMap<String, ValidatedTransfer>>>,
+    /// The `ScannedTransfer`s `scan_received` answers — the scripted
+    /// `payTo` history the scan tests walk.
+    scanned: Arc<Mutex<Vec<ScannedTransfer>>>,
 }
 
 impl std::fmt::Debug for SolanaStub {
@@ -164,6 +168,22 @@ impl ChainLookup for SolanaStub {
             // would dishonor the same way on-chain.
             let _ = expected;
             Some(answer)
+        })
+    }
+
+    fn scan_received<'a>(
+        &'a self,
+        max_signatures: usize,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Vec<ScannedTransfer>> + Send + 'a>>
+    {
+        Box::pin(async move {
+            self.scanned
+                .lock()
+                .unwrap()
+                .iter()
+                .take(max_signatures)
+                .cloned()
+                .collect()
         })
     }
 }
@@ -1850,4 +1870,324 @@ async fn solana_concurrent_confirms_credit_once() {
     assert_eq!(ok, 1, "exactly one confirm answers the receipt");
     assert_eq!(refused, N - 1);
     assert_eq!(balance(&app, &key).await, 1000);
+}
+
+// ---------------------------------------------------------------------------
+// The reconciliation surface (issue #1149): the daily CSV export and the
+// read-only unrecorded-on-chain scan.
+// ---------------------------------------------------------------------------
+
+/// One HTTP call that reads a *file*, not JSON: returns the status, the
+/// response's `Content-Type`/`Content-Disposition` and the body as text.
+async fn call_csv(
+    app: &Router,
+    path: &str,
+    key: Option<&str>,
+) -> (StatusCode, String, String, String) {
+    let mut req = Request::builder().method("GET").uri(path);
+    if let Some(key) = key {
+        req = crate::support::credential(req, key);
+    }
+    let req = req.body(Body::empty()).unwrap();
+    let res = app.clone().oneshot(req).await.unwrap();
+    let status = res.status();
+    let headers = res.headers().clone();
+    let content_type = headers
+        .get("content-type")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or_default()
+        .to_owned();
+    let disposition = headers
+        .get("content-disposition")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or_default()
+        .to_owned();
+    let bytes = res.into_body().collect().await.unwrap().to_bytes();
+    (
+        status,
+        content_type,
+        disposition,
+        String::from_utf8_lossy(&bytes).into_owned(),
+    )
+}
+
+/// Opens and credits one deposit through the stubbed chain, returning
+/// `(reference, signature)` — the row the CSV export and the scan diff read.
+async fn credit_one(
+    app: &Router,
+    stub: &SolanaStub,
+    key: &str,
+    amount_minor: i64,
+    delivered: i64,
+) -> (String, String) {
+    let (status, intent) = call(
+        app,
+        "POST",
+        "/api/v1/topups/solana",
+        Some(json!({"amountMinor": amount_minor})),
+        Some(key),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{intent}");
+    let reference = intent["data"]["reference"].as_str().unwrap().to_owned();
+    let signature = format!("sig{}", &uuid::Uuid::new_v4().simple().to_string()[..24]);
+    stub.located
+        .lock()
+        .unwrap()
+        .insert(reference.clone(), vec![signature.clone()]);
+    stub.validated.lock().unwrap().insert(
+        signature.clone(),
+        ValidatedTransfer {
+            signature: signature.clone(),
+            delivered,
+            block_time: Some(0),
+            payer: None,
+        },
+    );
+    let (status, receipt) = call(
+        app,
+        "POST",
+        "/api/v1/topups/solana/confirm",
+        Some(json!({"reference": reference})),
+        Some(key),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{receipt}");
+    (reference, signature)
+}
+
+/// The CSV export (issue #1149): a credited deposit lands one row carrying
+/// every frozen column — header first, then the deposit's own figures —
+/// served as `text/csv` with a `solana-deposits-<from>-<to>.csv` filename.
+#[tokio::test]
+async fn solana_reconciliation_csv_exports_the_window() {
+    let stub = SolanaStub::default();
+    let Some((app, _db)) = world(stub.clone()).await else {
+        return;
+    };
+    let key = register_session(&app).await;
+    let (reference, signature) = credit_one(&app, &stub, &key, 1000, 5_000).await;
+    // The default window (the last complete UTC day) covers a row created
+    // today only when today *is* inside it — it is not, so ask for today
+    // explicitly.
+    let today = time::OffsetDateTime::now_utc().date().to_string();
+    let (status, content_type, disposition, body) = call_csv(
+        &app,
+        &format!("/api/v1/admin/solana/reconciliation/deposits.csv?from={today}&to={today}"),
+        Some(ADMIN_TOKEN),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert!(content_type.starts_with("text/csv"), "{content_type}");
+    assert_eq!(
+        disposition,
+        format!("attachment; filename=\"solana-deposits-{today}-{today}.csv\"")
+    );
+    let mut lines = body.lines();
+    assert_eq!(
+        lines.next().unwrap(),
+        "depositId,organizationId,paymentRef,signature,payer,asset,amountMinor,delivered,expected,rateMicro,receivedMinor,status,createdAt,refundSignature,refundStatus"
+    );
+    let row = lines.next().expect("the credited deposit exported one row");
+    let cells: Vec<&str> = row.split(',').collect();
+    assert_eq!(cells.len(), 15, "{row}");
+    assert_eq!(cells[2], reference, "{row}");
+    assert_eq!(cells[3], signature, "{row}");
+    assert_eq!(cells[5], "sol", "{row}");
+    assert_eq!(cells[6], "1000", "{row}");
+    assert_eq!(cells[7], "5000", "{row}");
+    assert_eq!(cells[8], "5000", "{row}");
+    assert_eq!(cells[9], "200000000", "{row}");
+    assert_eq!(cells[10], "1000", "{row}");
+    assert_eq!(cells[11], "credited", "{row}");
+    assert!(lines.next().is_none(), "one deposit, one row: {body}");
+}
+
+/// The export honors its window: a `from`/`to` day range covering only
+/// yesterday holds no today's deposit — the header alone answers, which is
+/// how a reconciler reads "no deposits that day", never an empty 200.
+#[tokio::test]
+async fn solana_reconciliation_csv_filters_the_window() {
+    let stub = SolanaStub::default();
+    let Some((app, _db)) = world(stub.clone()).await else {
+        return;
+    };
+    let key = register_session(&app).await;
+    let (_reference, _signature) = credit_one(&app, &stub, &key, 1000, 5_000).await;
+    let yesterday = (time::OffsetDateTime::now_utc().date() - time::Duration::days(1)).to_string();
+    let (status, _ct, _cd, body) = call_csv(
+        &app,
+        &format!(
+            "/api/v1/admin/solana/reconciliation/deposits.csv?from={yesterday}&to={yesterday}"
+        ),
+        Some(ADMIN_TOKEN),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body.lines().count(), 1, "the header alone: {body}");
+    // A malformed date is a 400, not a silently different window.
+    let (status, _, _, _) = call_csv(
+        &app,
+        "/api/v1/admin/solana/reconciliation/deposits.csv?from=not-a-day&to=2026-01-01",
+        Some(ADMIN_TOKEN),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    // A lone bound is a 400 — both or neither.
+    let (status, _, _, _) = call_csv(
+        &app,
+        "/api/v1/admin/solana/reconciliation/deposits.csv?from=2026-01-01",
+        Some(ADMIN_TOKEN),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+}
+
+/// The scan (issue #1149): `payTo`'s scripted history carries three
+/// transfers — one whose signature credits a recorded deposit (excluded),
+/// one that paid the vault with no intent (reported, `matchedIntent:
+/// false`), and the deposit's own confirm. Only the unmatched one surfaces.
+#[tokio::test]
+async fn solana_reconciliation_scan_reports_only_unmatched() {
+    let stub = SolanaStub::default();
+    let Some((app, _db)) = world(stub.clone()).await else {
+        return;
+    };
+    let key = register_session(&app).await;
+    let (_reference, recorded_sig) = credit_one(&app, &stub, &key, 1000, 5_000).await;
+    // The chain's scripted `payTo` history: the recorded signature, one
+    // orphaned payment that arrived with no intent, and a third — also
+    // unrecorded — the report carries too.
+    stub.scanned.lock().unwrap().extend([
+        ScannedTransfer {
+            signature: recorded_sig.clone(),
+            block_time: Some(1),
+            asset: Some("sol".to_owned()),
+            delivered: 5_000,
+            payer: None,
+        },
+        ScannedTransfer {
+            signature: "sigOrphaned1111111111111111111111111111111111111".to_owned(),
+            block_time: Some(2),
+            asset: Some("sol".to_owned()),
+            delivered: 7_500,
+            payer: Some("payerWallet1111111111111111111111111111".to_owned()),
+        },
+        ScannedTransfer {
+            signature: "sigOrphaned2222222222222222222222222222222222222".to_owned(),
+            block_time: Some(3),
+            asset: Some("usdc".to_owned()),
+            delivered: 1_200,
+            payer: None,
+        },
+    ]);
+    let (status, report) = call(
+        &app,
+        "POST",
+        "/api/v1/admin/solana/reconciliation/scan",
+        Some(json!({})),
+        Some(ADMIN_TOKEN),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{report}");
+    assert_eq!(report["data"]["scanned"].as_i64().unwrap(), 3);
+    let unmatched = report["data"]["unmatched"].as_array().unwrap();
+    assert_eq!(unmatched.len(), 2, "{report}");
+    let signatures: Vec<&str> = unmatched
+        .iter()
+        .map(|u| u["signature"].as_str().unwrap())
+        .collect();
+    assert!(!signatures.contains(&recorded_sig.as_str()), "{report}");
+    let orphan = unmatched
+        .iter()
+        .find(|u| {
+            u["signature"].as_str() == Some("sigOrphaned1111111111111111111111111111111111111")
+        })
+        .expect("the orphaned payment reported");
+    assert!(!orphan["matchedIntent"].as_bool().unwrap());
+    assert_eq!(orphan["delivered"].as_i64().unwrap(), 7_500);
+    assert_eq!(orphan["asset"].as_str().unwrap(), "sol");
+    assert_eq!(
+        orphan["payer"].as_str().unwrap(),
+        "payerWallet1111111111111111111111111111"
+    );
+    // Read-only by construction: nothing credited, nothing marked — the
+    // customer's balance is untouched and no new deposit row appeared.
+    assert_eq!(balance(&app, &key).await, 1000);
+}
+
+/// The scan's bound: `limit` clamps the scripted history the walk reads —
+/// under `limit: 1` only the newest scripted transfer is examined and can
+/// report; an out-of-range bound clamps rather than erroring.
+#[tokio::test]
+async fn solana_reconciliation_scan_bounds_the_walk() {
+    let stub = SolanaStub::default();
+    let Some((app, _db)) = world(stub.clone()).await else {
+        return;
+    };
+    let _key = register_session(&app).await;
+    stub.scanned.lock().unwrap().extend([
+        ScannedTransfer {
+            signature: "sigA1111111111111111111111111111111111111111111".to_owned(),
+            block_time: Some(1),
+            asset: Some("sol".to_owned()),
+            delivered: 100,
+            payer: None,
+        },
+        ScannedTransfer {
+            signature: "sigB2222222222222222222222222222222222222222222".to_owned(),
+            block_time: Some(2),
+            asset: Some("sol".to_owned()),
+            delivered: 200,
+            payer: None,
+        },
+    ]);
+    // `limit: 1` reads only the newest scripted transfer — `scanned` is the
+    // count the walk examined, and only that one can report.
+    let (status, report) = call(
+        &app,
+        "POST",
+        "/api/v1/admin/solana/reconciliation/scan",
+        Some(json!({"limit": 1})),
+        Some(ADMIN_TOKEN),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{report}");
+    assert_eq!(report["data"]["scanned"].as_i64().unwrap(), 1);
+    assert_eq!(report["data"]["unmatched"].as_array().unwrap().len(), 1);
+}
+
+/// An unconfigured rail 503s both reconciliation endpoints — the rail's own
+/// refusal, not an empty answer that reads as a clean reconciliation.
+#[tokio::test]
+async fn solana_reconciliation_unconfigured_answers_503() {
+    let Some(u) = oxsum_testkit::suite_url!() else {
+        return;
+    };
+    let pool: PgPool = sqlx::postgres::PgPoolOptions::new()
+        .max_connections(5)
+        .connect(&u)
+        .await
+        .expect("connects to PostgreSQL");
+    let db = Db::from_pool(pool);
+    db.migrate().await.expect("migrates");
+    oxsum_testkit::set_registration_fixture(db.pool(), true).await;
+    let config = Config::new(Signup::Open, None).with_admin_token(ADMIN_TOKEN);
+    let app = oxsum_server::app(db, config);
+    let (status, _, _, _) = call_csv(
+        &app,
+        "/api/v1/admin/solana/reconciliation/deposits.csv",
+        Some(ADMIN_TOKEN),
+    )
+    .await;
+    assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+    let (status, _) = call(
+        &app,
+        "POST",
+        "/api/v1/admin/solana/reconciliation/scan",
+        Some(json!({})),
+        Some(ADMIN_TOKEN),
+    )
+    .await;
+    assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
 }
