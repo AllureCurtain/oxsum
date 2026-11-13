@@ -14,6 +14,7 @@ Use this page to pick a document. Longer pages disagree with themselves in place
 | Payments | [Rails](rails.md). A local fixture is not a live-money certification |
 | Why a technical choice was made | [Decisions](decisions.md). The **Status** line on an entry wins. Superseded entries stay as history and are not current instructions |
 | Operator launch status | [Operator launch](roadmap/operator-launch/README.md). Screenshot and JSON captures are indexed in [EVIDENCE.md](roadmap/EVIDENCE.md) once that note is on the branch you have; the markdown conclusions are the part to read |
+| Run an operator procedure | `runbooks/` — rehearsal and ops runbooks, e.g. [Solana mainnet rehearsal](runbooks/solana-mainnet-rehearsal.md) |
 | Release gates | [Self-hosted release](self-hosted-release.md) |
 | Day-to-day UI | [User guide](user-guide.md) and [DESIGN.md](../DESIGN.md) |
 | Security or support | [SECURITY.md](../SECURITY.md), [SUPPORT.md](../SUPPORT.md) |
@@ -36,4 +37,5 @@ Use this page to pick a document. Longer pages disagree with themselves in place
 | `examples/` | Maintained walkthroughs (scoped management, consumption, webhooks, the Solana rail, the offline verifier) |
 | `deploy/` | Compose profiles for an image install |
 | `docs/roadmap/` | Launch and release notes. Conclusions stay in markdown. Captures are not required reading |
+| `docs/runbooks/` | Operator runbooks: rehearsals and procedures that move real money or real state |
 | `TODO.md` | Open-issue index. `docs/history/TODO-log.md` is a frozen narrative, not a place to append |
