@@ -1204,18 +1204,23 @@ struct PayoutStub {
 
 /// One scripted on-chain payout `validate_payout` answers with: the address
 /// it paid, the mint it spent (`None` = native SOL), the delivered figure,
-/// and the debited funding parties the source-check screens (issue #1175).
+/// how much the expected source's own balance fell (issue #1209 — the
+/// source check judges the vault's decrease, not a signer flag), and the
+/// debited funding parties reported for screening (issue #1175).
 #[derive(Debug, Clone)]
 struct ArmedPayout {
     recipient: String,
     mint: Option<String>,
     delivered: i64,
+    source_decrease: i64,
     payers: Vec<String>,
 }
 
 impl PayoutStub {
     /// Arms one on-chain payout: `signature` delivered `delivered` of `mint`
-    /// (`None` = native SOL) to `recipient`, funded by `payers`.
+    /// (`None` = native SOL) to `recipient`, funded by `payers`. The vault's
+    /// own balance falls by the full `delivered` — the ordinary refund the
+    /// rail is built to take.
     fn arm(
         &self,
         signature: &str,
@@ -1224,12 +1229,28 @@ impl PayoutStub {
         delivered: i64,
         payers: &[&str],
     ) {
+        self.arm_with_source(signature, recipient, mint, delivered, delivered, payers);
+    }
+
+    /// Arms one payout whose funding source lost `source_decrease` — less
+    /// than `delivered` means the payout a third party (partly) paid direct,
+    /// the refusal the source check exists for (issue #1209).
+    fn arm_with_source(
+        &self,
+        signature: &str,
+        recipient: &str,
+        mint: Option<&str>,
+        delivered: i64,
+        source_decrease: i64,
+        payers: &[&str],
+    ) {
         self.payouts.lock().unwrap().insert(
             signature.to_owned(),
             ArmedPayout {
                 recipient: recipient.to_owned(),
                 mint: mint.map(str::to_owned),
                 delivered,
+                source_decrease,
                 payers: payers.iter().map(|p| p.to_string()).collect(),
             },
         );
@@ -1267,8 +1288,15 @@ impl ChainLookup for PayoutStub {
         Box::pin(async move {
             let armed = self.payouts.lock().unwrap().get(signature).cloned()?;
             // The client's own checks: wrong recipient or wrong mint is no
-            // proof at all; the delivered figure rides up unjudged.
+            // proof at all, and neither is a payout the expected source never
+            // funded — the vault's own balance must have fallen by at least
+            // the delivered figure (issue #1209). `payers` stays reporting.
             if armed.recipient != expected.recipient || armed.mint != expected.spl_token_mint {
+                return None;
+            }
+            // The armed decrease is the expected source's own loss — the
+            // vault's lamports/ATA balance the client reads on-chain.
+            if armed.source_decrease < armed.delivered {
                 return None;
             }
             Some(ValidatedTransfer {
@@ -2744,5 +2772,205 @@ async fn solana_approve_refund_binds_to_the_screened_address() {
     assert_eq!(
         refund["addressScreening"]["verdict"].as_str().unwrap(),
         "clear"
+    );
+}
+
+/// Issue #1209: the refund-signature unique index is the last word when two
+/// completes race on *different* deposit rows — the in-lock EXISTS probe can
+/// read "unused" on both sides before either UPDATE lands, so the index must
+/// refuse the second write itself. Proven directly: a second row taking a
+/// closed payout's signature raises the 23505 the completer maps to Conflict.
+#[tokio::test]
+async fn the_refund_signature_unique_index_refuses_a_second_close() {
+    let Some(db) = database("solana_refund_sig_idx").await else {
+        return;
+    };
+    let org = organization(&db, "refund-sig-idx").await;
+    let wallet = wallet_for(&db, org).await;
+    let terms = terms();
+    let (first_id, _) = credit_with(&db, &wallet, org, &terms, None, 3_000, 0).await;
+    let (second_id, _) = credit_with(&db, &wallet, org, &terms, None, 3_000, 0).await;
+    for id in [first_id, second_id] {
+        db.solana_request_refund(id, "operator", "under-delivered")
+            .await
+            .unwrap();
+        db.solana_set_refund_address(org, id, "4uQeVj5tqViQh7yWWGStvkEG1Zmhx6uasJtWCJziofM")
+            .await
+            .unwrap();
+        db.solana_approve_refund(id, "operator", None)
+            .await
+            .unwrap();
+    }
+    let payout =
+        "299xJhoRJCHgYo6xxU78Joi8sY7uXrsp7kzXMxbVFZVLKHqVAfV1R3dA864pwEhe6z1wYWy1BXDzyvzNZDKHfdMd";
+    let stub = PayoutStub::default();
+    stub.arm(
+        payout,
+        "4uQeVj5tqViQh7yWWGStvkEG1Zmhx6uasJtWCJziofM",
+        None,
+        3_000,
+        &["oxsumDepositAddr111111111111111111111111111"],
+    );
+    let verifier = payout_verifier(stub);
+    // The first refund closes under the signature.
+    let closed = db
+        .solana_complete_refund(first_id, payout, &verifier)
+        .await
+        .unwrap();
+    assert_eq!(closed.status, solana_status::REFUNDED);
+    // The race the probe cannot cover: a second refund_pending row writing
+    // the same signature must hit the unique index — 23505, the code the
+    // completer maps to the same Conflict the probe raises.
+    let raced = sqlx::query(
+        "UPDATE oxsum.deposits \
+         SET meta = meta || jsonb_build_object('refundSignature', $2::text) \
+         WHERE deposit_id = $1",
+    )
+    .bind(second_id)
+    .bind(payout)
+    .execute(db.pool())
+    .await;
+    let error = raced.expect_err("the unique index refuses the second write");
+    match &error {
+        sqlx::Error::Database(db_error) => assert_eq!(
+            db_error.code().as_deref(),
+            Some("23505"),
+            "the index violation is the unique-violation code: {error}"
+        ),
+        other => panic!("expected a database error, got {other:?}"),
+    }
+}
+
+/// Issue #1209: two refund-pending deposits racing to close under one payout
+/// signature — whichever side of the probe/index guard the loser lands on,
+/// exactly one refund closes and the loser stays `refund_pending` on a
+/// Conflict. A barrier inside the stubbed payout check releases both verifies
+/// together so the two completes reach their UPDATEs overlapped.
+#[tokio::test]
+async fn raced_completes_on_one_signature_close_one_refund() {
+    let Some(db) = database("solana_refund_race").await else {
+        return;
+    };
+    let org = organization(&db, "refund-race").await;
+    let wallet = wallet_for(&db, org).await;
+    let terms = terms();
+    let (first_id, _) = credit_with(&db, &wallet, org, &terms, None, 3_000, 0).await;
+    let (second_id, _) = credit_with(&db, &wallet, org, &terms, None, 3_000, 0).await;
+    for id in [first_id, second_id] {
+        db.solana_request_refund(id, "operator", "under-delivered")
+            .await
+            .unwrap();
+        db.solana_set_refund_address(org, id, "4uQeVj5tqViQh7yWWGStvkEG1Zmhx6uasJtWCJziofM")
+            .await
+            .unwrap();
+        db.solana_approve_refund(id, "operator", None)
+            .await
+            .unwrap();
+    }
+    let payout =
+        "299xJhoRJCHgYo6xxU78Joi8sY7uXrsp7kzXMxbVFZVLKHqVAfV1R3dA864pwEhe6z1wYWy1BXDzyvzNZDKHfdMd";
+    /// A `PayoutStub` whose verify parks both callers on one barrier — the
+    /// two completes leave the chain check at the same instant and race
+    /// their claim window.
+    struct Barriered {
+        armed: ArmedPayout,
+        barrier: std::sync::Arc<tokio::sync::Barrier>,
+    }
+    impl std::fmt::Debug for Barriered {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            f.debug_struct("Barriered").finish_non_exhaustive()
+        }
+    }
+    impl ChainLookup for Barriered {
+        fn find_reference<'a>(
+            &'a self,
+            _reference: &'a str,
+        ) -> std::pin::Pin<
+            Box<dyn std::future::Future<Output = Result<Vec<String>, LookupError>> + Send + 'a>,
+        > {
+            Box::pin(async { Ok(Vec::new()) })
+        }
+        fn validate_transfer<'a>(
+            &'a self,
+            _signature: &'a str,
+            _expected: &'a ExpectedTransfer,
+        ) -> std::pin::Pin<
+            Box<
+                dyn std::future::Future<Output = Result<Option<ValidatedTransfer>, LookupError>>
+                    + Send
+                    + 'a,
+            >,
+        > {
+            Box::pin(async { Ok(None) })
+        }
+        fn validate_payout<'a>(
+            &'a self,
+            signature: &'a str,
+            expected: &'a oxsum_core::ExpectedPayout,
+        ) -> std::pin::Pin<
+            Box<dyn std::future::Future<Output = Option<ValidatedTransfer>> + Send + 'a>,
+        > {
+            Box::pin(async move {
+                self.barrier.wait().await;
+                let armed = self.armed.clone();
+                if armed.recipient != expected.recipient
+                    || armed.mint != expected.spl_token_mint
+                    || armed.source_decrease < armed.delivered
+                {
+                    return None;
+                }
+                Some(ValidatedTransfer {
+                    signature: signature.to_owned(),
+                    delivered: armed.delivered,
+                    block_time: Some(0),
+                    payers: armed.payers.clone(),
+                })
+            })
+        }
+    }
+    let barriered = Arc::new(Barriered {
+        armed: ArmedPayout {
+            recipient: "4uQeVj5tqViQh7yWWGStvkEG1Zmhx6uasJtWCJziofM".to_owned(),
+            mint: None,
+            delivered: 3_000,
+            source_decrease: 3_000,
+            payers: vec!["oxsumDepositAddr111111111111111111111111111".to_owned()],
+        },
+        barrier: std::sync::Arc::new(tokio::sync::Barrier::new(2)),
+    });
+    let verifier = SolanaRailVerifier::new(barriered, terms);
+    // Two completes, one signature — run them concurrently so their claim
+    // windows overlap.
+    let (first, second) = tokio::join!(
+        db.solana_complete_refund(first_id, payout, &verifier),
+        db.solana_complete_refund(second_id, payout, &verifier),
+    );
+    let outcomes = [first, second];
+    let closed = outcomes.iter().filter(|outcome| outcome.is_ok()).count();
+    let refused = outcomes
+        .iter()
+        .filter(|outcome| matches!(outcome, Err(WalletError::Conflict(_))))
+        .count();
+    assert_eq!(
+        (closed, refused),
+        (1, 1),
+        "exactly one refund closes; the loser is refused: {outcomes:?}"
+    );
+    // The loser stays refund_pending — its refund remains open for a real
+    // payout.
+    let statuses: Vec<String> = sqlx::query_scalar(
+        "SELECT status FROM oxsum.deposits WHERE deposit_id = ANY($1) ORDER BY status",
+    )
+    .bind(vec![first_id, second_id])
+    .fetch_all(db.pool())
+    .await
+    .unwrap();
+    assert_eq!(
+        statuses,
+        vec![
+            solana_status::REFUND_PENDING.to_owned(),
+            solana_status::REFUNDED.to_owned()
+        ],
+        "one refunded, one still refund_pending: {statuses:?}"
     );
 }
