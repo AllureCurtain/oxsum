@@ -1236,9 +1236,10 @@
       "refundHint": "必填 —— 将成为退款记录的原因和审计条目的明细",
       "openRefund": "开启退款",
       "refundAddress": "退款地址：",
+      "refundAmount": "冻结退款额：{{amount}} {{asset}} 基本单位 —— 链上支付须不低于此额才能关闭该单。",
       "approveRefund": "批准退款",
       "completeLabel": "支付签名",
-      "completeHint": "多签支付交易的 base58 签名 —— 退款的链上凭证",
+      "completeHint": "多签支付交易的 base58 签名 —— 关闭前会按冻结退款额做链上校验",
       "completeRefund": "记录支付"
     },
     "discounts": {

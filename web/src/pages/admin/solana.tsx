@@ -206,6 +206,14 @@ function RefundActions({
           <code className="mono">{deposit.refundAddress}</code>
         </p>
       ) : null}
+      {deposit.refundAmount != null ? (
+        <p className="text-xs text-muted">
+          {t("admin.solanaExceptions.refundAmount", {
+            amount: deposit.refundAmount,
+            asset: deposit.refund?.mint ?? deposit.asset ?? "sol",
+          })}
+        </p>
+      ) : null}
       {refundable(deposit.status) ? (
         <form
           className="flex flex-wrap items-end gap-2"

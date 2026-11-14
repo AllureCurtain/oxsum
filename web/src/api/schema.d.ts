@@ -15493,6 +15493,9 @@ export interface paths {
          *     (the locked rate — minor-credits per whole `asset`),
          *     `receivedMinor` (the delivered figure converted back at the
          *     locked rate), `status`, `createdAt` (RFC-3339),
+         *     `refundAmount` (the payout's frozen figure in the locked asset's
+         *     base units — `delivered − expected` on `overpaid`, `delivered` on
+         *     the others; empty while no refund is open),
          *     `refundSignature` (the multisig payout's signature) and
          *     `refundStatus` (`requested`/`approved`/`completed` across the
          *     pull-payment lifecycle, empty otherwise). All statuses export —
@@ -15618,9 +15621,15 @@ export interface paths {
          * Open a pull-payment refund on an exception deposit
          * @description Opens a refund on an `underpaid`/`overpaid`/`late`/`flagged` solana
          *     deposit (issue #1142): the row moves to `refund_pending` and
-         *     `meta.refund` records the operator, the time and the reason. The
-         *     flow is a pull payment — the customer supplies the refund address on
-         *     their own surface, the operator approves, the multisig pays
+         *     `meta.refund` records the operator, the time and the reason — and
+         *     freezes the payout's terms (issue #1175): `refundAmount` is
+         *     `delivered − expected` on an `overpaid` row (the surplus alone, since
+         *     the opened amount already credited) and `delivered` on the others,
+         *     in the locked `asset`/`mint`'s base units. A row that records no
+         *     refundable amount refuses `409` — the operator reconciles it by hand
+         *     rather than opening a refund the complete path could never verify.
+         *     The flow is a pull payment — the customer supplies the refund address
+         *     on their own surface, the operator approves, the multisig pays
          *     out-of-band, and `refund-complete` records the payout signature.
          *     Re-requesting an open refund replays the standing row; a `refunded`
          *     or non-refundable deposit is `409`, an unknown one `404`. Nothing
@@ -15732,12 +15741,19 @@ export interface paths {
          * @description Closes an approved refund (issue #1142): records the payout
          *     transaction's base58 signature — the refund's on-chain proof — in
          *     `meta.refundSignature` and lands the deposit `refunded`, terminal.
-         *     The payout already happened: the multisig signed it off-server in
-         *     the asset the intent locked, so this is bookkeeping and audit, never
-         *     a send, and no ledger entry posts. A replayed complete with the
-         *     standing signature answers the closed row; a contradicting signature
-         *     on a `refunded` row and a complete before approval are `409`; a
-         *     malformed signature is `400`.
+         *     The signature is verified on-chain first (issue #1175): the
+         *     transaction must exist at the rail's commitment, have succeeded, and
+         *     have delivered at least `refundAmount` of the frozen `mint`'s asset
+         *     (lamports for native SOL) to the recorded `refundAddress`. A
+         *     signature that names no such transaction — nonexistent, failed,
+         *     wrong recipient, wrong mint, or under the frozen amount — is `409`
+         *     and the row stays `refund_pending` for the operator to re-submit
+         *     once the real payout exists. The payout already happened: the
+         *     multisig signed it off-server in the asset the intent locked, so
+         *     this is bookkeeping and audit, never a send, and no ledger entry
+         *     posts. A replayed complete with the standing signature answers the
+         *     closed row; a contradicting signature on a `refunded` row and a
+         *     complete before approval are `409`; a malformed signature is `400`.
          */
         post: {
             parameters: {
@@ -15770,6 +15786,7 @@ export interface paths {
                 404: components["responses"]["Error"];
                 409: components["responses"]["Error"];
                 500: components["responses"]["Error"];
+                503: components["responses"]["Error"];
             };
         };
         delete?: never;
@@ -22645,12 +22662,23 @@ export interface components {
             refundAddress?: string | null;
             /**
              * @description The refund record `meta.refund` walks: `requestedBy`,
-             *     `requestedAt` and `reason` at open, `addressedAt` once the
-             *     customer names the address, `approvedBy`/`approvedAt` at the
-             *     operator's verdict, `completedAt` when the payout signature
-             *     lands.
+             *     `requestedAt` and `reason` at open — plus the frozen payout terms
+             *     `amount` (the asset's base units the multisig must pay),
+             *     `asset` and `mint` it closes against (issue #1175) —
+             *     `addressedAt` once the customer names the address,
+             *     `approvedBy`/`approvedAt` at the operator's verdict,
+             *     `completedAt` when the payout signature lands.
              */
             refund?: Record<string, never> | null;
+            /**
+             * Format: int64
+             * @description The payout's frozen figure in the locked asset's own base units
+             *     (`meta.refund.amount`): `delivered − expected` on an `overpaid`
+             *     row — the surplus alone, since the opened amount already
+             *     credited — and `delivered` on `underpaid`/`late`/`flagged`. Null
+             *     while no refund is open.
+             */
+            refundAmount?: number | null;
             /** @description the multisig payout's on-chain signature — the refund's proof */
             refundSignature?: string | null;
             /** Format: date-time */
