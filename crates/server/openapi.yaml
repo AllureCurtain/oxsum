@@ -17390,7 +17390,7 @@ components:
         splToken: { type: string, nullable: true, description: the SPL mint the intent priced in; null for native SOL }
         rateMicro: { type: integer, format: int64, nullable: true, description: the rate the intent locked — minor-credits per whole `asset`; null on a row opened before the field was recorded }
         signature: { type: string, nullable: true, description: the paying transaction's signature }
-        payer: { type: string, nullable: true, description: the attributed payer — `meta.payerAddress`, which every terminal write merges (issue #1186), else `meta.screening.address` on a `flagged` row parked before the merge; null when no path recorded one }
+        payer: { type: string, nullable: true, description: "the attributed payer — `meta.payerAddress`, which every terminal write merges (issue #1186), else `meta.screening.address` on a `flagged` row parked before the merge; null when no path recorded one" }
         entryId: { type: string, format: uuid, nullable: true, description: the ledger entry that credited the wallet — set on `overpaid`, whose opened amount still credited }
         refundAddress: { type: string, nullable: true, description: the customer's refund address — supplied, never derived }
         refund:

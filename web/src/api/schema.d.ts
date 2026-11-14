@@ -15483,10 +15483,11 @@ export interface paths {
          *     The column freeze — `depositId`, `organizationId`, `paymentRef`
          *     (the intent's `reference` marker), `signature` (the paying
          *     transaction — `facilitator_tx_hash`), `payer` (the attributed
-         *     payer: `meta.payerAddress` when a path recorded it, falling back
-         *     to `meta.screening.address` on a `flagged` row; empty when no path
-         *     recorded one — the verify context's `payerAddress` is not merged
-         *     into `meta` today), `asset` (the whitelist key the intent
+         *     payer: `meta.payerAddress`, which every terminal write merges
+         *     from the verify context — issue #1186 — falling back to
+         *     `meta.screening.address` on a `flagged` row parked before the
+         *     merge landed; empty on a `pending` row that never recorded
+         *     one), `asset` (the whitelist key the intent
          *     locked), `amountMinor` (the credit figure opened for),
          *     `delivered`/`expected` (the located transfer's delivery and the
          *     intent's demand in that asset's own base units), `rateMicro`
@@ -22634,7 +22635,7 @@ export interface components {
             rateMicro?: number | null;
             /** @description the paying transaction's signature */
             signature?: string | null;
-            /** @description the attributed payer — `meta.payerAddress` when a path recorded it */
+            /** @description the attributed payer — `meta.payerAddress`, which every terminal write merges (issue #1186), else `meta.screening.address` on a `flagged` row parked before the merge; null when no path recorded one */
             payer?: string | null;
             /**
              * Format: uuid
