@@ -188,9 +188,13 @@ pub(crate) async fn approve_refund(
         {
             match verifier.screen_address(address).await {
                 oxsum_core::ScreenVerdict::Clear => Some(address.to_owned()),
-                oxsum_core::ScreenVerdict::Flagged { source, reason } => {
+                oxsum_core::ScreenVerdict::Flagged {
+                    source,
+                    reason,
+                    address,
+                } => {
                     return Err(ApiError::Conflict(format!(
-                        "the refund address is flagged by {source} ({reason}); the refund cannot be approved"
+                        "the refund address {address} is flagged by {source} ({reason}); the refund cannot be approved"
                     )));
                 }
                 oxsum_core::ScreenVerdict::TemporarilyUnavailable => {

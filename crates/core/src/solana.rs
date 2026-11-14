@@ -83,8 +83,10 @@ pub const USD_PEGGED_RATE_MICRO: i64 = 1_000_000;
 /// before the poll expires it (default when the config omits it): Solana
 /// Pay's own unbounded-poll guard, so a never-paid intent does not poll
 /// forever. The 15-minute window the mainnet-readiness decision recorded
-/// (issue #1117) — a customer paying by hand needs the time.
-const DEFAULT_INTENT_TTL_SECS: i64 = 900;
+/// (issue #1117) — a customer paying by hand needs the time. The config's
+/// `OXSUM_SOLANA_INTENT_TTL_SECS` default reads this same constant (issue
+/// #1193) so the two layers can never drift to different defaults again.
+pub const DEFAULT_INTENT_TTL_SECS: i64 = 900;
 
 /// The finality grace on the expiry sweep (issue #1174): a poll pass marks an
 /// intent `expired` only when its own verify *began* at/after
@@ -351,6 +353,22 @@ impl SolanaCluster {
             "devnet" | "dev" => Some(Self::Devnet),
             "testnet" | "test" => Some(Self::Testnet),
             _ => None,
+        }
+    }
+
+    /// The cluster's `getGenesisHash` — the chain's own fingerprint the boot
+    /// confirms against (issue #1203). The endpoints' URLs only *hint* at a
+    /// cluster; this is the value the network itself reports, so a backend
+    /// behind an ambiguous URL is pinned by what it answers, not what its
+    /// address spells. A local test-validator shares devnet's hash (it is a
+    /// devnet fork). `None` for a cluster the boot cannot name a canonical
+    /// hash for — treated as unconfirmed, never a pass.
+    #[must_use]
+    pub fn genesis_hash(&self) -> Option<&'static str> {
+        match self {
+            Self::MainnetBeta => Some("5eykt4UsFv8P8NJdTREpY1vzqKqZKvdpKuc147dw2N9d"),
+            Self::Devnet => Some("EtWTRABZaYq6iMfeYKouRu166VU2xqa1wcaWoxPkrZBG"),
+            Self::Testnet => Some("4uhcVJyU9pJkvQyS88uRDiswHXSCkY3zQawwpjk2NsNY"),
         }
     }
 }
@@ -681,6 +699,20 @@ pub trait ChainLookup: std::fmt::Debug + Send + Sync {
         Box::pin(async { None })
     }
 
+    /// `getGenesisHash`: the cluster fingerprint the boot confirms against
+    /// (issue #1203). The endpoints' URL keywords only *imply* a cluster — a
+    /// Helius mainnet URL could be pointed at a devnet backend, or a local
+    /// validator at either — so the boot reads the chain's own answer and
+    /// refuses to serve when it disagrees with the cluster `terms` resolved.
+    /// `None` when the lookup cannot answer or has no impl; the caller treats
+    /// a non-answer as "unconfirmed" the way `mint_decimals` treats a missing
+    /// mint — the boot refuses rather than serve an unpinned network.
+    fn genesis_hash<'a>(
+        &'a self,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Option<String>> + Send + 'a>> {
+        Box::pin(async { None })
+    }
+
     /// The reconciliation scan's on-chain half (issue #1149): walk the
     /// deposit address's `getSignaturesForAddress` history — newest first,
     /// paginated, bounded at `max_signatures` — and keep only the transactions
@@ -837,6 +869,11 @@ pub enum ScreenVerdict {
         /// The hit's detail — the SDN entry, the Chainalysis identifications
         /// count — so an operator reviewing the queue sees why it flagged.
         reason: String,
+        /// The payer address the source flagged. Screening walks every
+        /// debited funding party (issue #1178); this names the one that hit
+        /// so `meta.screening` records the actual flag, not just the
+        /// representative `payerAddress` (issue #1204).
+        address: String,
     },
     /// The external screen could not answer (transport error, non-200,
     /// unreadable body). Deliberately not `Clear`: a deployment that requires
@@ -1005,8 +1042,10 @@ pub struct SolanaExceptionDeposit {
     /// The payer address the rail attributed — `meta.payerAddress`, which
     /// every terminal write merges from the verify context (issue #1186),
     /// falling back to `meta.screening.address` on a `flagged` row parked
-    /// before the merge landed. `None` on a `pending` row that never
-    /// recorded one; the CSV column documents its provenance.
+    /// before the merge landed (on a post-#1204 flag that field names the
+    /// *flagged* party, which is the address a reviewer attributes anyway).
+    /// `None` on a `pending` row that never recorded one; the CSV column
+    /// documents its provenance.
     pub payer: Option<String>,
     /// The ledger entry that credited the wallet, when the deposit credited
     /// (the `overpaid` case: the credit stands, the surplus is what a refund
@@ -1303,6 +1342,7 @@ impl SolanaRailVerifier {
     /// boot refuses to start rather than misprice or accept an
     /// extension-laden mint.
     pub async fn verify_mints(&mut self) -> Result<(), String> {
+        self.confirm_cluster().await?;
         for asset in &mut self.terms.assets {
             let Some(mint) = asset.spl_token_mint.clone() else {
                 continue;
@@ -1356,6 +1396,75 @@ impl SolanaRailVerifier {
         self.terms.spl_token_mint = default.spl_token_mint;
         self.terms.asset_decimals = default.asset_decimals;
         self.terms.rate_micro = default.rate_micro;
+        Ok(())
+    }
+
+    /// Confirms the resolved `terms.cluster` against the chain's own
+    /// `getGenesisHash` (issue #1203). The endpoints' URL keywords only
+    /// *imply* the cluster — a `devnet` in a hostname is a hint, not proof —
+    /// so the boot asks the network itself before it trusts the `cluster`
+    /// the open intent answers (the page's only network hint). A local
+    /// test-validator generates its own genesis, so an unrecognized hash
+    /// warns-and-serves rather than brick a local dev loop. `Err` fires only
+    /// when the endpoint provably serves a *different public* cluster — the
+    /// answered hash is another cluster's canonical genesis — naming both so
+    /// an operator sees the crossed network; an unreachable probe or an
+    /// unclassifiable hash warns and serves under the resolved cluster.
+    async fn confirm_cluster(&self) -> Result<(), String> {
+        let Some(expected) = self.terms.cluster.genesis_hash() else {
+            return Err(format!(
+                "the resolved solana cluster {} names no canonical genesis hash — \
+                 the rail cannot confirm which network its endpoints serve",
+                self.terms.cluster.as_str()
+            ));
+        };
+        let Some(answered) = self.chain.genesis_hash().await else {
+            // A lookup that cannot answer is not a mismatch — warn and serve
+            // under the URL-implied cluster rather than refuse a boot whose
+            // only fault is an unreachable (or unimplemented) probe. The
+            // mismatch arm below is the refusal the issue asks for.
+            tracing::warn!(
+                cluster = %self.terms.cluster.as_str(),
+                "the solana endpoints could not answer getGenesisHash — the \
+                 declared cluster is only URL-implied, not chain-confirmed"
+            );
+            return Ok(());
+        };
+        if answered == expected {
+            return Ok(());
+        }
+        // The hard refusal is only ever a *crossed public network*: the
+        // endpoint provably serves a different public cluster than the one
+        // `terms` resolved — e.g. a `devnet`-hinted URL that is really a
+        // mainnet backend (the silent-mainnet failure). A hash that is
+        // neither the resolved cluster's nor another public cluster's — a
+        // local test-validator's freshly-generated genesis, or a private
+        // fork — is unclassifiable, so the boot warns and serves under the
+        // declared cluster rather than brick a local dev loop.
+        let other_public = [
+            SolanaCluster::MainnetBeta,
+            SolanaCluster::Devnet,
+            SolanaCluster::Testnet,
+        ]
+        .iter()
+        .filter(|c| **c != self.terms.cluster)
+        .any(|c| c.genesis_hash() == Some(answered.as_str()));
+        if other_public {
+            return Err(format!(
+                "the solana endpoints serve genesis hash {answered}, but the resolved \
+                 cluster is {} (genesis {expected}) — the URLs' shape implied the \
+                 wrong public network; point OXSUM_SOLANA_RPC_URLS at the {} cluster",
+                self.terms.cluster.as_str(),
+                self.terms.cluster.as_str(),
+            ));
+        }
+        tracing::warn!(
+            cluster = %self.terms.cluster.as_str(),
+            genesis = %answered,
+            "the solana endpoints answered a genesis hash that is neither the \
+             resolved cluster's nor another public cluster's — a local validator \
+             or private fork; serving under the declared cluster"
+        );
         Ok(())
     }
 
@@ -1572,8 +1681,8 @@ fn verified_payment(
             "blockTime": validated.block_time,
             // Every debited funding party screening must clear (issue #1178);
             // `payerAddress` keeps the first — the representative the queue
-            // row and the flag's `screening.address` record — for the readers
-            // that predate the list.
+            // row and the flag's `screening.payerAddress` record — for the
+            // readers that predate the list.
             "payerAddress": validated.payers.first(),
             "payerAddresses": validated.payers,
             "receivedCredits": asset_units_to_credits(
@@ -1628,8 +1737,20 @@ impl SolanaRailVerifier {
         let mut unavailable = false;
         for payer in payers {
             match sanctions.screen(payer).await {
-                ScreenVerdict::Flagged { source, reason } => {
-                    return ScreenVerdict::Flagged { source, reason };
+                ScreenVerdict::Flagged {
+                    source,
+                    reason,
+                    address: _,
+                } => {
+                    // The hit address is the payer just screened — the
+                    // sub-screen names its own `address`, but the walker's
+                    // `payer` is authoritative for which of the debited
+                    // parties flagged (issue #1204).
+                    return ScreenVerdict::Flagged {
+                        source,
+                        reason,
+                        address: payer.to_owned(),
+                    };
                 }
                 ScreenVerdict::TemporarilyUnavailable => unavailable = true,
                 ScreenVerdict::Clear => {}
@@ -2202,8 +2323,12 @@ impl Db {
         // lock, the same read-only footing the chain RPCs already take.
         match verifier.screen_payer(&payment).await {
             ScreenVerdict::Clear => {}
-            ScreenVerdict::Flagged { source, reason } => {
-                self.flag_solana_deposit(deposit_id, &meta, &payment, &source, &reason)
+            ScreenVerdict::Flagged {
+                source,
+                reason,
+                address,
+            } => {
+                self.flag_solana_deposit(deposit_id, &meta, &payment, &source, &reason, &address)
                     .await?;
                 // The flag is a named verdict, not "nothing settled": the
                 // confirm route answers a `flagged` conflict the customer's
@@ -2469,13 +2594,14 @@ impl Db {
     /// transfer honored the intent's terms but the payer hit a sanctions
     /// screen, so the money is held for the operator queue — never credited,
     /// never auto-refunded. `meta.screening` records what the screen answered
-    /// (`verdict`, `source`, `reason`, the screened `address` and `at`, plus
-    /// the located `signature`) so a reviewer reads why the row is parked
-    /// without re-deriving it; `facilitator_tx_hash` takes the signature too,
-    /// so the flag and the double-spend index agree on which transaction is
-    /// held. The verified figures (`delivered`/`expected`/`receivedCredits`/
-    /// `blockTime`) merge alongside so a later screening-clear credits under
-    /// the recorded terms without a second chain round-trip (issue #1184).
+    /// (`verdict`, `source`, `reason`, the flagged `address`, the screened
+    /// `addresses` and `at`, plus the located `signature`) so a reviewer reads
+    /// why the row is parked without re-deriving it; `facilitator_tx_hash`
+    /// takes the signature too, so the flag and the double-spend index agree
+    /// on which transaction is held. The verified figures
+    /// (`delivered`/`expected`/`receivedCredits`/`blockTime`) merge alongside
+    /// so a later screening-clear credits under the recorded terms without a
+    /// second chain round-trip (issue #1184).
     /// The row is re-claimed `FOR UPDATE` inside a short transaction —
     /// a raced credit that already landed or a second flagging pass is a
     /// no-op — and an `expired` row whose payment verified on-time rescues
@@ -2488,12 +2614,15 @@ impl Db {
         payment: &crate::x402::VerifiedPayment,
         source: &str,
         reason: &str,
+        flagged_address: &str,
     ) -> Result<(), WalletError> {
         let signature = payment.context["signature"].as_str().unwrap_or_default();
         let payer = payment.context["payerAddress"].as_str().unwrap_or_default();
-        // The whole screened set rides beside the representative `address` —
-        // a flag on the second debited party still reads which wallets the
-        // walk covered (issue #1178).
+        // `address` records the party the screen actually flagged — which may
+        // be a debited funding source, not the representative `payerAddress`
+        // (issue #1204). `addresses` keeps the whole screened set so the walk
+        // still reads which wallets it covered (issue #1178); `payerAddress`
+        // remains the representative the queue row shows.
         let payers = payment.context["payerAddresses"].clone();
         let at = time::OffsetDateTime::now_utc()
             .format(&time::format_description::well_known::Rfc3339)
@@ -2503,7 +2632,13 @@ impl Db {
             "verdict": "flagged",
             "source": source,
             "reason": reason,
-            "address": payer,
+            // The address that actually hit the screen — the record the
+            // operator reviews — not the representative `payerAddress`
+            // (issue #1204). `addresses` below still lists every party the
+            // walk screened; `payerAddress` (recorded beside it) stays the
+            // queue's representative.
+            "address": flagged_address,
+            "payerAddress": payer,
             "addresses": payers,
             "at": at,
         });
@@ -3844,6 +3979,9 @@ mod tests {
     struct MintAudit {
         owner: Option<String>,
         decimals: Option<u32>,
+        /// The `getGenesisHash` the stub answers; `None` = the probe could
+        /// not answer (the warn-and-serve arm of `confirm_cluster`).
+        genesis: Option<String>,
     }
 
     impl ChainLookup for MintAudit {
@@ -3883,6 +4021,13 @@ mod tests {
             let owner = self.owner.clone();
             Box::pin(async move { owner })
         }
+        fn genesis_hash<'a>(
+            &'a self,
+        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Option<String>> + Send + 'a>>
+        {
+            let genesis = self.genesis.clone();
+            Box::pin(async move { genesis })
+        }
     }
 
     /// The Token-2022 program id is the audit's named refusal; the classic
@@ -3906,6 +4051,7 @@ mod tests {
             std::sync::Arc::new(MintAudit {
                 owner: Some(TOKEN_2022_PROGRAM_ID.to_owned()),
                 decimals: Some(6),
+                genesis: None,
             }),
             terms,
         );
@@ -3930,6 +4076,7 @@ mod tests {
                 std::sync::Arc::new(MintAudit {
                     owner: Some(owner.to_owned()),
                     decimals: Some(6),
+                    genesis: None,
                 }),
                 terms(),
             );
@@ -3960,6 +4107,7 @@ mod tests {
             std::sync::Arc::new(MintAudit {
                 owner: Some("TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA".to_owned()),
                 decimals: Some(6),
+                genesis: None,
             }),
             t,
         );
@@ -3974,11 +4122,105 @@ mod tests {
             std::sync::Arc::new(MintAudit {
                 owner: None,
                 decimals: None,
+                genesis: None,
             }),
             terms(),
         );
         let err = verifier.verify_mints().await.unwrap_err();
         assert!(err.contains("usdc"), "{err}");
+    }
+
+    /// Issue #1203: `verify_mints` first confirms the resolved cluster
+    /// against the chain's own `getGenesisHash`. A hash that disagrees with
+    /// `terms.cluster` refuses the boot with both names — the URL-implied
+    /// cluster was only a hint, and a wallet sent to the wrong network is
+    /// the silent-mainnet failure the pin exists to prevent.
+    #[tokio::test]
+    async fn verify_mints_refuses_a_genesis_mismatch() {
+        let mut terms = terms();
+        terms.cluster = SolanaCluster::Devnet;
+        let mut verifier = SolanaRailVerifier::new(
+            std::sync::Arc::new(MintAudit {
+                owner: Some(SPL_TOKEN_PROGRAM_ID.to_owned()),
+                decimals: Some(6),
+                // The endpoint answers mainnet-beta's hash while the config
+                // resolved devnet — a backend pointed at the wrong network.
+                genesis: Some(
+                    SolanaCluster::MainnetBeta
+                        .genesis_hash()
+                        .unwrap()
+                        .to_owned(),
+                ),
+            }),
+            terms,
+        );
+        let err = verifier.verify_mints().await.unwrap_err();
+        assert!(err.contains("genesis hash"), "{err}");
+        assert!(err.contains("devnet"), "{err}");
+        // The answered (mainnet) hash is named alongside the resolved cluster.
+        assert!(
+            err.contains(SolanaCluster::MainnetBeta.genesis_hash().unwrap()),
+            "{err}"
+        );
+    }
+
+    /// The matching-hash arm: the endpoint answers the resolved cluster's
+    /// own genesis and the audit proceeds to the mint reads. A local
+    /// test-validator reports devnet's hash, so a devnet-shaped boot is
+    /// confirmed, not refused.
+    #[tokio::test]
+    async fn verify_mints_confirms_a_matching_genesis() {
+        let mut terms = terms();
+        terms.cluster = SolanaCluster::Devnet;
+        let mut verifier = SolanaRailVerifier::new(
+            std::sync::Arc::new(MintAudit {
+                owner: Some(SPL_TOKEN_PROGRAM_ID.to_owned()),
+                decimals: Some(6),
+                genesis: Some(SolanaCluster::Devnet.genesis_hash().unwrap().to_owned()),
+            }),
+            terms,
+        );
+        verifier.verify_mints().await.unwrap();
+    }
+
+    /// The unreachable-probe arm: a lookup that cannot answer `getGenesisHash`
+    /// is not a mismatch — the boot warns and serves under the URL-implied
+    /// cluster rather than refuse an otherwise-valid boot (and a stub that
+    /// never implemented the read does not break the audit).
+    #[tokio::test]
+    async fn verify_mints_serves_when_the_genesis_probe_cannot_answer() {
+        let mut terms = terms();
+        terms.cluster = SolanaCluster::Devnet;
+        let mut verifier = SolanaRailVerifier::new(
+            std::sync::Arc::new(MintAudit {
+                owner: Some(SPL_TOKEN_PROGRAM_ID.to_owned()),
+                decimals: Some(6),
+                genesis: None,
+            }),
+            terms,
+        );
+        verifier.verify_mints().await.unwrap();
+    }
+
+    /// The unclassifiable-hash arm: a local test-validator generates its own
+    /// genesis (not devnet's canonical hash, not another public cluster's),
+    /// so the boot warns and serves under the declared cluster rather than
+    /// brick the dev loop the URL's localhost shape already implied.
+    #[tokio::test]
+    async fn verify_mints_serves_an_unclassifiable_genesis() {
+        let mut terms = terms();
+        terms.cluster = SolanaCluster::Devnet;
+        let mut verifier = SolanaRailVerifier::new(
+            std::sync::Arc::new(MintAudit {
+                owner: Some(SPL_TOKEN_PROGRAM_ID.to_owned()),
+                decimals: Some(6),
+                // A local validator's own genesis — neither devnet's nor any
+                // other public cluster's canonical hash.
+                genesis: Some("LocalValidatorGenesisHash1111111111111111".to_owned()),
+            }),
+            terms,
+        );
+        verifier.verify_mints().await.unwrap();
     }
 
     /// The oracle stub `resolve_rate` tests sample — one scripted quote, or
