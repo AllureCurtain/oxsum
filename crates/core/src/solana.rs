@@ -77,8 +77,9 @@ pub const USD_PEGGED_RATE_MICRO: i64 = 1_000_000;
 /// One Solana deposit-intent `open` may quote an intent this many seconds
 /// before the poll expires it (default when the config omits it): Solana
 /// Pay's own unbounded-poll guard, so a never-paid intent does not poll
-/// forever.
-const DEFAULT_INTENT_TTL_SECS: i64 = 600;
+/// forever. The 15-minute window the mainnet-readiness decision recorded
+/// (issue #1117) — a customer paying by hand needs the time.
+const DEFAULT_INTENT_TTL_SECS: i64 = 900;
 
 /// The SPL Token-2022 program id: a mint whose owner is this program is
 /// refused at boot (issue #1140). Token-2022 mints carry extensions —
@@ -2778,6 +2779,33 @@ mod tests {
         assert_eq!(terms.spl_token_mint.as_deref(), Some("usdcMint"));
         assert_eq!(terms.asset_decimals, 6);
         assert_eq!(terms.rate_micro, USD_PEGGED_RATE_MICRO);
+    }
+
+    /// The deployment default (issue #1185): an unset/non-positive
+    /// `intent_ttl_secs` resolves the 15-minute window the decision recorded;
+    /// a positive figure is the deployment's own and stands.
+    #[test]
+    fn the_intent_ttl_defaults_to_fifteen_minutes() {
+        let unset = SolanaTerms::new(
+            "payTo".to_owned(),
+            vec![AssetTerms {
+                key: "sol".to_owned(),
+                spl_token_mint: None,
+                asset_decimals: 9,
+                rate_micro: 200_000_000,
+            }],
+            "sol".to_owned(),
+            0,
+            1,
+            i64::MAX,
+            0,
+        );
+        assert_eq!(unset.ttl(), 900);
+        assert_eq!(
+            terms().ttl(),
+            600,
+            "an explicit TTL is the deployment's own"
+        );
     }
 
     /// `mint_accepted`: native SOL always stands; a whitelisted mint stands;

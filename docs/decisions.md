@@ -4445,8 +4445,11 @@ the intent is created, sampled from Pyth Hermes' HTTP endpoint
 reads only the locked `meta`, never a live price. A SOL intent refuses to
 open when the freshest Pyth quote is older than 60 seconds or quotes a
 confidence interval wider than 1% of the price — a stale or diffuse oracle
-is not a price. The `expiresAt` stays the intent's own deadline (default
-`OXSUM_SOLANA_INTENT_TTL_SECS`, recommended 900 s on mainnet); the locked
+is not a price. The `expiresAt` stays the intent's own deadline — the
+15-minute window this decision recorded is the rail's default
+(`OXSUM_SOLANA_INTENT_TTL_SECS` unset → 900 s; the code and env templates
+drifted to 600 s under it until #1185 reconciled them, an explicit value
+always stands); the locked
 rate is not a floating quote that expires with the price feed, it is the
 fixed term the intent was opened under. USDC needs no oracle — its rate is
 the fixed unit conversion. `OXSUM_SOLANA_RATE_MICRO` survives only as a
