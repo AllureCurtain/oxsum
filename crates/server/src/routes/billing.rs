@@ -354,7 +354,10 @@ pub(crate) struct SolanaConfirmReq {
 /// payment (wrong recipient, wrong mint, missing marker). A located transfer
 /// that underpays or landed after the intent expired is `409` — the deposit
 /// is on the operator's exception queue (`underpaid`/`late`), not open for
-/// retries (issue #1142). A deployment without `OXSUM_SOLANA_*` answers 503.
+/// retries (issue #1142). A transfer whose payer hit a sanctions screen is
+/// `409` too — the deposit parked `flagged` for operator review, so the
+/// answer names it rather than the 404 that would misread as still-settling
+/// (issues #1144, #1184). A deployment without `OXSUM_SOLANA_*` answers 503.
 pub(crate) async fn solana_confirm(
     State(state): State<AppState>,
     Extension(principal): Extension<Principal>,
@@ -387,6 +390,12 @@ pub(crate) async fn solana_confirm(
         oxsum_core::SolanaCredit::Late => {
             return Err(ApiError::Conflict(
                 "the paying transaction landed after the intent expired; the deposit is queued for review"
+                    .into(),
+            ));
+        }
+        oxsum_core::SolanaCredit::Flagged => {
+            return Err(ApiError::Conflict(
+                "the paying transfer was flagged by screening; the deposit is held for review"
                     .into(),
             ));
         }

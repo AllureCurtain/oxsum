@@ -27,7 +27,8 @@ inline refund actions. The statuses:
   payer hit a sanctions source and the row parked before the ledger credited;
   `meta.screening` records `{verdict, source, reason, address, at}` and
   `facilitator_tx_hash` names the held transaction. Review is a compliance
-  call — refund on-chain or clear it, never an auto-send.
+  call — refund on-chain or clear it into a credit (issue #1184's
+  `screening-clear`), never an auto-send and never an auto-clear.
 - `refund_pending` — a refund was opened; the row is mid-lifecycle.
 - `refunded` — the payout signature is recorded; the deposit is closed.
 
@@ -63,7 +64,18 @@ on `meta.refund`, each audited (`solana.refund.request` / `.approve` /
 3. **Approve** — `POST /api/v1/admin/solana/{depositId}/refund-approve`
    records the review verdict and **freezes the address** (a post-approval
    edit could redirect the payout the multisig is about to sign). Approving
-   with no address yet is `409`.
+   with no address yet is `409`. When `OXSUM_SOLANA_SANCTIONS_ENABLED=1`
+   the standing `refundAddress` is screened through the same gate the
+   pre-credit payer check runs (issue #1184): a `Flagged` destination
+   refuses `409` — a refund cannot be approved to pay a sanctioned
+   address — and a screen that cannot answer refuses `403`, because an
+   approval must never point the payout at an unscreened address. The
+   approval binds to the screened address — a customer edit that lands
+   between the screen and the approval is a `409`, never a redirected
+   payout — and a cleared screen records
+   `{address, verdict: "clear", at}` on `meta.refund.addressScreening`. An
+   already-approved refund replays without a fresh screen — the freeze
+   already happened.
 4. **Pay + record** — the multisig sends the refund out-of-band **in the
    deposit's locked asset**: a plain `SystemProgram.transfer` of lamports for
    `sol`, or an SPL `TransferChecked` of `delivered − expected` (or the agreed
@@ -94,6 +106,17 @@ returns on-chain.
   credit already stands.
 - **Late** — refund through the lifecycle, or credit manually when the
   lateness was not the customer's fault.
+- **Flagged** — the compliance verdict, never a timer: review the
+  `meta.screening` record (`verdict`, `source`, `reason`, `address`), then
+  either **clear** — `POST /api/v1/admin/solana/{depositId}/
+  screening-clear {"reason"}` credits the already-verified transfer under
+  the same `solana:<signature>` key the ordinary credit would have used
+  (manual review, never an auto-clear; a replayed clear answers the
+  standing credited row, `409` on any non-`flagged` status, and the clear
+  audits as `solana.screening.clear` beside `meta.screening.clearedBy`/
+  `clearedAt`/`clearReason`) — or **refund** the parked payment back
+  through the lifecycle. A row whose review finds the flag *correct* is
+  not cleared — refund it or leave it parked.
 - **Cross-organization** (a signature that credited one org and was refused
   in another — the `deposits_solana_tx_hash` double-spend refusal) —
   escalate: the second org's customer paid into a deposit the first org

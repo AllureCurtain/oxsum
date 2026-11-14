@@ -163,6 +163,9 @@ pub mod action {
     /// The operator ran the solana vault reconciliation scan — the read-only
     /// walk that reports on-chain transfers no deposit recorded (issue #1149).
     pub const SOLANA_RECONCILE_SCAN: &str = "solana.reconcile.scan";
+    /// The operator cleared a `flagged` solana deposit after manual review —
+    /// the deposit credits under its original verified terms (issue #1184).
+    pub const SOLANA_SCREENING_CLEAR: &str = "solana.screening.clear";
 
     /// Every action the surface writes — the `action` filter's vocabulary.
     pub const ALL: &[&str] = &[
@@ -222,6 +225,7 @@ pub mod action {
         SOLANA_REFUND_APPROVE,
         SOLANA_REFUND_COMPLETE,
         SOLANA_RECONCILE_SCAN,
+        SOLANA_SCREENING_CLEAR,
     ];
 }
 

@@ -50,6 +50,16 @@ test("409 names the exception its code or message carries", () => {
   );
   // A code that names it directly maps without reading the message.
   assert.equal(solanaStatus({ status: 409, code: "SOLANA_UNDERPAID" }).phase, "underpaid");
+  // #1184's flagged confirm names the hold in its message — the parked
+  // deposit reads held-for-review, never the "settling" a 404 would pretend.
+  const flagged = solanaStatus({
+    status: 409,
+    code: "CONFLICT",
+    message: "the paying transfer was flagged by screening; the deposit is held for review",
+  });
+  assert.equal(flagged.phase, "flagged");
+  assert.equal(flagged.tone, "warn");
+  assert.equal(flagged.key, "topup.solanaStatusFlagged");
   // An unnamed 409 still surfaces as an exception, never as waiting.
   const unknown = solanaStatus({ status: 409, code: "CONFLICT", message: "no" });
   assert.equal(unknown.phase, "exception");

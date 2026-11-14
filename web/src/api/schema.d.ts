@@ -5510,14 +5510,15 @@ export interface paths {
          *     locked asset's base units marks `underpaid`, a `blockTime` at/after
          *     `expiresAt` marks `late`, and the deposit sits on the operator's
          *     exception queue rather than looping `pending` forever. `404` means no
-         *     `pending` intent answers to that
+         *     `pending` or `flagged` intent answers to that
          *     `reference` — including the race where the `solana-deposits` poll
          *     already credited it (the money arrived; the `404` is "no open intent",
-         *     not "the deposit is missing") and the same `404` when the screen
-         *     already parked the deposit `flagged`. With
+         *     not "the deposit is missing"). With
          *     `OXSUM_SOLANA_SANCTIONS_ENABLED=1` the located transfer's payer is
          *     screened before credit: a hit parks the row `flagged` for operator
-         *     review (never credited, never auto-refunded), and a screening source
+         *     review (never credited, never auto-refunded) and the confirm answers
+         *     `409` naming the flagged hold — the verdict issue #1184 keeps out of
+         *     the "unknown intent" `404` — while a screening source
          *     that cannot answer refuses `403` and leaves the intent `pending` —
          *     the rail never books unscreened money. A deployment without
          *     `OXSUM_SOLANA_*` answers 503.
@@ -15686,11 +15687,20 @@ export interface paths {
         /**
          * Approve an opened solana refund for the multisig payout
          * @description Records the operator's approval on a `refund_pending` deposit
-         *     (issue #1142): `meta.refund.approvedBy`/`approvedAt` mark the refund
-         *     cleared for signing. The customer must have supplied their refund
-         *     address first — an approval with nowhere to pay is `409`, and the
-         *     address freezes at approval so a later edit cannot redirect the
+         *     (issues #1142, #1184): `meta.refund.approvedBy`/`approvedAt` mark the
+         *     refund cleared for signing. The customer must have supplied their
+         *     refund address first — an approval with nowhere to pay is `409`, and
+         *     the address freezes at approval so a later edit cannot redirect the
          *     payout. Approving an already-approved refund replays it.
+         *     Before the approval is recorded the standing `refundAddress` is
+         *     screened through the same sanctions gate the pre-credit payer check
+         *     runs: a `Flagged` address refuses `409` — the refund cannot be
+         *     approved to pay a sanctioned destination — and a screen that cannot
+         *     answer refuses `403`, deny-until-cleared. The approval binds to the
+         *     screened address, so a customer edit landing between the screen and
+         *     the approval is a `409`, never a silently redirected payout. When
+         *     the deployment has no `OXSUM_SOLANA_SANCTIONS_*` gate the screen is
+         *     a no-op `Clear` and the approve is exactly as before.
          */
         post: {
             parameters: {
@@ -15716,9 +15726,78 @@ export interface paths {
                 };
                 400: components["responses"]["Error"];
                 401: components["responses"]["Error"];
+                403: components["responses"]["Error"];
                 404: components["responses"]["Error"];
                 409: components["responses"]["Error"];
                 500: components["responses"]["Error"];
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/admin/solana/{depositId}/screening-clear": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Clear a flagged solana deposit after manual review and credit it
+         * @description The review-then-credit path for a `flagged` deposit (issue #1184):
+         *     the operator's manual-review verdict that the parked payment may
+         *     credit after all. This is manual review, never a bypass — nothing
+         *     auto-clears, and only a `flagged` row answers: the credit books the
+         *     already-verified transfer under the same `solana:<signature>`
+         *     idempotency key and the same `FOR UPDATE` row discipline the
+         *     ordinary credit path takes, so a replayed clear answers the standing
+         *     credited row and never books twice, and the recorded `delivered >
+         *     expected` still lands the row `overpaid` exactly as a same-day
+         *     credit would have. `meta.screening` attributes the decision
+         *     (`clearedBy`/`clearedAt`/`clearReason`) beside the flag's own
+         *     verdict, and an audit row (`solana.screening.clear`) records the
+         *     action. A non-`flagged` deposit is `409`, an unknown one `404`, and
+         *     a flagged row that never recorded its paying signature cannot
+         *     credit — `409`, the refund path is how that row unwinds. A
+         *     deployment without `OXSUM_SOLANA_*` answers 503.
+         */
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    depositId: string;
+                };
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": components["schemas"]["SolanaScreeningClearRequest"];
+                };
+            };
+            responses: {
+                /** @description The deposit, now `credited` (or `overpaid` when the recorded transfer over-delivered) */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            data: components["schemas"]["SolanaExceptionDeposit"];
+                        };
+                    };
+                };
+                400: components["responses"]["Error"];
+                401: components["responses"]["Error"];
+                404: components["responses"]["Error"];
+                409: components["responses"]["Error"];
+                500: components["responses"]["Error"];
+                503: components["responses"]["Error"];
             };
         };
         delete?: never;
@@ -22684,6 +22763,10 @@ export interface components {
         };
         SolanaRefundRequest: {
             /** @description why the refund is opened — the reason the queue row and the audit entry carry */
+            reason: string;
+        };
+        SolanaScreeningClearRequest: {
+            /** @description the review note the operator's clear carries — `meta.screening.clearReason` and the audit entry record it; a clear with no recorded reasoning is not a review */
             reason: string;
         };
         SolanaRefundCompleteRequest: {

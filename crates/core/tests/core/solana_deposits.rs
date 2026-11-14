@@ -1334,7 +1334,7 @@ async fn the_refund_walks_pending_address_approve_complete() {
     assert_eq!(refund["reason"].as_str().unwrap(), "under-delivered");
     assert!(refund["requestedAt"].is_string());
     // Approving with no address is refused.
-    let early = db.solana_approve_refund(deposit_id, "operator").await;
+    let early = db.solana_approve_refund(deposit_id, "operator", None).await;
     assert!(matches!(early, Err(WalletError::Conflict(_))), "{early:?}");
     // The customer names the refund address — validated base58-32.
     let bad = db
@@ -1376,7 +1376,7 @@ async fn the_refund_walks_pending_address_approve_complete() {
     );
     // Approve, then the address freezes.
     let approved = db
-        .solana_approve_refund(deposit_id, "operator")
+        .solana_approve_refund(deposit_id, "operator", None)
         .await
         .unwrap();
     assert!(approved.refund.unwrap()["approvedAt"].is_string());
@@ -1638,15 +1638,25 @@ async fn a_flagged_payer_parks_the_deposit_for_review() {
     let wallet = oxsum_core::Wallet::open(db.pool().clone(), &tenant_id)
         .await
         .unwrap();
-    // The flag parks: no credit, `Settled` — the same shape "already
-    // settled" takes, because the caller never learns the screening detail.
+    // The flag parks: no credit, and the verdict names itself — `Flagged`,
+    // not the `Settled` that would fold the hold into "nothing to answer"
+    // and leave the confirm a misleading 404 (issue #1184).
     let result = db
         .credit_solana_deposit(&wallet, deposit_id, &verifier, time::Date::MAX)
         .await
         .unwrap();
     assert!(
-        matches!(result, SolanaCredit::Settled),
+        matches!(result, SolanaCredit::Flagged),
         "a flagged deposit never credits: {result:?}"
+    );
+    // A replayed walk over the parked row answers the same named verdict.
+    let replay = db
+        .credit_solana_deposit(&wallet, deposit_id, &verifier, time::Date::MAX)
+        .await
+        .unwrap();
+    assert!(
+        matches!(replay, SolanaCredit::Flagged),
+        "a flagged deposit stays a named answer: {replay:?}"
     );
     assert_eq!(wallet.available().await.unwrap(), 0);
     let row = sqlx::query(
@@ -1769,7 +1779,7 @@ async fn a_flagged_funding_source_parks_the_deposit() {
         .await
         .unwrap();
     assert!(
-        matches!(result, SolanaCredit::Settled),
+        matches!(result, SolanaCredit::Flagged),
         "a flagged funding party never credits: {result:?}"
     );
     assert_eq!(wallet.available().await.unwrap(), 0);
@@ -1851,7 +1861,7 @@ async fn a_flagged_party_wins_over_an_unavailable_one() {
         .await
         .unwrap();
     assert!(
-        matches!(result, SolanaCredit::Settled),
+        matches!(result, SolanaCredit::Flagged),
         "a flagged party parks even when another cannot be screened: {result:?}"
     );
     let status: String =
@@ -1955,4 +1965,234 @@ async fn an_unavailable_screen_leaves_the_deposit_pending() {
             .unwrap();
     assert_eq!(status, "pending");
     assert_eq!(wallet.available().await.unwrap(), 0);
+}
+
+/// Issue #1184: the review-then-credit path — a `flagged` deposit the
+/// operator cleared credits under the already-verified terms, the same
+/// `solana:<signature>` key the ordinary credit would have booked, and a
+/// replayed clear answers the standing credited row instead of crediting
+/// twice or refusing.
+#[tokio::test]
+async fn a_cleared_flagged_deposit_credits_exactly_once() {
+    let Some(db) = database("solana_clear").await else {
+        return;
+    };
+    let org = organization(&db, "clear").await;
+    let tenants = oxsum_core::Tenants::new(db.pool().clone());
+    let wallet = wallet_for(&db, org).await;
+    // Park a deposit the way the screen does: a flagged row carrying the
+    // verified payment's signature and figures.
+    let deposit_id = Uuid::new_v4();
+    db.open_solana_deposit(org, deposit_id, 1000, &terms(), None, &rate(&terms(), None))
+        .await
+        .unwrap()
+        .expect("inserts");
+    let signature = "sigClearCore0000000000000000000000000000000000000000000";
+    sqlx::query(
+        "UPDATE oxsum.deposits \
+         SET status = 'flagged', facilitator_tx_hash = $2, \
+             meta = meta || jsonb_build_object( \
+                 'screening', jsonb_build_object( \
+                     'verdict', 'flagged', 'source', 'ofac-sdn', \
+                     'reason', 'hit', 'address', 'flaggedPayer', 'at', 'now'), \
+                 'signature', $2::text, \
+                 'delivered', 5000::bigint, \
+                 'expected', 5000::bigint, \
+                 'receivedCredits', 1000::bigint) \
+         WHERE deposit_id = $1",
+    )
+    .bind(deposit_id)
+    .bind(signature)
+    .execute(db.pool())
+    .await
+    .unwrap();
+    // The clear credits: status `credited`, the entry is set, and
+    // `meta.screening` attributes the operator's review.
+    let cleared = db
+        .solana_screening_clear(
+            &tenants,
+            deposit_id,
+            "operator",
+            "manual review passed",
+            time::Date::MAX,
+        )
+        .await
+        .unwrap();
+    assert_eq!(cleared.status, "credited");
+    assert!(cleared.entry_id.is_some(), "{cleared:?}");
+    assert_eq!(wallet.available().await.unwrap(), 1000);
+    let meta: serde_json::Value =
+        sqlx::query_scalar("SELECT meta FROM oxsum.deposits WHERE deposit_id = $1")
+            .bind(deposit_id)
+            .fetch_one(db.pool())
+            .await
+            .unwrap();
+    let screening = &meta["screening"];
+    // The flag's own verdict stays for the audit trail; the clear appends.
+    assert_eq!(screening["verdict"].as_str().unwrap(), "flagged");
+    assert_eq!(screening["clearedBy"].as_str().unwrap(), "operator");
+    assert_eq!(
+        screening["clearReason"].as_str().unwrap(),
+        "manual review passed"
+    );
+    assert!(screening["cleared"].as_bool().unwrap());
+    // A replayed clear answers the standing credited row — never a second
+    // credit, never a refusal.
+    let replay = db
+        .solana_screening_clear(
+            &tenants,
+            deposit_id,
+            "operator",
+            "manual review passed",
+            time::Date::MAX,
+        )
+        .await
+        .unwrap();
+    assert_eq!(replay.status, "credited");
+    assert_eq!(replay.entry_id, cleared.entry_id);
+    assert_eq!(wallet.available().await.unwrap(), 1000);
+}
+
+/// Issue #1184: an over-delivered flagged transfer still lands `overpaid`
+/// on its clear — the recorded `delivered > expected` verdict the ordinary
+/// credit path would have reached on the same day.
+#[tokio::test]
+async fn a_cleared_flagged_deposit_keeps_the_overpaid_verdict() {
+    let Some(db) = database("solana_clear_over").await else {
+        return;
+    };
+    let org = organization(&db, "clear-over").await;
+    let tenants = oxsum_core::Tenants::new(db.pool().clone());
+    let wallet = wallet_for(&db, org).await;
+    let deposit_id = Uuid::new_v4();
+    db.open_solana_deposit(org, deposit_id, 1000, &terms(), None, &rate(&terms(), None))
+        .await
+        .unwrap()
+        .expect("inserts");
+    sqlx::query(
+        "UPDATE oxsum.deposits \
+         SET status = 'flagged', facilitator_tx_hash = $2, \
+             meta = meta || jsonb_build_object( \
+                 'signature', $2::text, \
+                 'delivered', 9000::bigint, \
+                 'expected', 5000::bigint, \
+                 'receivedCredits', 1800::bigint) \
+         WHERE deposit_id = $1",
+    )
+    .bind(deposit_id)
+    .bind("sigClearOver000000000000000000000000000000000000000000")
+    .execute(db.pool())
+    .await
+    .unwrap();
+    let cleared = db
+        .solana_screening_clear(
+            &tenants,
+            deposit_id,
+            "operator",
+            "reviewed",
+            time::Date::MAX,
+        )
+        .await
+        .unwrap();
+    assert_eq!(cleared.status, "overpaid");
+    // The credit books the opened amount — the surplus stays the queue's
+    // concern, exactly as the same-day overpaid credit does.
+    assert_eq!(wallet.available().await.unwrap(), 1000);
+}
+
+/// Issue #1184: the clear is `flagged`-only — a `pending`, `credited` or
+/// `underpaid` row refuses `Conflict`, an unknown id a `NotFound`, and an
+/// empty reason an `InvalidInput`: a clear with no recorded reasoning is
+/// not a review.
+#[tokio::test]
+async fn screening_clear_refuses_a_non_flagged_deposit() {
+    let Some(db) = database("solana_clear_refuse").await else {
+        return;
+    };
+    let org = organization(&db, "clear-refuse").await;
+    let tenants = oxsum_core::Tenants::new(db.pool().clone());
+    let wallet = wallet_for(&db, org).await;
+    // A pending intent has no hold to clear.
+    let pending_id = Uuid::new_v4();
+    db.open_solana_deposit(org, pending_id, 1000, &terms(), None, &rate(&terms(), None))
+        .await
+        .unwrap()
+        .expect("inserts");
+    let pending = db
+        .solana_screening_clear(&tenants, pending_id, "operator", "x", time::Date::MAX)
+        .await;
+    assert!(
+        matches!(pending, Err(WalletError::Conflict(_))),
+        "{pending:?}"
+    );
+    // A credited row without `screening.cleared` is not this path's replay.
+    let (credited_id, _) = credit_with(&db, &wallet, org, &terms(), None, 5_000, 0).await;
+    let credited = db
+        .solana_screening_clear(&tenants, credited_id, "operator", "x", time::Date::MAX)
+        .await;
+    assert!(
+        matches!(credited, Err(WalletError::Conflict(_))),
+        "{credited:?}"
+    );
+    // An unknown deposit is a NotFound.
+    let missing = db
+        .solana_screening_clear(&tenants, Uuid::new_v4(), "operator", "x", time::Date::MAX)
+        .await;
+    assert!(
+        matches!(missing, Err(WalletError::NotFound(_))),
+        "{missing:?}"
+    );
+    // And a clear always carries its reason.
+    let reasonless = db
+        .solana_screening_clear(&tenants, pending_id, "operator", "  ", time::Date::MAX)
+        .await;
+    assert!(
+        matches!(reasonless, Err(WalletError::InvalidInput(_))),
+        "{reasonless:?}"
+    );
+}
+
+/// Issue #1184: the approval binds to the address the caller screened — a
+/// customer edit that lands between the screen and the approval refuses
+/// `Conflict`, and a matching screen records its verdict on `meta.refund`.
+#[tokio::test]
+async fn solana_approve_refund_binds_to_the_screened_address() {
+    let Some(db) = database("solana_approve_screen").await else {
+        return;
+    };
+    let org = organization(&db, "approve-screen").await;
+    let wallet = wallet_for(&db, org).await;
+    let (deposit_id, _) = credit_with(&db, &wallet, org, &terms(), None, 3_000, 0).await;
+    db.solana_request_refund(deposit_id, "operator", "under-delivered")
+        .await
+        .unwrap();
+    let address = "4uQeVj5tqViQh7yWWGStvkEG1Zmhx6uasJtWCJziofM";
+    db.solana_set_refund_address(org, deposit_id, address)
+        .await
+        .unwrap();
+    // A screen against a different address does not approve the standing
+    // one — the bind refuses rather than paying an unscreened destination.
+    let stale = db
+        .solana_approve_refund(
+            deposit_id,
+            "operator",
+            Some("11111111111111111111111111111111"),
+        )
+        .await;
+    assert!(matches!(stale, Err(WalletError::Conflict(_))), "{stale:?}");
+    // The matching screen approves and records its verdict.
+    let approved = db
+        .solana_approve_refund(deposit_id, "operator", Some(address))
+        .await
+        .unwrap();
+    let refund = approved.refund.expect("meta.refund is recorded");
+    assert!(refund["approvedAt"].is_string());
+    assert_eq!(
+        refund["addressScreening"]["address"].as_str().unwrap(),
+        address
+    );
+    assert_eq!(
+        refund["addressScreening"]["verdict"].as_str().unwrap(),
+        "clear"
+    );
 }

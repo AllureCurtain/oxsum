@@ -123,14 +123,19 @@ export function solanaStatus(input: {
       return { phase: "settling", tone: "info", key: "topup.solanaStatusSettling" };
     case 409: {
       // #1142's 409 names the exception in its message ("underpaid",
-      // "after the intent expired"); a code may do so too. Match the word,
-      // never the whole sentence.
+      // "after the intent expired", "flagged by screening"); a code may do
+      // so too. Match the word, never the whole sentence.
       const text = `${code ?? ""} ${message ?? ""}`.toLowerCase();
       if (text.includes("underpaid")) {
         return { phase: "underpaid", tone: "error", key: "topup.solanaStatusUnderpaid" };
       }
       if (text.includes("late") || text.includes("expired")) {
         return { phase: "late", tone: "error", key: "topup.solanaStatusLate" };
+      }
+      // #1184's flagged confirm: the parked deposit reads held-for-review,
+      // never the "settling" a 404 would pretend.
+      if (text.includes("flagged") || text.includes("held for review")) {
+        return { phase: "flagged", tone: "warn", key: "topup.solanaStatusFlagged" };
       }
       return { phase: "exception", tone: "error", key: "topup.solanaStatusException" };
     }
