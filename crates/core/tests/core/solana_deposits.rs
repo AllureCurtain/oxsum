@@ -1240,16 +1240,23 @@ impl ChainLookup for PayoutStub {
     fn find_reference<'a>(
         &'a self,
         _reference: &'a str,
-    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Vec<String>> + Send + 'a>> {
-        Box::pin(async { Vec::new() })
+    ) -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = Result<Vec<String>, LookupError>> + Send + 'a>,
+    > {
+        Box::pin(async { Ok(Vec::new()) })
     }
     fn validate_transfer<'a>(
         &'a self,
         _signature: &'a str,
         _expected: &'a ExpectedTransfer,
-    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Option<ValidatedTransfer>> + Send + 'a>>
-    {
-        Box::pin(async { None })
+    ) -> std::pin::Pin<
+        Box<
+            dyn std::future::Future<Output = Result<Option<ValidatedTransfer>, LookupError>>
+                + Send
+                + 'a,
+        >,
+    > {
+        Box::pin(async { Ok(None) })
     }
     fn validate_payout<'a>(
         &'a self,
