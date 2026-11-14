@@ -464,10 +464,10 @@ pub(crate) async fn deposits_csv(
 ///
 /// - `signature` — `facilitator_tx_hash` (or `meta.signature`), the paying
 ///   transaction.
-/// - `payer` — `meta.payerAddress` when a path recorded it, falling back to
-///   `meta.screening.address` on a `flagged` row; empty when the row never
-///   recorded one (the verify context's `payerAddress` is not merged into
-///   `meta` today — documented, not invented).
+/// - `payer` — `meta.payerAddress`, which every terminal write merges from
+///   the verify context (issue #1186), falling back to
+///   `meta.screening.address` on a `flagged` row parked before the merge
+///   landed; empty on a `pending` row that never recorded one.
 /// - `delivered`/`expected` — the locked asset's own base units
 ///   (`meta.delivered`, `meta.expected`/`meta.solLamports`).
 /// - `rateMicro` — the intent's locked `meta.rateMicro`.
@@ -552,16 +552,28 @@ pub(crate) struct UnmatchedTransfer {
     matched_intent: bool,
 }
 
-/// The scan's answer: how much history was walked and which transfers in it
-/// recorded no deposit.
+/// The scan's answer (issue #1188): three distinct figures the old report
+/// conflated — how much history was walked, how many paying transfers it
+/// found, which of them recorded no deposit — plus the bound signal.
 #[derive(serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct ScanReport {
-    /// How many `payTo` signature-history entries the walk scanned.
+    /// How many `payTo` signature-history entries the walk actually
+    /// inspected — one `getTransaction` each, bounded at `limit`. NOT the
+    /// credited count (that was the bug: `scanned` used to read
+    /// `signatures.len()`, which was the filtered transfers found).
     scanned: usize,
-    /// The transfers that paid `payTo` but match no
-    /// `deposits.facilitator_tx_hash` — each needs an operator's eyes.
+    /// How many of the walked transactions actually delivered value into the
+    /// vault in a whitelisted asset — one per (signature, asset) leg, so a
+    /// transaction paying SOL + an SPL mint counts twice.
+    credited: usize,
+    /// The credited transfers that match no
+    /// `deposits.facilitator_tx_hash` — each needs an operator's eyes;
+    /// `unmatched.len()` is their count.
     unmatched: Vec<UnmatchedTransfer>,
+    /// Whether the walk stopped at `limit` while older history may exist
+    /// beyond the bound — `false` when the signature history ran out first.
+    limit_reached: bool,
 }
 
 /// `POST /api/v1/admin/solana/reconciliation/scan` (issue #1149): walks
@@ -589,21 +601,24 @@ pub(crate) async fn scan(
         .limit
         .unwrap_or(DEFAULT_SCAN_SIGNATURES)
         .clamp(1, MAX_SCAN_SIGNATURES);
-    // The chain walk — `payTo`'s inbound transfers, bounded.
-    let scanned = verifier.scan_received(limit).await;
-    let signatures: Vec<String> = scanned.iter().map(|t| t.signature.clone()).collect();
+    // The chain walk — `payTo`'s inbound transfers, bounded. `walked` is the
+    // signatures inspected, `credited` the paying transfers among them
+    // (one row per asset leg), `history_bounded` the truncation signal.
+    let walk = verifier.scan_received(limit).await;
+    let signatures: Vec<String> = walk.credited.iter().map(|t| t.signature.clone()).collect();
     // Diff against the recorded deposits: an on-chain signature that paid
     // the vault but appears nowhere is money that arrived with no intent.
     let recorded = state.db.solana_recorded_signatures(&signatures).await?;
-    let unmatched = scanned
-        .into_iter()
+    let unmatched = walk
+        .credited
+        .iter()
         .filter(|t| !recorded.contains(&t.signature))
         .map(|t| UnmatchedTransfer {
-            signature: t.signature,
+            signature: t.signature.clone(),
             block_time: t.block_time,
-            asset: t.asset,
+            asset: t.asset.clone(),
             delivered: t.delivered,
-            payer: t.payer,
+            payer: t.payer.clone(),
             matched_intent: false,
         })
         .collect::<Vec<_>>();
@@ -612,16 +627,20 @@ pub(crate) async fn scan(
         oxsum_core::audit_action::SOLANA_RECONCILE_SCAN,
         None,
         serde_json::json!({
-            "scanned": signatures.len(),
+            "scanned": walk.walked,
+            "credited": walk.credited.len(),
             "unmatched": unmatched.len(),
             "limit": limit,
+            "limitReached": walk.history_bounded,
         }),
         Some(&format!("solana-reconcile-scan/{}", Uuid::new_v4())),
     )
     .await?;
     ok(ScanReport {
-        scanned: signatures.len(),
+        scanned: walk.walked,
+        credited: walk.credited.len(),
         unmatched,
+        limit_reached: walk.history_bounded,
     })
 }
 

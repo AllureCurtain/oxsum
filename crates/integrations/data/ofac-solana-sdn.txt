@@ -7,11 +7,23 @@
 # case-folded.
 #
 # Provenance: the U.S. Treasury OFAC Specially Designated Nationals list's
-# "Digital Currency Address - SOL" entries, as published in OFAC's sanctions
-# list data (https://sanctionslist.ofac.treas.gov/). The file ships minimal —
-# it is a floor, not the universe. A deployment refreshes it out-of-band via
-# OXSUM_SOLANA_SDN_LIST_PATH (point it at a regenerated copy of this format)
-# and adds API coverage via OXSUM_SOLANA_SANCTIONS_API_KEY; the file is
-# parsed at boot and a listed entry is `Flagged` without any network call.
+# "Digital Currency Address - SOL" entries, retrieved 2026-11-14 from OFAC's
+# published SDN data:
+#   https://sanctionslistservice.ofac.treas.gov/api/download/sdn_advanced.xml
+#   (cross-checked against https://www.treasury.gov/ofac/downloads/sdn.xml)
+# The file is a floor, not the universe. A deployment refreshes it out-of-band
+# via OXSUM_SOLANA_SDN_LIST_PATH (point it at a regenerated copy of this
+# format) and adds API coverage via OXSUM_SOLANA_SANCTIONS_API_KEY; the file
+# is parsed at boot and a listed entry is `Flagged` without any network call.
 #
-# Addresses (append below; keep the format):
+# Addresses:
+
+# SOKOLOVSKI, Rolan (Individual)
+42RLPACwZPx3vYYmxSueqsogfynBDqXK298EDsNoyoHi
+
+# RASHEVSKYI, Dmytro (Individual)
+Fc1EwQUZyTEagaDvA1utHXCcZNyG1x2PLt2DfNu1cJdH
+FuCC7GoYwt5TsNTjWL23Xx9UKCvC18chjMEFPL3vJDCC
+
+# SHPS SHELBIT (Entity)
+6wjqWWra8ombzaw6VHrG5xpQ972jCYF6bbHiFCbWmr4U

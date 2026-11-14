@@ -5422,12 +5422,15 @@ export interface paths {
          * Open a Solana top-up intent
          * @description The `solana` deposit rail (issues #1117, #1139, #1140): opens a
          *     `pending` deposit intent and answers the `reference`, `asset`,
-         *     `payTo`, `amountLamports` and `expiresAt` the caller's wallet needs
-         *     to pay it — the whitelist asset the body's `asset` names (`sol`,
-         *     `usdc`, …) or the deployment's `OXSUM_SOLANA_DEFAULT_ASSET` when
-         *     omitted. `payment_ref` anchors on the per-intent `reference` marker
-         *     account the paying transaction must carry, so the intent is unique
-         *     by construction.
+         *     `payTo`, `amountLamports`, `expiresAt` and `cluster` the caller's
+         *     wallet needs to pay it — the whitelist asset the body's `asset`
+         *     names (`sol`, `usdc`, …) or the deployment's
+         *     `OXSUM_SOLANA_DEFAULT_ASSET` when omitted. `payment_ref` anchors on
+         *     the per-intent `reference` marker account the paying transaction must
+         *     carry, so the intent is unique by construction. `cluster` names the
+         *     network the rail pays on (`mainnet-beta`, `devnet`, `testnet`; issue
+         *     #1181) — Solana addresses are identical across clusters, so a wallet
+         *     must send on the cluster the intent declares.
          *
          *     The amount books at the rate the intent locks at open. A `sol`
          *     intent is oracle-priced: the open samples Pyth Hermes for the
@@ -15484,10 +15487,11 @@ export interface paths {
          *     The column freeze — `depositId`, `organizationId`, `paymentRef`
          *     (the intent's `reference` marker), `signature` (the paying
          *     transaction — `facilitator_tx_hash`), `payer` (the attributed
-         *     payer: `meta.payerAddress` when a path recorded it, falling back
-         *     to `meta.screening.address` on a `flagged` row; empty when no path
-         *     recorded one — the verify context's `payerAddress` is not merged
-         *     into `meta` today), `asset` (the whitelist key the intent
+         *     payer: `meta.payerAddress`, which every terminal write merges
+         *     from the verify context — issue #1186 — falling back to
+         *     `meta.screening.address` on a `flagged` row parked before the
+         *     merge landed; empty on a `pending` row that never recorded
+         *     one), `asset` (the whitelist key the intent
          *     locked), `amountMinor` (the credit figure opened for),
          *     `delivered`/`expected` (the located transfer's delivery and the
          *     intent's demand in that asset's own base units), `rateMicro`
@@ -15583,7 +15587,12 @@ export interface paths {
                 };
             };
             responses: {
-                /** @description The scan report — scanned count plus the unmatched transfers */
+                /**
+                 * @description The scan report — `scanned` signatures actually walked, `credited`
+                 *     transfers that paid `payTo` in a whitelisted asset, `unmatched`
+                 *     rows with no recorded deposit, and `limitReached` when older
+                 *     history may exist beyond the bound
+                 */
                 200: {
                     headers: {
                         [name: string]: unknown;
@@ -22628,6 +22637,11 @@ export interface components {
          * @description The opened intent: everything a wallet needs to pay it. `reference` is
          *     the per-intent marker account the paying transaction must carry as a
          *     read-only, non-signer account key — the rail finds the transfer by it.
+         *     `cluster` pins the network the rail pays on (issue #1181): Solana
+         *     addresses are identical across clusters, so the page must know which
+         *     one the server means — a Solana Pay URL carries it as `cluster=` when
+         *     it is not `mainnet-beta`, and a wallet adapter refuses to send through
+         *     an endpoint that does not match.
          */
         SolanaTopupResponse: {
             /** @description the per-intent marker address the transfer must carry */
@@ -22658,6 +22672,16 @@ export interface components {
              * @description when the unpaid intent lapses
              */
             expiresAt: string;
+            /**
+             * @description The Solana cluster the rail pays on — `OXSUM_SOLANA_CLUSTER`
+             *     when set, else derived from the deployment's RPC endpoints
+             *     (validated consistent at boot, issue #1181). The `cluster`
+             *     parameter a Solana Pay transfer-request URL carries — a
+             *     `mainnet-beta` intent may omit the parameter but the value here
+             *     still names the network the intent pays on.
+             * @enum {string}
+             */
+            cluster: "mainnet-beta" | "devnet" | "testnet";
         };
         SolanaConfirmRequest: {
             /** @description the intent's `reference` marker — the caller's copy of the intent it opened, not the chain signature; the rail locates and validates the paying transaction itself */
@@ -22713,7 +22737,7 @@ export interface components {
             rateMicro?: number | null;
             /** @description the paying transaction's signature */
             signature?: string | null;
-            /** @description the attributed payer — `meta.payerAddress` when a path recorded it */
+            /** @description the attributed payer — `meta.payerAddress`, which every terminal write merges (issue #1186), else `meta.screening.address` on a `flagged` row parked before the merge; null when no path recorded one */
             payer?: string | null;
             /**
              * Format: uuid
@@ -22761,10 +22785,14 @@ export interface components {
             limit: number;
         };
         SolanaScanReport: {
-            /** @description how many `payTo` signature-history entries the walk scanned */
+            /** @description how many `payTo` signature-history entries the walk actually inspected (one `getTransaction` each) — bounded at `limit` */
             scanned: number;
-            /** @description the transfers that paid `payTo` but match no recorded deposit — the "money arrived with no intent" rows */
+            /** @description how many of the walked transactions actually delivered value into `payTo` in a whitelisted asset — each becomes a row the deposits table is diffed against */
+            credited: number;
+            /** @description the credited transfers whose signature no `deposits.facilitator_tx_hash` records — the "money arrived with no intent" rows; `unmatched.length` is their count */
             unmatched: components["schemas"]["SolanaUnmatchedTransfer"][];
+            /** @description whether the walk stopped at `limit` while more signature history may exist beyond it — `false` when `payTo`'s history ended before the bound */
+            limitReached: boolean;
         };
         SolanaUnmatchedTransfer: {
             /** @description the on-chain transaction's signature */

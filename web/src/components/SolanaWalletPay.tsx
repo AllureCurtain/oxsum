@@ -11,9 +11,13 @@
  * The flow: pick (or auto-pick) a usable wallet → `connect()` → build the
  * intent's transfer (`buildSolanaTransfer`, reference marker appended
  * read-only) → `adapter.sendTransaction` signs and submits through the
- * public/`VITE_SOLANA_RPC_URL` endpoint → the parent re-asks the confirm
- * endpoint the same way "I've sent it" does, so credit rides the existing
- * poll/status path rather than a parallel one.
+ * `VITE_SOLANA_RPC_URL` endpoint (or the public mainnet one for a
+ * `mainnet-beta` intent) → the parent re-asks the confirm endpoint the same
+ * way "I've sent it" does, so credit rides the existing poll/status path
+ * rather than a parallel one. Issue #1181 pins the network: the send refuses
+ * when the endpoint's shape disagrees with the intent's `cluster`, and a
+ * non-mainnet intent without a configured endpoint is never sent at all —
+ * the QR, whose `cluster=` carries the network, stays the payment path.
  */
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
@@ -25,6 +29,13 @@ import type { SolanaIntent } from "../api/hooks";
 import { buildSolanaTransfer, intentTransferTerms, solanaRpcEndpoint } from "../lib/solanaTx";
 import { usableSolanaWallets } from "../lib/solanaWallets";
 import { Banner, Button } from "./ui";
+
+/** The endpoint problem that disables the send button (issue #1181): a
+ * `VITE_SOLANA_RPC_URL` that names a different cluster than the intent's
+ * (`mismatch`), or no `VITE_` variable at all on a non-mainnet rail
+ * (`unconfigured`). Either way the QR/manual transfer — whose `cluster=`
+ * carries the right network — stays the payment path. */
+type EndpointBlock = "mismatch" | "unconfigured";
 
 type WalletPhase =
   | "pick" // several wallets detected — choose one
@@ -65,9 +76,21 @@ export function SolanaWalletPay({
     () => intentTransferTerms(intent, payer),
     [intent, payer],
   );
+  // The send's endpoint must agree with the intent's own cluster (issue
+  // #1181): Solana addresses are identical across clusters, so an endpoint
+  // naming a different network would move real money while the rail waits
+  // for a transfer on another cluster. `blocked` carries the refusal kind —
+  // a banner names it and the send never starts.
+  const endpoint = useMemo(() => solanaRpcEndpoint(intent.cluster), [intent.cluster]);
+  const blocked: EndpointBlock | null = "error" in endpoint ? endpoint.error : null;
   const connectionRef = useRef<Connection | null>(null);
-  if (connectionRef.current === null) {
-    connectionRef.current = new Connection(solanaRpcEndpoint(), "confirmed");
+  const endpointUrl = "ok" in endpoint ? endpoint.ok : null;
+  // A fresh intent on a different cluster must not reuse the old intent's
+  // Connection — re-derive it whenever the resolved endpoint changes.
+  const connectionUrlRef = useRef<string | null>(null);
+  if (connectionUrlRef.current !== endpointUrl) {
+    connectionUrlRef.current = endpointUrl;
+    connectionRef.current = endpointUrl === null ? null : new Connection(endpointUrl, "confirmed");
   }
 
   if (usable.length === 0) {
@@ -82,6 +105,17 @@ export function SolanaWalletPay({
 
   const pay = async (adapter: Adapter) => {
     setError(null);
+    // Never send through an endpoint that disagrees with the intent's
+    // cluster (issue #1181) — the QR/manual transfer is the path a blocked
+    // send falls back to.
+    if (blocked !== null || connectionRef.current === null) {
+      setError(
+        blocked === "mismatch"
+          ? t("topup.solanaWalletClusterMismatch", { cluster: intent.cluster })
+          : t("topup.solanaWalletClusterUnconfigured", { cluster: intent.cluster }),
+      );
+      return;
+    }
     try {
       setPhase("connecting");
       if (adapter.publicKey === null) await adapter.connect();
@@ -143,7 +177,7 @@ export function SolanaWalletPay({
                 ? t("topup.solanaWalletConnecting")
                 : t("topup.solanaWalletSending")
             }
-            disabled={phase === "sent" || usable.length === 0}
+            disabled={phase === "sent" || usable.length === 0 || blocked !== null}
           >
             {t("topup.solanaWalletPay", { wallet: String(active.name) })}
           </Button>
@@ -170,6 +204,20 @@ export function SolanaWalletPay({
       */}
       {active !== null && payer !== null && terms === null ? (
         <Banner tone="warn">{t("topup.solanaWalletBadIntent")}</Banner>
+      ) : null}
+      {/* The endpoint/cluster refusal (issue #1181): the configured browser
+          RPC names a different network than the intent pays on, or no
+          `VITE_SOLANA_RPC_URL` exists on a non-mainnet rail. The send stays
+          refused — the QR below carries `cluster=` and pays correctly. */}
+      {blocked === "mismatch" ? (
+        <Banner tone="warn">
+          {t("topup.solanaWalletClusterMismatch", { cluster: intent.cluster })}
+        </Banner>
+      ) : null}
+      {blocked === "unconfigured" ? (
+        <Banner tone="warn">
+          {t("topup.solanaWalletClusterUnconfigured", { cluster: intent.cluster })}
+        </Banner>
       ) : null}
     </div>
   );
