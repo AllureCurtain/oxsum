@@ -86,13 +86,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     tracing::info!("oxsum schema ready");
 
     // Every whitelisted SPL mint is audited on-chain before the rail serves
-    // traffic (issues #1129, #1140): the mint's own decimals replace the
-    // config's placeholder — a 6-decimal USDC mint priced at 9 would
-    // mischarge 1000× — and its owner program must be the classic SPL Token
-    // program, never Token-2022, whose extensions the rail does not model.
-    // A failure refuses the boot with the mint named. The audit mutates the
-    // verifier's terms, so it runs before the config is shared with the
-    // router and the jobs worker.
+    // traffic (issues #1129, #1140, #1182): the mint's own decimals replace
+    // the config's placeholder — a 6-decimal USDC mint priced at 9 would
+    // mischarge 1000× — its owner program must be the classic SPL Token
+    // program and nothing else (Token-2022 is named outright; any other
+    // owner is not a mint at all), and its account data must be the classic
+    // 82-byte initialized mint layout. A failure refuses the boot with the
+    // mint named. The audit mutates the verifier's terms, so it runs before
+    // the config is shared with the router and the jobs worker.
     if let Some(verifier) = config.solana_for_boot_audit() {
         verifier
             .verify_mints()

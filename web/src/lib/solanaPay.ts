@@ -13,6 +13,25 @@
  * request — the wallet, not the page, decides what the transfer carries.
  */
 
+/** The Solana cluster an intent pays on — the open-intent `cluster` field's
+ * own union (issue #1181), spelled out here so the pure URL builder stays
+ * free of the API layer. `mainnet-beta` is the production default a bare
+ * Solana Pay URL already means; `devnet` and `testnet` are the values the
+ * `cluster` parameter must carry. */
+export type SolanaCluster = "mainnet-beta" | "devnet" | "testnet";
+
+/** The cluster the page names beside an intent's terms (issue #1181): the
+ * `cluster` value itself — wallets and the spec already spell the names the
+ * customer needs to see, so the display string is the value verbatim, kept
+ * behind one helper so the page never drops a stray literal. `undefined`/
+ * an unknown value answers `mainnet-beta`: an intent that does not declare
+ * a network is production-shaped by the same rule the endpoint resolution
+ * takes — the dangerous direction is never rendered as test money. */
+export function solanaClusterName(cluster: SolanaCluster | string | null | undefined): SolanaCluster {
+  if (cluster === "devnet" || cluster === "testnet") return cluster;
+  return "mainnet-beta";
+}
+
 /** The terms the transfer-request URL pins. `assetDecimals` converts
  * `baseUnits` (lamports for SOL, the mint's smallest unit for an SPL token)
  * into the decimal `amount` wallets display; `splToken` stays `null`/`undefined`
@@ -29,6 +48,11 @@ export interface SolanaPayRequest {
   reference: string;
   /** The SPL mint when the intent prices a token; omitted for native SOL. */
   splToken?: string | null;
+  /** The network the payment must land on (issue #1181). `mainnet-beta` (or
+   * unset) writes no `cluster` parameter — Solana Pay's own spec treats it
+   * as the default; `devnet`/`testnet` write `cluster=` so a scanning wallet
+   * sends on the same network the rail verifies. */
+  cluster?: SolanaCluster;
   /** The wallet-facing label (e.g. "oxsum top-up"). */
   label?: string;
   /** The wallet-facing memo (e.g. the deposit id). */
@@ -64,7 +88,7 @@ export function baseUnitsDecimal(baseUnits: number, decimals: number): string | 
  * a second value into the request.
  */
 export function solanaPayUrl(request: SolanaPayRequest): string | null {
-  const { recipient, baseUnits, assetDecimals, reference, splToken, label, memo } = request;
+  const { recipient, baseUnits, assetDecimals, reference, splToken, cluster, label, memo } = request;
   if (recipient.trim() === "" || reference.trim() === "") return null;
   const amount = baseUnitsDecimal(baseUnits, assetDecimals);
   if (amount === null) return null;
@@ -75,6 +99,11 @@ export function solanaPayUrl(request: SolanaPayRequest): string | null {
   // request.
   if (splToken) params.set("spl-token", splToken);
   params.set("reference", reference);
+  // `cluster` names the network the transfer must land on (issue #1181):
+  // Solana addresses are identical across clusters, so a devnet/testnet
+  // intent must pin it or the wallet defaults to mainnet — real money to the
+  // same `payTo`. `mainnet-beta` omits it, matching the spec's own default.
+  if (cluster !== undefined && cluster !== "mainnet-beta") params.set("cluster", cluster);
   if (label !== undefined && label !== "") params.set("label", label);
   if (memo !== undefined && memo !== "") params.set("memo", memo);
   return `solana:${encodeURIComponent(recipient)}?${params.toString()}`;

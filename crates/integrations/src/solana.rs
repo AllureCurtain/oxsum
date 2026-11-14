@@ -31,9 +31,9 @@
 //! endpoint's host. A provider that authenticates by header sets
 //! `OXSUM_SOLANA_RPC_AUTH_HEADER`, applied to every endpoint's calls.
 //!
-//! What is *not* verified here, on the record: `confirmed` is the default
-//! commitment because devnet top-ups are low-value and latency matters more
-//! than the residual reorg window; `finalized` is one config flag away. No
+//! What is *not* verified here, on the record: `finalized` is the default
+//! commitment (issue #1129) — the mainnet-grade setting; a devnet loop sets
+//! `OXSUM_SOLANA_COMMITMENT=confirmed` explicitly for latency. No
 //! watcher holds a subscription open — the periodic job polls.
 
 use std::sync::Mutex;
@@ -42,9 +42,26 @@ use std::time::{Duration, Instant};
 
 use serde_json::{Value, json};
 
+/// The classic SPL Token program id — the only owner a whitelisted mint may
+/// carry (issue #1182). The boot's mint audit refuses any other owner:
+/// Token-2022 (`oxsum_core::TOKEN_2022_PROGRAM_ID`, still named explicitly so
+/// an operator knows *why*) and every other program outright — an account
+/// that is not a classic SPL mint cannot be trusted to price a deposit.
+pub const SPL_TOKEN_PROGRAM_ID: &str = "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA";
+
+/// The classic SPL mint account's byte length: mintAuthority option+key (36)
+/// plus supply (8) plus decimals (1) plus isInitialized (1) plus
+/// freezeAuthority option+key (36). A mint account that is not exactly this
+/// long is not the layout the rail parses — the audit refuses it rather than
+/// reading `decimals`/`isInitialized` off shifted bytes (issue #1182).
+const SPL_MINT_DATA_LEN: usize = 82;
+
+/// The classic SPL mint layout's `isInitialized` flag offset.
+const SPL_MINT_IS_INITIALIZED_OFFSET: usize = 45;
+
 /// Standard base64 decode for the `getAccountInfo` `data` field — a thin
-/// wrapper so `mint_decimals` names its error instead of unwrapping a
-/// library type.
+/// wrapper so the mint audit names its error instead of unwrapping a library
+/// type.
 fn base64_decode(raw: &str) -> Result<Vec<u8>, String> {
     use base64::Engine as _;
     base64::engine::general_purpose::STANDARD
@@ -92,7 +109,7 @@ pub struct SolanaConfig {
     /// SPL Token program, never Token-2022.
     pub mints: Vec<MintWhitelistEntry>,
     /// The commitment `find_reference` / `validate_transfer` ask the RPC for:
-    /// `confirmed` (default) or `finalized` (`OXSUM_SOLANA_COMMITMENT`).
+    /// `finalized` (default) or `confirmed` (`OXSUM_SOLANA_COMMITMENT`).
     pub commitment: String,
     /// An auth header applied to every endpoint's calls
     /// (`OXSUM_SOLANA_RPC_AUTH_HEADER`, e.g. `Authorization: Bearer …`) — for
@@ -395,56 +412,62 @@ impl SolanaRpcClient {
         &self.config
     }
 
-    /// Reads a mint's decimals from the chain (issues #1129, #1140).
-    /// `getAccountInfo(mint)` with base64 encoding answers the raw SPL mint
-    /// layout, whose `decimals` byte sits at offset 44 (after mintAuthority
-    /// option+key, supply and the initialized flag). The boot calls this once
-    /// per whitelisted mint so the mint's own figure — never an operator's
-    /// declaration — sets `asset_decimals`: a 6-decimal USDC mint read as 9
-    /// decimals would overcharge by 1000×.
+    /// Reads a mint account off the chain once (issue #1182): one
+    /// `getAccountInfo(mint, base64)` answers both the program that owns the
+    /// account and its raw data, so the audit's owner check and layout parse
+    /// can never observe *different* accounts (the defect two separate reads
+    /// carried — the decimals could come from an account the owner check
+    /// never saw).
     ///
-    /// `Err` when the RPC fails or the mint account is missing/unparseable.
-    pub async fn mint_decimals(&self, mint: &str) -> Result<u32, SolanaError> {
+    /// `Err` when the RPC fails or the account is missing/unparseable.
+    async fn mint_account(&self, mint: &str) -> Result<(String, Vec<u8>), SolanaError> {
         let result = self
             .call(
-                "mint_decimals",
+                "mint_account",
                 "getAccountInfo",
                 json!([mint, {"encoding": "base64"}]),
             )
             .await?;
+        let owner = result["value"]["owner"]
+            .as_str()
+            .map(str::to_owned)
+            .ok_or_else(|| SolanaError("getAccountInfo returned no owner".into()))?;
         let data_b64 = result["value"]["data"][0]
             .as_str()
             .ok_or_else(|| SolanaError("getAccountInfo returned no mint data".into()))?;
         let bytes = base64_decode(data_b64)
             .map_err(|e| SolanaError(format!("mint data is not base64: {e}")))?;
-        // SPL mint layout: mintAuthority (36) + supply (8) + decimals (1) +
-        // isInitialized (1) + freezeAuthority (36) — decimals is byte 44.
-        let decimals = bytes
-            .get(44)
-            .copied()
-            .ok_or_else(|| SolanaError("mint account data is too short".into()))?;
-        Ok(u32::from(decimals))
+        Ok((owner, bytes))
     }
 
-    /// Reads the program that owns a mint account — the Token or Token-2022
-    /// program id `getAccountInfo` reports as `owner`. The boot calls this
-    /// once per whitelisted mint and refuses Token-2022: extensions the rail
-    /// does not model (transfer fees, hooks, required memos) could misprice
-    /// or mis-credit a deposit (issue #1140).
+    /// The program that owns a mint account — the classic SPL Token or
+    /// Token-2022 program id `getAccountInfo` reports as `owner`. The boot
+    /// calls this once per whitelisted mint and refuses any other owner
+    /// (issue #1182): Token-2022 is named explicitly (its transfer-fee and
+    /// hook extensions the rail does not model), and a mint owned by any
+    /// other program — the System program, a custom program — is refused
+    /// too, because an account that is not a classic SPL mint cannot price a
+    /// deposit.
     ///
     /// `Err` when the RPC fails or the account is missing/unparseable.
     pub async fn mint_owner(&self, mint: &str) -> Result<String, SolanaError> {
-        let result = self
-            .call(
-                "mint_owner",
-                "getAccountInfo",
-                json!([mint, {"encoding": "base64"}]),
-            )
-            .await?;
-        result["value"]["owner"]
-            .as_str()
-            .map(str::to_owned)
-            .ok_or_else(|| SolanaError("getAccountInfo returned no owner".into()))
+        Ok(self.mint_account(mint).await?.0)
+    }
+
+    /// Reads a mint's decimals from the chain (issues #1129, #1140). The
+    /// raw account data is first checked against the classic SPL mint layout
+    /// — exactly 82 bytes with `isInitialized` set (issue #1182) — so a
+    /// truncated account or an uninitialized mint is refused rather than
+    /// having byte 44 read off a buffer that is not a mint at all. The boot
+    /// calls this once per whitelisted mint so the mint's own figure — never
+    /// an operator's declaration — sets `asset_decimals`: a 6-decimal USDC
+    /// mint read as 9 decimals would overcharge by 1000×.
+    ///
+    /// `Err` when the RPC fails, the mint account is missing, or its data is
+    /// not a well-formed classic SPL mint layout.
+    pub async fn mint_decimals(&self, mint: &str) -> Result<u32, SolanaError> {
+        let (_owner, bytes) = self.mint_account(mint).await?;
+        mint_decimals_of(&bytes)
     }
 
     /// One JSON-RPC call over the endpoint pool (issue #1145): walk the
@@ -953,6 +976,27 @@ impl SolanaRpcClient {
             payers,
         }))
     }
+}
+
+/// The classic SPL mint layout's `decimals` field, checked against the whole
+/// layout first (issue #1182): the buffer must be exactly
+/// [`SPL_MINT_DATA_LEN`] bytes — the fixed classic mint size — and its
+/// `isInitialized` flag (byte 45) must be set. A truncated account, a padded
+/// Token-2022 blob, or an uninitialized mint is `Err` rather than a decimals
+/// read off bytes that are not a mint.
+fn mint_decimals_of(bytes: &[u8]) -> Result<u32, SolanaError> {
+    if bytes.len() != SPL_MINT_DATA_LEN {
+        return Err(SolanaError(format!(
+            "mint account data is {} bytes, not the {SPL_MINT_DATA_LEN}-byte classic SPL mint layout",
+            bytes.len()
+        )));
+    }
+    if bytes[SPL_MINT_IS_INITIALIZED_OFFSET] != 1 {
+        return Err(SolanaError("the mint account is not initialized".into()));
+    }
+    // Layout: mintAuthority option+key (36) + supply (8) + decimals (1) +
+    // isInitialized (1) + freezeAuthority option+key (36) — decimals is byte 44.
+    Ok(u32::from(bytes[44]))
 }
 
 /// The `core` verifier's `ChainLookup` over this JSON-RPC client: the two
@@ -2057,22 +2101,20 @@ mod tests {
         }))
         .await;
         // A `getAccountInfo` answer: value.owner is the classic SPL Token
-        // program; value.data[0] is a base64 SPL mint layout whose byte 44
-        // (decimals) is 6 — 68 zero bytes would read 0, so craft it.
+        // program; value.data[0] is a base64 classic SPL mint layout — 82
+        // bytes, isInitialized (byte 45) set — whose byte 44 (decimals) is 6.
         use base64::Engine as _;
-        let mut mint_layout = vec![0u8; 68];
-        mint_layout[44] = 6;
-        let mint_b64 = base64::engine::general_purpose::STANDARD.encode(mint_layout);
+        let mint_b64 = base64::engine::general_purpose::STANDARD.encode(classic_mint_layout(6));
         let (url_good, _good) = stub_rpc(json!({
             "jsonrpc": "2.0", "id": 1,
-            "result": {"value": {"owner": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA", "data": [mint_b64, "base64"]}}
+            "result": {"value": {"owner": SPL_TOKEN_PROGRAM_ID, "data": [mint_b64, "base64"]}}
         }))
         .await;
         let client = client(&[url_bad, url_good], None);
         let decimals = client.mint_decimals("someMint").await.unwrap();
         assert_eq!(decimals, 6);
         let owner = client.mint_owner("someMint").await.unwrap();
-        assert_eq!(owner, "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA");
+        assert_eq!(owner, SPL_TOKEN_PROGRAM_ID);
         // The first audit read started on the bad endpoint and failed over;
         // the round-robin cursor started the second on the good one, so the
         // bad endpoint saw exactly one hit — the failover worked.
@@ -2081,6 +2123,66 @@ mod tests {
             1,
             "the bad endpoint was tried once then failed over"
         );
+    }
+
+    /// A well-formed classic SPL mint account body: exactly
+    /// `SPL_MINT_DATA_LEN` bytes with `isInitialized` (byte 45) set and
+    /// `decimals` (byte 44) filled — the shape `mint_decimals_of` accepts.
+    fn classic_mint_layout(decimals: u8) -> Vec<u8> {
+        let mut layout = vec![0u8; SPL_MINT_DATA_LEN];
+        layout[44] = decimals;
+        layout[SPL_MINT_IS_INITIALIZED_OFFSET] = 1;
+        layout
+    }
+
+    /// Issue #1182: the mint layout is validated before byte 44 is ever read
+    /// — a truncated account, a longer (extension-padded) blob, or an
+    /// uninitialized mint is `Err`, never a decimals figure off data that is
+    /// not a classic mint.
+    #[test]
+    fn mint_decimals_of_validates_the_classic_layout() {
+        // The well-formed layout yields its decimals byte.
+        assert_eq!(mint_decimals_of(&classic_mint_layout(6)).unwrap(), 6);
+        assert_eq!(mint_decimals_of(&classic_mint_layout(9)).unwrap(), 9);
+
+        // Too short — the old `bytes.get(44)` arm would still have answered
+        // on a 68-byte stub; now the length must be exact.
+        let short = classic_mint_layout(6)[..68].to_vec();
+        let err = mint_decimals_of(&short).unwrap_err();
+        assert!(err.0.contains("68 bytes"), "{err:?}");
+
+        // Too long — an extension-carrying blob is not the classic layout.
+        let mut long = classic_mint_layout(6);
+        long.extend_from_slice(&[0u8; 100]);
+        assert!(mint_decimals_of(&long).is_err());
+
+        // Exactly the right length but `isInitialized` clear — a mint that
+        // was allocated but never initialized must not price a deposit.
+        let mut uninitialized = classic_mint_layout(6);
+        uninitialized[SPL_MINT_IS_INITIALIZED_OFFSET] = 0;
+        let err = mint_decimals_of(&uninitialized).unwrap_err();
+        assert!(err.0.contains("not initialized"), "{err:?}");
+
+        // Empty is the degenerate truncated case.
+        assert!(mint_decimals_of(&[]).is_err());
+    }
+
+    /// `mint_decimals` end-to-end over a stub RPC: an account whose data is
+    /// shorter than the classic layout is `Err` — the on-chain read surfaces
+    /// the same refusal the layout parser does, rather than a silently
+    /// misread byte 44.
+    #[tokio::test(flavor = "current_thread")]
+    async fn mint_decimals_refuses_a_truncated_account() {
+        use base64::Engine as _;
+        let truncated = base64::engine::general_purpose::STANDARD.encode(vec![0u8; 68]);
+        let (url, _hits) = stub_rpc(json!({
+            "jsonrpc": "2.0", "id": 1,
+            "result": {"value": {"owner": SPL_TOKEN_PROGRAM_ID, "data": [truncated, "base64"]}}
+        }))
+        .await;
+        let client = client(&[url], None);
+        let err = client.mint_decimals("someMint").await.unwrap_err();
+        assert!(err.0.contains("68 bytes"), "{err:?}");
     }
 
     /// The failover's metric shape, read back off a local Prometheus

@@ -242,6 +242,9 @@ pub struct RetentionReport {
     pub provider_raw_nulled: u64,
     /// Terminal `webhook_deliveries` rows deleted.
     pub webhook_deliveries: u64,
+    /// `solana_webhook_deliveries` dedup rows deleted (issue #1187) — the
+    /// rail's inbound pushes ride the same deliveries window.
+    pub solana_webhook_deliveries: u64,
     /// Finished `jobs` rows deleted.
     pub jobs: u64,
     /// Expired `request_log` rows deleted.
@@ -748,9 +751,10 @@ impl Db {
 
     /// The retention spec's batched cleanup (docs/decisions.md): idempotency
     /// records past their own `expires_at`, `usage_details.provider_raw` nulled
-    /// past its window, terminal webhook deliveries and finished job rows past
-    /// theirs. Each rule takes at most `RETENTION_BATCH` rows a pass — the
-    /// daily cadence drains any backlog without one giant transaction.
+    /// past its window, terminal webhook deliveries — outbound and the Solana
+    /// rail's inbound dedup — and finished job rows past theirs. Each rule
+    /// takes at most `RETENTION_BATCH` rows a pass — the daily cadence drains
+    /// any backlog without one giant transaction.
     pub async fn run_retention(
         &self,
         retention: &Retention,
@@ -789,6 +793,19 @@ impl Db {
         .execute(self.pool())
         .await?;
         report.webhook_deliveries = deliveries.rows_affected();
+
+        // The Solana rail's inbound-webhook dedup claims the same deliveries
+        // window its migration documents (issue #1187): one signature row per
+        // pushed transaction, aged out by `received_at`.
+        let solana_deliveries = sqlx::query(&format!(
+            "DELETE FROM oxsum.solana_webhook_deliveries WHERE signature IN ( \
+                 SELECT signature FROM oxsum.solana_webhook_deliveries \
+                 WHERE received_at <= $1 LIMIT {RETENTION_BATCH})"
+        ))
+        .bind(deliveries_cutoff)
+        .execute(self.pool())
+        .await?;
+        report.solana_webhook_deliveries = solana_deliveries.rows_affected();
 
         let jobs_cutoff = OffsetDateTime::now_utc() - Duration::days(retention.jobs_days);
         let jobs = sqlx::query(&format!(

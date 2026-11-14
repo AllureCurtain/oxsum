@@ -77,8 +77,9 @@ pub const USD_PEGGED_RATE_MICRO: i64 = 1_000_000;
 /// One Solana deposit-intent `open` may quote an intent this many seconds
 /// before the poll expires it (default when the config omits it): Solana
 /// Pay's own unbounded-poll guard, so a never-paid intent does not poll
-/// forever.
-const DEFAULT_INTENT_TTL_SECS: i64 = 600;
+/// forever. The 15-minute window the mainnet-readiness decision recorded
+/// (issue #1117) — a customer paying by hand needs the time.
+const DEFAULT_INTENT_TTL_SECS: i64 = 900;
 
 /// The SPL Token-2022 program id: a mint whose owner is this program is
 /// refused at boot (issue #1140). Token-2022 mints carry extensions —
@@ -86,6 +87,14 @@ const DEFAULT_INTENT_TTL_SECS: i64 = 600;
 /// not model, so the whitelist rejects them before they can misprice or
 /// mis-credit a deposit.
 pub const TOKEN_2022_PROGRAM_ID: &str = "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb";
+
+/// The classic SPL Token program id — the *only* owner a whitelisted mint
+/// may carry (issue #1182). The audit's refusal is a positive allowlist, not
+/// a Token-2022 denylist: an account owned by the System program or any
+/// other program is not a classic SPL mint and fails startup with the actual
+/// owner named. Duplicated from `integrations::solana::SPL_TOKEN_PROGRAM_ID`
+/// so core stays HTTP-free — the two are the same well-known program id.
+pub const SPL_TOKEN_PROGRAM_ID: &str = "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA";
 
 /// How a `sol` intent prices its `rate_micro` at open (issue #1139). A
 /// USD-pegged asset never consults this policy — its rate is the fixed
@@ -280,6 +289,57 @@ impl AssetTerms {
     }
 }
 
+/// The Solana cluster the rail pays on (issue #1181). Solana addresses are
+/// identical across clusters — a devnet deposit address and a mainnet one
+/// are indistinguishable — so the intent's own `cluster` is what a wallet or
+/// page reads to know which network the payment must land on. The deployment
+/// declares it once: `OXSUM_SOLANA_CLUSTER` when set, else the config derives
+/// it from the RPC endpoints' shape and refuses the boot when an explicit
+/// value disagrees with them — a `devnet` declaration over mainnet-shaped
+/// endpoints would send the page's `cluster=devnet` while the rail's own
+/// verifier reads mainnet, which is the misdirection this field exists to
+/// prevent.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SolanaCluster {
+    /// The production cluster (`mainnet-beta`) — the default an
+    /// unannotated endpoint resolves to, matching Solana Pay's own
+    /// omission of `cluster` on mainnet URLs.
+    MainnetBeta,
+    /// The public devnet — local test-validators included (their RPC is a
+    /// localhost endpoint, which the config reads as non-mainnet-shaped).
+    Devnet,
+    /// The public testnet.
+    Testnet,
+}
+
+impl SolanaCluster {
+    /// The lowercase name the API and the Solana Pay `cluster` parameter
+    /// carry: `mainnet-beta`, `devnet`, `testnet`.
+    #[must_use]
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::MainnetBeta => "mainnet-beta",
+            Self::Devnet => "devnet",
+            Self::Testnet => "testnet",
+        }
+    }
+
+    /// Parses the `OXSUM_SOLANA_CLUSTER` spelling — `mainnet-beta`,
+    /// `devnet` or `testnet`, `mainnet`/`beta`/`main` tolerated as the
+    /// common shorthand for the production cluster. `None` on anything
+    /// else: the caller names the variable in its startup error, and this
+    /// keeps the list of accepted spellings in exactly one place.
+    #[must_use]
+    pub fn parse(raw: &str) -> Option<Self> {
+        match raw.trim().to_ascii_lowercase().as_str() {
+            "mainnet-beta" | "mainnet" | "main" | "beta" => Some(Self::MainnetBeta),
+            "devnet" | "dev" => Some(Self::Devnet),
+            "testnet" | "test" => Some(Self::Testnet),
+            _ => None,
+        }
+    }
+}
+
 /// The rail's deployment: everything `verify` needs to decide whether a
 /// transaction honors an intent, and everything `open_solana_deposit` needs
 /// to write the intent's `meta`. Mirrors `SolanaConfig` in integrations so
@@ -297,6 +357,11 @@ pub struct SolanaTerms {
     /// vault receives every asset; an SPL top-up lands in its ATA for the
     /// intent's mint.
     pub pay_to: String,
+    /// The cluster the rail pays on (issue #1181) — what the `open` intent
+    /// response answers so the wallet sends on the same network the rail's
+    /// RPC pool verifies against. `MainnetBeta` by default; the config
+    /// layer fills the validated figure, never a guessed one.
+    pub cluster: SolanaCluster,
     /// The default asset's SPL mint — `None` when the default is native SOL.
     /// Kept for intents opened before the whitelist existed; new code reads
     /// [`SolanaTerms::terms_for_asset`].
@@ -402,6 +467,7 @@ impl SolanaTerms {
             .clone();
         Self {
             pay_to,
+            cluster: SolanaCluster::MainnetBeta,
             spl_token_mint: default.spl_token_mint.clone(),
             asset_decimals: default.asset_decimals,
             rate_micro: default.rate_micro,
@@ -415,6 +481,16 @@ impl SolanaTerms {
             max_amount_minor,
             opens_per_minute,
         }
+    }
+
+    /// Sets the cluster the rail pays on (issue #1181). `SolanaTerms::new`
+    /// defaults to `MainnetBeta` — the production posture a devnet
+    /// deployment overrides explicitly, never implicitly from a hint the
+    /// config layer could not validate.
+    #[must_use]
+    pub fn with_cluster(mut self, cluster: SolanaCluster) -> Self {
+        self.cluster = cluster;
+        self
     }
 }
 
@@ -508,9 +584,12 @@ pub trait ChainLookup: std::fmt::Debug + Send + Sync {
     /// read once per mint at boot so a declared figure that disagrees with
     /// the real mint refuses startup (issue #1129); with the multi-asset
     /// whitelist the figure is authoritative, never operator-declared
-    /// (issue #1140). `None` when the lookup cannot answer; never called for
-    /// native SOL (there is no mint to read). It is never on the per-request
-    /// path.
+    /// (issue #1140). The lookup validates the classic SPL mint layout
+    /// before answering — exact 82-byte data, `isInitialized` set — so a
+    /// truncated or uninitialized mint answers `None` and refuses the boot
+    /// (issue #1182). `None` when the lookup cannot answer or the account is
+    /// not a well-formed mint; never called for native SOL (there is no mint
+    /// to read). It is never on the per-request path.
     fn mint_decimals<'a>(
         &'a self,
         _mint: &'a str,
@@ -999,16 +1078,20 @@ impl SolanaRailVerifier {
         }
     }
 
-    /// The boot-time mint audit (issues #1129, #1140): every whitelisted SPL
-    /// mint is read on-chain once — its `decimals` replaces the config's
-    /// placeholder so the mint's own figure prices deposits, and its `owner`
-    /// program must be the classic SPL Token program, never Token-2022
-    /// (whose transfer-fee and hook extensions the rail does not model). A
-    /// native-SOL-only whitelist reads nothing. `Err` names the mint and the
-    /// fault — the boot refuses to start rather than misprice or accept an
-    /// extension-laden mint. `Ok(false)` would mean a mint read failed and
-    /// the caller should refuse too; the function returns `Err` in that case
-    /// so there is only one refusal shape.
+    /// The boot-time mint audit (issues #1129, #1140, #1182): every
+    /// whitelisted SPL mint is read on-chain once — its `decimals` replaces
+    /// the config's placeholder so the mint's own figure prices deposits, its
+    /// `owner` program must be the classic SPL Token program
+    /// ([`SPL_TOKEN_PROGRAM_ID`]) and nothing else, and its account data must
+    /// parse as the classic mint layout (the `mint_decimals` read refuses a
+    /// truncated or uninitialized mint, so the decimals byte is never read
+    /// off data that is not a mint). Token-2022 is still named explicitly —
+    /// its transfer-fee and hook extensions are the known wrong shape —
+    /// while every other owner names itself: an account owned by the System
+    /// program or a custom program is not a mint at all. A native-SOL-only
+    /// whitelist reads nothing. `Err` names the mint and the fault — the
+    /// boot refuses to start rather than misprice or accept an
+    /// extension-laden mint.
     pub async fn verify_mints(&mut self) -> Result<(), String> {
         for asset in &mut self.terms.assets {
             let Some(mint) = asset.spl_token_mint.clone() else {
@@ -1023,6 +1106,13 @@ impl SolanaRailVerifier {
                     "the {key:?} mint {mint} is owned by Token-2022 — the rail only \
                      accepts classic SPL Token mints (its transfer-fee and hook \
                      extensions are not modelled)"
+                ));
+            }
+            if owner != SPL_TOKEN_PROGRAM_ID {
+                return Err(format!(
+                    "the {key:?} mint {mint} is owned by {owner}, not the classic SPL \
+                     Token program {SPL_TOKEN_PROGRAM_ID} — the account is not a \
+                     classic SPL mint"
                 ));
             }
             let decimals =
@@ -1438,6 +1528,12 @@ impl Db {
     /// for the resolved asset — the caller resolves it first because an
     /// oracle sample must not ride inside the open's insert path (issue
     /// #1139).
+    ///
+    /// `opens_per_minute` is enforced inside the insert's own transaction
+    /// under a per-(rail, organization) `pg_advisory_xact_lock` (issue
+    /// #1169): count and insert serialize against every other open on the
+    /// organization, so a concurrent burst cannot read one stale count and
+    /// all land past the cap. `0` stays unlimited — that path takes no lock.
     pub async fn open_solana_deposit(
         &self,
         organization_id: Uuid,
@@ -1460,27 +1556,6 @@ impl Db {
                 "a deposit's amount must be between {} and {} minor-credits",
                 terms.min_amount_minor, terms.max_amount_minor
             )));
-        }
-        // Per-organization open rate (issue #1130): bound how many pending
-        // intents one organization may mint inside a minute — intent spam is
-        // a marker-address and poll-work exhaustion vector, not free.
-        if terms.opens_per_minute > 0 {
-            let recent: i64 = sqlx::query_scalar(
-                "SELECT count(*) FROM oxsum.deposits \
-                 WHERE rail = $1 AND organization_id = $2 \
-                   AND created_at > now() - interval '60 seconds'",
-            )
-            .bind(RAIL_SOLANA)
-            .bind(organization_id)
-            .fetch_one(self.pool())
-            .await?;
-            if recent >= terms.opens_per_minute {
-                return Err(WalletError::Forbidden(format!(
-                    "the organization opened too many solana intents; try again shortly \
-                     (limit {}/min)",
-                    terms.opens_per_minute
-                )));
-            }
         }
         // The asset the customer picked — `None` resolves the deployment's
         // default; a key off the whitelist is a 400, never a silent re-price
@@ -1525,7 +1600,7 @@ impl Db {
                 dst.insert(k.clone(), v.clone());
             }
         }
-        let inserted = sqlx::query(
+        let insert = sqlx::query(
             "INSERT INTO oxsum.deposits \
                  (deposit_id, organization_id, rail, payment_ref, amount_minor, status, meta) \
              VALUES ($1, $2, $3, $4, $5, 'pending', $6) \
@@ -1536,10 +1611,50 @@ impl Db {
         .bind(RAIL_SOLANA)
         .bind(&reference)
         .bind(amount_minor)
-        .bind(meta)
-        .execute(self.pool())
-        .await?
-        .rows_affected();
+        .bind(meta);
+        // Per-organization open rate (issue #1130): bound how many pending
+        // intents one organization may mint inside a minute — intent spam is
+        // a marker-address and poll-work exhaustion vector, not free. The
+        // count and the insert run inside ONE transaction under a per-
+        // (rail, organization) advisory lock (issue #1169): an unserialized
+        // `SELECT count(*)` then `INSERT` on separate pool checkouts is a
+        // TOCTOU — a concurrent burst all reads the same pre-burst count and
+        // lands past the cap. `pg_advisory_xact_lock` serializes the pair so
+        // every open judges the minute against what already committed, and
+        // the lock releases with the transaction. The uncapped path keeps
+        // the bare insert — no lock, no transaction, no extra round-trip.
+        let inserted = if terms.opens_per_minute > 0 {
+            let mut tx = self.pool().begin().await?;
+            sqlx::query(
+                "SELECT pg_advisory_xact_lock(\
+                     hashtextextended('oxsum/solana-open/v1:' || $1::text, 0))",
+            )
+            .bind(organization_id.to_string())
+            .execute(&mut *tx)
+            .await?;
+            let recent: i64 = sqlx::query_scalar(
+                "SELECT count(*) FROM oxsum.deposits \
+                 WHERE rail = $1 AND organization_id = $2 \
+                   AND created_at > now() - interval '60 seconds'",
+            )
+            .bind(RAIL_SOLANA)
+            .bind(organization_id)
+            .fetch_one(&mut *tx)
+            .await?;
+            if recent >= terms.opens_per_minute {
+                tx.rollback().await?;
+                return Err(WalletError::Forbidden(format!(
+                    "the organization opened too many solana intents; try again shortly \
+                     (limit {}/min)",
+                    terms.opens_per_minute
+                )));
+            }
+            let inserted = insert.execute(&mut *tx).await?.rows_affected();
+            tx.commit().await?;
+            inserted
+        } else {
+            insert.execute(self.pool()).await?.rows_affected()
+        };
         if inserted == 0 {
             return Ok(None);
         }
@@ -2805,6 +2920,33 @@ mod tests {
         assert_eq!(terms.rate_micro, USD_PEGGED_RATE_MICRO);
     }
 
+    /// The deployment default (issue #1185): an unset/non-positive
+    /// `intent_ttl_secs` resolves the 15-minute window the decision recorded;
+    /// a positive figure is the deployment's own and stands.
+    #[test]
+    fn the_intent_ttl_defaults_to_fifteen_minutes() {
+        let unset = SolanaTerms::new(
+            "payTo".to_owned(),
+            vec![AssetTerms {
+                key: "sol".to_owned(),
+                spl_token_mint: None,
+                asset_decimals: 9,
+                rate_micro: 200_000_000,
+            }],
+            "sol".to_owned(),
+            0,
+            1,
+            i64::MAX,
+            0,
+        );
+        assert_eq!(unset.ttl(), 900);
+        assert_eq!(
+            terms().ttl(),
+            600,
+            "an explicit TTL is the deployment's own"
+        );
+    }
+
     /// `mint_accepted`: native SOL always stands; a whitelisted mint stands;
     /// a mint no asset carries is refused — the defensive check that keeps a
     /// stored `meta.splToken` from settling a mint the deployment never
@@ -2941,12 +3083,17 @@ mod tests {
         }
     }
 
-    /// The Token-2022 program id is the audit's refusal key.
+    /// The Token-2022 program id is the audit's named refusal; the classic
+    /// SPL Token program id is the positive allowlist (issue #1182).
     #[test]
-    fn token_2022_is_the_refused_owner() {
+    fn the_token_program_ids_are_pinned() {
         assert_eq!(
             TOKEN_2022_PROGRAM_ID, "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
             "the pinned Token-2022 program id"
+        );
+        assert_eq!(
+            SPL_TOKEN_PROGRAM_ID, "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+            "the pinned classic SPL Token program id"
         );
     }
 
@@ -2963,6 +3110,41 @@ mod tests {
         let err = verifier.verify_mints().await.unwrap_err();
         assert!(err.contains("Token-2022"), "{err}");
         assert!(err.contains("usdc"), "{err}");
+    }
+
+    /// Issue #1182: the owner check is an allowlist, not a Token-2022
+    /// denylist — a mint owned by the System program (or any other program)
+    /// is refused too, with the actual owner named so an operator sees what
+    /// the account really is.
+    #[tokio::test]
+    async fn verify_mints_refuses_any_owner_but_classic_spl() {
+        for owner in [
+            // The System program — a wallet or nonce account pasted as a mint.
+            "11111111111111111111111111111111",
+            // Any other program — a token-lookalike the rail never modelled.
+            "MetaKeeptheChange9dQjGcdj5zqV9MWNJeBJd7Uf3v4z4p3",
+        ] {
+            let mut verifier = SolanaRailVerifier::new(
+                std::sync::Arc::new(MintAudit {
+                    owner: Some(owner.to_owned()),
+                    decimals: Some(6),
+                }),
+                terms(),
+            );
+            let err = verifier.verify_mints().await.unwrap_err();
+            assert!(
+                err.contains(owner),
+                "the refusal names the actual owner {owner}: {err}"
+            );
+            assert!(
+                err.contains(SPL_TOKEN_PROGRAM_ID),
+                "the refusal names the required owner: {err}"
+            );
+            assert!(
+                !err.contains("Token-2022"),
+                "a non-Token-2022 owner is not mislabelled: {err}"
+            );
+        }
     }
 
     #[tokio::test]

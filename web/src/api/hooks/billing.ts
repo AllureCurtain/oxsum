@@ -233,7 +233,9 @@ export function useAirwallexTopup() {
  * amount to send, and the whitelist `asset` that priced it. `splToken` is
  * the intent's SPL mint or `null` for native SOL; `assetDecimals` converts
  * `amountLamports` into the decimal `amount` a Solana Pay request names
- * (issue #1141), and `depositId` is the memo it pins. */
+ * (issue #1141), and `depositId` is the memo it pins. `cluster` names the
+ * network the rail pays on (issue #1181) — Solana addresses are identical
+ * across clusters, so the page must send on the one the intent declares. */
 export interface SolanaIntent {
   reference: string;
   asset?: string;
@@ -243,6 +245,7 @@ export interface SolanaIntent {
   assetDecimals: number;
   depositId: string;
   expiresAt: string;
+  cluster: "mainnet-beta" | "devnet" | "testnet";
 }
 
 /** Opens a Solana top-up intent. Unlike the hosted rails the amount rides on
