@@ -697,10 +697,16 @@ impl SolanaRpcClient {
     /// walked sequentially through the same endpoint pool every call uses,
     /// so the failover and cooldown rules apply unchanged; `max_signatures`
     /// is what bounds the `getTransaction` fan-out on a busy vault.
+    ///
+    /// The [`ScanWalk`] (issue #1188) reports the walk's real coverage:
+    /// `walked` is every signature whose `getTransaction` was attempted —
+    /// *not* the credited count the endpoint used to report — and
+    /// `history_bounded` tells whether the bound cut the walk while older
+    /// history may remain.
     pub async fn scan_received(
         &self,
         max_signatures: usize,
-    ) -> Result<Vec<ScannedTransfer>, SolanaError> {
+    ) -> Result<oxsum_core::ScanWalk, SolanaError> {
         const PAGE: usize = 100;
         let mut signatures = Vec::new();
         let mut before: Option<String> = None;
@@ -737,16 +743,19 @@ impl SolanaRpcClient {
                 break;
             }
         }
+        // `history_bounded` is honest only when the bound actually truncated a
+        // longer list — a short last page means the history ended on its own.
+        let history_bounded = signatures.len() > max_signatures;
         signatures.truncate(max_signatures);
         // For each candidate, prove it paid payTo in a whitelisted asset and
         // report the delivered figure. `getTransaction` runs once per
         // signature — sequential and bounded, the polite walk the endpoint
         // pool already amortizes.
-        let mut found = Vec::new();
+        let walked = signatures.len();
+        let mut credited = Vec::new();
         for signature in signatures {
             match self.inspect_received(&signature).await {
-                Ok(Some(scanned)) => found.push(scanned),
-                Ok(None) => {}
+                Ok(legs) => credited.extend(legs),
                 // A single unreadable transaction does not sink the scan:
                 // the signature stays unreported, and a transport failure
                 // already counted against its endpoint inside `call`.
@@ -759,19 +768,31 @@ impl SolanaRpcClient {
                 }
             }
         }
-        Ok(found)
+        Ok(oxsum_core::ScanWalk {
+            walked,
+            credited: credited
+                .into_iter()
+                .map(|t| oxsum_core::ScannedTransfer {
+                    signature: t.signature,
+                    block_time: t.block_time,
+                    asset: t.asset,
+                    delivered: t.delivered,
+                    payer: t.payer,
+                })
+                .collect(),
+            history_bounded,
+        })
     }
 
-    /// `getTransaction(signature)` under the scan's looser contract: `Ok(Some)`
-    /// when the transaction delivered value to `payTo` in a whitelisted asset —
-    /// the figure and the asset key it counted in. `Ok(None)` for a failed
-    /// transaction, a missing one, or one that moved nothing into the vault
-    /// (a `payTo`-signed send, an unrelated touch). The `delivered` figure is
-    /// the recipient-side delta — what the vault gained — never judged.
-    async fn inspect_received(
-        &self,
-        signature: &str,
-    ) -> Result<Option<ScannedTransfer>, SolanaError> {
+    /// `getTransaction(signature)` under the scan's looser contract: `Ok(Vec)`
+    /// with one [`ScannedTransfer`] per whitelisted asset the transaction
+    /// delivered to `payTo` — the figure and the asset key it counted in.
+    /// A single transaction that credits SOL *and* an SPL mint reports both
+    /// legs (issue #1188) — the empty Vec is a failed transaction, a missing
+    /// one, or one that moved nothing into the vault (a `payTo`-signed send,
+    /// an unrelated touch). The `delivered` figure is the recipient-side
+    /// delta — what the vault gained — never judged.
+    async fn inspect_received(&self, signature: &str) -> Result<Vec<ScannedTransfer>, SolanaError> {
         let result = self
             .call(
                 "scan_received",
@@ -787,78 +808,28 @@ impl SolanaRpcClient {
             )
             .await?;
         if result.is_null() {
-            return Ok(None);
+            return Ok(Vec::new());
         }
         let meta = &result["meta"];
         if !meta["err"].is_null() {
-            return Ok(None);
+            return Ok(Vec::new());
         }
         let message = &result["transaction"]["message"];
         let account_keys = match message["accountKeys"].as_array() {
             Some(keys) => keys,
-            None => return Ok(None),
+            None => return Ok(Vec::new()),
         };
-        // Native SOL first: `payTo`'s own post-minus-pre lamport delta — the
-        // vault's gain. A non-positive delta means nothing arrived (the tx
-        // may still touch payTo — as fee payer, as an outbound source).
-        if let Some(delta) = lamport_delta(
+        let block_time = result["blockTime"].as_i64();
+        Ok(received_legs(
+            signature,
+            meta,
             account_keys,
-            meta["preBalances"].as_array(),
-            meta["postBalances"].as_array(),
             &self.config.pay_to,
-        ) && delta > 0
-        {
-            let payer = sol_payers(
-                account_keys,
-                meta["preBalances"].as_array(),
-                meta["postBalances"].as_array(),
-            )
-            .into_iter()
-            .next();
-            return Ok(Some(ScannedTransfer {
-                signature: signature.to_owned(),
-                block_time: result["blockTime"].as_i64(),
-                asset: Some("sol".to_owned()),
-                delivered: delta,
-                payer,
-            }));
-        }
-        // Each whitelisted SPL mint: the token-account delta owned by `payTo`
-        // on that mint. `token_delta` already matches `owner` or the account
-        // address itself, so a payTo that *is* an ATA still attributes.
-        for asset in &self.config.mints {
-            let Some(mint) = asset.mint.as_deref() else {
-                continue;
-            };
-            if let Some(delta) = token_delta(
-                meta["postTokenBalances"].as_array(),
-                meta["preTokenBalances"].as_array(),
-                account_keys,
-                &self.config.pay_to,
-                mint,
-            ) && delta > 0
-            {
-                let payer = spl_payers(
-                    meta["preTokenBalances"].as_array(),
-                    meta["postTokenBalances"].as_array(),
-                    account_keys,
-                    mint,
-                )
-                .into_iter()
-                .next();
-                return Ok(Some(ScannedTransfer {
-                    signature: signature.to_owned(),
-                    block_time: result["blockTime"].as_i64(),
-                    asset: Some(asset.key.clone()),
-                    delivered: delta,
-                    payer,
-                }));
-            }
-        }
-        Ok(None)
+            &self.config.mints,
+            block_time,
+        ))
     }
 
-    /// `getTransaction(signature, jsonParsed)` — the `validateTransfer` half:
     /// prove the located transaction is this intent's paying transfer.
     /// `Ok(None)` means the transaction exists but is not the payment — a
     /// failed transaction, wrong recipient, wrong mint or missing reference —
@@ -978,6 +949,84 @@ impl SolanaRpcClient {
     }
 }
 
+/// The per-transaction legs `inspect_received` collects (issue #1188): one
+/// [`ScannedTransfer`] per whitelisted asset a transaction delivered into
+/// `payTo`. Native SOL's lamport delta leads, then every whitelisted SPL
+/// mint whose token-account delta on `payTo` came out positive — a single
+/// transaction that credits SOL *and* a token (a multi-hop swap settling
+/// both legs at once) reports one row per asset, never just the first that
+/// matched. An empty Vec means the transaction moved nothing into the vault.
+fn received_legs(
+    signature: &str,
+    meta: &Value,
+    account_keys: &[Value],
+    pay_to: &str,
+    mints: &[MintWhitelistEntry],
+    block_time: Option<i64>,
+) -> Vec<ScannedTransfer> {
+    let mut legs = Vec::new();
+    // Native SOL: `payTo`'s own post-minus-pre lamport delta — the vault's
+    // gain. A non-positive delta means nothing arrived (the tx may still
+    // touch payTo — as fee payer, as an outbound source).
+    if let Some(delta) = lamport_delta(
+        account_keys,
+        meta["preBalances"].as_array(),
+        meta["postBalances"].as_array(),
+        pay_to,
+    ) && delta > 0
+    {
+        let payer = sol_payers(
+            account_keys,
+            meta["preBalances"].as_array(),
+            meta["postBalances"].as_array(),
+        )
+        .into_iter()
+        .next();
+        legs.push(ScannedTransfer {
+            signature: signature.to_owned(),
+            block_time,
+            asset: Some("sol".to_owned()),
+            delivered: delta,
+            payer,
+        });
+    }
+    // Each whitelisted SPL mint: the token-account delta owned by `payTo`
+    // on that mint. `token_delta` already matches `owner` or the account
+    // address itself, so a payTo that *is* an ATA still attributes. Every
+    // positive mint reports its own row — dropping the second leg silently
+    // under-counted the scan before issue #1188.
+    for asset in mints {
+        let Some(mint) = asset.mint.as_deref() else {
+            continue;
+        };
+        if let Some(delta) = token_delta(
+            meta["postTokenBalances"].as_array(),
+            meta["preTokenBalances"].as_array(),
+            account_keys,
+            pay_to,
+            mint,
+        ) && delta > 0
+        {
+            let payer = spl_payers(
+                meta["preTokenBalances"].as_array(),
+                meta["postTokenBalances"].as_array(),
+                account_keys,
+                mint,
+            )
+            .into_iter()
+            .next();
+            legs.push(ScannedTransfer {
+                signature: signature.to_owned(),
+                block_time,
+                asset: Some(asset.key.clone()),
+                delivered: delta,
+                payer,
+            });
+        }
+    }
+    legs
+}
+
 /// The classic SPL mint layout's `decimals` field, checked against the whole
 /// layout first (issue #1182): the buffer must be exactly
 /// [`SPL_MINT_DATA_LEN`] bytes — the fixed classic mint size — and its
@@ -1086,9 +1135,8 @@ impl oxsum_core::ChainLookup for SolanaRpcClient {
     fn scan_received<'a>(
         &'a self,
         max_signatures: usize,
-    ) -> std::pin::Pin<
-        Box<dyn std::future::Future<Output = Vec<oxsum_core::ScannedTransfer>> + Send + 'a>,
-    > {
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = oxsum_core::ScanWalk> + Send + 'a>>
+    {
         Box::pin(async move {
             self.scan_received(max_signatures)
                 .await
@@ -1102,15 +1150,6 @@ impl oxsum_core::ChainLookup for SolanaRpcClient {
                     );
                 })
                 .unwrap_or_default()
-                .into_iter()
-                .map(|t| oxsum_core::ScannedTransfer {
-                    signature: t.signature,
-                    block_time: t.block_time,
-                    asset: t.asset,
-                    delivered: t.delivered,
-                    payer: t.payer,
-                })
-                .collect()
         })
     }
 }
@@ -1825,6 +1864,87 @@ mod tests {
             "usdcMint",
         );
         assert_eq!(delta, None);
+    }
+
+    /// #1188's second half: one transaction that credits `payTo` in SOL *and*
+    /// a whitelisted SPL mint reports one row per asset — the old
+    /// `inspect_received` early-returned on the SOL leg and the SPL leg never
+    /// surfaced. `received_legs` is the pure mapping `inspect_received`
+    /// delegates to, so the multi-asset shape is locked without an RPC.
+    #[test]
+    fn received_legs_reports_every_asset_a_transfer_credits() {
+        let mint = "usdcMint";
+        // One tx: a native lamport delta into `payToAddr` (index 1) AND an
+        // SPL token-account delta on `mint` owned by `payToAddr` (index 3) —
+        // the multi-hop-settlement shape a payment router produces.
+        let tx = json!({
+            "meta": {
+                "err": null,
+                "preBalances": [5_000_000_000_i64, 0, 1, 1],
+                "postBalances": [4_999_995_000_i64, 5_000, 1, 1],
+                "preTokenBalances": [],
+                "postTokenBalances": [{
+                    "accountIndex": 3, "mint": mint, "owner": "payToAddr",
+                    "uiTokenAmount": {"amount": "7500000", "decimals": 6, "uiAmountString": "7.5"}
+                }]
+            },
+            "transaction": {
+                "message": {
+                    "accountKeys": [
+                        {"pubkey": "PAYER_WALLET", "signer": true, "writable": true, "source": "transaction"},
+                        {"pubkey": "payToAddr", "signer": false, "writable": true, "source": "transaction"},
+                        {"pubkey": mint, "signer": false, "writable": false, "source": "transaction"},
+                        {"pubkey": "PAYTO_ATA", "signer": false, "writable": true, "source": "transaction"}
+                    ]
+                }
+            }
+        });
+        let keys = tx["transaction"]["message"]["accountKeys"]
+            .as_array()
+            .unwrap();
+        let mints = vec![
+            MintWhitelistEntry {
+                key: "sol".to_owned(),
+                mint: None,
+            },
+            MintWhitelistEntry {
+                key: "usdc".to_owned(),
+                mint: Some(mint.to_owned()),
+            },
+        ];
+        let legs = received_legs(
+            "sigMulti",
+            &tx["meta"],
+            keys,
+            "payToAddr",
+            &mints,
+            Some(1_700_000_000),
+        );
+        assert_eq!(legs.len(), 2, "one row per credited asset: {legs:?}");
+        assert_eq!(legs[0].asset.as_deref(), Some("sol"));
+        assert_eq!(legs[0].delivered, 5_000);
+        assert_eq!(legs[1].asset.as_deref(), Some("usdc"));
+        assert_eq!(legs[1].delivered, 7_500_000);
+        assert_eq!(legs[0].signature, "sigMulti");
+        assert_eq!(legs[1].signature, "sigMulti");
+        // And a transaction that moves nothing into the vault stays empty —
+        // a `payTo`-signed outbound send reads exactly like before.
+        let outbound = sol_tx(5_000, 0, "payToAddr");
+        let outbound_keys = outbound["transaction"]["message"]["accountKeys"]
+            .as_array()
+            .unwrap();
+        let legs = received_legs(
+            "sigOut",
+            &outbound["meta"],
+            outbound_keys,
+            "payToAddr",
+            &mints,
+            None,
+        );
+        assert!(
+            legs.is_empty(),
+            "an outbound send credits nothing: {legs:?}"
+        );
     }
 
     /// The `endpoint` metric label's spelling: host (plus a non-default

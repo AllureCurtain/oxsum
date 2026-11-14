@@ -117,16 +117,22 @@ fn multi_asset_terms_with_usdt() -> SolanaTerms {
 /// `amount`/`recipient`/`reference` against a scripted answer. `paid` arms
 /// the lookup to find and validate; `wrong` arms it to answer a transfer
 /// that does not honor the intent. `scanned` arms the reconciliation scan's
-/// answer (issue #1149) — the transfers `payTo`'s history reports.
+/// credited legs (issue #1149) and `history` how many signatures `payTo`'s
+/// history holds (issue #1188) — `walked`/`history_bounded` derive from it.
 #[derive(Clone, Default)]
 struct SolanaStub {
     /// `reference` → the signatures `find_reference` answers, newest first.
     located: Arc<Mutex<std::collections::HashMap<String, Vec<String>>>>,
     /// `signature` → the `ValidatedTransfer` `validate_transfer` answers.
     validated: Arc<Mutex<std::collections::HashMap<String, ValidatedTransfer>>>,
-    /// The `ScannedTransfer`s `scan_received` answers — the scripted
-    /// `payTo` history the scan tests walk.
+    /// The credited `ScannedTransfer` legs `scan_received` reports — the
+    /// paying transfers among the walked signatures.
     scanned: Arc<Mutex<Vec<ScannedTransfer>>>,
+    /// How many signature-history entries `payTo` holds — `walked` is
+    /// `min(history, limit)` and `history_bounded` is `history > limit`.
+    /// Defaults to the credited legs' length when only `scanned` is armed:
+    /// the pre-#1188 tests' implicit "history == credited" shape.
+    history: Arc<Mutex<Option<usize>>>,
 }
 
 impl std::fmt::Debug for SolanaStub {
@@ -174,16 +180,19 @@ impl ChainLookup for SolanaStub {
     fn scan_received<'a>(
         &'a self,
         max_signatures: usize,
-    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Vec<ScannedTransfer>> + Send + 'a>>
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = oxsum_core::ScanWalk> + Send + 'a>>
     {
         Box::pin(async move {
-            self.scanned
-                .lock()
-                .unwrap()
-                .iter()
-                .take(max_signatures)
-                .cloned()
-                .collect()
+            let armed: Vec<ScannedTransfer> = self.scanned.lock().unwrap().clone();
+            // The stub's implicit history is the armed legs' full length —
+            // `walked`/`history_bounded` then model the bound faithfully
+            // (`limit: 1` over 2 armed legs walks 1 and claims more remains).
+            let history = self.history.lock().unwrap().unwrap_or(armed.len());
+            oxsum_core::ScanWalk {
+                walked: history.min(max_signatures),
+                credited: armed.into_iter().take(max_signatures).collect(),
+                history_bounded: history > max_signatures,
+            }
         })
     }
 }
@@ -2124,7 +2133,12 @@ async fn solana_reconciliation_scan_reports_only_unmatched() {
     )
     .await;
     assert_eq!(status, StatusCode::OK, "{report}");
+    // #1188: `scanned` is the signatures *walked* — which the stub's default
+    // history pins at the credited legs' length — `credited` is the paying
+    // transfers found, `unmatched` the subset with no recorded deposit.
     assert_eq!(report["data"]["scanned"].as_i64().unwrap(), 3);
+    assert_eq!(report["data"]["credited"].as_i64().unwrap(), 3);
+    assert!(!report["data"]["limitReached"].as_bool().unwrap());
     let unmatched = report["data"]["unmatched"].as_array().unwrap();
     assert_eq!(unmatched.len(), 2, "{report}");
     let signatures: Vec<&str> = unmatched
@@ -2187,8 +2201,61 @@ async fn solana_reconciliation_scan_bounds_the_walk() {
     )
     .await;
     assert_eq!(status, StatusCode::OK, "{report}");
+    // The stub's default history equals the armed legs (2), so `limit: 1`
+    // walks one signature and reports `limitReached` — older history
+    // remains beyond the bound.
     assert_eq!(report["data"]["scanned"].as_i64().unwrap(), 1);
+    assert_eq!(report["data"]["credited"].as_i64().unwrap(), 1);
+    assert!(report["data"]["limitReached"].as_bool().unwrap());
     assert_eq!(report["data"]["unmatched"].as_array().unwrap().len(), 1);
+}
+
+/// #1188's actual bug: `scanned` used to read the *credited* transfers'
+/// count, not the walked signatures. With 5 signatures of history but only
+/// 2 paying transfers among them, `scanned` must read 5 and `credited` 2 —
+/// and `limitReached` stays false when the history ran out on its own.
+#[tokio::test]
+async fn solana_reconciliation_scan_reports_walked_not_credited() {
+    let stub = SolanaStub::default();
+    let Some((app, _db)) = world(stub.clone()).await else {
+        return;
+    };
+    let _key = register_session(&app).await;
+    stub.scanned.lock().unwrap().extend([
+        ScannedTransfer {
+            signature: "sigPay11111111111111111111111111111111111111111".to_owned(),
+            block_time: Some(1),
+            asset: Some("sol".to_owned()),
+            delivered: 100,
+            payer: None,
+        },
+        ScannedTransfer {
+            signature: "sigPay22222222222222222222222222222222222222222".to_owned(),
+            block_time: Some(2),
+            asset: Some("usdc".to_owned()),
+            delivered: 200,
+            payer: None,
+        },
+    ]);
+    // `payTo`'s history holds 5 signatures; only 2 paid the vault — the
+    // other 3 (outbound sends, unrelated touches) were walked but credited
+    // nothing. `scanned` must be the walked figure, never the credited one.
+    *stub.history.lock().unwrap() = Some(5);
+    let (status, report) = call(
+        &app,
+        "POST",
+        "/api/v1/admin/solana/reconciliation/scan",
+        Some(json!({})),
+        Some(ADMIN_TOKEN),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{report}");
+    assert_eq!(report["data"]["scanned"].as_i64().unwrap(), 5);
+    assert_eq!(report["data"]["credited"].as_i64().unwrap(), 2);
+    assert_eq!(report["data"]["unmatched"].as_array().unwrap().len(), 2);
+    // 5 signatures of history under the default limit 200 — the bound never
+    // engaged, so no older history is claimed.
+    assert!(!report["data"]["limitReached"].as_bool().unwrap());
 }
 
 /// An unconfigured rail 503s both reconciliation endpoints — the rail's own

@@ -15585,7 +15585,12 @@ export interface paths {
                 };
             };
             responses: {
-                /** @description The scan report — scanned count plus the unmatched transfers */
+                /**
+                 * @description The scan report — `scanned` signatures actually walked, `credited`
+                 *     transfers that paid `payTo` in a whitelisted asset, `unmatched`
+                 *     rows with no recorded deposit, and `limitReached` when older
+                 *     history may exist beyond the bound
+                 */
                 200: {
                     headers: {
                         [name: string]: unknown;
@@ -22696,10 +22701,14 @@ export interface components {
             limit: number;
         };
         SolanaScanReport: {
-            /** @description how many `payTo` signature-history entries the walk scanned */
+            /** @description how many `payTo` signature-history entries the walk actually inspected (one `getTransaction` each) — bounded at `limit` */
             scanned: number;
-            /** @description the transfers that paid `payTo` but match no recorded deposit — the "money arrived with no intent" rows */
+            /** @description how many of the walked transactions actually delivered value into `payTo` in a whitelisted asset — each becomes a row the deposits table is diffed against */
+            credited: number;
+            /** @description the credited transfers whose signature no `deposits.facilitator_tx_hash` records — the "money arrived with no intent" rows; `unmatched.length` is their count */
             unmatched: components["schemas"]["SolanaUnmatchedTransfer"][];
+            /** @description whether the walk stopped at `limit` while more signature history may exist beyond it — `false` when `payTo`'s history ended before the bound */
+            limitReached: boolean;
         };
         SolanaUnmatchedTransfer: {
             /** @description the on-chain transaction's signature */
