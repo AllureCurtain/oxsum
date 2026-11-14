@@ -144,13 +144,15 @@ struct SolanaStub {
 
 /// One scripted on-chain payout `validate_payout` answers with (issue
 /// #1175): the address it paid, the mint it spent (`None` = native SOL), the
-/// delivered figure, and the debited funding parties the source-check
-/// screens — the vault the refund must leave from must be among them.
+/// delivered figure, how much the expected source's own balance fell (issue
+/// #1209 — the source check judges the vault's decrease, not a signer flag),
+/// and the debited funding parties reported for screening.
 #[derive(Clone)]
 struct StubPayout {
     recipient: String,
     mint: Option<String>,
     delivered: i64,
+    source_decrease: i64,
     payers: Vec<String>,
 }
 
@@ -216,13 +218,14 @@ impl ChainLookup for SolanaStub {
         Box::pin(async move {
             let armed = self.payouts.lock().unwrap().get(signature).cloned()?;
             // The client's own checks: wrong recipient or wrong mint is no
-            // proof at all, and the source arm refuses a payout the vault did
-            // not fund — `expected.source` must sit among the debited parties
-            // (issue #1175). `delivered` rides up unjudged for the core's
-            // frozen-amount comparison.
+            // proof at all, and neither is a payout the expected source never
+            // funded — the vault's own balance must have fallen by at least
+            // the delivered figure, a rule that holds whether the vault
+            // signed or spent through CPI (issue #1209). `delivered` rides up
+            // unjudged for the core's frozen-amount comparison.
             if armed.recipient != expected.recipient
                 || armed.mint != expected.spl_token_mint
-                || !armed.payers.iter().any(|payer| payer == &expected.source)
+                || armed.source_decrease < armed.delivered
             {
                 return None;
             }
@@ -966,6 +969,7 @@ async fn solana_refund_walks_the_pull_payment_lifecycle() {
             recipient: refund_address.to_owned(),
             mint: None,
             delivered: 1,
+            source_decrease: 1,
             payers: vec!["oxsumDepositAddr111111111111111111111111111".to_owned()],
         },
     );
@@ -1065,6 +1069,7 @@ async fn solana_refund_complete_verifies_the_payout_onchain() {
             recipient: "9uQeVj5tqViQh7yWWGStvkEG1Zmhx6uasJtWCJziofN".to_owned(),
             mint: None,
             delivered: 1,
+            source_decrease: 1,
             payers: vec!["oxsumDepositAddr111111111111111111111111111".to_owned()],
         },
     );
@@ -1084,6 +1089,7 @@ async fn solana_refund_complete_verifies_the_payout_onchain() {
             recipient: refund_address.to_owned(),
             mint: None,
             delivered: 0,
+            source_decrease: 0,
             payers: vec!["oxsumDepositAddr111111111111111111111111111".to_owned()],
         },
     );
@@ -1104,6 +1110,7 @@ async fn solana_refund_complete_verifies_the_payout_onchain() {
             recipient: refund_address.to_owned(),
             mint: None,
             delivered: 1,
+            source_decrease: 1,
             payers: vec!["oxsumDepositAddr111111111111111111111111111".to_owned()],
         },
     );
@@ -1174,6 +1181,7 @@ async fn solana_refund_complete_refuses_a_signature_already_used() {
             recipient: refund_address.to_owned(),
             mint: None,
             delivered: 1,
+            source_decrease: 1,
             payers: vec![pay_to.to_owned()],
         },
     );
@@ -1268,6 +1276,9 @@ async fn solana_refund_complete_requires_the_vault_to_have_paid() {
             recipient: refund_address.to_owned(),
             mint: None,
             delivered: 1,
+            // The stranger's wallet funded the whole payout — the vault's
+            // own balance never fell, so the source check refuses.
+            source_decrease: 0,
             payers: vec!["thirdPartyWallet9999999999999999999999999".to_owned()],
         },
     );
@@ -1303,6 +1314,7 @@ async fn solana_refund_complete_requires_the_vault_to_have_paid() {
             recipient: refund_address.to_owned(),
             mint: None,
             delivered: 1,
+            source_decrease: 1,
             payers: vec!["oxsumDepositAddr111111111111111111111111111".to_owned()],
         },
     );

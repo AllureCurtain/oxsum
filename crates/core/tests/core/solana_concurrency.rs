@@ -1135,7 +1135,9 @@ async fn the_poll_rescues_an_expired_row_whose_payment_landed_on_time() {
         .poll_solana_deposits(&verifier, &tenants, time::Date::MAX)
         .await
         .unwrap();
-    assert_eq!(checked, 1, "the rescue pass walked the expired row");
+    // `checked` counts the live pending list only (issue #1209) — the rescue
+    // walk's figure rides the pass's own log line.
+    assert_eq!(checked, 0, "no pending rows existed to check");
     assert_eq!(
         credited, 1,
         "the on-time payment credited through the rescue"
@@ -1207,7 +1209,7 @@ async fn a_lookup_failure_defers_the_row_and_the_next_pass_credits() {
         .poll_solana_deposits(&failing, &tenants, time::Date::MAX)
         .await
         .unwrap();
-    assert_eq!(checked, 1, "the rescue pass walked the row and deferred");
+    assert_eq!(checked, 0, "no pending rows existed to check");
     assert_eq!(credited, 0, "a lookup failure never credits — or expires");
     let status: String =
         sqlx::query_scalar("SELECT status FROM oxsum.deposits WHERE deposit_id = $1")
@@ -1219,8 +1221,18 @@ async fn a_lookup_failure_defers_the_row_and_the_next_pass_credits() {
         status, "expired",
         "a deferred verify leaves the row exactly where it was — never swept, never queued"
     );
-    // The outage clears: the same row, the same rescue pass, the payment it
-    // could not see credits.
+    // The outage clears once the check's backoff has elapsed (issue #1209):
+    // the first pass stamped `rescueCheckedAt`, so only a pass after the
+    // backoff re-walks the row — backdate the stamp to stand in for the wait.
+    sqlx::query(
+        "UPDATE oxsum.deposits \
+         SET meta = meta || jsonb_build_object('rescueCheckedAt', '2000-01-01T00:00:00Z'::text) \
+         WHERE deposit_id = $1",
+    )
+    .bind(deposit_id)
+    .execute(db.pool())
+    .await
+    .unwrap();
     let healed = SolanaRailVerifier::new(
         Arc::new(OneSig {
             signature: "sigHealedRpc000000000000000000000000000000000000000000".to_owned(),
@@ -1916,11 +1928,14 @@ async fn the_rescue_pass_ignores_expired_rows_older_than_a_day() {
         .poll_solana_deposits(&verifier, &tenants, time::Date::MAX)
         .await
         .unwrap();
+    // `checked` counts the live pending list only (issue #1209) — the rescue
+    // walk's own figure rides the pass's log line; `credited` is the proof
+    // the in-window expired row was walked and its payment booked.
+    assert_eq!(checked, 0, "no pending rows existed to check");
     assert_eq!(
-        checked, 1,
+        credited, 1,
         "only the in-window expired row is walked — the day-old one is out of scope"
     );
-    assert_eq!(credited, 1);
     let old_status: String =
         sqlx::query_scalar("SELECT status FROM oxsum.deposits WHERE deposit_id = $1")
             .bind(old_id)
@@ -1938,5 +1953,346 @@ async fn the_rescue_pass_ignores_expired_rows_older_than_a_day() {
             .await
             .unwrap();
     assert_eq!(fresh_status, "credited");
+    assert_eq!(wallet.available().await.unwrap(), 1000);
+}
+
+/// Issue #1209: the rescue pass paces re-checks — a checked row records
+/// `rescueCheckedAt`/`rescueAttempts` and sits out its backoff instead of
+/// being re-queried every pass. With 100 expired rows and a 64-row cap, pass
+/// 1 walks the newest 64 (never-checked rows first, freshest deadline wins),
+/// pass 2 walks the remaining 36 — never re-walking pass 1's rows — and the
+/// one on-time payment among them credits.
+#[tokio::test]
+async fn the_rescue_pass_drains_a_flooded_queue_without_rechecking() {
+    let Some(db) = database("solana_rescue_backoff").await else {
+        return;
+    };
+    let terms = terms();
+    let org = organization(&db, "rescue-backoff").await;
+    let wallet = wallet_for(&db, org).await;
+    // 100 expired rows; each expiresAt a minute apart so the DESC order is
+    // deterministic. The armed payment sits on the *oldest* of them — rank
+    // 100 in the due ordering — so pass 1 cannot reach it.
+    let mut ids = Vec::new();
+    let mut refs = std::collections::HashMap::new();
+    for i in 0..100 {
+        let id = Uuid::new_v4();
+        let (reference, _, _) = db
+            .open_solana_deposit(org, id, 1000, &terms, None, &static_rate(&terms))
+            .await
+            .unwrap()
+            .expect("inserts");
+        refs.insert(id, reference);
+        db.expire_solana_deposit(id).await.unwrap();
+        let stamp = (time::OffsetDateTime::now_utc() - time::Duration::minutes(i))
+            .format(&time::format_description::well_known::Rfc3339)
+            .unwrap();
+        sqlx::query(
+            "UPDATE oxsum.deposits SET meta = jsonb_set(meta, '{expiresAt}', $1::jsonb) \
+             WHERE deposit_id = $2",
+        )
+        .bind(serde_json::Value::String(stamp))
+        .bind(id)
+        .execute(db.pool())
+        .await
+        .unwrap();
+        ids.push(id);
+    }
+    // ids[99] expired 99 minutes ago — the oldest, so the last the pass can
+    // reach. Its payment is armed and on-time (block_time 0 precedes every
+    // real expiresAt).
+    let paid_id = ids[99];
+    let paid_reference = refs[&paid_id].clone();
+    /// Answers the armed signature only for the paid row's marker and counts
+    /// every `find_reference` call — the re-query ledger the backoff paces.
+    struct Counting {
+        paid_reference: String,
+        signature: String,
+        calls: Mutex<u64>,
+    }
+    impl std::fmt::Debug for Counting {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            f.debug_struct("Counting").finish_non_exhaustive()
+        }
+    }
+    impl ChainLookup for Counting {
+        fn find_reference<'a>(
+            &'a self,
+            reference: &'a str,
+        ) -> std::pin::Pin<
+            Box<dyn std::future::Future<Output = Result<Vec<String>, LookupError>> + Send + 'a>,
+        > {
+            Box::pin(async move {
+                *self.calls.lock().unwrap() += 1;
+                if reference == self.paid_reference {
+                    Ok(vec![self.signature.clone()])
+                } else {
+                    Ok(Vec::new())
+                }
+            })
+        }
+        fn validate_transfer<'a>(
+            &'a self,
+            signature: &'a str,
+            expected: &'a ExpectedTransfer,
+        ) -> std::pin::Pin<
+            Box<
+                dyn std::future::Future<Output = Result<Option<ValidatedTransfer>, LookupError>>
+                    + Send
+                    + 'a,
+            >,
+        > {
+            Box::pin(async move {
+                if signature != self.signature
+                    || expected.recipient != "oxsumDepositAddr111111111111111111111111111"
+                {
+                    return Ok(None);
+                }
+                Ok(Some(ValidatedTransfer {
+                    signature: signature.to_owned(),
+                    delivered: 5_000,
+                    block_time: Some(0),
+                    payers: Vec::new(),
+                }))
+            })
+        }
+    }
+    let stub = Arc::new(Counting {
+        paid_reference,
+        signature: "sigRescueBackoff00000000000000000000000000000000000000".to_owned(),
+        calls: Mutex::new(0),
+    });
+    let verifier = SolanaRailVerifier::new(stub.clone(), terms);
+    let tenants = oxsum_core::Tenants::new(db.pool().clone());
+    // Pass 1: the newest 64 never-checked rows — the paid row is out of
+    // reach, so nothing credits.
+    let (_checked, credited, _expired, _queued) = db
+        .poll_solana_deposits(&verifier, &tenants, time::Date::MAX)
+        .await
+        .unwrap();
+    assert_eq!(credited, 0, "the paid row ranks past the 64-row cap");
+    assert_eq!(
+        *stub.calls.lock().unwrap(),
+        64,
+        "pass 1 walked exactly the newest 64 never-checked rows"
+    );
+    // Pass 2 immediately after: pass 1's rows sit inside their first backoff
+    // (rescueAttempts 1 → 5 minutes), so the due filter hands over the
+    // remaining 36 never-checked rows — the paid row among them.
+    let (_checked, credited, _expired, _queued) = db
+        .poll_solana_deposits(&verifier, &tenants, time::Date::MAX)
+        .await
+        .unwrap();
+    assert_eq!(
+        credited, 1,
+        "the second pass reached the oldest row and its on-time payment credited"
+    );
+    assert_eq!(
+        *stub.calls.lock().unwrap(),
+        100,
+        "pass 2 walked the 36 rows it had never checked — not a re-check of pass 1's 64"
+    );
+    let status: String =
+        sqlx::query_scalar("SELECT status FROM oxsum.deposits WHERE deposit_id = $1")
+            .bind(paid_id)
+            .fetch_one(db.pool())
+            .await
+            .unwrap();
+    assert_eq!(status, "credited");
+    assert_eq!(wallet.available().await.unwrap(), 1000);
+    // And the stamp: every walked row still `expired` recorded its check —
+    // the rescued row needs no stamp, it is `credited` and done.
+    let stamped: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM oxsum.deposits \
+         WHERE rail = 'solana' AND meta ? 'rescueCheckedAt' AND organization_id = $1",
+    )
+    .bind(org)
+    .fetch_one(db.pool())
+    .await
+    .unwrap();
+    assert_eq!(
+        stamped, 99,
+        "every walked row still expired recorded its check"
+    );
+}
+
+/// Issue #1209: within a row's backoff the rescue pass does not re-query the
+/// chain at all — `find_reference` is not called for it. A checked row that
+/// is not yet due contributes zero RPC calls.
+#[tokio::test]
+async fn a_row_inside_its_rescue_backoff_is_not_requeried() {
+    let Some(db) = database("solana_backoff_skip").await else {
+        return;
+    };
+    let terms = terms();
+    let org = organization(&db, "backoff-skip").await;
+    let deposit_id = Uuid::new_v4();
+    db.open_solana_deposit(org, deposit_id, 1000, &terms, None, &static_rate(&terms))
+        .await
+        .unwrap()
+        .expect("inserts");
+    db.expire_solana_deposit(deposit_id).await.unwrap();
+    /// Counts `find_reference` calls; finds nothing — the row stays expired.
+    struct CountsNothing {
+        calls: Mutex<u64>,
+    }
+    impl std::fmt::Debug for CountsNothing {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            f.debug_struct("CountsNothing").finish_non_exhaustive()
+        }
+    }
+    impl ChainLookup for CountsNothing {
+        fn find_reference<'a>(
+            &'a self,
+            _reference: &'a str,
+        ) -> std::pin::Pin<
+            Box<dyn std::future::Future<Output = Result<Vec<String>, LookupError>> + Send + 'a>,
+        > {
+            Box::pin(async move {
+                *self.calls.lock().unwrap() += 1;
+                Ok(Vec::new())
+            })
+        }
+        fn validate_transfer<'a>(
+            &'a self,
+            _signature: &'a str,
+            _expected: &'a ExpectedTransfer,
+        ) -> std::pin::Pin<
+            Box<
+                dyn std::future::Future<Output = Result<Option<ValidatedTransfer>, LookupError>>
+                    + Send
+                    + 'a,
+            >,
+        > {
+            Box::pin(async { Ok(None) })
+        }
+    }
+    let stub = Arc::new(CountsNothing {
+        calls: Mutex::new(0),
+    });
+    let verifier = SolanaRailVerifier::new(stub.clone(), terms);
+    let tenants = oxsum_core::Tenants::new(db.pool().clone());
+    // Pass 1 checks the never-checked row: one find_reference call, and the
+    // row's first backoff begins.
+    db.poll_solana_deposits(&verifier, &tenants, time::Date::MAX)
+        .await
+        .unwrap();
+    assert_eq!(*stub.calls.lock().unwrap(), 1, "the row was checked once");
+    // Pass 2 immediately: the row sits inside its ~5-minute backoff
+    // (rescueAttempts 1), so the rescue pass never even asks the chain.
+    db.poll_solana_deposits(&verifier, &tenants, time::Date::MAX)
+        .await
+        .unwrap();
+    assert_eq!(
+        *stub.calls.lock().unwrap(),
+        1,
+        "a row inside its backoff is not re-queried"
+    );
+    // Once the backoff has elapsed (backdated stamp), the row is due again.
+    sqlx::query(
+        "UPDATE oxsum.deposits \
+         SET meta = meta || jsonb_build_object('rescueCheckedAt', '2000-01-01T00:00:00Z'::text) \
+         WHERE deposit_id = $1",
+    )
+    .bind(deposit_id)
+    .execute(db.pool())
+    .await
+    .unwrap();
+    db.poll_solana_deposits(&verifier, &tenants, time::Date::MAX)
+        .await
+        .unwrap();
+    assert_eq!(
+        *stub.calls.lock().unwrap(),
+        2,
+        "a row past its backoff is re-checked on the next pass"
+    );
+}
+
+/// Issue #1209: one unconfirmable candidate must not mask the marker's other
+/// signatures — `validate_transfer` answering `Err` on the first signature
+/// while a later one honors still credits the deposit. Before the fix a
+/// single `Err` deferred the whole verify, leaving a paid intent pending.
+#[tokio::test]
+async fn a_candidate_error_does_not_mask_a_later_honoring_signature() {
+    let Some(db) = database("solana_err_then_pay").await else {
+        return;
+    };
+    let terms = terms();
+    let org = organization(&db, "err-then-pay").await;
+    let wallet = wallet_for(&db, org).await;
+    let deposit_id = Uuid::new_v4();
+    db.open_solana_deposit(org, deposit_id, 1000, &terms, None, &static_rate(&terms))
+        .await
+        .unwrap()
+        .expect("inserts");
+    /// Two signatures on the marker: the first refuses to confirm (a
+    /// transport failure, a cross-confirmation disagreement), the second is
+    /// the honoring payment.
+    struct ErrThenPays {
+        honoring: String,
+    }
+    impl std::fmt::Debug for ErrThenPays {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            f.debug_struct("ErrThenPays").finish_non_exhaustive()
+        }
+    }
+    impl ChainLookup for ErrThenPays {
+        fn find_reference<'a>(
+            &'a self,
+            _reference: &'a str,
+        ) -> std::pin::Pin<
+            Box<dyn std::future::Future<Output = Result<Vec<String>, LookupError>> + Send + 'a>,
+        > {
+            Box::pin(async move {
+                Ok(vec![
+                    "sigUnconfirmable0000000000000000000000000000000000000".to_owned(),
+                    self.honoring.clone(),
+                ])
+            })
+        }
+        fn validate_transfer<'a>(
+            &'a self,
+            signature: &'a str,
+            expected: &'a ExpectedTransfer,
+        ) -> std::pin::Pin<
+            Box<
+                dyn std::future::Future<Output = Result<Option<ValidatedTransfer>, LookupError>>
+                    + Send
+                    + 'a,
+            >,
+        > {
+            Box::pin(async move {
+                if signature == self.honoring {
+                    if expected.recipient != "oxsumDepositAddr111111111111111111111111111" {
+                        return Ok(None);
+                    }
+                    return Ok(Some(ValidatedTransfer {
+                        signature: signature.to_owned(),
+                        delivered: 5_000,
+                        block_time: Some(0),
+                        payers: Vec::new(),
+                    }));
+                }
+                Err(LookupError(
+                    "cross-confirmation failed: the fallback endpoint disagreed".into(),
+                ))
+            })
+        }
+    }
+    let verifier = SolanaRailVerifier::new(
+        Arc::new(ErrThenPays {
+            honoring: "sigActuallyPaid0000000000000000000000000000000000000".to_owned(),
+        }),
+        terms,
+    );
+    let tenants = oxsum_core::Tenants::new(db.pool().clone());
+    let (_checked, credited, _expired, _queued) = db
+        .poll_solana_deposits(&verifier, &tenants, time::Date::MAX)
+        .await
+        .unwrap();
+    assert_eq!(
+        credited, 1,
+        "the honoring signature behind the erroring one still credits"
+    );
     assert_eq!(wallet.available().await.unwrap(), 1000);
 }

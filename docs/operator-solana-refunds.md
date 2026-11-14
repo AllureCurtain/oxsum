@@ -103,6 +103,20 @@ on `meta.refund`, each audited (`solana.refund.request` / `.approve` /
    with the same signature answers the standing row; a contradicting one
    is `409` — the audit-protecting refusal.
 
+   The source proof is the vault's own balance fall, not a signature on
+   the payout (issue #1209): a Squads v4 vault spends through CPI — the
+   vault PDA never appears in the transaction's signer set — so a payout
+   is judged by `payTo`'s lamports (or a `payTo`-owned token account on
+   the locked mint) decreasing by at least the delivered figure. That is
+   also the refusal direction: a transaction a third party sent the
+   customer direct pays out without the vault losing a lamport, and is
+   `409` — the row keeps believing a refund the vault never funded. One
+   payout signature closes **one** refund, ever: the
+   `deposits_solana_refund_signature` unique index plus the in-lock
+   recheck refuse a second `refund_pending` row naming an already-recorded
+   signature — send a second transaction for the second refund, never
+   reuse the hash.
+
 No ledger entry ever posts on this path: an `underpaid`/`late`/`flagged`
 deposit never credited, so the refund simply returns what sits in `payTo`; an
 `overpaid` one's `entry_id` still proves the opened credit while only the

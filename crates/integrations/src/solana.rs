@@ -1099,13 +1099,39 @@ impl SolanaRpcClient {
                 delta
             }
         };
-        // The funding parties the transaction debited — every signer whose
-        // balance fell for SOL, every debited token account's owner for SPL.
-        // The payout must leave from the vault (`expected.source` is `payTo`):
-        // a SOL payout debits `payTo` itself; an SPL payout debits a token
-        // account `payTo` owns. A refund a third party paid direct — the
-        // customer, a stranger — never empties the vault the row believes it
-        // closed, so it is no proof of payout.
+        // The funding parties the transaction debited, kept for reporting —
+        // every signer whose balance fell for SOL, every debited token
+        // account's owner for SPL. The refund's *source* proof is stricter
+        // than a signer set: a Squads vault PDA spends through CPI and never
+        // appears in the signer list, so `sol_payers` would refuse the very
+        // payout the rail is built to take (issue #1209). The proof asks
+        // whether the vault's own balance *fell*: for SOL, `expected.source`
+        // is the accountKeys entry whose lamport delta is a decrease of at
+        // least `delivered` regardless of the signer flag; for SPL it is a
+        // token account `expected.source` owns that decreased by at least
+        // `delivered` on the locked mint. A refund a third party paid direct
+        // never empties the vault the row believes it closed, so a
+        // source-decrease below `delivered` is no proof of payout.
+        let source_paid = match expected.spl_token_mint.as_deref() {
+            None => source_lamports_decreased(
+                account_keys,
+                meta["preBalances"].as_array(),
+                meta["postBalances"].as_array(),
+                &expected.source,
+                delivered,
+            ),
+            Some(mint) => source_token_decreased(
+                meta["preTokenBalances"].as_array(),
+                meta["postTokenBalances"].as_array(),
+                account_keys,
+                &expected.source,
+                mint,
+                delivered,
+            ),
+        };
+        if !source_paid {
+            return Ok(None);
+        }
         let payers = match expected.spl_token_mint.as_deref() {
             None => sol_payers(
                 account_keys,
@@ -1119,9 +1145,6 @@ impl SolanaRpcClient {
                 mint,
             ),
         };
-        if !payers.iter().any(|payer| payer == &expected.source) {
-            return Ok(None);
-        }
         Ok(Some(ValidatedTransfer {
             signature: signature.to_owned(),
             delivered,
@@ -1693,6 +1716,93 @@ fn spl_payers(
         payers.extend(first_signer(account_keys));
     }
     payers
+}
+
+/// Whether the account `source` lost at least `delivered` lamports in this
+/// transaction — the refund-payout source proof (issue #1209). Unlike
+/// [`sol_payers`] the check ignores the signer flag entirely: a Squads vault
+/// PDA spends through CPI and never signs, so requiring `signer: true` would
+/// refuse the exact payout shape the rail is built to take. The vault's
+/// position in `accountKeys` indexes `preBalances`/`postBalances`
+/// positionally, the same addressing `lamport_delta` uses; `pre - post >=
+/// delivered` is the proof. Balance arrays that cannot answer — missing, or
+/// `source` not among the keys — are no proof.
+fn source_lamports_decreased(
+    account_keys: &[Value],
+    pre_balances: Option<&Vec<Value>>,
+    post_balances: Option<&Vec<Value>>,
+    source: &str,
+    delivered: i64,
+) -> bool {
+    let Some(index) = account_keys
+        .iter()
+        .position(|key| key["pubkey"].as_str().or_else(|| key.as_str()) == Some(source))
+    else {
+        return false;
+    };
+    let pre = balance_i64(pre_balances.and_then(|b| b.get(index)));
+    let post = balance_i64(post_balances.and_then(|b| b.get(index)));
+    pre.saturating_sub(post) >= delivered
+}
+
+/// The SPL arm of the source proof (issue #1209): a token account *owned by*
+/// `source` whose balance on `mint` fell by at least `delivered`. Rows pair on
+/// `accountIndex` + `mint` between `preTokenBalances` and `postTokenBalances`;
+/// a missing post row means the account drained or closed — the decrease is
+/// the whole pre figure, the same convention `spl_payers` follows. The owner
+/// comes from the row's `owner` field (a Squads vault owns its ATA without
+/// signing); a row with no owner falls back to the account's own pubkey —
+/// `source` holding the token account itself. No token row can carry
+/// `accountIndex` above `usize::MAX` rows of `accountKeys`, so a malformed
+/// index just never matches.
+fn source_token_decreased(
+    pre: Option<&Vec<Value>>,
+    post: Option<&Vec<Value>>,
+    account_keys: &[Value],
+    source: &str,
+    mint: &str,
+    delivered: i64,
+) -> bool {
+    let Some(pre_rows) = pre else {
+        return false;
+    };
+    let mut decreased: i64 = 0;
+    for pre_row in pre_rows {
+        if pre_row["mint"].as_str() != Some(mint) {
+            continue;
+        }
+        let Some(index) = pre_row["accountIndex"].as_u64() else {
+            continue;
+        };
+        let owned = pre_row["owner"].as_str() == Some(source)
+            || account_keys
+                .get(index as usize)
+                .and_then(|k| k["pubkey"].as_str().or_else(|| k.as_str()))
+                == Some(source);
+        if !owned {
+            continue;
+        }
+        let post_amount: i64 = post
+            .and_then(|rows| {
+                rows.iter().find(|p| {
+                    p["accountIndex"].as_u64() == Some(index) && p["mint"].as_str() == Some(mint)
+                })
+            })
+            .and_then(|p| p["uiTokenAmount"]["amount"].as_str())
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(0);
+        let Some(pre_amount) = pre_row["uiTokenAmount"]["amount"]
+            .as_str()
+            .and_then(|s| s.parse::<i64>().ok())
+        else {
+            continue;
+        };
+        decreased = decreased.saturating_add(pre_amount.saturating_sub(post_amount));
+        if decreased >= delivered {
+            return true;
+        }
+    }
+    false
 }
 
 /// The SPL-token counterpart of the native-balance delta: the difference
@@ -2848,5 +2958,356 @@ mod tests {
             1,
             "the single endpoint answered one read — no confirmation round-trip exists"
         );
+    }
+
+    /// The refund demand the payout tests place on the chain: `payTo` is the
+    /// vault (`expected.source`), `refundAddr` the customer's frozen refund
+    /// address.
+    fn expected_payout(mint: Option<&str>) -> ExpectedPayout {
+        ExpectedPayout {
+            recipient: "refundAddr".to_owned(),
+            spl_token_mint: mint.map(str::to_owned),
+            source: "payTo".to_owned(),
+        }
+    }
+
+    /// A Squads-shaped native-SOL payout (issue #1209): the multisig vault
+    /// `payTo` is a *non-signer* account whose lamports the CPI debited; the
+    /// only signer is the Squads program's fee payer. `accountKeys[1]` is the
+    /// vault, `[2]` the customer's refund address.
+    fn squads_sol_payout_tx(
+        vault_pre: i64,
+        vault_post: i64,
+        refund_post: i64,
+        err: Value,
+    ) -> Value {
+        json!({
+            "meta": {
+                "err": err,
+                "preBalances": [5_000_000_000_i64, vault_pre, 0],
+                "postBalances": [4_999_995_000_i64, vault_post, refund_post],
+                "preTokenBalances": [],
+                "postTokenBalances": []
+            },
+            "blockTime": 1_700_000_000_i64,
+            "transaction": {
+                "message": {
+                    "accountKeys": [
+                        {"pubkey": "SQUADS_FEE_PAYER", "signer": true, "writable": true, "source": "transaction"},
+                        {"pubkey": "payTo", "signer": false, "writable": true, "source": "transaction"},
+                        {"pubkey": "refundAddr", "signer": false, "writable": true, "source": "transaction"}
+                    ]
+                }
+            }
+        })
+    }
+
+    /// A third-party-paid SOL transfer the vault never touched: the signer
+    /// `STRANGER` paid `refundAddr` direct — `payTo` sits in the keys (it is
+    /// the rail's known vault) but its balance did not fall.
+    fn third_party_sol_tx(refund_post: i64) -> Value {
+        json!({
+            "meta": {
+                "err": null,
+                "preBalances": [5_000_000_000_i64, 9_000_000_000_i64, 0],
+                "postBalances": [4_990_000_000_i64, 9_000_000_000_i64, refund_post],
+                "preTokenBalances": [],
+                "postTokenBalances": []
+            },
+            "transaction": {
+                "message": {
+                    "accountKeys": [
+                        {"pubkey": "STRANGER", "signer": true, "writable": true, "source": "transaction"},
+                        {"pubkey": "payTo", "signer": false, "writable": false, "source": "transaction"},
+                        {"pubkey": "refundAddr", "signer": false, "writable": true, "source": "transaction"}
+                    ]
+                }
+            }
+        })
+    }
+
+    /// A Squads-shaped SPL payout (issue #1209): the vault owns the sending
+    /// token account — `accountKeys[1]` is the vault-owned ATA the transfer
+    /// debited, `owner: "payTo"` on its balance rows — and the recipient's ATA
+    /// sits at index 4 owned by `refundAddr`.
+    fn squads_spl_payout_tx(
+        vault_pre_amount: &str,
+        vault_post_amount: Option<&str>,
+        recipient_post_amount: &str,
+        mint: &str,
+        err: Value,
+    ) -> Value {
+        let mut post_rows = vec![json!({
+            "accountIndex": 4, "mint": mint, "owner": "refundAddr",
+            "uiTokenAmount": {"amount": recipient_post_amount, "decimals": 6, "uiAmountString": "0"}
+        })];
+        if let Some(amount) = vault_post_amount {
+            post_rows.insert(
+                0,
+                json!({
+                    "accountIndex": 1, "mint": mint, "owner": "payTo",
+                    "uiTokenAmount": {"amount": amount, "decimals": 6, "uiAmountString": "0"}
+                }),
+            );
+        }
+        json!({
+            "meta": {
+                "err": err,
+                "preBalances": [5_000_000_000_i64],
+                "postBalances": [4_999_995_000_i64],
+                "preTokenBalances": [{
+                    "accountIndex": 1, "mint": mint, "owner": "payTo",
+                    "uiTokenAmount": {"amount": vault_pre_amount, "decimals": 6, "uiAmountString": "0"}
+                }],
+                "postTokenBalances": post_rows
+            },
+            "transaction": {
+                "message": {
+                    "accountKeys": [
+                        {"pubkey": "SQUADS_FEE_PAYER", "signer": true, "writable": true, "source": "transaction"},
+                        {"pubkey": "VAULT_ATA", "signer": false, "writable": true, "source": "transaction"},
+                        {"pubkey": mint, "signer": false, "writable": false, "source": "transaction"},
+                        {"pubkey": "TOKEN_PROGRAM", "signer": false, "writable": false, "source": "transaction"},
+                        {"pubkey": "REFUND_ATA", "signer": false, "writable": true, "source": "transaction"},
+                        {"pubkey": "payTo", "signer": false, "writable": false, "source": "transaction"}
+                    ]
+                }
+            }
+        })
+    }
+
+    /// Issue #1209 (a): a Squads vault payout must validate — the vault PDA
+    /// never signs, so the old signer-set proof refused the very refund the
+    /// rail is built to take. The proof is the vault's balance decrease.
+    #[tokio::test(flavor = "current_thread")]
+    async fn validate_payout_accepts_a_squads_vault_sol_refund() {
+        // Vault 9 SOL → 8.995 SOL (paid 5_000_000 lamports), refund address
+        // 0 → 5_000_000. The only signer is the fee payer.
+        let (url, _hits) = stub_rpc(json!({"jsonrpc": "2.0", "id": 1, "result":
+                squads_sol_payout_tx(9_000_000_000, 8_995_000_000, 5_000_000, json!(null))}))
+        .await;
+        let client = client(&[url], None);
+        let validated = client
+            .validate_payout("refundSig", &expected_payout(None))
+            .await
+            .unwrap();
+        let validated =
+            validated.expect("a vault-decrease payout is proof even with no vault signature");
+        assert_eq!(validated.delivered, 5_000_000);
+        // `payers` stays reporting-only: the debited signer is the fee payer.
+        assert_eq!(validated.payers, vec!["SQUADS_FEE_PAYER".to_owned()]);
+    }
+
+    /// Issue #1209 (b): a third party paying the refund address direct is no
+    /// proof — the vault the row believes it closed never lost a lamport,
+    /// even though the signed payer is somebody.
+    #[tokio::test(flavor = "current_thread")]
+    async fn validate_payout_refuses_a_third_party_sol_payment() {
+        let (url, _hits) =
+            stub_rpc(json!({"jsonrpc": "2.0", "id": 1, "result": third_party_sol_tx(5_000_000)}))
+                .await;
+        let client = client(&[url], None);
+        let validated = client
+            .validate_payout("refundSig", &expected_payout(None))
+            .await
+            .unwrap();
+        assert!(
+            validated.is_none(),
+            "a stranger-paid refund never emptied the vault: {validated:?}"
+        );
+    }
+
+    /// Issue #1209 (c): the vault lost lamports but fewer than `delivered` —
+    /// a partial drain is not the payout the refund amount froze.
+    #[tokio::test(flavor = "current_thread")]
+    async fn validate_payout_refuses_a_vault_decrease_below_delivered() {
+        // Vault dropped only 4_000_000 while 5_000_000 reached the refund
+        // address — someone else covered the rest.
+        let (url, _hits) = stub_rpc(json!({"jsonrpc": "2.0", "id": 1, "result":
+                squads_sol_payout_tx(9_000_000_000, 8_996_000_000, 5_000_000, json!(null))}))
+        .await;
+        let client = client(&[url], None);
+        let validated = client
+            .validate_payout("refundSig", &expected_payout(None))
+            .await
+            .unwrap();
+        assert!(
+            validated.is_none(),
+            "a source decrease below delivered is no proof: {validated:?}"
+        );
+    }
+
+    /// Issue #1209 (d): a Squads SPL refund — the vault's own token account
+    /// drained by the payout — must validate. The owner field, not a
+    /// signature, attributes the spend.
+    #[tokio::test(flavor = "current_thread")]
+    async fn validate_payout_accepts_a_squads_vault_spl_refund() {
+        let (url, _hits) =
+            stub_rpc(json!({"jsonrpc": "2.0", "id": 1, "result":
+                squads_spl_payout_tx("9000000", Some("4000000"), "5000000", "usdcMint", json!(null))}))
+                .await;
+        let client = client(&[url], None);
+        let validated = client
+            .validate_payout("refundSig", &expected_payout(Some("usdcMint")))
+            .await
+            .unwrap();
+        let validated = validated.expect("a vault-ATA decrease is proof for an SPL payout");
+        assert_eq!(validated.delivered, 5_000_000);
+        // Reporting payers: the debited token account's owner — the vault.
+        assert_eq!(validated.payers, vec!["payTo".to_owned()]);
+    }
+
+    /// Issue #1209 (e): a failed transaction, a payout to a different
+    /// recipient, and a payout on the wrong mint each fail — the strictness
+    /// the recipient/mint checks carry never changed.
+    #[tokio::test(flavor = "current_thread")]
+    async fn validate_payout_refuses_failed_wrong_recipient_and_wrong_mint() {
+        // Failed transaction — `meta.err` set.
+        let (url_err, _e) = stub_rpc(json!({"jsonrpc": "2.0", "id": 1, "result":
+                squads_sol_payout_tx(9_000_000_000, 8_995_000_000, 5_000_000,
+                    json!({"InstructionError": [0, "Custom"]}))}))
+        .await;
+        let err_client = client(&[url_err], None);
+        assert!(
+            err_client
+                .validate_payout("refundSig", &expected_payout(None))
+                .await
+                .unwrap()
+                .is_none(),
+            "a failed transaction moved nothing"
+        );
+        // Right vault, right amount, wrong recipient — `lamport_delta` finds
+        // no `refundAddr` key.
+        let wrong_recipient = json!({
+            "meta": {
+                "err": null,
+                "preBalances": [5_000_000_000_i64, 9_000_000_000_i64, 0],
+                "postBalances": [4_999_995_000_i64, 8_995_000_000_i64, 5_000_000],
+                "preTokenBalances": [],
+                "postTokenBalances": []
+            },
+            "transaction": {
+                "message": {
+                    "accountKeys": [
+                        {"pubkey": "SQUADS_FEE_PAYER", "signer": true, "writable": true, "source": "transaction"},
+                        {"pubkey": "payTo", "signer": false, "writable": true, "source": "transaction"},
+                        {"pubkey": "someoneElse", "signer": false, "writable": true, "source": "transaction"}
+                    ]
+                }
+            }
+        });
+        let (url_wrong, _w) =
+            stub_rpc(json!({"jsonrpc": "2.0", "id": 1, "result": wrong_recipient})).await;
+        let wrong_client = client(&[url_wrong], None);
+        assert!(
+            wrong_client
+                .validate_payout("refundSig", &expected_payout(None))
+                .await
+                .unwrap()
+                .is_none(),
+            "a payout to a different address is no proof for this refund"
+        );
+        // Wrong mint: the SPL rows ride `otherMint`, not `usdcMint`.
+        let (url_mint, _m) =
+            stub_rpc(json!({"jsonrpc": "2.0", "id": 1, "result":
+                squads_spl_payout_tx("9000000", Some("4000000"), "5000000", "otherMint", json!(null))}))
+                .await;
+        let mint_client = client(&[url_mint], None);
+        assert!(
+            mint_client
+                .validate_payout("refundSig", &expected_payout(Some("usdcMint")))
+                .await
+                .unwrap()
+                .is_none(),
+            "a payout on the wrong mint is no proof"
+        );
+    }
+
+    /// The vault paid out but the same transaction never delivered to the
+    /// refund address — the `delivered` side still guards.
+    #[tokio::test(flavor = "current_thread")]
+    async fn validate_payout_refuses_a_vault_spend_that_paid_elsewhere() {
+        // Vault fell 5_000_000 but `refundAddr` gained 0 — the debit went
+        // somewhere else (fee, another transfer in the same tx).
+        let (url, _hits) = stub_rpc(json!({"jsonrpc": "2.0", "id": 1, "result":
+                squads_sol_payout_tx(9_000_000_000, 8_995_000_000, 0, json!(null))}))
+        .await;
+        let client = client(&[url], None);
+        let validated = client
+            .validate_payout("refundSig", &expected_payout(None))
+            .await
+            .unwrap();
+        let validated =
+            validated.expect("the source check judges the vault's decrease, not the delivery");
+        // `delivered` is 0 — the reported figure the core compares to the
+        // refund amount; the source check already passed on the vault drain.
+        assert_eq!(validated.delivered, 0);
+    }
+
+    /// `source_lamports_decreased` needs `pre - post >= delivered` on the
+    /// vault's own accountKeys slot, signer flag ignored.
+    #[test]
+    fn source_lamports_decreased_judges_the_vaults_own_slot() {
+        let tx = squads_sol_payout_tx(9_000_000_000, 8_995_000_000, 5_000_000, json!(null));
+        let keys = tx["transaction"]["message"]["accountKeys"]
+            .as_array()
+            .unwrap();
+        let pre = tx["meta"]["preBalances"].as_array();
+        let post = tx["meta"]["postBalances"].as_array();
+        assert!(source_lamports_decreased(
+            keys, pre, post, "payTo", 5_000_000
+        ));
+        assert!(source_lamports_decreased(keys, pre, post, "payTo", 1));
+        assert!(!source_lamports_decreased(
+            keys, pre, post, "payTo", 5_000_001
+        ));
+        // A source that is not in the keys cannot have paid.
+        assert!(!source_lamports_decreased(
+            keys,
+            pre,
+            post,
+            "absentVault",
+            1
+        ));
+        // Missing balance arrays are no proof.
+        assert!(!source_lamports_decreased(keys, None, post, "payTo", 1));
+    }
+
+    /// `source_token_decreased` sums decreases across token accounts the
+    /// vault owns on the locked mint — several partial drains can meet
+    /// `delivered` together, a third party's decrease never counts.
+    #[test]
+    fn source_token_decreased_counts_only_source_owned_rows() {
+        let mint = "usdcMint";
+        let keys = json!([
+            {"pubkey": "FEE_PAYER", "signer": true, "writable": true, "source": "transaction"},
+            {"pubkey": "VAULT_ATA_A", "signer": false, "writable": true, "source": "transaction"},
+            {"pubkey": "STRANGER_ATA", "signer": false, "writable": true, "source": "transaction"}
+        ]);
+        let keys = keys.as_array().unwrap();
+        let pre = json!([
+            {"accountIndex": 1, "mint": mint, "owner": "payTo",
+             "uiTokenAmount": {"amount": "3000", "decimals": 6, "uiAmountString": "0"}},
+            {"accountIndex": 2, "mint": mint, "owner": "stranger",
+             "uiTokenAmount": {"amount": "9000", "decimals": 6, "uiAmountString": "0"}}
+        ]);
+        let post = json!([
+            {"accountIndex": 1, "mint": mint, "owner": "payTo",
+             "uiTokenAmount": {"amount": "0", "decimals": 6, "uiAmountString": "0"}},
+            {"accountIndex": 2, "mint": mint, "owner": "stranger",
+             "uiTokenAmount": {"amount": "0", "decimals": 6, "uiAmountString": "0"}}
+        ]);
+        let pre = pre.as_array();
+        let post = post.as_array();
+        // The vault's own ATA fell 3000 — enough for 3000, not for 3001 even
+        // though the stranger's ATA fell 9000 in the same transaction.
+        assert!(source_token_decreased(
+            pre, post, keys, "payTo", mint, 3_000
+        ));
+        assert!(!source_token_decreased(
+            pre, post, keys, "payTo", mint, 3_001
+        ));
+        // No pre rows at all is no proof.
+        assert!(!source_token_decreased(None, post, keys, "payTo", mint, 1));
     }
 }
