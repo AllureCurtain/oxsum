@@ -602,7 +602,15 @@ transfer-request URL plus a QR code — scan it with a Solana wallet, or copy
 the link, and the wallet fills in the recipient, amount and `reference`
 marker itself. The manual `payTo` / amount / `reference` fields stay beneath
 the QR for a wallet that cannot scan; when no compatible wallet is detected
-the button stays away and the QR/manual path is the payment.
+the button stays away and the QR/manual path is the payment. The intent's
+`cluster` names the network it pays on — shown beside the terms and pinned
+into the URL as `cluster=` on a non-mainnet deployment (issue #1181; Solana
+addresses are identical across clusters, so the name is the wallet's only
+hint). The pay button sends only through an endpoint that agrees with the
+intent's cluster: a deployment serving `devnet`/`testnet` intents needs
+`VITE_SOLANA_RPC_URL` built in, and a mismatch refuses the send rather than
+move money on the wrong network — the QR carries the right cluster either
+way.
 
 While the intent stands open the tab shows its live status (issue #1148): a
 countdown to `expiresAt` — red once under a minute remains — the locked

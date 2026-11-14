@@ -5,12 +5,14 @@ import { PublicKey, SystemProgram } from "@solana/web3.js";
 import {
   ASSOCIATED_TOKEN_PROGRAM_ID,
   TOKEN_PROGRAM_ID,
+  getAssociatedTokenAddressSync,
 } from "@solana/spl-token";
 
 import {
   buildSolanaTransfer,
   intentTransferTerms,
   parsePublicKey,
+  solanaEndpointCluster,
   solanaRpcEndpoint,
 } from "../src/lib/solanaTx.ts";
 import { usableSolanaWallets } from "../src/lib/solanaWallets.ts";
@@ -22,6 +24,12 @@ const PAY_TO = new PublicKey("EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v");
 const PAYER = new PublicKey("4uQeVj5tqViQh7yWWGStvkEG1Zmhx6uasJtWCJziofM");
 const REFERENCE = new PublicKey("8opHzTAnfzRpPEx21XtnrVTX28YQuCpAjcn1PczScKh");
 const MINT = new PublicKey("Gh9ZwEmdLJ8DscnNT79r5xY69sL2w8hDB2J5r5h1k2tT");
+// A real Squads v4 vault PDA — `getVaultPda(multisig, 0)` for multisig
+// `C46NEXuBLRJjJhfAsKBUxUYdxSBQUPc3SXQFRBTXfupC`, the known-answer pair the
+// `crates/integrations::squads` test pins against the `@sqds/multisig` SDK.
+// A vault is a program-derived address, so it is off-curve — the case the
+// default ATA derivation refuses.
+const SQUADS_VAULT = new PublicKey("65kaU3KWZJCEz11vrCQfUZMc5AWSTzkFybwKD5BckLH8");
 
 const SPL_INTENT = {
   payTo: PAY_TO.toBase58(),
@@ -91,6 +99,32 @@ test("an SPL intent derives ATAs and appends the marker on TransferChecked", () 
   assert.ok(!destAta.equals(PAY_TO));
 });
 
+test("an SPL intent pays a Squads vault — an off-curve payTo (issue #1180)", () => {
+  // The vault PDA is off-curve by construction; assert the fixture holds so a
+  // test-vector drift fails loudly rather than silently re-testing on-curve.
+  assert.equal(PublicKey.isOnCurve(SQUADS_VAULT.toBytes()), false);
+  const terms = intentTransferTerms(
+    { ...SPL_INTENT, payTo: SQUADS_VAULT.toBase58() },
+    PAYER,
+  );
+  assert.ok(terms !== null);
+  // The throw the issue reports happens here, inside the builder.
+  const tx = buildSolanaTransfer(terms);
+  assert.equal(tx.instructions.length, 2);
+  const [createAta, transfer] = tx.instructions;
+  // The destination is the Associated Token Program's derivation for the
+  // off-curve owner — the account the ATA creation and the transfer name.
+  const expectedAta = getAssociatedTokenAddressSync(MINT, SQUADS_VAULT, true);
+  assert.ok(createAta.keys[1].pubkey.equals(expectedAta));
+  assert.ok(createAta.keys[2].pubkey.equals(SQUADS_VAULT));
+  assert.ok(transfer.keys[2].pubkey.equals(expectedAta));
+  // The marker still rides the transfer read-only and non-signing.
+  const marker = transfer.keys.find((k) => k.pubkey.equals(REFERENCE));
+  assert.ok(marker !== undefined);
+  assert.equal(marker.isSigner, false);
+  assert.equal(marker.isWritable, false);
+});
+
 test("usableSolanaWallets keeps installed/loadable, drops the rest, dedupes", () => {
   const fake = (name: string, readyState: WalletReadyState): Adapter =>
     ({ name, readyState }) as unknown as Adapter;
@@ -108,7 +142,29 @@ test("usableSolanaWallets keeps installed/loadable, drops the rest, dedupes", ()
   assert.equal(usableSolanaWallets([]).length, 0);
 });
 
-test("solanaRpcEndpoint defaults to mainnet-beta when the env is unset", () => {
-  // `VITE_SOLANA_RPC_URL` is unset in the test run, so the default answers.
-  assert.equal(solanaRpcEndpoint(), "https://api.mainnet-beta.solana.com");
+test("solanaRpcEndpoint answers the public endpoint for a mainnet intent only", () => {
+  // `VITE_SOLANA_RPC_URL` is unset in the test run, so the defaults answer.
+  assert.deepEqual(solanaRpcEndpoint("mainnet-beta"), {
+    ok: "https://api.mainnet-beta.solana.com",
+  });
+  // Issue #1181: a non-mainnet intent without a configured endpoint refuses
+  // to send — never the old silent public-mainnet fallback, never a guessed
+  // private one. The QR carries `cluster=` and stays the payment path.
+  assert.deepEqual(solanaRpcEndpoint("devnet"), {
+    error: "unconfigured",
+    cluster: "devnet",
+  });
+  assert.deepEqual(solanaRpcEndpoint("testnet"), {
+    error: "unconfigured",
+    cluster: "testnet",
+  });
+});
+
+test("solanaEndpointCluster reads devnet/testnet/localhost shapes, else mainnet", () => {
+  assert.equal(solanaEndpointCluster("https://api.devnet.solana.com"), "devnet");
+  assert.equal(solanaEndpointCluster("http://127.0.0.1:8899"), "devnet");
+  assert.equal(solanaEndpointCluster("http://localhost:8899"), "devnet");
+  assert.equal(solanaEndpointCluster("https://api.testnet.solana.com"), "testnet");
+  assert.equal(solanaEndpointCluster("https://mainnet.helius-rpc.com/?api-key=x"), "mainnet-beta");
+  assert.equal(solanaEndpointCluster("https://api.mainnet-beta.solana.com"), "mainnet-beta");
 });

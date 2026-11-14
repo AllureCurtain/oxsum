@@ -57,10 +57,16 @@ open the Vite URL — session cookies are same-origin through the proxy.
 
 One build-time variable shapes the bundle: `VITE_SOLANA_RPC_URL` names the
 JSON-RPC endpoint the Topup page's wallet-adapter pay button sends the
-customer-signed transfer through (issue #1147), defaulting to
-`https://api.mainnet-beta.solana.com`. It is a `VITE_*` read inside
+customer-signed transfer through (issue #1147). It is a `VITE_*` read inside
 `import.meta.env`, not an `OXSUM_*` server var — set it at `npm run build`
-for an authenticated or devnet loop.
+for an authenticated or devnet loop. Issue #1181 pins it to the intent's own
+`cluster` (the open-intent response declares `mainnet-beta`/`devnet`/
+`testnet`): unset, only a `mainnet-beta` intent sends — through
+`https://api.mainnet-beta.solana.com` — while a `devnet`/`testnet` intent
+refuses the adapter and the Solana Pay QR (whose `cluster=` carries the
+right network) stays the path. An endpoint whose shape disagrees with the
+intent's `cluster` refuses to send rather than move money on the wrong
+network.
 
 ## Production
 

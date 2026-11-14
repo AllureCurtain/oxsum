@@ -29,7 +29,7 @@ import { CodeBlock } from "../components/ui";
 import { Banner, Card, Cr, Field, StatChip, credits, creditsWithDisplay } from "../components/ui";
 import { QRCodeSVG } from "qrcode.react";
 import { decimalMinor } from "../lib/money";
-import { baseUnitsDecimal, solanaPayUrl } from "../lib/solanaPay";
+import { baseUnitsDecimal, solanaClusterName, solanaPayUrl } from "../lib/solanaPay";
 import {
   solanaCountdown,
   solanaExpired,
@@ -380,6 +380,7 @@ function SolanaPayBlock({ intent, onWalletSent }: { intent: SolanaIntent; onWall
     assetDecimals: intent.assetDecimals,
     reference: intent.reference,
     splToken: intent.splToken,
+    cluster: intent.cluster,
     label: t("topup.solanaPayLabel"),
     memo: intent.depositId,
   });
@@ -608,6 +609,12 @@ function SolanaRail() {
             </p>
             <SolanaCountdown expiresAt={opened.expiresAt} now={now} />
           </div>
+          {/* The network the intent pays on, named plainly (issue #1181):
+              Solana addresses are identical across clusters, so "devnet"
+              here is the customer's proof the payment is test money. */}
+          <p className="text-xs text-muted">
+            {t("topup.solanaNetwork", { network: solanaClusterName(opened.cluster) })}
+          </p>
           <SolanaPayBlock
             intent={opened}
             onWalletSent={() => {
