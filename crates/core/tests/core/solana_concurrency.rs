@@ -1122,11 +1122,14 @@ async fn the_poll_rescues_an_expired_row_whose_payment_landed_on_time() {
     // past the first-check minute — inside the rescue pass's 24 h window
     // (block_time 0 is before any real expiresAt, so the payment is on-time).
     db.expire_solana_deposit(deposit_id).await.unwrap();
-    // The first rescue check waits `expiresAt + 1 minute` (issue #1209): an
-    // intent whose TTL only just lapsed is too fresh to rescue — backdate the
-    // deadline so the row is due.
+    // The first rescue check waits a minute past the row's `expiredAt` (issue
+    // #1209 follow-up): a just-written `expired` row is too fresh to rescue —
+    // backdate both the write stamp (the first-check clock) and the deadline
+    // (which keeps the 24 h window open) so the row is due.
     sqlx::query(
-        "UPDATE oxsum.deposits SET meta = jsonb_set(meta, '{expiresAt}', $1::jsonb) \
+        "UPDATE oxsum.deposits \
+         SET meta = jsonb_set(jsonb_set(meta, '{expiresAt}', $1::jsonb), \
+                              '{expiredAt}', $1::jsonb) \
          WHERE deposit_id = $2",
     )
     .bind(serde_json::Value::String(
@@ -1877,14 +1880,17 @@ async fn the_rescue_pass_ignores_expired_rows_older_than_a_day() {
         db.expire_solana_deposit(id).await.unwrap();
     }
     // `expired` writes preserve meta.expiresAt — backdate it directly: one
-    // row inside the 24 h rescue window, one outside it.
+    // row inside the 24 h rescue window, one outside it. The fresh row's
+    // `expiredAt` is also backdated past the first-check minute (the write is
+    // the first-check clock now) so it is due to rescue; the old row needs no
+    // stamp, the window already refuses it.
     let old_stamp = (time::OffsetDateTime::now_utc() - time::Duration::hours(25))
         .format(&time::format_description::well_known::Rfc3339)
         .unwrap();
     let fresh_stamp = (time::OffsetDateTime::now_utc() - time::Duration::hours(1))
         .format(&time::format_description::well_known::Rfc3339)
         .unwrap();
-    for (id, stamp) in [(old_id, old_stamp), (fresh_id, fresh_stamp)] {
+    for (id, stamp) in [(old_id, old_stamp), (fresh_id, fresh_stamp.clone())] {
         sqlx::query(
             "UPDATE oxsum.deposits SET meta = jsonb_set(meta, '{expiresAt}', $1::jsonb) \
              WHERE deposit_id = $2",
@@ -1895,6 +1901,15 @@ async fn the_rescue_pass_ignores_expired_rows_older_than_a_day() {
         .await
         .unwrap();
     }
+    sqlx::query(
+        "UPDATE oxsum.deposits SET meta = jsonb_set(meta, '{expiredAt}', $1::jsonb) \
+         WHERE deposit_id = $2",
+    )
+    .bind(serde_json::Value::String(fresh_stamp.clone()))
+    .bind(fresh_id)
+    .execute(db.pool())
+    .await
+    .unwrap();
     /// Pays the fresh row's reference; the old row's marker finds nothing —
     /// even so, the old row must never be walked at all.
     struct PaysFresh {
@@ -2017,12 +2032,15 @@ async fn the_rescue_pass_drains_a_flooded_queue_without_rechecking() {
         db.expire_solana_deposit(id).await.unwrap();
         // i+5: the freshest row is 5 min past expiry — past the first-check
         // minute (issue #1209) so every row is due to rescue; the 1-minute
-        // stagger still gives a deterministic DESC ordering.
+        // stagger still gives a deterministic DESC ordering. `expiredAt` rides
+        // the same stamp — the write is the first-check clock now.
         let stamp = (time::OffsetDateTime::now_utc() - time::Duration::minutes(i + 5))
             .format(&time::format_description::well_known::Rfc3339)
             .unwrap();
         sqlx::query(
-            "UPDATE oxsum.deposits SET meta = jsonb_set(meta, '{expiresAt}', $1::jsonb) \
+            "UPDATE oxsum.deposits \
+             SET meta = jsonb_set(jsonb_set(meta, '{expiresAt}', $1::jsonb), \
+                                  '{expiredAt}', $1::jsonb) \
              WHERE deposit_id = $2",
         )
         .bind(serde_json::Value::String(stamp))
@@ -2167,9 +2185,12 @@ async fn a_row_inside_its_rescue_backoff_is_not_requeried() {
         .expect("inserts");
     db.expire_solana_deposit(deposit_id).await.unwrap();
     // Past the first-check minute (issue #1209) — the row is due, not too
-    // fresh to rescue.
+    // fresh to rescue. `expiredAt` is the first-check clock, so it rides the
+    // same backdated stamp as `expiresAt` (which keeps the 24 h window open).
     sqlx::query(
-        "UPDATE oxsum.deposits SET meta = jsonb_set(meta, '{expiresAt}', $1::jsonb) \
+        "UPDATE oxsum.deposits \
+         SET meta = jsonb_set(jsonb_set(meta, '{expiresAt}', $1::jsonb), \
+                              '{expiredAt}', $1::jsonb) \
          WHERE deposit_id = $2",
     )
     .bind(serde_json::Value::String(
@@ -2498,10 +2519,11 @@ async fn a_candidate_error_defers_instead_of_marking_underpaid() {
 }
 
 /// Issue #1209 follow-up: the rescue pass's first check on an `expired` row is
-/// paced — a just-lapsed row (expiresAt inside the last minute) is too fresh
-/// to rescue (its payment may still be finalizing), so the never-checked arm
-/// also requires `expiresAt <= now() - 1 minute`. Asserted through the
-/// `rescueCheckedAt` stamp: untouched while too fresh, stamped once due.
+/// paced — a row written `expired` inside the last minute is too fresh to
+/// rescue (its payment may still be finalizing), so the never-checked arm keys
+/// the minute off `meta.expiredAt` (the write, `expiresAt` as the pre-stamp
+/// fallback). Asserted through the `rescueCheckedAt` stamp: untouched while
+/// too fresh, stamped once due.
 #[tokio::test]
 async fn the_rescue_first_check_waits_a_minute_after_expiry() {
     let Some(db) = database("solana_rescue_pace").await else {
@@ -2514,21 +2536,10 @@ async fn the_rescue_first_check_waits_a_minute_after_expiry() {
         .await
         .unwrap()
         .expect("inserts");
-    // Already `expired` (the sweep flipped it) with expiresAt 30 s ago —
-    // inside the first-check minute, so the rescue must skip it.
+    // Already `expired` (the sweep flipped it, stamping `expiredAt` = now) —
+    // inside the first-check minute, so the rescue must skip it. `expiresAt`
+    // stays inside the 24 h rescue window.
     db.expire_solana_deposit(deposit_id).await.unwrap();
-    // expiresAt = now - 30 s: too fresh for the first rescue check.
-    sqlx::query(
-        "UPDATE oxsum.deposits \
-         SET meta = jsonb_set(meta, '{expiresAt}', \
-             to_jsonb(to_char(now() - interval '30 seconds', \
-             'YYYY-MM-DD\"T\"HH24:MI:SSZ'))) \
-         WHERE deposit_id = $1",
-    )
-    .bind(deposit_id)
-    .execute(db.pool())
-    .await
-    .unwrap();
     let tenants = oxsum_core::Tenants::new(db.pool().clone());
     // A stub that pays nothing — the rescue just walks the row and stamps it.
     struct NoSigs;
@@ -2573,12 +2584,14 @@ async fn the_rescue_first_check_waits_a_minute_after_expiry() {
     .unwrap();
     assert!(
         stamped.is_none(),
-        "an expiresAt only 30 s old must not be rescue-checked yet — got {stamped:?}"
+        "a row written `expired` 0 s ago must not be rescue-checked yet — got {stamped:?}"
     );
-    // Now past the first-check minute — the row becomes due and gets stamped.
+    // `expiredAt` past the first-check minute — the row becomes due and gets
+    // stamped. The first-check clock is the write, so this is the stamp that
+    // matters; `expiresAt` is already in-window.
     sqlx::query(
         "UPDATE oxsum.deposits \
-         SET meta = jsonb_set(meta, '{expiresAt}', \
+         SET meta = jsonb_set(meta, '{expiredAt}', \
              to_jsonb(to_char(now() - interval '90 seconds', \
              'YYYY-MM-DD\"T\"HH24:MI:SSZ'))) \
          WHERE deposit_id = $1",
@@ -2599,6 +2612,240 @@ async fn the_rescue_first_check_waits_a_minute_after_expiry() {
     .unwrap();
     assert!(
         stamped.is_some(),
-        "once expiresAt is past the first minute the rescue checks and stamps the row"
+        "once expiredAt is past the first minute the rescue checks and stamps the row"
+    );
+}
+
+/// Issue #1209 follow-up: a row this pass just expired is not re-verified in
+/// the same pass's rescue walk — `find_reference` sees the marker once (the
+/// expiry pass), not twice. Only a later pass, once `expiredAt` is a minute
+/// old, lets the rescue re-walk it.
+#[tokio::test]
+async fn a_just_expired_row_is_not_rechecked_in_the_same_pass() {
+    let Some(db) = database("solana_rescue_samepass").await else {
+        return;
+    };
+    // A 1-second TTL so the intent's own deadline genuinely lapses during the
+    // test — expiry is the sweep's verdict, and `meta.expiresAt` needs a real
+    // value the rescue window (`expiresAt >= now()-24h`) keeps in scope.
+    let terms = SolanaTerms {
+        intent_ttl_secs: 1,
+        ..terms()
+    };
+    let org = organization(&db, "rescue-samepass").await;
+    let deposit_id = Uuid::new_v4();
+    let (reference, _, _) = db
+        .open_solana_deposit(org, deposit_id, 1000, &terms, None, &static_rate(&terms))
+        .await
+        .unwrap()
+        .expect("inserts");
+    // Backdate expiresAt past the 120 s expiry grace so the sweep's Unpaid
+    // verdict actually expires the row this pass. `expiredAt` is NOT set — the
+    // sweep stamps it when it flips the row, so it lands fresh (inside the
+    // first-check minute) even though the deadline is old. That split is the
+    // point of the change: the first-check clock is the write, not the deadline.
+    sqlx::query(
+        "UPDATE oxsum.deposits SET meta = jsonb_set(meta, '{expiresAt}', $1::jsonb) \
+         WHERE deposit_id = $2",
+    )
+    .bind(serde_json::Value::String(
+        (time::OffsetDateTime::now_utc() - time::Duration::minutes(3))
+            .format(&time::format_description::well_known::Rfc3339)
+            .unwrap(),
+    ))
+    .bind(deposit_id)
+    .execute(db.pool())
+    .await
+    .unwrap();
+    // Count every `find_reference`: the tally is the proof the same pass did
+    // not expire-and-re-walk the row.
+    struct Counting {
+        calls: Mutex<u64>,
+    }
+    impl std::fmt::Debug for Counting {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            f.debug_struct("Counting").finish_non_exhaustive()
+        }
+    }
+    impl ChainLookup for Counting {
+        fn find_reference<'a>(
+            &'a self,
+            _reference: &'a str,
+        ) -> std::pin::Pin<
+            Box<dyn std::future::Future<Output = Result<Vec<String>, LookupError>> + Send + 'a>,
+        > {
+            Box::pin(async move {
+                *self.calls.lock().unwrap() += 1;
+                // Provably unpaid — the verdict the sweep acts on.
+                Ok(Vec::new())
+            })
+        }
+        fn validate_transfer<'a>(
+            &'a self,
+            _signature: &'a str,
+            _expected: &'a ExpectedTransfer,
+        ) -> std::pin::Pin<
+            Box<
+                dyn std::future::Future<Output = Result<Option<ValidatedTransfer>, LookupError>>
+                    + Send
+                    + 'a,
+            >,
+        > {
+            Box::pin(async { Ok(None) })
+        }
+    }
+    let stub = Arc::new(Counting {
+        calls: Mutex::new(0),
+    });
+    let verifier = SolanaRailVerifier::new(stub.clone(), terms);
+    let tenants = oxsum_core::Tenants::new(db.pool().clone());
+    // One pass: it verifies the marker (1 call), finds it unpaid past the
+    // grace, and expires the row — stamping `expiredAt` = now. That stamp is
+    // fresh, inside the first-check minute, so the same pass's rescue walk
+    // must skip the row: still 1 find_reference call, not 2.
+    db.poll_solana_deposits(&verifier, &tenants, time::Date::MAX)
+        .await
+        .unwrap();
+    assert_eq!(
+        *stub.calls.lock().unwrap(),
+        1,
+        "the just-expired row is verified once — the rescue does not re-walk it in the same pass"
+    );
+    let status: String =
+        sqlx::query_scalar("SELECT status FROM oxsum.deposits WHERE deposit_id = $1")
+            .bind(deposit_id)
+            .fetch_one(db.pool())
+            .await
+            .unwrap();
+    assert_eq!(status, "expired");
+    // Once the row's `expiredAt` is a minute old the rescue may look — stand
+    // in for the wait by backdating the stamp, then the next pass re-walks it.
+    sqlx::query(
+        "UPDATE oxsum.deposits SET meta = jsonb_set(meta, '{expiredAt}', $1::jsonb) \
+         WHERE deposit_id = $2",
+    )
+    .bind(serde_json::Value::String(
+        (time::OffsetDateTime::now_utc() - time::Duration::minutes(2))
+            .format(&time::format_description::well_known::Rfc3339)
+            .unwrap(),
+    ))
+    .bind(deposit_id)
+    .execute(db.pool())
+    .await
+    .unwrap();
+    db.poll_solana_deposits(&verifier, &tenants, time::Date::MAX)
+        .await
+        .unwrap();
+    assert_eq!(
+        *stub.calls.lock().unwrap(),
+        2,
+        "a row whose expiredAt is past the first minute is rescue-checked on a later pass"
+    );
+    let _ = reference;
+}
+
+/// Issue #1209 follow-up: a deferred verdict leaves a durable signal. Every
+/// `SolanaCredit::Deferred` bumps `meta.deferCount` and stamps
+/// `firstDeferredAt`/`lastDeferredAt` — and `solana_deposit_health` reports
+/// the `pending` rows whose defer crossed the concern line. No status changes.
+#[tokio::test]
+async fn a_deferred_verdict_accumulates_a_health_signal() {
+    let Some(db) = database("solana_defer_signal").await else {
+        return;
+    };
+    let terms = terms();
+    let org = organization(&db, "defer-signal").await;
+    let deposit_id = Uuid::new_v4();
+    db.open_solana_deposit(org, deposit_id, 1000, &terms, None, &static_rate(&terms))
+        .await
+        .unwrap()
+        .expect("inserts");
+    /// `find_reference` always errors — a chain outage, so every verify
+    /// defers.
+    struct AlwaysDown;
+    impl std::fmt::Debug for AlwaysDown {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            f.debug_struct("AlwaysDown").finish_non_exhaustive()
+        }
+    }
+    impl ChainLookup for AlwaysDown {
+        fn find_reference<'a>(
+            &'a self,
+            _reference: &'a str,
+        ) -> std::pin::Pin<
+            Box<dyn std::future::Future<Output = Result<Vec<String>, LookupError>> + Send + 'a>,
+        > {
+            Box::pin(async { Err(LookupError("endpoint unreachable".into())) })
+        }
+        fn validate_transfer<'a>(
+            &'a self,
+            _signature: &'a str,
+            _expected: &'a ExpectedTransfer,
+        ) -> std::pin::Pin<
+            Box<
+                dyn std::future::Future<Output = Result<Option<ValidatedTransfer>, LookupError>>
+                    + Send
+                    + 'a,
+            >,
+        > {
+            Box::pin(async { Err(LookupError("endpoint unreachable".into())) })
+        }
+    }
+    let verifier = SolanaRailVerifier::new(Arc::new(AlwaysDown), terms);
+    let tenants = oxsum_core::Tenants::new(db.pool().clone());
+    // Three consecutive deferred passes: the row stays `pending` and the
+    // defer counter grows to 3.
+    for _ in 0..3 {
+        db.poll_solana_deposits(&verifier, &tenants, time::Date::MAX)
+            .await
+            .unwrap();
+    }
+    let (status, defer_count): (String, i64) = sqlx::query_as(
+        "SELECT status, COALESCE((meta->>'deferCount')::int, 0)::bigint \
+         FROM oxsum.deposits WHERE deposit_id = $1",
+    )
+    .bind(deposit_id)
+    .fetch_one(db.pool())
+    .await
+    .unwrap();
+    assert_eq!(
+        status, "pending",
+        "a deferred verify never changes the status"
+    );
+    assert_eq!(defer_count, 3, "each deferred pass bumps the counter once");
+    // `firstDeferredAt`/`lastDeferredAt` are recorded for the 24 h rule.
+    let stamped: Option<String> = sqlx::query_scalar(
+        "SELECT meta->>'firstDeferredAt' FROM oxsum.deposits WHERE deposit_id = $1",
+    )
+    .bind(deposit_id)
+    .fetch_one(db.pool())
+    .await
+    .unwrap();
+    assert!(stamped.is_some(), "the first defer is timestamped");
+    // `solana_deposit_health` counts it only once it crosses the line:
+    // deferCount 3 < 20 and firstDeferredAt is fresh, so not yet long-deferred.
+    let (_counts, _paid, _oldest, long_deferred) = db.solana_deposit_health().await.unwrap();
+    assert_eq!(
+        long_deferred, 0,
+        "a 3-defer fresh row is not yet a long-deferred signal"
+    );
+    // Push the first defer past 24 h — the age branch of the metric fires.
+    sqlx::query(
+        "UPDATE oxsum.deposits SET meta = jsonb_set(meta, '{firstDeferredAt}', $1::jsonb) \
+         WHERE deposit_id = $2",
+    )
+    .bind(serde_json::Value::String(
+        (time::OffsetDateTime::now_utc() - time::Duration::hours(25))
+            .format(&time::format_description::well_known::Rfc3339)
+            .unwrap(),
+    ))
+    .bind(deposit_id)
+    .execute(db.pool())
+    .await
+    .unwrap();
+    let (_counts, _paid, _oldest, long_deferred) = db.solana_deposit_health().await.unwrap();
+    assert_eq!(
+        long_deferred, 1,
+        "a pending row first deferred over a day ago surfaces as long-deferred"
     );
 }
