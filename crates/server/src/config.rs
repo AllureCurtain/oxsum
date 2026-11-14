@@ -2321,6 +2321,24 @@ fn solana_of() -> Result<Option<Arc<oxsum_core::SolanaRailVerifier>>, String> {
         config,
     )
     .map_err(|error| format!("OXSUM_SOLANA_RPC_URLS: {}", error.0))?;
+    // One endpoint is one opinion (issue #1183): a credit decision rests on
+    // two agreeing `getTransaction` answers whenever the pool can supply them.
+    // A lone endpoint cannot cross-confirm — acceptable on a devnet loop, a
+    // deliberate downgrade on a mainnet-shaped URL, so the boot says so.
+    let devnet_shaped = rpc_urls.iter().all(|rpc_url| {
+        rpc_url.contains("devnet")
+            || rpc_url.contains("testnet")
+            || rpc_url.contains("localhost")
+            || rpc_url.contains("127.0.0.1")
+    });
+    if rpc_urls.len() == 1 && !devnet_shaped {
+        tracing::warn!(
+            "the solana rail has a single mainnet-shaped RPC endpoint — a \
+             credit decision trusts one node's word; configure \
+             OXSUM_SOLANA_RPC_URLS with a second provider for \
+             cross-confirmation (recommended on mainnet)"
+        );
+    }
     // Under the whitelist the boot still must verify each mint's decimals —
     // but the declared figure is gone, so the on-chain value fills the spec
     // in `main` (the verifier's `verify_mints` audit). The terms are built

@@ -31,6 +31,18 @@
 //! endpoint's host. A provider that authenticates by header sets
 //! `OXSUM_SOLANA_RPC_AUTH_HEADER`, applied to every endpoint's calls.
 //!
+//! With two or more endpoints a *credit-grade* answer is cross-confirmed
+//! (issue #1183): `validate_transfer` re-fetches the same `getTransaction` on
+//! a second healthy endpoint and both must report the same successful
+//! transaction delivering the same amount to the same recipient on the same
+//! mint. A disagreement or a sibling that cannot answer is not a credit
+//! basis — the deposit stays `pending` — because failover alone only proves
+//! *some* node answered, never that its answer is true. `find_reference`
+//! needs no second opinion of its own: the signatures it returns are only
+//! candidates, and the invented-signature case fails the cross-confirmed
+//! `getTransaction` that follows. A single-endpoint pool keeps the lone
+//! answer — `solana_of` warns at boot when that endpoint is mainnet-shaped.
+//!
 //! What is *not* verified here, on the record: `confirmed` is the default
 //! commitment because devnet top-ups are low-value and latency matters more
 //! than the residual reorg window; `finalized` is one config flag away. No
@@ -461,6 +473,20 @@ impl SolanaRpcClient {
         method: &str,
         params: Value,
     ) -> Result<Value, SolanaError> {
+        self.call_reporting_endpoint(call_name, method, params)
+            .await
+            .map(|(value, _)| value)
+    }
+
+    /// [`call`] plus the endpoint that answered — the cross-confirmation in
+    /// `validate_transfer` needs to know which endpoint served so the
+    /// confirmation read lands on a *different* one (issue #1183).
+    async fn call_reporting_endpoint(
+        &self,
+        call_name: &'static str,
+        method: &str,
+        params: Value,
+    ) -> Result<(Value, &RpcEndpoint), SolanaError> {
         let body = json!({
             "jsonrpc": "2.0",
             "id": 1,
@@ -503,7 +529,7 @@ impl SolanaRpcClient {
             match result {
                 Ok(value) => {
                     endpoint.note_ok();
-                    return Ok(value);
+                    return Ok((value, endpoint));
                 }
                 Err(e) => {
                     endpoint.note_failure();
@@ -541,7 +567,7 @@ impl SolanaRpcClient {
                 match result {
                     Ok(value) => {
                         endpoint.note_ok();
-                        return Ok(value);
+                        return Ok((value, endpoint));
                     }
                     Err(e) => {
                         endpoint.note_failure();
@@ -845,24 +871,35 @@ impl SolanaRpcClient {
     /// compares `delivered` against `expected.amount` — the locked asset's
     /// base units — so an under-delivery marks the deposit `underpaid` in the
     /// operator queue rather than masquerading as "no payment yet".
+    ///
+    /// A *credit* decision never rests on one node's word (issue #1183): when
+    /// the pool carries a second endpoint, a validated answer is re-fetched —
+    /// the same signature at the same commitment — on a different healthy
+    /// endpoint before it is believed. The two endpoints must agree on the
+    /// evidence the validation reads (a successful transaction carrying the
+    /// intent's `reference` and delivering `delivered` to the `recipient` on
+    /// the expected mint). A disagreement, or a second endpoint that cannot
+    /// answer at all, keeps the deposit `pending` — reported as `Ok(None)`
+    /// with a `solana_rpc_cross_confirmations_total{outcome}` count — because
+    /// a lone lagging or lying endpoint is exactly the failure the pool exists
+    /// to survive. A single-endpoint pool keeps the original posture: the
+    /// first answer stands alone (and `solana_of` warns at boot when that
+    /// single endpoint is mainnet-shaped).
     pub async fn validate_transfer(
         &self,
         signature: &str,
         expected: &ExpectedTransfer,
     ) -> Result<Option<ValidatedTransfer>, SolanaError> {
-        let result = self
-            .call(
-                "validate_transfer",
-                "getTransaction",
-                json!([
-                    signature,
-                    {
-                        "encoding": "jsonParsed",
-                        "commitment": self.config.commitment,
-                        "maxSupportedTransactionVersion": 0,
-                    },
-                ]),
-            )
+        let params = json!([
+            signature,
+            {
+                "encoding": "jsonParsed",
+                "commitment": self.config.commitment,
+                "maxSupportedTransactionVersion": 0,
+            },
+        ]);
+        let (result, served_by) = self
+            .call_reporting_endpoint("validate_transfer", "getTransaction", params.clone())
             .await?;
         if result.is_null() {
             return Ok(None);
@@ -940,12 +977,125 @@ impl SolanaRpcClient {
                 mint,
             ),
         };
+        // Cross-confirm the credit-grade answer on a second endpoint (issue
+        // #1183). The primary read already proved the transfer on
+        // `served_by`; a second healthy endpoint must see the same successful
+        // transaction deliver the same amount to the same recipient on the
+        // same mint under the same marker before the answer stands.
+        // Anything less — no tx, a different delivered figure, a missing
+        // marker, or no second endpoint able to answer — is not a credit
+        // basis: the deposit stays `pending` (`Ok(None)`) and the next pass
+        // retries.
+        if self.endpoints.len() > 1 {
+            let confirmed = self
+                .cross_confirm_transaction(signature, expected, served_by, &params, delivered)
+                .await;
+            if !confirmed {
+                return Ok(None);
+            }
+        }
         Ok(Some(ValidatedTransfer {
             signature: signature.to_owned(),
             delivered,
             block_time: result["blockTime"].as_i64(),
             payer,
         }))
+    }
+
+    /// The second-opinion read behind a validated transfer (issue #1183):
+    /// re-issue the exact `getTransaction` the primary endpoint answered on a
+    /// *different* healthy endpoint, and demand that it sees the same
+    /// successful transaction — `err: null`, the intent's `reference` marker
+    /// present as a read-only non-signer, and the same `delivered` figure to
+    /// the expected `recipient` on the expected mint. `true` only when a
+    /// second endpoint answered with agreeing evidence.
+    ///
+    /// The confirmation is deliberately *not* the failover `call`: it must
+    /// land on an endpoint other than the one that served, and its failure
+    /// must not fail over onto `served_by` (agreeing with yourself is not a
+    /// second opinion). `false` — never `Err` — covers every refusal: the
+    /// caller maps it to `Ok(None)`, so a disagreement or a dark second
+    /// endpoint reads as "not yet verified" exactly like an unpaid intent,
+    /// and `solana_rpc_cross_confirmations_total{endpoint,outcome}` records
+    /// which of "agreed"/"disagreed"/"unreachable" the attempt resolved to.
+    async fn cross_confirm_transaction(
+        &self,
+        signature: &str,
+        expected: &ExpectedTransfer,
+        served_by: &RpcEndpoint,
+        params: &Value,
+        delivered: i64,
+    ) -> bool {
+        let body = json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "getTransaction",
+            "params": params,
+        });
+        // The confirmation walks the endpoints except the one that served —
+        // same cooldown rules as `call` (a cooling endpoint is skipped), so
+        // the second opinion is always a live provider. An endpoint that
+        // cannot answer moves the walk to the next sibling; a pool of two
+        // tries exactly the other one.
+        for endpoint in self.endpoints.iter() {
+            if std::ptr::eq(endpoint, served_by) || endpoint.cooling_down() {
+                continue;
+            }
+            match self.call_once(endpoint, "getTransaction", &body).await {
+                Ok(result) => {
+                    endpoint.note_ok();
+                    let agreed = cross_confirmation_agrees(&result, expected, delivered);
+                    metrics::counter!(
+                        "solana_rpc_cross_confirmations_total",
+                        "endpoint" => endpoint.host.clone(),
+                        "outcome" => if agreed { "agreed" } else { "disagreed" }
+                    )
+                    .increment(1);
+                    if !agreed {
+                        tracing::warn!(
+                            signature,
+                            endpoint = %endpoint.host,
+                            served_by = %served_by.host,
+                            "the solana endpoints disagree on a credit-grade \
+                             transaction; the deposit stays pending"
+                        );
+                    }
+                    return agreed;
+                }
+                Err(e) => {
+                    endpoint.note_failure();
+                    metrics::counter!(
+                        "solana_rpc_errors_total",
+                        "call" => "validate_transfer_confirm",
+                        "endpoint" => endpoint.host.clone()
+                    )
+                    .increment(1);
+                    metrics::counter!(
+                        "solana_rpc_cross_confirmations_total",
+                        "endpoint" => endpoint.host.clone(),
+                        "outcome" => "unreachable"
+                    )
+                    .increment(1);
+                    tracing::warn!(
+                        signature,
+                        endpoint = %endpoint.host,
+                        error = %e.0,
+                        "a cross-confirmation endpoint could not answer"
+                    );
+                }
+            }
+        }
+        // No second endpoint could be tried or answered: every sibling is
+        // cooling down or failing (a pool that is effectively single-endpoint
+        // right now). Unverified is the safe answer — the first endpoint's
+        // word alone is not a credit basis for a multi-endpoint deployment.
+        tracing::warn!(
+            signature,
+            served_by = %served_by.host,
+            "no second solana endpoint is healthy enough to cross-confirm; \
+             the deposit stays pending"
+        );
+        false
     }
 }
 
@@ -1063,6 +1213,48 @@ impl oxsum_core::ChainLookup for SolanaRpcClient {
                 .collect()
         })
     }
+}
+
+/// What the cross-confirmation demands a second endpoint agree on (issue
+/// #1183): the same `getTransaction` shape `validate_transfer` reads —
+/// `meta.err` null, the intent's `reference` among the account keys as a
+/// read-only non-signer, and a recipient-side `delivered` delta on the
+/// expected mint (or native lamports) *equal to* the figure the primary
+/// endpoint reported. The same evidence extractors the primary validation
+/// ran (`reference_marker_present`, `lamport_delta`/`token_delta`) re-run
+/// here, so an endpoint that hallucinated a different amount, a different
+/// recipient-side account, a missing marker or a failed transaction disagrees
+/// — it is never enough that the signature merely exists.
+fn cross_confirmation_agrees(result: &Value, expected: &ExpectedTransfer, delivered: i64) -> bool {
+    if result.is_null() {
+        return false;
+    }
+    let meta = &result["meta"];
+    if !meta["err"].is_null() {
+        return false;
+    }
+    let Some(account_keys) = result["transaction"]["message"]["accountKeys"].as_array() else {
+        return false;
+    };
+    if !reference_marker_present(account_keys, &expected.reference) {
+        return false;
+    }
+    let second = match expected.spl_token_mint.as_deref() {
+        None => lamport_delta(
+            account_keys,
+            meta["preBalances"].as_array(),
+            meta["postBalances"].as_array(),
+            &expected.recipient,
+        ),
+        Some(mint) => token_delta(
+            meta["postTokenBalances"].as_array(),
+            meta["preTokenBalances"].as_array(),
+            account_keys,
+            &expected.recipient,
+            mint,
+        ),
+    };
+    second == Some(delivered)
 }
 
 /// The native-SOL counterpart of [`token_delta`]: the recipient's
@@ -2034,5 +2226,133 @@ mod tests {
         // The API key appears nowhere in the exposition document.
         assert!(!rendered.contains("TOPSECRET"), "{rendered}");
         drop(_guard);
+    }
+
+    /// A `getTransaction`-shaped answer carrying one paying native-SOL
+    /// transfer — the body `validate_transfer` and its cross-confirmation
+    /// read. `post_lamports` is what the deposit address gained.
+    fn transaction_result(pre_lamports: i64, post_lamports: i64, recipient: &str) -> Value {
+        json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "result": sol_tx(pre_lamports, post_lamports, recipient)
+        })
+    }
+
+    /// The demand the cross-confirmation tests place on the chain: `payTo`
+    /// (the test config's deposit address), 5000 lamports, native SOL, the
+    /// marker `sol_tx` embeds as a read-only non-signer.
+    fn expected_transfer() -> ExpectedTransfer {
+        ExpectedTransfer {
+            recipient: "payTo".to_owned(),
+            amount: 5_000,
+            spl_token_mint: None,
+            reference: "REFERENCE_MARKER".to_owned(),
+        }
+    }
+
+    /// Issue #1183: two endpoints agreeing on the same transaction is the
+    /// credit-grade answer — `validate_transfer` refetches the signature on a
+    /// second endpoint and both report the same delivered figure.
+    #[tokio::test(flavor = "current_thread")]
+    async fn validate_transfer_cross_confirms_on_a_second_endpoint() {
+        let (url_a, hits_a) = stub_rpc(transaction_result(0, 5_000, "payTo")).await;
+        let (url_b, hits_b) = stub_rpc(transaction_result(0, 5_000, "payTo")).await;
+        let client = client(&[url_a, url_b], None);
+        let validated = client
+            .validate_transfer("sig1", &expected_transfer())
+            .await
+            .unwrap();
+        assert_eq!(validated.map(|v| v.delivered), Some(5_000));
+        // The primary read and the second opinion each landed once — one
+        // endpoint served `getTransaction`, the other confirmed it.
+        assert_eq!(hits_a.load(std::sync::atomic::Ordering::SeqCst), 1);
+        assert_eq!(hits_b.load(std::sync::atomic::Ordering::SeqCst), 1);
+    }
+
+    /// A second endpoint that has not seen the transaction cannot confirm it:
+    /// the answer is not a credit basis and the deposit stays pending.
+    #[tokio::test(flavor = "current_thread")]
+    async fn an_endpoint_that_missed_the_tx_keeps_the_deposit_pending() {
+        let (url_a, _a) = stub_rpc(transaction_result(0, 5_000, "payTo")).await;
+        let (url_b, _b) = stub_rpc(json!({"jsonrpc": "2.0", "id": 1, "result": null})).await;
+        let client = client(&[url_a, url_b], None);
+        let validated = client
+            .validate_transfer("sig1", &expected_transfer())
+            .await
+            .unwrap();
+        assert!(validated.is_none(), "no single endpoint's word credits");
+    }
+
+    /// Two endpoints that disagree on the delivered amount cannot both be
+    /// right: the deposit stays pending rather than crediting either figure.
+    #[tokio::test(flavor = "current_thread")]
+    async fn disagreeing_endpoints_keep_the_deposit_pending() {
+        let (url_a, _a) = stub_rpc(transaction_result(0, 5_000, "payTo")).await;
+        let (url_b, _b) = stub_rpc(transaction_result(0, 4_000, "payTo")).await;
+        let client = client(&[url_a, url_b], None);
+        let validated = client
+            .validate_transfer("sig1", &expected_transfer())
+            .await
+            .unwrap();
+        assert!(validated.is_none(), "a disagreement is not a credit basis");
+    }
+
+    /// A second endpoint that cannot answer at all is not a confirmation: the
+    /// deposit stays pending until a sibling endpoint can vouch.
+    #[tokio::test(flavor = "current_thread")]
+    async fn an_unreachable_second_endpoint_keeps_the_deposit_pending() {
+        let (url_a, _a) = stub_rpc(transaction_result(0, 5_000, "payTo")).await;
+        let (url_b, _b) = stub_rpc(json!({
+            "jsonrpc": "2.0", "id": 1, "error": {"code": -1, "message": "no"}
+        }))
+        .await;
+        let client = client(&[url_a, url_b], None);
+        let validated = client
+            .validate_transfer("sig1", &expected_transfer())
+            .await
+            .unwrap();
+        assert!(validated.is_none(), "no second opinion, no credit");
+    }
+
+    /// The confirmation is an extra read, not a replacement for failover: a
+    /// dead first endpoint fails the primary read over to the second, and a
+    /// third endpoint supplies the second opinion — validation still lands.
+    #[tokio::test(flavor = "current_thread")]
+    async fn cross_confirmation_survives_a_primary_failover() {
+        let (url_bad, _bad) = stub_rpc(json!({
+            "jsonrpc": "2.0", "id": 1, "error": {"code": -1, "message": "no"}
+        }))
+        .await;
+        let (url_b, _b) = stub_rpc(transaction_result(0, 5_000, "payTo")).await;
+        let (url_c, _c) = stub_rpc(transaction_result(0, 5_000, "payTo")).await;
+        let client = client(&[url_bad, url_b, url_c], None);
+        // The primary read fails over bad → B; the confirmation walks past B
+        // (the serving endpoint cannot second-guess itself) and past the now
+        // cooling bad endpoint to C's agreeing answer.
+        let validated = client
+            .validate_transfer("sig1", &expected_transfer())
+            .await
+            .unwrap();
+        assert_eq!(validated.map(|v| v.delivered), Some(5_000));
+    }
+
+    /// A single-endpoint pool has no second opinion to ask: the first answer
+    /// stands alone, exactly the pre-#1183 behavior a one-provider deployment
+    /// keeps.
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_single_endpoint_pool_validates_without_a_second_opinion() {
+        let (url, hits) = stub_rpc(transaction_result(0, 5_000, "payTo")).await;
+        let client = client(std::slice::from_ref(&url), None);
+        let validated = client
+            .validate_transfer("sig1", &expected_transfer())
+            .await
+            .unwrap();
+        assert_eq!(validated.map(|v| v.delivered), Some(5_000));
+        assert_eq!(
+            hits.load(std::sync::atomic::Ordering::SeqCst),
+            1,
+            "the single endpoint answered one read — no confirmation round-trip exists"
+        );
     }
 }
