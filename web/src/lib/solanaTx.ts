@@ -124,9 +124,13 @@ export function buildSolanaTransfer(terms: SolanaTransferTerms): Transaction {
   const mint = terms.splToken;
   // `payTo` is the vault's owner key; its ATA for this mint is what the
   // transfer must credit. The idempotent create covers a never-funded vault
-  // ATA without failing on one that already exists.
+  // ATA without failing on one that already exists. The recipient allows an
+  // off-curve owner: the deployment's receiving account can be a Squads v4
+  // vault, which is a PDA — the derivation throws without `allowOwnerOffCurve`
+  // and "pay with wallet" never reaches the wallet. The sender stays an
+  // ordinary on-curve wallet key, so its derivation keeps the default.
   const sourceAta = getAssociatedTokenAddressSync(mint, terms.payer);
-  const destAta = getAssociatedTokenAddressSync(mint, terms.payTo);
+  const destAta = getAssociatedTokenAddressSync(mint, terms.payTo, true);
   tx.add(
     createAssociatedTokenAccountIdempotentInstruction(
       terms.payer,
