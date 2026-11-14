@@ -1345,6 +1345,7 @@ async fn solana_flagged_refund_amount_is_delivered_and_screened() {
         ScreenVerdict::Flagged {
             source: "ofac-sdn".to_owned(),
             reason: "the payer is on the OFAC SDN list".to_owned(),
+            address: "hitPayerAddr2222222222222222222222222222".to_owned(),
         },
     );
     let Some((app, _db)) =
@@ -1425,6 +1426,7 @@ async fn solana_flagged_refund_amount_is_delivered_and_screened() {
         ScreenVerdict::Flagged {
             source: "ofac-sdn".to_owned(),
             reason: "the refund address is on the OFAC SDN list".to_owned(),
+            address: sanctioned.to_owned(),
         },
     );
     let (status, _) = call(
@@ -2039,6 +2041,7 @@ async fn solana_screening_flagged_parks_the_deposit() {
         ScreenVerdict::Flagged {
             source: "ofac-sdn".to_owned(),
             reason: "the payer is on the OFAC SDN list".to_owned(),
+            address: "hitPayerAddr2222222222222222222222222222".to_owned(),
         },
     );
     let Some((app, db)) = world_with_screen_and_terms(stub.clone(), terms(), Some(screen)).await
@@ -2195,6 +2198,7 @@ async fn solana_screening_flagged_parks_a_usdc_deposit() {
         ScreenVerdict::Flagged {
             source: "chainalysis".to_owned(),
             reason: "chainalysis listed the address (2 identifications)".to_owned(),
+            address: "usdcHitPayerAddr6666666666666666666666666".to_owned(),
         },
     );
     let Some((app, db)) =
@@ -2363,6 +2367,7 @@ async fn solana_screening_clear_credits_a_flagged_deposit_once() {
         ScreenVerdict::Flagged {
             source: "ofac-sdn".to_owned(),
             reason: "the payer is on the OFAC SDN list".to_owned(),
+            address: "clearPayerAddr7777777777777777777777777777".to_owned(),
         },
     );
     let Some((app, db)) = world_with_screen_and_terms(stub.clone(), terms(), Some(screen)).await
@@ -2536,6 +2541,7 @@ async fn solana_refund_approve_screens_the_refund_address() {
         ScreenVerdict::Flagged {
             source: "ofac-sdn".to_owned(),
             reason: "the refund address is on the OFAC SDN list".to_owned(),
+            address: sanctioned.to_owned(),
         },
     );
     let Some((app, _db)) =
@@ -2951,6 +2957,7 @@ async fn solana_reconciliation_csv_populates_payer_on_exception_rows() {
         ScreenVerdict::Flagged {
             source: "ofac-sdn".to_owned(),
             reason: "the payer is on the OFAC SDN list".to_owned(),
+            address: flagged_payer.to_owned(),
         },
     );
     let Some((app, _db)) = world_with_screen_and_terms(stub.clone(), terms(), Some(screen)).await

@@ -194,6 +194,15 @@ or `cargo nextest run -p oxsum-server --test server -E 'test(/^(plans|refunds)::
 The former per-file `--test <suite>` and `binary(<suite>)` selectors no longer
 exist. For one test use its complete module-qualified name.
 
+**Run the database-backed suites with `cargo nextest`, never bare
+`cargo test`** (issue #1207). `cargo test` compiles each test binary serially
+and runs doctests the workspace never wrote for the aggregate binaries; nextest
+lists and runs the same modules in parallel and is what CI's shards execute, so
+a local `cargo test --test server` answers a different (slower, differently
+ordered) suite than the gate. The only `cargo test` survivors are the
+process-shared modules below — they are excluded from the aggregate's nextest
+profile on purpose.
+
 The process-shared modules use the ordinary test harness:
 `cargo test -p oxsum-core --test core generative:: -- --test-threads=4`
 (and separately `seed::` and `jobs::`), plus
@@ -1011,7 +1020,19 @@ and `clippy --all-targets` still compiles every test target — a type or borrow
 cannot merge. The price is explicit: an integration or database failure can reach
 `main` and surface only after the merge, so a red `main` is fixed forward or reverted
 immediately. The local pre-push bar stays at fmt + clippy + the touched crates' tests
-(issue #370). Build, test and clippy jobs use `dtolnay/rust-toolchain@stable` —
+(issue #370). When a change wants the heavy tier's evidence *before* merge — a
+risky cross-crate rework, a release-candidate freeze, a migration ordering —
+a manual dispatch runs the full tier on the branch's own SHA instead of waiting
+for the merge to surface it:
+
+```bash
+gh workflow run CI --ref <branch>
+gh run watch   # the newest dispatch's run, until it resolves
+```
+
+`workflow_dispatch` ignores the `paths-ignore` filter and forces the heavy tier
+the same way the nightly does, so the run proves the branch the way a `main`
+push would. Build, test and clippy jobs use `dtolnay/rust-toolchain@stable` —
 the runner's stable, no version pin — with the components they need. The `fmt`
 job is the exception: it installs the exact nightly named in `rustfmt-nightly`,
 so the formatter matches the one the local scripts run:
