@@ -11320,7 +11320,11 @@ paths:
             schema: { $ref: "#/components/schemas/SolanaScanRequest" }
       responses:
         "200":
-          description: The scan report — scanned count plus the unmatched transfers
+          description: |
+            The scan report — `scanned` signatures actually walked, `credited`
+            transfers that paid `payTo` in a whitelisted asset, `unmatched`
+            rows with no recorded deposit, and `limitReached` when older
+            history may exist beyond the bound
           content:
             application/json:
               schema:
@@ -17434,15 +17438,21 @@ components:
           description: how many of `payTo`'s most recent signatures the scan walks — one `getTransaction` per candidate, so the bound is the RPC budget
     SolanaScanReport:
       type: object
-      required: [scanned, unmatched]
+      required: [scanned, credited, unmatched, limitReached]
       properties:
         scanned:
           type: integer
-          description: how many `payTo` signature-history entries the walk scanned
+          description: how many `payTo` signature-history entries the walk actually inspected (one `getTransaction` each) — bounded at `limit`
+        credited:
+          type: integer
+          description: how many of the walked transactions actually delivered value into `payTo` in a whitelisted asset — each becomes a row the deposits table is diffed against
         unmatched:
           type: array
           items: { $ref: "#/components/schemas/SolanaUnmatchedTransfer" }
-          description: the transfers that paid `payTo` but match no recorded deposit — the "money arrived with no intent" rows
+          description: the credited transfers whose signature no `deposits.facilitator_tx_hash` records — the "money arrived with no intent" rows; `unmatched.length` is their count
+        limitReached:
+          type: boolean
+          description: whether the walk stopped at `limit` while more signature history may exist beyond it — `false` when `payTo`'s history ended before the bound
     SolanaUnmatchedTransfer:
       type: object
       required: [signature, delivered, matchedIntent]
