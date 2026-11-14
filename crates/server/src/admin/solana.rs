@@ -15,10 +15,13 @@
 //! it (`refund`), the customer names the refund address on their own surface,
 //! the operator approves (`refund-approve`), the multisig pays out-of-band —
 //! the server holds no spend key — and the recorded payout signature closes
-//! the row (`refund-complete`). No ledger entry ever posts on this path: an
+//! the row (`refund-complete`) — but only once the signature verifies
+//! on-chain against the refund's frozen amount/address/mint (issue #1175).
+//! No ledger entry ever posts on this path: an
 //! `underpaid`/`late`/`flagged` deposit never credited, so the refund simply
 //! returns what sits in `payTo`; an `overpaid` one's `entry_id` still proves
-//! the opened credit while the surplus goes back the same way.
+//! the opened credit while only the `delivered − expected` surplus goes back
+//! the same way.
 
 use axum::extract::{Path, State};
 use axum::http::HeaderValue;
@@ -184,19 +187,26 @@ pub(crate) struct RefundCompleteReq {
 
 /// `POST /api/v1/admin/solana/{depositId}/refund-complete` (issue #1142):
 /// records the payout's signature and closes the deposit `refunded`,
-/// terminal. The payout already happened — the server holds no spend key, so
-/// this is bookkeeping and audit, never a send. `400` on a malformed
-/// signature, `409` before approval or with a contradicting signature on a
-/// `refunded` row; a replayed complete with the standing signature answers
-/// the closed row.
+/// terminal — but only once the signature proves the payout on-chain (issue
+/// #1175): the transaction must exist, have succeeded, and have delivered at
+/// least the refund's frozen amount in the frozen asset to the recorded
+/// refund address. A signature that proves nothing is `409` and the row
+/// stays `refund_pending`. The payout already happened — the server holds no
+/// spend key, so this is bookkeeping and audit, never a send. `400` on a
+/// malformed signature, `409` before approval, on a signature that does not
+/// verify, or with a contradicting signature on a `refunded` row; a replayed
+/// complete with the standing signature answers the closed row.
 pub(crate) async fn complete_refund(
     State(state): State<AppState>,
     Path(deposit_id): Path<Uuid>,
     ApiJson(request): ApiJson<RefundCompleteReq>,
 ) -> ApiResult<oxsum_core::SolanaExceptionDeposit> {
+    let verifier = state.config.solana().ok_or_else(|| {
+        ApiError::ServiceUnavailable("the solana deposit rail is not configured".into())
+    })?;
     let deposit = state
         .db
-        .solana_complete_refund(deposit_id, &request.signature)
+        .solana_complete_refund(deposit_id, &request.signature, verifier)
         .await?;
     record(
         &state,
@@ -235,8 +245,8 @@ const DEFAULT_SCAN_SIGNATURES: usize = 200;
 
 /// `depositId,organizationId,paymentRef,signature,payer,asset,amountMinor,
 /// delivered,expected,rateMicro,receivedMinor,status,createdAt,
-/// refundSignature,refundStatus` — the column freeze `openapi.yaml` records
-/// and this array is the single source of.
+/// refundAmount,refundSignature,refundStatus` — the column freeze
+/// `openapi.yaml` records and this array is the single source of.
 const CSV_FIELDS: &[&str] = &[
     "depositId",
     "organizationId",
@@ -251,6 +261,7 @@ const CSV_FIELDS: &[&str] = &[
     "receivedMinor",
     "status",
     "createdAt",
+    "refundAmount",
     "refundSignature",
     "refundStatus",
 ];
@@ -365,6 +376,9 @@ pub(crate) async fn deposits_csv(
 /// - `delivered`/`expected` — the locked asset's own base units
 ///   (`meta.delivered`, `meta.expected`/`meta.solLamports`).
 /// - `rateMicro` — the intent's locked `meta.rateMicro`.
+/// - `refundAmount` — the payout's frozen figure in the locked asset's base
+///   units (`meta.refund.amount`, issue #1175): `delivered − expected` on
+///   `overpaid`, `delivered` on the others; empty while no refund is open.
 /// - `refundStatus` — the pull-payment lifecycle derived from `status` +
 ///   `meta.refund`: `requested` (refund_pending), `approved` (refund_pending
 ///   with `approvedAt`), `completed` (refunded), empty otherwise.
@@ -403,6 +417,7 @@ fn csv_row(row: &oxsum_core::SolanaExceptionDeposit) -> String {
         opt(row.received_minor),
         row.status.clone(),
         created_at,
+        opt(row.refund_amount),
         row.refund_signature.clone().unwrap_or_default(),
         refund_status.to_owned(),
     ];
