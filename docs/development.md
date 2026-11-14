@@ -484,7 +484,7 @@ OXSUM_SOLANA_E2E_RPC=http://127.0.0.1:8899 \
 
 `OXSUM_SOLANA_E2E_RPC` defaults to `http://127.0.0.1:8899`, so the env only
 matters for a non-default port. CI runs the same suite in the `solana-e2e`
-job (heavy tier: post-merge, nightly and dispatch), which installs the
+job (heavy tier: pre-merge on Rust-crate pull requests, post-merge, nightly and dispatch), which installs the
 pinned agave release into a cached directory, starts the validator and runs
 the archived test binary — the job fails when the validator never comes up
 rather than letting the skips pass silently.
@@ -1039,19 +1039,34 @@ ignore the path filter and force the full tier, so main is re-verified within a 
 regardless of what the last push touched — including a docs-only push, which
 `paths-ignore` never triggered at all.
 
-The gate has two tiers (issue #552). A pull request pays the fast tier only — the compile-time
-checks, the lib/doc tests and the two stage builds — and merges on those. The heavy
-tier (`build-tests`, the three shards, `test-extras`) runs on pushes to `main`, the
-nightly and a manual dispatch, where nothing is waiting on it. The five required checks (`fmt`, `clippy`, `test`,
-`wasm`, `frontend`) are all in the fast tier, so branch protection needs no change,
-and `clippy --all-targets` still compiles every test target — a type or borrow error
-cannot merge. The price is explicit: an integration or database failure can reach
-`main` and surface only after the merge, so a red `main` is fixed forward or reverted
-immediately. The local pre-push bar stays at fmt + clippy + the touched crates' tests
-(issue #370). When a change wants the heavy tier's evidence *before* merge — a
-risky cross-crate rework, a release-candidate freeze, a migration ordering —
-a manual dispatch runs the full tier on the branch's own SHA instead of waiting
-for the merge to surface it:
+The gate has two tiers (issue #552, reworked by issue #1214). Every pull request
+runs the fast tier: the compile-time checks, the lib/doc tests and the two stage
+builds. A pull request also runs the **heavy tier** (`build-tests`, the three
+shards, `test-extras`, `solana-e2e`) *before merge* when its diff touches
+`crates/**` (core, server, integrations, core's migrations…), `Cargo.toml`,
+`Cargo.lock`, `.cargo/**`, `rust-toolchain.toml`, `.config/nextest.toml`,
+`.github/workflows/ci.yml`, `.github/actions/**` or one of the helpers the
+heavy jobs execute (`filter`'s `heavy` output), or when it carries the
+`ci:heavy` label — adding the label re-runs CI on the same SHA. Web-only and
+docs-only pull requests stay on the fast tier. Issue #552 had moved the heavy
+tier post-merge only; main then went red on 40% of pushes (0% before), nearly
+all integration, migration and concurrency breaks a pre-merge run would have
+stopped, so the money-path suites now gate the merge again.
+
+The heavy tier also still runs on every Rust-surface push to `main`, the nightly
+and a manual dispatch. That post-merge run stays as the safety net for merge
+skew — two pull requests that are each green but conflict together — and the
+release-candidate gate (`scripts/check-candidate-ci.py`) requires a full green
+run on the candidate's own `main` SHA.
+
+The five required checks (`fmt`, `clippy`, `test`, `wasm`, `frontend`) are
+unchanged and all in the fast tier, so a light pull request never waits on an
+"expected" check. `heavy-tier` rolls the heavy jobs up: it always runs, passes
+when the tier does not apply (every heavy job `skipped`), passes when every
+heavy job succeeded, and fails when one failed, was cancelled or was skipped
+although the tier applied. It is the one name to add to the required checks
+once the pre-merge tier has proven itself. A manual dispatch still runs the full
+tier on any branch's own SHA:
 
 ```bash
 gh workflow run CI --ref <branch>
@@ -1085,19 +1100,19 @@ so the formatter matches the one the local scripts run:
   plus the doctests, with no postgres service and no integration binaries — the
   heavy test targets (testcontainers, sqlx test deps) never compile in this job,
   so a unit break answers in a few minutes instead of waiting on the full suite.
-- `build-tests` (pushes to `main`, the nightly, manual dispatch): `cargo nextest archive --workspace` compiles every test
+- `build-tests` (heavy tier — pre-merge per `filter`'s `heavy` paths or `ci:heavy`, `main` pushes, the nightly, manual dispatch): `cargo nextest archive --workspace` compiles every test
   binary once into a `.tar.zst` artifact (issue #276). A second archive builds
   doubleentry's postgres suite with the feature on — its
   `#![cfg(feature = "postgres")]` gate means a plain `--workspace` archive would
   ship an empty binary. `Free disk space` lives here, the only job that still
   compiles the heavy targets.
-- `test-shard` (matrix of three, `main` pushes, nightly and manual dispatch): downloads the archive and runs
+- `test-shard` (matrix of three, heavy tier): downloads the archive and runs
   `cargo nextest run --archive-file … --partition count:i/3`, so the suite's
   wall-clock is a third of one runner's. Each shard gets its own
   `postgres:17-alpine` service and runs the scratch-database sweep before the
   tests — an interrupted run's residue cannot bleed into the next shard's
   timing (issue #271).
-- `test-extras` (pushes to `main`, the nightly, manual dispatch): downloads the same artifact, extracts both archives, and runs
+- `test-extras` (heavy tier): downloads the same artifact, extracts both archives, and runs
   the core `generative::`, `seed::`, `jobs::` and server `jobs::` modules
   through `scripts/run-shared-suites.py`. Each module runs in one aggregate
   process with four test threads, preserving its process-local coordination.
