@@ -198,6 +198,34 @@ send), then walk the pull-payment refund lifecycle or open an intent
 retroactively by hand. A vault with more history than `limit` answers its
 newest bound only — investigate, then run again.
 
+## Pre-deploy: deduplicate recorded payout signatures (migration 0139)
+
+Migration `0139_solana_refund_signature_uniqueness` adds
+`deposits_solana_refund_signature`, a partial unique index over
+`meta->>'refundSignature'` on solana rows that recorded a payout. Building it
+on a live table that already double-recorded a signature **fails the index
+build** — two rows cannot both keep the same `refundSignature`. Before the
+migration goes live, run the probe:
+
+```sql
+SELECT meta->>'refundSignature' AS signature, count(*)
+FROM oxsum.deposits
+WHERE rail = 'solana' AND meta ? 'refundSignature'
+GROUP BY 1
+HAVING count(*) > 1;
+```
+
+An empty result means the index builds cleanly — run the migration. If rows
+come back, a payout signature was recorded against more than one deposit
+(the raced-close shape #1209 closed: two completes on different rows both
+recorded the same payout before the lock re-check ran). The signature names
+one on-chain payout, so only **one** row is the real closure — reconcile by
+hand: verify on-chain which deposit the payout actually settles, then strip
+`refundSignature` from every other row (`meta - 'refundSignature'` plus the
+operator's verdict on the refund lifecycle — typically `refund_failed` or a
+return to `refund_pending` for a manual redo), never by guessing which row
+loses. Once the probe answers empty, rerun the migration.
+
 ## Reading a row directly
 
 When the queue's answer is not enough, the row itself is the record:
