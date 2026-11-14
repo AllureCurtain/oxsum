@@ -220,11 +220,13 @@ come back, a payout signature was recorded against more than one deposit
 (the raced-close shape #1209 closed: two completes on different rows both
 recorded the same payout before the lock re-check ran). The signature names
 one on-chain payout, so only **one** row is the real closure — reconcile by
-hand: verify on-chain which deposit the payout actually settles, then strip
-`refundSignature` from every other row (`meta - 'refundSignature'` plus the
-operator's verdict on the refund lifecycle — typically `refund_failed` or a
-return to `refund_pending` for a manual redo), never by guessing which row
-loses. Once the probe answers empty, rerun the migration.
+hand: verify on-chain which deposit the payout actually settles and keep its
+status `refunded`; for every other row, strip the stale signature
+(`meta - 'refundSignature'`) and set the status back to `refund_pending`,
+where it waits for a resubmitted real payout signature — Solana deposits have
+no `refund_failed` status, so do not write one. Never guess which row loses.
+Record the manual reconciliation as an audit entry — who ran it, when, and
+why — before rerunning the migration once the probe answers empty.
 
 ## Reading a row directly
 
