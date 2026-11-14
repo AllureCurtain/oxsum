@@ -1557,9 +1557,13 @@ async fn a_refund_complete_requires_a_proven_onchain_payout() {
     )
     .await
     .unwrap();
-    db.solana_approve_refund(deposit_id, "op", Some("4uQeVj5tqViQh7yWWGStvkEG1Zmhx6uasJtWCJziofM"))
-        .await
-        .unwrap();
+    db.solana_approve_refund(
+        deposit_id,
+        "op",
+        Some("4uQeVj5tqViQh7yWWGStvkEG1Zmhx6uasJtWCJziofM"),
+    )
+    .await
+    .unwrap();
     let phantom =
         "299xJhoRJCHgYo6xxU78Joi8sY7uXrsp7kzXMxbVFZVLKHqVAfV1R3dA864pwEhe6z1wYWy1BXDzyvzNZDKHfdMd";
     // Case 1: a signature no transaction exists for — refused, row stays open.
@@ -1684,9 +1688,13 @@ async fn the_overpaid_refund_freezes_only_the_premium() {
     )
     .await
     .unwrap();
-    db.solana_approve_refund(deposit_id, "op", Some("4uQeVj5tqViQh7yWWGStvkEG1Zmhx6uasJtWCJziofM"))
-        .await
-        .unwrap();
+    db.solana_approve_refund(
+        deposit_id,
+        "op",
+        Some("4uQeVj5tqViQh7yWWGStvkEG1Zmhx6uasJtWCJziofM"),
+    )
+    .await
+    .unwrap();
     let sig =
         "299xJhoRJCHgYo6xxU78Joi8sY7uXrsp7kzXMxbVFZVLKHqVAfV1R3dA864pwEhe6z1wYWy1BXDzyvzNZDKHfdMd";
     // A payout of the whole `delivered` (9_000) verifies delivered ≥ frozen —

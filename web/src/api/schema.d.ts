@@ -15498,12 +15498,13 @@ export interface paths {
          *     (the locked rate — minor-credits per whole `asset`),
          *     `receivedMinor` (the delivered figure converted back at the
          *     locked rate), `status`, `createdAt` (RFC-3339),
-         *     `refundAmount` (the payout's frozen figure in the locked asset's
-         *     base units — `delivered − expected` on `overpaid`, `delivered` on
-         *     the others; empty while no refund is open),
-         *     `refundSignature` (the multisig payout's signature) and
+         *     `refundSignature` (the multisig payout's signature),
          *     `refundStatus` (`requested`/`approved`/`completed` across the
-         *     pull-payment lifecycle, empty otherwise). All statuses export —
+         *     pull-payment lifecycle, empty otherwise) and `refundAmount` (the
+         *     payout's frozen figure in the locked asset's base units —
+         *     `delivered − expected` on `overpaid`, `delivered` on the others;
+         *     empty while no refund is open — the last column, issue #1175).
+         *     All statuses export —
          *     not only the exception queue's — because a line-by-line vault
          *     reconciliation wants the credited rows too.
          */

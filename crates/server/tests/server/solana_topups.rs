@@ -1109,6 +1109,338 @@ async fn solana_refund_complete_verifies_the_payout_onchain() {
     assert_eq!(closed["data"]["refundAmount"].as_i64().unwrap(), 1);
 }
 
+/// Issue #1175 (P1): one on-chain payout closes at most one refund. Two
+/// `refund_pending` rows armed to the same honest signature: the first closes,
+/// the second is `409` and stays `refund_pending` — reusing the multisig's
+/// signature can never settle two bills against a single transaction.
+#[tokio::test]
+async fn solana_refund_complete_refuses_a_signature_already_used() {
+    let stub = SolanaStub::default();
+    let Some((app, _db)) = world(stub.clone()).await else {
+        return;
+    };
+    let key = register_session(&app).await;
+    let refund_address = "4uQeVj5tqViQh7yWWGStvkEG1Zmhx6uasJtWCJziofM";
+    let pay_to = "oxsumDepositAddr111111111111111111111111111";
+    // Two underpaid rows, each refundable for its own 1 lamport.
+    let a_id = open_exception(&app, &stub, &key, 500, 1, 0).await;
+    let b_id = open_exception(&app, &stub, &key, 500, 1, 0).await;
+    for deposit_id in [&a_id, &b_id] {
+        let (status, _) = call(
+            &app,
+            "POST",
+            &format!("/api/v1/admin/solana/{deposit_id}/refund"),
+            Some(json!({"reason": "underpaid"})),
+            Some(ADMIN_TOKEN),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        let (status, _) = call(
+            &app,
+            "POST",
+            &format!("/api/v1/topups/solana/{deposit_id}/refund-address"),
+            Some(json!({"address": refund_address})),
+            Some(&key),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        let (status, _) = call(
+            &app,
+            "POST",
+            &format!("/api/v1/admin/solana/{deposit_id}/refund-approve"),
+            None,
+            Some(ADMIN_TOKEN),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+    }
+    // The same honest payout — vault-funded, the frozen amount — for both.
+    let payout =
+        "299xJhoRJCHgYo6xxU78Joi8sY7uXrsp7kzXMxbVFZVLKHqVAfV1R3dA864pwEhe6z1wYWy1BXDzyvzNZDKHfdMd";
+    stub.payouts.lock().unwrap().insert(
+        payout.to_owned(),
+        StubPayout {
+            recipient: refund_address.to_owned(),
+            mint: None,
+            delivered: 1,
+            payers: vec![pay_to.to_owned()],
+        },
+    );
+    // The first refund closes on the signature.
+    let (status, closed) = call(
+        &app,
+        "POST",
+        &format!("/api/v1/admin/solana/{a_id}/refund-complete"),
+        Some(json!({"signature": payout})),
+        Some(ADMIN_TOKEN),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{closed}");
+    assert_eq!(closed["data"]["status"].as_str().unwrap(), "refunded");
+    // The second must refuse — the signature already settled bill A, and the
+    // row stays `refund_pending` for a real payout of its own.
+    let (status, refusal) = call(
+        &app,
+        "POST",
+        &format!("/api/v1/admin/solana/{b_id}/refund-complete"),
+        Some(json!({"signature": payout})),
+        Some(ADMIN_TOKEN),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CONFLICT, "{refusal}");
+    let (status, queue) = call(
+        &app,
+        "GET",
+        "/api/v1/admin/solana/exceptions",
+        None,
+        Some(ADMIN_TOKEN),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{queue}");
+    let b = queue["data"]["entries"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|row| row["depositId"].as_str() == Some(b_id.as_str()))
+        .expect("the refused refund is on the queue");
+    assert_eq!(b["status"].as_str().unwrap(), "refund_pending");
+}
+
+/// Issue #1175 (P2): the payout must leave the vault (`payTo`), not just reach
+/// the customer's address. A transaction a third party signed to the frozen
+/// refund address — sufficient amount, right address — is no proof the vault
+/// paid, so refund-complete refuses and the row stays `refund_pending`.
+#[tokio::test]
+async fn solana_refund_complete_requires_the_vault_to_have_paid() {
+    let stub = SolanaStub::default();
+    let Some((app, _db)) = world(stub.clone()).await else {
+        return;
+    };
+    let key = register_session(&app).await;
+    let refund_address = "4uQeVj5tqViQh7yWWGStvkEG1Zmhx6uasJtWCJziofM";
+    let deposit_id = open_exception(&app, &stub, &key, 500, 1, 0).await;
+    let (status, _) = call(
+        &app,
+        "POST",
+        &format!("/api/v1/admin/solana/{deposit_id}/refund"),
+        Some(json!({"reason": "underpaid"})),
+        Some(ADMIN_TOKEN),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let (status, _) = call(
+        &app,
+        "POST",
+        &format!("/api/v1/topups/solana/{deposit_id}/refund-address"),
+        Some(json!({"address": refund_address})),
+        Some(&key),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let (status, _) = call(
+        &app,
+        "POST",
+        &format!("/api/v1/admin/solana/{deposit_id}/refund-approve"),
+        None,
+        Some(ADMIN_TOKEN),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let payout =
+        "299xJhoRJCHgYo6xxU78Joi8sY7uXrsp7kzXMxbVFZVLKHqVAfV1R3dA864pwEhe6z1wYWy1BXDzyvzNZDKHfdMd";
+    // A real tx paying the right address + amount — but funded by a stranger,
+    // not the vault. The source arm refuses it: the row believes a payout that
+    // never emptied `payTo`.
+    stub.payouts.lock().unwrap().insert(
+        payout.to_owned(),
+        StubPayout {
+            recipient: refund_address.to_owned(),
+            mint: None,
+            delivered: 1,
+            payers: vec!["thirdPartyWallet9999999999999999999999999".to_owned()],
+        },
+    );
+    let (status, refusal) = call(
+        &app,
+        "POST",
+        &format!("/api/v1/admin/solana/{deposit_id}/refund-complete"),
+        Some(json!({"signature": payout})),
+        Some(ADMIN_TOKEN),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CONFLICT, "{refusal}");
+    let (status, queue) = call(
+        &app,
+        "GET",
+        "/api/v1/admin/solana/exceptions",
+        None,
+        Some(ADMIN_TOKEN),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{queue}");
+    let row = queue["data"]["entries"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|row| row["depositId"].as_str() == Some(deposit_id.as_str()))
+        .expect("the refused refund is on the queue");
+    assert_eq!(row["status"].as_str().unwrap(), "refund_pending");
+    // The vault's own payout closes the row.
+    stub.payouts.lock().unwrap().insert(
+        payout.to_owned(),
+        StubPayout {
+            recipient: refund_address.to_owned(),
+            mint: None,
+            delivered: 1,
+            payers: vec!["oxsumDepositAddr111111111111111111111111111".to_owned()],
+        },
+    );
+    let (status, closed) = call(
+        &app,
+        "POST",
+        &format!("/api/v1/admin/solana/{deposit_id}/refund-complete"),
+        Some(json!({"signature": payout})),
+        Some(ADMIN_TOKEN),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{closed}");
+    assert_eq!(closed["data"]["status"].as_str().unwrap(), "refunded");
+}
+
+/// Issue #1175 (fix 4): a `flagged` row carries `meta.delivered` (main's
+/// #1186 merge), so a refund opened on it freezes `delivered` as the owed
+/// amount — and `refund-approve`'s `refundAddress` screen (main's #1184)
+/// still applies on that row: a sanctioned destination refuses, a clean one
+/// approves.
+#[tokio::test]
+async fn solana_flagged_refund_amount_is_delivered_and_screened() {
+    let stub = SolanaStub::default();
+    let screen = ScreenStub::default();
+    let flagged_payer = "hitPayerAddr2222222222222222222222222222";
+    screen.verdicts.lock().unwrap().insert(
+        flagged_payer.to_owned(),
+        ScreenVerdict::Flagged {
+            source: "ofac-sdn".to_owned(),
+            reason: "the payer is on the OFAC SDN list".to_owned(),
+        },
+    );
+    let Some((app, _db)) =
+        world_with_screen_and_terms(stub.clone(), terms(), Some(screen.clone())).await
+    else {
+        return;
+    };
+    let key = register_session(&app).await;
+    // Open + arm a flagged deposit: 5_000 lamports delivered, the payer on the
+    // SDN list — confirm parks it `flagged` with `meta.delivered` recorded.
+    let (status, intent) = call(
+        &app,
+        "POST",
+        "/api/v1/topups/solana",
+        Some(json!({"amountMinor": 1000})),
+        Some(&key),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{intent}");
+    let reference = intent["data"]["reference"].as_str().unwrap().to_owned();
+    let signature = "sigFlagRefund0000000000000000000000000000000000000000000";
+    stub.located
+        .lock()
+        .unwrap()
+        .insert(reference.clone(), vec![signature.to_owned()]);
+    stub.validated.lock().unwrap().insert(
+        signature.to_owned(),
+        ValidatedTransfer {
+            signature: signature.to_owned(),
+            delivered: 5_000,
+            block_time: Some(0),
+            payers: vec![flagged_payer.to_owned()],
+        },
+    );
+    let (status, _) = call(
+        &app,
+        "POST",
+        "/api/v1/topups/solana/confirm",
+        Some(json!({"reference": reference})),
+        Some(&key),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CONFLICT);
+    let (status, queue) = call(
+        &app,
+        "GET",
+        "/api/v1/admin/solana/exceptions",
+        None,
+        Some(ADMIN_TOKEN),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{queue}");
+    let deposit_id = queue["data"]["entries"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|row| row["signature"].as_str() == Some(signature))
+        .expect("the flagged deposit is on the queue")["depositId"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    // The refund on the flagged row freezes `delivered` — the parked 5_000.
+    let (status, opened) = call(
+        &app,
+        "POST",
+        &format!("/api/v1/admin/solana/{deposit_id}/refund"),
+        Some(json!({"reason": "screening hold"})),
+        Some(ADMIN_TOKEN),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{opened}");
+    assert_eq!(opened["data"]["refundAmount"].as_i64().unwrap(), 5_000);
+    // The customer names a refund address the screen also flags — the approve
+    // screen refuses it like any other row.
+    let sanctioned = "4uQeVj5tqViQh7yWWGStvkEG1Zmhx6uasJtWCJziofM";
+    screen.verdicts.lock().unwrap().insert(
+        sanctioned.to_owned(),
+        ScreenVerdict::Flagged {
+            source: "ofac-sdn".to_owned(),
+            reason: "the refund address is on the OFAC SDN list".to_owned(),
+        },
+    );
+    let (status, _) = call(
+        &app,
+        "POST",
+        &format!("/api/v1/topups/solana/{deposit_id}/refund-address"),
+        Some(json!({"address": sanctioned})),
+        Some(&key),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let (status, refusal) = call(
+        &app,
+        "POST",
+        &format!("/api/v1/admin/solana/{deposit_id}/refund-approve"),
+        None,
+        Some(ADMIN_TOKEN),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CONFLICT, "{refusal}");
+    // Once the address clears, the approve lands and records its screen.
+    screen.verdicts.lock().unwrap().remove(sanctioned);
+    let (status, approved) = call(
+        &app,
+        "POST",
+        &format!("/api/v1/admin/solana/{deposit_id}/refund-approve"),
+        None,
+        Some(ADMIN_TOKEN),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{approved}");
+    assert_eq!(
+        approved["data"]["refund"]["addressScreening"]["verdict"]
+            .as_str()
+            .unwrap(),
+        "clear"
+    );
+}
+
 /// A refund cannot open on a deposit that owes nothing: `pending`,
 /// `credited` (without an overpay), `expired` and `refunded` are all
 /// non-refundable — `409`, never a silent accept.
@@ -2655,12 +2987,16 @@ async fn solana_reconciliation_csv_populates_payer_on_exception_rows() {
     assert_eq!(status, StatusCode::OK, "{body}");
     let row = body.lines().nth(1).expect("the flagged deposit exported");
     let cells: Vec<&str> = row.split(',').collect();
-    assert_eq!(cells.len(), 15, "{row}");
+    // The row now carries a 16th trailing `refundAmount` cell (empty here —
+    // the flag froze it, issue #1175); the cells ahead of it are unchanged.
+    assert_eq!(cells.len(), 16, "{row}");
     assert_eq!(cells[4], flagged_payer, "{row}");
     assert_eq!(cells[7], "5000", "{row}");
     assert_eq!(cells[8], "5000", "{row}");
     assert_eq!(cells[10], "1000", "{row}");
     assert_eq!(cells[11], "flagged", "{row}");
+    // No refund is open on this parked row, so the trailing figure stays empty.
+    assert_eq!(cells[15], "", "{row}");
 }
 
 /// The export honors its window: a `from`/`to` day range covering only
