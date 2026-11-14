@@ -309,7 +309,7 @@ impl ChainLookup for OneSig {
                 signature: signature.to_owned(),
                 delivered: self.delivered,
                 block_time: Some(self.block_time),
-                payer: None,
+                payers: Vec::new(),
             })
         })
     }
@@ -361,7 +361,7 @@ impl ChainLookup for ManySigs {
                 signature: signature.to_owned(),
                 delivered: self.delivered,
                 block_time: Some(0),
-                payer: None,
+                payers: Vec::new(),
             })
         })
     }
@@ -860,7 +860,7 @@ async fn verify_locked_honors_the_locked_asset_and_refuses_off_whitelist() {
                     signature: signature.to_owned(),
                     delivered: self.delivered,
                     block_time: Some(0),
-                    payer: None,
+                    payers: Vec::new(),
                 })
             })
         }
@@ -1206,7 +1206,7 @@ impl ChainLookup for AttributedSig {
                 signature: signature.to_owned(),
                 delivered: self.delivered,
                 block_time: Some(0),
-                payer: Some(self.payer.clone()),
+                payers: vec![self.payer.clone()],
             })
         })
     }
@@ -1538,14 +1538,43 @@ impl SanctionsScreen for FixedScreen {
     }
 }
 
-/// A `OneSig` that answers a `ValidatedTransfer` carrying a payer — the shape
-/// the screening path needs. `validate_transfer` honors the same terms the
-/// deposit's stub does.
+/// A per-address screen (issue #1178): `verdicts` maps a payer address to the
+/// verdict `screen` answers, an unmapped address answers `Clear` — the shape
+/// a multi-party transfer needs, where the screen flags the second debited
+/// signer while the fee payer is clean.
+#[derive(Debug)]
+struct MapScreen {
+    verdicts: std::collections::HashMap<String, ScreenVerdict>,
+    /// The addresses `screen` was asked, in order — the test asserts the walk
+    /// covered every debited party.
+    asked: Mutex<Vec<String>>,
+}
+
+impl SanctionsScreen for MapScreen {
+    fn screen<'a>(
+        &'a self,
+        address: &'a str,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ScreenVerdict> + Send + 'a>> {
+        let verdict = self
+            .verdicts
+            .get(address)
+            .cloned()
+            .unwrap_or(ScreenVerdict::Clear);
+        Box::pin(async move {
+            self.asked.lock().unwrap().push(address.to_owned());
+            verdict
+        })
+    }
+}
+
+/// A `OneSig` that answers a `ValidatedTransfer` carrying the debited funding
+/// parties the screening path runs on (issues #1144, #1178).
+/// `validate_transfer` honors the same terms the deposit's stub does.
 #[derive(Debug)]
 struct PayingSig {
     signature: String,
     delivered: i64,
-    payer: Option<String>,
+    payers: Vec<String>,
 }
 
 impl ChainLookup for PayingSig {
@@ -1569,7 +1598,7 @@ impl ChainLookup for PayingSig {
                 signature: signature.to_owned(),
                 delivered: self.delivered,
                 block_time: Some(0),
-                payer: self.payer.clone(),
+                payers: self.payers.clone(),
             })
         })
     }
@@ -1590,7 +1619,7 @@ async fn a_flagged_payer_parks_the_deposit_for_review() {
         Arc::new(PayingSig {
             signature: "sigFlagCore000000000000000000000000000000000000000000".to_owned(),
             delivered: 5_000,
-            payer: Some("sanctionedPayerAddr444444444444444444444444".to_owned()),
+            payers: vec!["sanctionedPayerAddr444444444444444444444444".to_owned()],
         }),
         terms(),
     )
@@ -1692,6 +1721,192 @@ async fn a_flagged_payer_parks_the_deposit_for_review() {
     assert_eq!(flagged.received_minor, Some(1_000));
 }
 
+/// Issue #1178: screening covers *every* debited funding party, not just the
+/// first the transaction names. A clean fee-paying relayer plus a second
+/// debited signer on the SDN — the laundering shape — still parks the
+/// deposit: the screen clears the relayer and flags the source.
+#[tokio::test]
+async fn a_flagged_funding_source_parks_the_deposit() {
+    let Some(db) = database("solana_flag_source").await else {
+        return;
+    };
+    let org = organization(&db, "flag-source").await;
+    let deposit_id = Uuid::new_v4();
+    db.open_solana_deposit(org, deposit_id, 1000, &terms(), None, &rate(&terms(), None))
+        .await
+        .unwrap()
+        .expect("inserts");
+    // The validated transfer debited two parties: the fee-paying relayer the
+    // old code screened (clean) and the funding source the fix adds — the
+    // sanctioned wallet the relayer was hiding.
+    let screen = Arc::new(MapScreen {
+        verdicts: [(
+            "sdnSourceAddr7777777777777777777777777777".to_owned(),
+            ScreenVerdict::Flagged {
+                source: "ofac-sdn".to_owned(),
+                reason: "the funding source is on the OFAC SDN list".to_owned(),
+            },
+        )]
+        .into_iter()
+        .collect(),
+        asked: Mutex::new(Vec::new()),
+    });
+    let verifier = SolanaRailVerifier::new(
+        Arc::new(PayingSig {
+            signature: "sigLaunder000000000000000000000000000000000000000000".to_owned(),
+            delivered: 5_000,
+            payers: vec![
+                "cleanRelayerAddr6666666666666666666666666".to_owned(),
+                "sdnSourceAddr7777777777777777777777777777".to_owned(),
+            ],
+        }),
+        terms(),
+    )
+    .with_sanctions(screen.clone());
+    let wallet = wallet_for(&db, org).await;
+    let result = db
+        .credit_solana_deposit(&wallet, deposit_id, &verifier, time::Date::MAX)
+        .await
+        .unwrap();
+    assert!(
+        matches!(result, SolanaCredit::Settled),
+        "a flagged funding party never credits: {result:?}"
+    );
+    assert_eq!(wallet.available().await.unwrap(), 0);
+    // The walk asked the screen about *both* debited parties — the relayer
+    // could not launder the source out of the check.
+    let asked = screen.asked.lock().unwrap().clone();
+    assert_eq!(
+        asked,
+        vec![
+            "cleanRelayerAddr6666666666666666666666666".to_owned(),
+            "sdnSourceAddr7777777777777777777777777777".to_owned(),
+        ]
+    );
+    let row = sqlx::query("SELECT status, meta FROM oxsum.deposits WHERE deposit_id = $1")
+        .bind(deposit_id)
+        .fetch_one(db.pool())
+        .await
+        .unwrap();
+    assert_eq!(row.get::<String, _>("status"), "flagged");
+    let meta = row.get::<serde_json::Value, _>("meta");
+    assert_eq!(meta["screening"]["verdict"].as_str().unwrap(), "flagged");
+    // `screening.address` keeps the representative (the fee payer — first in
+    // key order); `screening.addresses` carries the whole screened set.
+    assert_eq!(
+        meta["screening"]["addresses"][1].as_str().unwrap(),
+        "sdnSourceAddr7777777777777777777777777777"
+    );
+}
+
+/// Issue #1178: a `Flagged` on one party wins over a `TemporarilyUnavailable`
+/// on another — the deposit parks rather than deferring — while an
+/// unavailable-only walk still defers (never credits unscreened money).
+#[tokio::test]
+async fn a_flagged_party_wins_over_an_unavailable_one() {
+    let Some(db) = database("solana_flag_over_unavail").await else {
+        return;
+    };
+    let org = organization(&db, "flag-unavail").await;
+    let wallet = wallet_for(&db, org).await;
+    // The fee payer's screen is unreachable; the source is flagged — the
+    // flag parks, the deferral does not shield it.
+    let flagged = Uuid::new_v4();
+    db.open_solana_deposit(org, flagged, 1000, &terms(), None, &rate(&terms(), None))
+        .await
+        .unwrap()
+        .expect("inserts");
+    let screen = Arc::new(MapScreen {
+        verdicts: [
+            (
+                "unavailPayerAddr88888888888888888888888888".to_owned(),
+                ScreenVerdict::TemporarilyUnavailable,
+            ),
+            (
+                "flaggedSourceAddr9999999999999999999999999".to_owned(),
+                ScreenVerdict::Flagged {
+                    source: "chainalysis".to_owned(),
+                    reason: "chainalysis listed the address".to_owned(),
+                },
+            ),
+        ]
+        .into_iter()
+        .collect(),
+        asked: Mutex::new(Vec::new()),
+    });
+    let verifier = SolanaRailVerifier::new(
+        Arc::new(PayingSig {
+            signature: "sigFlagUnav000000000000000000000000000000000000000000".to_owned(),
+            delivered: 5_000,
+            payers: vec![
+                "unavailPayerAddr88888888888888888888888888".to_owned(),
+                "flaggedSourceAddr9999999999999999999999999".to_owned(),
+            ],
+        }),
+        terms(),
+    )
+    .with_sanctions(screen);
+    let result = db
+        .credit_solana_deposit(&wallet, flagged, &verifier, time::Date::MAX)
+        .await
+        .unwrap();
+    assert!(
+        matches!(result, SolanaCredit::Settled),
+        "a flagged party parks even when another cannot be screened: {result:?}"
+    );
+    let status: String =
+        sqlx::query_scalar("SELECT status FROM oxsum.deposits WHERE deposit_id = $1")
+            .bind(flagged)
+            .fetch_one(db.pool())
+            .await
+            .unwrap();
+    assert_eq!(status, "flagged");
+    assert_eq!(wallet.available().await.unwrap(), 0);
+
+    // An unavailable answer on one party with no flag anywhere defers — the
+    // row stays pending and no credit runs.
+    let deferred = Uuid::new_v4();
+    db.open_solana_deposit(org, deferred, 1000, &terms(), None, &rate(&terms(), None))
+        .await
+        .unwrap()
+        .expect("inserts");
+    let deferred_verifier = SolanaRailVerifier::new(
+        Arc::new(PayingSig {
+            signature: "sigDefer000000000000000000000000000000000000000000".to_owned(),
+            delivered: 5_000,
+            payers: vec![
+                "cleanPayerAddr0000000000000000000000000000".to_owned(),
+                "unavailPayerAddr88888888888888888888888888".to_owned(),
+            ],
+        }),
+        terms(),
+    )
+    .with_sanctions(Arc::new(MapScreen {
+        verdicts: [(
+            "unavailPayerAddr88888888888888888888888888".to_owned(),
+            ScreenVerdict::TemporarilyUnavailable,
+        )]
+        .into_iter()
+        .collect(),
+        asked: Mutex::new(Vec::new()),
+    }));
+    let result = db
+        .credit_solana_deposit(&wallet, deferred, &deferred_verifier, time::Date::MAX)
+        .await;
+    assert!(
+        matches!(result, Err(WalletError::Forbidden(_))),
+        "an unavailable-only walk defers: {result:?}"
+    );
+    let status: String =
+        sqlx::query_scalar("SELECT status FROM oxsum.deposits WHERE deposit_id = $1")
+            .bind(deferred)
+            .fetch_one(db.pool())
+            .await
+            .unwrap();
+    assert_eq!(status, "pending");
+    assert_eq!(wallet.available().await.unwrap(), 0);
+}
+
 #[tokio::test]
 async fn an_unavailable_screen_leaves_the_deposit_pending() {
     let Some(db) = database("solana_screen_unavail").await else {
@@ -1707,7 +1922,7 @@ async fn an_unavailable_screen_leaves_the_deposit_pending() {
         Arc::new(PayingSig {
             signature: "sigUnavCore00000000000000000000000000000000000000000".to_owned(),
             delivered: 5_000,
-            payer: Some("retryPayerAddr55555555555555555555555555".to_owned()),
+            payers: vec!["retryPayerAddr55555555555555555555555555".to_owned()],
         }),
         terms(),
     )

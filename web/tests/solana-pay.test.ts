@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { baseUnitsDecimal, solanaPayUrl } from "../src/lib/solanaPay.ts";
+import { baseUnitsDecimal, solanaClusterName, solanaPayUrl } from "../src/lib/solanaPay.ts";
 
 // The intent's fixed terms for the URL cases: a devnet deposit address, a
 // per-intent marker, and the mint a configured SPL rail would name.
@@ -92,4 +92,42 @@ test("empty label and memo stay off the URL entirely", () => {
     memo: "",
   });
   assert.equal(url, `solana:${PAY_TO}?amount=42&reference=${REFERENCE}`);
+});
+
+test("a devnet intent pins cluster=devnet; mainnet omits the parameter", () => {
+  // Issue #1181: Solana addresses are identical across clusters, so a
+  // non-mainnet intent must carry `cluster=` or a scanning wallet sends real
+  // mainnet money to the same `payTo`. `mainnet-beta` writes nothing —
+  // Solana Pay's own default — and `testnet` names itself.
+  const base = { recipient: PAY_TO, baseUnits: 5_000, assetDecimals: 9, reference: REFERENCE };
+  const devnet = solanaPayUrl({ ...base, cluster: "devnet" });
+  assert.equal(
+    devnet,
+    `solana:${PAY_TO}?amount=0.000005&reference=${REFERENCE}&cluster=devnet`,
+  );
+  const testnet = solanaPayUrl({ ...base, cluster: "testnet" });
+  assert.equal(
+    testnet,
+    `solana:${PAY_TO}?amount=0.000005&reference=${REFERENCE}&cluster=testnet`,
+  );
+  const mainnet = solanaPayUrl({ ...base, cluster: "mainnet-beta" });
+  assert.equal(
+    mainnet,
+    `solana:${PAY_TO}?amount=0.000005&reference=${REFERENCE}`,
+  );
+  // Unset means the pre-#1181 shape: no parameter, the spec's mainnet default.
+  assert.equal(solanaPayUrl({ ...base }), mainnet);
+});
+
+test("solanaClusterName names the intent's network, defaulting to mainnet", () => {
+  // The name the page shows beside the terms (issue #1181): devnet/testnet
+  // spell themselves; anything else — unset, malformed, a future cluster —
+  // is production, because the dangerous direction is never rendered as
+  // test money.
+  assert.equal(solanaClusterName("devnet"), "devnet");
+  assert.equal(solanaClusterName("testnet"), "testnet");
+  assert.equal(solanaClusterName("mainnet-beta"), "mainnet-beta");
+  assert.equal(solanaClusterName(undefined), "mainnet-beta");
+  assert.equal(solanaClusterName(null), "mainnet-beta");
+  assert.equal(solanaClusterName("something-else"), "mainnet-beta");
 });

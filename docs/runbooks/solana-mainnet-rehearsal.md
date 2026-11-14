@@ -53,7 +53,9 @@ Complete every line before configuring the deployment.
   mismatch refuses startup; see docs/self-hosted-solana-multisig.md). If a
   multisig is not yet in place for the rehearsal,
   a dedicated single-signer address is acceptable **for the rehearsal only** —
-  the boot warns loudly that `payTo` is an unverified hot wallet — treat its
+  a mainnet-shaped endpoint then refuses to boot unless the deliberate
+  `OXSUM_SOLANA_ALLOW_HOT_WALLET=1` opt-out is set (issue #1189; the boot
+  logs a loud warn marking the accepted risk) — treat its
   key like the deployment's cash drawer, and migrate to the multisig before
   any customer traffic.
 - [ ] An authenticated Solana RPC endpoint (Helius or Triton key) — never the
@@ -64,11 +66,12 @@ Complete every line before configuring the deployment.
   transfers plus fees. This wallet plays the customer. Phantom, Solflare or a
   CLI keypair are all fine; the rail does not care what sends the transfer,
   only that it carries the `reference` marker.
-- [ ] Chainalysis (or equivalent screening provider) API key if rehearsing the
-  screening path (issue #1144 — `OXSUM_SOLANA_SANCTIONS_API_KEY`; the local
-  OFAC SDN Solana list always applies when the gate is on) — plus a local copy
-  of the list file if the deployment points `OXSUM_SOLANA_SDN_LIST_PATH` at a
-  refreshed one.
+- [ ] A Chainalysis (or equivalent screening provider) API key, or a non-empty
+  local SDN list file — `OXSUM_SOLANA_SANCTIONS_ENABLED=1` is REQUIRED on a
+  mainnet-shaped endpoint (issue #1179: the boot refuses to start with the
+  variable unset), so the rehearsal screens with at least the embedded OFAC
+  SDN Solana list; `OXSUM_SOLANA_SANCTIONS_API_KEY` adds the free API's
+  coverage and `OXSUM_SOLANA_SDN_LIST_PATH` a refreshed file.
 - [ ] The operator token for the deployment and a `psql` line to the database
   (the Compose file's `postgres` service or your managed instance).
 - [ ] A registered customer organization on the deployment — the rehearsal
@@ -89,15 +92,25 @@ OXSUM_SOLANA_RPC_URLS=https://mainnet.helius-rpc.com/?api-key=<key>
 
 # The multisig vault every intent pays — and the custody pin that proves it:
 # the boot derives the multisig's `vault index 0` PDA offline and refuses to
-# start unless PAY_TO equals it (issue #1143). Leave MULTISIG_ACCOUNT unset
-# only on the single-signer rehearsal variant — the boot then warns that
-# PAY_TO is an unverified hot wallet.
+# start unless PAY_TO equals it (issue #1143). On a mainnet-shaped endpoint
+# MULTISIG_ACCOUNT is required (issue #1189): unset, the boot refuses. The
+# single-signer rehearsal variant is the only place
+# OXSUM_SOLANA_ALLOW_HOT_WALLET=1 belongs — it boots under a loud warn that
+# PAY_TO is an unverified hot wallet holding real funds.
 OXSUM_SOLANA_PAY_TO=<vault base58 address>
 OXSUM_SOLANA_MULTISIG_ACCOUNT=<multisig account base58>
+# OXSUM_SOLANA_ALLOW_HOT_WALLET=1  # rehearsal-only: unpinned hot wallet
 
 # Mainnet-grade finality. Finalized is the default; state it explicitly so a
 # later reader cannot mistake the posture.
 OXSUM_SOLANA_COMMITMENT=finalized
+
+# The network the intents declare (issue #1181): `mainnet-beta` matches the
+# endpoints' shape and is what the boot would infer anyway — stating it
+# explicitly is the rehearsal's own tripwire: an endpoint accidentally
+# pointed at devnet refuses the boot instead of silently minting intents the
+# page labels mainnet.
+OXSUM_SOLANA_CLUSTER=mainnet-beta
 
 # USDC as the rehearsal asset, via the legacy single-mint form (the rail
 # also carries a multi-asset whitelist since #1140 — one deployment can
@@ -120,9 +133,20 @@ OXSUM_SOLANA_MIN_MINOR=1000
 OXSUM_SOLANA_MAX_MINOR=5000000
 OXSUM_SOLANA_OPENS_PER_MINUTE=3
 
-# A mainnet rehearsal wants a longer payable window than devnet's 600 s so the
-# expired-then-paid scenario can be staged deliberately. 900 s recommended.
+# The rail's 900 s default is already the 15-minute window a mainnet rehearsal
+# wants; pinning it here keeps the expired-then-paid scenario staging intact
+# whichever way a future default moves.
 OXSUM_SOLANA_INTENT_TTL_SECS=900
+
+# REQUIRED on a mainnet-shaped endpoint (issue #1179): the boot refuses to
+# start with the variable unset. `1` screens every payer pre-credit — the
+# embedded OFAC SDN Solana list always, plus the Chainalysis free API when
+# SANCTIONS_API_KEY is set (an API key or a non-empty SDN_LIST_PATH file is
+# the rehearsal's coverage; the embedded list alone is the floor). `0` is
+# only legal because it is explicit — the boot warns loudly that screening is
+# off on a mainnet endpoint, and an unscreened rehearsal is not a rehearsal.
+OXSUM_SOLANA_SANCTIONS_ENABLED=1
+OXSUM_SOLANA_SANCTIONS_API_KEY=<chainalysis key>
 ```
 
 Boot and verify:
@@ -169,6 +193,7 @@ Expected: `200` with
 ```json
 {"data":{"reference":"<base58>","payTo":"<vault>","amountLamports":2000000,
           "splToken":"EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+          "cluster":"mainnet-beta",
           "expiresAt":"<RFC3339>"}}
 ```
 
@@ -181,6 +206,11 @@ carry as a **read-only non-signer** account key.
 - The dashboard's **Solana** tab renders the intent as a Solana Pay
   transfer-request URL plus a QR (issue #1141): scan it with the test wallet
   and approve — the wallet fills recipient, amount and `reference` itself.
+  The intent's `cluster` pins the network end to end (issue #1181): a
+  non-mainnet intent writes `cluster=` into that URL, and the wallet-adapter
+  pay button sends only through a `VITE_SOLANA_RPC_URL` whose shape agrees —
+  an endpoint naming another network refuses rather than send real money on
+  the wrong cluster.
 - Or build a `TransferChecked` SPL transfer by hand for `amountLamports` of
   the USDC mint to `payTo`'s ATA, with `reference` added as a read-only
   non-signer account key — `examples/solana-topup/pay.mjs` does exactly this
@@ -356,9 +386,10 @@ of the delivered figure.
 
 ## Step 7 — screening a flagged payer
 
-With `OXSUM_SOLANA_SANCTIONS_ENABLED=1` (issue #1144 — the recommended
-mainnet posture; the boot warns when a mainnet-shaped endpoint runs with it
-off) the payer's debited signer is screened before the ledger credit books:
+With `OXSUM_SOLANA_SANCTIONS_ENABLED=1` (issue #1144 — REQUIRED on a
+mainnet-shaped endpoint since issue #1179: the boot refuses to start with
+the variable unset, and an explicit `0` boots only under a loud warning) the
+payer's debited signer is screened before the ledger credit books:
 the local OFAC SDN Solana list always, plus the Chainalysis free API when
 `OXSUM_SOLANA_SANCTIONS_API_KEY` is set. A hit does not credit and does not
 refund — the deposit moves to `flagged` and into operator review at
@@ -468,12 +499,17 @@ deposits table.
 - [ ] `OXSUM_SOLANA_MAX_MINOR` ≤ 5 000 000 verified in the running env — no
   intent can demand more than US$5.
 - [ ] `payTo` is the vault, not a hot wallet — `OXSUM_SOLANA_MULTISIG_ACCOUNT`
-  set, so the boot proved it — and the vault's ATA for the USDC mint exists
-  and is primed.
+  set, so the boot proved it (mainnet refuses to boot without it —
+  `OXSUM_SOLANA_ALLOW_HOT_WALLET` is the rehearsal-only opt-out) — and the
+  vault's ATA for the USDC mint exists and is primed.
 - [ ] The test wallet holds ~US$20 and nothing more; the operator knows which
   customer session it will pay as.
 - [ ] `OXSUM_SOLANA_COMMITMENT=finalized` booted; the USDC mint's decimals
   check passed at startup.
+- [ ] `OXSUM_SOLANA_CLUSTER=mainnet-beta` booted without a disagreement —
+  a devnet-shaped endpoint in `OXSUM_SOLANA_RPC_URLS` is a startup refusal
+  now (issue #1181), and the opened intent's `cluster` answers
+  `mainnet-beta`.
 - [ ] The `solana-deposits` job is scheduled (it is when the rail is
   configured — the 15 s pass log line appears once intents exist).
 - [ ] The refund path is agreed: who supplies refund addresses, who signs at

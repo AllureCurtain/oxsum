@@ -121,7 +121,7 @@ the mint's base units).
   for this reason; a real deployment's deposit address is already funded, so
   this is a scratch-loop concern only.
 - **Intent expiry.** An unpaid `pending` intent lapses at `expiresAt`
-  (`OXSUM_SOLANA_INTENT_TTL_SECS`, default 600 s). A payment that lands after
+  (`OXSUM_SOLANA_INTENT_TTL_SECS`, default 900 s). A payment that lands after
   expiry is not credited — it is money sent to `payTo` outside any deposit,
   recovered as an operator matter, not by this rail.
 - **`confirmed` vs `finalized`.** The walkthrough uses `confirmed`, the
