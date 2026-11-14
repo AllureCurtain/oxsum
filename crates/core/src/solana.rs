@@ -88,6 +88,25 @@ pub const USD_PEGGED_RATE_MICRO: i64 = 1_000_000;
 /// #1193) so the two layers can never drift to different defaults again.
 pub const DEFAULT_INTENT_TTL_SECS: i64 = 900;
 
+/// The defer-signal counting window (issue #1212): `meta.deferCount` grows at
+/// most once per this many seconds, however many deferred verdicts land inside
+/// it. The 15 s poll and every repeated customer confirm each defer a row the
+/// chain cannot answer for, so a per-verdict count turned a ~5-minute
+/// screening outage into a long-deferred alert; counted per window, the
+/// figure reads "distinct 5-minute windows this row was seen deferring".
+pub const SOLANA_DEFER_COUNT_WINDOW_SECS: i64 = 300;
+
+/// The `deferCount` (distinct [`SOLANA_DEFER_COUNT_WINDOW_SECS`] windows) at
+/// which a `pending` row counts as long-deferred — 12 windows is at least
+/// ~55 minutes of deferral, an hour of sustained outage rather than a blip.
+pub const SOLANA_LONG_DEFER_WINDOWS: i64 = 12;
+
+/// The age of `meta.firstDeferredAt` past which a still-`pending` row counts
+/// as long-deferred regardless of its count — the backstop for a verify that
+/// defers only intermittently. An intent lives 15 minutes
+/// ([`DEFAULT_INTENT_TTL_SECS`]); a row still deferring hours later is stuck.
+pub const SOLANA_LONG_DEFER_AGE_HOURS: i64 = 6;
+
 /// The finality grace on the expiry sweep (issue #1174): a poll pass marks an
 /// intent `expired` only when its own verify *began* at/after
 /// `expiresAt + SOLANA_EXPIRY_GRACE_SECS`. A payment that landed just before
@@ -2788,9 +2807,11 @@ impl Db {
     /// one's `updated_at` — the row's own clock, the closest durable figure
     /// to the chain's `blockTime` the table records — `None` when there is
     /// none. `long_deferred` is the `pending` rows whose defer signal crossed
-    /// the concern line: `deferCount` ≥ 20, or a `firstDeferredAt` older than
-    /// 24 h (issue #1209 follow-up) — a deferred verdict is a signal, not a
-    /// status, so the count is the only place a stuck verify surfaces.
+    /// the concern line: a `deferCount` of at least
+    /// [`SOLANA_LONG_DEFER_WINDOWS`] distinct counting windows, or a
+    /// `firstDeferredAt` older than [`SOLANA_LONG_DEFER_AGE_HOURS`] (issues
+    /// #1209, #1212) — a deferred verdict is a signal, not a status, so the
+    /// count is the only place a stuck verify surfaces.
     pub async fn solana_deposit_health(
         &self,
     ) -> Result<(Vec<(String, i64)>, i64, Option<i64>, i64), WalletError> {
@@ -2813,33 +2834,53 @@ impl Db {
         let long_deferred: i64 = sqlx::query_scalar(
             "SELECT count(*) FROM oxsum.deposits \
              WHERE rail = $1 AND status = 'pending' \
-               AND (COALESCE((meta->>'deferCount')::int, 0) >= 20 \
-                    OR (meta->>'firstDeferredAt')::timestamptz <= now() - interval '24 hours')",
+               AND (COALESCE((meta->>'deferCount')::int, 0) >= $2 \
+                    OR (meta->>'firstDeferredAt')::timestamptz \
+                       <= now() - make_interval(hours => $3::int))",
         )
         .bind(RAIL_SOLANA)
+        .bind(SOLANA_LONG_DEFER_WINDOWS)
+        .bind(SOLANA_LONG_DEFER_AGE_HOURS)
         .fetch_one(self.pool())
         .await?;
         Ok((status_counts, paid_uncredited, oldest, long_deferred))
     }
 
-    /// Records a deferred verify against a still-`pending` row: bumps
-    /// `meta.deferCount` and stamps `meta.lastDeferredAt`. A long-deferred
-    /// intent is a signal, not a verdict — the counter lets
-    /// [`solana_deposit_health`](Self::solana_deposit_health) surface a row
-    /// the chain keeps failing to answer for without the sweep ever touching
-    /// it. No status changes here (issue #1209 follow-up).
+    /// Records a deferred verify against a still-`pending` row. Every defer
+    /// stamps `meta.lastDeferredAt` (and `firstDeferredAt` once), but
+    /// `meta.deferCount` grows at most once per
+    /// [`SOLANA_DEFER_COUNT_WINDOW_SECS`]: a bump stamps `meta.deferCountedAt`
+    /// and the next one waits until that stamp is a window old (issue #1212).
+    /// The 15 s poll and a customer re-pressing confirm defer the same row
+    /// many times a minute; counting each verdict made a short outage read as
+    /// a stuck deposit. A row counted before the window existed (no
+    /// `deferCountedAt`) restarts at 1 so its per-verdict legacy figure does
+    /// not trip the alert. A long-deferred intent is a signal, not a verdict —
+    /// [`solana_deposit_health`](Self::solana_deposit_health) surfaces it
+    /// without the sweep ever touching it. No status, and no `updated_at`,
+    /// changes here (issue #1209 follow-up).
     async fn record_solana_defer(&self, deposit_id: Uuid) {
         if let Err(error) = sqlx::query(
             "UPDATE oxsum.deposits \
              SET meta = meta || jsonb_build_object( \
-                     'deferCount', COALESCE((meta->>'deferCount')::int, 0) + 1, \
                      'lastDeferredAt', now(), \
                      'firstDeferredAt', COALESCE(meta->>'firstDeferredAt', \
                                                 to_char(now(), 'YYYY-MM-DD\"T\"HH24:MI:SSZ'))) \
+                 || CASE \
+                      WHEN meta->>'deferCountedAt' IS NULL THEN \
+                        jsonb_build_object('deferCount', 1, 'deferCountedAt', now()) \
+                      WHEN (meta->>'deferCountedAt')::timestamptz \
+                           <= now() - make_interval(secs => $3::double precision) THEN \
+                        jsonb_build_object( \
+                          'deferCount', COALESCE((meta->>'deferCount')::int, 0) + 1, \
+                          'deferCountedAt', now()) \
+                      ELSE '{}'::jsonb \
+                    END \
              WHERE deposit_id = $1 AND rail = $2 AND status = 'pending'",
         )
         .bind(deposit_id)
         .bind(RAIL_SOLANA)
+        .bind(SOLANA_DEFER_COUNT_WINDOW_SECS as f64)
         .execute(self.pool())
         .await
         {

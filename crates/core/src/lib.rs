@@ -343,7 +343,8 @@ pub use sessions::{
 };
 pub use solana::{
     AssetTerms, ChainLookup, DEFAULT_INTENT_TTL_SECS, ExpectedPayout, ExpectedTransfer, LockedRate,
-    LookupError, OracleQuote, PriceOracle, RAIL_SOLANA, SPL_TOKEN_PROGRAM_ID, SanctionsScreen,
+    LookupError, OracleQuote, PriceOracle, RAIL_SOLANA, SOLANA_DEFER_COUNT_WINDOW_SECS,
+    SOLANA_LONG_DEFER_AGE_HOURS, SOLANA_LONG_DEFER_WINDOWS, SPL_TOKEN_PROGRAM_ID, SanctionsScreen,
     ScanWalk, ScannedTransfer, ScreenVerdict, SolanaCluster, SolanaCredit, SolanaExceptionDeposit,
     SolanaPricing, SolanaRailVerifier, SolanaTerms, SolanaVerification, TOKEN_2022_PROGRAM_ID,
     USD_PEGGED_RATE_MICRO, ValidatedTransfer, status as solana_status,

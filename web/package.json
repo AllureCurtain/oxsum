@@ -34,6 +34,7 @@
     "@solana/wallet-standard-wallet-adapter-react": "^1.1.8",
     "@solana/web3.js": "^1.99.0",
     "@tanstack/react-query": "^5.107.1",
+    "buffer": "^6.0.3",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
     "i18next": "^26.7.2",

@@ -2745,9 +2745,10 @@ async fn a_just_expired_row_is_not_rechecked_in_the_same_pass() {
 }
 
 /// Issue #1209 follow-up: a deferred verdict leaves a durable signal. Every
-/// `SolanaCredit::Deferred` bumps `meta.deferCount` and stamps
-/// `firstDeferredAt`/`lastDeferredAt` — and `solana_deposit_health` reports
-/// the `pending` rows whose defer crossed the concern line. No status changes.
+/// `SolanaCredit::Deferred` stamps `firstDeferredAt`/`lastDeferredAt`, and
+/// `meta.deferCount` grows at most once per counting window (issue #1212) —
+/// `solana_deposit_health` reports the `pending` rows whose defer crossed the
+/// window or age line. No status changes.
 #[tokio::test]
 async fn a_deferred_verdict_accumulates_a_health_signal() {
     let Some(db) = database("solana_defer_signal").await else {
@@ -2793,59 +2794,153 @@ async fn a_deferred_verdict_accumulates_a_health_signal() {
     }
     let verifier = SolanaRailVerifier::new(Arc::new(AlwaysDown), terms);
     let tenants = oxsum_core::Tenants::new(db.pool().clone());
-    // Three consecutive deferred passes: the row stays `pending` and the
-    // defer counter grows to 3.
+    let read = |db: &Db| {
+        let pool = db.pool().clone();
+        async move {
+            sqlx::query_as::<_, (String, i64)>(
+                "SELECT status, COALESCE((meta->>'deferCount')::int, 0)::bigint \
+                 FROM oxsum.deposits WHERE deposit_id = $1",
+            )
+            .bind(deposit_id)
+            .fetch_one(&pool)
+            .await
+            .unwrap()
+        }
+    };
+    let backdate = |db: &Db, key: &'static str, age: time::Duration| {
+        let pool = db.pool().clone();
+        async move {
+            sqlx::query(
+                "UPDATE oxsum.deposits SET meta = jsonb_set(meta, ARRAY[$1], $2::jsonb) \
+                 WHERE deposit_id = $3",
+            )
+            .bind(key)
+            .bind(serde_json::Value::String(
+                (time::OffsetDateTime::now_utc() - age)
+                    .format(&time::format_description::well_known::Rfc3339)
+                    .unwrap(),
+            ))
+            .bind(deposit_id)
+            .execute(&pool)
+            .await
+            .unwrap();
+        }
+    };
+    // Five back-to-back deferred passes — the 15 s poll plus a customer
+    // hammering confirm, all inside one counting window: the row stays
+    // `pending` and the counter reads 1, not 5 (issue #1212).
+    for _ in 0..5 {
+        db.poll_solana_deposits(&verifier, &tenants, time::Date::MAX)
+            .await
+            .unwrap();
+    }
+    let (status, defer_count) = read(&db).await;
+    assert_eq!(
+        status, "pending",
+        "a deferred verify never changes the status"
+    );
+    assert_eq!(
+        defer_count, 1,
+        "deferred verdicts inside one counting window count once"
+    );
+    // `firstDeferredAt`/`lastDeferredAt`/`deferCountedAt` are recorded.
+    let (first, last, counted): (Option<String>, Option<String>, Option<String>) = sqlx::query_as(
+        "SELECT meta->>'firstDeferredAt', meta->>'lastDeferredAt', meta->>'deferCountedAt' \
+             FROM oxsum.deposits WHERE deposit_id = $1",
+    )
+    .bind(deposit_id)
+    .fetch_one(db.pool())
+    .await
+    .unwrap();
+    assert!(first.is_some(), "the first defer is timestamped");
+    assert!(last.is_some(), "the latest defer is timestamped");
+    assert!(counted.is_some(), "the counted window is timestamped");
+    // Once the counted stamp is a full window old, the next defer counts
+    // again — a sustained outage still accumulates, one per window.
+    backdate(
+        &db,
+        "deferCountedAt",
+        time::Duration::seconds(oxsum_core::SOLANA_DEFER_COUNT_WINDOW_SECS + 1),
+    )
+    .await;
     for _ in 0..3 {
         db.poll_solana_deposits(&verifier, &tenants, time::Date::MAX)
             .await
             .unwrap();
     }
-    let (status, defer_count): (String, i64) = sqlx::query_as(
-        "SELECT status, COALESCE((meta->>'deferCount')::int, 0)::bigint \
-         FROM oxsum.deposits WHERE deposit_id = $1",
-    )
-    .bind(deposit_id)
-    .fetch_one(db.pool())
-    .await
-    .unwrap();
-    assert_eq!(
-        status, "pending",
-        "a deferred verify never changes the status"
-    );
-    assert_eq!(defer_count, 3, "each deferred pass bumps the counter once");
-    // `firstDeferredAt`/`lastDeferredAt` are recorded for the 24 h rule.
-    let stamped: Option<String> = sqlx::query_scalar(
-        "SELECT meta->>'firstDeferredAt' FROM oxsum.deposits WHERE deposit_id = $1",
-    )
-    .bind(deposit_id)
-    .fetch_one(db.pool())
-    .await
-    .unwrap();
-    assert!(stamped.is_some(), "the first defer is timestamped");
-    // `solana_deposit_health` counts it only once it crosses the line:
-    // deferCount 3 < 20 and firstDeferredAt is fresh, so not yet long-deferred.
+    let (status, defer_count) = read(&db).await;
+    assert_eq!(status, "pending");
+    assert_eq!(defer_count, 2, "a later window counts once more");
     let (_counts, _paid, _oldest, long_deferred) = db.solana_deposit_health().await.unwrap();
     assert_eq!(
         long_deferred, 0,
-        "a 3-defer fresh row is not yet a long-deferred signal"
+        "a two-window fresh row is not yet a long-deferred signal"
     );
-    // Push the first defer past 24 h — the age branch of the metric fires.
+    // One window short of the line, then one more window: it crosses.
     sqlx::query(
-        "UPDATE oxsum.deposits SET meta = jsonb_set(meta, '{firstDeferredAt}', $1::jsonb) \
+        "UPDATE oxsum.deposits SET meta = jsonb_set(meta, '{deferCount}', to_jsonb($1::int)) \
          WHERE deposit_id = $2",
     )
-    .bind(serde_json::Value::String(
-        (time::OffsetDateTime::now_utc() - time::Duration::hours(25))
-            .format(&time::format_description::well_known::Rfc3339)
-            .unwrap(),
-    ))
+    .bind((oxsum_core::SOLANA_LONG_DEFER_WINDOWS - 1) as i32)
     .bind(deposit_id)
     .execute(db.pool())
     .await
     .unwrap();
     let (_counts, _paid, _oldest, long_deferred) = db.solana_deposit_health().await.unwrap();
     assert_eq!(
-        long_deferred, 1,
-        "a pending row first deferred over a day ago surfaces as long-deferred"
+        long_deferred, 0,
+        "one window short of the line is not flagged"
     );
+    backdate(
+        &db,
+        "deferCountedAt",
+        time::Duration::seconds(oxsum_core::SOLANA_DEFER_COUNT_WINDOW_SECS + 1),
+    )
+    .await;
+    db.poll_solana_deposits(&verifier, &tenants, time::Date::MAX)
+        .await
+        .unwrap();
+    let (status, defer_count) = read(&db).await;
+    assert_eq!(status, "pending", "crossing the line changes no status");
+    assert_eq!(defer_count, oxsum_core::SOLANA_LONG_DEFER_WINDOWS);
+    let (_counts, _paid, _oldest, long_deferred) = db.solana_deposit_health().await.unwrap();
+    assert_eq!(
+        long_deferred, 1,
+        "a row deferred across the window threshold surfaces as long-deferred"
+    );
+    // A row counted before the window existed (per-verdict legacy figure, no
+    // `deferCountedAt`) restarts at 1 instead of tripping the alert.
+    sqlx::query(
+        "UPDATE oxsum.deposits \
+         SET meta = (meta - 'deferCountedAt') || jsonb_build_object('deferCount', 50) \
+         WHERE deposit_id = $1",
+    )
+    .bind(deposit_id)
+    .execute(db.pool())
+    .await
+    .unwrap();
+    db.poll_solana_deposits(&verifier, &tenants, time::Date::MAX)
+        .await
+        .unwrap();
+    let (_status, defer_count) = read(&db).await;
+    assert_eq!(defer_count, 1, "a legacy per-verdict count restarts at 1");
+    let (_counts, _paid, _oldest, long_deferred) = db.solana_deposit_health().await.unwrap();
+    assert_eq!(long_deferred, 0, "a restarted legacy count is not flagged");
+    // The age branch: a first defer just inside the age line is not flagged,
+    // one past it is — however low the count.
+    let age = time::Duration::hours(oxsum_core::SOLANA_LONG_DEFER_AGE_HOURS);
+    backdate(&db, "firstDeferredAt", age - time::Duration::minutes(5)).await;
+    let (_counts, _paid, _oldest, long_deferred) = db.solana_deposit_health().await.unwrap();
+    assert_eq!(
+        long_deferred, 0,
+        "a first defer inside the age line is not flagged"
+    );
+    backdate(&db, "firstDeferredAt", age + time::Duration::minutes(5)).await;
+    let (_counts, _paid, _oldest, long_deferred) = db.solana_deposit_health().await.unwrap();
+    assert_eq!(
+        long_deferred, 1,
+        "a pending row first deferred past the age line surfaces as long-deferred"
+    );
+    let (status, _defer_count) = read(&db).await;
+    assert_eq!(status, "pending", "the health read changes no status");
 }

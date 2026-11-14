@@ -19,6 +19,9 @@
  * `blockhash`/`feePayer`.
  */
 
+// Must stay the first import: it installs `globalThis.Buffer` before the
+// `@solana/*` modules below evaluate (they read the global at module scope).
+import "./bufferPolyfill.ts";
 import {
   getAssociatedTokenAddressSync,
   createAssociatedTokenAccountIdempotentInstruction,
