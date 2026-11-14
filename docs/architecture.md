@@ -296,8 +296,12 @@ flowchart TD
     flagged --> queue
     over --> queue
     queue --> refund["pull-payment refund (issue #1142)<br/>refund → refund-address →<br/>refund-approve → multisig pays →<br/>refund-complete → refunded"]
-    pending -->|"expiresAt lapses unpaid"| expired["expired — a payment that<br/>landed before expiresAt still<br/>credits; blockTime judges lateness"]
+    pending -->|"expiresAt lapses unpaid,<br/>verified unpaid this pass"| expired["expired — a payment that<br/>landed before expiresAt still<br/>credits; blockTime judges lateness"]
+    expired -->|"re-verified: payment<br/>landed before expiresAt"| credit
+    expired -->|"payment landed<br/>after expiresAt"| late
 ```
+
+The poll is unleadered, so expiry is verify-then-expire keyed per row (issue #1174): the pass collects the ids it itself verified `Unpaid` and its sweep touches only those rows — an intent past the 256-row work-list bound is never expired unseen, and a `pending`-guarded UPDATE makes a raced credit a no-op. A second instance may still expire a row mid-verify — that instance's verdict is genuine — so an `expired` row also re-verifies: a payment whose `blockTime` precedes `expiresAt` rescues into the ordinary credit walk, and a sweep that raced ahead of a landed payment can never strand it.
 
 Two branches run beside it: the RPC failover pool (`OXSUM_SOLANA_RPC_URLS`, issue #1145) that `findReference`/`validateTransfer` call through — round-robin, a twice-failing endpoint sitting out a ~30 s cooldown — and the reconciliation pass that reads every `solana` row against `payTo`'s on-chain signature list (issue #1149). The optional Helius webhook (issue #1150) mounts `POST /api/v1/webhooks/solana` — a push only re-runs the matching intent's own verify sooner, the server still credits on its own check; unset, the route is unmounted and polling stays the only confirm path. The wallet-adapter pay button (issue #1147) mounts beside the QR on the dashboard — a convenience the customer may ignore, not a rail change. The local test-validator e2e suite (issue #1152) is the remaining follow-up.
 

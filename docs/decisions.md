@@ -4968,3 +4968,13 @@ spurious `BlockhashNotFound`) and a fresh-account transfer needs the
 rent-exempt minimum (noise transfers self-pay instead). If the suite ever
 needs instructions past that set, revisiting an SDK dev-dep is a one-line
 change — the wire builder is deliberately test-only, never library code.
+
+## 2026-11-14 — The Solana expiry sweep expires only what it verified (#1174)
+
+The poll's blanket `UPDATE deposits SET status='expired' ... WHERE status='pending' AND expiresAt <= now()` expired rows the pass had never verified: the 257th+ intent past the work list's `LIMIT 256`, and any row a second unleadered instance was mid-verify on. `credit_solana_deposit`'s `status != 'pending'` early return then read the expired row as settled, so a payment already on-chain before `expiresAt` sat in the vault uncredited and off the exception queue — money with no customer credit and no operator visibility.
+
+The invariant the pass now enforces is the one #1128 stated: **a payment on-chain before `expiresAt` still credits even when its confirmation lands after the TTL** — and it must hold whichever side of a sweep race the row lands on.
+
+- **Verify-then-expire, keyed per row.** Each `Forbidden` "not paid yet" verdict pushes the id onto a verified-unpaid list, and the sweep is `UPDATE ... WHERE deposit_id = ANY(unpaid) AND status='pending'` — only rows this pass itself verified unpaid can expire, so a `pending` row the pass never walked (the 257th past `LIMIT 256`, or a row a raced verdict left `pending`) keeps its intent for the next pass. The work list stays deliberately unlocked: the verify's chain RPCs must not run under row locks (issue #1128), and a claim held across the whole walk would deadlock — the credit path re-locks each row on a *different* pooled connection. A second unleadered instance can still expire a row this pass is mid-verify on — that instance's Unpaid verdict is genuine — which is exactly the stale-verdict race the rescue below covers.
+- **`credit_solana_deposit` rescues `expired`.** Belt to the sweep's suspenders: an `expired` row still runs the verify — `blockTime < expiresAt` rescues to `pending` and walks the ordinary credit path (sanctions screening included), `blockTime >= expiresAt` re-marks `late` on the queue, still `Unpaid` keeps `expired`. The race the keyed sweep cannot close — a second instance (or a stray writer) flipping `expired` while this walk's verify is in flight — loses nothing: the re-verification reads the chain again.
+- **`expire_solana_deposit` is `pending`-only.** `confirmed` is a verified payment whose credit has not landed; expiring it would bury real money — now a no-op.
