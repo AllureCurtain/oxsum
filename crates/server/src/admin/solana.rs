@@ -358,10 +358,10 @@ pub(crate) async fn deposits_csv(
 ///
 /// - `signature` — `facilitator_tx_hash` (or `meta.signature`), the paying
 ///   transaction.
-/// - `payer` — `meta.payerAddress` when a path recorded it, falling back to
-///   `meta.screening.address` on a `flagged` row; empty when the row never
-///   recorded one (the verify context's `payerAddress` is not merged into
-///   `meta` today — documented, not invented).
+/// - `payer` — `meta.payerAddress`, which every terminal write merges from
+///   the verify context (issue #1186), falling back to
+///   `meta.screening.address` on a `flagged` row parked before the merge
+///   landed; empty on a `pending` row that never recorded one.
 /// - `delivered`/`expected` — the locked asset's own base units
 ///   (`meta.delivered`, `meta.expected`/`meta.solLamports`).
 /// - `rateMicro` — the intent's locked `meta.rateMicro`.

@@ -1963,6 +1963,20 @@ async fn credit_one(
     amount_minor: i64,
     delivered: i64,
 ) -> (String, String) {
+    credit_one_paid_by(app, stub, key, amount_minor, delivered, None).await
+}
+
+/// `credit_one` whose validated transfer attributes a `payer` — the wallet
+/// address the terminal `meta` merges (issue #1186) and the CSV's `payer`
+/// column reads back.
+async fn credit_one_paid_by(
+    app: &Router,
+    stub: &SolanaStub,
+    key: &str,
+    amount_minor: i64,
+    delivered: i64,
+    payer: Option<&str>,
+) -> (String, String) {
     let (status, intent) = call(
         app,
         "POST",
@@ -1984,7 +1998,7 @@ async fn credit_one(
             signature: signature.clone(),
             delivered,
             block_time: Some(0),
-            payers: Vec::new(),
+            payers: payer.into_iter().map(str::to_owned).collect(),
         },
     );
     let (status, receipt) = call(
@@ -2009,7 +2023,9 @@ async fn solana_reconciliation_csv_exports_the_window() {
         return;
     };
     let key = register_session(&app).await;
-    let (reference, signature) = credit_one(&app, &stub, &key, 1000, 5_000).await;
+    let payer = "csvPayerWallet8888888888888888888888888";
+    let (reference, signature) =
+        credit_one_paid_by(&app, &stub, &key, 1000, 5_000, Some(payer)).await;
     // The default window (the last complete UTC day) covers a row created
     // today only when today *is* inside it — it is not, so ask for today
     // explicitly.
@@ -2036,6 +2052,9 @@ async fn solana_reconciliation_csv_exports_the_window() {
     assert_eq!(cells.len(), 15, "{row}");
     assert_eq!(cells[2], reference, "{row}");
     assert_eq!(cells[3], signature, "{row}");
+    // The `payer` column attributes the wallet the credited transfer's
+    // `meta.payerAddress` recorded (issue #1186) — never an empty cell.
+    assert_eq!(cells[4], payer, "{row}");
     assert_eq!(cells[5], "sol", "{row}");
     assert_eq!(cells[6], "1000", "{row}");
     assert_eq!(cells[7], "5000", "{row}");
@@ -2044,6 +2063,90 @@ async fn solana_reconciliation_csv_exports_the_window() {
     assert_eq!(cells[10], "1000", "{row}");
     assert_eq!(cells[11], "credited", "{row}");
     assert!(lines.next().is_none(), "one deposit, one row: {body}");
+}
+
+/// Issue #1186: an exception deposit's row carries the same `payer` the
+/// credit path's does — a `flagged` row parks the attributed wallet on
+/// `meta.payerAddress` (beside the screening record) and `delivered`/
+/// `expected`/`receivedMinor` fill in what the parked transfer sent, so the
+/// CSV reconciles it like any other terminal row.
+#[tokio::test]
+async fn solana_reconciliation_csv_populates_payer_on_exception_rows() {
+    let stub = SolanaStub::default();
+    // A screening world whose payer hits a flag verdict — the deposit parks
+    // `flagged` rather than crediting.
+    let screen = ScreenStub::default();
+    let flagged_payer = "csvFlaggedPayer99999999999999999999999";
+    screen.verdicts.lock().unwrap().insert(
+        flagged_payer.to_owned(),
+        ScreenVerdict::Flagged {
+            source: "ofac-sdn".to_owned(),
+            reason: "the payer is on the OFAC SDN list".to_owned(),
+        },
+    );
+    let Some((app, _db)) = world_with_screen_and_terms(stub.clone(), terms(), Some(screen)).await
+    else {
+        return;
+    };
+    let key = register_session(&app).await;
+    // Open the intent and arm the flag-verdict transfer — a confirm leaves
+    // the row `flagged`, which the walk surfaces as the settled no-op.
+    let (status, intent) = call(
+        &app,
+        "POST",
+        "/api/v1/topups/solana",
+        Some(json!({"amountMinor": 1000})),
+        Some(&key),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{intent}");
+    let reference = intent["data"]["reference"].as_str().unwrap().to_owned();
+    let signature = format!("sig{}", &uuid::Uuid::new_v4().simple().to_string()[..24]);
+    stub.located
+        .lock()
+        .unwrap()
+        .insert(reference.clone(), vec![signature.clone()]);
+    stub.validated.lock().unwrap().insert(
+        signature.clone(),
+        ValidatedTransfer {
+            signature: signature.clone(),
+            delivered: 5_000,
+            block_time: Some(0),
+            payers: vec![flagged_payer.to_owned()],
+        },
+    );
+    let (status, _receipt) = call(
+        &app,
+        "POST",
+        "/api/v1/topups/solana/confirm",
+        Some(json!({"reference": reference})),
+        Some(&key),
+    )
+    .await;
+    // A flag parks the row; the confirm answers the same `404` a settled row
+    // does — the caller never learns the screening detail.
+    assert_eq!(
+        status,
+        StatusCode::NOT_FOUND,
+        "a flagged deposit never credits"
+    );
+    assert_eq!(balance(&app, &key).await, 0);
+    let today = time::OffsetDateTime::now_utc().date().to_string();
+    let (status, _ct, _cd, body) = call_csv(
+        &app,
+        &format!("/api/v1/admin/solana/reconciliation/deposits.csv?from={today}&to={today}"),
+        Some(ADMIN_TOKEN),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let row = body.lines().nth(1).expect("the flagged deposit exported");
+    let cells: Vec<&str> = row.split(',').collect();
+    assert_eq!(cells.len(), 15, "{row}");
+    assert_eq!(cells[4], flagged_payer, "{row}");
+    assert_eq!(cells[7], "5000", "{row}");
+    assert_eq!(cells[8], "5000", "{row}");
+    assert_eq!(cells[10], "1000", "{row}");
+    assert_eq!(cells[11], "flagged", "{row}");
 }
 
 /// The export honors its window: a `from`/`to` day range covering only

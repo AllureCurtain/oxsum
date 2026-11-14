@@ -878,10 +878,10 @@ pub struct SolanaExceptionDeposit {
     /// The paying transaction's signature — the spent anchor
     /// `deposits_solana_tx_hash` guards.
     pub signature: Option<String>,
-    /// The payer address the rail attributed — `meta.payerAddress` on the
-    /// credit/exception rows that recorded it (today: none — the verify
-    /// context's `payerAddress` is logged but not merged), falling back to
-    /// `meta.screening.address` on a `flagged` row. `None` when no path
+    /// The payer address the rail attributed — `meta.payerAddress`, which
+    /// every terminal write merges from the verify context (issue #1186),
+    /// falling back to `meta.screening.address` on a `flagged` row parked
+    /// before the merge landed. `None` on a `pending` row that never
     /// recorded one; the CSV column documents its provenance.
     pub payer: Option<String>,
     /// The ledger entry that credited the wallet, when the deposit credited
@@ -2028,6 +2028,9 @@ impl Db {
         } else {
             "credited"
         };
+        // Merge the attributed payer beside the verification figures so every
+        // terminal `meta` reads the same (issue #1186): the queue row and the
+        // CSV's `payer` column take `meta.payerAddress` from here.
         let flipped = sqlx::query(
             "UPDATE oxsum.deposits \
              SET status = $4, entry_id = $1, \
@@ -2036,7 +2039,8 @@ impl Db {
                      'delivered', $5::bigint, \
                      'expected', $6::bigint, \
                      'receivedCredits', $7::bigint, \
-                     'overpaid', $8::boolean), \
+                     'payerAddress', $8::text, \
+                     'overpaid', $9::boolean), \
                  updated_at = now() \
              WHERE deposit_id = $3 AND status <> 'credited'",
         )
@@ -2047,6 +2051,7 @@ impl Db {
         .bind(payment.context["delivered"].as_i64())
         .bind(payment.context["expected"].as_i64())
         .bind(payment.context["receivedCredits"].as_i64())
+        .bind(payment.context["payerAddress"].as_str())
         .bind(overpaid)
         .execute(&mut *tx)
         .await?
@@ -2116,6 +2121,10 @@ impl Db {
                 "the paying transaction already credited another deposit".into(),
             ));
         }
+        // The same terminal record the credit path merges (issue #1186):
+        // `payerAddress` rides beside the figures so the queue row and the
+        // CSV's `payer` column attribute the payer the screen or a refund
+        // decision needs.
         sqlx::query(
             "UPDATE oxsum.deposits \
              SET status = $1, facilitator_tx_hash = $2, received_minor = $3, \
@@ -2124,6 +2133,7 @@ impl Db {
                      'delivered', $4::bigint, \
                      'expected', $5::bigint, \
                      'receivedCredits', $6::bigint, \
+                     'payerAddress', $9::text, \
                      'blockTime', $7::bigint, \
                      'exception', $1::text), \
                  updated_at = now() \
@@ -2137,6 +2147,7 @@ impl Db {
         .bind(context["receivedCredits"].as_i64())
         .bind(context["blockTime"].as_i64())
         .bind(deposit_id)
+        .bind(context["payerAddress"].as_str())
         .execute(&mut *tx)
         .await
         .map_err(|e| {
@@ -2191,16 +2202,27 @@ impl Db {
             "at": at,
         });
         flag_meta["signature"] = json!(signature);
+        // The same terminal record the other marks merge (issue #1186): the
+        // flagged row records what the chain delivered against the intent's
+        // demand — `payerAddress`, `delivered`, `expected`, `receivedCredits`
+        // — so the queue row and the CSV's `payer`/`delivered`/`expected`
+        // columns read the parked deposit like any other terminal state.
+        flag_meta["payerAddress"] = payment.context["payerAddress"].clone();
+        flag_meta["delivered"] = payment.context["delivered"].clone();
+        flag_meta["expected"] = payment.context["expected"].clone();
+        flag_meta["receivedCredits"] = payment.context["receivedCredits"].clone();
+        flag_meta["blockTime"] = payment.context["blockTime"].clone();
         sqlx::query(
             "UPDATE oxsum.deposits \
              SET status = 'flagged', facilitator_tx_hash = $1, meta = $2, \
-                 updated_at = now() \
+                 received_minor = $5, updated_at = now() \
              WHERE deposit_id = $3 AND rail = $4 AND status = 'pending'",
         )
         .bind(signature)
         .bind(&flag_meta)
         .bind(deposit_id)
         .bind(RAIL_SOLANA)
+        .bind(payment.context["receivedCredits"].as_i64())
         .execute(self.pool())
         .await
         .map_err(|e| {
