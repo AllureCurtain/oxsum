@@ -5139,3 +5139,40 @@ The first #1174 pass keyed the sweep on `Err(WalletError::Forbidden)` verdicts �
 - **Off-whitelist stays unpayable.** A stored `meta.splToken` no configured asset carries still answers `Unpaid` — the mint was never payable, so the unpaid verdict is the honest one and the sweep ends the row once it lapses.
 
 Trade-off kept on purpose: a `pending` row under a persistent outage never expires — that is the point. The operator surface (`solana_deposits_paid_uncredited`, the exception queue) is where a stuck row becomes visible; expiry is a verdict about the chain, and only the chain may produce it.
+
+## 2026-11-14 — One resolved cluster drives every mainnet gate; the flag records the hit payer and the boot confirms genesis (#1207)
+
+Three records-versus-code corrections plus two behavioural pin-downs folded
+into one refactor; each earlier entry stays as its own record and this one
+marks what it supersedes.
+
+- **One cluster source.** `solana_cluster_of` resolves the rail's cluster
+  once, above the custody gate, and every mainnet judgment now reads
+  `cluster == SolanaCluster::MainnetBeta` — the custody refusal, the
+  single-endpoint cross-confirmation warn and the sanctions opt-in gate all
+  key on that one answer instead of each re-deriving the network from the
+  URLs. The redundant `solana_devnet_shaped`/`solana_mainnet_shaped`
+  helpers (and the shape test that only exercised them) are deleted; the
+  helpers' "mixed pool reads as mainnet, the safe direction" rule still
+  holds because `solana_cluster_of` refuses a mixed pool outright before
+  any gate runs. The 2026-11-14 #1189 entry above claimed the gates shared
+  `solana_devnet_shaped` — superseded: they now share the resolved
+  `SolanaCluster`, and `OXSUM_SOLANA_CLUSTER`'s explicit word is honored by
+  the same single source rather than re-derived per gate.
+- **The flag records the flagged payer, not the representative.**
+  `ScreenVerdict::Flagged` gains `address`, and `screen_payer` attaches the
+  debited party the screen actually hit — a sanctioned funding source
+  behind a clean fee-paying relayer now lands in `meta.screening.address`,
+  where the old record wrote the representative `payerAddress` and made the
+  review row name the wrong wallet. `screening.payerAddress` keeps the
+  representative and `addresses` the whole screened set, so the queue still
+  reads which wallets the walk covered.
+- **The boot confirms the cluster on-chain.** `verify_mints` now opens with
+  `confirm_cluster`: `getGenesisHash` on the endpoint pool must not
+  *disagree* with the resolved `terms.cluster`. Only a crossed public
+  network refuses — the endpoint answers a different public cluster's
+  canonical genesis (a `devnet`-hinted URL serving mainnet-beta's hash is
+  the silent-mainnet failure #1181 set out to kill). An unreachable probe
+  warns-and-serves; a hash matching no public cluster (a local
+  test-validator's own genesis, a private fork) warns-and-serves too, so a
+  dev loop is never bricked by a fingerprint it cannot name.
