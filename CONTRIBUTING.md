@@ -14,7 +14,7 @@ oxsum is issue-driven. Open or pick an issue before writing code. One pull reque
 
 Branch names match `^(feat|fix|docs|refactor|test|chore|build|ci|perf)/[a-z0-9]+(-[a-z0-9]+)*$`. The description states the outcome. It does not start with an issue number.
 
-Format Rust with `scripts/fmt.sh`, not bare `cargo fmt`. The check is `scripts/fmt-check.sh`.
+Format Rust with `scripts/fmt.sh`, not bare `cargo fmt`. The check is `scripts/fmt-check.sh`. Run `scripts/setup-dev.sh` once per clone to install the pinned rustfmt and the pre-commit hook.
 
 ## Issue labels
 

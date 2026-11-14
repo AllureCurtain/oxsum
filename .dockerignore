@@ -4,3 +4,10 @@
 target
 .git
 .worktrees
+# Host dependency trees (issue #1214). The CI `frontend` job
+# runs `npm --prefix web ci` on the runner before `docker build`, and the
+# frontend stage's `COPY web/ ./` would then copy the host's `web/node_modules`
+# over the tree the stage's own `npm ci` just installed — the
+# "cannot replace to directory …/web/node_modules with file" BuildKit failure,
+# plus ~260 MB of build context. The stage installs its own tree.
+**/node_modules

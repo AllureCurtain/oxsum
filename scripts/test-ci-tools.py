@@ -89,6 +89,10 @@ class InstallerTests(unittest.TestCase):
             "version": "2.40.0", "root": "fixture", "binary": "bin/mold",
             "size": len(self.bytes), "sha256": hashlib.sha256(self.bytes).hexdigest(),
         }
+        # The between-round cool-down is real time in CI; tests record it.
+        sleeper = patch.object(tools, "pause")
+        self.sleep = sleeper.start()
+        self.addCleanup(sleeper.stop)
 
     def destination(self):
         return self.root / "cache/mold/2.40.0/x64"
@@ -116,7 +120,9 @@ class InstallerTests(unittest.TestCase):
                 with self.assertRaises(subprocess.CalledProcessError):
                     tools.install("mold", self.spec, self.root / "cache")
                 extract.assert_not_called()
-        self.assertEqual(len(calls), 4)
+        # Four curl attempts per round, two rounds, one bounded pause.
+        self.assertEqual(len(calls), 8)
+        self.sleep.assert_called_once_with(tools.ROUND_PAUSE_SECONDS)
         self.assert_clean_failure()
 
     def test_http_success_with_html_or_truncation_never_extracts(self):
@@ -204,8 +210,18 @@ class InstallerTests(unittest.TestCase):
             self.spec.update(asset=url, fallback=url + "-fallback")
             with self.assertRaises(subprocess.CalledProcessError):
                 tools.install("mold", self.spec, self.root / "cache")
-        self.assertEqual(len(calls), 8)
+        # Both URLs, four attempts each, in each of the two rounds.
+        self.assertEqual(len(calls), 16)
+        self.sleep.assert_called_once_with(tools.ROUND_PAUSE_SECONDS)
         self.assert_clean_failure()
+
+    def test_an_outage_longer_than_one_round_recovers_after_the_pause(self):
+        with server(self.root, [(504, b"unavailable")] * 8 + [(200, self.bytes)]) as (url, calls):
+            self.spec.update(asset=url, fallback=url + "-fallback")
+            tools.install("mold", self.spec, self.root / "cache")
+        self.assertEqual(len(calls), 9)
+        self.sleep.assert_called_once_with(tools.ROUND_PAUSE_SECONDS)
+        self.assertTrue(self.destination().with_suffix(".complete").is_file())
 
     def test_integrity_failure_never_tries_fallback(self):
         with server(self.root, [(200, b"x" + self.bytes[1:]), (200, self.bytes)]) as (url, calls):

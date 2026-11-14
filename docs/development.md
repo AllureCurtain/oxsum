@@ -96,15 +96,27 @@ Warnings are errors under CI's `-D warnings`, so a new warning fails the PR even
 when the local `cargo clippy` run only printed it. Run the same command with
 `-D warnings` before pushing.
 
-### Pre-commit hook (optional)
+### One-time setup
+
+```bash
+scripts/setup-dev.sh
+```
+
+installs the nightly rustfmt pinned in `rustfmt-nightly`, sets
+`core.hooksPath` to `.githooks` and runs `scripts/fmt-check.sh` once. Re-run it
+after `rustfmt-nightly` is bumped. It is idempotent and changes nothing outside
+this clone's git config and the rustup toolchain list.
+
+### Pre-commit hook
 
 `.githooks/pre-commit` runs `scripts/fmt-check.sh` (the pinned nightly) plus a *scoped* `cargo clippy`
 — only the crates the staged files touched, never the whole workspace — so a
 docs-only commit costs seconds, not minutes. Manifest changes (`Cargo.toml`,
 `Cargo.lock`, `.cargo/config.toml`) still lint everything; `web/`, `docs/`,
 `.github/` and other non-Rust paths skip clippy entirely (the frontend gate is
-the Dockerfile's `frontend` stage and the CI `frontend` job). Install once per
-clone:
+the Dockerfile's `frontend` stage and the CI `frontend` job). A staged
+`web/src/locales/*.json` also runs `web/tests/locale-integrity.test.mjs`.
+`scripts/setup-dev.sh` installs it; by hand it is:
 
 ```bash
 git config core.hooksPath .githooks
@@ -970,7 +982,10 @@ CI and the candidate workflow install mold 2.40.0 and sccache 0.19.0 through
 with `--retry-all-errors`, and x86_64 Linux. It fetches exact official GitHub
 asset IDs over HTTPS, with four finite attempts and a 250-second process cap
 per URL. On transport failure only, the corresponding pinned official browser
-release URL is tried with the same bound. Integrity, oversized-response, local
+release URL is tried with the same bound. When both URLs fail on transport,
+the helper pauses 20 seconds once and makes one more identical round (issue
+#1214): the infra failures on record were release endpoints answering 5xx for
+longer than curl's own ~4-second retry window. Integrity, oversized-response, local
 I/O and TLS trust failures fail closed. Both routes require the same pinned
 size/SHA-256 before extraction. Installation uses a private
 staging directory and atomic rename into `RUNNER_TOOL_CACHE`; no privileged
@@ -1145,7 +1160,7 @@ backend changes were needed.
 
 ```bash
 npm --prefix web ci          # install the toolchain (Node 22+)
-npm --prefix web run test:contract # check OpenAPI security declarations
+npm --prefix web run test:contract # check OpenAPI (parse + security) and the locale catalogues
 npm --prefix web run codegen # check the contract, then regenerate src/api/schema.d.ts
 npm --prefix web run dev     # vite dev server, proxies /api to localhost:3000
 npm --prefix web run build   # emit web/dist
