@@ -19,6 +19,8 @@
  * non-mainnet intent without a configured endpoint is never sent at all —
  * the QR, whose `cluster=` carries the network, stays the payment path.
  */
+// First: installs `globalThis.Buffer` before any `@solana/*` module evaluates.
+import "../lib/bufferPolyfill.ts";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { useStandardWalletAdapters } from "@solana/wallet-standard-wallet-adapter-react";

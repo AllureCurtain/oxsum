@@ -83,9 +83,11 @@ const SOLANA_EXCEPTION_QUEUE: &str = "solana_exception_queue_depth";
 /// increments the same name rather than minting a second spelling.
 const SOLANA_SCREENING_HITS: &str = "solana_screening_hits_total";
 /// Solana `pending` deposits deferred long enough to worry about — a
-/// `deferCount` ≥ 20, or a first defer older than 24 h (issue #1209
-/// follow-up). A deferred verdict is a signal, never a status change, so this
-/// gauge is the only surface a stuck verify reaches.
+/// `deferCount` of at least `SOLANA_LONG_DEFER_WINDOWS` (12) distinct
+/// `SOLANA_DEFER_COUNT_WINDOW_SECS` (5 min) windows, or a first defer older
+/// than `SOLANA_LONG_DEFER_AGE_HOURS` (6 h) (issues #1209, #1212). A deferred
+/// verdict is a signal, never a status change, so this gauge is the only
+/// surface a stuck verify reaches.
 const SOLANA_LONG_DEFERRED: &str = "solana_deposits_long_deferred";
 
 /// The per-app metric registry: a Prometheus recorder plus the handle that renders it.

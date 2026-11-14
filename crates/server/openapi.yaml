@@ -1,11 +1,20 @@
 openapi: 3.1.0
 info:
   title: oxsum API
-  version: 0.130.0
+  version: 0.131.0
   x-consumption-cache: Response cache v2 binds the exact complete request, concrete endpoint and semantic headers, customer/key permissions, selected experiment/mandate, alias targets, and every admitted route's price, destination, settings and credential configuration. A primary route without an available credential cannot serve a cache hit. Text case and whitespace are significant; old digests miss. Legacy excludeSystem is accepted but ignored.
   x-ledger-description: Ledger descriptions contain at most 16384 Unicode scalar values (at most 65536 UTF-8 bytes before JSON escaping). Settlement v14 and canonical hashes are unchanged; full subscription/cache provenance is retained. Writers and offline/browser verifiers must support this bound. Older 512-character readers cannot read longer new entries even with the same database schema. Arbitrary guardrail-output budgeting remains issue 875.
   description: |
     Common conventions (auth, idempotency, error format, money units) are documented in docs/api.md.
+
+    0.131.0 makes the solana defer signal noise-robust (issue #1212):
+    `meta.deferCount` now counts distinct 5-minute windows a `pending` row
+    was seen deferring — not every deferred verdict — so the 15 s poll and
+    repeated confirms during a short outage no longer inflate it; the bump
+    stamps `meta.deferCountedAt` and a row without that stamp restarts at 1.
+    `solana_deposits_long_deferred` now reports `pending` rows with
+    `deferCount` ≥ 12 windows or a first defer over 6 h (was ≥ 20 verdicts
+    or 24 h). Still no status change; no request or response shape changes.
 
     0.130.0 tightens the solana verify's error handling and the rescue pass's
     pacing: when a candidate's `validate_transfer` fails mid-walk, a shortfall

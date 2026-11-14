@@ -259,6 +259,7 @@ it; alert on these:
 | `solana_deposits_paid_uncredited_oldest_seconds` | Gauge — age of the oldest `confirmed` row | `> 900` (15 min) — the same alert's staleness figure; an uncredited deposit this old is a customer complaint waiting. |
 | `solana_exception_queue_depth{status}` | Gauge per deposit status (`confirmed`, `reversed`, `expired`, and the #1142 statuses — `underpaid`/`overpaid`/`late`/`flagged`/`refund_pending`/`refunded`) | Backlog growth on an exception status > a tolerable N — pick N per deployment volume; `flagged` `> 0` always wants eyes. |
 | `solana_screening_hits_total{result}` | Counter, `result="flagged"` — the series exists from boot; #1144's screening check increments it | `> 0` — a payer address hit a sanctions list; the deposit needs operator review, never an automatic refund. |
+| `solana_deposits_long_deferred` | Gauge — `pending` deposits whose verify keeps deferring (issues #1209, #1212): `meta.deferCount` ≥ 12 distinct 5-minute windows (≈ an hour of sustained deferral), **or** `meta.firstDeferredAt` older than 6 h. Refreshed every `solana-deposits` pass; the same pass logs `solana deposits deferred too long to be routine` while it is nonzero | **Warn** `> 0` for 15 min — a verify has been unable to conclude for about an hour; read the row's `meta` and the job's warn lines (RPC errors, missing `blockTime`, screening non-answers, settle refusals). **Page** `> 0` for 2 h, or any growth while `solana_rpc_endpoint_healthy` reads 1 — the chain answers but this deposit still cannot be judged. Never act on the row automatically: a deferred row may be paid. |
 | `solana_rpc_endpoint_healthy` + `solana_rpc_errors_total` together | — | All endpoints unhealthy AND rising errors = the rail cannot verify transfers at all; intents still open but nothing confirms. |
 
 Tuning notes:
@@ -270,6 +271,16 @@ Tuning notes:
 - `solana_deposits_paid_uncredited` should almost always read 0: `confirmed`
   is a momentary state inside one transaction, so a persistent nonzero means
   a crash between writes, not normal operation.
+- `solana_deposits_long_deferred` counts *windows*, not verdicts: every
+  deferred verify stamps `meta.lastDeferredAt`, but `meta.deferCount` grows
+  at most once per `SOLANA_DEFER_COUNT_WINDOW_SECS` (300 s, stamped in
+  `meta.deferCountedAt`), so the 15 s poll and a customer re-pressing
+  confirm during a short screening or RPC outage cannot inflate it — a
+  5-minute blip leaves a row at 1–2. The thresholds
+  (`SOLANA_LONG_DEFER_WINDOWS` = 12, `SOLANA_LONG_DEFER_AGE_HOURS` = 6) are
+  constants in `oxsum-core`; the gauge is a signal only and never changes a
+  row's status. A row counted before #1212 (no `deferCountedAt`) restarts at
+  1 on its next defer.
 - Endpoint labels carry host only — a Helius API key in the URL can never
   reach a metric, a log line or a `Debug` print.
 
