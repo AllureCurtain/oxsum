@@ -499,6 +499,22 @@ impl SolanaRpcClient {
         mint_decimals_of(&bytes)
     }
 
+    /// `getGenesisHash` — the chain's own cluster fingerprint (issue #1203).
+    /// The boot reads it once, on the same failover the verification calls
+    /// use, to confirm the resolved `cluster` is the network the endpoints
+    /// actually serve: the URL's `devnet`/host hint only implies a cluster,
+    /// while this answer is the network's word for itself. `Err` when no
+    /// endpoint could answer or the result was not a base58 hash.
+    pub async fn genesis_hash(&self) -> Result<String, SolanaError> {
+        let result = self
+            .call("genesis_hash", "getGenesisHash", json!([]))
+            .await?;
+        result
+            .as_str()
+            .map(str::to_owned)
+            .ok_or_else(|| SolanaError("getGenesisHash returned no hash".into()))
+    }
+
     /// One JSON-RPC call over the endpoint pool (issue #1145): walk the
     /// endpoints starting at the round-robin cursor, skipping any inside its
     /// failure cooldown. A transport failure, a non-2xx or an RPC-level
@@ -996,6 +1012,16 @@ impl SolanaRpcClient {
                 mint,
             ),
         };
+        // The primary's own evidence record — the figure, block time and
+        // payer set the second endpoint must agree with — assembled before the
+        // cross-confirm so the confirmation compares against one value, not a
+        // re-derivation (issues #1183, #1199).
+        let primary = ValidatedTransfer {
+            signature: signature.to_owned(),
+            delivered,
+            block_time: result["blockTime"].as_i64(),
+            payers,
+        };
         // Cross-confirm the credit-grade answer on a second endpoint (issue
         // #1183). The primary read already proved the transfer on
         // `served_by`; a second healthy endpoint must see the same successful
@@ -1008,7 +1034,7 @@ impl SolanaRpcClient {
         // issue #1174).
         if self.endpoints.len() > 1 {
             let confirmed = self
-                .cross_confirm_transaction(signature, expected, served_by, &params, delivered)
+                .cross_confirm_transaction(signature, expected, served_by, &params, &primary)
                 .await;
             if !confirmed {
                 return Err(SolanaError(format!(
@@ -1017,12 +1043,7 @@ impl SolanaRpcClient {
                 )));
             }
         }
-        Ok(Some(ValidatedTransfer {
-            signature: signature.to_owned(),
-            delivered,
-            block_time: result["blockTime"].as_i64(),
-            payers,
-        }))
+        Ok(Some(primary))
     }
 
     /// `getTransaction(signature, jsonParsed)` — the refund-complete half
@@ -1154,7 +1175,7 @@ impl SolanaRpcClient {
         expected: &ExpectedTransfer,
         served_by: &RpcEndpoint,
         params: &Value,
-        delivered: i64,
+        primary: &ValidatedTransfer,
     ) -> bool {
         let body = json!({
             "jsonrpc": "2.0",
@@ -1174,7 +1195,7 @@ impl SolanaRpcClient {
             match self.call_once(endpoint, "getTransaction", &body).await {
                 Ok(result) => {
                     endpoint.note_ok();
-                    let agreed = cross_confirmation_agrees(&result, expected, delivered);
+                    let agreed = cross_confirmation_agrees(&result, expected, primary);
                     metrics::counter!(
                         "solana_rpc_cross_confirmations_total",
                         "endpoint" => endpoint.host.clone(),
@@ -1439,6 +1460,12 @@ impl oxsum_core::ChainLookup for SolanaRpcClient {
         Box::pin(async move { self.mint_owner(mint).await.ok() })
     }
 
+    fn genesis_hash<'a>(
+        &'a self,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Option<String>> + Send + 'a>> {
+        Box::pin(async move { self.genesis_hash().await.ok() })
+    }
+
     fn scan_received<'a>(
         &'a self,
         max_signatures: usize,
@@ -1461,8 +1488,8 @@ impl oxsum_core::ChainLookup for SolanaRpcClient {
     }
 }
 
-/// What the cross-confirmation demands a second endpoint agree on (issue
-/// #1183): the same `getTransaction` shape `validate_transfer` reads —
+/// What the cross-confirmation demands a second endpoint agree on (issues
+/// #1183, #1199): the same `getTransaction` shape `validate_transfer` reads —
 /// `meta.err` null, the intent's `reference` among the account keys as a
 /// read-only non-signer, and a recipient-side `delivered` delta on the
 /// expected mint (or native lamports) *equal to* the figure the primary
@@ -1471,7 +1498,18 @@ impl oxsum_core::ChainLookup for SolanaRpcClient {
 /// here, so an endpoint that hallucinated a different amount, a different
 /// recipient-side account, a missing marker or a failed transaction disagrees
 /// — it is never enough that the signature merely exists.
-fn cross_confirmation_agrees(result: &Value, expected: &ExpectedTransfer, delivered: i64) -> bool {
+///
+/// #1199 tightens the agreement past the amount: the second endpoint must
+/// also report the same `blockTime` and the same debited-funding-party set
+/// the primary's `ValidatedTransfer` carried. Two nodes agreeing a payment
+/// happened but reporting different confirmations or different payers are
+/// NOT a consensus — an endpoint replaying a stale or doctored view of the
+/// same signature disagrees.
+fn cross_confirmation_agrees(
+    result: &Value,
+    expected: &ExpectedTransfer,
+    primary: &ValidatedTransfer,
+) -> bool {
     if result.is_null() {
         return false;
     }
@@ -1500,7 +1538,34 @@ fn cross_confirmation_agrees(result: &Value, expected: &ExpectedTransfer, delive
             mint,
         ),
     };
-    second == Some(delivered)
+    if second != Some(primary.delivered) {
+        return false;
+    }
+    // Same amount is not the whole agreement (issue #1199): the blockTime the
+    // second endpoint reports must equal the primary's, and the debited
+    // funding parties its balances isolate must equal the primary's payer
+    // set — the sort makes the comparison order-insensitive because both
+    // extractors build the vec in account-key order already.
+    if result["blockTime"].as_i64() != primary.block_time {
+        return false;
+    }
+    let mut second_payers = match expected.spl_token_mint.as_deref() {
+        None => sol_payers(
+            account_keys,
+            meta["preBalances"].as_array(),
+            meta["postBalances"].as_array(),
+        ),
+        Some(mint) => spl_payers(
+            meta["preTokenBalances"].as_array(),
+            meta["postTokenBalances"].as_array(),
+            account_keys,
+            mint,
+        ),
+    };
+    let mut first_payers = primary.payers.clone();
+    second_payers.sort();
+    first_payers.sort();
+    second_payers == first_payers
 }
 
 /// The native-SOL counterpart of [`token_delta`]: the recipient's
@@ -2376,6 +2441,11 @@ mod tests {
         .expect("the test's endpoints all carry hosts")
     }
 
+    /// A `getGenesisHash`-shaped answer carrying the chain's fingerprint.
+    fn genesis_result(hash: &str) -> serde_json::Value {
+        json!({"jsonrpc": "2.0", "id": 1, "result": hash})
+    }
+
     /// A `getSignaturesForAddress`-shaped answer carrying one signature — the
     /// body `find_reference` walks.
     fn signatures_result(signatures: &[&str]) -> serde_json::Value {
@@ -2386,6 +2456,31 @@ mod tests {
                 .map(|s| json!({"signature": s}))
                 .collect::<Vec<_>>()
         })
+    }
+
+    /// The boot's cluster probe reads the `result` string through — the
+    /// same `call` failover the verification calls use (issue #1203).
+    #[tokio::test(flavor = "current_thread")]
+    async fn genesis_hash_reads_the_chains_fingerprint() {
+        let (url, _hits) = stub_rpc(genesis_result(
+            "5eykt4UsFv8P8NJdTREpY1vzqKqZKvdpKuc147dw2N9d",
+        ))
+        .await;
+        let client = client(&[url], None);
+        assert_eq!(
+            client.genesis_hash().await.unwrap(),
+            "5eykt4UsFv8P8NJdTREpY1vzqKqZKvdpKuc147dw2N9d"
+        );
+    }
+
+    /// A `getGenesisHash` answer that is not a string is a non-answer —
+    /// `Err`, so the boot treats it as unconfirmed rather than serve on a
+    /// misread hash.
+    #[tokio::test(flavor = "current_thread")]
+    async fn genesis_hash_refuses_a_non_string_result() {
+        let (url, _hits) = stub_rpc(json!({"jsonrpc": "2.0", "id": 1, "result": {"x": 1}})).await;
+        let client = client(&[url], None);
+        assert!(client.genesis_hash().await.is_err());
     }
 
     /// First-healthy-wins: endpoint A answers, endpoint B is never asked —
@@ -2829,6 +2924,52 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(validated.map(|v| v.delivered), Some(5_000));
+    }
+
+    /// Issue #1199: agreeing on the delivered amount is not the whole
+    /// consensus — the second endpoint must report the same `blockTime` and
+    /// the same debited funding parties the primary's `ValidatedTransfer`
+    /// carried. A node replaying a different confirmation of the same
+    /// signature disagrees; the deposit stays pending (`Err`, never unpaid).
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_different_block_time_is_a_disagreement() {
+        // The primary reports no blockTime (None); the second endpoint
+        // reports one — the two views of "the same" transaction differ.
+        let mut second = sol_tx(0, 5_000, "payTo");
+        second["blockTime"] = json!(1_700_000_000);
+        let (url_a, _a) = stub_rpc(transaction_result(0, 5_000, "payTo")).await;
+        let (url_b, _b) = stub_rpc(json!({"jsonrpc": "2.0", "id": 1, "result": second})).await;
+        let client = client(&[url_a, url_b], None);
+        let err = client
+            .validate_transfer("sig1", &expected_transfer())
+            .await
+            .unwrap_err();
+        assert!(
+            err.0.contains("cross-confirmation"),
+            "a different blockTime is a disagreement, not a credit: {err:?}"
+        );
+    }
+
+    /// Issue #1199: same amount, different funding party — the second
+    /// endpoint sees a different wallet debited than the primary attributed.
+    /// That is not a consensus; the deposit stays pending.
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_different_payer_set_is_a_disagreement() {
+        // Same 5000 delivered to payTo, but a different signer funds it on
+        // the second endpoint's view — payers disagree.
+        let mut second = sol_tx(0, 5_000, "payTo");
+        second["transaction"]["message"]["accountKeys"][0]["pubkey"] = json!("OTHER_PAYER");
+        let (url_a, _a) = stub_rpc(transaction_result(0, 5_000, "payTo")).await;
+        let (url_b, _b) = stub_rpc(json!({"jsonrpc": "2.0", "id": 1, "result": second})).await;
+        let client = client(&[url_a, url_b], None);
+        let err = client
+            .validate_transfer("sig1", &expected_transfer())
+            .await
+            .unwrap_err();
+        assert!(
+            err.0.contains("cross-confirmation"),
+            "a different payer set is a disagreement, not a credit: {err:?}"
+        );
     }
 
     /// A single-endpoint pool has no second opinion to ask: the first answer
