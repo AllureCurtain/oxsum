@@ -284,4 +284,151 @@ mod tests {
             MIGRATIONS.last().expect("migrations exist").0
         );
     }
+
+    /// The checked-in schema inventory, without its comment lines.
+    fn schema_inventory() -> Vec<&'static str> {
+        include_str!("../schema-inventory.txt")
+            .lines()
+            .map(str::trim)
+            .filter(|line| !line.is_empty() && !line.starts_with('#'))
+            .collect()
+    }
+
+    /// Drops `--` and `/* */` comments so prose about a table never counts as DDL.
+    fn without_comments(sql: &str) -> String {
+        let mut out = String::with_capacity(sql.len());
+        let mut rest = sql;
+        while !rest.is_empty() {
+            if let Some(tail) = rest.strip_prefix("--") {
+                rest = tail.find('\n').map_or("", |end| &tail[end..]);
+            } else if let Some(tail) = rest.strip_prefix("/*") {
+                rest = tail.find("*/").map_or("", |end| &tail[end + 2..]);
+            } else {
+                let mut chars = rest.chars();
+                if let Some(c) = chars.next() {
+                    out.push(c);
+                }
+                rest = chars.as_str();
+            }
+        }
+        out
+    }
+
+    /// The `oxsum` relations a migration chain leaves behind, derived from its DDL:
+    /// `CREATE [OR REPLACE] [UNLOGGED] TABLE|VIEW [IF NOT EXISTS]`, `DROP TABLE|VIEW
+    /// [IF EXISTS] a, b` and `ALTER TABLE|VIEW [IF EXISTS] [ONLY] a RENAME TO b`.
+    fn relations_created_by(migrations: &[(&str, &str)]) -> std::collections::BTreeSet<String> {
+        let relation = |token: &str| -> Option<String> {
+            let token = token.trim_matches('"').to_lowercase();
+            token
+                .strip_prefix("oxsum.")
+                .map(|name| name.trim_matches('"').to_owned())
+        };
+        let mut relations = std::collections::BTreeSet::from(["_migrations".to_owned()]);
+        for (_, sql) in migrations {
+            let spaced = without_comments(sql)
+                .replace('(', " ( ")
+                .replace(')', " ) ")
+                .replace(',', " , ")
+                .replace(';', " ; ");
+            let tokens: Vec<String> = spaced.split_whitespace().map(str::to_lowercase).collect();
+            let at = |index: usize| tokens.get(index).map_or("", String::as_str);
+            let mut i = 0;
+            while i < tokens.len() {
+                let mut j = i + 1;
+                match at(i) {
+                    "create" => {
+                        if at(j) == "or" && at(j + 1) == "replace" {
+                            j += 2;
+                        }
+                        if matches!(at(j), "unlogged" | "temp" | "temporary") {
+                            j += 1;
+                        }
+                        if matches!(at(j), "table" | "view") {
+                            j += 1;
+                            if at(j) == "if" && at(j + 1) == "not" && at(j + 2) == "exists" {
+                                j += 3;
+                            }
+                            if let Some(name) = relation(at(j)) {
+                                relations.insert(name);
+                            }
+                        }
+                    }
+                    "drop" if matches!(at(j), "table" | "view") => {
+                        j += 1;
+                        if at(j) == "if" && at(j + 1) == "exists" {
+                            j += 2;
+                        }
+                        while let Some(name) = relation(at(j)) {
+                            relations.remove(&name);
+                            if at(j + 1) != "," {
+                                break;
+                            }
+                            j += 2;
+                        }
+                    }
+                    "alter" if matches!(at(j), "table" | "view") => {
+                        j += 1;
+                        if at(j) == "if" && at(j + 1) == "exists" {
+                            j += 2;
+                        }
+                        if at(j) == "only" {
+                            j += 1;
+                        }
+                        if let (Some(from), "rename", "to") =
+                            (relation(at(j)), at(j + 1), at(j + 2))
+                        {
+                            relations.remove(&from);
+                            relations.insert(at(j + 3).trim_matches('"').to_owned());
+                        }
+                    }
+                    _ => {}
+                }
+                i += 1;
+            }
+        }
+        relations
+    }
+
+    #[test]
+    fn schema_inventory_matches_the_migrations() {
+        let inventory = schema_inventory();
+        assert!(
+            inventory.windows(2).all(|pair| pair[0] < pair[1]),
+            "schema-inventory.txt must be sorted and free of repeats"
+        );
+        let derived: Vec<String> = relations_created_by(MIGRATIONS).into_iter().collect();
+        let missing: Vec<&String> = derived
+            .iter()
+            .filter(|name| !inventory.contains(&name.as_str()))
+            .collect();
+        let stale: Vec<&&str> = inventory
+            .iter()
+            .filter(|name| !derived.iter().any(|d| d == *name))
+            .collect();
+        assert!(
+            missing.is_empty() && stale.is_empty(),
+            "crates/core/schema-inventory.txt is out of date: add {missing:?}, remove {stale:?}"
+        );
+    }
+
+    #[test]
+    fn the_inventory_parser_follows_creates_drops_renames_and_ignores_comments() {
+        let chain: &[(&str, &str)] = &[
+            (
+                "1",
+                "CREATE TABLE oxsum.a (id int);\n-- CREATE TABLE oxsum.ghost (id int);\nCREATE TABLE IF NOT EXISTS oxsum.b(id int);",
+            ),
+            (
+                "2",
+                "/* CREATE TABLE oxsum.ghost2 */ CREATE OR REPLACE VIEW oxsum.v AS SELECT 1;\nALTER TABLE oxsum.a RENAME COLUMN id TO key;",
+            ),
+            (
+                "3",
+                "ALTER TABLE IF EXISTS oxsum.b RENAME TO c; DROP TABLE IF EXISTS oxsum.v, oxsum.missing CASCADE;",
+            ),
+        ];
+        let derived: Vec<String> = relations_created_by(chain).into_iter().collect();
+        assert_eq!(derived, ["_migrations", "a", "c"]);
+    }
 }

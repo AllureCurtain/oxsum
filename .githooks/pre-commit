@@ -12,7 +12,11 @@
 #   web/, docs/, .github/,    → skip clippy entirely (the frontend gate is the
 #   scripts/, demo/, local-notes/   Dockerfile's `frontend` stage and the CI `frontend` job)
 #
-# Install: git config core.hooksPath .githooks     (one-time, per clone)
+#   locales: web/src/locales/*.json staged → web/tests/locale-integrity.test.mjs
+#            (valid JSON, no duplicate keys, en/zh-CN key and placeholder parity)
+#
+# Install: scripts/setup-dev.sh                    (one-time, per clone; sets
+#          core.hooksPath .githooks and installs the pinned rustfmt)
 # Bypass:  git commit --no-verify                  (escape hatch for edge cases)
 
 set -euo pipefail
@@ -26,6 +30,15 @@ echo "pre-commit: fmt"
 if ! scripts/fmt-check.sh; then
     echo "  fmt failed — run 'scripts/fmt.sh' to fix" >&2
     exit 1
+fi
+
+if grep -q '^web/src/locales/' <<< "$STAGED"; then
+    echo "pre-commit: locale catalogues"
+    if ! node --test web/tests/locale-integrity.test.mjs >/dev/null 2>&1; then
+        node --test web/tests/locale-integrity.test.mjs >&2 || true
+        echo "  locale check failed" >&2
+        exit 1
+    fi
 fi
 
 # --- map staged paths to crates ---------------------------------------------

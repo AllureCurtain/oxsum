@@ -10,6 +10,7 @@ import shutil
 import subprocess
 import tarfile
 import tempfile
+import time
 
 
 TOOLS = {
@@ -49,14 +50,36 @@ def verify_archive(spec, path):
         raise ValueError("official asset SHA-256 mismatch")
 
 
+# Transport-only curl exits: DNS/connect/HTTP/timeout/partial/TLS-handshake
+# resets. Local I/O, TLS trust failures and --max-filesize (63) fail closed.
+TRANSPORT_EXITS = (5, 6, 7, 16, 18, 22, 28, 35, 52, 55, 56, 92)
+
+# A second pass over both official URLs after a cool-down (issue #1214): the
+# CI infra failures on record were GitHub release endpoints answering 5xx for
+# longer than curl's own ~4 s retry window. One bounded pause, never more.
+ROUNDS = 2
+ROUND_PAUSE_SECONDS = 20
+
+
+def pause(seconds):
+    """The between-round cool-down; a seam so tests need not wait it out."""
+    time.sleep(seconds)
+
+
 def download(spec, destination):
-    """Try each official URL four times; never fall back on integrity failure."""
+    """Try each official URL four times per round, two rounds with one pause;
+    never fall back on integrity failure."""
     pending = destination.with_suffix(".part")
     try:
         urls = [spec["asset"]]
         if spec.get("fallback"):
             urls.append(spec["fallback"])
-        for index, url in enumerate(urls):
+        attempts = [(round_, index, url) for round_ in range(ROUNDS) for index, url in enumerate(urls)]
+        for position, (round_, index, url) in enumerate(attempts):
+            last = position == len(attempts) - 1
+            if round_ > 0 and index == 0:
+                print(f"Official asset transport failed on every URL; pausing {ROUND_PAUSE_SECONDS}s before one more round", flush=True)
+                pause(ROUND_PAUSE_SECONDS)
             pending.unlink(missing_ok=True)
             try:
                 subprocess.run([
@@ -71,17 +94,15 @@ def download(spec, destination):
                 ], check=True, timeout=250)
                 break
             except subprocess.CalledProcessError as error:
-                # Network/HTTP failures can use another official URL. Local I/O,
-                # TLS trust failures and --max-filesize (63) fail closed.
-                if error.returncode not in (5, 6, 7, 16, 18, 22, 28, 35, 52, 55, 56, 92):
+                if error.returncode not in TRANSPORT_EXITS:
                     raise
-                if index == len(urls) - 1:
+                if last:
                     raise
-                print("Official asset transport failed; trying the pinned release URL", flush=True)
+                print("Official asset transport failed; trying the next pinned official URL", flush=True)
             except subprocess.TimeoutExpired:
-                if index == len(urls) - 1:
+                if last:
                     raise
-                print("Official asset transport failed; trying the pinned release URL", flush=True)
+                print("Official asset transport failed; trying the next pinned official URL", flush=True)
         verify_archive(spec, pending)
         os.replace(pending, destination)
     finally:

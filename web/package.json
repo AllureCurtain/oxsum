@@ -7,7 +7,7 @@
     "dev": "vite",
     "build": "tsc -b && vite build",
     "codegen": "npm run test:contract && openapi-typescript ../crates/server/openapi.yaml -o src/api/schema.d.ts",
-    "test:contract": "node --test tests/openapi-security.test.mjs",
+    "test:contract": "node --test tests/openapi-security.test.mjs tests/locale-integrity.test.mjs",
     "preview": "vite preview"
   },
   "dependencies": {
