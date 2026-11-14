@@ -305,11 +305,19 @@ export interface SolanaExceptionDeposit {
     requestedBy?: string;
     requestedAt?: string;
     reason?: string;
+    /** The payout's frozen terms (issue #1175): `amount` in the asset's base
+     * units, `asset`/`mint` the locked denomination it must spend. */
+    amount?: number;
+    asset?: string;
+    mint?: string | null;
     addressedAt?: string;
     approvedBy?: string;
     approvedAt?: string;
     completedAt?: string;
   } | null;
+  /** The payout's frozen figure in the locked asset's base units
+   * (`delivered − expected` on `overpaid`, `delivered` on the rest). */
+  refundAmount: number | null;
   refundSignature: string | null;
   createdAt: string;
   updatedAt: string;

@@ -1187,6 +1187,99 @@ async fn an_over_delivered_transfer_credits_once_and_marks_overpaid() {
     assert_eq!(queue[0].delivered, Some(2_500));
 }
 
+/// The stubbed chain a refund test's complete path reads (issue #1175):
+/// `payouts` arms `validate_payout` — signature → the payout the chain
+/// reports as `(recipient, mint, delivered, payers)`. A signature the map
+/// does not know is "no such transaction"; a recipient/mint mismatch
+/// dishonors the payout exactly the way the RPC client's own checks do, so
+/// the test drives the wrong-address/wrong-mint refusals by arming a tx that
+/// paid elsewhere. `find_reference`/`validate_transfer` are inert — the
+/// deposit is already marked by the time the payout is probed.
+#[derive(Debug, Default)]
+struct PayoutStub {
+    /// `signature` → the payout `(recipient, mint, delivered, payers)` the
+    /// chain reports — the scripted refund transaction.
+    payouts: Mutex<std::collections::HashMap<String, ArmedPayout>>,
+}
+
+/// One scripted on-chain payout `validate_payout` answers with: the address
+/// it paid, the mint it spent (`None` = native SOL), the delivered figure,
+/// and the debited funding parties the source-check screens (issue #1175).
+#[derive(Debug, Clone)]
+struct ArmedPayout {
+    recipient: String,
+    mint: Option<String>,
+    delivered: i64,
+    payers: Vec<String>,
+}
+
+impl PayoutStub {
+    /// Arms one on-chain payout: `signature` delivered `delivered` of `mint`
+    /// (`None` = native SOL) to `recipient`, funded by `payers`.
+    fn arm(
+        &self,
+        signature: &str,
+        recipient: &str,
+        mint: Option<&str>,
+        delivered: i64,
+        payers: &[&str],
+    ) {
+        self.payouts.lock().unwrap().insert(
+            signature.to_owned(),
+            ArmedPayout {
+                recipient: recipient.to_owned(),
+                mint: mint.map(str::to_owned),
+                delivered,
+                payers: payers.iter().map(|p| p.to_string()).collect(),
+            },
+        );
+    }
+}
+
+impl ChainLookup for PayoutStub {
+    fn find_reference<'a>(
+        &'a self,
+        _reference: &'a str,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Vec<String>> + Send + 'a>> {
+        Box::pin(async { Vec::new() })
+    }
+    fn validate_transfer<'a>(
+        &'a self,
+        _signature: &'a str,
+        _expected: &'a ExpectedTransfer,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Option<ValidatedTransfer>> + Send + 'a>>
+    {
+        Box::pin(async { None })
+    }
+    fn validate_payout<'a>(
+        &'a self,
+        signature: &'a str,
+        expected: &'a oxsum_core::ExpectedPayout,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Option<ValidatedTransfer>> + Send + 'a>>
+    {
+        Box::pin(async move {
+            let armed = self.payouts.lock().unwrap().get(signature).cloned()?;
+            // The client's own checks: wrong recipient or wrong mint is no
+            // proof at all; the delivered figure rides up unjudged.
+            if armed.recipient != expected.recipient || armed.mint != expected.spl_token_mint {
+                return None;
+            }
+            Some(ValidatedTransfer {
+                signature: signature.to_owned(),
+                delivered: armed.delivered,
+                block_time: Some(0),
+                payers: armed.payers.clone(),
+            })
+        })
+    }
+}
+
+/// A `SolanaRailVerifier` over a `PayoutStub` — the verifier
+/// `solana_complete_refund` needs on the complete path.
+fn payout_verifier(stub: PayoutStub) -> SolanaRailVerifier {
+    SolanaRailVerifier::new(Arc::new(stub), terms())
+}
+
 /// Issue #1186's stub: a `OneSig` whose validated transfer carries the payer
 /// wallet the rail attributes — the shape a credit or exception mark needs to
 /// merge `payerAddress` from.
@@ -1339,6 +1432,9 @@ async fn every_terminal_meta_records_the_payer_and_figures() {
 /// Issue #1142: the refund state machine — `underpaid → refund_pending →
 /// (address) → approved → refunded` — with each order violation refused and
 /// `refunded` terminal. Driven at the Db layer where the transitions live.
+/// Issue #1175 adds the complete path's on-chain gate: the payout signature
+/// must prove a real transaction to the frozen address, on the locked mint,
+/// for at least the frozen amount.
 #[tokio::test]
 async fn the_refund_walks_pending_address_approve_complete() {
     let Some(db) = database("solana_refund").await else {
@@ -1348,16 +1444,22 @@ async fn the_refund_walks_pending_address_approve_complete() {
     let wallet = wallet_for(&db, org).await;
     let terms = terms();
     let (deposit_id, _) = credit_with(&db, &wallet, org, &terms, None, 3_000, 0).await;
-    // Open: underpaid → refund_pending, recording who/why.
+    // Open: underpaid → refund_pending, recording who/why — and, since
+    // #1175, the frozen amount the payout must honor: `delivered` for an
+    // underpaid row (3_000 lamports of the asked 5_000).
     let opened = db
         .solana_request_refund(deposit_id, "operator", "under-delivered")
         .await
         .unwrap();
     assert_eq!(opened.status, solana_status::REFUND_PENDING);
+    assert_eq!(opened.refund_amount, Some(3_000));
     let refund = opened.refund.expect("meta.refund is recorded");
     assert_eq!(refund["requestedBy"].as_str().unwrap(), "operator");
     assert_eq!(refund["reason"].as_str().unwrap(), "under-delivered");
     assert!(refund["requestedAt"].is_string());
+    assert_eq!(refund["amount"].as_i64().unwrap(), 3_000);
+    assert_eq!(refund["asset"].as_str().unwrap(), "sol");
+    assert!(refund["mint"].is_null(), "{refund}");
     // Approving with no address is refused.
     let early = db.solana_approve_refund(deposit_id, "operator", None).await;
     assert!(matches!(early, Err(WalletError::Conflict(_))), "{early:?}");
@@ -1391,10 +1493,23 @@ async fn the_refund_walks_pending_address_approve_complete() {
         matches!(foreign, Err(WalletError::NotFound(_))),
         "{foreign:?}"
     );
+    // The payout's verifier: `delivered` = 3_000 lamports to the frozen
+    // refund address, native SOL (`mint: None`).
+    let stub = PayoutStub::default();
+    stub.arm(
+        "299xJhoRJCHgYo6xxU78Joi8sY7uXrsp7kzXMxbVFZVLKHqVAfV1R3dA864pwEhe6z1wYWy1BXDzyvzNZDKHfdMd",
+        "4uQeVj5tqViQh7yWWGStvkEG1Zmhx6uasJtWCJziofM",
+        None,
+        3_000,
+        &["oxsumDepositAddr111111111111111111111111111"],
+    );
+    let verifier = payout_verifier(stub);
     // Completing before approval is refused.
     let payout =
         "299xJhoRJCHgYo6xxU78Joi8sY7uXrsp7kzXMxbVFZVLKHqVAfV1R3dA864pwEhe6z1wYWy1BXDzyvzNZDKHfdMd";
-    let unapproved = db.solana_complete_refund(deposit_id, payout).await;
+    let unapproved = db
+        .solana_complete_refund(deposit_id, payout, &verifier)
+        .await;
     assert!(
         matches!(unapproved, Err(WalletError::Conflict(_))),
         "{unapproved:?}"
@@ -1413,17 +1528,24 @@ async fn the_refund_walks_pending_address_approve_complete() {
         "{frozen:?}"
     );
     // Complete: refunded with the payout signature — terminal.
-    let closed = db.solana_complete_refund(deposit_id, payout).await.unwrap();
+    let closed = db
+        .solana_complete_refund(deposit_id, payout, &verifier)
+        .await
+        .unwrap();
     assert_eq!(closed.status, solana_status::REFUNDED);
     assert_eq!(closed.refund_signature.as_deref(), Some(payout));
     // A replayed complete with the standing signature answers the row; a
     // contradicting signature is the audit-protecting Conflict.
-    let replay = db.solana_complete_refund(deposit_id, payout).await.unwrap();
+    let replay = db
+        .solana_complete_refund(deposit_id, payout, &verifier)
+        .await
+        .unwrap();
     assert_eq!(replay.status, solana_status::REFUNDED);
     let contradiction = db
         .solana_complete_refund(
             deposit_id,
             "1111111111111111111111111111111111111111111111111111111111111111",
+            &verifier,
         )
         .await;
     assert!(
@@ -1432,6 +1554,209 @@ async fn the_refund_walks_pending_address_approve_complete() {
     );
     // And no credit ever ran — the customer's money returns on-chain.
     assert_eq!(wallet.available().await.unwrap(), 0);
+}
+
+/// Issue #1175: a plausible-looking signature that names no proving
+/// transaction is refused — the row stays `refund_pending` rather than
+/// closing on bookkeeping alone. Also the three dishonoring shapes the
+/// verify must catch: a real tx that paid the wrong address, the wrong mint,
+/// or under the frozen amount.
+#[tokio::test]
+async fn a_refund_complete_requires_a_proven_onchain_payout() {
+    let Some(db) = database("solana_refund_gate_chain").await else {
+        return;
+    };
+    let org = organization(&db, "refund-chain").await;
+    let wallet = wallet_for(&db, org).await;
+    let terms = multi_asset_terms();
+    // A USDC underpayment: 600 of the asked 1_000 base units — the frozen
+    // refund amount is the delivered 600 on the usdc mint.
+    let (deposit_id, _) = credit_with(&db, &wallet, org, &terms, Some("usdc"), 600, 0).await;
+    db.solana_request_refund(deposit_id, "op", "underpaid")
+        .await
+        .unwrap();
+    db.solana_set_refund_address(
+        org,
+        deposit_id,
+        "4uQeVj5tqViQh7yWWGStvkEG1Zmhx6uasJtWCJziofM",
+    )
+    .await
+    .unwrap();
+    db.solana_approve_refund(
+        deposit_id,
+        "op",
+        Some("4uQeVj5tqViQh7yWWGStvkEG1Zmhx6uasJtWCJziofM"),
+    )
+    .await
+    .unwrap();
+    let phantom =
+        "299xJhoRJCHgYo6xxU78Joi8sY7uXrsp7kzXMxbVFZVLKHqVAfV1R3dA864pwEhe6z1wYWy1BXDzyvzNZDKHfdMd";
+    // Case 1: a signature no transaction exists for — refused, row stays open.
+    let unarmed = payout_verifier(PayoutStub::default());
+    let refused = db
+        .solana_complete_refund(deposit_id, phantom, &unarmed)
+        .await;
+    assert!(
+        matches!(refused, Err(WalletError::Conflict(_))),
+        "{refused:?}"
+    );
+    let status: String =
+        sqlx::query_scalar("SELECT status FROM oxsum.deposits WHERE deposit_id = $1")
+            .bind(deposit_id)
+            .fetch_one(db.pool())
+            .await
+            .unwrap();
+    assert_eq!(status, solana_status::REFUND_PENDING);
+    // Case 2: a real tx that paid a different address.
+    let stub = PayoutStub::default();
+    stub.arm(
+        phantom,
+        "9uQeVj5tqViQh7yWWGStvkEG1Zmhx6uasJtWCJziofN",
+        Some("usdcMint11111111111111111111111111111111"),
+        600,
+        &["oxsumDepositAddr111111111111111111111111111"],
+    );
+    let wrong_recipient = payout_verifier(stub);
+    let refused = db
+        .solana_complete_refund(deposit_id, phantom, &wrong_recipient)
+        .await;
+    assert!(
+        matches!(refused, Err(WalletError::Conflict(_))),
+        "a payout to the wrong address must refuse: {refused:?}"
+    );
+    // Case 3: a real tx on the wrong mint (native SOL, not USDC).
+    let stub = PayoutStub::default();
+    stub.arm(
+        phantom,
+        "4uQeVj5tqViQh7yWWGStvkEG1Zmhx6uasJtWCJziofM",
+        None,
+        600,
+        &["oxsumDepositAddr111111111111111111111111111"],
+    );
+    let wrong_mint = payout_verifier(stub);
+    let refused = db
+        .solana_complete_refund(deposit_id, phantom, &wrong_mint)
+        .await;
+    assert!(
+        matches!(refused, Err(WalletError::Conflict(_))),
+        "a payout on the wrong mint must refuse: {refused:?}"
+    );
+    // Case 4: a real tx that under-delivers against the frozen amount.
+    let stub = PayoutStub::default();
+    stub.arm(
+        phantom,
+        "4uQeVj5tqViQh7yWWGStvkEG1Zmhx6uasJtWCJziofM",
+        Some("usdcMint11111111111111111111111111111111"),
+        599,
+        &["oxsumDepositAddr111111111111111111111111111"],
+    );
+    let short = payout_verifier(stub);
+    let refused = db.solana_complete_refund(deposit_id, phantom, &short).await;
+    assert!(
+        matches!(refused, Err(WalletError::Conflict(_))),
+        "a payout under the frozen amount must refuse: {refused:?}"
+    );
+    // The row stayed `refund_pending` through every refusal.
+    let status: String =
+        sqlx::query_scalar("SELECT status FROM oxsum.deposits WHERE deposit_id = $1")
+            .bind(deposit_id)
+            .fetch_one(db.pool())
+            .await
+            .unwrap();
+    assert_eq!(status, solana_status::REFUND_PENDING);
+    // Case 5: the honest payout — correct address, correct mint, the frozen
+    // amount — closes the refund.
+    let stub = PayoutStub::default();
+    stub.arm(
+        phantom,
+        "4uQeVj5tqViQh7yWWGStvkEG1Zmhx6uasJtWCJziofM",
+        Some("usdcMint11111111111111111111111111111111"),
+        600,
+        &["oxsumDepositAddr111111111111111111111111111"],
+    );
+    let honest = payout_verifier(stub);
+    let closed = db
+        .solana_complete_refund(deposit_id, phantom, &honest)
+        .await
+        .unwrap();
+    assert_eq!(closed.status, solana_status::REFUNDED);
+    assert_eq!(closed.refund_amount, Some(600));
+    assert_eq!(closed.refund_signature.as_deref(), Some(phantom));
+}
+
+/// Issue #1175: the frozen amount is the *premium* on an overpaid row —
+/// `delivered − expected`, never the full `delivered`, because the opened
+/// amount already credited. An `overpaid` row whose recorded surplus is
+/// non-positive refuses to open a refund at all (the mark guarantees a
+/// positive surplus; the refusal is the defense of record, not the flow).
+#[tokio::test]
+async fn the_overpaid_refund_freezes_only_the_premium() {
+    let Some(db) = database("solana_refund_overpaid").await else {
+        return;
+    };
+    let org = organization(&db, "refund-overpaid").await;
+    let wallet = wallet_for(&db, org).await;
+    let terms = terms();
+    // 9_000 lamports delivered against the asked 5_000 — the customer holds
+    // 1_000 credits; the refund owes only the 4_000 surplus.
+    let (deposit_id, _) = credit_with(&db, &wallet, org, &terms, None, 9_000, 0).await;
+    let opened = db
+        .solana_request_refund(deposit_id, "op", "overpaid surplus")
+        .await
+        .unwrap();
+    assert_eq!(opened.refund_amount, Some(4_000));
+    assert_eq!(opened.refund.unwrap()["amount"].as_i64().unwrap(), 4_000);
+    db.solana_set_refund_address(
+        org,
+        deposit_id,
+        "4uQeVj5tqViQh7yWWGStvkEG1Zmhx6uasJtWCJziofM",
+    )
+    .await
+    .unwrap();
+    db.solana_approve_refund(
+        deposit_id,
+        "op",
+        Some("4uQeVj5tqViQh7yWWGStvkEG1Zmhx6uasJtWCJziofM"),
+    )
+    .await
+    .unwrap();
+    let sig =
+        "299xJhoRJCHgYo6xxU78Joi8sY7uXrsp7kzXMxbVFZVLKHqVAfV1R3dA864pwEhe6z1wYWy1BXDzyvzNZDKHfdMd";
+    // A payout of the whole `delivered` (9_000) verifies delivered ≥ frozen —
+    // the gate is `≥`, so an over-generous payout still closes; what refuses
+    // is a payout *under* the frozen premium.
+    let stub = PayoutStub::default();
+    stub.arm(
+        sig,
+        "4uQeVj5tqViQh7yWWGStvkEG1Zmhx6uasJtWCJziofM",
+        None,
+        3_999,
+        &["oxsumDepositAddr111111111111111111111111111"],
+    );
+    let short = payout_verifier(stub);
+    let refused = db.solana_complete_refund(deposit_id, sig, &short).await;
+    assert!(
+        matches!(refused, Err(WalletError::Conflict(_))),
+        "a payout under the frozen premium must refuse: {refused:?}"
+    );
+    let stub = PayoutStub::default();
+    stub.arm(
+        sig,
+        "4uQeVj5tqViQh7yWWGStvkEG1Zmhx6uasJtWCJziofM",
+        None,
+        4_000,
+        &["oxsumDepositAddr111111111111111111111111111"],
+    );
+    let honest = payout_verifier(stub);
+    let closed = db
+        .solana_complete_refund(deposit_id, sig, &honest)
+        .await
+        .unwrap();
+    assert_eq!(closed.status, solana_status::REFUNDED);
+    assert_eq!(closed.refund_amount, Some(4_000));
+    // The credit the overpay already booked stands — the surplus, not the
+    // principal, is what returned on-chain.
+    assert_eq!(wallet.available().await.unwrap(), 1000);
 }
 
 /// Issue #1142: a refund opens only on the refundable statuses. `pending`,
@@ -1481,22 +1806,29 @@ async fn a_refund_opens_only_on_the_refundable_statuses() {
         "the replay answers the standing refund, not a rewrite"
     );
     // `flagged` — the #1144 screening status — is refundable: the refund
-    // lifecycle predates the writer that lands rows there.
+    // lifecycle predates the writer that lands rows there. The flagged row
+    // carries the same `delivered`/`expected` figures `flag_solana_deposit`
+    // now merges, so the open can freeze the refund amount (issue #1175).
     let flagged = Uuid::new_v4();
     db.open_solana_deposit(org, flagged, 1000, &terms, None, &rate(&terms, None))
         .await
         .unwrap()
         .expect("inserts");
-    sqlx::query("UPDATE oxsum.deposits SET status = 'flagged' WHERE deposit_id = $1")
-        .bind(flagged)
-        .execute(db.pool())
-        .await
-        .unwrap();
+    sqlx::query(
+        "UPDATE oxsum.deposits SET status = 'flagged', \
+         meta = meta || jsonb_build_object('delivered', 5_000::bigint, 'expected', 5_000::bigint) \
+         WHERE deposit_id = $1",
+    )
+    .bind(flagged)
+    .execute(db.pool())
+    .await
+    .unwrap();
     let opened = db
         .solana_request_refund(flagged, "op", "screening hold")
         .await
         .unwrap();
     assert_eq!(opened.status, solana_status::REFUND_PENDING);
+    assert_eq!(opened.refund_amount, Some(5_000));
     // Unknown deposits are `NotFound`.
     let missing = db.solana_request_refund(Uuid::new_v4(), "op", "x").await;
     assert!(

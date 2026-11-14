@@ -1239,9 +1239,10 @@
       "refundHint": "required — it becomes the refund record's reason and the audit entry's detail",
       "openRefund": "Open refund",
       "refundAddress": "Refund address:",
+      "refundAmount": "Frozen refund: {{amount}} {{asset}} base units — the payout must deliver at least this on-chain before the row closes.",
       "approveRefund": "Approve refund",
       "completeLabel": "Payout signature",
-      "completeHint": "the multisig payout transaction's base58 signature — the refund's on-chain proof",
+      "completeHint": "the multisig payout transaction's base58 signature — verified on-chain against the frozen refund before the row closes",
       "completeRefund": "Record payout"
     },
     "discounts": {

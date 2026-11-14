@@ -48,10 +48,15 @@
 //! expected figure is per-asset: `verify_locked` compares the delivered
 //! amount against the intent's locked base units — lamports for `sol`, the
 //! locked mint's units for an SPL asset. A refund is a pull payment, never
-//! an auto-send: the operator opens it (`refund_pending`), the customer
+//! an auto-send: the operator opens it (`refund_pending`) — freezing the
+//! payout's amount (`delivered − expected` on `overpaid`, `delivered` on
+//! the rest) and asset into `meta.refund` (issue #1175) — the customer
 //! names the refund address, the operator approves, the multisig pays
 //! out-of-band in the asset the intent locked, and the recorded payout
-//! signature closes the row (`refunded`).
+//! signature closes the row (`refunded`) — but only once the signature
+//! verifies on-chain: `getTransaction` must show a succeeded transaction
+//! that paid the frozen refund address at least the frozen amount in the
+//! locked asset.
 
 use rand::Rng;
 use serde_json::json;
@@ -621,6 +626,31 @@ pub trait ChainLookup: std::fmt::Debug + Send + Sync {
         >,
     >;
 
+    /// `getTransaction(signature)`: prove the submitted transaction is the
+    /// refund's on-chain payout (issue #1175) — the `validate_transfer`
+    /// counterpart for money *out* of `payTo`. The payout carries no
+    /// `reference` marker (the runbook deliberately never reuses the
+    /// deposit's marker), so the proof is: the transaction exists and
+    /// succeeded, and `expected.recipient` — the customer's frozen refund
+    /// address — gained a computable balance delta on `expected.
+    /// spl_token_mint` (the lamport delta for native SOL, the token-account
+    /// delta for an SPL mint). `None` means the transaction does not prove
+    /// the payout — nonexistent, failed, wrong recipient, wrong mint. The
+    /// delivered figure is *reported*, not judged: `solana_complete_refund`
+    /// compares it against the refund amount the lifecycle froze.
+    ///
+    /// The default is the same empty answer a `ChainLookup` without a payout
+    /// impl gives — and it fails closed: a lookup that cannot prove the
+    /// payout refuses the completion, never silently closes the refund.
+    fn validate_payout<'a>(
+        &'a self,
+        _signature: &'a str,
+        _expected: &'a ExpectedPayout,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Option<ValidatedTransfer>> + Send + 'a>>
+    {
+        Box::pin(async { None })
+    }
+
     /// A whitelisted SPL mint's on-chain decimals — `getAccountInfo(mint)`
     /// read once per mint at boot so a declared figure that disagrees with
     /// the real mint refuses startup (issue #1129); with the multi-asset
@@ -741,6 +771,29 @@ pub struct ExpectedTransfer {
     pub spl_token_mint: Option<String>,
     /// The intent's `reference` marker the transaction must carry.
     pub reference: String,
+}
+
+/// The demand a refund's payout places on the chain-side transaction (issue
+/// #1175), mirroring `integrations::solana::ExpectedPayout` without
+/// importing the HTTP type. Unlike [`ExpectedTransfer`] there is no
+/// `reference`: the refund payout deliberately never reuses the deposit's
+/// marker, so the proof keys on recipient + mint alone, and
+/// `solana_complete_refund` judges the reported `delivered` against the
+/// amount the lifecycle froze into `meta.refund`.
+#[derive(Debug, Clone)]
+pub struct ExpectedPayout {
+    /// The customer's frozen refund address the payout must pay
+    /// (`meta.refundAddress`).
+    pub recipient: String,
+    /// The SPL mint the payout must spend, or `None` for native SOL — the
+    /// asset the intent locked (`meta.refund.mint`/`meta.splToken`).
+    pub spl_token_mint: Option<String>,
+    /// The vault the payout must leave from — the intent's `payTo`. The proof
+    /// demands it appear among the transaction's debited funding parties: a
+    /// refund a third party paid the customer direct never empties the vault
+    /// the row believes it closed (issue #1175). For SOL `source` itself signs
+    /// a debit; for SPL the debited token account's owner is `source`.
+    pub source: String,
 }
 
 /// A located-and-validated transfer, mirroring `integrations::solana::
@@ -964,8 +1017,16 @@ pub struct SolanaExceptionDeposit {
     pub refund_address: Option<String>,
     /// The refund record `meta.refund` walks: `requestedBy`/`requestedAt`/
     /// `reason` at open, `addressedAt`, `approvedBy`/`approvedAt` and
-    /// `completedAt` along the lifecycle.
+    /// `completedAt` along the lifecycle — plus the frozen `amount`/`asset`/
+    /// `mint` the payout must honor (issue #1175).
     pub refund: Option<serde_json::Value>,
+    /// The payout's frozen figure in the locked asset's own base units
+    /// (`meta.refund.amount`): `delivered − expected` on an `overpaid` row —
+    /// the surplus alone, since the opened amount already credited — and
+    /// `delivered` on `underpaid`/`late`/`flagged`. `None` while no refund
+    /// is open (and on a refund opened before the figure was frozen — the
+    /// complete path derives the same figure from `meta` then).
+    pub refund_amount: Option<i64>,
     /// The payout transaction's signature, once the operator records it —
     /// the refund's on-chain proof.
     pub refund_signature: Option<String>,
@@ -1005,6 +1066,7 @@ fn exception_from_row(row: &sqlx::postgres::PgRow) -> Result<SolanaExceptionDepo
         entry_id: row.try_get("entry_id")?,
         refund_address: meta["refundAddress"].as_str().map(str::to_owned),
         refund: meta.get("refund").cloned(),
+        refund_amount: meta["refund"]["amount"].as_i64(),
         refund_signature: meta["refundSignature"].as_str().map(str::to_owned),
         created_at: row.try_get("created_at")?,
         updated_at: row.try_get("updated_at")?,
@@ -1023,6 +1085,38 @@ fn solana_pubkey(address: &str) -> Option<()> {
 fn solana_signature(signature: &str) -> Option<()> {
     let decoded = bs58::decode(signature.trim()).into_vec().ok()?;
     (decoded.len() == 64).then_some(())
+}
+
+/// The refund's frozen payout figure in the locked asset's own base units
+/// (issue #1175): what the multisig must pay for the refund to be honest.
+///
+/// - `overpaid` — `delivered − expected`: the surplus alone returns; the
+///   opened amount already credited (`entry_id` proves it), so refunding the
+///   whole `delivered` would hand the customer both the credit and the
+///   principal.
+/// - `underpaid`/`late`/`flagged` — `delivered`: nothing credited, so the
+///   whole payment returns.
+///
+/// The exception kind survives the `refund_pending` transition inside `meta`
+/// itself — `meta.exception` names it on the `mark_solana_exception` rows,
+/// `meta.overpaid: true` marks an over-delivery, and a `flagged` row is the
+/// one carrying `meta.screening` — so the figure is re-derivable on a refund
+/// opened before the amount was frozen (and the complete path falls back to
+/// the same derivation when `meta.refund.amount` is absent). `None` when the
+/// meta records no `delivered` figure — a row whose payment detail was never
+/// merged cannot name an honest refund amount, and the caller refuses.
+fn refund_amount_for(meta: &serde_json::Value) -> Option<i64> {
+    let delivered = meta["delivered"].as_i64()?;
+    let expected = meta["expected"].as_i64();
+    let overpaid = meta["exception"].as_str() == Some(status::OVERPAID)
+        || meta["overpaid"].as_bool() == Some(true);
+    if overpaid {
+        // `expected` must exist for the premium figure — an overpaid row
+        // without it is a corrupt record, not a full-delivered refund.
+        expected.map(|e| delivered.saturating_sub(e))
+    } else {
+        Some(delivered)
+    }
 }
 
 impl SolanaRailVerifier {
@@ -1083,6 +1177,22 @@ impl SolanaRailVerifier {
     /// recorded deposits; the scan itself never writes — it reports.
     pub async fn scan_received(&self, max_signatures: usize) -> ScanWalk {
         self.chain.scan_received(max_signatures).await
+    }
+
+    /// The refund-complete chain check (issue #1175): delegates to the
+    /// rail's `ChainLookup` — `getTransaction(signature)` read at the same
+    /// commitment the rail verifies deposits under. `Some` means the
+    /// transaction exists, succeeded and delivered a computable delta to the
+    /// frozen refund address on the frozen mint; `delivered` rides up
+    /// unjudged for the caller to compare against the frozen refund amount.
+    /// `None` is every non-proof — nonexistent, failed, wrong recipient,
+    /// wrong mint — one indistinguishable answer at the seam.
+    pub async fn validate_payout(
+        &self,
+        signature: &str,
+        expected: &ExpectedPayout,
+    ) -> Option<ValidatedTransfer> {
+        self.chain.validate_payout(signature, expected).await
     }
 
     /// A whitelisted mint's on-chain decimals via the chain lookup — `None`
@@ -2402,12 +2512,15 @@ impl Db {
         // flagged row records what the chain delivered against the intent's
         // demand — `payerAddress`, `delivered`, `expected`, `receivedCredits`
         // — so the queue row and the CSV's `payer`/`delivered`/`expected`
-        // columns read the parked deposit like any other terminal state.
+        // columns read the parked deposit like any other terminal state, and
+        // the refund lifecycle can freeze `delivered` as the owed amount
+        // (issue #1175).
         flag_meta["payerAddress"] = payment.context["payerAddress"].clone();
         flag_meta["delivered"] = payment.context["delivered"].clone();
         flag_meta["expected"] = payment.context["expected"].clone();
         flag_meta["receivedCredits"] = payment.context["receivedCredits"].clone();
         flag_meta["blockTime"] = payment.context["blockTime"].clone();
+        flag_meta["exception"] = json!(status::FLAGGED);
         let mut tx = self.pool().begin().await?;
         let still_open: bool = sqlx::query_scalar(
             "SELECT status IN ('pending', 'expired') FROM oxsum.deposits \
@@ -2707,10 +2820,22 @@ impl Db {
 
     /// Opens a pull-payment refund on an exception deposit (issue #1142):
     /// `underpaid`/`overpaid`/`late`/`flagged` → `refund_pending`, with
-    /// `meta.refund` recording who asked, when and why. Re-requesting an open
-    /// refund replays the standing row — the same idempotent answer a double
-    /// click expects — while a `refunded` deposit and every non-refundable
-    /// status is a `Conflict`, and an unknown one a `NotFound`.
+    /// `meta.refund` recording who asked, when and why — and, since issue
+    /// #1175, *what*: the frozen `amount`/`asset`/`mint` the payout must
+    /// honor. The figure is the exception's own arithmetic, computed from the
+    /// meta the marking path recorded: `overpaid` owes only the surplus
+    /// (`delivered − expected` — the opened amount already credited, so
+    /// refunding the whole `delivered` would hand the customer both credit
+    /// and principal); `underpaid`/`late`/`flagged` owe the whole
+    /// `delivered`. A row that cannot name an honest amount — no `delivered`
+    /// recorded, or a non-positive surplus — refuses the open: the operator
+    /// reconciles that row by hand rather than opening a refund the complete
+    /// path could never verify.
+    ///
+    /// Re-requesting an open refund replays the standing row — the same
+    /// idempotent answer a double click expects — while a `refunded` deposit
+    /// and every non-refundable status is a `Conflict`, and an unknown one a
+    /// `NotFound`.
     ///
     /// Nothing moves on-chain: the multisig pays out-of-band by design, and
     /// the row only records that a refund was *opened*.
@@ -2727,7 +2852,7 @@ impl Db {
         }
         let mut tx = self.pool().begin().await?;
         let row = sqlx::query(
-            "SELECT status FROM oxsum.deposits \
+            "SELECT status, meta FROM oxsum.deposits \
              WHERE deposit_id = $1 AND rail = $2 FOR UPDATE",
         )
         .bind(deposit_id)
@@ -2738,6 +2863,7 @@ impl Db {
             return Err(WalletError::NotFound("the deposit is not known".into()));
         };
         let current: String = row.try_get("status")?;
+        let meta: serde_json::Value = row.try_get("meta")?;
         if current == status::REFUND_PENDING {
             // A replayed request answers the standing refund.
             tx.commit().await?;
@@ -2748,6 +2874,20 @@ impl Db {
                 "a {current} deposit is not refundable"
             )));
         }
+        // Freeze the payout's terms at open — the figure the multisig signs
+        // and the complete path verifies against. `refund_amount_for`
+        // returns `None` only when `meta.delivered` was never recorded.
+        let amount = refund_amount_for(&meta)
+            .filter(|amount| *amount > 0)
+            .ok_or_else(|| {
+                WalletError::Conflict(
+                    "the deposit records no refundable amount to open a refund on".into(),
+                )
+            })?;
+        // The asset the refund repays is the one the intent locked — read it
+        // off `meta` exactly the way the queue row does.
+        let asset = meta["asset"].as_str().map(str::to_owned);
+        let mint = meta["splToken"].as_str().map(str::to_owned);
         sqlx::query(
             "UPDATE oxsum.deposits \
              SET status = 'refund_pending', \
@@ -2755,7 +2895,10 @@ impl Db {
                      jsonb_build_object( \
                          'requestedBy', $2::text, \
                          'requestedAt', now()::text, \
-                         'reason', $3::text)), \
+                         'reason', $3::text, \
+                         'amount', $5::bigint, \
+                         'asset', $6::text, \
+                         'mint', $7::text)), \
                  updated_at = now() \
              WHERE deposit_id = $1 AND status = ANY($4)",
         )
@@ -2763,6 +2906,9 @@ impl Db {
         .bind(requested_by)
         .bind(reason)
         .bind(status::REFUNDABLE)
+        .bind(amount)
+        .bind(asset)
+        .bind(mint)
         .execute(&mut *tx)
         .await?;
         tx.commit().await?;
@@ -3089,34 +3235,50 @@ impl Db {
 
     /// Closes an approved refund with the payout's on-chain signature
     /// (issue #1142): the multisig has already paid — the server holds no
-    /// spend key and never will — so this only records `meta.refundSignature`
-    /// and lands the row `refunded`, terminal. A replayed complete with the
-    /// same signature answers the standing row; a different signature on a
+    /// spend key and never will — so this records `meta.refundSignature` and
+    /// lands the row `refunded`, terminal — but only once the submitted
+    /// signature *proves* the payout on-chain (issue #1175). The verifier
+    /// reads `getTransaction` at the rail's own commitment and the row's
+    /// frozen terms judge it: the transaction must have succeeded and
+    /// delivered at least `meta.refund.amount` of `meta.refund.mint`'s asset
+    /// (lamports for a native SOL intent) to the frozen `meta.refundAddress`.
+    /// A plausible-looking signature that names no such transaction — or one
+    /// that paid the wrong address, the wrong mint, or under the frozen
+    /// amount — is a `Conflict` and the row stays `refund_pending`: recording
+    /// a payout that never happened is the failure this check exists for.
+    /// A replayed complete with the recorded signature answers the standing
+    /// row without re-walking the chain; a different signature on a
     /// `refunded` row is a `Conflict`, as is completing before approval.
     ///
     /// No ledger entry posts: for an `underpaid`/`late`/`flagged` deposit the
     /// customer's money never credited — the refund returns it on-chain in
     /// the asset the intent locked (`meta.asset` + the recorded `delivered`
     /// figure); for an `overpaid` one `entry_id` still proves the opened
-    /// credit while the surplus goes back the same way.
+    /// credit while only the `delivered − expected` surplus goes back.
     pub async fn solana_complete_refund(
         &self,
         deposit_id: Uuid,
         signature: &str,
+        verifier: &SolanaRailVerifier,
     ) -> Result<SolanaExceptionDeposit, WalletError> {
         if solana_signature(signature).is_none() {
             return Err(WalletError::InvalidInput(
                 "the payout signature is not a base58 Solana signature".into(),
             ));
         }
-        let mut tx = self.pool().begin().await?;
+        // Read the row's state before any chain round-trip — the refund's own
+        // bookkeeping decides whether a chain check is owed at all: a replay
+        // answers from the record, and every order refusal lands without an
+        // RPC. The verify itself runs outside the row lock, the same footing
+        // `credit_solana_deposit`'s chain reads take — a `FOR UPDATE` held
+        // across `getTransaction` would serialize the queue on RPC latency.
         let row = sqlx::query(
             "SELECT status, meta FROM oxsum.deposits \
-             WHERE deposit_id = $1 AND rail = $2 FOR UPDATE",
+             WHERE deposit_id = $1 AND rail = $2",
         )
         .bind(deposit_id)
         .bind(RAIL_SOLANA)
-        .fetch_optional(&mut *tx)
+        .fetch_optional(self.pool())
         .await?;
         let Some(row) = row else {
             return Err(WalletError::NotFound("the deposit is not known".into()));
@@ -3127,7 +3289,6 @@ impl Db {
             // The refund closed — a replayed complete with the standing
             // signature answers it; a different one contradicts the record.
             return if meta["refundSignature"].as_str() == Some(signature.trim()) {
-                tx.commit().await?;
                 self.solana_exception_deposit(deposit_id).await
             } else {
                 Err(WalletError::Conflict(
@@ -3143,6 +3304,100 @@ impl Db {
         if !meta["refund"]["approvedAt"].is_string() {
             return Err(WalletError::Conflict(
                 "the refund has not been approved".into(),
+            ));
+        }
+        // The terms the payout must honor: the frozen refund address — set
+        // before approval and locked by it — the frozen amount (a refund
+        // opened before the amount froze derives the same figure from the
+        // recorded `delivered`/`expected`), and the intent's locked mint.
+        let refund_address = meta["refundAddress"]
+            .as_str()
+            .ok_or_else(|| WalletError::Conflict("the refund names no payout address".into()))?;
+        let amount = meta["refund"]["amount"]
+            .as_i64()
+            .or_else(|| refund_amount_for(&meta))
+            .filter(|amount| *amount > 0)
+            .ok_or_else(|| {
+                WalletError::Conflict(
+                    "the deposit records no refundable amount to verify a payout against".into(),
+                )
+            })?;
+        let mint = meta["refund"]["mint"]
+            .as_str()
+            .or_else(|| meta["splToken"].as_str())
+            .map(str::to_owned);
+        // The vault the payout must leave from — the intent's `payTo`, locked
+        // into `meta` at open (the row's own `pay_to` column carries it too).
+        // The proof demands it among the transaction's debited funding parties
+        // so a third-party payout the customer received direct cannot close a
+        // refund the vault never funded (issue #1175).
+        let source = meta["payTo"]
+            .as_str()
+            .or_else(|| meta["pay_to"].as_str())
+            .unwrap_or("")
+            .to_owned();
+        // The on-chain proof: the named transaction exists, succeeded, moved
+        // the locked asset to the customer's address, and left the vault.
+        // `None` covers every non-proof — nonexistent, failed, wrong
+        // recipient, wrong mint, foreign source — and a short delivery is a
+        // refusal on the figure, all the same `Conflict`: the row stays
+        // `refund_pending` and the operator re-submits once the real payout
+        // exists on-chain.
+        let paid = verifier
+            .validate_payout(
+                signature.trim(),
+                &ExpectedPayout {
+                    recipient: refund_address.to_owned(),
+                    spl_token_mint: mint,
+                    source,
+                },
+            )
+            .await
+            .filter(|payout| payout.delivered >= amount);
+        if paid.is_none() {
+            return Err(WalletError::Conflict(
+                "the payout signature does not verify: no succeeded transaction \
+                 delivered the frozen refund amount to the refund address in the \
+                 locked asset"
+                    .into(),
+            ));
+        }
+        let mut tx = self.pool().begin().await?;
+        // Re-claim the row: a raced lifecycle write between the read and the
+        // verify must not close on stale terms — the refund stays open and
+        // the caller re-submits.
+        let still_pending: bool = sqlx::query_scalar(
+            "SELECT status = 'refund_pending' FROM oxsum.deposits \
+             WHERE deposit_id = $1 FOR UPDATE",
+        )
+        .bind(deposit_id)
+        .fetch_one(&mut *tx)
+        .await?;
+        if !still_pending {
+            return Err(WalletError::Conflict(
+                "the refund is no longer pending — its state changed mid-verification".into(),
+            ));
+        }
+        // One on-chain payout closes at most one refund: a signature another
+        // deposit already recorded cannot settle this row too — the second
+        // bill would read `refunded` while the single transaction only paid
+        // out once (issue #1175). Checked inside the row lock so a raced
+        // complete on another deposit serializes against this one.
+        let signature_in_use: bool = sqlx::query_scalar(
+            "SELECT EXISTS( \
+                 SELECT 1 FROM oxsum.deposits \
+                 WHERE rail = $2 AND deposit_id <> $1 \
+                   AND meta->>'refundSignature' = $3 \
+             )",
+        )
+        .bind(deposit_id)
+        .bind(RAIL_SOLANA)
+        .bind(signature.trim())
+        .fetch_one(&mut *tx)
+        .await?;
+        if signature_in_use {
+            return Err(WalletError::Conflict(
+                "the payout signature already closed another refund".into(),
             ));
         }
         sqlx::query(

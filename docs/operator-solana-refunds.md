@@ -54,9 +54,19 @@ on `meta.refund`, each audited (`solana.refund.request` / `.approve` /
 `.complete`):
 
 1. **Open** — `POST /api/v1/admin/solana/{depositId}/refund {"reason"}` on an
-   `underpaid`/`overpaid`/`late`/`flagged` deposit marks it `refund_pending`.
-   Re-requesting an open refund replays the standing row; a non-refundable or
-   `refunded` deposit is `409`.
+   `underpaid`/`overpaid`/`late`/`flagged` deposit marks it `refund_pending`
+   and **freezes the payout's terms** (issue #1175): `refund.amount` is
+   `delivered − expected` on an `overpaid` row — the surplus alone, because
+   the opened amount already credited and refunding the whole `delivered`
+   would hand the customer both credit and principal — and `delivered` on
+   `underpaid`/`late`/`flagged`; `refund.asset`/`refund.mint` name the
+   locked denomination the payout must spend. The figure surfaces as
+   `refundAmount` on the queue row and the CSV. A deposit that records no
+   refundable amount (a `delivered` figure that was never written, or a
+   non-positive surplus) refuses `409` — reconcile that row by hand rather
+   than open a refund the complete path could never verify. Re-requesting
+   an open refund replays the standing row; a non-refundable or `refunded`
+   deposit is `409`.
 2. **Address** — the customer supplies where the money goes:
    `POST /api/v1/topups/solana/{depositId}/refund-address {"address"}` on
    their own surface, validated as a base58 32-byte public key. The rail
@@ -77,20 +87,26 @@ on `meta.refund`, each audited (`solana.refund.request` / `.approve` /
    already-approved refund replays without a fresh screen — the freeze
    already happened.
 4. **Pay + record** — the multisig sends the refund out-of-band **in the
-   deposit's locked asset**: a plain `SystemProgram.transfer` of lamports for
-   `sol`, or an SPL `TransferChecked` of `delivered − expected` (or the agreed
-   refund figure) base units into the customer's ATA for `meta.splToken`
-   otherwise — always from `payTo` to the recorded address, never reusing the
-   deposit's `reference`. Then
+   deposit's locked asset, for the frozen `refundAmount`**: a plain
+   `SystemProgram.transfer` of lamports for `sol`, or an SPL
+   `TransferChecked` of `refund.amount` base units into the customer's ATA
+   for `meta.splToken` otherwise — always from `payTo` to the recorded
+   address, never reusing the deposit's `reference`. Then
    `POST /api/v1/admin/solana/{depositId}/refund-complete {"signature"}`
-   records the payout's signature and closes the row `refunded`. A replayed
-   complete with the same signature answers the standing row; a contradicting
-   one is `409` — the audit-protecting refusal.
+   **verifies the signature on-chain before closing** (issue #1175): the
+   transaction must exist at the rail's commitment, have succeeded, and
+   have delivered at least `refundAmount` of the frozen asset to the
+   recorded refund address. A signature that names no such transaction —
+   nonexistent, failed, wrong recipient, wrong mint, or under the frozen
+   amount — is `409` and the row stays `refund_pending`; the operator
+   re-submits once the real payout exists on-chain. A replayed complete
+   with the same signature answers the standing row; a contradicting one
+   is `409` — the audit-protecting refusal.
 
 No ledger entry ever posts on this path: an `underpaid`/`late`/`flagged`
 deposit never credited, so the refund simply returns what sits in `payTo`; an
-`overpaid` one's `entry_id` still proves the opened credit while the surplus
-returns on-chain.
+`overpaid` one's `entry_id` still proves the opened credit while only the
+`delivered − expected` surplus returns on-chain.
 
 ## Deciding which shape the refund takes
 
@@ -102,8 +118,8 @@ returns on-chain.
   the reason. Requires the business owner's sign-off, not a unilateral
   credit.
 - **Overpayment** — routine: refund the surplus (`delivered − expected` base
-  units of the locked asset) through the lifecycle; the customer's opened
-  credit already stands.
+  units of the locked asset — the figure `refundAmount` froze at open)
+  through the lifecycle; the customer's opened credit already stands.
 - **Late** — refund through the lifecycle, or credit manually when the
   lateness was not the customer's fault.
 - **Flagged** — the compliance verdict, never a timer: review the
@@ -144,7 +160,8 @@ state records, else `meta.screening.address` on a `flagged` row parked
 before the merge; empty on a `pending` row that never recorded one),
 `asset`, `amountMinor`, `delivered`/`expected` (the locked asset's
 base units), `rateMicro` (the locked rate), `receivedMinor`, `status`,
-`createdAt`, `refundSignature`, `refundStatus` (`requested`/`approved`/
+`createdAt`, `refundAmount` (the payout's frozen figure in the locked
+asset's base units), `refundSignature`, `refundStatus` (`requested`/`approved`/
 `completed`). The export is capped at 50_000 rows and *refuses* past it
 (`400`) rather than ship a truncated file a reconciler would read as
 complete — narrow the window and retry. Diff `signature`+`delivered` against
