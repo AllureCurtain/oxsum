@@ -328,6 +328,9 @@
     "solanaWalletRejected": "The wallet declined the request — approve it in the wallet to pay, or use the QR/manual transfer below.",
     "solanaWalletFailed": "The wallet could not send the transfer — check the wallet and network, or use the QR/manual transfer below.",
     "solanaWalletBadIntent": "This intent's terms cannot drive a wallet payment — use the QR/manual transfer below.",
+    "solanaNetwork": "Network: {{network}} — pay on this Solana cluster only; the same address on another cluster is a different ledger.",
+    "solanaWalletClusterMismatch": "The wallet send is off: the browser's configured RPC endpoint names a different network than this intent's {{cluster}}. Use the QR/manual transfer below — it carries the right cluster.",
+    "solanaWalletClusterUnconfigured": "The wallet send is off on {{cluster}}: this deployment needs VITE_SOLANA_RPC_URL built in to pay by adapter. Use the QR/manual transfer below — it carries the right cluster.",
     "copy": "Copy",
     "copied": "Copied"
   },

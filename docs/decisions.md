@@ -5051,3 +5051,36 @@ Pinned by `solana_custody_gates_the_mainnet_hot_wallet`,
 `--check-config` arms in `check_config_validates_env_without_a_database`
 (mainnet + no multisig refuses; a matching vault passes; the opt-out passes
 under the warn; devnet + no multisig passes).
+
+## 2026-11-14 — The intent declares its cluster; every send path pins it (#1181)
+
+Solana addresses are identical across clusters — a devnet `payTo` and a
+mainnet one are indistinguishable on-chain — so an `open` intent that never
+named its network let a devnet server + a default-built frontend send real
+mainnet money to the same address. The fix pins the cluster end to end
+rather than guessing at either side:
+
+- **One declaration, validated at boot.** `OXSUM_SOLANA_CLUSTER`
+  (`mainnet-beta`/`devnet`/`testnet`) is the explicit word; unset, the boot
+  derives it from the RPC endpoints' shape — `devnet`/`testnet` URLs and
+  localhost-style validators are non-mainnet, everything else is mainnet
+  because production is the dangerous assumption. A declaration that
+  disagrees with the shape is a startup error, never a warn-and-serve: the
+  intent's `cluster` is the page's only network hint, so a wrong value would
+  direct wallets to a different network than the verifier reads. A mixed
+  endpoint pool is refused outright — no declaration can pin a cluster half
+  the failover contradicts.
+- **The contract carries it.** `SolanaTopupResponse.cluster` is required
+  (`openapi.yaml` first, then the implementation): the Solana Pay URL
+  writes `cluster=` whenever the intent is not `mainnet-beta` (the spec's
+  own omission rule), the page names the network beside the terms, and the
+  wallet adapter resolves its `Connection` against it.
+- **The browser refuses rather than assume.** `VITE_SOLANA_RPC_URL` whose
+  shape disagrees with the intent's cluster refuses the send outright —
+  sending through it would move money on the wrong network while the rail
+  waits for a transfer that never lands. Unset, only `mainnet-beta` keeps
+  the public endpoint it always had; a `devnet`/`testnet` intent prompts
+  for configuration and falls back to the QR, because a non-mainnet rail is
+  usually a private provider or a local validator the public cluster cannot
+  see — a silent public-devnet send would land on a network the verifier
+  never reads.

@@ -32,6 +32,7 @@ import {
 } from "@solana/web3.js";
 
 import type { SolanaIntent } from "../api/hooks";
+import type { SolanaCluster } from "./solanaPay";
 
 /**
  * The terms the transfer needs, read off the opened intent plus the wallet's
@@ -155,18 +156,73 @@ export function buildSolanaTransfer(terms: SolanaTransferTerms): Transaction {
   return tx;
 }
 
+/** The public endpoint a `VITE_SOLANA_RPC_URL`-less build may use — only
+ * ever mainnet-beta. A devnet/testnet rail cannot safely default to the
+ * public cluster: the deployment's endpoints may be a private provider or a
+ * local validator the public network cannot see, so a silent public-devnet
+ * send would land on a network the rail's verifier never reads (issue
+ * #1181). Non-mainnet without a configured endpoint refuses and prompts for
+ * configuration — the QR, whose `cluster=` carries the right network, stays
+ * the payment path. */
+const MAINNET_PUBLIC_ENDPOINT = "https://api.mainnet-beta.solana.com";
+
 /**
- * The RPC endpoint the browser sends through (issue #1147):
- * `VITE_SOLANA_RPC_URL` at build time, defaulting to the public mainnet-beta
- * cluster. The send only ever carries the signed transaction — the rail's own
- * configured RPC pool does the authoritative verification server-side, so a
- * public or rate-limited endpoint here degrades the send path, never the
- * credit decision.
+ * The cluster an endpoint's *shape* implies — the same heuristic the server
+ * applies to `OXSUM_SOLANA_RPC_URLS` (issue #1181), so a `VITE_SOLANA_RPC_URL`
+ * an operator builds the bundle with is checked against the intent's own
+ * `cluster`, never assumed. A URL naming `devnet`/`testnet` or pointing at a
+ * localhost-style host (a local validator is a dev network by construction)
+ * implies that cluster; anything else implies `mainnet-beta` — the
+ * production direction is the dangerous one, so an unannotated endpoint is
+ * never read as test money.
  */
-export function solanaRpcEndpoint(): string {
+export function solanaEndpointCluster(endpoint: string): SolanaCluster {
+  const lower = endpoint.toLowerCase();
+  if (
+    lower.includes("devnet") ||
+    lower.includes("localhost") ||
+    lower.includes("127.0.0.1") ||
+    lower.includes("[::1]")
+  ) {
+    return "devnet";
+  }
+  if (lower.includes("testnet")) return "testnet";
+  return "mainnet-beta";
+}
+
+/** The wallet-adapter send path's endpoint decision (issue #1181). `ok` is
+ * the URL the `Connection` may point at; `error` is a user-facing string the
+ * page shows *instead of sending* — a mismatch must refuse, because sending
+ * to the wrong cluster would move real money against the intent's terms
+ * while the rail's own verifier waits on another network for a transfer
+ * that will never land. */
+export type SolanaEndpointResolution =
+  | { ok: string }
+  | { error: "mismatch" | "unconfigured"; cluster: SolanaCluster };
+
+/**
+ * Resolves the RPC endpoint the browser sends through for `cluster` (issues
+ * #1147, #1181). `VITE_SOLANA_RPC_URL` at build time wins when it names the
+ * intent's cluster — an authenticated provider the operator pinned. When it
+ * names a *different* cluster (a mainnet URL baked into a bundle now serving
+ * a devnet rail), the send refuses: the endpoint is the operator's own word,
+ * and honoring it would send on the wrong network. With no `VITE_` variable,
+ * `mainnet-beta` keeps the public endpoint it always had; `devnet`/`testnet`
+ * refuse with `unconfigured` — a non-mainnet rail is usually a private
+ * provider or a local validator the public cluster cannot see, so the page
+ * prompts for `VITE_SOLANA_RPC_URL` and the QR (its `cluster=` carries the
+ * right network) stays the payment path.
+ */
+export function solanaRpcEndpoint(cluster: SolanaCluster): SolanaEndpointResolution {
   const configured = import.meta.env?.VITE_SOLANA_RPC_URL;
   if (typeof configured === "string" && configured.trim() !== "") {
-    return configured.trim();
+    const endpoint = configured.trim();
+    const implied = solanaEndpointCluster(endpoint);
+    if (implied !== cluster) {
+      return { error: "mismatch", cluster: implied };
+    }
+    return { ok: endpoint };
   }
-  return "https://api.mainnet-beta.solana.com";
+  if (cluster === "mainnet-beta") return { ok: MAINNET_PUBLIC_ENDPOINT };
+  return { error: "unconfigured", cluster };
 }

@@ -344,6 +344,15 @@ async fn solana_intent_pays_once() {
         36,
         "{intent}"
     );
+    // The intent declares the network it pays on (issue #1181): a wallet
+    // reads `cluster` because Solana addresses are identical across
+    // clusters — `SolanaTerms` defaults to `mainnet-beta` and the test's
+    // terms carry it.
+    assert_eq!(
+        intent["data"]["cluster"].as_str().unwrap(),
+        "mainnet-beta",
+        "{intent}"
+    );
     // Arm the stub: the paying transaction lands, delivering exactly the
     // asked lamports.
     let signature = "sig1111111111111111111111111111111111111111111111111111111111111111";
@@ -383,6 +392,31 @@ async fn solana_intent_pays_once() {
     // The deposit is already credited — the replay is a no-op the rail
     // surfaces as a second, harmless answer rather than a second credit.
     assert_eq!(balance(&app, &key).await, 1000, "{replay}");
+}
+
+/// Issue #1181: the open intent answers the rail's declared cluster — a
+/// devnet deployment's intents say `devnet`, so a wallet or a Solana Pay
+/// URL built from the response knows the payment lands on the same network
+/// the rail's verifier reads (Solana addresses are identical across
+/// clusters; the name is the only honest hint).
+#[tokio::test]
+async fn solana_intent_declares_its_cluster() {
+    let stub = SolanaStub::default();
+    let devnet_terms = terms().with_cluster(oxsum_core::SolanaCluster::Devnet);
+    let Some((app, _db)) = world_with_terms(stub, devnet_terms).await else {
+        return;
+    };
+    let key = register_session(&app).await;
+    let (status, intent) = call(
+        &app,
+        "POST",
+        "/api/v1/topups/solana",
+        Some(json!({"amountMinor": 1000})),
+        Some(&key),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{intent}");
+    assert_eq!(intent["data"]["cluster"].as_str().unwrap(), "devnet");
 }
 
 /// Issue #1142: a located transfer that delivers under the asked amount is

@@ -105,6 +105,13 @@ OXSUM_SOLANA_MULTISIG_ACCOUNT=<multisig account base58>
 # later reader cannot mistake the posture.
 OXSUM_SOLANA_COMMITMENT=finalized
 
+# The network the intents declare (issue #1181): `mainnet-beta` matches the
+# endpoints' shape and is what the boot would infer anyway — stating it
+# explicitly is the rehearsal's own tripwire: an endpoint accidentally
+# pointed at devnet refuses the boot instead of silently minting intents the
+# page labels mainnet.
+OXSUM_SOLANA_CLUSTER=mainnet-beta
+
 # USDC as the rehearsal asset, via the legacy single-mint form (the rail
 # also carries a multi-asset whitelist since #1140 — one deployment can
 # serve both SOL and USDC — but the legacy form is the right choice for a
@@ -186,6 +193,7 @@ Expected: `200` with
 ```json
 {"data":{"reference":"<base58>","payTo":"<vault>","amountLamports":2000000,
           "splToken":"EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+          "cluster":"mainnet-beta",
           "expiresAt":"<RFC3339>"}}
 ```
 
@@ -198,6 +206,11 @@ carry as a **read-only non-signer** account key.
 - The dashboard's **Solana** tab renders the intent as a Solana Pay
   transfer-request URL plus a QR (issue #1141): scan it with the test wallet
   and approve — the wallet fills recipient, amount and `reference` itself.
+  The intent's `cluster` pins the network end to end (issue #1181): a
+  non-mainnet intent writes `cluster=` into that URL, and the wallet-adapter
+  pay button sends only through a `VITE_SOLANA_RPC_URL` whose shape agrees —
+  an endpoint naming another network refuses rather than send real money on
+  the wrong cluster.
 - Or build a `TransferChecked` SPL transfer by hand for `amountLamports` of
   the USDC mint to `payTo`'s ATA, with `reference` added as a read-only
   non-signer account key — `examples/solana-topup/pay.mjs` does exactly this
@@ -493,6 +506,10 @@ deposits table.
   customer session it will pay as.
 - [ ] `OXSUM_SOLANA_COMMITMENT=finalized` booted; the USDC mint's decimals
   check passed at startup.
+- [ ] `OXSUM_SOLANA_CLUSTER=mainnet-beta` booted without a disagreement —
+  a devnet-shaped endpoint in `OXSUM_SOLANA_RPC_URLS` is a startup refusal
+  now (issue #1181), and the opened intent's `cluster` answers
+  `mainnet-beta`.
 - [ ] The `solana-deposits` job is scheduled (it is when the rail is
   configured — the 15 s pass log line appears once intents exist).
 - [ ] The refund path is agreed: who supplies refund addresses, who signs at
