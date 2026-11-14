@@ -631,3 +631,375 @@ async fn the_chain_rpc_section_holds_no_row_lock() {
     assert_eq!(wallet_a.available().await.unwrap(), 1000);
     assert_eq!(wallet_b.available().await.unwrap(), 1000);
 }
+
+/// Issue #1174: the poll's expiry sweep may expire only the rows the same
+/// pass verified `Unpaid`. 300 lapsed intents exceed the pass's 256-row work
+/// list, so intent 257 is never verified — the old blanket
+/// `UPDATE ... expiresAt <= now()` expired it anyway, and a payment that had
+/// landed on-chain before `expiresAt` sat in the vault uncredited with no
+/// queue row. Now the unverified row stays `pending`, the next pass walks it,
+/// and `credit_solana_deposit` credits it even if a race did flip it
+/// `expired` first.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_sweep_never_expires_a_row_it_did_not_verify() {
+    let Some(db) = database("solana_sweep_verified").await else {
+        return;
+    };
+    // A one-second TTL: a real expiresAt is stored (0 resolves the 600 s
+    // default), and backdating it below makes every row already lapsed —
+    // deterministic, never a wall-clock race with the inserts.
+    let terms = SolanaTerms {
+        intent_ttl_secs: 1,
+        ..terms()
+    };
+    // A lapsed backlog the work-list bound truncates: 300 intents whose
+    // created_at spread guarantees the 257th lands past the LIMIT. Opened
+    // sequentially so created_at strictly increases with the index.
+    let org = organization(&db, "sweep").await;
+    let wallet = wallet_for(&db, org).await;
+    let mut refs = Vec::new();
+    for i in 0..300_usize {
+        let deposit_id = Uuid::new_v4();
+        let (reference, _, _) = db
+            .open_solana_deposit(org, deposit_id, 1000, &terms, None, &static_rate(&terms))
+            .await
+            .unwrap()
+            .expect("inserts");
+        if i == 256 {
+            refs.push((deposit_id, reference));
+        }
+    }
+    // Backdate every intent's expiresAt into the past: 0 resolves the
+    // default TTL rather than a zero lapse, so the test sets the lapse
+    // directly instead of racing a 1 s wall clock.
+    sqlx::query(
+        "UPDATE oxsum.deposits SET meta = jsonb_set(meta, '{expiresAt}', $1::jsonb) \
+         WHERE rail = 'solana' AND organization_id = $2",
+    )
+    .bind("\"2000-01-01T00:00:00Z\"")
+    .bind(org)
+    .execute(db.pool())
+    .await
+    .unwrap();
+    let (target_id, target_ref) = refs.pop().expect("the 257th intent is recorded");
+    // Every intent is lapsed (the backdated expiresAt), and the stub
+    // pays only the 257th's marker — block_time 0, before its expiresAt.
+    /// Answers `vec![sig]` for the one armed reference, nothing for any
+    /// other — the chain state where only intent 257 paid.
+    struct PaysOne {
+        reference: String,
+        signature: String,
+        delivered: i64,
+    }
+    impl std::fmt::Debug for PaysOne {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            f.debug_struct("PaysOne").finish_non_exhaustive()
+        }
+    }
+    impl ChainLookup for PaysOne {
+        fn find_reference<'a>(
+            &'a self,
+            reference: &'a str,
+        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Vec<String>> + Send + 'a>> {
+            Box::pin(async move {
+                if reference == self.reference {
+                    vec![self.signature.clone()]
+                } else {
+                    Vec::new()
+                }
+            })
+        }
+        fn validate_transfer<'a>(
+            &'a self,
+            signature: &'a str,
+            expected: &'a ExpectedTransfer,
+        ) -> std::pin::Pin<
+            Box<dyn std::future::Future<Output = Option<ValidatedTransfer>> + Send + 'a>,
+        > {
+            Box::pin(async move {
+                if signature != self.signature
+                    || expected.recipient != "oxsumDepositAddr111111111111111111111111111"
+                {
+                    return None;
+                }
+                Some(ValidatedTransfer {
+                    signature: signature.to_owned(),
+                    delivered: self.delivered,
+                    block_time: Some(0),
+                    payer: None,
+                })
+            })
+        }
+    }
+    let verifier = SolanaRailVerifier::new(
+        Arc::new(PaysOne {
+            reference: target_ref,
+            signature: "sigIntent25700000000000000000000000000000000000000000".to_owned(),
+            delivered: 5_000,
+        }),
+        terms,
+    );
+    let tenants = oxsum_core::Tenants::new(db.pool().clone());
+    let (checked, _credited, expired, _queued) = db
+        .poll_solana_deposits(&verifier, &tenants, time::Date::MAX)
+        .await
+        .unwrap();
+    assert_eq!(checked, 256, "one pass walks at most its work-list bound");
+    let status: String =
+        sqlx::query_scalar("SELECT status FROM oxsum.deposits WHERE deposit_id = $1")
+            .bind(target_id)
+            .fetch_one(db.pool())
+            .await
+            .unwrap();
+    assert_eq!(
+        status, "pending",
+        "the 257th intent was never verified — it must not expire: {status}"
+    );
+    let expired_rows: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM oxsum.deposits \
+         WHERE rail = 'solana' AND status = 'expired' AND organization_id = $1",
+    )
+    .bind(org)
+    .fetch_one(db.pool())
+    .await
+    .unwrap();
+    assert_eq!(expired, expired_rows as u64);
+    assert_eq!(
+        expired_rows, 256,
+        "every verified-unpaid lapsed row the pass walked expired, nothing more"
+    );
+    // The next pass reaches it: the payment verifies on-time and credits.
+    let (_checked, credited, _expired, _queued) = db
+        .poll_solana_deposits(&verifier, &tenants, time::Date::MAX)
+        .await
+        .unwrap();
+    assert_eq!(credited, 1, "the second pass credits the paid intent");
+    assert_eq!(wallet.available().await.unwrap(), 1000);
+}
+
+/// Issue #1174: two unleadered poll instances racing one lapsed intent must
+/// not strand its payment. Instance A parks inside its verify on the armed
+/// intent; instance B walks the same work list, verifies the armed intent
+/// unpaid (its own genuine verdict — the chain stub sees no paying transfer
+/// for B), and its keyed sweep expires the row under A's in-flight verify.
+/// Before the fix A's `credit_solana_deposit` then hit the
+/// `status != 'pending'` gate and returned `Settled` — money in the vault,
+/// no customer credit, no queue row. Now the `expired`-rescue re-walks the
+/// row and the on-time payment credits.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn two_polls_racing_one_intent_still_credit_its_payment() {
+    let Some(db) = database("solana_poll_race").await else {
+        return;
+    };
+    // A one-second TTL: a real expiresAt is stored (0 resolves the 600 s
+    // default), backdated below so every intent is lapsed when either poll
+    // runs — deterministic, not a wall-clock race.
+    let terms = SolanaTerms {
+        intent_ttl_secs: 1,
+        ..terms()
+    };
+    let org = organization(&db, "poll-race").await;
+    let wallet = wallet_for(&db, org).await;
+    // Filler intents — unpaid under either stub, so they are each pass's
+    // verified-unpaid sweep candidates alongside the armed one.
+    for _ in 0..3 {
+        db.open_solana_deposit(
+            org,
+            Uuid::new_v4(),
+            1000,
+            &terms,
+            None,
+            &static_rate(&terms),
+        )
+        .await
+        .unwrap()
+        .expect("inserts");
+    }
+    let deposit_id = Uuid::new_v4();
+    let (reference, _, _) = db
+        .open_solana_deposit(org, deposit_id, 1000, &terms, None, &static_rate(&terms))
+        .await
+        .unwrap()
+        .expect("inserts");
+    // Backdate every intent's expiresAt into the past so both passes read a
+    // genuinely lapsed intent: instance B's sweep is what flips the armed row.
+    sqlx::query(
+        "UPDATE oxsum.deposits SET meta = jsonb_set(meta, '{expiresAt}', $1::jsonb) \
+         WHERE rail = 'solana' AND organization_id = $2",
+    )
+    .bind("\"2000-01-01T00:00:00Z\"")
+    .bind(org)
+    .execute(db.pool())
+    .await
+    .unwrap();
+    /// `Blocker` — instance A's chain — parks its `find_reference` on the
+    /// armed reference until released, then answers the paying signature.
+    /// Any other reference is unpaid to it. Instance B's stub is the same
+    /// shape minus the gate: it finds nothing, so B's verdict on every row —
+    /// the armed one included — is a genuine `Unpaid`.
+    struct Blocker {
+        reference: String,
+        entered: Mutex<Option<tokio::sync::oneshot::Sender<()>>>,
+        release: Mutex<Option<tokio::sync::oneshot::Receiver<()>>>,
+        signature: String,
+        delivered: i64,
+    }
+    impl std::fmt::Debug for Blocker {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            f.debug_struct("Blocker").finish_non_exhaustive()
+        }
+    }
+    impl ChainLookup for Blocker {
+        fn find_reference<'a>(
+            &'a self,
+            reference: &'a str,
+        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Vec<String>> + Send + 'a>> {
+            Box::pin(async move {
+                if reference == self.reference {
+                    if let Some(entered) = self.entered.lock().unwrap().take() {
+                        let _ = entered.send(());
+                    }
+                    let release = self.release.lock().unwrap().take();
+                    if let Some(release) = release {
+                        let _ = release.await;
+                    }
+                    return vec![self.signature.clone()];
+                }
+                Vec::new()
+            })
+        }
+        fn validate_transfer<'a>(
+            &'a self,
+            signature: &'a str,
+            expected: &'a ExpectedTransfer,
+        ) -> std::pin::Pin<
+            Box<dyn std::future::Future<Output = Option<ValidatedTransfer>> + Send + 'a>,
+        > {
+            Box::pin(async move {
+                if signature != self.signature
+                    || expected.recipient != "oxsumDepositAddr111111111111111111111111111"
+                {
+                    return None;
+                }
+                Some(ValidatedTransfer {
+                    signature: signature.to_owned(),
+                    delivered: self.delivered,
+                    block_time: Some(0),
+                    payer: None,
+                })
+            })
+        }
+    }
+    struct FindsNothing;
+    impl std::fmt::Debug for FindsNothing {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            f.debug_struct("FindsNothing").finish_non_exhaustive()
+        }
+    }
+    impl ChainLookup for FindsNothing {
+        fn find_reference<'a>(
+            &'a self,
+            _reference: &'a str,
+        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Vec<String>> + Send + 'a>> {
+            Box::pin(async { Vec::new() })
+        }
+        fn validate_transfer<'a>(
+            &'a self,
+            _signature: &'a str,
+            _expected: &'a ExpectedTransfer,
+        ) -> std::pin::Pin<
+            Box<dyn std::future::Future<Output = Option<ValidatedTransfer>> + Send + 'a>,
+        > {
+            Box::pin(async { None })
+        }
+    }
+    let (entered_tx, entered_rx) = tokio::sync::oneshot::channel();
+    let (release_tx, release_rx) = tokio::sync::oneshot::channel();
+    // Instance A parks inside its verify on the armed intent — the window in
+    // which a second instance's sweep can expire the row under it.
+    let blocker = SolanaRailVerifier::new(
+        Arc::new(Blocker {
+            reference,
+            entered: Mutex::new(Some(entered_tx)),
+            release: Mutex::new(Some(release_rx)),
+            signature: "sigParkedPay000000000000000000000000000000000000000000".to_owned(),
+            delivered: 5_000,
+        }),
+        terms.clone(),
+    );
+    let blind = SolanaRailVerifier::new(Arc::new(FindsNothing), terms);
+    let tenants = oxsum_core::Tenants::new(db.pool().clone());
+    let poll_a = {
+        let db = db.clone();
+        let tenants = tenants.clone();
+        tokio::spawn(async move {
+            db.poll_solana_deposits(&blocker, &tenants, time::Date::MAX)
+                .await
+        })
+    };
+    // Wait until instance A is inside its chain RPC on the armed intent, then
+    // run instance B: it verifies every row unpaid — the armed one's verdict
+    // is genuine to B — and its sweep expires all four under A's parked
+    // verify.
+    tokio::time::timeout(std::time::Duration::from_secs(10), entered_rx)
+        .await
+        .expect("instance A reached its RPC section")
+        .unwrap();
+    let poll_b = {
+        let db = db.clone();
+        let tenants = tenants.clone();
+        tokio::spawn(async move {
+            db.poll_solana_deposits(&blind, &tenants, time::Date::MAX)
+                .await
+        })
+    };
+    let (b_checked, _, b_expired, _) =
+        tokio::time::timeout(std::time::Duration::from_secs(10), poll_b)
+            .await
+            .expect("instance B's pass does not wait on A's parked verify")
+            .unwrap()
+            .unwrap();
+    assert_eq!(b_checked, 4, "instance B walked every pending row");
+    assert_eq!(
+        b_expired, 4,
+        "instance B expired every row it verified unpaid — the armed one included"
+    );
+    let status: String =
+        sqlx::query_scalar("SELECT status FROM oxsum.deposits WHERE deposit_id = $1")
+            .bind(deposit_id)
+            .fetch_one(db.pool())
+            .await
+            .unwrap();
+    assert_eq!(
+        status, "expired",
+        "B's sweep flipped the armed row mid-verify"
+    );
+    // Release A's verify: the payment locates, the `expired`-rescue re-walks
+    // the row, and the ordinary credit path books it.
+    release_tx.send(()).unwrap();
+    let (a_checked, a_credited, _, _) =
+        tokio::time::timeout(std::time::Duration::from_secs(10), poll_a)
+            .await
+            .expect("instance A's pass finishes once released")
+            .unwrap()
+            .unwrap();
+    assert_eq!(a_checked, 4, "instance A's work list covered every row");
+    assert_eq!(a_credited, 1, "instance A's released verify credited");
+    let row =
+        sqlx::query("SELECT status, facilitator_tx_hash FROM oxsum.deposits WHERE deposit_id = $1")
+            .bind(deposit_id)
+            .fetch_one(db.pool())
+            .await
+            .unwrap();
+    assert_eq!(
+        row.get::<String, _>("status"),
+        "credited",
+        "a raced expiry must never strand an on-time payment"
+    );
+    assert_eq!(
+        row.get::<Option<String>, _>("facilitator_tx_hash")
+            .as_deref(),
+        Some("sigParkedPay000000000000000000000000000000000000000000")
+    );
+    assert_eq!(wallet.available().await.unwrap(), 1000);
+}
