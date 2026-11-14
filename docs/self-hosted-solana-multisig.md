@@ -43,10 +43,17 @@ vault of a different index, a multisig that was re-created so its PDAs moved.
 A mismatch fails startup and names both the configured `PAY_TO` and the
 vault the multisig implies.
 
-When `OXSUM_SOLANA_MULTISIG_ACCOUNT` is **unset**, the rail still boots — a
-plain wallet is a legitimate `PAY_TO` on a devnet loop — but the boot logs a
-loud warning that `PAY_TO` is an unverified **hot wallet**. Treat that
-warning as the deployment telling you its deposits land on a single key.
+When `OXSUM_SOLANA_MULTISIG_ACCOUNT` is **unset**, the answer depends on the
+endpoint's shape. On a **devnet/testnet/localhost** endpoint the rail still
+boots — a plain wallet is a legitimate `PAY_TO` there — but the boot logs a
+loud warning that `PAY_TO` is an unverified **hot wallet**. On a
+**mainnet-shaped** endpoint (issue #1189) the boot **refuses to start**: a
+hot wallet holding real customer funds is a custody risk, not a warning. The
+only way past is the deliberate opt-out `OXSUM_SOLANA_ALLOW_HOT_WALLET=1`
+(`1`/`true`; unset/`0`/`false` is off, anything else is a startup error) —
+the same explicit-opt-out pattern the sanctions gate holds — which boots
+under an even louder warn that names the accepted risk. Treat either warning
+as the deployment telling you its deposits land on a single key.
 
 **The residual, on the record.** The check is a PDA *derivation*, not
 on-chain introspection. It proves `PAY_TO` is the vault the multisig account
@@ -68,8 +75,10 @@ address is the vault.
    vault; `getVaultPda(multisigPda, 0)` in the SDK) into `OXSUM_SOLANA_PAY_TO`.
 3. Set the rest of the `OXSUM_SOLANA_*` set (RPC, rate, mint/decimals).
 4. Boot. A matching pair starts clean; a mismatch refuses and prints the
-   vault the multisig derives — paste that, or unset `MULTISIG_ACCOUNT` to
-   run an unverified hot wallet deliberately.
+   vault the multisig derives — paste that. On mainnet, running an
+   unverified hot wallet instead now requires the deliberate
+   `OXSUM_SOLANA_ALLOW_HOT_WALLET=1` opt-out (issue #1189); on devnet,
+   unsetting `MULTISIG_ACCOUNT` is enough.
 
 ## Signer roles — who holds the keys
 
