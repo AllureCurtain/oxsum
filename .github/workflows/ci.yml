@@ -1,15 +1,29 @@
-# Continuous integration: pull requests run the fast tier; heavy suites run on main.
+# Continuous integration: every pull request runs the fast tier; a pull request
+# that can change money-path behaviour also runs the heavy tier before merge.
 #
-# Two tiers (issue #552): a pull request runs the fast tier — `filter`, `fmt`,
-# `clippy --all-targets`, the lib/doc tests, `wasm`, `frontend`, `publishable`
-# and `audit` — and the heavy tier (`build-tests`, the three shards,
-# `test-extras`) runs on a push to `main`, where nothing is waiting on it. The
-# five required checks (`fmt`, `clippy`, `test`, `wasm`, `frontend`) are all in
-# the fast tier, so branch protection needs no changes; `clippy --all-targets`
-# still compiles every test target, which is what keeps a type error from
-# reaching main. The trade-off is explicit: an integration or database failure
-# can surface only after the merge, and main is then fixed forward or reverted
-# immediately, never left red.
+# Two tiers (issue #552, reworked in issue #1214). Every pull request runs the
+# fast tier — `filter`, `fmt`, `clippy --all-targets`, the lib/doc tests,
+# `wasm`, `frontend`, `publishable` and `audit`. The heavy tier (`build-tests`,
+# the three shards, `test-extras`, `solana-e2e`) runs on a pull request whose
+# diff touches `crates/**` (core, server, integrations, migrations…), the Cargo
+# manifests/lockfile, the cargo/toolchain config or the CI definition itself —
+# or that carries the `ci:heavy` label — and always on a push to `main`, the
+# nightly and a manual dispatch. Web- and docs-only pull requests stay on the
+# fast tier. Issue #552 moved the heavy tier post-merge only; two weeks of
+# history showed main red on 40% of pushes afterwards (0% before), about two
+# thirds of them integration/migration breaks a pre-merge heavy run would have
+# stopped.
+#
+# The five required checks (`fmt`, `clippy`, `test`, `wasm`, `frontend`) stay
+# in the fast tier and always report, so branch protection needs no change and
+# a light pull request never waits on an "expected" check. `heavy-tier` is the
+# one roll-up of the heavy jobs: it passes when the tier was correctly skipped
+# and fails when any heavy job failed or was cancelled — the single name to
+# make required later. The post-merge heavy run on `main` stays: it is the
+# safety net for the merge skew a pre-merge run cannot see (two green pull
+# requests that conflict only together), and the release-candidate gate
+# (`scripts/check-candidate-ci.py`) requires a full green CI run on the
+# candidate's own main SHA.
 #
 # Every push to main owns its run (issue #549): the concurrency group is keyed
 # on the commit, because GitHub cancels the *pending* run when a newer one joins
@@ -31,6 +45,10 @@ on:
     branches: [main]
     paths-ignore: ['docs/**', '**.md']
   pull_request:
+    # `labeled` lets `ci:heavy` force the heavy tier on a branch without a new
+    # push. Any other label re-runs the (cheap) fast tier too — the price of
+    # GitHub offering no per-label trigger filter.
+    types: [opened, synchronize, reopened, labeled]
   # A nightly full run, ignoring the path filter (issue #549): it re-verifies
   # main even when the last push touched only docs, or when a burst of merges
   # displaced a push run. 03:17 UTC keeps it clear of the common merge hours.
@@ -81,6 +99,12 @@ jobs:
       # A scheduled or manually dispatched run verifies the whole tree, whatever
       # the last push touched (issue #549).
       rust: ${{ (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && 'true' || steps.filter.outputs.rust }}
+      # Whether the heavy tier runs (issue #1214). A scheduled or dispatched
+      # run is a full run; a push to `main` runs it for any Rust-surface change
+      # (the post-merge safety net, unchanged); a pull request runs it when its
+      # diff can change what the DB-backed suites prove, or when it carries the
+      # `ci:heavy` label.
+      heavy: ${{ ((github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && 'true') || (github.event_name == 'push' && steps.filter.outputs.rust) || ((github.event_name == 'pull_request' && (contains(github.event.pull_request.labels.*.name, 'ci:heavy') || steps.filter.outputs.heavy == 'true')) && 'true') || 'false' }}
     steps:
       - uses: actions/checkout@v7
       # Only a push or a pull request has a base to diff against; a scheduled
@@ -105,6 +129,24 @@ jobs:
               - '.github/actions/**'
               - 'Dockerfile'
               - '.dockerignore'
+            # `heavy` = what the DB-backed integration, migration, concurrency
+            # and Solana e2e suites can observe: every crate (core, server,
+            # integrations and core's migrations among them), the manifests
+            # and lockfile, the cargo/toolchain config, the CI definition and
+            # the helpers the heavy jobs execute. Web, docs and other scripts
+            # cannot change a heavy-tier result, so they stay on the fast tier.
+            heavy:
+              - 'Cargo.toml'
+              - 'Cargo.lock'
+              - 'crates/**'
+              - '.cargo/**'
+              - 'rust-toolchain.toml'
+              - '.config/nextest.toml'
+              - '.github/workflows/ci.yml'
+              - '.github/actions/**'
+              - 'scripts/run-shared-suites.py'
+              - 'scripts/drop-test-scratch.sql'
+              - 'scripts/clean-testcontainers.sh'
 
   fmt:
     name: fmt
@@ -442,13 +484,14 @@ jobs:
     # Compiling waits on `fmt` (7s) only. It used to wait on `clippy` too, which
     # serialized 131s of lints in front of a build that needs none of them.
     #
-    # Post-merge only (issue #552): this job plus the shards is the expensive
-    # half of the suite, and none of them is a required check. On a pull request
-    # the fast tier covers compilation; here the binaries get built and run with
-    # nobody waiting. The nightly schedule and a manual dispatch run it too, so
-    # a commit a displaced push left ungated is verified within a day (#549).
+    # Heavy tier (issue #1214): a pull request whose diff can change a heavy
+    # result (`filter`'s `heavy` paths) or that carries `ci:heavy`, every
+    # Rust-surface push to `main`, the nightly and a manual dispatch — so a
+    # commit a displaced push left ungated is still verified within a day
+    # (#549). None of the heavy jobs is a required check; `heavy-tier` below
+    # rolls them up.
     needs: [filter, fmt]
-    if: needs.filter.outputs.rust == 'true' && (github.event_name == 'push' || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch')
+    if: needs.filter.outputs.heavy == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
@@ -515,9 +558,8 @@ jobs:
   test-shard:
     name: test-shard (${{ matrix.shard }}/3)
     needs: [filter, build-tests]
-    # Heavy tier: pushes to main, the nightly full run and manual dispatch
-    # (issues #552, #549). See build-tests above.
-    if: needs.filter.outputs.rust == 'true' && (github.event_name == 'push' || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch')
+    # Heavy tier (issues #552, #549, #1214). See build-tests above.
+    if: needs.filter.outputs.heavy == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     strategy:
@@ -576,9 +618,8 @@ jobs:
   test-extras:
     name: test-extras
     needs: [filter, build-tests]
-    # Heavy tier: pushes to main, the nightly full run and manual dispatch
-    # (issues #552, #549). See build-tests above.
-    if: needs.filter.outputs.rust == 'true' && (github.event_name == 'push' || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch')
+    # Heavy tier (issues #552, #549, #1214). See build-tests above.
+    if: needs.filter.outputs.heavy == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     services:
@@ -668,9 +709,8 @@ jobs:
   solana-e2e:
     name: solana-e2e
     needs: [filter, build-tests]
-    # Heavy tier like the shards: pushes to main, the nightly full run and
-    # manual dispatch (issues #552, #549).
-    if: needs.filter.outputs.rust == 'true' && (github.event_name == 'push' || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch')
+    # Heavy tier like the shards (issues #552, #549, #1214).
+    if: needs.filter.outputs.heavy == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     services:
@@ -756,3 +796,43 @@ jobs:
           if [ -f /tmp/solana-validator.pid ]; then
             kill "$(cat /tmp/solana-validator.pid)" 2>/dev/null || true
           fi
+
+  # The heavy tier's one roll-up (issue #1214). It always runs — `always()` —
+  # so it reports on every event: green when `filter` decided the tier does not
+  # apply (a web- or docs-only pull request; every heavy job then reports
+  # `skipped`), green when every heavy job succeeded, red when any heavy job
+  # failed or was cancelled, or when `filter` itself failed. A skipped heavy job
+  # under `heavy == 'true'` is red too: it means a dependency broke, not that
+  # the tier was waived. It is the single name to make required once the
+  # pre-merge heavy tier has proven itself.
+  heavy-tier:
+    name: heavy-tier
+    needs: [filter, build-tests, test-shard, test-extras, solana-e2e]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Judge the heavy tier
+        env:
+          FILTER_RESULT: ${{ needs.filter.result }}
+          HEAVY: ${{ needs.filter.outputs.heavy }}
+          RESULTS: ${{ toJSON(needs) }}
+        run: |
+          python3 - <<'PY'
+          import json, os, sys
+          if os.environ["FILTER_RESULT"] != "success":
+              sys.exit(f"filter did not succeed ({os.environ['FILTER_RESULT']}); the tier decision is unknown")
+          results = {name: job["result"] for name, job in json.loads(os.environ["RESULTS"]).items() if name != "filter"}
+          print("heavy tier applies:", os.environ["HEAVY"])
+          for name, result in sorted(results.items()):
+              print(f"  {name}: {result}")
+          if os.environ["HEAVY"] != "true":
+              bad = {n: r for n, r in results.items() if r not in ("skipped", "success")}
+              if bad:
+                  sys.exit(f"heavy jobs ran outside the tier and did not pass: {bad}")
+              print("the heavy tier does not apply to this change; nothing to judge")
+              sys.exit(0)
+          bad = {n: r for n, r in results.items() if r != "success"}
+          if bad:
+              sys.exit(f"heavy tier failed: {bad}")
+          print("every heavy job passed")
+          PY
