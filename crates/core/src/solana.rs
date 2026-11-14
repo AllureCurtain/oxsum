@@ -1276,6 +1276,15 @@ impl SolanaRailVerifier {
         sanctions.screen(payer).await
     }
 
+    /// Whether a sanctions screen is configured at all — the refund-approve
+    /// path reads it to decide whether its `Clear` verdict is a real screen
+    /// result it should bind and record, or the no-op default of a deployment
+    /// that never enabled `OXSUM_SOLANA_SANCTIONS_*` and so carries no
+    /// `addressScreening` record (issue #1184).
+    pub fn has_sanctions_screen(&self) -> bool {
+        self.sanctions.is_some()
+    }
+
     /// Screens one bare address — the refund-approve path's check on the
     /// customer-supplied `refundAddress` (issue #1184). The same opt-in gate
     /// as `screen_payer`: no configured screen answers `Clear`, so a

@@ -180,7 +180,9 @@ pub(crate) async fn approve_refund(
         .as_ref()
         .is_some_and(|r| r["approvedAt"].is_string());
     let screened = if !already_approved && let Some(address) = standing.refund_address.as_deref() {
-        if let Some(verifier) = state.config.solana() {
+        if let Some(verifier) = state.config.solana()
+            && verifier.has_sanctions_screen()
+        {
             match verifier.screen_address(address).await {
                 oxsum_core::ScreenVerdict::Clear => Some(address.to_owned()),
                 oxsum_core::ScreenVerdict::Flagged { source, reason } => {
