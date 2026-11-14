@@ -175,6 +175,23 @@ pub struct ExpectedTransfer {
     pub reference: String,
 }
 
+/// What `validate_payout` demands the chain-side transaction satisfy (issue
+/// #1175): the refund payout's own terms — the customer's frozen refund
+/// address and the locked mint — with no `reference` marker: the runbook
+/// deliberately never reuses the deposit's marker on the payout, so the
+/// proof keys on recipient + mint alone.
+#[derive(Debug, Clone)]
+pub struct ExpectedPayout {
+    /// The customer's frozen refund address the payout must pay.
+    pub recipient: String,
+    /// The SPL mint the payout must spend, or `None` for native SOL.
+    pub spl_token_mint: Option<String>,
+    /// The vault the payout must leave from — the rail's `payTo`, which must
+    /// appear among the transaction's debited funding parties. A refund a
+    /// third party paid direct is no proof the vault paid out (issue #1175).
+    pub source: String,
+}
+
 /// A located-and-validated transfer: the signature `find_reference` answered
 /// and `validate_transfer` proved, plus the amount it actually delivered so
 /// the deposit can record `received_minor` against the opened `amount_minor`.
@@ -1002,6 +1019,111 @@ impl SolanaRpcClient {
         }))
     }
 
+    /// `getTransaction(signature, jsonParsed)` — the refund-complete half
+    /// (issue #1175): prove the submitted transaction is the multisig payout
+    /// the refund row claims. `Ok(None)` means it does not prove the payout —
+    /// a nonexistent signature, a failed transaction, or one whose
+    /// `recipient` delta cannot be computed on `expected.spl_token_mint`
+    /// (wrong address, wrong mint, a `payTo`-signed send in the wrong
+    /// direction). The checks mirror `validate_transfer`'s strictness minus
+    /// the marker: `err` must be null and the recipient's delta computable —
+    /// the lamport delta for native SOL, the token-account delta for an SPL
+    /// mint — while the delivered figure is *reported*, not judged: the core
+    /// compares it against the refund amount the lifecycle froze. There is
+    /// no `reference` to demand: the payout deliberately never reuses the
+    /// deposit's marker, so recipient + mint is the whole proof.
+    pub async fn validate_payout(
+        &self,
+        signature: &str,
+        expected: &ExpectedPayout,
+    ) -> Result<Option<ValidatedTransfer>, SolanaError> {
+        let result = self
+            .call(
+                "validate_payout",
+                "getTransaction",
+                json!([
+                    signature,
+                    {
+                        "encoding": "jsonParsed",
+                        "commitment": self.config.commitment,
+                        "maxSupportedTransactionVersion": 0,
+                    },
+                ]),
+            )
+            .await?;
+        if result.is_null() {
+            return Ok(None);
+        }
+        let meta = &result["meta"];
+        // A failed transaction never moved the money.
+        if !meta["err"].is_null() {
+            return Ok(None);
+        }
+        let message = &result["transaction"]["message"];
+        let account_keys = match message["accountKeys"].as_array() {
+            Some(keys) => keys,
+            None => return Ok(None),
+        };
+        let delivered = match expected.spl_token_mint.as_deref() {
+            // Native SOL: the refund address's post-minus-pre lamport delta.
+            None => {
+                let Some(delta) = lamport_delta(
+                    account_keys,
+                    meta["preBalances"].as_array(),
+                    meta["postBalances"].as_array(),
+                    &expected.recipient,
+                ) else {
+                    return Ok(None);
+                };
+                delta
+            }
+            // SPL: the token-account delta on the frozen mint whose owner (or
+            // account address) is the refund address — a pre-funded ATA never
+            // counts its prior holdings.
+            Some(mint) => {
+                let Some(delta) = token_delta(
+                    meta["postTokenBalances"].as_array(),
+                    meta["preTokenBalances"].as_array(),
+                    account_keys,
+                    &expected.recipient,
+                    mint,
+                ) else {
+                    return Ok(None);
+                };
+                delta
+            }
+        };
+        // The funding parties the transaction debited — every signer whose
+        // balance fell for SOL, every debited token account's owner for SPL.
+        // The payout must leave from the vault (`expected.source` is `payTo`):
+        // a SOL payout debits `payTo` itself; an SPL payout debits a token
+        // account `payTo` owns. A refund a third party paid direct — the
+        // customer, a stranger — never empties the vault the row believes it
+        // closed, so it is no proof of payout.
+        let payers = match expected.spl_token_mint.as_deref() {
+            None => sol_payers(
+                account_keys,
+                meta["preBalances"].as_array(),
+                meta["postBalances"].as_array(),
+            ),
+            Some(mint) => spl_payers(
+                meta["preTokenBalances"].as_array(),
+                meta["postTokenBalances"].as_array(),
+                account_keys,
+                mint,
+            ),
+        };
+        if !payers.iter().any(|payer| payer == &expected.source) {
+            return Ok(None);
+        }
+        Ok(Some(ValidatedTransfer {
+            signature: signature.to_owned(),
+            delivered,
+            block_time: result["blockTime"].as_i64(),
+            payers,
+        }))
+    }
+
     /// The second-opinion read behind a validated transfer (issue #1183):
     /// re-issue the exact `getTransaction` the primary endpoint answered on a
     /// *different* healthy endpoint, and demand that it sees the same
@@ -1255,6 +1377,44 @@ impl oxsum_core::ChainLookup for SolanaRpcClient {
                     signature,
                     error = %e.0,
                     "solana validate_transfer RPC failed; treating as unvalidated"
+                );
+            })
+            .ok()
+            .flatten()
+            .map(|v| oxsum_core::ValidatedTransfer {
+                signature: v.signature,
+                delivered: v.delivered,
+                block_time: v.block_time,
+                payers: v.payers,
+            })
+        })
+    }
+
+    fn validate_payout<'a>(
+        &'a self,
+        signature: &'a str,
+        expected: &'a oxsum_core::ExpectedPayout,
+    ) -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = Option<oxsum_core::ValidatedTransfer>> + Send + 'a>,
+    > {
+        Box::pin(async move {
+            self.validate_payout(
+                signature,
+                &ExpectedPayout {
+                    recipient: expected.recipient.clone(),
+                    spl_token_mint: expected.spl_token_mint.clone(),
+                    source: expected.source.clone(),
+                },
+            )
+            .await
+            .inspect_err(|e| {
+                // Same distinction as validate_transfer: a transport failure
+                // is not "the payout does not exist" — warn it so an
+                // unreachable endpoint never reads as a dishonoring proof.
+                tracing::warn!(
+                    signature,
+                    error = %e.0,
+                    "solana validate_payout RPC failed; treating as unvalidated"
                 );
             })
             .ok()

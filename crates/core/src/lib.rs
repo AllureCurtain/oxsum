@@ -342,11 +342,11 @@ pub use sessions::{
     SessionPrincipal,
 };
 pub use solana::{
-    AssetTerms, ChainLookup, ExpectedTransfer, LockedRate, OracleQuote, PriceOracle, RAIL_SOLANA,
-    SPL_TOKEN_PROGRAM_ID, SanctionsScreen, ScanWalk, ScannedTransfer, ScreenVerdict, SolanaCluster,
-    SolanaCredit, SolanaExceptionDeposit, SolanaPricing, SolanaRailVerifier, SolanaTerms,
-    SolanaVerification, TOKEN_2022_PROGRAM_ID, USD_PEGGED_RATE_MICRO, ValidatedTransfer,
-    status as solana_status,
+    AssetTerms, ChainLookup, ExpectedPayout, ExpectedTransfer, LockedRate, OracleQuote,
+    PriceOracle, RAIL_SOLANA, SPL_TOKEN_PROGRAM_ID, SanctionsScreen, ScanWalk, ScannedTransfer,
+    ScreenVerdict, SolanaCluster, SolanaCredit, SolanaExceptionDeposit, SolanaPricing,
+    SolanaRailVerifier, SolanaTerms, SolanaVerification, TOKEN_2022_PROGRAM_ID,
+    USD_PEGGED_RATE_MICRO, ValidatedTransfer, status as solana_status,
 };
 pub use staff_invitations::{StaffInvitationPage, StaffInvitationSummary, StaffMailTarget};
 pub use statement_pdf::render_statement_pdf;
