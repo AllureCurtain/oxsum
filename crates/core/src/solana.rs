@@ -1488,10 +1488,15 @@ impl SolanaRailVerifier {
         // closest attempt, and the one the operator reconciles against
         // (issue #1142). A `validate_transfer` `Err` is NOT "not this
         // payment" — it is "cannot confirm" (a transport failure, or a
-        // cross-confirm that disagreed or went unreachable), so the whole
-        // verify defers rather than risk an unpaid verdict that the expiry
-        // sweep would act on over a possibly-paid intent (issue #1174).
+        // cross-confirm that disagreed or went unreachable). The walk keeps
+        // going past it: a later signature may still honor or fall short, and
+        // either verdict is firmer than the error. Only when the walk ends
+        // with nothing honoring *and* no usable short candidate does the
+        // recorded error make the verify `Deferred` rather than `Unpaid` —
+        // never letting a lookup failure feed the expiry sweep over a
+        // possibly-paid intent (issues #1174, #1209).
         let mut short: Option<ValidatedTransfer> = None;
+        let mut had_error = false;
         for signature in &signatures {
             let validated = match self
                 .chain
@@ -1510,16 +1515,18 @@ impl SolanaRailVerifier {
                 // Definitively not this intent's payment — try the next
                 // signature the marker indexed.
                 Ok(None) => continue,
-                // Could not confirm this candidate — defer the whole verify
-                // rather than risk an unpaid verdict that expires a possibly
-                // paid intent.
+                // Could not confirm this candidate — record it and keep
+                // walking: the marker's other signatures may still prove the
+                // payment. If nothing does, the flag below makes the verdict
+                // Deferred rather than Unpaid.
                 Err(error) => {
                     tracing::warn!(
                         signature,
                         error = %error,
-                        "solana validate_transfer failed; the verify defers"
+                        "solana validate_transfer failed; trying the next candidate"
                     );
-                    return SolanaVerification::Deferred;
+                    had_error = true;
+                    continue;
                 }
             };
             if validated.delivered >= expected {
@@ -1538,6 +1545,10 @@ impl SolanaRailVerifier {
             Some(validated) => SolanaVerification::Short(verified_payment(
                 opened, reference, validated, expected, terms,
             )),
+            // A lookup failure with no honoring and no usable short candidate
+            // defers rather than expiring; a clean walk with nothing found is
+            // genuinely unpaid.
+            None if had_error => SolanaVerification::Deferred,
             None => SolanaVerification::Unpaid,
         }
     }
@@ -3413,7 +3424,22 @@ impl Db {
         .bind(deposit_id)
         .bind(signature.trim())
         .execute(&mut *tx)
-        .await?;
+        .await
+        .map_err(|e| {
+            // A unique violation on deposits_solana_refund_signature means a
+            // concurrent complete on a *different* deposit row claimed this
+            // signature first — the EXISTS probe above can race when the two
+            // completes hold different row locks, so the index is the last
+            // word. Same refusal the probe raises (issue #1209).
+            if let sqlx::Error::Database(ref db) = e
+                && db.code().as_deref() == Some("23505")
+            {
+                return WalletError::Conflict(
+                    "the payout signature already closed another refund".into(),
+                );
+            }
+            WalletError::from(e)
+        })?;
         tx.commit().await?;
         self.solana_exception_deposit(deposit_id).await
     }
@@ -3565,24 +3591,48 @@ impl Db {
             .await?
             .rows_affected()
         };
-        // Rescue pass (issue #1174): rows already `expired` whose `expiresAt`
-        // fell within the last 24h get re-verified through the same walk — an
-        // on-time payment credits, a late one marks `late`, still-unpaid or
-        // deferred keeps `expired`. Bounded separately so the rescue cannot
-        // starve the live work list. The window is on `expiresAt`, not the
-        // row's write time: an intent can only rescue a payment that landed
-        // before its own deadline, so anything older is genuinely done.
+        // Rescue pass (issues #1174, #1209): rows already `expired` whose
+        // `expiresAt` fell within the last 24h get re-verified through the
+        // same walk — an on-time payment credits, a late one marks `late`,
+        // still-unpaid or deferred keeps `expired`. Bounded separately so the
+        // rescue cannot starve the live work list. The window is on
+        // `expiresAt`, not the row's write time: an intent can only rescue a
+        // payment that landed before its own deadline, so anything older is
+        // genuinely done.
+        //
+        // Fairness (issue #1209): every checked row records
+        // `meta.rescueCheckedAt` and an attempt count, and the due filter
+        // paces re-checks on a backoff — ~1m, 5m, 30m, 2h, 6h, then every 24h
+        // for the window's remainder. Without it a flooded queue re-queries
+        // the same rows every pass while a just-expired row whose payment
+        // landed on-time waits behind them; never-checked rows sort first
+        // (`NULLS FIRST`), then the freshest deadline wins.
         let rescue_rows: Vec<(Uuid, Uuid)> = sqlx::query_as(
             "SELECT d.deposit_id, d.organization_id \
              FROM oxsum.deposits d \
              WHERE d.rail = $1 AND d.status = 'expired' \
                AND (d.meta->>'expiresAt')::timestamptz >= now() - interval '24 hours' \
-             ORDER BY (d.meta->>'expiresAt')::timestamptz \
+               AND ( \
+                   d.meta->>'rescueCheckedAt' IS NULL \
+                   OR (d.meta->>'rescueCheckedAt')::timestamptz <= now() - ( \
+                       CASE COALESCE((d.meta->>'rescueAttempts')::int, 0) \
+                           WHEN 0 THEN interval '1 minute' \
+                           WHEN 1 THEN interval '5 minutes' \
+                           WHEN 2 THEN interval '30 minutes' \
+                           WHEN 3 THEN interval '2 hours' \
+                           WHEN 4 THEN interval '6 hours' \
+                           ELSE interval '24 hours' \
+                       END \
+                   ) \
+               ) \
+             ORDER BY (d.meta->>'rescueCheckedAt')::timestamptz NULLS FIRST, \
+                      (d.meta->>'expiresAt')::timestamptz DESC \
              LIMIT 64",
         )
         .bind(RAIL_SOLANA)
         .fetch_all(self.pool())
         .await?;
+        let mut rescued: u64 = 0;
         for (deposit_id, organization_id) in &rescue_rows {
             let tenant_id: String = sqlx::query_scalar(
                 "SELECT tenant_id FROM oxsum.organizations WHERE organization_id = $1",
@@ -3595,21 +3645,50 @@ impl Db {
                 .credit_solana_deposit(&wallet, *deposit_id, verifier, on)
                 .await
             {
-                Ok(SolanaCredit::Credited(_)) => credited += 1,
+                Ok(SolanaCredit::Credited(_)) => {
+                    credited += 1;
+                    rescued += 1;
+                }
                 Ok(SolanaCredit::Underpaid | SolanaCredit::Late | SolanaCredit::Flagged) => {
                     queued += 1;
                 }
                 // Still-unpaid stays expired; deferred/settled leave the row
                 // where the verdict left it.
-                _ => {}
+                Ok(_) => {}
+                Err(error) => {
+                    tracing::warn!(
+                        deposit_id = %deposit_id,
+                        error = %error,
+                        "the solana expired-deposit rescue failed; the row stays expired"
+                    );
+                }
             }
+            // Stamp the check regardless of outcome — the attempt consumed
+            // the row's slot, so the backoff paces its next turn. A failed
+            // stamp only means the row may re-check early, never that a
+            // payment is lost.
+            sqlx::query(
+                "UPDATE oxsum.deposits \
+                 SET meta = meta || jsonb_build_object( \
+                         'rescueCheckedAt', now()::text, \
+                         'rescueAttempts', COALESCE((meta->>'rescueAttempts')::int, 0) + 1), \
+                     updated_at = now() \
+                 WHERE deposit_id = $1 AND status = 'expired'",
+            )
+            .bind(deposit_id)
+            .execute(self.pool())
+            .await?;
         }
-        Ok((
-            rows.len() as u64 + rescue_rows.len() as u64,
-            credited,
-            expired_count,
-            queued,
-        ))
+        if rescue_rows.len() as u64 > 0 || rescued > 0 {
+            tracing::info!(
+                checked = rescue_rows.len() as u64,
+                rescued,
+                "the solana expired-deposit rescue pass ran"
+            );
+        }
+        // `checked` counts the live work list only — the rescue's own figures
+        // ride the log line above, not the tuple (issue #1209).
+        Ok((rows.len() as u64, credited, expired_count, queued))
     }
 }
 
