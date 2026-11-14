@@ -10,6 +10,7 @@ Open GitHub issues are the queue. This file is only the index. One row per open 
 
 | Issue | Title |
 | --- | --- |
+| [#1178](https://github.com/AllureCurtain/oxsum/issues/1178) | fix(solana): screen every funding party, not just the SOL relayer / fee payer |
 | [#1169](https://github.com/AllureCurtain/oxsum/issues/1169) | fix(solana): opens_per_minute count+insert is a TOCTOU under concurrent opens |
 | [#1152](https://github.com/AllureCurtain/oxsum/issues/1152) | test(solana): end-to-end deposits against a local test-validator |
 | [#1150](https://github.com/AllureCurtain/oxsum/issues/1150) | feat(solana): optional Helius webhook to accelerate verification |

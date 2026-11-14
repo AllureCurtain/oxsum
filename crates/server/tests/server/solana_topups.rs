@@ -357,7 +357,7 @@ async fn solana_intent_pays_once() {
             signature: signature.to_owned(),
             delivered: 5_000,
             block_time: Some(0),
-            payer: None,
+            payers: Vec::new(),
         },
     );
     // Confirm: the credit lands once.
@@ -420,7 +420,7 @@ async fn solana_confirm_marks_an_underpaid_transfer() {
             signature: signature.to_owned(),
             delivered: 1, // far below the asked 500-credit lamports
             block_time: Some(0),
-            payer: None,
+            payers: Vec::new(),
         },
     );
     let (status, body) = call(
@@ -523,7 +523,7 @@ async fn solana_signature_credits_once_across_organizations() {
             signature: signature.to_owned(),
             delivered: 5_000,
             block_time: Some(0),
-            payer: None,
+            payers: Vec::new(),
         },
     );
     // The first organization's confirm settles and credits.
@@ -584,7 +584,7 @@ async fn solana_confirm_marks_a_late_transfer() {
             signature: signature.to_owned(),
             delivered: 5_000,
             block_time: Some(4_102_444_800), // 2100-01-01 — past every TTL
-            payer: None,
+            payers: Vec::new(),
         },
     );
     let (status, body) = call(
@@ -645,7 +645,7 @@ async fn solana_overpay_credits_once_and_marks_overpaid() {
             signature: signature.to_owned(),
             delivered: 9_000, // over the asked 1_000 USDC base units
             block_time: Some(0),
-            payer: None,
+            payers: Vec::new(),
         },
     );
     let (status, receipt) = call(
@@ -722,7 +722,7 @@ async fn open_exception(
             signature: signature.clone(),
             delivered,
             block_time: Some(block_time),
-            payer: None,
+            payers: Vec::new(),
         },
     );
     let _ = call(
@@ -916,7 +916,7 @@ async fn solana_refund_refuses_a_non_refundable_status() {
             signature: signature.to_owned(),
             delivered: 5_000,
             block_time: Some(0),
-            payer: None,
+            payers: Vec::new(),
         },
     );
     let (status, _) = call(
@@ -1183,7 +1183,7 @@ async fn solana_usdt_open_and_confirm_credits() {
             signature: signature.to_owned(),
             delivered: 1_000,
             block_time: Some(0),
-            payer: None,
+            payers: Vec::new(),
         },
     );
     let (status, receipt) = call(
@@ -1432,7 +1432,7 @@ async fn solana_screening_clear_credits() {
             signature: signature.to_owned(),
             delivered: 5_000,
             block_time: Some(0),
-            payer: Some("cleanPayerAddr1111111111111111111111111111".to_owned()),
+            payers: vec!["cleanPayerAddr1111111111111111111111111111".to_owned()],
         },
     );
     let (status, receipt) = call(
@@ -1487,7 +1487,7 @@ async fn solana_screening_flagged_parks_the_deposit() {
             signature: signature.to_owned(),
             delivered: 5_000,
             block_time: Some(0),
-            payer: Some("hitPayerAddr2222222222222222222222222222".to_owned()),
+            payers: vec!["hitPayerAddr2222222222222222222222222222".to_owned()],
         },
     );
     // The confirm does not credit — the deposit parked at `flagged` reads as
@@ -1559,7 +1559,7 @@ async fn solana_screening_unavailable_stays_pending() {
             signature: signature.to_owned(),
             delivered: 5_000,
             block_time: Some(0),
-            payer: Some("unavailPayerAddr333333333333333333333333333".to_owned()),
+            payers: vec!["unavailPayerAddr333333333333333333333333333".to_owned()],
         },
     );
     let (status, _body) = call(
@@ -1627,7 +1627,7 @@ async fn solana_screening_flagged_parks_a_usdc_deposit() {
             delivered: 1_000, // 1_000 USDC base units at parity
             block_time: Some(0),
             // The SPL arm's answer — the debited token account's owner.
-            payer: Some("usdcHitPayerAddr6666666666666666666666666".to_owned()),
+            payers: vec!["usdcHitPayerAddr6666666666666666666666666".to_owned()],
         },
     );
     let (_status, _body) = call(
@@ -1692,7 +1692,7 @@ async fn solana_screening_absent_payer_is_unavailable_but_disabled_credits() {
             signature: signature.to_owned(),
             delivered: 5_000,
             block_time: Some(0),
-            payer: None,
+            payers: Vec::new(),
         },
     );
     let (status, _body) = call(
@@ -1733,7 +1733,7 @@ async fn solana_screening_absent_payer_is_unavailable_but_disabled_credits() {
             signature: signature.to_owned(),
             delivered: 5_000,
             block_time: Some(0),
-            payer: None,
+            payers: Vec::new(),
         },
     );
     let (status, receipt) = call(
@@ -1831,7 +1831,7 @@ async fn solana_concurrent_confirms_credit_once() {
             signature: signature.to_owned(),
             delivered: 5_000,
             block_time: Some(0),
-            payer: None,
+            payers: Vec::new(),
         },
     );
     const N: usize = 8;
@@ -1941,7 +1941,7 @@ async fn credit_one(
             signature: signature.clone(),
             delivered,
             block_time: Some(0),
-            payer: None,
+            payers: Vec::new(),
         },
     );
     let (status, receipt) = call(
@@ -2292,7 +2292,7 @@ async fn solana_webhook_credits_a_matching_intent() {
             signature: signature.to_owned(),
             delivered: 5_000,
             block_time: Some(0),
-            payer: None,
+            payers: Vec::new(),
         },
     );
     // The push names the intent's reference among its account keys — the match
@@ -2359,7 +2359,7 @@ async fn solana_webhook_replays_dedupe_and_credit_once() {
             signature: signature.to_owned(),
             delivered: 5_000,
             block_time: Some(0),
-            payer: None,
+            payers: Vec::new(),
         },
     );
     let payload = json!([helius_enhanced(signature, &[&reference])]);
@@ -2452,7 +2452,7 @@ async fn solana_webhook_matches_a_raw_envelope() {
             signature: signature.to_owned(),
             delivered: 5_000,
             block_time: Some(0),
-            payer: None,
+            payers: Vec::new(),
         },
     );
     // The raw getTransaction-shaped entry keys its account list under
