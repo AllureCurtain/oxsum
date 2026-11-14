@@ -4971,3 +4971,35 @@ spurious `BlockhashNotFound`) and a fresh-account transfer needs the
 rent-exempt minimum (noise transfers self-pay instead). If the suite ever
 needs instructions past that set, revisiting an SDK dev-dep is a one-line
 change — the wire builder is deliberately test-only, never library code.
+
+## 2026-11-14 — The Solana sanctions gate is a required choice on mainnet (#1179)
+
+`OXSUM_SOLANA_SANCTIONS_ENABLED` defaulted off and a mainnet-shaped RPC
+endpoint merely warned — real money could credit unscreened because an
+operator never saw the variable. The flag is now a tri-state
+(`sanctions_enabled_of` answers `Some(on)`, `Some(off)` or `None`), and
+`solana_sanctions_gate` applies the endpoint shape to the unset arm:
+
+- **Mainnet-shaped + unset → startup error.** The boot refuses, naming both
+  arms of the required choice — `=1` (recommended) or `=0` to run unscreened
+  by explicit decision. The heuristic is the same one the warn used
+  (extracted as `solana_mainnet_shaped`): an endpoint naming neither
+  `devnet`, `testnet`, `localhost` nor `127.0.0.1` is production-shaped, and
+  one mainnet-looking entry marks a mixed pool — the screening posture
+  follows the most production-like endpoint, never the most forgiving.
+- **Mainnet-shaped + explicit `=0` → boots, loudly.** Off stays legal only
+  because the operator typed it; the startup warn keeps the posture
+  observable instead of silent.
+- **Devnet/testnet/localhost + unset → off, quietly.** A local loop screens
+  nothing and errors nothing — the default's only safe home.
+- **`=1` composes with the SDN floor (#1176, its own change).** The gate
+  decides whether the `CompositeSanctions` screen is built at all; which
+  sources an enabled screen applies — the embedded list always, the
+  configured file, the API key — stays that fix's rule. This change only
+  guarantees a mainnet deployment makes the on/off call deliberately.
+
+The env examples, the development table and the mainnet-rehearsal runbook
+all moved with it: a mainnet drill lists `SANCTIONS_ENABLED=1` as REQUIRED
+with an API key or a non-empty SDN file, and the `--check-config` suite now
+covers every arm — unset refuses, `=1` passes, `=0` passes under the warn,
+devnet stays silent.

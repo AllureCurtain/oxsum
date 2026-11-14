@@ -64,11 +64,12 @@ Complete every line before configuring the deployment.
   transfers plus fees. This wallet plays the customer. Phantom, Solflare or a
   CLI keypair are all fine; the rail does not care what sends the transfer,
   only that it carries the `reference` marker.
-- [ ] Chainalysis (or equivalent screening provider) API key if rehearsing the
-  screening path (issue #1144 — `OXSUM_SOLANA_SANCTIONS_API_KEY`; the local
-  OFAC SDN Solana list always applies when the gate is on) — plus a local copy
-  of the list file if the deployment points `OXSUM_SOLANA_SDN_LIST_PATH` at a
-  refreshed one.
+- [ ] A Chainalysis (or equivalent screening provider) API key, or a non-empty
+  local SDN list file — `OXSUM_SOLANA_SANCTIONS_ENABLED=1` is REQUIRED on a
+  mainnet-shaped endpoint (issue #1179: the boot refuses to start with the
+  variable unset), so the rehearsal screens with at least the embedded OFAC
+  SDN Solana list; `OXSUM_SOLANA_SANCTIONS_API_KEY` adds the free API's
+  coverage and `OXSUM_SOLANA_SDN_LIST_PATH` a refreshed file.
 - [ ] The operator token for the deployment and a `psql` line to the database
   (the Compose file's `postgres` service or your managed instance).
 - [ ] A registered customer organization on the deployment — the rehearsal
@@ -124,6 +125,16 @@ OXSUM_SOLANA_OPENS_PER_MINUTE=3
 # wants; pinning it here keeps the expired-then-paid scenario staging intact
 # whichever way a future default moves.
 OXSUM_SOLANA_INTENT_TTL_SECS=900
+
+# REQUIRED on a mainnet-shaped endpoint (issue #1179): the boot refuses to
+# start with the variable unset. `1` screens every payer pre-credit — the
+# embedded OFAC SDN Solana list always, plus the Chainalysis free API when
+# SANCTIONS_API_KEY is set (an API key or a non-empty SDN_LIST_PATH file is
+# the rehearsal's coverage; the embedded list alone is the floor). `0` is
+# only legal because it is explicit — the boot warns loudly that screening is
+# off on a mainnet endpoint, and an unscreened rehearsal is not a rehearsal.
+OXSUM_SOLANA_SANCTIONS_ENABLED=1
+OXSUM_SOLANA_SANCTIONS_API_KEY=<chainalysis key>
 ```
 
 Boot and verify:
@@ -357,9 +368,10 @@ of the delivered figure.
 
 ## Step 7 — screening a flagged payer
 
-With `OXSUM_SOLANA_SANCTIONS_ENABLED=1` (issue #1144 — the recommended
-mainnet posture; the boot warns when a mainnet-shaped endpoint runs with it
-off) the payer's debited signer is screened before the ledger credit books:
+With `OXSUM_SOLANA_SANCTIONS_ENABLED=1` (issue #1144 — REQUIRED on a
+mainnet-shaped endpoint since issue #1179: the boot refuses to start with
+the variable unset, and an explicit `0` boots only under a loud warning) the
+payer's debited signer is screened before the ledger credit books:
 the local OFAC SDN Solana list always, plus the Chainalysis free API when
 `OXSUM_SOLANA_SANCTIONS_API_KEY` is set. A hit does not credit and does not
 refund — the deposit moves to `flagged` and into operator review at
