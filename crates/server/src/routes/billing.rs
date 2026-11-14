@@ -402,6 +402,14 @@ pub(crate) async fn solana_confirm(
         oxsum_core::SolanaCredit::Settled => {
             return Err(ApiError::NotFound("the deposit intent is not known".into()));
         }
+        // The chain provably has no honoring transfer (`Unpaid`), or it could
+        // not be confirmed either way (`Deferred`) — the same refusal the old
+        // `Err(WalletError::Forbidden)` produced, so the route's outward HTTP
+        // semantics are unchanged (issue #1174): 403, the deposit stays
+        // `pending`, the caller retries.
+        oxsum_core::SolanaCredit::Unpaid | oxsum_core::SolanaCredit::Deferred => {
+            return Err(ApiError::Forbidden("the payment is not verified".into()));
+        }
     };
     // The credit repaid counts against the statement book, like every rail:
     // open statements are repaid oldest first (issue #124).
