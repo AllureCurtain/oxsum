@@ -436,11 +436,12 @@ async fn check_config_validates_env_without_a_database() {
     );
     assert!(err.contains("OXSUM_SOLANA_PAY_TO"), "{err}");
     // The singular still configures the rail, comma-separated entries
-    // included; a full trio passes the check.
+    // included; a full trio passes the check. Both endpoints are
+    // devnet-shaped — a mixed-cluster list is refused below (issue #1181).
     let ok = run(&[
         (
             "OXSUM_SOLANA_RPC_URL",
-            "https://api.devnet.solana.com,https://a.example.com",
+            "https://api.devnet.solana.com,http://127.0.0.1:8899",
         ),
         (
             "OXSUM_SOLANA_PAY_TO",
