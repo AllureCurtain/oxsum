@@ -85,13 +85,13 @@ async fn wallet_for(db: &Db, org: Uuid) -> Arc<oxsum_core::Wallet> {
 
 /// A `ChainLookup` armed with one honoring transfer: `find_reference`
 /// answers the signature for every reference it is asked, `validate_transfer`
-/// reports `delivered`/`block_time`/`payer`. `block_time: 0` is always inside
+/// reports `delivered`/`block_time`/`payers`. `block_time: 0` is always inside
 /// the intent's TTL (the expiry judgment is the transaction's own clock).
 #[derive(Debug)]
 struct OneSig {
     signature: String,
     delivered: i64,
-    payer: Option<String>,
+    payers: Vec<String>,
 }
 
 impl ChainLookup for OneSig {
@@ -120,7 +120,7 @@ impl ChainLookup for OneSig {
                 signature: signature.to_owned(),
                 delivered: self.delivered,
                 block_time: Some(0),
-                payer: self.payer.clone(),
+                payers: self.payers.clone(),
             })
         })
     }
@@ -129,8 +129,10 @@ impl ChainLookup for OneSig {
 /// The opens-per-minute bound is per-organization: with the cap unset every
 /// concurrent open lands its own pending row under its own `payment_ref`
 /// (the reference is minted inside the open, so two raced opens can never
-/// collide on the anchor), and a capped org's losers refuse Forbidden — the
-/// cap itself reads the org's own rows only.
+/// collide on the anchor), and a capped org stops at exactly K — the
+/// serialized count+insert under the org's advisory lock (issue #1169)
+/// refuses the rest Forbidden, and the cap itself reads the org's own rows
+/// only.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn concurrent_opens_land_distinct_intents_and_the_cap_holds() {
     let Some(db) = database("solana_conc_open").await else {
@@ -169,17 +171,10 @@ async fn concurrent_opens_land_distinct_intents_and_the_cap_holds() {
     .unwrap();
     assert_eq!(pending, N as i64);
 
-    // (ii) A second org under `opens_per_minute = K < N`: the burst's losers
-    // refuse Forbidden once the bound's rows are visible — and the cap is
-    // per-org, so the first org's unbounded burst never counted against it.
-    //
-    // KNOWN GAP (reported under #1153): the count-and-insert is not atomic —
-    // every open in a tight-enough burst reads the same pre-burst `recent`
-    // count and all land, so `landed` can reach N rather than stopping at K.
-    // The test asserts the bound the code actually guarantees today: losers
-    // *do* refuse once landed rows are visible, and the org the cap names is
-    // the only one it counts. The strict `landed == K` is what the fix must
-    // restore.
+    // (ii) A second org under `opens_per_minute = K < N`: the count-and-insert
+    // serializes under the org's advisory lock (issue #1169), so the burst
+    // stops exactly at K — N-K losers refuse Forbidden. The cap is per-org,
+    // so the first org's unbounded burst never counted against it.
     const K: i64 = 4;
     let capped = SolanaTerms {
         opens_per_minute: K,
@@ -187,12 +182,15 @@ async fn concurrent_opens_land_distinct_intents_and_the_cap_holds() {
     };
     let capped_rate = static_rate(&capped);
     let capped_org = organization(&db, "open-capped").await;
+    let barrier = Arc::new(tokio::sync::Barrier::new(N));
     let mut opens = Vec::with_capacity(N);
     for _ in 0..N {
         let db = db.clone();
         let terms = capped.clone();
         let rate = capped_rate.clone();
+        let barrier = barrier.clone();
         opens.push(tokio::spawn(async move {
+            barrier.wait().await;
             db.open_solana_deposit(capped_org, Uuid::new_v4(), 1000, &terms, None, &rate)
                 .await
         }));
@@ -206,10 +204,13 @@ async fn concurrent_opens_land_distinct_intents_and_the_cap_holds() {
             other => panic!("a capped open is a landing or a Forbidden: {other:?}"),
         }
     }
-    assert!(landed >= 1, "at least the first burst opens land");
-    assert_eq!(landed + refused, N as i64, "every open resolves");
-    // The cap is real once rows are visible: after the burst the org is over
-    // its bound, so a further sequential open refuses.
+    assert_eq!(
+        landed, K,
+        "the serialized count+insert stops the burst at K"
+    );
+    assert_eq!(refused, N as i64 - K, "the rest refused Forbidden");
+    // The cap still bites after the burst: the org sits at its bound, so a
+    // further sequential open refuses.
     let throttled = db
         .open_solana_deposit(
             capped_org,
@@ -222,7 +223,7 @@ async fn concurrent_opens_land_distinct_intents_and_the_cap_holds() {
         .await;
     assert!(
         matches!(throttled, Err(WalletError::Forbidden(_))),
-        "an org over its per-minute count refuses the next open: {throttled:?}"
+        "an org at its per-minute count refuses the next open: {throttled:?}"
     );
     // The bound is per-org: the first org's unbounded burst never counted —
     // every row the capped org landed is its own.
@@ -234,7 +235,71 @@ async fn concurrent_opens_land_distinct_intents_and_the_cap_holds() {
     .fetch_one(db.pool())
     .await
     .unwrap();
-    assert_eq!(capped_pending, landed);
+    assert_eq!(capped_pending, K);
+}
+
+/// The per-minute budget is the organization's own: one capped org racing a
+/// burst stops at its K while a second capped org — same terms, same
+/// instant — still lands its own full K. Two bursts fanned onto one barrier
+/// prove neither org's lock or count eats the other's allowance.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_open_cap_is_per_organization() {
+    let Some(db) = database("solana_conc_per_org").await else {
+        return;
+    };
+    const N: usize = 12;
+    const K: i64 = 4;
+    let capped = SolanaTerms {
+        opens_per_minute: K,
+        ..terms()
+    };
+    let capped_rate = static_rate(&capped);
+    let org_a = organization(&db, "cap-a").await;
+    let org_b = organization(&db, "cap-b").await;
+    let barrier = Arc::new(tokio::sync::Barrier::new(2 * N));
+    let mut opens = Vec::with_capacity(2 * N);
+    for org in [org_a, org_b] {
+        for _ in 0..N {
+            let db = db.clone();
+            let terms = capped.clone();
+            let rate = capped_rate.clone();
+            let barrier = barrier.clone();
+            opens.push(tokio::spawn(async move {
+                barrier.wait().await;
+                (
+                    org,
+                    db.open_solana_deposit(org, Uuid::new_v4(), 1000, &terms, None, &rate)
+                        .await,
+                )
+            }));
+        }
+    }
+    let mut landed_a = 0;
+    let mut landed_b = 0;
+    let mut refused = 0;
+    for open in opens {
+        let (org, result) = open.await.unwrap();
+        match result {
+            Ok(Some(_)) if org == org_a => landed_a += 1,
+            Ok(Some(_)) => landed_b += 1,
+            Err(WalletError::Forbidden(_)) => refused += 1,
+            other => panic!("a capped open is a landing or a Forbidden: {other:?}"),
+        }
+    }
+    assert_eq!(landed_a, K, "org A's own burst stops at its own K");
+    assert_eq!(landed_b, K, "org B keeps a full budget under A's burst");
+    assert_eq!(refused, 2 * (N as i64 - K), "every loser refused Forbidden");
+    for (org, expected) in [(org_a, K), (org_b, K)] {
+        let pending: i64 = sqlx::query_scalar(
+            "SELECT count(*) FROM oxsum.deposits \
+             WHERE rail = 'solana' AND organization_id = $1 AND status = 'pending'",
+        )
+        .bind(org)
+        .fetch_one(db.pool())
+        .await
+        .unwrap();
+        assert_eq!(pending, expected);
+    }
 }
 
 /// N concurrent confirms on the SAME deposit resolving the SAME signature:
@@ -259,7 +324,7 @@ async fn concurrent_confirms_on_one_deposit_credit_once() {
         Arc::new(OneSig {
             signature: signature.to_owned(),
             delivered: 5_000,
-            payer: None,
+            payers: Vec::new(),
         }),
         terms,
     );
@@ -337,7 +402,7 @@ async fn two_orgs_racing_one_signature_credit_once() {
         Arc::new(OneSig {
             signature: signature.to_owned(),
             delivered: 5_000,
-            payer: None,
+            payers: Vec::new(),
         }),
         terms,
     );
@@ -431,7 +496,7 @@ async fn a_confirm_racing_the_poll_credits_once() {
         Arc::new(OneSig {
             signature: "sigPollRace0000000000000000000000000000000000000000000".to_owned(),
             delivered: 5_000,
-            payer: None,
+            payers: Vec::new(),
         }),
         terms,
     );
@@ -542,7 +607,7 @@ async fn the_chain_rpc_section_holds_no_row_lock() {
                     signature: signature.to_owned(),
                     delivered: self.delivered,
                     block_time: Some(0),
-                    payer: None,
+                    payers: Vec::new(),
                 })
             })
         }
@@ -601,7 +666,7 @@ async fn the_chain_rpc_section_holds_no_row_lock() {
         Arc::new(OneSig {
             signature: "sigFree000000000000000000000000000000000000000000000000".to_owned(),
             delivered: 5_000,
-            payer: None,
+            payers: Vec::new(),
         }),
         terms,
     );

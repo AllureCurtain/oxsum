@@ -11,6 +11,10 @@ Open GitHub issues are the queue. This file is only the index. One row per open 
 | Issue | Title |
 | --- | --- |
 | [#1174](https://github.com/AllureCurtain/oxsum/issues/1174) | fix(solana): expiry sweep must not expire unverified or in-flight paid intents |
+| [#1178](https://github.com/AllureCurtain/oxsum/issues/1178) | fix(solana): screen every funding party, not just the SOL relayer / fee payer |
+| [#1182](https://github.com/AllureCurtain/oxsum/issues/1182) | fix(solana): the mint audit must only allow the classic SPL Token program and validate the mint layout |
+| [#1181](https://github.com/AllureCurtain/oxsum/issues/1181) | fix(solana): pin the payment cluster; never silently default to mainnet |
+| [#1179](https://github.com/AllureCurtain/oxsum/issues/1179) | fix(solana): a mainnet-shaped endpoint must explicitly enable (or disable) sanctions screening |
 | [#1169](https://github.com/AllureCurtain/oxsum/issues/1169) | fix(solana): opens_per_minute count+insert is a TOCTOU under concurrent opens |
 | [#1152](https://github.com/AllureCurtain/oxsum/issues/1152) | test(solana): end-to-end deposits against a local test-validator |
 | [#1150](https://github.com/AllureCurtain/oxsum/issues/1150) | feat(solana): optional Helius webhook to accelerate verification |

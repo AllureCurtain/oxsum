@@ -7,6 +7,7 @@
 use std::sync::Arc;
 use std::time::Duration;
 
+use axum::extract::DefaultBodyLimit;
 use axum::http::StatusCode;
 use axum::routing::{delete, get, patch, post, put};
 use axum::{Json, Router, middleware};
@@ -436,8 +437,15 @@ pub fn router(state: AppState) -> Router {
         // The Solana rail's optional Helius push (issue #1150): the shared
         // `Authorization` secret Helius echoes is the credential — and even a
         // verified push only *triggers* a re-verify on the chain; it never
-        // credits on its own claims. Unmounted when the secret is unset.
-        .route("/webhooks/solana", post(billing::solana_webhook));
+        // credits on its own claims. Unmounted when the secret is unset. A
+        // delivery is a compact array of transaction entries, so the open
+        // surface caps the body rather than buffering unbounded input
+        // (issue #1187) — axum's `Bytes` extractor answers 413 past it.
+        .route(
+            "/webhooks/solana",
+            post(billing::solana_webhook)
+                .layer(DefaultBodyLimit::max(billing::SOLANA_WEBHOOK_BODY_LIMIT)),
+        );
 
     // Personal-session routes: the business console and the account actions a
     // logged-in user takes. `require_personal_session` resolves the cookie once

@@ -390,6 +390,21 @@ async fn the_retention_pass_ages_out_each_rule_once() {
         .unwrap();
     }
 
+    // A Solana rail dedup row past the deliveries window — and a fresh one
+    // (issue #1187): the inbound push's dedup ages out like the outbound
+    // deliveries do.
+    for (signature, days) in [("sig-old", 60), ("sig-live", 0)] {
+        sqlx::query(
+            "INSERT INTO oxsum.solana_webhook_deliveries (signature, matched, received_at) \
+             VALUES ($1, 0, now() - $2::interval)",
+        )
+        .bind(format!("{signature}-{}", Uuid::new_v4()))
+        .bind(format!("{days} days"))
+        .execute(db.pool())
+        .await
+        .unwrap();
+    }
+
     // A finished job row past its window, beside a recent one.
     let kind = kind();
     let old_job = enqueued(&db, &kind).await;
@@ -406,6 +421,7 @@ async fn the_retention_pass_ages_out_each_rule_once() {
     assert!(report.idempotency_records >= 1);
     assert!(report.provider_raw_nulled >= 1);
     assert!(report.webhook_deliveries >= 1);
+    assert_eq!(report.solana_webhook_deliveries, 1);
     assert!(report.jobs >= 1);
 
     // Each rule removed exactly what its window says, once.
@@ -433,6 +449,13 @@ async fn the_retention_pass_ages_out_each_rule_once() {
     .await
     .unwrap();
     assert_eq!(deliveries, 0);
+    let solana_left: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM oxsum.solana_webhook_deliveries WHERE signature LIKE 'sig-%'",
+    )
+    .fetch_one(db.pool())
+    .await
+    .unwrap();
+    assert_eq!(solana_left, 1, "the fresh dedup row survives");
     let old_job_left: i64 = sqlx::query_scalar("SELECT count(*) FROM oxsum.jobs WHERE job_id = $1")
         .bind(old_job)
         .fetch_one(db.pool())

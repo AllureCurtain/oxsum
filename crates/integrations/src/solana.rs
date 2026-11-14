@@ -31,9 +31,21 @@
 //! endpoint's host. A provider that authenticates by header sets
 //! `OXSUM_SOLANA_RPC_AUTH_HEADER`, applied to every endpoint's calls.
 //!
-//! What is *not* verified here, on the record: `confirmed` is the default
-//! commitment because devnet top-ups are low-value and latency matters more
-//! than the residual reorg window; `finalized` is one config flag away. No
+//! With two or more endpoints a *credit-grade* answer is cross-confirmed
+//! (issue #1183): `validate_transfer` re-fetches the same `getTransaction` on
+//! a second healthy endpoint and both must report the same successful
+//! transaction delivering the same amount to the same recipient on the same
+//! mint. A disagreement or a sibling that cannot answer is not a credit
+//! basis — the deposit stays `pending` — because failover alone only proves
+//! *some* node answered, never that its answer is true. `find_reference`
+//! needs no second opinion of its own: the signatures it returns are only
+//! candidates, and the invented-signature case fails the cross-confirmed
+//! `getTransaction` that follows. A single-endpoint pool keeps the lone
+//! answer — `solana_of` warns at boot when that endpoint is mainnet-shaped.
+//!
+//! What is *not* verified here, on the record: `finalized` is the default
+//! commitment (issue #1129) — the mainnet-grade setting; a devnet loop sets
+//! `OXSUM_SOLANA_COMMITMENT=confirmed` explicitly for latency. No
 //! watcher holds a subscription open — the periodic job polls.
 
 use std::sync::Mutex;
@@ -42,9 +54,26 @@ use std::time::{Duration, Instant};
 
 use serde_json::{Value, json};
 
+/// The classic SPL Token program id — the only owner a whitelisted mint may
+/// carry (issue #1182). The boot's mint audit refuses any other owner:
+/// Token-2022 (`oxsum_core::TOKEN_2022_PROGRAM_ID`, still named explicitly so
+/// an operator knows *why*) and every other program outright — an account
+/// that is not a classic SPL mint cannot be trusted to price a deposit.
+pub const SPL_TOKEN_PROGRAM_ID: &str = "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA";
+
+/// The classic SPL mint account's byte length: mintAuthority option+key (36)
+/// plus supply (8) plus decimals (1) plus isInitialized (1) plus
+/// freezeAuthority option+key (36). A mint account that is not exactly this
+/// long is not the layout the rail parses — the audit refuses it rather than
+/// reading `decimals`/`isInitialized` off shifted bytes (issue #1182).
+const SPL_MINT_DATA_LEN: usize = 82;
+
+/// The classic SPL mint layout's `isInitialized` flag offset.
+const SPL_MINT_IS_INITIALIZED_OFFSET: usize = 45;
+
 /// Standard base64 decode for the `getAccountInfo` `data` field — a thin
-/// wrapper so `mint_decimals` names its error instead of unwrapping a
-/// library type.
+/// wrapper so the mint audit names its error instead of unwrapping a library
+/// type.
 fn base64_decode(raw: &str) -> Result<Vec<u8>, String> {
     use base64::Engine as _;
     base64::engine::general_purpose::STANDARD
@@ -92,7 +121,7 @@ pub struct SolanaConfig {
     /// SPL Token program, never Token-2022.
     pub mints: Vec<MintWhitelistEntry>,
     /// The commitment `find_reference` / `validate_transfer` ask the RPC for:
-    /// `confirmed` (default) or `finalized` (`OXSUM_SOLANA_COMMITMENT`).
+    /// `finalized` (default) or `confirmed` (`OXSUM_SOLANA_COMMITMENT`).
     pub commitment: String,
     /// An auth header applied to every endpoint's calls
     /// (`OXSUM_SOLANA_RPC_AUTH_HEADER`, e.g. `Authorization: Bearer …`) — for
@@ -163,19 +192,19 @@ pub struct ValidatedTransfer {
     /// credits even when it is confirmed after; one that landed after never
     /// does (issue #1128).
     pub block_time: Option<i64>,
-    /// The payer's address — the account the transfer debited to pay the
-    /// recipient (issue #1144), the address pre-credit screening runs on.
-    /// For native SOL this is the signer whose lamport balance decreased
-    /// beyond the fee, falling back to `accountKeys[0]` (the fee payer) when
-    /// the balance arrays do not isolate one — the two are the same wallet in
-    /// the ordinary transfer, so the fallback names the right address in the
-    /// common case and the residual is documented. For an SPL transfer it is
-    /// the `owner` of the token account whose `preTokenBalances` row
+    /// Every debited funding party of the transfer (issues #1144, #1178):
+    /// the addresses pre-credit screening must each clear before the deposit
+    /// credits. For native SOL this is *every* signer whose lamport balance
+    /// decreased — the funding source(s) and the fee payer — so a sanctioned
+    /// wallet cannot launder the payment through a clean relayer; when the
+    /// balance arrays isolate no debited signer the list falls back to the
+    /// first signer (the fee payer, `accountKeys[0]`). For an SPL transfer it
+    /// is the `owner` of each token account whose `preTokenBalances` row
     /// decreased on the paid mint, falling back to the first signer when the
-    /// token rows do not name one. `None` only when the transaction's shape
-    /// carries no usable signal at all; the credit path treats it as
+    /// token rows name none. Empty only when the transaction's shape carries
+    /// no usable signal at all; the credit path treats an empty list as
     /// unscreenable, never as cleared.
-    pub payer: Option<String>,
+    pub payers: Vec<String>,
 }
 
 /// One inbound transfer the reconciliation scan surfaced (issue #1149),
@@ -194,8 +223,10 @@ pub struct ScannedTransfer {
     pub asset: Option<String>,
     /// What the transaction delivered to `payTo`, in `asset`'s base units.
     pub delivered: i64,
-    /// The payer's address — the same attribution `ValidatedTransfer.payer`
-    /// makes — when the transaction's shape yields one.
+    /// The payer's address — the first of the debited funding parties
+    /// `ValidatedTransfer.payers` names — when the transaction's shape yields
+    /// one. The report keeps a single representative; screening is the credit
+    /// path's job.
     pub payer: Option<String>,
 }
 
@@ -393,56 +424,62 @@ impl SolanaRpcClient {
         &self.config
     }
 
-    /// Reads a mint's decimals from the chain (issues #1129, #1140).
-    /// `getAccountInfo(mint)` with base64 encoding answers the raw SPL mint
-    /// layout, whose `decimals` byte sits at offset 44 (after mintAuthority
-    /// option+key, supply and the initialized flag). The boot calls this once
-    /// per whitelisted mint so the mint's own figure — never an operator's
-    /// declaration — sets `asset_decimals`: a 6-decimal USDC mint read as 9
-    /// decimals would overcharge by 1000×.
+    /// Reads a mint account off the chain once (issue #1182): one
+    /// `getAccountInfo(mint, base64)` answers both the program that owns the
+    /// account and its raw data, so the audit's owner check and layout parse
+    /// can never observe *different* accounts (the defect two separate reads
+    /// carried — the decimals could come from an account the owner check
+    /// never saw).
     ///
-    /// `Err` when the RPC fails or the mint account is missing/unparseable.
-    pub async fn mint_decimals(&self, mint: &str) -> Result<u32, SolanaError> {
+    /// `Err` when the RPC fails or the account is missing/unparseable.
+    async fn mint_account(&self, mint: &str) -> Result<(String, Vec<u8>), SolanaError> {
         let result = self
             .call(
-                "mint_decimals",
+                "mint_account",
                 "getAccountInfo",
                 json!([mint, {"encoding": "base64"}]),
             )
             .await?;
+        let owner = result["value"]["owner"]
+            .as_str()
+            .map(str::to_owned)
+            .ok_or_else(|| SolanaError("getAccountInfo returned no owner".into()))?;
         let data_b64 = result["value"]["data"][0]
             .as_str()
             .ok_or_else(|| SolanaError("getAccountInfo returned no mint data".into()))?;
         let bytes = base64_decode(data_b64)
             .map_err(|e| SolanaError(format!("mint data is not base64: {e}")))?;
-        // SPL mint layout: mintAuthority (36) + supply (8) + decimals (1) +
-        // isInitialized (1) + freezeAuthority (36) — decimals is byte 44.
-        let decimals = bytes
-            .get(44)
-            .copied()
-            .ok_or_else(|| SolanaError("mint account data is too short".into()))?;
-        Ok(u32::from(decimals))
+        Ok((owner, bytes))
     }
 
-    /// Reads the program that owns a mint account — the Token or Token-2022
-    /// program id `getAccountInfo` reports as `owner`. The boot calls this
-    /// once per whitelisted mint and refuses Token-2022: extensions the rail
-    /// does not model (transfer fees, hooks, required memos) could misprice
-    /// or mis-credit a deposit (issue #1140).
+    /// The program that owns a mint account — the classic SPL Token or
+    /// Token-2022 program id `getAccountInfo` reports as `owner`. The boot
+    /// calls this once per whitelisted mint and refuses any other owner
+    /// (issue #1182): Token-2022 is named explicitly (its transfer-fee and
+    /// hook extensions the rail does not model), and a mint owned by any
+    /// other program — the System program, a custom program — is refused
+    /// too, because an account that is not a classic SPL mint cannot price a
+    /// deposit.
     ///
     /// `Err` when the RPC fails or the account is missing/unparseable.
     pub async fn mint_owner(&self, mint: &str) -> Result<String, SolanaError> {
-        let result = self
-            .call(
-                "mint_owner",
-                "getAccountInfo",
-                json!([mint, {"encoding": "base64"}]),
-            )
-            .await?;
-        result["value"]["owner"]
-            .as_str()
-            .map(str::to_owned)
-            .ok_or_else(|| SolanaError("getAccountInfo returned no owner".into()))
+        Ok(self.mint_account(mint).await?.0)
+    }
+
+    /// Reads a mint's decimals from the chain (issues #1129, #1140). The
+    /// raw account data is first checked against the classic SPL mint layout
+    /// — exactly 82 bytes with `isInitialized` set (issue #1182) — so a
+    /// truncated account or an uninitialized mint is refused rather than
+    /// having byte 44 read off a buffer that is not a mint at all. The boot
+    /// calls this once per whitelisted mint so the mint's own figure — never
+    /// an operator's declaration — sets `asset_decimals`: a 6-decimal USDC
+    /// mint read as 9 decimals would overcharge by 1000×.
+    ///
+    /// `Err` when the RPC fails, the mint account is missing, or its data is
+    /// not a well-formed classic SPL mint layout.
+    pub async fn mint_decimals(&self, mint: &str) -> Result<u32, SolanaError> {
+        let (_owner, bytes) = self.mint_account(mint).await?;
+        mint_decimals_of(&bytes)
     }
 
     /// One JSON-RPC call over the endpoint pool (issue #1145): walk the
@@ -461,6 +498,20 @@ impl SolanaRpcClient {
         method: &str,
         params: Value,
     ) -> Result<Value, SolanaError> {
+        self.call_reporting_endpoint(call_name, method, params)
+            .await
+            .map(|(value, _)| value)
+    }
+
+    /// [`call`] plus the endpoint that answered — the cross-confirmation in
+    /// `validate_transfer` needs to know which endpoint served so the
+    /// confirmation read lands on a *different* one (issue #1183).
+    async fn call_reporting_endpoint(
+        &self,
+        call_name: &'static str,
+        method: &str,
+        params: Value,
+    ) -> Result<(Value, &RpcEndpoint), SolanaError> {
         let body = json!({
             "jsonrpc": "2.0",
             "id": 1,
@@ -503,7 +554,7 @@ impl SolanaRpcClient {
             match result {
                 Ok(value) => {
                     endpoint.note_ok();
-                    return Ok(value);
+                    return Ok((value, endpoint));
                 }
                 Err(e) => {
                     endpoint.note_failure();
@@ -541,7 +592,7 @@ impl SolanaRpcClient {
                 match result {
                     Ok(value) => {
                         endpoint.note_ok();
-                        return Ok(value);
+                        return Ok((value, endpoint));
                     }
                     Err(e) => {
                         endpoint.note_failure();
@@ -672,10 +723,16 @@ impl SolanaRpcClient {
     /// walked sequentially through the same endpoint pool every call uses,
     /// so the failover and cooldown rules apply unchanged; `max_signatures`
     /// is what bounds the `getTransaction` fan-out on a busy vault.
+    ///
+    /// The [`ScanWalk`] (issue #1188) reports the walk's real coverage:
+    /// `walked` is every signature whose `getTransaction` was attempted —
+    /// *not* the credited count the endpoint used to report — and
+    /// `history_bounded` tells whether the bound cut the walk while older
+    /// history may remain.
     pub async fn scan_received(
         &self,
         max_signatures: usize,
-    ) -> Result<Vec<ScannedTransfer>, SolanaError> {
+    ) -> Result<oxsum_core::ScanWalk, SolanaError> {
         const PAGE: usize = 100;
         let mut signatures = Vec::new();
         let mut before: Option<String> = None;
@@ -712,16 +769,19 @@ impl SolanaRpcClient {
                 break;
             }
         }
+        // `history_bounded` is honest only when the bound actually truncated a
+        // longer list — a short last page means the history ended on its own.
+        let history_bounded = signatures.len() > max_signatures;
         signatures.truncate(max_signatures);
         // For each candidate, prove it paid payTo in a whitelisted asset and
         // report the delivered figure. `getTransaction` runs once per
         // signature — sequential and bounded, the polite walk the endpoint
         // pool already amortizes.
-        let mut found = Vec::new();
+        let walked = signatures.len();
+        let mut credited = Vec::new();
         for signature in signatures {
             match self.inspect_received(&signature).await {
-                Ok(Some(scanned)) => found.push(scanned),
-                Ok(None) => {}
+                Ok(legs) => credited.extend(legs),
                 // A single unreadable transaction does not sink the scan:
                 // the signature stays unreported, and a transport failure
                 // already counted against its endpoint inside `call`.
@@ -734,19 +794,31 @@ impl SolanaRpcClient {
                 }
             }
         }
-        Ok(found)
+        Ok(oxsum_core::ScanWalk {
+            walked,
+            credited: credited
+                .into_iter()
+                .map(|t| oxsum_core::ScannedTransfer {
+                    signature: t.signature,
+                    block_time: t.block_time,
+                    asset: t.asset,
+                    delivered: t.delivered,
+                    payer: t.payer,
+                })
+                .collect(),
+            history_bounded,
+        })
     }
 
-    /// `getTransaction(signature)` under the scan's looser contract: `Ok(Some)`
-    /// when the transaction delivered value to `payTo` in a whitelisted asset —
-    /// the figure and the asset key it counted in. `Ok(None)` for a failed
-    /// transaction, a missing one, or one that moved nothing into the vault
-    /// (a `payTo`-signed send, an unrelated touch). The `delivered` figure is
-    /// the recipient-side delta — what the vault gained — never judged.
-    async fn inspect_received(
-        &self,
-        signature: &str,
-    ) -> Result<Option<ScannedTransfer>, SolanaError> {
+    /// `getTransaction(signature)` under the scan's looser contract: `Ok(Vec)`
+    /// with one [`ScannedTransfer`] per whitelisted asset the transaction
+    /// delivered to `payTo` — the figure and the asset key it counted in.
+    /// A single transaction that credits SOL *and* an SPL mint reports both
+    /// legs (issue #1188) — the empty Vec is a failed transaction, a missing
+    /// one, or one that moved nothing into the vault (a `payTo`-signed send,
+    /// an unrelated touch). The `delivered` figure is the recipient-side
+    /// delta — what the vault gained — never judged.
+    async fn inspect_received(&self, signature: &str) -> Result<Vec<ScannedTransfer>, SolanaError> {
         let result = self
             .call(
                 "scan_received",
@@ -762,74 +834,28 @@ impl SolanaRpcClient {
             )
             .await?;
         if result.is_null() {
-            return Ok(None);
+            return Ok(Vec::new());
         }
         let meta = &result["meta"];
         if !meta["err"].is_null() {
-            return Ok(None);
+            return Ok(Vec::new());
         }
         let message = &result["transaction"]["message"];
         let account_keys = match message["accountKeys"].as_array() {
             Some(keys) => keys,
-            None => return Ok(None),
+            None => return Ok(Vec::new()),
         };
-        // Native SOL first: `payTo`'s own post-minus-pre lamport delta — the
-        // vault's gain. A non-positive delta means nothing arrived (the tx
-        // may still touch payTo — as fee payer, as an outbound source).
-        if let Some(delta) = lamport_delta(
+        let block_time = result["blockTime"].as_i64();
+        Ok(received_legs(
+            signature,
+            meta,
             account_keys,
-            meta["preBalances"].as_array(),
-            meta["postBalances"].as_array(),
             &self.config.pay_to,
-        ) && delta > 0
-        {
-            let payer = sol_payer(
-                account_keys,
-                meta["preBalances"].as_array(),
-                meta["postBalances"].as_array(),
-            );
-            return Ok(Some(ScannedTransfer {
-                signature: signature.to_owned(),
-                block_time: result["blockTime"].as_i64(),
-                asset: Some("sol".to_owned()),
-                delivered: delta,
-                payer,
-            }));
-        }
-        // Each whitelisted SPL mint: the token-account delta owned by `payTo`
-        // on that mint. `token_delta` already matches `owner` or the account
-        // address itself, so a payTo that *is* an ATA still attributes.
-        for asset in &self.config.mints {
-            let Some(mint) = asset.mint.as_deref() else {
-                continue;
-            };
-            if let Some(delta) = token_delta(
-                meta["postTokenBalances"].as_array(),
-                meta["preTokenBalances"].as_array(),
-                account_keys,
-                &self.config.pay_to,
-                mint,
-            ) && delta > 0
-            {
-                let payer = spl_payer(
-                    meta["preTokenBalances"].as_array(),
-                    meta["postTokenBalances"].as_array(),
-                    account_keys,
-                    mint,
-                );
-                return Ok(Some(ScannedTransfer {
-                    signature: signature.to_owned(),
-                    block_time: result["blockTime"].as_i64(),
-                    asset: Some(asset.key.clone()),
-                    delivered: delta,
-                    payer,
-                }));
-            }
-        }
-        Ok(None)
+            &self.config.mints,
+            block_time,
+        ))
     }
 
-    /// `getTransaction(signature, jsonParsed)` — the `validateTransfer` half:
     /// prove the located transaction is this intent's paying transfer.
     /// `Ok(None)` means the transaction exists but is not the payment — a
     /// failed transaction, wrong recipient, wrong mint or missing reference —
@@ -845,24 +871,35 @@ impl SolanaRpcClient {
     /// compares `delivered` against `expected.amount` — the locked asset's
     /// base units — so an under-delivery marks the deposit `underpaid` in the
     /// operator queue rather than masquerading as "no payment yet".
+    ///
+    /// A *credit* decision never rests on one node's word (issue #1183): when
+    /// the pool carries a second endpoint, a validated answer is re-fetched —
+    /// the same signature at the same commitment — on a different healthy
+    /// endpoint before it is believed. The two endpoints must agree on the
+    /// evidence the validation reads (a successful transaction carrying the
+    /// intent's `reference` and delivering `delivered` to the `recipient` on
+    /// the expected mint). A disagreement, or a second endpoint that cannot
+    /// answer at all, keeps the deposit `pending` — reported as `Ok(None)`
+    /// with a `solana_rpc_cross_confirmations_total{outcome}` count — because
+    /// a lone lagging or lying endpoint is exactly the failure the pool exists
+    /// to survive. A single-endpoint pool keeps the original posture: the
+    /// first answer stands alone (and `solana_of` warns at boot when that
+    /// single endpoint is mainnet-shaped).
     pub async fn validate_transfer(
         &self,
         signature: &str,
         expected: &ExpectedTransfer,
     ) -> Result<Option<ValidatedTransfer>, SolanaError> {
-        let result = self
-            .call(
-                "validate_transfer",
-                "getTransaction",
-                json!([
-                    signature,
-                    {
-                        "encoding": "jsonParsed",
-                        "commitment": self.config.commitment,
-                        "maxSupportedTransactionVersion": 0,
-                    },
-                ]),
-            )
+        let params = json!([
+            signature,
+            {
+                "encoding": "jsonParsed",
+                "commitment": self.config.commitment,
+                "maxSupportedTransactionVersion": 0,
+            },
+        ]);
+        let (result, served_by) = self
+            .call_reporting_endpoint("validate_transfer", "getTransaction", params.clone())
             .await?;
         if result.is_null() {
             return Ok(None);
@@ -927,26 +964,238 @@ impl SolanaRpcClient {
         // verifier's comparison, not this proof's — an under-delivery is the
         // intent's paying transfer too, and it is what `underpaid` records
         // (issue #1142).
-        let payer = match expected.spl_token_mint.as_deref() {
-            None => sol_payer(
+        let payers = match expected.spl_token_mint.as_deref() {
+            None => sol_payers(
                 account_keys,
                 meta["preBalances"].as_array(),
                 meta["postBalances"].as_array(),
             ),
-            Some(mint) => spl_payer(
+            Some(mint) => spl_payers(
                 meta["preTokenBalances"].as_array(),
                 meta["postTokenBalances"].as_array(),
                 account_keys,
                 mint,
             ),
         };
+        // Cross-confirm the credit-grade answer on a second endpoint (issue
+        // #1183). The primary read already proved the transfer on
+        // `served_by`; a second healthy endpoint must see the same successful
+        // transaction deliver the same amount to the same recipient on the
+        // same mint under the same marker before the answer stands.
+        // Anything less — no tx, a different delivered figure, a missing
+        // marker, or no second endpoint able to answer — is not a credit
+        // basis: the deposit stays `pending` (`Ok(None)`) and the next pass
+        // retries.
+        if self.endpoints.len() > 1 {
+            let confirmed = self
+                .cross_confirm_transaction(signature, expected, served_by, &params, delivered)
+                .await;
+            if !confirmed {
+                return Ok(None);
+            }
+        }
         Ok(Some(ValidatedTransfer {
             signature: signature.to_owned(),
             delivered,
             block_time: result["blockTime"].as_i64(),
-            payer,
+            payers,
         }))
     }
+
+    /// The second-opinion read behind a validated transfer (issue #1183):
+    /// re-issue the exact `getTransaction` the primary endpoint answered on a
+    /// *different* healthy endpoint, and demand that it sees the same
+    /// successful transaction — `err: null`, the intent's `reference` marker
+    /// present as a read-only non-signer, and the same `delivered` figure to
+    /// the expected `recipient` on the expected mint. `true` only when a
+    /// second endpoint answered with agreeing evidence.
+    ///
+    /// The confirmation is deliberately *not* the failover `call`: it must
+    /// land on an endpoint other than the one that served, and its failure
+    /// must not fail over onto `served_by` (agreeing with yourself is not a
+    /// second opinion). `false` — never `Err` — covers every refusal: the
+    /// caller maps it to `Ok(None)`, so a disagreement or a dark second
+    /// endpoint reads as "not yet verified" exactly like an unpaid intent,
+    /// and `solana_rpc_cross_confirmations_total{endpoint,outcome}` records
+    /// which of "agreed"/"disagreed"/"unreachable" the attempt resolved to.
+    async fn cross_confirm_transaction(
+        &self,
+        signature: &str,
+        expected: &ExpectedTransfer,
+        served_by: &RpcEndpoint,
+        params: &Value,
+        delivered: i64,
+    ) -> bool {
+        let body = json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "getTransaction",
+            "params": params,
+        });
+        // The confirmation walks the endpoints except the one that served —
+        // same cooldown rules as `call` (a cooling endpoint is skipped), so
+        // the second opinion is always a live provider. An endpoint that
+        // cannot answer moves the walk to the next sibling; a pool of two
+        // tries exactly the other one.
+        for endpoint in self.endpoints.iter() {
+            if std::ptr::eq(endpoint, served_by) || endpoint.cooling_down() {
+                continue;
+            }
+            match self.call_once(endpoint, "getTransaction", &body).await {
+                Ok(result) => {
+                    endpoint.note_ok();
+                    let agreed = cross_confirmation_agrees(&result, expected, delivered);
+                    metrics::counter!(
+                        "solana_rpc_cross_confirmations_total",
+                        "endpoint" => endpoint.host.clone(),
+                        "outcome" => if agreed { "agreed" } else { "disagreed" }
+                    )
+                    .increment(1);
+                    if !agreed {
+                        tracing::warn!(
+                            signature,
+                            endpoint = %endpoint.host,
+                            served_by = %served_by.host,
+                            "the solana endpoints disagree on a credit-grade \
+                             transaction; the deposit stays pending"
+                        );
+                    }
+                    return agreed;
+                }
+                Err(e) => {
+                    endpoint.note_failure();
+                    metrics::counter!(
+                        "solana_rpc_errors_total",
+                        "call" => "validate_transfer_confirm",
+                        "endpoint" => endpoint.host.clone()
+                    )
+                    .increment(1);
+                    metrics::counter!(
+                        "solana_rpc_cross_confirmations_total",
+                        "endpoint" => endpoint.host.clone(),
+                        "outcome" => "unreachable"
+                    )
+                    .increment(1);
+                    tracing::warn!(
+                        signature,
+                        endpoint = %endpoint.host,
+                        error = %e.0,
+                        "a cross-confirmation endpoint could not answer"
+                    );
+                }
+            }
+        }
+        // No second endpoint could be tried or answered: every sibling is
+        // cooling down or failing (a pool that is effectively single-endpoint
+        // right now). Unverified is the safe answer — the first endpoint's
+        // word alone is not a credit basis for a multi-endpoint deployment.
+        tracing::warn!(
+            signature,
+            served_by = %served_by.host,
+            "no second solana endpoint is healthy enough to cross-confirm; \
+             the deposit stays pending"
+        );
+        false
+    }
+}
+
+/// The per-transaction legs `inspect_received` collects (issue #1188): one
+/// [`ScannedTransfer`] per whitelisted asset a transaction delivered into
+/// `payTo`. Native SOL's lamport delta leads, then every whitelisted SPL
+/// mint whose token-account delta on `payTo` came out positive — a single
+/// transaction that credits SOL *and* a token (a multi-hop swap settling
+/// both legs at once) reports one row per asset, never just the first that
+/// matched. An empty Vec means the transaction moved nothing into the vault.
+fn received_legs(
+    signature: &str,
+    meta: &Value,
+    account_keys: &[Value],
+    pay_to: &str,
+    mints: &[MintWhitelistEntry],
+    block_time: Option<i64>,
+) -> Vec<ScannedTransfer> {
+    let mut legs = Vec::new();
+    // Native SOL: `payTo`'s own post-minus-pre lamport delta — the vault's
+    // gain. A non-positive delta means nothing arrived (the tx may still
+    // touch payTo — as fee payer, as an outbound source).
+    if let Some(delta) = lamport_delta(
+        account_keys,
+        meta["preBalances"].as_array(),
+        meta["postBalances"].as_array(),
+        pay_to,
+    ) && delta > 0
+    {
+        let payer = sol_payers(
+            account_keys,
+            meta["preBalances"].as_array(),
+            meta["postBalances"].as_array(),
+        )
+        .into_iter()
+        .next();
+        legs.push(ScannedTransfer {
+            signature: signature.to_owned(),
+            block_time,
+            asset: Some("sol".to_owned()),
+            delivered: delta,
+            payer,
+        });
+    }
+    // Each whitelisted SPL mint: the token-account delta owned by `payTo`
+    // on that mint. `token_delta` already matches `owner` or the account
+    // address itself, so a payTo that *is* an ATA still attributes. Every
+    // positive mint reports its own row — dropping the second leg silently
+    // under-counted the scan before issue #1188.
+    for asset in mints {
+        let Some(mint) = asset.mint.as_deref() else {
+            continue;
+        };
+        if let Some(delta) = token_delta(
+            meta["postTokenBalances"].as_array(),
+            meta["preTokenBalances"].as_array(),
+            account_keys,
+            pay_to,
+            mint,
+        ) && delta > 0
+        {
+            let payer = spl_payers(
+                meta["preTokenBalances"].as_array(),
+                meta["postTokenBalances"].as_array(),
+                account_keys,
+                mint,
+            )
+            .into_iter()
+            .next();
+            legs.push(ScannedTransfer {
+                signature: signature.to_owned(),
+                block_time,
+                asset: Some(asset.key.clone()),
+                delivered: delta,
+                payer,
+            });
+        }
+    }
+    legs
+}
+
+/// The classic SPL mint layout's `decimals` field, checked against the whole
+/// layout first (issue #1182): the buffer must be exactly
+/// [`SPL_MINT_DATA_LEN`] bytes — the fixed classic mint size — and its
+/// `isInitialized` flag (byte 45) must be set. A truncated account, a padded
+/// Token-2022 blob, or an uninitialized mint is `Err` rather than a decimals
+/// read off bytes that are not a mint.
+fn mint_decimals_of(bytes: &[u8]) -> Result<u32, SolanaError> {
+    if bytes.len() != SPL_MINT_DATA_LEN {
+        return Err(SolanaError(format!(
+            "mint account data is {} bytes, not the {SPL_MINT_DATA_LEN}-byte classic SPL mint layout",
+            bytes.len()
+        )));
+    }
+    if bytes[SPL_MINT_IS_INITIALIZED_OFFSET] != 1 {
+        return Err(SolanaError("the mint account is not initialized".into()));
+    }
+    // Layout: mintAuthority option+key (36) + supply (8) + decimals (1) +
+    // isInitialized (1) + freezeAuthority option+key (36) — decimals is byte 44.
+    Ok(u32::from(bytes[44]))
 }
 
 /// The `core` verifier's `ChainLookup` over this JSON-RPC client: the two
@@ -1014,7 +1263,7 @@ impl oxsum_core::ChainLookup for SolanaRpcClient {
                 signature: v.signature,
                 delivered: v.delivered,
                 block_time: v.block_time,
-                payer: v.payer,
+                payers: v.payers,
             })
         })
     }
@@ -1036,9 +1285,8 @@ impl oxsum_core::ChainLookup for SolanaRpcClient {
     fn scan_received<'a>(
         &'a self,
         max_signatures: usize,
-    ) -> std::pin::Pin<
-        Box<dyn std::future::Future<Output = Vec<oxsum_core::ScannedTransfer>> + Send + 'a>,
-    > {
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = oxsum_core::ScanWalk> + Send + 'a>>
+    {
         Box::pin(async move {
             self.scan_received(max_signatures)
                 .await
@@ -1052,17 +1300,50 @@ impl oxsum_core::ChainLookup for SolanaRpcClient {
                     );
                 })
                 .unwrap_or_default()
-                .into_iter()
-                .map(|t| oxsum_core::ScannedTransfer {
-                    signature: t.signature,
-                    block_time: t.block_time,
-                    asset: t.asset,
-                    delivered: t.delivered,
-                    payer: t.payer,
-                })
-                .collect()
         })
     }
+}
+
+/// What the cross-confirmation demands a second endpoint agree on (issue
+/// #1183): the same `getTransaction` shape `validate_transfer` reads —
+/// `meta.err` null, the intent's `reference` among the account keys as a
+/// read-only non-signer, and a recipient-side `delivered` delta on the
+/// expected mint (or native lamports) *equal to* the figure the primary
+/// endpoint reported. The same evidence extractors the primary validation
+/// ran (`reference_marker_present`, `lamport_delta`/`token_delta`) re-run
+/// here, so an endpoint that hallucinated a different amount, a different
+/// recipient-side account, a missing marker or a failed transaction disagrees
+/// — it is never enough that the signature merely exists.
+fn cross_confirmation_agrees(result: &Value, expected: &ExpectedTransfer, delivered: i64) -> bool {
+    if result.is_null() {
+        return false;
+    }
+    let meta = &result["meta"];
+    if !meta["err"].is_null() {
+        return false;
+    }
+    let Some(account_keys) = result["transaction"]["message"]["accountKeys"].as_array() else {
+        return false;
+    };
+    if !reference_marker_present(account_keys, &expected.reference) {
+        return false;
+    }
+    let second = match expected.spl_token_mint.as_deref() {
+        None => lamport_delta(
+            account_keys,
+            meta["preBalances"].as_array(),
+            meta["postBalances"].as_array(),
+            &expected.recipient,
+        ),
+        Some(mint) => token_delta(
+            meta["postTokenBalances"].as_array(),
+            meta["preTokenBalances"].as_array(),
+            account_keys,
+            &expected.recipient,
+            mint,
+        ),
+    };
+    second == Some(delivered)
 }
 
 /// The native-SOL counterpart of [`token_delta`]: the recipient's
@@ -1145,98 +1426,116 @@ fn first_signer(account_keys: &[Value]) -> Option<String> {
     None
 }
 
-/// The native-SOL payer (issue #1144): the signer whose lamport balance
-/// *decreased* — the account the transfer debited — rather than blindly
-/// `accountKeys[0]`. The fee payer is ordinarily the same wallet, so when the
-/// balance arrays do not isolate a single debited signer the answer falls
-/// back to the first signer: a fee-payer-distinct-from-source shape (a
-/// relayer paying the fee for another wallet's transfer) is the documented
-/// residual — v1 names the fee payer there, which still names *a* party to
-/// the payment rather than none.
-fn sol_payer(
+/// The native-SOL funding parties (issues #1144, #1178): *every* signer whose
+/// lamport balance *decreased* — the accounts the transfer debited — rather
+/// than blindly `accountKeys[0]`, and rather than stopping at the first hit.
+/// Screening must cover each debited party: a sanctioned source wallet that
+/// hides behind a clean fee-paying relayer would otherwise evade the check,
+/// so the funding source(s) *and* the fee payer all ride the answer in key
+/// order. When the balance arrays isolate no debited signer — an absent or
+/// all-zero delta — the list falls back to the first signer (the fee payer),
+/// which still names *a* party to the payment rather than none.
+fn sol_payers(
     account_keys: &[Value],
     pre_balances: Option<&Vec<Value>>,
     post_balances: Option<&Vec<Value>>,
-) -> Option<String> {
-    let (pre, post) = (pre_balances?, post_balances?);
-    // A signer whose balance fell paid for something — the transfer and/or
-    // the fee. Several can fall (fee payer + a second funding signer); the
-    // first in key order is the fee payer by Solana's own ordering, which is
-    // the strongest single answer the wire gives.
-    for (index, key) in account_keys.iter().enumerate() {
-        let is_signer = key["signer"].as_bool() == Some(true) || (key.is_string() && index == 0);
-        if !is_signer {
-            continue;
-        }
-        let pre = balance_i64(pre.get(index));
-        let post = balance_i64(post.get(index));
-        if post < pre {
-            return key["pubkey"]
-                .as_str()
-                .or_else(|| key.as_str())
-                .map(str::to_owned);
+) -> Vec<String> {
+    let mut payers: Vec<String> = Vec::new();
+    if let (Some(pre), Some(post)) = (pre_balances, post_balances) {
+        // A signer whose balance fell paid for something — the transfer
+        // and/or the fee. Several can fall (fee payer + a second funding
+        // signer); every one is a funding party the screen must clear.
+        for (index, key) in account_keys.iter().enumerate() {
+            let is_signer =
+                key["signer"].as_bool() == Some(true) || (key.is_string() && index == 0);
+            if !is_signer {
+                continue;
+            }
+            let pre = balance_i64(pre.get(index));
+            let post = balance_i64(post.get(index));
+            if post < pre
+                && let Some(pubkey) = key["pubkey"].as_str().or_else(|| key.as_str())
+                && !payers.iter().any(|p| p == pubkey)
+            {
+                payers.push(pubkey.to_owned());
+            }
         }
     }
-    first_signer(account_keys)
+    if payers.is_empty() {
+        payers.extend(first_signer(account_keys));
+    }
+    payers
 }
 
-/// The SPL payer (issue #1144): the `owner` of the token account whose
-/// `preTokenBalances` → `postTokenBalances` figure *decreased* on the paid
-/// mint — the wallet the tokens left. Matching rows by `accountIndex` keeps
-/// the pair on one account. When the token rows carry no usable decrease or
-/// owner — a shape `jsonParsed` does not surface — the answer falls back to
-/// the first signer (the wallet that authorized the transfer), the same
-/// residual the SOL arm documents.
-fn spl_payer(
+/// The SPL funding parties (issues #1144, #1178): the `owner` of *every*
+/// token account whose `preTokenBalances` → `postTokenBalances` figure
+/// *decreased* on the paid mint — each wallet tokens left. Matching rows by
+/// `accountIndex` keeps each pair on one account; a payment funded from two
+/// accounts names both owners so screening covers every debited party, the
+/// same coverage the SOL arm gives. When the token rows carry no usable
+/// decrease or owner — a shape `jsonParsed` does not surface — the answer
+/// falls back to the first signer (the wallet that authorized the transfer),
+/// the same residual the SOL arm documents.
+fn spl_payers(
     pre: Option<&Vec<Value>>,
     post: Option<&Vec<Value>>,
     account_keys: &[Value],
     mint: &str,
-) -> Option<String> {
-    let pre_rows = pre?;
-    for pre_row in pre_rows {
-        if pre_row["mint"].as_str() != Some(mint) {
-            continue;
-        }
-        // A malformed row — no accountIndex, an unparseable amount — skips to
-        // the next rather than ending the walk: the payer may still sit on a
-        // later well-formed row of the same mint.
-        let Some(index) = pre_row["accountIndex"].as_u64() else {
-            continue;
-        };
-        // Pair the row with its post-state on the same accountIndex + mint; a
-        // missing post row means the account closed or drained to zero — the
-        // decrease is the whole pre figure.
-        let post_amount: i64 = post
-            .and_then(|rows| {
-                rows.iter().find(|p| {
-                    p["accountIndex"].as_u64() == Some(index) && p["mint"].as_str() == Some(mint)
-                })
-            })
-            .and_then(|p| p["uiTokenAmount"]["amount"].as_str())
-            .and_then(|s| s.parse().ok())
-            .unwrap_or(0);
-        let Some(pre_amount) = pre_row["uiTokenAmount"]["amount"]
-            .as_str()
-            .and_then(|s| s.parse::<i64>().ok())
-        else {
-            continue;
-        };
-        if post_amount < pre_amount {
-            // The debited token account's owner is the payer — the wallet the
-            // funds left, not the ATA address itself.
-            if let Some(owner) = pre_row["owner"].as_str() {
-                return Some(owner.to_owned());
+) -> Vec<String> {
+    let mut payers: Vec<String> = Vec::new();
+    if let Some(pre_rows) = pre {
+        for pre_row in pre_rows {
+            if pre_row["mint"].as_str() != Some(mint) {
+                continue;
             }
-            // No owner on the row: fall back to the account's own address —
-            // still a party to the payment, and the shape some RPCs return.
-            return account_keys
-                .get(index as usize)
-                .and_then(|k| k["pubkey"].as_str().or_else(|| k.as_str()))
-                .map(str::to_owned);
+            // A malformed row — no accountIndex, an unparseable amount — skips
+            // to the next rather than ending the walk: a payer may still sit
+            // on a later well-formed row of the same mint.
+            let Some(index) = pre_row["accountIndex"].as_u64() else {
+                continue;
+            };
+            // Pair the row with its post-state on the same accountIndex +
+            // mint; a missing post row means the account closed or drained to
+            // zero — the decrease is the whole pre figure.
+            let post_amount: i64 = post
+                .and_then(|rows| {
+                    rows.iter().find(|p| {
+                        p["accountIndex"].as_u64() == Some(index)
+                            && p["mint"].as_str() == Some(mint)
+                    })
+                })
+                .and_then(|p| p["uiTokenAmount"]["amount"].as_str())
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(0);
+            let Some(pre_amount) = pre_row["uiTokenAmount"]["amount"]
+                .as_str()
+                .and_then(|s| s.parse::<i64>().ok())
+            else {
+                continue;
+            };
+            if post_amount >= pre_amount {
+                continue;
+            }
+            // The debited token account's owner is the funding party — the
+            // wallet the tokens left, not the ATA address itself. No owner on
+            // the row: fall back to the account's own address — still a party
+            // to the payment, and the shape some RPCs return.
+            let payer = pre_row["owner"].as_str().or_else(|| {
+                account_keys
+                    .get(index as usize)
+                    .and_then(|k| k["pubkey"].as_str().or_else(|| k.as_str()))
+            });
+            if let Some(payer) = payer
+                && !payers.iter().any(|p| p == payer)
+            {
+                payers.push(payer.to_owned());
+            }
         }
     }
-    first_signer(account_keys)
+    if payers.is_empty() {
+        payers.extend(first_signer(account_keys));
+    }
+    payers
 }
 
 /// The SPL-token counterpart of the native-balance delta: the difference
@@ -1543,26 +1842,26 @@ mod tests {
     /// signer whose lamport balance fell — the wallet the transfer debited —
     /// which in the ordinary transfer is the fee payer at `accountKeys[0]`.
     #[test]
-    fn sol_payer_names_the_debited_signer() {
+    fn sol_payers_names_the_debited_signer() {
         let tx = sol_tx(0, 5_000, "payToAddr");
         let keys = tx["transaction"]["message"]["accountKeys"]
             .as_array()
             .unwrap();
-        let payer = sol_payer(
+        let payers = sol_payers(
             keys,
             tx["meta"]["preBalances"].as_array(),
             tx["meta"]["postBalances"].as_array(),
         );
-        assert_eq!(payer.as_deref(), Some("PAYER_WALLET"));
+        assert_eq!(payers, vec!["PAYER_WALLET".to_owned()]);
     }
 
-    /// A fee payer distinct from the source: a relayer at index 0 pays only
-    /// the fee while a second signer's balance drops by the transfer amount.
-    /// The first *decreased* signer is the answer — still the fee payer here
-    /// (its balance fell too), the documented v1 residual: the wallet named
-    /// is a party to the payment, never the recipient.
+    /// Issue #1178: a fee payer distinct from the source — a relayer at index
+    /// 0 pays only the fee while a second signer's balance drops by the
+    /// transfer amount — names *both* debited signers, in key order. Screening
+    /// every funding party is the point: a sanctioned source can no longer
+    /// hide behind a clean relayer's fee-only debit.
     #[test]
-    fn sol_payer_falls_back_to_the_first_debited_signer() {
+    fn sol_payers_names_every_debited_signer() {
         let tx = json!({
             "meta": {
                 "err": null,
@@ -1584,20 +1883,52 @@ mod tests {
         let keys = tx["transaction"]["message"]["accountKeys"]
             .as_array()
             .unwrap();
-        let payer = sol_payer(
+        let payers = sol_payers(
             keys,
             tx["meta"]["preBalances"].as_array(),
             tx["meta"]["postBalances"].as_array(),
         );
-        // Both signers' balances fell; the first in key order (the fee payer)
-        // is the documented answer.
-        assert_eq!(payer.as_deref(), Some("RELAYER"));
+        // Both signers' balances fell — the fee payer and the funding source —
+        // and the answer carries both in key order.
+        assert_eq!(payers, vec!["RELAYER".to_owned(), "SOURCE".to_owned()]);
     }
 
-    /// For an SPL transfer the payer is the `owner` of the token account that
-    /// decreased on the paid mint — the wallet the tokens left.
+    /// When the balance arrays isolate no debited signer the answer falls
+    /// back to the first signer — the fee payer, still a party to the
+    /// payment rather than none.
     #[test]
-    fn spl_payer_names_the_debited_owner() {
+    fn sol_payers_falls_back_to_the_first_signer() {
+        let tx = json!({
+            "meta": {
+                "err": null,
+                // No signer's balance fell — an empty-delta shape.
+                "preBalances":  [5_000_000_000_i64, 0],
+                "postBalances": [5_000_000_000_i64, 0],
+            },
+            "transaction": {
+                "message": {
+                    "accountKeys": [
+                        {"pubkey": "FEE_PAYER", "signer": true, "writable": true, "source": "transaction"},
+                        {"pubkey": "RECIPIENT", "signer": false, "writable": true, "source": "transaction"}
+                    ]
+                }
+            }
+        });
+        let keys = tx["transaction"]["message"]["accountKeys"]
+            .as_array()
+            .unwrap();
+        let payers = sol_payers(
+            keys,
+            tx["meta"]["preBalances"].as_array(),
+            tx["meta"]["postBalances"].as_array(),
+        );
+        assert_eq!(payers, vec!["FEE_PAYER".to_owned()]);
+    }
+
+    /// For an SPL transfer the payers are the `owner`s of the token accounts
+    /// that decreased on the paid mint — the wallets the tokens left.
+    #[test]
+    fn spl_payers_names_the_debited_owner() {
         // Index 1 is the sender's ATA (decreased), index 3 the recipient's
         // (increased); both rows ride the same mint.
         let mut tx = spl_tx("5000000", None, "usdcMint", "payToAddr");
@@ -1624,19 +1955,64 @@ mod tests {
         let keys = tx["transaction"]["message"]["accountKeys"]
             .as_array()
             .unwrap();
-        let payer = spl_payer(
+        let payers = spl_payers(
             tx["meta"]["preTokenBalances"].as_array(),
             tx["meta"]["postTokenBalances"].as_array(),
             keys,
             "usdcMint",
         );
-        assert_eq!(payer.as_deref(), Some("PAYER_WALLET"));
+        assert_eq!(payers, vec!["PAYER_WALLET".to_owned()]);
+    }
+
+    /// Issue #1178: a payment funded from two token accounts on the paid mint
+    /// names both debited owners — screening must clear each, not just the
+    /// first the rows happened to list.
+    #[test]
+    fn spl_payers_names_every_debited_owner() {
+        let mut tx = spl_tx("5000000", None, "usdcMint", "payToAddr");
+        tx["meta"]["preTokenBalances"] = json!([
+            {
+                "accountIndex": 1, "mint": "usdcMint", "owner": "FIRST_OWNER",
+                "uiTokenAmount": {"amount": "9000000", "decimals": 6, "uiAmountString": "9"}
+            },
+            {
+                "accountIndex": 2, "mint": "usdcMint", "owner": "SECOND_OWNER",
+                "uiTokenAmount": {"amount": "500000", "decimals": 6, "uiAmountString": "0.5"}
+            }
+        ]);
+        tx["meta"]["postTokenBalances"] = json!([
+            {
+                "accountIndex": 1, "mint": "usdcMint", "owner": "FIRST_OWNER",
+                "uiTokenAmount": {"amount": "4500000", "decimals": 6, "uiAmountString": "4.5"}
+            },
+            {
+                "accountIndex": 2, "mint": "usdcMint", "owner": "SECOND_OWNER",
+                "uiTokenAmount": {"amount": "0", "decimals": 6, "uiAmountString": "0"}
+            },
+            {
+                "accountIndex": 3, "mint": "usdcMint", "owner": "payToAddr",
+                "uiTokenAmount": {"amount": "5000000", "decimals": 6, "uiAmountString": "5"}
+            }
+        ]);
+        let keys = tx["transaction"]["message"]["accountKeys"]
+            .as_array()
+            .unwrap();
+        let payers = spl_payers(
+            tx["meta"]["preTokenBalances"].as_array(),
+            tx["meta"]["postTokenBalances"].as_array(),
+            keys,
+            "usdcMint",
+        );
+        assert_eq!(
+            payers,
+            vec!["FIRST_OWNER".to_owned(), "SECOND_OWNER".to_owned()]
+        );
     }
 
     /// A preTokenBalances row on a *different* mint decreasing does not name
-    /// the payer — the screen keys on the paid mint's own debit.
+    /// a payer — the screen keys on the paid mint's own debit.
     #[test]
-    fn spl_payer_ignores_a_decrease_on_another_mint() {
+    fn spl_payers_ignores_a_decrease_on_another_mint() {
         let mut tx = spl_tx("5000000", None, "usdcMint", "payToAddr");
         tx["meta"]["preTokenBalances"] = json!([
             {
@@ -1657,7 +2033,7 @@ mod tests {
         let keys = tx["transaction"]["message"]["accountKeys"]
             .as_array()
             .unwrap();
-        let payer = spl_payer(
+        let payers = spl_payers(
             tx["meta"]["preTokenBalances"].as_array(),
             tx["meta"]["postTokenBalances"].as_array(),
             keys,
@@ -1665,7 +2041,7 @@ mod tests {
         );
         // No paid-mint decrease: the fallback names the first signer, the
         // wallet that authorized the transfer — PAYER_WALLET at index 0.
-        assert_eq!(payer.as_deref(), Some("PAYER_WALLET"));
+        assert_eq!(payers, vec!["PAYER_WALLET".to_owned()]);
     }
 
     #[test]
@@ -1680,6 +2056,87 @@ mod tests {
             "usdcMint",
         );
         assert_eq!(delta, None);
+    }
+
+    /// #1188's second half: one transaction that credits `payTo` in SOL *and*
+    /// a whitelisted SPL mint reports one row per asset — the old
+    /// `inspect_received` early-returned on the SOL leg and the SPL leg never
+    /// surfaced. `received_legs` is the pure mapping `inspect_received`
+    /// delegates to, so the multi-asset shape is locked without an RPC.
+    #[test]
+    fn received_legs_reports_every_asset_a_transfer_credits() {
+        let mint = "usdcMint";
+        // One tx: a native lamport delta into `payToAddr` (index 1) AND an
+        // SPL token-account delta on `mint` owned by `payToAddr` (index 3) —
+        // the multi-hop-settlement shape a payment router produces.
+        let tx = json!({
+            "meta": {
+                "err": null,
+                "preBalances": [5_000_000_000_i64, 0, 1, 1],
+                "postBalances": [4_999_995_000_i64, 5_000, 1, 1],
+                "preTokenBalances": [],
+                "postTokenBalances": [{
+                    "accountIndex": 3, "mint": mint, "owner": "payToAddr",
+                    "uiTokenAmount": {"amount": "7500000", "decimals": 6, "uiAmountString": "7.5"}
+                }]
+            },
+            "transaction": {
+                "message": {
+                    "accountKeys": [
+                        {"pubkey": "PAYER_WALLET", "signer": true, "writable": true, "source": "transaction"},
+                        {"pubkey": "payToAddr", "signer": false, "writable": true, "source": "transaction"},
+                        {"pubkey": mint, "signer": false, "writable": false, "source": "transaction"},
+                        {"pubkey": "PAYTO_ATA", "signer": false, "writable": true, "source": "transaction"}
+                    ]
+                }
+            }
+        });
+        let keys = tx["transaction"]["message"]["accountKeys"]
+            .as_array()
+            .unwrap();
+        let mints = vec![
+            MintWhitelistEntry {
+                key: "sol".to_owned(),
+                mint: None,
+            },
+            MintWhitelistEntry {
+                key: "usdc".to_owned(),
+                mint: Some(mint.to_owned()),
+            },
+        ];
+        let legs = received_legs(
+            "sigMulti",
+            &tx["meta"],
+            keys,
+            "payToAddr",
+            &mints,
+            Some(1_700_000_000),
+        );
+        assert_eq!(legs.len(), 2, "one row per credited asset: {legs:?}");
+        assert_eq!(legs[0].asset.as_deref(), Some("sol"));
+        assert_eq!(legs[0].delivered, 5_000);
+        assert_eq!(legs[1].asset.as_deref(), Some("usdc"));
+        assert_eq!(legs[1].delivered, 7_500_000);
+        assert_eq!(legs[0].signature, "sigMulti");
+        assert_eq!(legs[1].signature, "sigMulti");
+        // And a transaction that moves nothing into the vault stays empty —
+        // a `payTo`-signed outbound send reads exactly like before.
+        let outbound = sol_tx(5_000, 0, "payToAddr");
+        let outbound_keys = outbound["transaction"]["message"]["accountKeys"]
+            .as_array()
+            .unwrap();
+        let legs = received_legs(
+            "sigOut",
+            &outbound["meta"],
+            outbound_keys,
+            "payToAddr",
+            &mints,
+            None,
+        );
+        assert!(
+            legs.is_empty(),
+            "an outbound send credits nothing: {legs:?}"
+        );
     }
 
     /// The `endpoint` metric label's spelling: host (plus a non-default
@@ -1956,22 +2413,20 @@ mod tests {
         }))
         .await;
         // A `getAccountInfo` answer: value.owner is the classic SPL Token
-        // program; value.data[0] is a base64 SPL mint layout whose byte 44
-        // (decimals) is 6 — 68 zero bytes would read 0, so craft it.
+        // program; value.data[0] is a base64 classic SPL mint layout — 82
+        // bytes, isInitialized (byte 45) set — whose byte 44 (decimals) is 6.
         use base64::Engine as _;
-        let mut mint_layout = vec![0u8; 68];
-        mint_layout[44] = 6;
-        let mint_b64 = base64::engine::general_purpose::STANDARD.encode(mint_layout);
+        let mint_b64 = base64::engine::general_purpose::STANDARD.encode(classic_mint_layout(6));
         let (url_good, _good) = stub_rpc(json!({
             "jsonrpc": "2.0", "id": 1,
-            "result": {"value": {"owner": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA", "data": [mint_b64, "base64"]}}
+            "result": {"value": {"owner": SPL_TOKEN_PROGRAM_ID, "data": [mint_b64, "base64"]}}
         }))
         .await;
         let client = client(&[url_bad, url_good], None);
         let decimals = client.mint_decimals("someMint").await.unwrap();
         assert_eq!(decimals, 6);
         let owner = client.mint_owner("someMint").await.unwrap();
-        assert_eq!(owner, "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA");
+        assert_eq!(owner, SPL_TOKEN_PROGRAM_ID);
         // The first audit read started on the bad endpoint and failed over;
         // the round-robin cursor started the second on the good one, so the
         // bad endpoint saw exactly one hit — the failover worked.
@@ -1980,6 +2435,66 @@ mod tests {
             1,
             "the bad endpoint was tried once then failed over"
         );
+    }
+
+    /// A well-formed classic SPL mint account body: exactly
+    /// `SPL_MINT_DATA_LEN` bytes with `isInitialized` (byte 45) set and
+    /// `decimals` (byte 44) filled — the shape `mint_decimals_of` accepts.
+    fn classic_mint_layout(decimals: u8) -> Vec<u8> {
+        let mut layout = vec![0u8; SPL_MINT_DATA_LEN];
+        layout[44] = decimals;
+        layout[SPL_MINT_IS_INITIALIZED_OFFSET] = 1;
+        layout
+    }
+
+    /// Issue #1182: the mint layout is validated before byte 44 is ever read
+    /// — a truncated account, a longer (extension-padded) blob, or an
+    /// uninitialized mint is `Err`, never a decimals figure off data that is
+    /// not a classic mint.
+    #[test]
+    fn mint_decimals_of_validates_the_classic_layout() {
+        // The well-formed layout yields its decimals byte.
+        assert_eq!(mint_decimals_of(&classic_mint_layout(6)).unwrap(), 6);
+        assert_eq!(mint_decimals_of(&classic_mint_layout(9)).unwrap(), 9);
+
+        // Too short — the old `bytes.get(44)` arm would still have answered
+        // on a 68-byte stub; now the length must be exact.
+        let short = classic_mint_layout(6)[..68].to_vec();
+        let err = mint_decimals_of(&short).unwrap_err();
+        assert!(err.0.contains("68 bytes"), "{err:?}");
+
+        // Too long — an extension-carrying blob is not the classic layout.
+        let mut long = classic_mint_layout(6);
+        long.extend_from_slice(&[0u8; 100]);
+        assert!(mint_decimals_of(&long).is_err());
+
+        // Exactly the right length but `isInitialized` clear — a mint that
+        // was allocated but never initialized must not price a deposit.
+        let mut uninitialized = classic_mint_layout(6);
+        uninitialized[SPL_MINT_IS_INITIALIZED_OFFSET] = 0;
+        let err = mint_decimals_of(&uninitialized).unwrap_err();
+        assert!(err.0.contains("not initialized"), "{err:?}");
+
+        // Empty is the degenerate truncated case.
+        assert!(mint_decimals_of(&[]).is_err());
+    }
+
+    /// `mint_decimals` end-to-end over a stub RPC: an account whose data is
+    /// shorter than the classic layout is `Err` — the on-chain read surfaces
+    /// the same refusal the layout parser does, rather than a silently
+    /// misread byte 44.
+    #[tokio::test(flavor = "current_thread")]
+    async fn mint_decimals_refuses_a_truncated_account() {
+        use base64::Engine as _;
+        let truncated = base64::engine::general_purpose::STANDARD.encode(vec![0u8; 68]);
+        let (url, _hits) = stub_rpc(json!({
+            "jsonrpc": "2.0", "id": 1,
+            "result": {"value": {"owner": SPL_TOKEN_PROGRAM_ID, "data": [truncated, "base64"]}}
+        }))
+        .await;
+        let client = client(&[url], None);
+        let err = client.mint_decimals("someMint").await.unwrap_err();
+        assert!(err.0.contains("68 bytes"), "{err:?}");
     }
 
     /// The failover's metric shape, read back off a local Prometheus
@@ -2034,5 +2549,133 @@ mod tests {
         // The API key appears nowhere in the exposition document.
         assert!(!rendered.contains("TOPSECRET"), "{rendered}");
         drop(_guard);
+    }
+
+    /// A `getTransaction`-shaped answer carrying one paying native-SOL
+    /// transfer — the body `validate_transfer` and its cross-confirmation
+    /// read. `post_lamports` is what the deposit address gained.
+    fn transaction_result(pre_lamports: i64, post_lamports: i64, recipient: &str) -> Value {
+        json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "result": sol_tx(pre_lamports, post_lamports, recipient)
+        })
+    }
+
+    /// The demand the cross-confirmation tests place on the chain: `payTo`
+    /// (the test config's deposit address), 5000 lamports, native SOL, the
+    /// marker `sol_tx` embeds as a read-only non-signer.
+    fn expected_transfer() -> ExpectedTransfer {
+        ExpectedTransfer {
+            recipient: "payTo".to_owned(),
+            amount: 5_000,
+            spl_token_mint: None,
+            reference: "REFERENCE_MARKER".to_owned(),
+        }
+    }
+
+    /// Issue #1183: two endpoints agreeing on the same transaction is the
+    /// credit-grade answer — `validate_transfer` refetches the signature on a
+    /// second endpoint and both report the same delivered figure.
+    #[tokio::test(flavor = "current_thread")]
+    async fn validate_transfer_cross_confirms_on_a_second_endpoint() {
+        let (url_a, hits_a) = stub_rpc(transaction_result(0, 5_000, "payTo")).await;
+        let (url_b, hits_b) = stub_rpc(transaction_result(0, 5_000, "payTo")).await;
+        let client = client(&[url_a, url_b], None);
+        let validated = client
+            .validate_transfer("sig1", &expected_transfer())
+            .await
+            .unwrap();
+        assert_eq!(validated.map(|v| v.delivered), Some(5_000));
+        // The primary read and the second opinion each landed once — one
+        // endpoint served `getTransaction`, the other confirmed it.
+        assert_eq!(hits_a.load(std::sync::atomic::Ordering::SeqCst), 1);
+        assert_eq!(hits_b.load(std::sync::atomic::Ordering::SeqCst), 1);
+    }
+
+    /// A second endpoint that has not seen the transaction cannot confirm it:
+    /// the answer is not a credit basis and the deposit stays pending.
+    #[tokio::test(flavor = "current_thread")]
+    async fn an_endpoint_that_missed_the_tx_keeps_the_deposit_pending() {
+        let (url_a, _a) = stub_rpc(transaction_result(0, 5_000, "payTo")).await;
+        let (url_b, _b) = stub_rpc(json!({"jsonrpc": "2.0", "id": 1, "result": null})).await;
+        let client = client(&[url_a, url_b], None);
+        let validated = client
+            .validate_transfer("sig1", &expected_transfer())
+            .await
+            .unwrap();
+        assert!(validated.is_none(), "no single endpoint's word credits");
+    }
+
+    /// Two endpoints that disagree on the delivered amount cannot both be
+    /// right: the deposit stays pending rather than crediting either figure.
+    #[tokio::test(flavor = "current_thread")]
+    async fn disagreeing_endpoints_keep_the_deposit_pending() {
+        let (url_a, _a) = stub_rpc(transaction_result(0, 5_000, "payTo")).await;
+        let (url_b, _b) = stub_rpc(transaction_result(0, 4_000, "payTo")).await;
+        let client = client(&[url_a, url_b], None);
+        let validated = client
+            .validate_transfer("sig1", &expected_transfer())
+            .await
+            .unwrap();
+        assert!(validated.is_none(), "a disagreement is not a credit basis");
+    }
+
+    /// A second endpoint that cannot answer at all is not a confirmation: the
+    /// deposit stays pending until a sibling endpoint can vouch.
+    #[tokio::test(flavor = "current_thread")]
+    async fn an_unreachable_second_endpoint_keeps_the_deposit_pending() {
+        let (url_a, _a) = stub_rpc(transaction_result(0, 5_000, "payTo")).await;
+        let (url_b, _b) = stub_rpc(json!({
+            "jsonrpc": "2.0", "id": 1, "error": {"code": -1, "message": "no"}
+        }))
+        .await;
+        let client = client(&[url_a, url_b], None);
+        let validated = client
+            .validate_transfer("sig1", &expected_transfer())
+            .await
+            .unwrap();
+        assert!(validated.is_none(), "no second opinion, no credit");
+    }
+
+    /// The confirmation is an extra read, not a replacement for failover: a
+    /// dead first endpoint fails the primary read over to the second, and a
+    /// third endpoint supplies the second opinion — validation still lands.
+    #[tokio::test(flavor = "current_thread")]
+    async fn cross_confirmation_survives_a_primary_failover() {
+        let (url_bad, _bad) = stub_rpc(json!({
+            "jsonrpc": "2.0", "id": 1, "error": {"code": -1, "message": "no"}
+        }))
+        .await;
+        let (url_b, _b) = stub_rpc(transaction_result(0, 5_000, "payTo")).await;
+        let (url_c, _c) = stub_rpc(transaction_result(0, 5_000, "payTo")).await;
+        let client = client(&[url_bad, url_b, url_c], None);
+        // The primary read fails over bad → B; the confirmation walks past B
+        // (the serving endpoint cannot second-guess itself) and past the now
+        // cooling bad endpoint to C's agreeing answer.
+        let validated = client
+            .validate_transfer("sig1", &expected_transfer())
+            .await
+            .unwrap();
+        assert_eq!(validated.map(|v| v.delivered), Some(5_000));
+    }
+
+    /// A single-endpoint pool has no second opinion to ask: the first answer
+    /// stands alone, exactly the pre-#1183 behavior a one-provider deployment
+    /// keeps.
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_single_endpoint_pool_validates_without_a_second_opinion() {
+        let (url, hits) = stub_rpc(transaction_result(0, 5_000, "payTo")).await;
+        let client = client(std::slice::from_ref(&url), None);
+        let validated = client
+            .validate_transfer("sig1", &expected_transfer())
+            .await
+            .unwrap();
+        assert_eq!(validated.map(|v| v.delivered), Some(5_000));
+        assert_eq!(
+            hits.load(std::sync::atomic::Ordering::SeqCst),
+            1,
+            "the single endpoint answered one read — no confirmation round-trip exists"
+        );
     }
 }

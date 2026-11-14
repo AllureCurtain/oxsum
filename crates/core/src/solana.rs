@@ -77,8 +77,9 @@ pub const USD_PEGGED_RATE_MICRO: i64 = 1_000_000;
 /// One Solana deposit-intent `open` may quote an intent this many seconds
 /// before the poll expires it (default when the config omits it): Solana
 /// Pay's own unbounded-poll guard, so a never-paid intent does not poll
-/// forever.
-const DEFAULT_INTENT_TTL_SECS: i64 = 600;
+/// forever. The 15-minute window the mainnet-readiness decision recorded
+/// (issue #1117) — a customer paying by hand needs the time.
+const DEFAULT_INTENT_TTL_SECS: i64 = 900;
 
 /// The SPL Token-2022 program id: a mint whose owner is this program is
 /// refused at boot (issue #1140). Token-2022 mints carry extensions —
@@ -86,6 +87,14 @@ const DEFAULT_INTENT_TTL_SECS: i64 = 600;
 /// not model, so the whitelist rejects them before they can misprice or
 /// mis-credit a deposit.
 pub const TOKEN_2022_PROGRAM_ID: &str = "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb";
+
+/// The classic SPL Token program id — the *only* owner a whitelisted mint
+/// may carry (issue #1182). The audit's refusal is a positive allowlist, not
+/// a Token-2022 denylist: an account owned by the System program or any
+/// other program is not a classic SPL mint and fails startup with the actual
+/// owner named. Duplicated from `integrations::solana::SPL_TOKEN_PROGRAM_ID`
+/// so core stays HTTP-free — the two are the same well-known program id.
+pub const SPL_TOKEN_PROGRAM_ID: &str = "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA";
 
 /// How a `sol` intent prices its `rate_micro` at open (issue #1139). A
 /// USD-pegged asset never consults this policy — its rate is the fixed
@@ -280,6 +289,57 @@ impl AssetTerms {
     }
 }
 
+/// The Solana cluster the rail pays on (issue #1181). Solana addresses are
+/// identical across clusters — a devnet deposit address and a mainnet one
+/// are indistinguishable — so the intent's own `cluster` is what a wallet or
+/// page reads to know which network the payment must land on. The deployment
+/// declares it once: `OXSUM_SOLANA_CLUSTER` when set, else the config derives
+/// it from the RPC endpoints' shape and refuses the boot when an explicit
+/// value disagrees with them — a `devnet` declaration over mainnet-shaped
+/// endpoints would send the page's `cluster=devnet` while the rail's own
+/// verifier reads mainnet, which is the misdirection this field exists to
+/// prevent.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SolanaCluster {
+    /// The production cluster (`mainnet-beta`) — the default an
+    /// unannotated endpoint resolves to, matching Solana Pay's own
+    /// omission of `cluster` on mainnet URLs.
+    MainnetBeta,
+    /// The public devnet — local test-validators included (their RPC is a
+    /// localhost endpoint, which the config reads as non-mainnet-shaped).
+    Devnet,
+    /// The public testnet.
+    Testnet,
+}
+
+impl SolanaCluster {
+    /// The lowercase name the API and the Solana Pay `cluster` parameter
+    /// carry: `mainnet-beta`, `devnet`, `testnet`.
+    #[must_use]
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::MainnetBeta => "mainnet-beta",
+            Self::Devnet => "devnet",
+            Self::Testnet => "testnet",
+        }
+    }
+
+    /// Parses the `OXSUM_SOLANA_CLUSTER` spelling — `mainnet-beta`,
+    /// `devnet` or `testnet`, `mainnet`/`beta`/`main` tolerated as the
+    /// common shorthand for the production cluster. `None` on anything
+    /// else: the caller names the variable in its startup error, and this
+    /// keeps the list of accepted spellings in exactly one place.
+    #[must_use]
+    pub fn parse(raw: &str) -> Option<Self> {
+        match raw.trim().to_ascii_lowercase().as_str() {
+            "mainnet-beta" | "mainnet" | "main" | "beta" => Some(Self::MainnetBeta),
+            "devnet" | "dev" => Some(Self::Devnet),
+            "testnet" | "test" => Some(Self::Testnet),
+            _ => None,
+        }
+    }
+}
+
 /// The rail's deployment: everything `verify` needs to decide whether a
 /// transaction honors an intent, and everything `open_solana_deposit` needs
 /// to write the intent's `meta`. Mirrors `SolanaConfig` in integrations so
@@ -297,6 +357,11 @@ pub struct SolanaTerms {
     /// vault receives every asset; an SPL top-up lands in its ATA for the
     /// intent's mint.
     pub pay_to: String,
+    /// The cluster the rail pays on (issue #1181) — what the `open` intent
+    /// response answers so the wallet sends on the same network the rail's
+    /// RPC pool verifies against. `MainnetBeta` by default; the config
+    /// layer fills the validated figure, never a guessed one.
+    pub cluster: SolanaCluster,
     /// The default asset's SPL mint — `None` when the default is native SOL.
     /// Kept for intents opened before the whitelist existed; new code reads
     /// [`SolanaTerms::terms_for_asset`].
@@ -402,6 +467,7 @@ impl SolanaTerms {
             .clone();
         Self {
             pay_to,
+            cluster: SolanaCluster::MainnetBeta,
             spl_token_mint: default.spl_token_mint.clone(),
             asset_decimals: default.asset_decimals,
             rate_micro: default.rate_micro,
@@ -415,6 +481,16 @@ impl SolanaTerms {
             max_amount_minor,
             opens_per_minute,
         }
+    }
+
+    /// Sets the cluster the rail pays on (issue #1181). `SolanaTerms::new`
+    /// defaults to `MainnetBeta` — the production posture a devnet
+    /// deployment overrides explicitly, never implicitly from a hint the
+    /// config layer could not validate.
+    #[must_use]
+    pub fn with_cluster(mut self, cluster: SolanaCluster) -> Self {
+        self.cluster = cluster;
+        self
     }
 }
 
@@ -448,9 +524,9 @@ pub struct SolanaRailVerifier {
     /// `sol` open then refuses rather than falling back (issue #1139).
     oracle: Option<std::sync::Arc<dyn PriceOracle>>,
     /// The sanctions screen the credit path runs on the located transfer's
-    /// payer (issue #1144). `None` — the default — screens nothing: a
-    /// deployment that never enabled `OXSUM_SOLANA_SANCTIONS_*` credits
-    /// exactly as before.
+    /// debited funding parties (issues #1144, #1178). `None` — the default —
+    /// screens nothing: a deployment that never enabled
+    /// `OXSUM_SOLANA_SANCTIONS_*` credits exactly as before.
     sanctions: Option<std::sync::Arc<dyn SanctionsScreen>>,
 }
 
@@ -508,9 +584,12 @@ pub trait ChainLookup: std::fmt::Debug + Send + Sync {
     /// read once per mint at boot so a declared figure that disagrees with
     /// the real mint refuses startup (issue #1129); with the multi-asset
     /// whitelist the figure is authoritative, never operator-declared
-    /// (issue #1140). `None` when the lookup cannot answer; never called for
-    /// native SOL (there is no mint to read). It is never on the per-request
-    /// path.
+    /// (issue #1140). The lookup validates the classic SPL mint layout
+    /// before answering — exact 82-byte data, `isInitialized` set — so a
+    /// truncated or uninitialized mint answers `None` and refuses the boot
+    /// (issue #1182). `None` when the lookup cannot answer or the account is
+    /// not a well-formed mint; never called for native SOL (there is no mint
+    /// to read). It is never on the per-request path.
     fn mint_decimals<'a>(
         &'a self,
         _mint: &'a str,
@@ -540,7 +619,15 @@ pub trait ChainLookup: std::fmt::Debug + Send + Sync {
     /// (the scan exists precisely to find the payments that carried none).
     /// `getTransaction` is fetched once per candidate — the bound on
     /// `max_signatures` is what keeps the walk polite on a busy vault.
-    /// A lookup that cannot answer returns an empty Vec: an unreachable
+    ///
+    /// The [`ScanWalk`] reports the walk's real coverage: `walked` is how many
+    /// signatures were inspected (≠ the credited count — the report's
+    /// `scanned` figure was wrong before issue #1188), `credited` one entry
+    /// per whitelisted asset a transaction delivered into the vault (a single
+    /// transaction that pays both SOL and an SPL mint reports twice), and
+    /// `history_bounded` whether the walk stopped at the bound while older
+    /// history may remain.
+    /// A lookup that cannot answer returns an empty walk: an unreachable
     /// endpoint reads as "nothing found", exactly like `find_reference`'s
     /// contract — the scan is a report, never a credit path, so a blind
     /// answer is a quiet miss, not a wrong write. The default is the same
@@ -548,10 +635,29 @@ pub trait ChainLookup: std::fmt::Debug + Send + Sync {
     fn scan_received<'a>(
         &'a self,
         _max_signatures: usize,
-    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Vec<ScannedTransfer>> + Send + 'a>>
-    {
-        Box::pin(async { Vec::new() })
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ScanWalk> + Send + 'a>> {
+        Box::pin(async { ScanWalk::default() })
     }
+}
+
+/// The reconciliation scan's coverage report (issue #1188): what one
+/// `ChainLookup::scan_received` walk actually did. The three figures answer
+/// distinct questions the old "list of transfers" conflated — `walked` is
+/// the signatures inspected, `credited` the paying transfers found among
+/// them, `history_bounded` the truncation signal.
+#[derive(Debug, Clone, Default)]
+pub struct ScanWalk {
+    /// How many `payTo` signature-history entries the walk inspected (one
+    /// `getTransaction` each), bounded at `max_signatures`.
+    pub walked: usize,
+    /// The transfers that delivered value into the vault in a whitelisted
+    /// asset — one entry per (signature, asset) pair, so a transaction that
+    /// pays SOL *and* an SPL mint in one shot reports both legs.
+    pub credited: Vec<ScannedTransfer>,
+    /// Whether the walk stopped at `max_signatures` while more signature
+    /// history may exist beyond the bound — `false` when the history ended
+    /// on its own (a short page).
+    pub history_bounded: bool,
 }
 
 /// One on-chain transfer the reconciliation scan surfaced (issue #1149): a
@@ -575,9 +681,10 @@ pub struct ScannedTransfer {
     /// What the transaction delivered to the deposit address, in `asset`'s
     /// base units.
     pub delivered: i64,
-    /// The payer's address when the transaction's shape yields one — the same
-    /// attribution `ValidatedTransfer.payer` makes (the debited signer or
-    /// token-account owner), `None` when it does not.
+    /// The payer's address when the transaction's shape yields one — the
+    /// first of the debited funding parties `ValidatedTransfer.payers` names,
+    /// `None` when it yields none. The report carries one representative;
+    /// screening the whole set is the credit path's job.
     pub payer: Option<String>,
 }
 
@@ -606,11 +713,15 @@ pub struct ValidatedTransfer {
     /// The on-chain `blockTime` — when the chain recorded the transfer.
     /// Expiry is judged against this, not the server's clock.
     pub block_time: Option<i64>,
-    /// The payer's address — the account whose balance was debited to pay the
-    /// recipient (issue #1144). `None` when the transaction's shape does not
-    /// yield one; the screening seam treats `None` as unscreenable and the
-    /// credit path then decides by the deployment's fail policy.
-    pub payer: Option<String>,
+    /// Every debited funding party of the payment (issues #1144, #1178) —
+    /// for native SOL each signer whose lamport balance fell (the funding
+    /// source(s) and the fee payer), for SPL each debited token account's
+    /// owner. Pre-credit screening runs on *every* listed address so a
+    /// sanctioned source cannot hide behind a clean relayer. Empty when the
+    /// transaction's shape yields none; the screening seam treats an empty
+    /// list as unscreenable and the credit path then decides by the
+    /// deployment's fail policy.
+    pub payers: Vec<String>,
 }
 
 /// The verdict a [`SanctionsScreen`] returns for one payer address (issue
@@ -691,6 +802,14 @@ pub enum SolanaCredit {
     /// A paying transfer was located whose on-chain `blockTime` is at/after
     /// the intent's `expiresAt` — the deposit is now `late`.
     Late,
+    /// The located transfer honored the intent's terms but its payer hit a
+    /// sanctions screen — the deposit is parked `flagged` for operator
+    /// review (issue #1144): never credited by this walk, never auto-
+    /// refunded. A replayed walk over an already-`flagged` row answers the
+    /// same verdict — the confirm route maps it to a named conflict, never
+    /// the "unknown intent" 404 the caller reads as still-settling (issue
+    /// #1184).
+    Flagged,
     /// The deposit was no longer `pending` — a raced poll or confirm already
     /// walked it. The no-op replay `Ok(None)` used to mean.
     Settled,
@@ -767,10 +886,10 @@ pub struct SolanaExceptionDeposit {
     /// The paying transaction's signature — the spent anchor
     /// `deposits_solana_tx_hash` guards.
     pub signature: Option<String>,
-    /// The payer address the rail attributed — `meta.payerAddress` on the
-    /// credit/exception rows that recorded it (today: none — the verify
-    /// context's `payerAddress` is logged but not merged), falling back to
-    /// `meta.screening.address` on a `flagged` row. `None` when no path
+    /// The payer address the rail attributed — `meta.payerAddress`, which
+    /// every terminal write merges from the verify context (issue #1186),
+    /// falling back to `meta.screening.address` on a `flagged` row parked
+    /// before the merge landed. `None` on a `pending` row that never
     /// recorded one; the CSV column documents its provenance.
     pub payer: Option<String>,
     /// The ledger entry that credited the wallet, when the deposit credited
@@ -875,10 +994,10 @@ impl SolanaRailVerifier {
         }
     }
 
-    /// Attaches the sanctions screen the credit path runs on every located
-    /// transfer's payer (issue #1144). `SolanaRailVerifier::new` leaves the
-    /// screen off — a deployment that never configures `OXSUM_SOLANA_
-    /// SANCTIONS_*` sees no change at all.
+    /// Attaches the sanctions screen the credit path runs on every debited
+    /// funding party of the located transfer (issues #1144, #1178).
+    /// `SolanaRailVerifier::new` leaves the screen off — a deployment that
+    /// never configures `OXSUM_SOLANA_SANCTIONS_*` sees no change at all.
     #[must_use]
     pub fn with_sanctions(mut self, sanctions: std::sync::Arc<dyn SanctionsScreen>) -> Self {
         self.sanctions = Some(sanctions);
@@ -894,10 +1013,12 @@ impl SolanaRailVerifier {
     /// The reconciliation scan (issue #1149): the on-chain half delegated to
     /// the rail's `ChainLookup` — `payTo`'s inbound transfers over the last
     /// `max_signatures` of its signature history, each already filtered to a
-    /// real delivery into the vault in a whitelisted asset. The caller diffs
-    /// the answer against the recorded deposits; the scan itself never
-    /// writes — it reports.
-    pub async fn scan_received(&self, max_signatures: usize) -> Vec<ScannedTransfer> {
+    /// real delivery into the vault in a whitelisted asset. The [`ScanWalk`]
+    /// carries the walk's real coverage (issue #1188): signatures inspected,
+    /// paying transfers found (one per asset leg), and whether the bound cut
+    /// the walk short. The caller diffs the credited signatures against the
+    /// recorded deposits; the scan itself never writes — it reports.
+    pub async fn scan_received(&self, max_signatures: usize) -> ScanWalk {
         self.chain.scan_received(max_signatures).await
     }
 
@@ -994,16 +1115,20 @@ impl SolanaRailVerifier {
         }
     }
 
-    /// The boot-time mint audit (issues #1129, #1140): every whitelisted SPL
-    /// mint is read on-chain once — its `decimals` replaces the config's
-    /// placeholder so the mint's own figure prices deposits, and its `owner`
-    /// program must be the classic SPL Token program, never Token-2022
-    /// (whose transfer-fee and hook extensions the rail does not model). A
-    /// native-SOL-only whitelist reads nothing. `Err` names the mint and the
-    /// fault — the boot refuses to start rather than misprice or accept an
-    /// extension-laden mint. `Ok(false)` would mean a mint read failed and
-    /// the caller should refuse too; the function returns `Err` in that case
-    /// so there is only one refusal shape.
+    /// The boot-time mint audit (issues #1129, #1140, #1182): every
+    /// whitelisted SPL mint is read on-chain once — its `decimals` replaces
+    /// the config's placeholder so the mint's own figure prices deposits, its
+    /// `owner` program must be the classic SPL Token program
+    /// ([`SPL_TOKEN_PROGRAM_ID`]) and nothing else, and its account data must
+    /// parse as the classic mint layout (the `mint_decimals` read refuses a
+    /// truncated or uninitialized mint, so the decimals byte is never read
+    /// off data that is not a mint). Token-2022 is still named explicitly —
+    /// its transfer-fee and hook extensions are the known wrong shape —
+    /// while every other owner names itself: an account owned by the System
+    /// program or a custom program is not a mint at all. A native-SOL-only
+    /// whitelist reads nothing. `Err` names the mint and the fault — the
+    /// boot refuses to start rather than misprice or accept an
+    /// extension-laden mint.
     pub async fn verify_mints(&mut self) -> Result<(), String> {
         for asset in &mut self.terms.assets {
             let Some(mint) = asset.spl_token_mint.clone() else {
@@ -1018,6 +1143,13 @@ impl SolanaRailVerifier {
                     "the {key:?} mint {mint} is owned by Token-2022 — the rail only \
                      accepts classic SPL Token mints (its transfer-fee and hook \
                      extensions are not modelled)"
+                ));
+            }
+            if owner != SPL_TOKEN_PROGRAM_ID {
+                return Err(format!(
+                    "the {key:?} mint {mint} is owned by {owner}, not the classic SPL \
+                     Token program {SPL_TOKEN_PROGRAM_ID} — the account is not a \
+                     classic SPL mint"
                 ));
             }
             let decimals =
@@ -1234,7 +1366,12 @@ fn verified_payment(
             "delivered": validated.delivered,
             "expected": expected,
             "blockTime": validated.block_time,
-            "payerAddress": validated.payer,
+            // Every debited funding party screening must clear (issue #1178);
+            // `payerAddress` keeps the first — the representative the queue
+            // row and the flag's `screening.address` record — for the readers
+            // that predate the list.
+            "payerAddress": validated.payers.first(),
+            "payerAddresses": validated.payers,
             "receivedCredits": asset_units_to_credits(
                 validated.delivered,
                 terms.rate_micro,
@@ -1245,27 +1382,80 @@ fn verified_payment(
 }
 
 impl SolanaRailVerifier {
-    /// Screens the payer address `verify` recorded in the payment's context
-    /// (issue #1144). With no screen configured — a deployment that never
-    /// enabled `OXSUM_SOLANA_SANCTIONS_*` — the verdict is `Clear` and the
-    /// credit path is exactly as before. When screening *is* on but the
-    /// transfer's shape yielded no payer, the verdict is
+    /// Screens every debited funding party `verify` recorded in the payment's
+    /// context (issues #1144, #1178). With no screen configured — a deployment
+    /// that never enabled `OXSUM_SOLANA_SANCTIONS_*` — the verdict is `Clear`
+    /// and the credit path is exactly as before. When screening *is* on but
+    /// the transfer's shape yielded no payer, the verdict is
     /// `TemporarilyUnavailable`, never `Clear`: an address the rail cannot
     /// name is an address it cannot clear, and deny-until-cleared refuses to
     /// book unscreened money (the row stays `pending` for an operator, the
     /// same posture an unreachable screening API takes).
+    ///
+    /// The walk covers the whole `payerAddresses` list — a transfer funded
+    /// by several wallets (a clean fee-paying relayer plus a second debited
+    /// source) is screened on each, so a sanctioned source cannot launder the
+    /// deposit through the relayer's fee-only debit. The first `Flagged`
+    /// wins outright — one hit parks the deposit whatever the other parties
+    /// answer — and a `TemporarilyUnavailable` on any party with no `Flagged`
+    /// defers the credit the same way an unreachable screen does.
     pub async fn screen_payer(&self, payment: &VerifiedPayment) -> ScreenVerdict {
         let Some(sanctions) = &self.sanctions else {
             return ScreenVerdict::Clear;
         };
-        let Some(payer) = payment.context["payerAddress"].as_str() else {
+        let mut payers: Vec<&str> = payment.context["payerAddresses"]
+            .as_array()
+            .map(|rows| rows.iter().filter_map(serde_json::Value::as_str).collect())
+            .unwrap_or_default();
+        if payers.is_empty()
+            && let Some(payer) = payment.context["payerAddress"].as_str()
+        {
+            // A context written before the list existed carries only the
+            // singular — screen what it names.
+            payers.push(payer);
+        }
+        if payers.is_empty() {
             tracing::warn!(
                 signature = %payment.context["signature"].as_str().unwrap_or_default(),
                 "the validated transfer carried no payer; screening cannot clear it"
             );
             return ScreenVerdict::TemporarilyUnavailable;
+        }
+        let mut unavailable = false;
+        for payer in payers {
+            match sanctions.screen(payer).await {
+                ScreenVerdict::Flagged { source, reason } => {
+                    return ScreenVerdict::Flagged { source, reason };
+                }
+                ScreenVerdict::TemporarilyUnavailable => unavailable = true,
+                ScreenVerdict::Clear => {}
+            }
+        }
+        if unavailable {
+            return ScreenVerdict::TemporarilyUnavailable;
+        }
+        ScreenVerdict::Clear
+    }
+
+    /// Whether a sanctions screen is configured at all — the refund-approve
+    /// path reads it to decide whether its `Clear` verdict is a real screen
+    /// result it should bind and record, or the no-op default of a deployment
+    /// that never enabled `OXSUM_SOLANA_SANCTIONS_*` and so carries no
+    /// `addressScreening` record (issue #1184).
+    pub fn has_sanctions_screen(&self) -> bool {
+        self.sanctions.is_some()
+    }
+
+    /// Screens one bare address — the refund-approve path's check on the
+    /// customer-supplied `refundAddress` (issue #1184). The same opt-in gate
+    /// as `screen_payer`: no configured screen answers `Clear`, so a
+    /// deployment that never enabled `OXSUM_SOLANA_SANCTIONS_*` approves
+    /// exactly as before.
+    pub async fn screen_address(&self, address: &str) -> ScreenVerdict {
+        let Some(sanctions) = &self.sanctions else {
+            return ScreenVerdict::Clear;
         };
-        sanctions.screen(payer).await
+        sanctions.screen(address).await
     }
 }
 
@@ -1396,6 +1586,12 @@ impl Db {
     /// for the resolved asset — the caller resolves it first because an
     /// oracle sample must not ride inside the open's insert path (issue
     /// #1139).
+    ///
+    /// `opens_per_minute` is enforced inside the insert's own transaction
+    /// under a per-(rail, organization) `pg_advisory_xact_lock` (issue
+    /// #1169): count and insert serialize against every other open on the
+    /// organization, so a concurrent burst cannot read one stale count and
+    /// all land past the cap. `0` stays unlimited — that path takes no lock.
     pub async fn open_solana_deposit(
         &self,
         organization_id: Uuid,
@@ -1418,27 +1614,6 @@ impl Db {
                 "a deposit's amount must be between {} and {} minor-credits",
                 terms.min_amount_minor, terms.max_amount_minor
             )));
-        }
-        // Per-organization open rate (issue #1130): bound how many pending
-        // intents one organization may mint inside a minute — intent spam is
-        // a marker-address and poll-work exhaustion vector, not free.
-        if terms.opens_per_minute > 0 {
-            let recent: i64 = sqlx::query_scalar(
-                "SELECT count(*) FROM oxsum.deposits \
-                 WHERE rail = $1 AND organization_id = $2 \
-                   AND created_at > now() - interval '60 seconds'",
-            )
-            .bind(RAIL_SOLANA)
-            .bind(organization_id)
-            .fetch_one(self.pool())
-            .await?;
-            if recent >= terms.opens_per_minute {
-                return Err(WalletError::Forbidden(format!(
-                    "the organization opened too many solana intents; try again shortly \
-                     (limit {}/min)",
-                    terms.opens_per_minute
-                )));
-            }
         }
         // The asset the customer picked — `None` resolves the deployment's
         // default; a key off the whitelist is a 400, never a silent re-price
@@ -1483,7 +1658,7 @@ impl Db {
                 dst.insert(k.clone(), v.clone());
             }
         }
-        let inserted = sqlx::query(
+        let insert = sqlx::query(
             "INSERT INTO oxsum.deposits \
                  (deposit_id, organization_id, rail, payment_ref, amount_minor, status, meta) \
              VALUES ($1, $2, $3, $4, $5, 'pending', $6) \
@@ -1494,10 +1669,50 @@ impl Db {
         .bind(RAIL_SOLANA)
         .bind(&reference)
         .bind(amount_minor)
-        .bind(meta)
-        .execute(self.pool())
-        .await?
-        .rows_affected();
+        .bind(meta);
+        // Per-organization open rate (issue #1130): bound how many pending
+        // intents one organization may mint inside a minute — intent spam is
+        // a marker-address and poll-work exhaustion vector, not free. The
+        // count and the insert run inside ONE transaction under a per-
+        // (rail, organization) advisory lock (issue #1169): an unserialized
+        // `SELECT count(*)` then `INSERT` on separate pool checkouts is a
+        // TOCTOU — a concurrent burst all reads the same pre-burst count and
+        // lands past the cap. `pg_advisory_xact_lock` serializes the pair so
+        // every open judges the minute against what already committed, and
+        // the lock releases with the transaction. The uncapped path keeps
+        // the bare insert — no lock, no transaction, no extra round-trip.
+        let inserted = if terms.opens_per_minute > 0 {
+            let mut tx = self.pool().begin().await?;
+            sqlx::query(
+                "SELECT pg_advisory_xact_lock(\
+                     hashtextextended('oxsum/solana-open/v1:' || $1::text, 0))",
+            )
+            .bind(organization_id.to_string())
+            .execute(&mut *tx)
+            .await?;
+            let recent: i64 = sqlx::query_scalar(
+                "SELECT count(*) FROM oxsum.deposits \
+                 WHERE rail = $1 AND organization_id = $2 \
+                   AND created_at > now() - interval '60 seconds'",
+            )
+            .bind(RAIL_SOLANA)
+            .bind(organization_id)
+            .fetch_one(&mut *tx)
+            .await?;
+            if recent >= terms.opens_per_minute {
+                tx.rollback().await?;
+                return Err(WalletError::Forbidden(format!(
+                    "the organization opened too many solana intents; try again shortly \
+                     (limit {}/min)",
+                    terms.opens_per_minute
+                )));
+            }
+            let inserted = insert.execute(&mut *tx).await?.rows_affected();
+            tx.commit().await?;
+            inserted
+        } else {
+            insert.execute(self.pool()).await?.rows_affected()
+        };
         if inserted == 0 {
             return Ok(None);
         }
@@ -1510,9 +1725,15 @@ impl Db {
         Ok(Some((reference, lamports, stored_expiry)))
     }
 
-    /// Finds the pending intent a `reference` names — the lookup the confirm
+    /// Finds the open intent a `reference` names — the lookup the confirm
     /// route runs on a replayed submission, answering the same `(deposit_id,
     /// organization_id, amount_minor)` rather than opening a second intent.
+    /// `flagged` rows answer too: a screening-parked deposit is still the
+    /// intent the reference names, so the confirm can say *flagged* rather
+    /// than the 404 "unknown intent" that would misread as still-settling
+    /// (issue #1184). The terminal queue statuses stay unfound — their
+    /// answers live on the deposits list.
+    ///
     /// The expiry is deliberately *not* filtered here: it is judged on the
     /// paying transaction's `blockTime` inside `credit_solana_deposit`, so a
     /// payment that landed before `expiresAt` still finds its intent and
@@ -1526,7 +1747,7 @@ impl Db {
             "SELECT deposit_id, organization_id, amount_minor \
              FROM oxsum.deposits \
              WHERE rail = $1 AND organization_id = $2 AND payment_ref = $3 \
-               AND status = 'pending'",
+               AND status IN ('pending', 'flagged')",
         )
         .bind(RAIL_SOLANA)
         .bind(organization_id)
@@ -1685,7 +1906,13 @@ impl Db {
         // paying transaction's own `blockTime`, judged after verify: a payment
         // on-chain before `expiresAt` credits even from `expired`, a late one
         // re-marks `late`, and a still-unpaid row keeps its `expired` — the
-        // sweep's original verdict stands.
+        // sweep's original verdict stands. A `flagged` row names its own
+        // verdict rather than folding into `Settled`: the confirm route turns
+        // it into a named conflict, never the 404 a caller would read as
+        // still-settling (issue #1184).
+        if status == status::FLAGGED {
+            return Ok(SolanaCredit::Flagged);
+        }
         if status != "pending" && status != "expired" {
             return Ok(SolanaCredit::Settled);
         }
@@ -1741,27 +1968,31 @@ impl Db {
             .await?;
             return Ok(SolanaCredit::Underpaid);
         }
-        // Pre-credit sanctions screening on the payer (issue #1144): the
-        // transfer's debited address is checked once the payment is otherwise
-        // creditable — a late or mistimed transfer is refused above before the
-        // screen ever runs, so the review queue only ever parks payments that
-        // *would* have credited. `Flagged` parks the row at `flagged` — never
-        // credited, never auto-refunded — with `meta.screening` recording the
-        // verdict. `TemporarilyUnavailable` leaves the row `pending`: a
-        // screening service that cannot answer is not a clear, and
-        // deny-until-cleared refuses to book unscreened money, so the next
-        // pass retries. The screen runs outside any row lock, the same
-        // read-only footing the chain RPCs already take.
+        // Pre-credit sanctions screening on every debited funding party
+        // (issues #1144, #1178): each address the transfer debited — the
+        // funding source(s) and the fee payer, or every debited token
+        // account's owner — is checked once the payment is otherwise
+        // creditable, so a sanctioned source cannot launder through a clean
+        // relayer's fee-only debit. A late or mistimed transfer is refused
+        // above before the screen ever runs, so the review queue only ever
+        // parks payments that *would* have credited. `Flagged` parks the row
+        // at `flagged` — never credited, never auto-refunded — with
+        // `meta.screening` recording the verdict. `TemporarilyUnavailable`
+        // leaves the row `pending`: a screening service that cannot answer
+        // is not a clear, and deny-until-cleared refuses to book unscreened
+        // money, so the next pass retries. The screen runs outside any row
+        // lock, the same read-only footing the chain RPCs already take.
         match verifier.screen_payer(&payment).await {
             ScreenVerdict::Clear => {}
             ScreenVerdict::Flagged { source, reason } => {
                 self.flag_solana_deposit(deposit_id, &meta, &payment, &source, &reason)
                     .await?;
-                // The flag reads as "nothing credited" to the caller — the
-                // same shape a deposit that already settled answers, because
-                // the caller never learns the screening detail; the
-                // operator's queue is where a flag belongs.
-                return Ok(SolanaCredit::Settled);
+                // The flag is a named verdict, not "nothing settled": the
+                // confirm route answers a `flagged` conflict the customer's
+                // status line maps onto the held-for-review copy, and the
+                // operator's queue is where the review happens (issue
+                // #1184).
+                return Ok(SolanaCredit::Flagged);
             }
             ScreenVerdict::TemporarilyUnavailable => {
                 return Err(WalletError::Forbidden(
@@ -1866,6 +2097,9 @@ impl Db {
         } else {
             "credited"
         };
+        // Merge the attributed payer beside the verification figures so every
+        // terminal `meta` reads the same (issue #1186): the queue row and the
+        // CSV's `payer` column take `meta.payerAddress` from here.
         let flipped = sqlx::query(
             "UPDATE oxsum.deposits \
              SET status = $4, entry_id = $1, \
@@ -1874,7 +2108,8 @@ impl Db {
                      'delivered', $5::bigint, \
                      'expected', $6::bigint, \
                      'receivedCredits', $7::bigint, \
-                     'overpaid', $8::boolean), \
+                     'payerAddress', $8::text, \
+                     'overpaid', $9::boolean), \
                  updated_at = now() \
              WHERE deposit_id = $3 AND status <> 'credited'",
         )
@@ -1885,6 +2120,7 @@ impl Db {
         .bind(payment.context["delivered"].as_i64())
         .bind(payment.context["expected"].as_i64())
         .bind(payment.context["receivedCredits"].as_i64())
+        .bind(payment.context["payerAddress"].as_str())
         .bind(overpaid)
         .execute(&mut *tx)
         .await?
@@ -1957,6 +2193,10 @@ impl Db {
                 "the paying transaction already credited another deposit".into(),
             ));
         }
+        // The same terminal record the credit path merges (issue #1186):
+        // `payerAddress` rides beside the figures so the queue row and the
+        // CSV's `payer` column attribute the payer the screen or a refund
+        // decision needs.
         sqlx::query(
             "UPDATE oxsum.deposits \
              SET status = $1, facilitator_tx_hash = $2, received_minor = $3, \
@@ -1965,6 +2205,7 @@ impl Db {
                      'delivered', $4::bigint, \
                      'expected', $5::bigint, \
                      'receivedCredits', $6::bigint, \
+                     'payerAddress', $9::text, \
                      'blockTime', $7::bigint, \
                      'exception', $1::text), \
                  updated_at = now() \
@@ -1978,6 +2219,7 @@ impl Db {
         .bind(context["receivedCredits"].as_i64())
         .bind(context["blockTime"].as_i64())
         .bind(deposit_id)
+        .bind(context["payerAddress"].as_str())
         .execute(&mut *tx)
         .await
         .map_err(|e| {
@@ -2003,7 +2245,10 @@ impl Db {
     /// the located `signature`) so a reviewer reads why the row is parked
     /// without re-deriving it; `facilitator_tx_hash` takes the signature too,
     /// so the flag and the double-spend index agree on which transaction is
-    /// held. The row is re-claimed `FOR UPDATE` inside a short transaction —
+    /// held. The verified figures (`delivered`/`expected`/`receivedCredits`/
+    /// `blockTime`) merge alongside so a later screening-clear credits under
+    /// the recorded terms without a second chain round-trip (issue #1184).
+    /// The row is re-claimed `FOR UPDATE` inside a short transaction —
     /// a raced credit that already landed or a second flagging pass is a
     /// no-op — and an `expired` row whose payment verified on-time rescues
     /// into the flag the same way (the sweep's unpaid verdict went stale,
@@ -2018,6 +2263,10 @@ impl Db {
     ) -> Result<(), WalletError> {
         let signature = payment.context["signature"].as_str().unwrap_or_default();
         let payer = payment.context["payerAddress"].as_str().unwrap_or_default();
+        // The whole screened set rides beside the representative `address` —
+        // a flag on the second debited party still reads which wallets the
+        // walk covered (issue #1178).
+        let payers = payment.context["payerAddresses"].clone();
         let at = time::OffsetDateTime::now_utc()
             .format(&time::format_description::well_known::Rfc3339)
             .unwrap_or_default();
@@ -2027,9 +2276,20 @@ impl Db {
             "source": source,
             "reason": reason,
             "address": payer,
+            "addresses": payers,
             "at": at,
         });
         flag_meta["signature"] = json!(signature);
+        // The same terminal record the other marks merge (issue #1186): the
+        // flagged row records what the chain delivered against the intent's
+        // demand — `payerAddress`, `delivered`, `expected`, `receivedCredits`
+        // — so the queue row and the CSV's `payer`/`delivered`/`expected`
+        // columns read the parked deposit like any other terminal state.
+        flag_meta["payerAddress"] = payment.context["payerAddress"].clone();
+        flag_meta["delivered"] = payment.context["delivered"].clone();
+        flag_meta["expected"] = payment.context["expected"].clone();
+        flag_meta["receivedCredits"] = payment.context["receivedCredits"].clone();
+        flag_meta["blockTime"] = payment.context["blockTime"].clone();
         let mut tx = self.pool().begin().await?;
         let still_open: bool = sqlx::query_scalar(
             "SELECT status IN ('pending', 'expired') FROM oxsum.deposits \
@@ -2047,13 +2307,14 @@ impl Db {
         sqlx::query(
             "UPDATE oxsum.deposits \
              SET status = 'flagged', facilitator_tx_hash = $1, meta = $2, \
-                 updated_at = now() \
+                 received_minor = $5, updated_at = now() \
              WHERE deposit_id = $3 AND rail = $4 AND status IN ('pending', 'expired')",
         )
         .bind(signature)
         .bind(&flag_meta)
         .bind(deposit_id)
         .bind(RAIL_SOLANA)
+        .bind(payment.context["receivedCredits"].as_i64())
         .execute(&mut *tx)
         .await
         .map_err(|e| {
@@ -2457,10 +2718,19 @@ impl Db {
     /// review and the payout may be signed. The customer must have named
     /// their refund address first — an approval with nowhere to pay is a
     /// `Conflict`. Approving an already-approved refund replays.
+    ///
+    /// `screened_address` is the refund address the caller just screened
+    /// clear (issue #1184): the approval binds to *that* address, so a
+    /// customer edit that lands between the screen and the approval — the
+    /// pre-freeze window — is a `Conflict` that makes the caller re-screen
+    /// rather than approving an unscreened destination. `None` means the
+    /// deployment has no screening gate configured; the standing address is
+    /// approved unchanged, exactly as before.
     pub async fn solana_approve_refund(
         &self,
         deposit_id: Uuid,
         approved_by: &str,
+        screened_address: Option<&str>,
     ) -> Result<SolanaExceptionDeposit, WalletError> {
         let mut tx = self.pool().begin().await?;
         let row = sqlx::query(
@@ -2486,25 +2756,215 @@ impl Db {
                 "the customer has not supplied a refund address".into(),
             ));
         }
+        if let Some(screened) = screened_address
+            && meta["refundAddress"].as_str() != Some(screened)
+        {
+            // The address changed after the caller screened it — an approval
+            // bound to the stale read could pay an unscreened destination.
+            // Refuse: the caller reads the standing address, re-screens and
+            // approves again.
+            return Err(WalletError::Conflict(
+                "the refund address changed after it was screened; re-screen and approve again"
+                    .into(),
+            ));
+        }
         if meta["refund"]["approvedAt"].is_string() {
             // The approval stands — a replayed approve answers it.
             tx.commit().await?;
             return self.solana_exception_deposit(deposit_id).await;
         }
+        let address_screening = screened_address.map(|address| {
+            json!({
+                "address": address,
+                "verdict": "clear",
+                "at": time::OffsetDateTime::now_utc()
+                    .format(&time::format_description::well_known::Rfc3339)
+                    .unwrap_or_default(),
+            })
+        });
         sqlx::query(
             "UPDATE oxsum.deposits \
              SET meta = meta || jsonb_build_object('refund', \
                      COALESCE(meta->'refund', '{}'::jsonb) || \
                          jsonb_build_object( \
                              'approvedBy', $2::text, \
-                             'approvedAt', now()::text)), \
+                             'approvedAt', now()::text, \
+                             'addressScreening', $3::jsonb)), \
                  updated_at = now() \
              WHERE deposit_id = $1 AND status = 'refund_pending'",
         )
         .bind(deposit_id)
         .bind(approved_by)
+        .bind(&address_screening)
         .execute(&mut *tx)
         .await?;
+        tx.commit().await?;
+        self.solana_exception_deposit(deposit_id).await
+    }
+
+    /// Clears a `flagged` deposit after the operator's manual review and
+    /// credits it (issue #1184): the review-then-credit path the screening
+    /// hold exists for. This is *manual review*, never a bypass — the flag
+    /// parked a transfer that already honored the intent's locked terms
+    /// (the `Honoring` verdict is what reached the screen), so the clear
+    /// books the verified payment the flag recorded, under the SAME
+    /// `solana:<signature>` idempotency key and the SAME `FOR UPDATE` row
+    /// discipline the ordinary credit path takes:
+    ///
+    /// - `flagged` only — every other status is a `Conflict`; an unknown
+    ///   deposit a `NotFound`. Nothing auto-clears: only this call moves a
+    ///   flagged row forward.
+    /// - The ledger credit runs under `solana:<signature>` — the paying
+    ///   transaction's own idempotency anchor — so a replayed clear answers
+    ///   the standing receipt, never a second credit, and the recorded
+    ///   `delivered > expected` still lands the row `overpaid` exactly as a
+    ///   same-day credit would have.
+    /// - `meta.screening.clearedBy`/`clearedAt`/`clearReason` attribute the
+    ///   decision; the flag's own `verdict`/`source`/`reason` stay for the
+    ///   audit trail.
+    ///
+    /// The wallet is resolved off the deposit's organization — the same
+    /// `tenant_id` join the poll runs — so the operator needs no org
+    /// credential to clear a held row.
+    pub async fn solana_screening_clear(
+        &self,
+        tenants: &crate::Tenants,
+        deposit_id: Uuid,
+        cleared_by: &str,
+        reason: &str,
+        on: time::Date,
+    ) -> Result<SolanaExceptionDeposit, WalletError> {
+        if reason.trim().is_empty() {
+            return Err(WalletError::InvalidInput(
+                "a screening clear needs the review's reason".into(),
+            ));
+        }
+        // Resolve the deposit's organization first — unlocked: the locked
+        // transaction below re-reads everything it acts on.
+        let org = sqlx::query(
+            "SELECT o.tenant_id, d.organization_id \
+             FROM oxsum.deposits d \
+             JOIN oxsum.organizations o ON o.organization_id = d.organization_id \
+             WHERE d.deposit_id = $1 AND d.rail = $2",
+        )
+        .bind(deposit_id)
+        .bind(RAIL_SOLANA)
+        .fetch_optional(self.pool())
+        .await?;
+        let Some(org) = org else {
+            return Err(WalletError::NotFound("the deposit is not known".into()));
+        };
+        let tenant_id: String = org.try_get("tenant_id")?;
+        let organization_id: Uuid = org.try_get("organization_id")?;
+        let wallet = tenants.get(&tenant_id).await?;
+        let mut tx = self.pool().begin().await?;
+        let row = sqlx::query(
+            "SELECT status, amount_minor, payment_ref, facilitator_tx_hash, meta \
+             FROM oxsum.deposits \
+             WHERE deposit_id = $1 AND rail = $2 FOR UPDATE",
+        )
+        .bind(deposit_id)
+        .bind(RAIL_SOLANA)
+        .fetch_optional(&mut *tx)
+        .await?;
+        let Some(row) = row else {
+            return Err(WalletError::NotFound("the deposit is not known".into()));
+        };
+        let current: String = row.try_get("status")?;
+        let meta: serde_json::Value = row.try_get("meta")?;
+        if current != status::FLAGGED {
+            // A replayed clear answers the standing credited row — the
+            // `solana:<signature>` entry already booked under this deposit's
+            // own clear, so the second call is a replay, never a refusal.
+            // Any other status genuinely has no hold to clear.
+            if meta["screening"]["cleared"].as_bool() == Some(true) {
+                tx.commit().await?;
+                return self.solana_exception_deposit(deposit_id).await;
+            }
+            return Err(WalletError::Conflict(format!(
+                "a {current} deposit has no screening hold to clear"
+            )));
+        }
+        let amount_minor: i64 = row.try_get("amount_minor")?;
+        let payment_ref: String = row.try_get("payment_ref")?;
+        let signature: Option<String> = row.try_get("facilitator_tx_hash")?;
+        let Some(signature) = signature.filter(|s| !s.is_empty()) else {
+            // A flagged row without its paying transaction cannot credit —
+            // there is no idempotency anchor to book under. The queue's
+            // refund path is how that row unwinds instead.
+            return Err(WalletError::Conflict(
+                "the flagged deposit recorded no paying signature to credit under".into(),
+            ));
+        };
+        // The credit replays under the signature-derived key: a retried or
+        // raced clear answers the standing receipt (`is_new: false`), never
+        // a second credit — the same anchor the ordinary credit path books.
+        let credit_key = format!("solana:{signature}");
+        let receipt = wallet.top_up(&credit_key, amount_minor, on).await?;
+        // `delivered`/`expected` were recorded by the flag under the locked
+        // asset's base units; an over-delivery books the opened amount and
+        // lands `overpaid`, exactly like the same-day credit would have. A
+        // pre-#1184 flagged row carries neither figure — flag only ever
+        // parked an `Honoring` verdict, so it credits the opened amount.
+        let delivered = meta["delivered"].as_i64();
+        let expected = meta["expected"].as_i64();
+        let overpaid = match (delivered, expected) {
+            (Some(d), Some(e)) => d > e,
+            _ => false,
+        };
+        let landing = if overpaid {
+            status::OVERPAID
+        } else {
+            "credited"
+        };
+        let cleared_at = time::OffsetDateTime::now_utc()
+            .format(&time::format_description::well_known::Rfc3339)
+            .unwrap_or_default();
+        let flipped = sqlx::query(
+            "UPDATE oxsum.deposits \
+             SET status = $4, entry_id = $1, \
+                 meta = meta || jsonb_build_object( \
+                     'screening', COALESCE(meta->'screening', '{}'::jsonb) || \
+                         jsonb_build_object( \
+                             'clearedBy', $5::text, \
+                             'clearedAt', $6::text, \
+                             'clearReason', $8::text, \
+                             'cleared', true), \
+                     'signature', $2::text, \
+                     'overpaid', $7::boolean), \
+                 updated_at = now() \
+             WHERE deposit_id = $3 AND status = 'flagged'",
+        )
+        .bind(*receipt.entry_id.as_uuid())
+        .bind(&signature)
+        .bind(deposit_id)
+        .bind(landing)
+        .bind(cleared_by)
+        .bind(&cleared_at)
+        .bind(overpaid)
+        .bind(reason.trim())
+        .execute(&mut *tx)
+        .await?
+        .rows_affected();
+        if flipped > 0 {
+            Self::enqueue_event(
+                &mut tx,
+                organization_id,
+                DEPOSIT_CREDITED,
+                json!({
+                    "rail": RAIL_SOLANA,
+                    "paymentRef": payment_ref,
+                    "amountMinor": amount_minor,
+                    "signature": signature,
+                    "entryId": receipt.entry_id.as_uuid(),
+                    "screeningClear": true,
+                }),
+            )
+            .await?;
+            if let Ok(available) = wallet.available().await {
+                Self::clear_balance_low(&mut tx, organization_id, available).await?;
+            }
+        }
         tx.commit().await?;
         self.solana_exception_deposit(deposit_id).await
     }
@@ -2680,7 +3140,9 @@ impl Db {
                 .await
             {
                 Ok(SolanaCredit::Credited(_)) => credited += 1,
-                Ok(SolanaCredit::Underpaid | SolanaCredit::Late) => queued += 1,
+                Ok(SolanaCredit::Underpaid | SolanaCredit::Late | SolanaCredit::Flagged) => {
+                    queued += 1;
+                }
                 Ok(SolanaCredit::Settled) => {}
                 // A verification refusal is "not paid yet" — the row is a
                 // sweep candidate when its own TTL has lapsed. A refuse that
@@ -2829,6 +3291,33 @@ mod tests {
         assert_eq!(terms.rate_micro, USD_PEGGED_RATE_MICRO);
     }
 
+    /// The deployment default (issue #1185): an unset/non-positive
+    /// `intent_ttl_secs` resolves the 15-minute window the decision recorded;
+    /// a positive figure is the deployment's own and stands.
+    #[test]
+    fn the_intent_ttl_defaults_to_fifteen_minutes() {
+        let unset = SolanaTerms::new(
+            "payTo".to_owned(),
+            vec![AssetTerms {
+                key: "sol".to_owned(),
+                spl_token_mint: None,
+                asset_decimals: 9,
+                rate_micro: 200_000_000,
+            }],
+            "sol".to_owned(),
+            0,
+            1,
+            i64::MAX,
+            0,
+        );
+        assert_eq!(unset.ttl(), 900);
+        assert_eq!(
+            terms().ttl(),
+            600,
+            "an explicit TTL is the deployment's own"
+        );
+    }
+
     /// `mint_accepted`: native SOL always stands; a whitelisted mint stands;
     /// a mint no asset carries is refused — the defensive check that keeps a
     /// stored `meta.splToken` from settling a mint the deployment never
@@ -2965,12 +3454,17 @@ mod tests {
         }
     }
 
-    /// The Token-2022 program id is the audit's refusal key.
+    /// The Token-2022 program id is the audit's named refusal; the classic
+    /// SPL Token program id is the positive allowlist (issue #1182).
     #[test]
-    fn token_2022_is_the_refused_owner() {
+    fn the_token_program_ids_are_pinned() {
         assert_eq!(
             TOKEN_2022_PROGRAM_ID, "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
             "the pinned Token-2022 program id"
+        );
+        assert_eq!(
+            SPL_TOKEN_PROGRAM_ID, "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+            "the pinned classic SPL Token program id"
         );
     }
 
@@ -2987,6 +3481,41 @@ mod tests {
         let err = verifier.verify_mints().await.unwrap_err();
         assert!(err.contains("Token-2022"), "{err}");
         assert!(err.contains("usdc"), "{err}");
+    }
+
+    /// Issue #1182: the owner check is an allowlist, not a Token-2022
+    /// denylist — a mint owned by the System program (or any other program)
+    /// is refused too, with the actual owner named so an operator sees what
+    /// the account really is.
+    #[tokio::test]
+    async fn verify_mints_refuses_any_owner_but_classic_spl() {
+        for owner in [
+            // The System program — a wallet or nonce account pasted as a mint.
+            "11111111111111111111111111111111",
+            // Any other program — a token-lookalike the rail never modelled.
+            "MetaKeeptheChange9dQjGcdj5zqV9MWNJeBJd7Uf3v4z4p3",
+        ] {
+            let mut verifier = SolanaRailVerifier::new(
+                std::sync::Arc::new(MintAudit {
+                    owner: Some(owner.to_owned()),
+                    decimals: Some(6),
+                }),
+                terms(),
+            );
+            let err = verifier.verify_mints().await.unwrap_err();
+            assert!(
+                err.contains(owner),
+                "the refusal names the actual owner {owner}: {err}"
+            );
+            assert!(
+                err.contains(SPL_TOKEN_PROGRAM_ID),
+                "the refusal names the required owner: {err}"
+            );
+            assert!(
+                !err.contains("Token-2022"),
+                "a non-Token-2022 owner is not mislabelled: {err}"
+            );
+        }
     }
 
     #[tokio::test]

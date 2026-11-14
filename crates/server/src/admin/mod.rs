@@ -138,6 +138,12 @@ pub fn router(state: AppState) -> Router<AppState> {
         )
         .route("/solana/reconciliation/scan", post(solana::scan))
         .route("/solana/{deposit_id}/refund", post(solana::request_refund))
+        // The review-then-credit path for a `flagged` deposit (issue #1184):
+        // the operator's manual clear, never an auto-clear.
+        .route(
+            "/solana/{deposit_id}/screening-clear",
+            post(solana::screening_clear),
+        )
         .route(
             "/solana/{deposit_id}/refund-approve",
             post(solana::approve_refund),
