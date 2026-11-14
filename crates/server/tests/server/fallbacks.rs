@@ -186,7 +186,8 @@ impl World {
 
     /// Waits for a settlement that happens off the request path.
     async fn settlement_within(&self, request_id: &str) -> Value {
-        for _ in 0..250 {
+        let deadline = oxsum_testkit::settle_deadline();
+        while std::time::Instant::now() < deadline {
             if let Some(record) = self.settlement(request_id).await {
                 return record;
             }

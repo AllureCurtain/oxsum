@@ -25,7 +25,27 @@
 //! drops `oxsum_test_*`/`de_*` older than 24 h before `nextest` starts. The
 //! drop is the next run's job, never a test process's own (issue #271).
 
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+
+/// How long an integration test polls for work that completes off the request
+/// path — a settlement, an idempotency record leaving `in_flight`, a cache row
+/// (issue #1216).
+///
+/// The polls used to be `250 × 20 ms` iteration counts, a budget of roughly
+/// five seconds. A single wait for a connection on a saturated shard can take
+/// longer than that (the test pools keep sqlx's 30-second acquire timeout), so
+/// a background settlement that was only slow could read as "the turn never
+/// settled". The wall-clock deadline is predictable and covers one full
+/// acquire wait. A passing test is no slower, because it returns on the first
+/// probe that sees the row. A settlement that is really lost (the #867 class)
+/// still fails, only later.
+pub const SETTLE_DEADLINE: Duration = Duration::from_secs(30);
+
+/// The instant a poll started now gives up: `while Instant::now() < deadline`.
+#[must_use]
+pub fn settle_deadline() -> Instant {
+    Instant::now() + SETTLE_DEADLINE
+}
 
 /// How old an `oxsum_test_*` database must be before a later sweep drops it.
 ///

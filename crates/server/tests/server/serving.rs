@@ -978,7 +978,8 @@ async fn a_postbyte_disconnect_cancels_but_still_prices() {
     // The dropped turn settles off the request path — wait for the operation
     // to go terminal, then read the rows.
     let mut operation;
-    for _ in 0..250 {
+    let deadline = oxsum_testkit::settle_deadline();
+    while std::time::Instant::now() < deadline {
         operation = world.operation(&request_id).await;
         if operation.get::<String, _>("state") == "cancelled" {
             break;

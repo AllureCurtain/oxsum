@@ -369,7 +369,8 @@ async fn settled(world: &World, request_id: &str) -> Value {
         .expect("the organization's ledger opens");
     let hold_key = format!("req-{request_id}:hold");
     let entry_id = oxsum_core::entry_id_for(&oxsum_core::settlement_key_for(&hold_key));
-    for _ in 0..250 {
+    let deadline = oxsum_testkit::settle_deadline();
+    while std::time::Instant::now() < deadline {
         if let Some(bundle) = wallet
             .receipt_proof(entry_id, None)
             .await
