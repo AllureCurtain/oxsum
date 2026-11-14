@@ -31,9 +31,9 @@
 //! endpoint's host. A provider that authenticates by header sets
 //! `OXSUM_SOLANA_RPC_AUTH_HEADER`, applied to every endpoint's calls.
 //!
-//! What is *not* verified here, on the record: `confirmed` is the default
-//! commitment because devnet top-ups are low-value and latency matters more
-//! than the residual reorg window; `finalized` is one config flag away. No
+//! What is *not* verified here, on the record: `finalized` is the default
+//! commitment (issue #1129) — the mainnet-grade setting; a devnet loop sets
+//! `OXSUM_SOLANA_COMMITMENT=confirmed` explicitly for latency. No
 //! watcher holds a subscription open — the periodic job polls.
 
 use std::sync::Mutex;
@@ -92,7 +92,7 @@ pub struct SolanaConfig {
     /// SPL Token program, never Token-2022.
     pub mints: Vec<MintWhitelistEntry>,
     /// The commitment `find_reference` / `validate_transfer` ask the RPC for:
-    /// `confirmed` (default) or `finalized` (`OXSUM_SOLANA_COMMITMENT`).
+    /// `finalized` (default) or `confirmed` (`OXSUM_SOLANA_COMMITMENT`).
     pub commitment: String,
     /// An auth header applied to every endpoint's calls
     /// (`OXSUM_SOLANA_RPC_AUTH_HEADER`, e.g. `Authorization: Bearer …`) — for
