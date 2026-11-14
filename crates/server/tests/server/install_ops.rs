@@ -436,11 +436,13 @@ async fn check_config_validates_env_without_a_database() {
     );
     assert!(err.contains("OXSUM_SOLANA_PAY_TO"), "{err}");
     // The singular still configures the rail, comma-separated entries
-    // included; a full trio passes the check.
+    // included; a full trio passes the check. Both endpoints stay
+    // devnet-shaped — a mainnet entry would now require the custody pin or
+    // the hot-wallet opt-out (issue #1189), covered below.
     let ok = run(&[
         (
             "OXSUM_SOLANA_RPC_URL",
-            "https://api.devnet.solana.com,https://a.example.com",
+            "https://api.devnet.solana.com,https://api.testnet.solana.com",
         ),
         (
             "OXSUM_SOLANA_PAY_TO",
@@ -511,6 +513,84 @@ async fn check_config_validates_env_without_a_database() {
         "a lone webhook secret warns and drops, never errors: {}",
         String::from_utf8_lossy(&ok.stderr)
     );
+
+    // The mainnet custody gate (issue #1189): a mainnet-shaped endpoint with
+    // no `OXSUM_SOLANA_MULTISIG_ACCOUNT` refuses to start — a hot wallet
+    // holding real funds is a custody risk — unless the explicit
+    // `OXSUM_SOLANA_ALLOW_HOT_WALLET=1` opt-out is set. Devnet keeps multisig
+    // optional + warn. The pair below is the Squads v4 fixture the unit tests
+    // pin: multisig `C46NEXuB…` derives vault index 0 `65kaU3KW…`.
+    let mainnet_rail = |extra: &[(&str, &str)]| {
+        let mut vars = vec![
+            (
+                "OXSUM_SOLANA_RPC_URL",
+                "https://mainnet.helius-rpc.com/?api-key=x",
+            ),
+            (
+                "OXSUM_SOLANA_PAY_TO",
+                "payToExample111111111111111111111111111",
+            ),
+            ("OXSUM_SOLANA_RATE_MICRO", "200000000"),
+        ];
+        vars.extend_from_slice(extra);
+        run(&vars)
+    };
+    // Mainnet + no multisig + no opt-out → startup fails naming both.
+    let bad = mainnet_rail(&[]);
+    assert!(!bad.status.success());
+    let err = format!(
+        "{}{}",
+        String::from_utf8_lossy(&bad.stderr),
+        String::from_utf8_lossy(&bad.stdout)
+    );
+    assert!(err.contains("OXSUM_SOLANA_MULTISIG_ACCOUNT"), "{err}");
+    assert!(err.contains("OXSUM_SOLANA_ALLOW_HOT_WALLET"), "{err}");
+    // Mainnet + a matching multisig/vault pair → passes.
+    let ok = run(&[
+        (
+            "OXSUM_SOLANA_RPC_URL",
+            "https://mainnet.helius-rpc.com/?api-key=x",
+        ),
+        (
+            "OXSUM_SOLANA_PAY_TO",
+            "65kaU3KWZJCEz11vrCQfUZMc5AWSTzkFybwKD5BckLH8",
+        ),
+        ("OXSUM_SOLANA_RATE_MICRO", "200000000"),
+        (
+            "OXSUM_SOLANA_MULTISIG_ACCOUNT",
+            "C46NEXuBLRJjJhfAsKBUxUYdxSBQUPc3SXQFRBTXfupC",
+        ),
+    ]);
+    assert!(
+        ok.status.success(),
+        "the matching multisig/vault pair must pass: {}",
+        String::from_utf8_lossy(&ok.stderr)
+    );
+    // Mainnet + no multisig + the explicit opt-out → passes with the warn.
+    let ok = mainnet_rail(&[("OXSUM_SOLANA_ALLOW_HOT_WALLET", "1")]);
+    assert!(
+        ok.status.success(),
+        "the explicit hot-wallet opt-out must pass: {}",
+        String::from_utf8_lossy(&ok.stderr)
+    );
+    let warn = format!(
+        "{}{}",
+        String::from_utf8_lossy(&ok.stderr),
+        String::from_utf8_lossy(&ok.stdout)
+    );
+    assert!(warn.contains("ALLOW_HOT_WALLET"), "{warn}");
+    // A malformed opt-out names itself — never a silent off.
+    let bad = mainnet_rail(&[("OXSUM_SOLANA_ALLOW_HOT_WALLET", "yes")]);
+    assert!(!bad.status.success());
+    let err = format!(
+        "{}{}",
+        String::from_utf8_lossy(&bad.stderr),
+        String::from_utf8_lossy(&bad.stdout)
+    );
+    assert!(err.contains("OXSUM_SOLANA_ALLOW_HOT_WALLET"), "{err}");
+    // Devnet + no multisig → passes, no error (the hot-wallet warn logs but
+    // never gates — the `rail` helper's 127.0.0.1 endpoint is devnet-shaped,
+    // and every earlier `rail(&…)` success case above already proves it).
 
     // Missing DATABASE_URL names that instead of connecting to nothing.
     let missing = binary::oxsum()

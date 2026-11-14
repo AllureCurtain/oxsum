@@ -1804,18 +1804,41 @@ enum SolanaCustody {
     /// without on-chain introspection.
     VerifiedMultisigVault,
     /// `OXSUM_SOLANA_MULTISIG_ACCOUNT` was unset — `payTo` is unverified and
-    /// is treated as a hot wallet (allowed on a devnet loop, warned loudly).
+    /// is treated as a hot wallet. On a devnet-shaped endpoint that is
+    /// legitimate and warns loudly; on a mainnet-shaped one it only boots
+    /// behind the explicit `OXSUM_SOLANA_ALLOW_HOT_WALLET` opt-out (issue
+    /// #1189).
     UnverifiedHotWallet,
 }
 
+/// Whether every RPC endpoint reads as a non-mainnet target — the heuristic
+/// the mainnet gates share (issue #1144's sanctions warning, issue #1189's
+/// custody refusal). An endpoint naming `devnet`, `testnet`, `localhost` or
+/// `127.0.0.1` is dev-shaped; *every* endpoint must read dev-shaped for the
+/// pool to be treated as non-mainnet — a mixed pool is mainnet, the safe
+/// direction.
+fn solana_devnet_shaped(rpc_urls: &[String]) -> bool {
+    rpc_urls.iter().all(|rpc_url| {
+        rpc_url.contains("devnet")
+            || rpc_url.contains("testnet")
+            || rpc_url.contains("localhost")
+            || rpc_url.contains("127.0.0.1")
+    })
+}
+
 /// Validates `OXSUM_SOLANA_PAY_TO` against the Squads v4 multisig
-/// `OXSUM_SOLANA_MULTISIG_ACCOUNT` names (issue #1143). When the multisig is
-/// configured, the boot derives its `vault index 0` PDA and requires `payTo`
-/// to equal it — a mismatch means the receiving address is not the vault the
-/// multisig implies (a pasted hot-wallet, a vault of another index, or a
-/// multisig that was re-created), and startup refuses. When the multisig is
-/// unset the rail still boots — a plain wallet is a legitimate devnet
-/// `payTo` — but the warn marks it as unverified custody, never silently.
+/// `OXSUM_SOLANA_MULTISIG_ACCOUNT` names (issues #1143, #1189). When the
+/// multisig is configured, the boot derives its `vault index 0` PDA and
+/// requires `payTo` to equal it — a mismatch means the receiving address is
+/// not the vault the multisig implies (a pasted hot-wallet, a vault of
+/// another index, or a multisig that was re-created), and startup refuses.
+/// When the multisig is unset, a devnet-shaped endpoint still boots — a
+/// plain wallet is a legitimate devnet `payTo` — but the warn marks it as
+/// unverified custody, never silently. A **mainnet-shaped** endpoint refuses
+/// to start without the multisig pin: a hot wallet holding real customer
+/// funds is a custody risk, so the only way past is the deliberate
+/// `OXSUM_SOLANA_ALLOW_HOT_WALLET=1` opt-out — the same explicit-opt-out
+/// pattern the sanctions gate holds — which boots with an even louder warn.
 ///
 /// This is a derivation check only, deliberately: it proves `payTo` equals
 /// the PDA the multisig account implies, not that the multisig's
@@ -1824,16 +1847,45 @@ enum SolanaCustody {
 fn solana_custody_of(
     multisig_account: Option<&str>,
     pay_to: &str,
+    mainnet_shaped: bool,
+    allow_hot_wallet: bool,
 ) -> Result<SolanaCustody, String> {
     let Some(multisig_account) = multisig_account else {
-        tracing::warn!(
-            pay_to,
-            "OXSUM_SOLANA_MULTISIG_ACCOUNT is unset: the Solana rail's payTo is \
-             NOT verified as a multisig vault — it is a hot wallet. A devnet loop \
-             may keep this, but a production deployment should receive into a \
-             Squads v4 multisig's vault PDA; set OXSUM_SOLANA_MULTISIG_ACCOUNT to \
-             the multisig account so the boot can prove payTo is its vault index 0"
-        );
+        if mainnet_shaped && !allow_hot_wallet {
+            return Err(
+                "OXSUM_SOLANA_MULTISIG_ACCOUNT is unset but the rail points at a \
+                 mainnet-shaped endpoint — deposits would land on an unverified \
+                 hot wallet holding real funds. Set OXSUM_SOLANA_MULTISIG_ACCOUNT \
+                 to the Squads v4 multisig account whose vault index 0 is PAY_TO \
+                 (docs/self-hosted-solana-multisig.md), or set \
+                 OXSUM_SOLANA_ALLOW_HOT_WALLET=1 to deliberately run an unverified \
+                 hot wallet"
+                    .into(),
+            );
+        }
+        if mainnet_shaped {
+            // The explicit opt-out: the operator asked for the hot wallet,
+            // so the warn that records it is louder than the devnet one —
+            // mainnet real-funds custody is a deliberate risk acceptance,
+            // never a quiet default.
+            tracing::warn!(
+                pay_to,
+                "OXSUM_SOLANA_ALLOW_HOT_WALLET=1 on a mainnet-shaped endpoint: \
+                 the Solana rail's payTo is an UNVERIFIED HOT WALLET holding real \
+                 customer funds — no multisig threshold protects it. Set \
+                 OXSUM_SOLANA_MULTISIG_ACCOUNT to a Squads v4 multisig account so \
+                 the boot can prove payTo is its vault index 0"
+            );
+        } else {
+            tracing::warn!(
+                pay_to,
+                "OXSUM_SOLANA_MULTISIG_ACCOUNT is unset: the Solana rail's payTo is \
+                 NOT verified as a multisig vault — it is a hot wallet. A devnet loop \
+                 may keep this, but a production deployment should receive into a \
+                 Squads v4 multisig's vault PDA; set OXSUM_SOLANA_MULTISIG_ACCOUNT to \
+                 the multisig account so the boot can prove payTo is its vault index 0"
+            );
+        }
         return Ok(SolanaCustody::UnverifiedHotWallet);
     };
     let vault = oxsum_integrations::squads::MultisigVault {
@@ -2067,11 +2119,11 @@ fn solana_rpc_urls_of(plural: Option<&str>, singular: Option<&str>) -> Vec<Strin
         .unwrap_or_default()
 }
 
-/// Parses the Solana deposit rail (issues #1117, #1139, #1140, #1145, #1151).
-/// The complete set: `OXSUM_SOLANA_RPC_URLS` (or `OXSUM_SOLANA_RPC_URL`) +
-/// `OXSUM_SOLANA_PAY_TO`, plus a rate source — a Pyth oracle a `sol`
-/// whitelist intent prices at open (issue #1139) or the static
-/// `OXSUM_SOLANA_RATE_MICRO` a devnet deployment pins behind
+/// Parses the Solana deposit rail (issues #1117, #1139, #1140, #1145, #1151,
+/// #1189). The complete set is `OXSUM_SOLANA_RPC_URLS` (or
+/// `OXSUM_SOLANA_RPC_URL`) plus `OXSUM_SOLANA_PAY_TO`, plus a rate source —
+/// a Pyth oracle a `sol` whitelist intent prices at open (issue #1139) or
+/// the static `OXSUM_SOLANA_RATE_MICRO` a devnet deployment pins behind
 /// `OXSUM_SOLANA_DEVNET_STATIC_RATE=1` (and the figure the legacy
 /// single-asset form always locks). `OXSUM_SOLANA_ASSETS` +
 /// `OXSUM_SOLANA_MINT_<KEY>` / `OXSUM_SOLANA_DEFAULT_ASSET` /
@@ -2080,8 +2132,12 @@ fn solana_rpc_urls_of(plural: Option<&str>, singular: Option<&str>) -> Vec<Strin
 /// is a startup error like the Stripe trio. The `usdt` whitelist key is
 /// opt-in (issue #1151): `OXSUM_SOLANA_USDT_ENABLED` gates it, and the boot
 /// refuses either half of a mismatch — USDT configured with the flag off, or
-/// `MINT_USDT` beside a whitelist that does not carry `usdt`. Unset and the
-/// rail is absent: `POST /api/v1/topups/solana` answers 503 and the
+/// `MINT_USDT` beside a whitelist that does not carry `usdt`. Custody is
+/// pinned by `OXSUM_SOLANA_MULTISIG_ACCOUNT` (issue #1143): on a
+/// mainnet-shaped endpoint it is required — the boot refuses an unpinned
+/// `payTo` unless the deliberate `OXSUM_SOLANA_ALLOW_HOT_WALLET=1` opt-out is
+/// set (issue #1189) — and stays optional-but-warned on devnet. Unset and
+/// the rail is absent: `POST /api/v1/topups/solana` answers 503 and the
 /// `solana-deposits` job schedules nothing.
 ///
 /// The endpoint set is a pool (issue #1145): `OXSUM_SOLANA_RPC_URLS` is the
@@ -2112,6 +2168,18 @@ fn solana_of() -> Result<Option<Arc<oxsum_core::SolanaRailVerifier>>, String> {
         var("OXSUM_SOLANA_MINT_USDT").is_some(),
     );
     solana_usdt_gate(usdt_enabled, usdt_declared, usdt_declared)?;
+    // The hot-wallet opt-out (issue #1189) parses up here for the same reason:
+    // an unparseable value is a startup error whatever else is set — the
+    // operator meant *something* by setting it, and a silent guess is worse.
+    // The flag itself only gates inside the custody check below, once the
+    // endpoint set's shape is known.
+    let allow_hot_wallet = match var("OXSUM_SOLANA_ALLOW_HOT_WALLET").as_deref() {
+        Some("1") | Some("true") => true,
+        None | Some("0") | Some("false") => false,
+        Some(_) => {
+            return Err("OXSUM_SOLANA_ALLOW_HOT_WALLET must be 1/true or 0/false".into());
+        }
+    };
     let devnet_static = var("OXSUM_SOLANA_DEVNET_STATIC_RATE")
         .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
         .unwrap_or(false);
@@ -2282,13 +2350,38 @@ fn solana_of() -> Result<Option<Arc<oxsum_core::SolanaRailVerifier>>, String> {
         .transpose()
         .map_err(|_| "OXSUM_SOLANA_OPENS_PER_MINUTE must be an integer".to_owned())?
         .unwrap_or(0);
-    // Custody check (issue #1143): when `OXSUM_SOLANA_MULTISIG_ACCOUNT` names
-    // the Squads v4 multisig the deployment receives into, `PAY_TO` must be
-    // that multisig's `vault index 0` PDA — the derivation is run offline and
-    // a mismatch is a startup error, so a pasted hot-wallet can never
-    // masquerade as the vault. Unset, the rail is unverified: a loud warn
-    // marks `payTo` as a hot wallet the operator chose not to pin.
-    solana_custody_of(var("OXSUM_SOLANA_MULTISIG_ACCOUNT").as_deref(), &pay_to)?;
+    // The endpoint set must parse before the custody gate reads its shape
+    // (issue #1189): a hostless entry is neither devnet- nor mainnet-shaped —
+    // it is malformed, and surfaces its own `OXSUM_SOLANA_RPC_URLS` error
+    // rather than reading as mainnet and tripping the multisig refusal.
+    // `SolanaRpcClient::try_new` below re-checks the same shape when it builds
+    // the endpoints; this early pass only orders the two refusals correctly.
+    for rpc_url in &rpc_urls {
+        let parses = reqwest::Url::parse(rpc_url)
+            .ok()
+            .and_then(|url| url.host_str().map(|host| host.to_owned()));
+        if parses.is_none() {
+            return Err(format!(
+                "OXSUM_SOLANA_RPC_URLS: an RPC endpoint has no host: {rpc_url}"
+            ));
+        }
+    }
+    // Custody check (issues #1143, #1189): when `OXSUM_SOLANA_MULTISIG_ACCOUNT`
+    // names the Squads v4 multisig the deployment receives into, `PAY_TO` must
+    // be that multisig's `vault index 0` PDA — the derivation is run offline
+    // and a mismatch is a startup error, so a pasted hot-wallet can never
+    // masquerade as the vault. Unset, the answer depends on the endpoint's
+    // shape: a devnet loop keeps multisig optional (warn-only); a
+    // mainnet-shaped endpoint refuses to start, because a hot wallet holding
+    // real funds is a custody risk — unless the operator explicitly opted out
+    // with `OXSUM_SOLANA_ALLOW_HOT_WALLET`, parsed above on the sanctions
+    // gate's boolean shape, and then boots under an even louder warn.
+    solana_custody_of(
+        var("OXSUM_SOLANA_MULTISIG_ACCOUNT").as_deref(),
+        &pay_to,
+        !solana_devnet_shaped(&rpc_urls),
+        allow_hot_wallet,
+    )?;
 
     // A provider whose credential cannot ride inside the URL (rare — Helius
     // and Triton both key auth in the URL) sets the verbatim `Name: value`
@@ -2439,11 +2532,10 @@ fn solana_helius_webhook_secret_of(rail: bool) -> Result<Option<String>, String>
 /// boolean: `1`/`true` turns the payer screen on, `0`/`false`/unset off —
 /// off is the default so a devnet loop screens nothing, and an unparseable
 /// value is a startup error rather than a silent off (the operator meant
-/// *something* by setting it). A mainnet-shaped endpoint — the RPC URL names
-/// neither `devnet` nor `testnet` nor a localhost-style host — with the gate
-/// off warns that screening is not running: the recommended mainnet posture
-/// is on, and the warning is how the operator knows it was never a silent
-/// skip.
+/// *something* by setting it). A mainnet-shaped endpoint —
+/// `solana_devnet_shaped`'s inverse — with the gate off warns that screening
+/// is not running: the recommended mainnet posture is on, and the warning is
+/// how the operator knows it was never a silent skip.
 fn sanctions_enabled(rpc_urls: &[String]) -> Result<bool, String> {
     let enabled = match var("OXSUM_SOLANA_SANCTIONS_ENABLED").as_deref() {
         Some("1") | Some("true") => true,
@@ -2455,13 +2547,7 @@ fn sanctions_enabled(rpc_urls: &[String]) -> Result<bool, String> {
     if enabled {
         return Ok(true);
     }
-    let devnet_shaped = rpc_urls.iter().all(|rpc_url| {
-        rpc_url.contains("devnet")
-            || rpc_url.contains("testnet")
-            || rpc_url.contains("localhost")
-            || rpc_url.contains("127.0.0.1")
-    });
-    if !devnet_shaped {
+    if !solana_devnet_shaped(rpc_urls) {
         tracing::warn!(
             "the solana rail points at a mainnet-shaped endpoint but \
              OXSUM_SOLANA_SANCTIONS_ENABLED is off — payer screening is not \
@@ -2852,34 +2938,98 @@ mod tests {
 
     #[test]
     fn solana_custody_accepts_a_matching_vault() {
-        assert_eq!(
-            super::solana_custody_of(Some(TEST_MULTISIG), TEST_VAULT_0).unwrap(),
-            super::SolanaCustody::VerifiedMultisigVault
-        );
+        for mainnet in [true, false] {
+            assert_eq!(
+                super::solana_custody_of(Some(TEST_MULTISIG), TEST_VAULT_0, mainnet, false)
+                    .unwrap(),
+                super::SolanaCustody::VerifiedMultisigVault,
+                "mainnet={mainnet}"
+            );
+        }
     }
 
     #[test]
     fn solana_custody_refuses_a_mismatched_pay_to() {
         // A payTo that is not the derived vault is a startup error naming
         // both halves — a pasted hot-wallet can never masquerade as the vault.
-        let err = super::solana_custody_of(Some(TEST_MULTISIG), TEST_MULTISIG).unwrap_err();
+        let err =
+            super::solana_custody_of(Some(TEST_MULTISIG), TEST_MULTISIG, false, false).unwrap_err();
         assert!(err.contains("OXSUM_SOLANA_PAY_TO"), "{err}");
         assert!(err.contains(TEST_VAULT_0), "{err}");
     }
 
     #[test]
     fn solana_custody_marks_an_unset_multisig_as_unverified() {
-        // Unset multisig is not an error — a devnet hot wallet is allowed —
-        // but the answer records the unverified branch so it is never silent.
+        // Unset multisig on a devnet-shaped endpoint is not an error — a
+        // devnet hot wallet is allowed — but the answer records the
+        // unverified branch so it is never silent.
         assert_eq!(
-            super::solana_custody_of(None, TEST_VAULT_0).unwrap(),
+            super::solana_custody_of(None, TEST_VAULT_0, false, false).unwrap(),
             super::SolanaCustody::UnverifiedHotWallet
         );
     }
 
+    /// Issue #1189: a mainnet-shaped endpoint with no multisig pin refuses to
+    /// start — a hot wallet holding real funds is a custody risk, so the only
+    /// way past is the deliberate `ALLOW_HOT_WALLET` opt-out, and a matching
+    /// vault still verifies.
+    #[test]
+    fn solana_custody_gates_the_mainnet_hot_wallet() {
+        // No multisig, no opt-out → startup error naming both the missing pin
+        // and the opt-out.
+        let err = super::solana_custody_of(None, TEST_VAULT_0, true, false).unwrap_err();
+        assert!(err.contains("OXSUM_SOLANA_MULTISIG_ACCOUNT"), "{err}");
+        assert!(err.contains("OXSUM_SOLANA_ALLOW_HOT_WALLET"), "{err}");
+        // The explicit opt-out boots anyway — the louder warn records the
+        // accepted risk — and still answers UnverifiedHotWallet.
+        assert_eq!(
+            super::solana_custody_of(None, TEST_VAULT_0, true, true).unwrap(),
+            super::SolanaCustody::UnverifiedHotWallet
+        );
+        // A matching vault verifies on mainnet exactly as on devnet.
+        assert_eq!(
+            super::solana_custody_of(Some(TEST_MULTISIG), TEST_VAULT_0, true, false).unwrap(),
+            super::SolanaCustody::VerifiedMultisigVault
+        );
+        // The opt-out beside a configured multisig is harmless — the pin
+        // wins, so the flag is never a silent skip of the derivation.
+        assert_eq!(
+            super::solana_custody_of(Some(TEST_MULTISIG), TEST_VAULT_0, true, true).unwrap(),
+            super::SolanaCustody::VerifiedMultisigVault
+        );
+    }
+
+    /// The endpoint-shape heuristic the mainnet gates share (issues #1144,
+    /// #1189): every URL must read dev-shaped for the pool to be non-mainnet —
+    /// a mixed pool is mainnet, the safe direction.
+    #[test]
+    fn the_endpoint_shape_is_devnet_only_when_every_url_is() {
+        let devnet = |urls: &[&str]| {
+            super::solana_devnet_shaped(&urls.iter().map(|u| u.to_string()).collect::<Vec<_>>())
+        };
+        assert!(devnet(&["https://api.devnet.solana.com"]));
+        assert!(devnet(&["https://api.testnet.solana.com"]));
+        assert!(devnet(&["http://localhost:8899"]));
+        assert!(devnet(&["http://127.0.0.1:8899"]));
+        assert!(devnet(&[
+            "https://api.devnet.solana.com",
+            "http://127.0.0.1:8899"
+        ]));
+        // Authenticated mainnet providers and the public cluster are mainnet.
+        assert!(!devnet(&["https://mainnet.helius-rpc.com/?api-key=x"]));
+        assert!(!devnet(&["https://api.mainnet-beta.solana.com"]));
+        assert!(!devnet(&["https://solana-rpc.example.com"]));
+        // One devnet-looking URL does not launder a mainnet pool.
+        assert!(!devnet(&[
+            "https://api.devnet.solana.com",
+            "https://mainnet.helius-rpc.com/?api-key=x"
+        ]));
+    }
+
     #[test]
     fn solana_custody_refuses_a_malformed_multisig() {
-        let err = super::solana_custody_of(Some("not-base58!!!"), TEST_VAULT_0).unwrap_err();
+        let err = super::solana_custody_of(Some("not-base58!!!"), TEST_VAULT_0, false, false)
+            .unwrap_err();
         assert!(err.contains("OXSUM_SOLANA_MULTISIG_ACCOUNT"), "{err}");
     }
 
