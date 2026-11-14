@@ -117,32 +117,41 @@ fn multi_asset_terms_with_usdt() -> SolanaTerms {
 /// `amount`/`recipient`/`reference` against a scripted answer. `paid` arms
 /// the lookup to find and validate; `wrong` arms it to answer a transfer
 /// that does not honor the intent. `scanned` arms the reconciliation scan's
-/// answer (issue #1149) — the transfers `payTo`'s history reports. `payouts`
-/// arms the refund-complete check (issue #1175) — signature → the payout the
-/// chain reports as `(recipient, mint, delivered)`, dishonored on a
-/// recipient/mint mismatch the way the client's own checks refuse.
+/// credited legs (issue #1149) and `history` how many signatures `payTo`'s
+/// history holds (issue #1188) — `walked`/`history_bounded` derive from it.
+/// `payouts` arms the refund-complete check (issue #1175) — signature → the
+/// payout the chain reports as `(recipient, mint, delivered, payers)`,
+/// dishonored on a recipient/mint/source mismatch the way the client's own
+/// checks refuse.
 #[derive(Clone, Default)]
 struct SolanaStub {
     /// `reference` → the signatures `find_reference` answers, newest first.
     located: Arc<Mutex<std::collections::HashMap<String, Vec<String>>>>,
     /// `signature` → the `ValidatedTransfer` `validate_transfer` answers.
     validated: Arc<Mutex<std::collections::HashMap<String, ValidatedTransfer>>>,
-    /// The `ScannedTransfer`s `scan_received` answers — the scripted
-    /// `payTo` history the scan tests walk.
+    /// The credited `ScannedTransfer` legs `scan_received` reports — the
+    /// paying transfers among the walked signatures.
     scanned: Arc<Mutex<Vec<ScannedTransfer>>>,
-    /// `signature` → the payout `(recipient, mint, delivered)` the chain
-    /// reports `validate_payout` as — the scripted refund transaction.
+    /// How many signature-history entries `payTo` holds — `walked` is
+    /// `min(history, limit)` and `history_bounded` is `history > limit`.
+    /// Defaults to the credited legs' length when only `scanned` is armed:
+    /// the pre-#1188 tests' implicit "history == credited" shape.
+    history: Arc<Mutex<Option<usize>>>,
+    /// `signature` → the payout `(recipient, mint, delivered, payers)` the
+    /// chain reports `validate_payout` as — the scripted refund transaction.
     payouts: Arc<Mutex<std::collections::HashMap<String, StubPayout>>>,
 }
 
 /// One scripted on-chain payout `validate_payout` answers with (issue
 /// #1175): the address it paid, the mint it spent (`None` = native SOL), the
-/// delivered figure.
+/// delivered figure, and the debited funding parties the source-check
+/// screens — the vault the refund must leave from must be among them.
 #[derive(Clone)]
 struct StubPayout {
     recipient: String,
     mint: Option<String>,
     delivered: i64,
+    payers: Vec<String>,
 }
 
 impl std::fmt::Debug for SolanaStub {
@@ -196,16 +205,21 @@ impl ChainLookup for SolanaStub {
         Box::pin(async move {
             let armed = self.payouts.lock().unwrap().get(signature).cloned()?;
             // The client's own checks: wrong recipient or wrong mint is no
-            // proof at all; `delivered` rides up unjudged for the core's
+            // proof at all, and the source arm refuses a payout the vault did
+            // not fund — `expected.source` must sit among the debited parties
+            // (issue #1175). `delivered` rides up unjudged for the core's
             // frozen-amount comparison.
-            if armed.recipient != expected.recipient || armed.mint != expected.spl_token_mint {
+            if armed.recipient != expected.recipient
+                || armed.mint != expected.spl_token_mint
+                || !armed.payers.iter().any(|payer| payer == &expected.source)
+            {
                 return None;
             }
             Some(ValidatedTransfer {
                 signature: signature.to_owned(),
                 delivered: armed.delivered,
                 block_time: Some(0),
-                payer: None,
+                payers: armed.payers.clone(),
             })
         })
     }
@@ -213,16 +227,19 @@ impl ChainLookup for SolanaStub {
     fn scan_received<'a>(
         &'a self,
         max_signatures: usize,
-    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Vec<ScannedTransfer>> + Send + 'a>>
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = oxsum_core::ScanWalk> + Send + 'a>>
     {
         Box::pin(async move {
-            self.scanned
-                .lock()
-                .unwrap()
-                .iter()
-                .take(max_signatures)
-                .cloned()
-                .collect()
+            let armed: Vec<ScannedTransfer> = self.scanned.lock().unwrap().clone();
+            // The stub's implicit history is the armed legs' full length —
+            // `walked`/`history_bounded` then model the bound faithfully
+            // (`limit: 1` over 2 armed legs walks 1 and claims more remains).
+            let history = self.history.lock().unwrap().unwrap_or(armed.len());
+            oxsum_core::ScanWalk {
+                walked: history.min(max_signatures),
+                credited: armed.into_iter().take(max_signatures).collect(),
+                history_bounded: history > max_signatures,
+            }
         })
     }
 }
@@ -383,6 +400,15 @@ async fn solana_intent_pays_once() {
         36,
         "{intent}"
     );
+    // The intent declares the network it pays on (issue #1181): a wallet
+    // reads `cluster` because Solana addresses are identical across
+    // clusters — `SolanaTerms` defaults to `mainnet-beta` and the test's
+    // terms carry it.
+    assert_eq!(
+        intent["data"]["cluster"].as_str().unwrap(),
+        "mainnet-beta",
+        "{intent}"
+    );
     // Arm the stub: the paying transaction lands, delivering exactly the
     // asked lamports.
     let signature = "sig1111111111111111111111111111111111111111111111111111111111111111";
@@ -396,7 +422,7 @@ async fn solana_intent_pays_once() {
             signature: signature.to_owned(),
             delivered: 5_000,
             block_time: Some(0),
-            payer: None,
+            payers: Vec::new(),
         },
     );
     // Confirm: the credit lands once.
@@ -422,6 +448,31 @@ async fn solana_intent_pays_once() {
     // The deposit is already credited — the replay is a no-op the rail
     // surfaces as a second, harmless answer rather than a second credit.
     assert_eq!(balance(&app, &key).await, 1000, "{replay}");
+}
+
+/// Issue #1181: the open intent answers the rail's declared cluster — a
+/// devnet deployment's intents say `devnet`, so a wallet or a Solana Pay
+/// URL built from the response knows the payment lands on the same network
+/// the rail's verifier reads (Solana addresses are identical across
+/// clusters; the name is the only honest hint).
+#[tokio::test]
+async fn solana_intent_declares_its_cluster() {
+    let stub = SolanaStub::default();
+    let devnet_terms = terms().with_cluster(oxsum_core::SolanaCluster::Devnet);
+    let Some((app, _db)) = world_with_terms(stub, devnet_terms).await else {
+        return;
+    };
+    let key = register_session(&app).await;
+    let (status, intent) = call(
+        &app,
+        "POST",
+        "/api/v1/topups/solana",
+        Some(json!({"amountMinor": 1000})),
+        Some(&key),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{intent}");
+    assert_eq!(intent["data"]["cluster"].as_str().unwrap(), "devnet");
 }
 
 /// Issue #1142: a located transfer that delivers under the asked amount is
@@ -459,7 +510,7 @@ async fn solana_confirm_marks_an_underpaid_transfer() {
             signature: signature.to_owned(),
             delivered: 1, // far below the asked 500-credit lamports
             block_time: Some(0),
-            payer: None,
+            payers: Vec::new(),
         },
     );
     let (status, body) = call(
@@ -562,7 +613,7 @@ async fn solana_signature_credits_once_across_organizations() {
             signature: signature.to_owned(),
             delivered: 5_000,
             block_time: Some(0),
-            payer: None,
+            payers: Vec::new(),
         },
     );
     // The first organization's confirm settles and credits.
@@ -623,7 +674,7 @@ async fn solana_confirm_marks_a_late_transfer() {
             signature: signature.to_owned(),
             delivered: 5_000,
             block_time: Some(4_102_444_800), // 2100-01-01 — past every TTL
-            payer: None,
+            payers: Vec::new(),
         },
     );
     let (status, body) = call(
@@ -684,7 +735,7 @@ async fn solana_overpay_credits_once_and_marks_overpaid() {
             signature: signature.to_owned(),
             delivered: 9_000, // over the asked 1_000 USDC base units
             block_time: Some(0),
-            payer: None,
+            payers: Vec::new(),
         },
     );
     let (status, receipt) = call(
@@ -761,7 +812,7 @@ async fn open_exception(
             signature: signature.clone(),
             delivered,
             block_time: Some(block_time),
-            payer: None,
+            payers: Vec::new(),
         },
     );
     let _ = call(
@@ -904,6 +955,7 @@ async fn solana_refund_walks_the_pull_payment_lifecycle() {
             recipient: refund_address.to_owned(),
             mint: None,
             delivered: 1,
+            payers: vec!["oxsumDepositAddr111111111111111111111111111".to_owned()],
         },
     );
     let (status, closed) = call(
@@ -1002,6 +1054,7 @@ async fn solana_refund_complete_verifies_the_payout_onchain() {
             recipient: "9uQeVj5tqViQh7yWWGStvkEG1Zmhx6uasJtWCJziofN".to_owned(),
             mint: None,
             delivered: 1,
+            payers: vec!["oxsumDepositAddr111111111111111111111111111".to_owned()],
         },
     );
     let (status, body) = call(
@@ -1020,6 +1073,7 @@ async fn solana_refund_complete_verifies_the_payout_onchain() {
             recipient: refund_address.to_owned(),
             mint: None,
             delivered: 0,
+            payers: vec!["oxsumDepositAddr111111111111111111111111111".to_owned()],
         },
     );
     let (status, body) = call(
@@ -1039,6 +1093,7 @@ async fn solana_refund_complete_verifies_the_payout_onchain() {
             recipient: refund_address.to_owned(),
             mint: None,
             delivered: 1,
+            payers: vec!["oxsumDepositAddr111111111111111111111111111".to_owned()],
         },
     );
     let (status, closed) = call(
@@ -1086,7 +1141,7 @@ async fn solana_refund_refuses_a_non_refundable_status() {
             signature: signature.to_owned(),
             delivered: 5_000,
             block_time: Some(0),
-            payer: None,
+            payers: Vec::new(),
         },
     );
     let (status, _) = call(
@@ -1353,7 +1408,7 @@ async fn solana_usdt_open_and_confirm_credits() {
             signature: signature.to_owned(),
             delivered: 1_000,
             block_time: Some(0),
-            payer: None,
+            payers: Vec::new(),
         },
     );
     let (status, receipt) = call(
@@ -1602,7 +1657,7 @@ async fn solana_screening_clear_credits() {
             signature: signature.to_owned(),
             delivered: 5_000,
             block_time: Some(0),
-            payer: Some("cleanPayerAddr1111111111111111111111111111".to_owned()),
+            payers: vec!["cleanPayerAddr1111111111111111111111111111".to_owned()],
         },
     );
     let (status, receipt) = call(
@@ -1657,12 +1712,14 @@ async fn solana_screening_flagged_parks_the_deposit() {
             signature: signature.to_owned(),
             delivered: 5_000,
             block_time: Some(0),
-            payer: Some("hitPayerAddr2222222222222222222222222222".to_owned()),
+            payers: vec!["hitPayerAddr2222222222222222222222222222".to_owned()],
         },
     );
-    // The confirm does not credit — the deposit parked at `flagged` reads as
-    // "no open intent" to the caller, and the wallet never moves.
-    let (_status, _body) = call(
+    // The confirm does not credit — the deposit parked at `flagged` answers
+    // the named 409 the customer's status line reads as held-for-review,
+    // never the "unknown intent" 404 that would misread as settling (issue
+    // #1184) — and the wallet never moves.
+    let (status, body) = call(
         &app,
         "POST",
         "/api/v1/topups/solana/confirm",
@@ -1670,7 +1727,25 @@ async fn solana_screening_flagged_parks_the_deposit() {
         Some(&key),
     )
     .await;
+    assert_eq!(status, StatusCode::CONFLICT, "{body}");
+    assert!(
+        body["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("flagged"),
+        "{body}"
+    );
     assert_eq!(balance(&app, &key).await, 0);
+    // A replayed confirm answers the same flagged hold — still not a 404.
+    let (status, _) = call(
+        &app,
+        "POST",
+        "/api/v1/topups/solana/confirm",
+        Some(json!({"reference": reference})),
+        Some(&key),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CONFLICT);
     let row = sqlx::query(
         "SELECT status, meta, facilitator_tx_hash FROM oxsum.deposits WHERE payment_ref = $1",
     )
@@ -1729,7 +1804,7 @@ async fn solana_screening_unavailable_stays_pending() {
             signature: signature.to_owned(),
             delivered: 5_000,
             block_time: Some(0),
-            payer: Some("unavailPayerAddr333333333333333333333333333".to_owned()),
+            payers: vec!["unavailPayerAddr333333333333333333333333333".to_owned()],
         },
     );
     let (status, _body) = call(
@@ -1797,10 +1872,10 @@ async fn solana_screening_flagged_parks_a_usdc_deposit() {
             delivered: 1_000, // 1_000 USDC base units at parity
             block_time: Some(0),
             // The SPL arm's answer — the debited token account's owner.
-            payer: Some("usdcHitPayerAddr6666666666666666666666666".to_owned()),
+            payers: vec!["usdcHitPayerAddr6666666666666666666666666".to_owned()],
         },
     );
-    let (_status, _body) = call(
+    let (status, _body) = call(
         &app,
         "POST",
         "/api/v1/topups/solana/confirm",
@@ -1808,6 +1883,7 @@ async fn solana_screening_flagged_parks_a_usdc_deposit() {
         Some(&key),
     )
     .await;
+    assert_eq!(status, StatusCode::CONFLICT);
     assert_eq!(balance(&app, &key).await, 0);
     let row = sqlx::query("SELECT status, meta FROM oxsum.deposits WHERE payment_ref = $1")
         .bind(&reference)
@@ -1862,7 +1938,7 @@ async fn solana_screening_absent_payer_is_unavailable_but_disabled_credits() {
             signature: signature.to_owned(),
             delivered: 5_000,
             block_time: Some(0),
-            payer: None,
+            payers: Vec::new(),
         },
     );
     let (status, _body) = call(
@@ -1903,7 +1979,7 @@ async fn solana_screening_absent_payer_is_unavailable_but_disabled_credits() {
             signature: signature.to_owned(),
             delivered: 5_000,
             block_time: Some(0),
-            payer: None,
+            payers: Vec::new(),
         },
     );
     let (status, receipt) = call(
@@ -1916,6 +1992,317 @@ async fn solana_screening_absent_payer_is_unavailable_but_disabled_credits() {
     .await;
     assert_eq!(status, StatusCode::OK, "{receipt}");
     assert_eq!(balance(&app2, &key2).await, 1000);
+}
+
+/// Issue #1184: the operator's review-then-credit — a `flagged` deposit the
+/// `screening-clear` call releases credits exactly once under the paying
+/// transaction's own `solana:<signature>` key, a replayed clear answers the
+/// standing credited row, and a non-`flagged` deposit refuses. The flag's
+/// own verdict stays on `meta.screening` beside the recorded clear.
+#[tokio::test]
+async fn solana_screening_clear_credits_a_flagged_deposit_once() {
+    let stub = SolanaStub::default();
+    let screen = ScreenStub::default();
+    screen.verdicts.lock().unwrap().insert(
+        "clearPayerAddr7777777777777777777777777777".to_owned(),
+        ScreenVerdict::Flagged {
+            source: "ofac-sdn".to_owned(),
+            reason: "the payer is on the OFAC SDN list".to_owned(),
+        },
+    );
+    let Some((app, db)) = world_with_screen_and_terms(stub.clone(), terms(), Some(screen)).await
+    else {
+        return;
+    };
+    let key = register_session(&app).await;
+    let (status, intent) = call(
+        &app,
+        "POST",
+        "/api/v1/topups/solana",
+        Some(json!({"amountMinor": 1000})),
+        Some(&key),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{intent}");
+    let reference = intent["data"]["reference"].as_str().unwrap().to_owned();
+    let deposit_id = intent["data"]["depositId"].as_str().unwrap().to_owned();
+    let signature = "sigClearHttp0000000000000000000000000000000000000000000000";
+    stub.located
+        .lock()
+        .unwrap()
+        .insert(reference.clone(), vec![signature.to_owned()]);
+    stub.validated.lock().unwrap().insert(
+        signature.to_owned(),
+        ValidatedTransfer {
+            signature: signature.to_owned(),
+            delivered: 5_000,
+            block_time: Some(0),
+            payers: vec!["clearPayerAddr7777777777777777777777777777".to_owned()],
+        },
+    );
+    // The flag parks the row.
+    let (status, _) = call(
+        &app,
+        "POST",
+        "/api/v1/topups/solana/confirm",
+        Some(json!({"reference": reference})),
+        Some(&key),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CONFLICT);
+    assert_eq!(balance(&app, &key).await, 0);
+    // The operator's clear needs its review reason.
+    let (status, body) = call(
+        &app,
+        "POST",
+        &format!("/api/v1/admin/solana/{deposit_id}/screening-clear"),
+        Some(json!({"reason": "  "})),
+        Some(ADMIN_TOKEN),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    // The clear credits once — the deposit reads `credited` with its entry.
+    let (status, cleared) = call(
+        &app,
+        "POST",
+        &format!("/api/v1/admin/solana/{deposit_id}/screening-clear"),
+        Some(json!({"reason": "manual review: the payer is not the listed entity"})),
+        Some(ADMIN_TOKEN),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{cleared}");
+    assert_eq!(cleared["data"]["status"].as_str().unwrap(), "credited");
+    assert!(cleared["data"]["entryId"].is_string(), "{cleared}");
+    assert_eq!(balance(&app, &key).await, 1000);
+    // `meta.screening` attributes the review beside the flag's verdict.
+    let meta: Value =
+        sqlx::query_scalar("SELECT meta FROM oxsum.deposits WHERE deposit_id = $1::uuid")
+            .bind(&deposit_id)
+            .fetch_one(db.pool())
+            .await
+            .unwrap();
+    let screening = &meta["screening"];
+    assert_eq!(screening["verdict"].as_str().unwrap(), "flagged");
+    assert_eq!(screening["clearedBy"].as_str().unwrap(), "operator");
+    assert_eq!(
+        screening["clearReason"].as_str().unwrap(),
+        "manual review: the payer is not the listed entity"
+    );
+    // The audit trail recorded the operator's action.
+    let audit: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM oxsum.admin_audit \
+         WHERE action = 'solana.screening.clear' AND target = $1",
+    )
+    .bind(&deposit_id)
+    .fetch_one(db.pool())
+    .await
+    .unwrap();
+    assert_eq!(audit, 1);
+    // A replayed clear answers the standing credited row — never a second
+    // credit, never a refusal.
+    let (status, replay) = call(
+        &app,
+        "POST",
+        &format!("/api/v1/admin/solana/{deposit_id}/screening-clear"),
+        Some(json!({"reason": "manual review: the payer is not the listed entity"})),
+        Some(ADMIN_TOKEN),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{replay}");
+    assert_eq!(balance(&app, &key).await, 1000);
+}
+
+/// A `pending` or `credited` deposit has no screening hold to clear —
+/// `409`, and an unknown id is `404`. The customer surface cannot clear its
+/// own flag either: the route answers to the operator token alone.
+#[tokio::test]
+async fn solana_screening_clear_refuses_a_non_flagged_deposit() {
+    let stub = SolanaStub::default();
+    let Some((app, _db)) = world(stub.clone()).await else {
+        return;
+    };
+    let key = register_session(&app).await;
+    let (status, intent) = call(
+        &app,
+        "POST",
+        "/api/v1/topups/solana",
+        Some(json!({"amountMinor": 1000})),
+        Some(&key),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{intent}");
+    let deposit_id = intent["data"]["depositId"].as_str().unwrap().to_owned();
+    // `pending` — nothing flagged yet.
+    let (status, _) = call(
+        &app,
+        "POST",
+        &format!("/api/v1/admin/solana/{deposit_id}/screening-clear"),
+        Some(json!({"reason": "reviewed"})),
+        Some(ADMIN_TOKEN),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CONFLICT);
+    // Unknown id — 404.
+    let (status, _) = call(
+        &app,
+        "POST",
+        &format!("/api/v1/admin/solana/{}/screening-clear", Uuid::new_v4()),
+        Some(json!({"reason": "reviewed"})),
+        Some(ADMIN_TOKEN),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    // The customer credential is not the operator's — 401, never a clear.
+    let (status, _) = call(
+        &app,
+        "POST",
+        &format!("/api/v1/admin/solana/{deposit_id}/screening-clear"),
+        Some(json!({"reason": "reviewed"})),
+        Some(&key),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+}
+
+/// Issue #1184: a sanctioned `refundAddress` cannot be approved — the
+/// approve screens the standing address through the same gate the payer
+/// check runs and a `Flagged` verdict refuses `409`, so a refund can never
+/// point its payout at a listed destination. A screen that cannot answer
+/// refuses `403` — deny-until-cleared, like the pre-credit check.
+#[tokio::test]
+async fn solana_refund_approve_screens_the_refund_address() {
+    let stub = SolanaStub::default();
+    let screen = ScreenStub::default();
+    // A well-formed base58 key the screen lists — the address validates as a
+    // pubkey, so it records, and only the approval's screen refuses it.
+    let sanctioned = "4uQeVj5tqViQh7yWWGStvkEG1Zmhx6uasJtWCJziofM";
+    screen.verdicts.lock().unwrap().insert(
+        sanctioned.to_owned(),
+        ScreenVerdict::Flagged {
+            source: "ofac-sdn".to_owned(),
+            reason: "the refund address is on the OFAC SDN list".to_owned(),
+        },
+    );
+    let Some((app, _db)) =
+        world_with_screen_and_terms(stub.clone(), terms(), Some(screen.clone())).await
+    else {
+        return;
+    };
+    let key = register_session(&app).await;
+    // An underpaid deposit — the refundable exception.
+    let deposit_id = open_exception(&app, &stub, &key, 500, 1, 0).await;
+    let (status, _) = call(
+        &app,
+        "POST",
+        &format!("/api/v1/admin/solana/{deposit_id}/refund"),
+        Some(json!({"reason": "the transfer underpaid the intent"})),
+        Some(ADMIN_TOKEN),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    // The customer names a refund address the screen flags — the address
+    // itself is a well-formed base58 key, so it records.
+    let (status, addressed) = call(
+        &app,
+        "POST",
+        &format!("/api/v1/topups/solana/{deposit_id}/refund-address"),
+        Some(json!({"address": sanctioned})),
+        Some(&key),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{addressed}");
+    // Approving to pay a sanctioned destination refuses — the refund stays
+    // `refund_pending`.
+    let (status, refusal) = call(
+        &app,
+        "POST",
+        &format!("/api/v1/admin/solana/{deposit_id}/refund-approve"),
+        None,
+        Some(ADMIN_TOKEN),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CONFLICT, "{refusal}");
+    // A screen that cannot answer refuses too — the approval waits rather
+    // than pointing the payout at an unscreened address.
+    screen
+        .verdicts
+        .lock()
+        .unwrap()
+        .insert(sanctioned.to_owned(), ScreenVerdict::TemporarilyUnavailable);
+    let (status, _) = call(
+        &app,
+        "POST",
+        &format!("/api/v1/admin/solana/{deposit_id}/refund-approve"),
+        None,
+        Some(ADMIN_TOKEN),
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    // Once the address clears — the list updated, the address re-proved —
+    // the approval lands and records its screen verdict.
+    screen.verdicts.lock().unwrap().remove(sanctioned);
+    let (status, approved) = call(
+        &app,
+        "POST",
+        &format!("/api/v1/admin/solana/{deposit_id}/refund-approve"),
+        None,
+        Some(ADMIN_TOKEN),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{approved}");
+    assert_eq!(
+        approved["data"]["refund"]["addressScreening"]["verdict"]
+            .as_str()
+            .unwrap(),
+        "clear"
+    );
+}
+
+/// A refund approval stays exactly as before when the deployment has no
+/// sanctions gate configured — the screen is a no-op and nothing about the
+/// lifecycle changes (issue #1184's gate is opt-in, like #1144's).
+#[tokio::test]
+async fn solana_refund_approve_without_a_screen_approves_as_before() {
+    let stub = SolanaStub::default();
+    let Some((app, _db)) = world(stub.clone()).await else {
+        return;
+    };
+    let key = register_session(&app).await;
+    let deposit_id = open_exception(&app, &stub, &key, 500, 1, 0).await;
+    let (status, _) = call(
+        &app,
+        "POST",
+        &format!("/api/v1/admin/solana/{deposit_id}/refund"),
+        Some(json!({"reason": "the transfer underpaid the intent"})),
+        Some(ADMIN_TOKEN),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let (status, _) = call(
+        &app,
+        "POST",
+        &format!("/api/v1/topups/solana/{deposit_id}/refund-address"),
+        Some(json!({"address": "4uQeVj5tqViQh7yWWGStvkEG1Zmhx6uasJtWCJziofM"})),
+        Some(&key),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let (status, approved) = call(
+        &app,
+        "POST",
+        &format!("/api/v1/admin/solana/{deposit_id}/refund-approve"),
+        None,
+        Some(ADMIN_TOKEN),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{approved}");
+    // No screen ran — the approval carries no verdict, only the standing
+    // `approvedBy`/`approvedAt` the lifecycle always recorded.
+    assert!(approved["data"]["refund"]["approvedAt"].is_string());
+    assert!(
+        approved["data"]["refund"]["addressScreening"].is_null(),
+        "{approved}"
+    );
 }
 
 /// Issue #1153: a burst of concurrent opens on one organization lands every
@@ -2001,7 +2388,7 @@ async fn solana_concurrent_confirms_credit_once() {
             signature: signature.to_owned(),
             delivered: 5_000,
             block_time: Some(0),
-            payer: None,
+            payers: Vec::new(),
         },
     );
     const N: usize = 8;
@@ -2090,6 +2477,20 @@ async fn credit_one(
     amount_minor: i64,
     delivered: i64,
 ) -> (String, String) {
+    credit_one_paid_by(app, stub, key, amount_minor, delivered, None).await
+}
+
+/// `credit_one` whose validated transfer attributes a `payer` — the wallet
+/// address the terminal `meta` merges (issue #1186) and the CSV's `payer`
+/// column reads back.
+async fn credit_one_paid_by(
+    app: &Router,
+    stub: &SolanaStub,
+    key: &str,
+    amount_minor: i64,
+    delivered: i64,
+    payer: Option<&str>,
+) -> (String, String) {
     let (status, intent) = call(
         app,
         "POST",
@@ -2111,7 +2512,7 @@ async fn credit_one(
             signature: signature.clone(),
             delivered,
             block_time: Some(0),
-            payer: None,
+            payers: payer.into_iter().map(str::to_owned).collect(),
         },
     );
     let (status, receipt) = call(
@@ -2136,7 +2537,9 @@ async fn solana_reconciliation_csv_exports_the_window() {
         return;
     };
     let key = register_session(&app).await;
-    let (reference, signature) = credit_one(&app, &stub, &key, 1000, 5_000).await;
+    let payer = "csvPayerWallet8888888888888888888888888";
+    let (reference, signature) =
+        credit_one_paid_by(&app, &stub, &key, 1000, 5_000, Some(payer)).await;
     // The default window (the last complete UTC day) covers a row created
     // today only when today *is* inside it — it is not, so ask for today
     // explicitly.
@@ -2156,13 +2559,16 @@ async fn solana_reconciliation_csv_exports_the_window() {
     let mut lines = body.lines();
     assert_eq!(
         lines.next().unwrap(),
-        "depositId,organizationId,paymentRef,signature,payer,asset,amountMinor,delivered,expected,rateMicro,receivedMinor,status,createdAt,refundAmount,refundSignature,refundStatus"
+        "depositId,organizationId,paymentRef,signature,payer,asset,amountMinor,delivered,expected,rateMicro,receivedMinor,status,createdAt,refundSignature,refundStatus,refundAmount"
     );
     let row = lines.next().expect("the credited deposit exported one row");
     let cells: Vec<&str> = row.split(',').collect();
     assert_eq!(cells.len(), 16, "{row}");
     assert_eq!(cells[2], reference, "{row}");
     assert_eq!(cells[3], signature, "{row}");
+    // The `payer` column attributes the wallet the credited transfer's
+    // `meta.payerAddress` recorded (issue #1186) — never an empty cell.
+    assert_eq!(cells[4], payer, "{row}");
     assert_eq!(cells[5], "sol", "{row}");
     assert_eq!(cells[6], "1000", "{row}");
     assert_eq!(cells[7], "5000", "{row}");
@@ -2171,6 +2577,90 @@ async fn solana_reconciliation_csv_exports_the_window() {
     assert_eq!(cells[10], "1000", "{row}");
     assert_eq!(cells[11], "credited", "{row}");
     assert!(lines.next().is_none(), "one deposit, one row: {body}");
+}
+
+/// Issue #1186: an exception deposit's row carries the same `payer` the
+/// credit path's does — a `flagged` row parks the attributed wallet on
+/// `meta.payerAddress` (beside the screening record) and `delivered`/
+/// `expected`/`receivedMinor` fill in what the parked transfer sent, so the
+/// CSV reconciles it like any other terminal row.
+#[tokio::test]
+async fn solana_reconciliation_csv_populates_payer_on_exception_rows() {
+    let stub = SolanaStub::default();
+    // A screening world whose payer hits a flag verdict — the deposit parks
+    // `flagged` rather than crediting.
+    let screen = ScreenStub::default();
+    let flagged_payer = "csvFlaggedPayer99999999999999999999999";
+    screen.verdicts.lock().unwrap().insert(
+        flagged_payer.to_owned(),
+        ScreenVerdict::Flagged {
+            source: "ofac-sdn".to_owned(),
+            reason: "the payer is on the OFAC SDN list".to_owned(),
+        },
+    );
+    let Some((app, _db)) = world_with_screen_and_terms(stub.clone(), terms(), Some(screen)).await
+    else {
+        return;
+    };
+    let key = register_session(&app).await;
+    // Open the intent and arm the flag-verdict transfer — a confirm leaves
+    // the row `flagged`, which the walk surfaces as the settled no-op.
+    let (status, intent) = call(
+        &app,
+        "POST",
+        "/api/v1/topups/solana",
+        Some(json!({"amountMinor": 1000})),
+        Some(&key),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{intent}");
+    let reference = intent["data"]["reference"].as_str().unwrap().to_owned();
+    let signature = format!("sig{}", &uuid::Uuid::new_v4().simple().to_string()[..24]);
+    stub.located
+        .lock()
+        .unwrap()
+        .insert(reference.clone(), vec![signature.clone()]);
+    stub.validated.lock().unwrap().insert(
+        signature.clone(),
+        ValidatedTransfer {
+            signature: signature.clone(),
+            delivered: 5_000,
+            block_time: Some(0),
+            payers: vec![flagged_payer.to_owned()],
+        },
+    );
+    let (status, _receipt) = call(
+        &app,
+        "POST",
+        "/api/v1/topups/solana/confirm",
+        Some(json!({"reference": reference})),
+        Some(&key),
+    )
+    .await;
+    // A flag parks the row; the confirm answers the named held-for-review
+    // `409` (issue #1184) — never a credit.
+    assert_eq!(
+        status,
+        StatusCode::CONFLICT,
+        "a flagged deposit never credits"
+    );
+    assert_eq!(balance(&app, &key).await, 0);
+    let today = time::OffsetDateTime::now_utc().date().to_string();
+    let (status, _ct, _cd, body) = call_csv(
+        &app,
+        &format!("/api/v1/admin/solana/reconciliation/deposits.csv?from={today}&to={today}"),
+        Some(ADMIN_TOKEN),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let row = body.lines().nth(1).expect("the flagged deposit exported");
+    let cells: Vec<&str> = row.split(',').collect();
+    assert_eq!(cells.len(), 15, "{row}");
+    assert_eq!(cells[4], flagged_payer, "{row}");
+    assert_eq!(cells[7], "5000", "{row}");
+    assert_eq!(cells[8], "5000", "{row}");
+    assert_eq!(cells[10], "1000", "{row}");
+    assert_eq!(cells[11], "flagged", "{row}");
 }
 
 /// The export honors its window: a `from`/`to` day range covering only
@@ -2260,7 +2750,12 @@ async fn solana_reconciliation_scan_reports_only_unmatched() {
     )
     .await;
     assert_eq!(status, StatusCode::OK, "{report}");
+    // #1188: `scanned` is the signatures *walked* — which the stub's default
+    // history pins at the credited legs' length — `credited` is the paying
+    // transfers found, `unmatched` the subset with no recorded deposit.
     assert_eq!(report["data"]["scanned"].as_i64().unwrap(), 3);
+    assert_eq!(report["data"]["credited"].as_i64().unwrap(), 3);
+    assert!(!report["data"]["limitReached"].as_bool().unwrap());
     let unmatched = report["data"]["unmatched"].as_array().unwrap();
     assert_eq!(unmatched.len(), 2, "{report}");
     let signatures: Vec<&str> = unmatched
@@ -2323,8 +2818,61 @@ async fn solana_reconciliation_scan_bounds_the_walk() {
     )
     .await;
     assert_eq!(status, StatusCode::OK, "{report}");
+    // The stub's default history equals the armed legs (2), so `limit: 1`
+    // walks one signature and reports `limitReached` — older history
+    // remains beyond the bound.
     assert_eq!(report["data"]["scanned"].as_i64().unwrap(), 1);
+    assert_eq!(report["data"]["credited"].as_i64().unwrap(), 1);
+    assert!(report["data"]["limitReached"].as_bool().unwrap());
     assert_eq!(report["data"]["unmatched"].as_array().unwrap().len(), 1);
+}
+
+/// #1188's actual bug: `scanned` used to read the *credited* transfers'
+/// count, not the walked signatures. With 5 signatures of history but only
+/// 2 paying transfers among them, `scanned` must read 5 and `credited` 2 —
+/// and `limitReached` stays false when the history ran out on its own.
+#[tokio::test]
+async fn solana_reconciliation_scan_reports_walked_not_credited() {
+    let stub = SolanaStub::default();
+    let Some((app, _db)) = world(stub.clone()).await else {
+        return;
+    };
+    let _key = register_session(&app).await;
+    stub.scanned.lock().unwrap().extend([
+        ScannedTransfer {
+            signature: "sigPay11111111111111111111111111111111111111111".to_owned(),
+            block_time: Some(1),
+            asset: Some("sol".to_owned()),
+            delivered: 100,
+            payer: None,
+        },
+        ScannedTransfer {
+            signature: "sigPay22222222222222222222222222222222222222222".to_owned(),
+            block_time: Some(2),
+            asset: Some("usdc".to_owned()),
+            delivered: 200,
+            payer: None,
+        },
+    ]);
+    // `payTo`'s history holds 5 signatures; only 2 paid the vault — the
+    // other 3 (outbound sends, unrelated touches) were walked but credited
+    // nothing. `scanned` must be the walked figure, never the credited one.
+    *stub.history.lock().unwrap() = Some(5);
+    let (status, report) = call(
+        &app,
+        "POST",
+        "/api/v1/admin/solana/reconciliation/scan",
+        Some(json!({})),
+        Some(ADMIN_TOKEN),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{report}");
+    assert_eq!(report["data"]["scanned"].as_i64().unwrap(), 5);
+    assert_eq!(report["data"]["credited"].as_i64().unwrap(), 2);
+    assert_eq!(report["data"]["unmatched"].as_array().unwrap().len(), 2);
+    // 5 signatures of history under the default limit 200 — the bound never
+    // engaged, so no older history is claimed.
+    assert!(!report["data"]["limitReached"].as_bool().unwrap());
 }
 
 /// An unconfigured rail 503s both reconciliation endpoints — the rail's own
@@ -2462,7 +3010,7 @@ async fn solana_webhook_credits_a_matching_intent() {
             signature: signature.to_owned(),
             delivered: 5_000,
             block_time: Some(0),
-            payer: None,
+            payers: Vec::new(),
         },
     );
     // The push names the intent's reference among its account keys — the match
@@ -2529,7 +3077,7 @@ async fn solana_webhook_replays_dedupe_and_credit_once() {
             signature: signature.to_owned(),
             delivered: 5_000,
             block_time: Some(0),
-            payer: None,
+            payers: Vec::new(),
         },
     );
     let payload = json!([helius_enhanced(signature, &[&reference])]);
@@ -2622,7 +3170,7 @@ async fn solana_webhook_matches_a_raw_envelope() {
             signature: signature.to_owned(),
             delivered: 5_000,
             block_time: Some(0),
-            payer: None,
+            payers: Vec::new(),
         },
     );
     // The raw getTransaction-shaped entry keys its account list under
@@ -2637,4 +3185,75 @@ async fn solana_webhook_matches_a_raw_envelope() {
         StatusCode::OK
     );
     assert_eq!(balance(&app, &key).await, 1000);
+}
+
+/// The `jsonParsed` raw envelope spells the same account list differently:
+/// each `transaction.message.accountKeys` entry is a `{pubkey, signer,
+/// writable}` object rather than a bare string (issue #1187). The marker
+/// still resolves — a shape the extractor missed would dedup the signature
+/// while resolving nothing, losing the intent for good.
+#[tokio::test]
+async fn solana_webhook_matches_a_jsonparsed_envelope() {
+    let stub = SolanaStub::default();
+    let Some((app, _db)) = world_with_webhook(stub.clone()).await else {
+        return;
+    };
+    let key = register_session(&app).await;
+    let (status, intent) = call(
+        &app,
+        "POST",
+        "/api/v1/topups/solana",
+        Some(json!({"amountMinor": 1000})),
+        Some(&key),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{intent}");
+    let reference = intent["data"]["reference"].as_str().unwrap().to_owned();
+    let signature = "sigParsed444444444444444444444444444444444444444444444444";
+    stub.located
+        .lock()
+        .unwrap()
+        .insert(reference.clone(), vec![signature.to_owned()]);
+    stub.validated.lock().unwrap().insert(
+        signature.to_owned(),
+        ValidatedTransfer {
+            signature: signature.to_owned(),
+            delivered: 5_000,
+            block_time: Some(0),
+            payers: Vec::new(),
+        },
+    );
+    // The object-shaped key entry: `pubkey` carries the account the string
+    // form spells bare.
+    let payload = json!([{
+        "signature": signature,
+        "blockTime": 1_700_000_000i64,
+        "transaction": {"message": {"accountKeys": [
+            {"pubkey": reference, "signer": false, "writable": false},
+            {"pubkey": "payerAddr", "signer": true, "writable": true},
+        ]}},
+    }]);
+    assert_eq!(
+        webhook_call(&app, &payload.to_string(), Some(HELIUS_SECRET)).await,
+        StatusCode::OK
+    );
+    assert_eq!(balance(&app, &key).await, 1000);
+}
+
+/// A delivery past the body's 2 MiB cap is a `413` — the open surface refuses
+/// an unbounded buffer rather than parsing it (issue #1187). The cap sits on
+/// the route, so even a correctly-authorized oversized push is refused.
+#[tokio::test]
+async fn solana_webhook_refuses_an_oversized_body() {
+    let stub = SolanaStub::default();
+    let Some((app, _db)) = world_with_webhook(stub.clone()).await else {
+        return;
+    };
+    let mut body = String::from("[{\"signature\":\"x\",\"padding\":\"");
+    body.push_str(&"a".repeat(2 * 1024 * 1024));
+    body.push_str("\"}]");
+    assert_eq!(
+        webhook_call(&app, &body, Some(HELIUS_SECRET)).await,
+        StatusCode::PAYLOAD_TOO_LARGE
+    );
 }

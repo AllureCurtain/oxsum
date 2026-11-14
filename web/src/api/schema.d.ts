@@ -5422,12 +5422,15 @@ export interface paths {
          * Open a Solana top-up intent
          * @description The `solana` deposit rail (issues #1117, #1139, #1140): opens a
          *     `pending` deposit intent and answers the `reference`, `asset`,
-         *     `payTo`, `amountLamports` and `expiresAt` the caller's wallet needs
-         *     to pay it — the whitelist asset the body's `asset` names (`sol`,
-         *     `usdc`, …) or the deployment's `OXSUM_SOLANA_DEFAULT_ASSET` when
-         *     omitted. `payment_ref` anchors on the per-intent `reference` marker
-         *     account the paying transaction must carry, so the intent is unique
-         *     by construction.
+         *     `payTo`, `amountLamports`, `expiresAt` and `cluster` the caller's
+         *     wallet needs to pay it — the whitelist asset the body's `asset`
+         *     names (`sol`, `usdc`, …) or the deployment's
+         *     `OXSUM_SOLANA_DEFAULT_ASSET` when omitted. `payment_ref` anchors on
+         *     the per-intent `reference` marker account the paying transaction must
+         *     carry, so the intent is unique by construction. `cluster` names the
+         *     network the rail pays on (`mainnet-beta`, `devnet`, `testnet`; issue
+         *     #1181) — Solana addresses are identical across clusters, so a wallet
+         *     must send on the cluster the intent declares.
          *
          *     The amount books at the rate the intent locks at open. A `sol`
          *     intent is oracle-priced: the open samples Pyth Hermes for the
@@ -5507,14 +5510,15 @@ export interface paths {
          *     locked asset's base units marks `underpaid`, a `blockTime` at/after
          *     `expiresAt` marks `late`, and the deposit sits on the operator's
          *     exception queue rather than looping `pending` forever. `404` means no
-         *     `pending` intent answers to that
+         *     `pending` or `flagged` intent answers to that
          *     `reference` — including the race where the `solana-deposits` poll
          *     already credited it (the money arrived; the `404` is "no open intent",
-         *     not "the deposit is missing") and the same `404` when the screen
-         *     already parked the deposit `flagged`. With
+         *     not "the deposit is missing"). With
          *     `OXSUM_SOLANA_SANCTIONS_ENABLED=1` the located transfer's payer is
          *     screened before credit: a hit parks the row `flagged` for operator
-         *     review (never credited, never auto-refunded), and a screening source
+         *     review (never credited, never auto-refunded) and the confirm answers
+         *     `409` naming the flagged hold — the verdict issue #1184 keeps out of
+         *     the "unknown intent" `404` — while a screening source
          *     that cannot answer refuses `403` and leaves the intent `pending` —
          *     the rail never books unscreened money. A deployment without
          *     `OXSUM_SOLANA_*` answers 503.
@@ -15483,10 +15487,11 @@ export interface paths {
          *     The column freeze — `depositId`, `organizationId`, `paymentRef`
          *     (the intent's `reference` marker), `signature` (the paying
          *     transaction — `facilitator_tx_hash`), `payer` (the attributed
-         *     payer: `meta.payerAddress` when a path recorded it, falling back
-         *     to `meta.screening.address` on a `flagged` row; empty when no path
-         *     recorded one — the verify context's `payerAddress` is not merged
-         *     into `meta` today), `asset` (the whitelist key the intent
+         *     payer: `meta.payerAddress`, which every terminal write merges
+         *     from the verify context — issue #1186 — falling back to
+         *     `meta.screening.address` on a `flagged` row parked before the
+         *     merge landed; empty on a `pending` row that never recorded
+         *     one), `asset` (the whitelist key the intent
          *     locked), `amountMinor` (the credit figure opened for),
          *     `delivered`/`expected` (the located transfer's delivery and the
          *     intent's demand in that asset's own base units), `rateMicro`
@@ -15585,7 +15590,12 @@ export interface paths {
                 };
             };
             responses: {
-                /** @description The scan report — scanned count plus the unmatched transfers */
+                /**
+                 * @description The scan report — `scanned` signatures actually walked, `credited`
+                 *     transfers that paid `payTo` in a whitelisted asset, `unmatched`
+                 *     rows with no recorded deposit, and `limitReached` when older
+                 *     history may exist beyond the bound
+                 */
                 200: {
                     headers: {
                         [name: string]: unknown;
@@ -15686,11 +15696,20 @@ export interface paths {
         /**
          * Approve an opened solana refund for the multisig payout
          * @description Records the operator's approval on a `refund_pending` deposit
-         *     (issue #1142): `meta.refund.approvedBy`/`approvedAt` mark the refund
-         *     cleared for signing. The customer must have supplied their refund
-         *     address first — an approval with nowhere to pay is `409`, and the
-         *     address freezes at approval so a later edit cannot redirect the
+         *     (issues #1142, #1184): `meta.refund.approvedBy`/`approvedAt` mark the
+         *     refund cleared for signing. The customer must have supplied their
+         *     refund address first — an approval with nowhere to pay is `409`, and
+         *     the address freezes at approval so a later edit cannot redirect the
          *     payout. Approving an already-approved refund replays it.
+         *     Before the approval is recorded the standing `refundAddress` is
+         *     screened through the same sanctions gate the pre-credit payer check
+         *     runs: a `Flagged` address refuses `409` — the refund cannot be
+         *     approved to pay a sanctioned destination — and a screen that cannot
+         *     answer refuses `403`, deny-until-cleared. The approval binds to the
+         *     screened address, so a customer edit landing between the screen and
+         *     the approval is a `409`, never a silently redirected payout. When
+         *     the deployment has no `OXSUM_SOLANA_SANCTIONS_*` gate the screen is
+         *     a no-op `Clear` and the approve is exactly as before.
          */
         post: {
             parameters: {
@@ -15716,9 +15735,78 @@ export interface paths {
                 };
                 400: components["responses"]["Error"];
                 401: components["responses"]["Error"];
+                403: components["responses"]["Error"];
                 404: components["responses"]["Error"];
                 409: components["responses"]["Error"];
                 500: components["responses"]["Error"];
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/admin/solana/{depositId}/screening-clear": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Clear a flagged solana deposit after manual review and credit it
+         * @description The review-then-credit path for a `flagged` deposit (issue #1184):
+         *     the operator's manual-review verdict that the parked payment may
+         *     credit after all. This is manual review, never a bypass — nothing
+         *     auto-clears, and only a `flagged` row answers: the credit books the
+         *     already-verified transfer under the same `solana:<signature>`
+         *     idempotency key and the same `FOR UPDATE` row discipline the
+         *     ordinary credit path takes, so a replayed clear answers the standing
+         *     credited row and never books twice, and the recorded `delivered >
+         *     expected` still lands the row `overpaid` exactly as a same-day
+         *     credit would have. `meta.screening` attributes the decision
+         *     (`clearedBy`/`clearedAt`/`clearReason`) beside the flag's own
+         *     verdict, and an audit row (`solana.screening.clear`) records the
+         *     action. A non-`flagged` deposit is `409`, an unknown one `404`, and
+         *     a flagged row that never recorded its paying signature cannot
+         *     credit — `409`, the refund path is how that row unwinds. A
+         *     deployment without `OXSUM_SOLANA_*` answers 503.
+         */
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    depositId: string;
+                };
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": components["schemas"]["SolanaScreeningClearRequest"];
+                };
+            };
+            responses: {
+                /** @description The deposit, now `credited` (or `overpaid` when the recorded transfer over-delivered) */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            data: components["schemas"]["SolanaExceptionDeposit"];
+                        };
+                    };
+                };
+                400: components["responses"]["Error"];
+                401: components["responses"]["Error"];
+                404: components["responses"]["Error"];
+                409: components["responses"]["Error"];
+                500: components["responses"]["Error"];
+                503: components["responses"]["Error"];
             };
         };
         delete?: never;
@@ -22566,6 +22654,11 @@ export interface components {
          * @description The opened intent: everything a wallet needs to pay it. `reference` is
          *     the per-intent marker account the paying transaction must carry as a
          *     read-only, non-signer account key — the rail finds the transfer by it.
+         *     `cluster` pins the network the rail pays on (issue #1181): Solana
+         *     addresses are identical across clusters, so the page must know which
+         *     one the server means — a Solana Pay URL carries it as `cluster=` when
+         *     it is not `mainnet-beta`, and a wallet adapter refuses to send through
+         *     an endpoint that does not match.
          */
         SolanaTopupResponse: {
             /** @description the per-intent marker address the transfer must carry */
@@ -22596,6 +22689,16 @@ export interface components {
              * @description when the unpaid intent lapses
              */
             expiresAt: string;
+            /**
+             * @description The Solana cluster the rail pays on — `OXSUM_SOLANA_CLUSTER`
+             *     when set, else derived from the deployment's RPC endpoints
+             *     (validated consistent at boot, issue #1181). The `cluster`
+             *     parameter a Solana Pay transfer-request URL carries — a
+             *     `mainnet-beta` intent may omit the parameter but the value here
+             *     still names the network the intent pays on.
+             * @enum {string}
+             */
+            cluster: "mainnet-beta" | "devnet" | "testnet";
         };
         SolanaConfirmRequest: {
             /** @description the intent's `reference` marker — the caller's copy of the intent it opened, not the chain signature; the rail locates and validates the paying transaction itself */
@@ -22651,7 +22754,7 @@ export interface components {
             rateMicro?: number | null;
             /** @description the paying transaction's signature */
             signature?: string | null;
-            /** @description the attributed payer — `meta.payerAddress` when a path recorded it */
+            /** @description the attributed payer — `meta.payerAddress`, which every terminal write merges (issue #1186), else `meta.screening.address` on a `flagged` row parked before the merge; null when no path recorded one */
             payer?: string | null;
             /**
              * Format: uuid
@@ -22690,6 +22793,10 @@ export interface components {
             /** @description why the refund is opened — the reason the queue row and the audit entry carry */
             reason: string;
         };
+        SolanaScreeningClearRequest: {
+            /** @description the review note the operator's clear carries — `meta.screening.clearReason` and the audit entry record it; a clear with no recorded reasoning is not a review */
+            reason: string;
+        };
         SolanaRefundCompleteRequest: {
             /** @description the multisig payout transaction's base58 signature — the refund's on-chain proof */
             signature: string;
@@ -22706,10 +22813,14 @@ export interface components {
             limit: number;
         };
         SolanaScanReport: {
-            /** @description how many `payTo` signature-history entries the walk scanned */
+            /** @description how many `payTo` signature-history entries the walk actually inspected (one `getTransaction` each) — bounded at `limit` */
             scanned: number;
-            /** @description the transfers that paid `payTo` but match no recorded deposit — the "money arrived with no intent" rows */
+            /** @description how many of the walked transactions actually delivered value into `payTo` in a whitelisted asset — each becomes a row the deposits table is diffed against */
+            credited: number;
+            /** @description the credited transfers whose signature no `deposits.facilitator_tx_hash` records — the "money arrived with no intent" rows; `unmatched.length` is their count */
             unmatched: components["schemas"]["SolanaUnmatchedTransfer"][];
+            /** @description whether the walk stopped at `limit` while more signature history may exist beyond it — `false` when `payTo`'s history ended before the bound */
+            limitReached: boolean;
         };
         SolanaUnmatchedTransfer: {
             /** @description the on-chain transaction's signature */

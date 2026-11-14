@@ -114,6 +114,9 @@ fn pay_to() -> Keypair {
 /// whole SOL buys one credit, so `amount_minor` minor-credits converts to
 /// `amount_minor` lamports exactly — the e2e's figures stay readable.
 fn sol_terms(pay_to: &Keypair) -> SolanaTerms {
+    // A local test-validator is a devnet-shaped deployment (issue #1181) —
+    // the terms name it so an intent read back through the API would say
+    // `devnet`, matching how `solana_of` resolves a localhost endpoint.
     SolanaTerms::new(
         pay_to.address(),
         vec![AssetTerms {
@@ -128,6 +131,7 @@ fn sol_terms(pay_to: &Keypair) -> SolanaTerms {
         i64::MAX,
         0,
     )
+    .with_cluster(oxsum_core::SolanaCluster::Devnet)
 }
 
 /// A two-asset whitelist for the SPL case: SOL plus the test mint at USD

@@ -328,6 +328,9 @@
     "solanaWalletRejected": "钱包拒绝了该请求 —— 请在钱包中批准以完成支付，或使用下方二维码/手动转账。",
     "solanaWalletFailed": "钱包未能发出该笔转账 —— 请检查钱包与网络，或使用下方二维码/手动转账。",
     "solanaWalletBadIntent": "该意图的支付条款无法驱动钱包支付 —— 请使用下方二维码/手动转账。",
+    "solanaNetwork": "网络：{{network}} —— 请仅在该 Solana 集群上支付；其他集群上的同一地址属于不同的账本。",
+    "solanaWalletClusterMismatch": "已停用钱包直付：浏览器配置的 RPC 端点指向的网络与该意图的 {{cluster}} 不一致。请使用下方二维码/手动转账 —— 链接已携带正确的集群。",
+    "solanaWalletClusterUnconfigured": "{{cluster}} 网络下已停用钱包直付：此部署需要在构建时提供 VITE_SOLANA_RPC_URL 才能使用适配器支付。请使用下方二维码/手动转账 —— 链接已携带正确的集群。",
     "copy": "复制",
     "copied": "已复制"
   },
