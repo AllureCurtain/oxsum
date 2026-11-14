@@ -540,7 +540,15 @@ pub trait ChainLookup: std::fmt::Debug + Send + Sync {
     /// (the scan exists precisely to find the payments that carried none).
     /// `getTransaction` is fetched once per candidate — the bound on
     /// `max_signatures` is what keeps the walk polite on a busy vault.
-    /// A lookup that cannot answer returns an empty Vec: an unreachable
+    ///
+    /// The [`ScanWalk`] reports the walk's real coverage: `walked` is how many
+    /// signatures were inspected (≠ the credited count — the report's
+    /// `scanned` figure was wrong before issue #1188), `credited` one entry
+    /// per whitelisted asset a transaction delivered into the vault (a single
+    /// transaction that pays both SOL and an SPL mint reports twice), and
+    /// `history_bounded` whether the walk stopped at the bound while older
+    /// history may remain.
+    /// A lookup that cannot answer returns an empty walk: an unreachable
     /// endpoint reads as "nothing found", exactly like `find_reference`'s
     /// contract — the scan is a report, never a credit path, so a blind
     /// answer is a quiet miss, not a wrong write. The default is the same
@@ -548,10 +556,29 @@ pub trait ChainLookup: std::fmt::Debug + Send + Sync {
     fn scan_received<'a>(
         &'a self,
         _max_signatures: usize,
-    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Vec<ScannedTransfer>> + Send + 'a>>
-    {
-        Box::pin(async { Vec::new() })
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ScanWalk> + Send + 'a>> {
+        Box::pin(async { ScanWalk::default() })
     }
+}
+
+/// The reconciliation scan's coverage report (issue #1188): what one
+/// `ChainLookup::scan_received` walk actually did. The three figures answer
+/// distinct questions the old "list of transfers" conflated — `walked` is
+/// the signatures inspected, `credited` the paying transfers found among
+/// them, `history_bounded` the truncation signal.
+#[derive(Debug, Clone, Default)]
+pub struct ScanWalk {
+    /// How many `payTo` signature-history entries the walk inspected (one
+    /// `getTransaction` each), bounded at `max_signatures`.
+    pub walked: usize,
+    /// The transfers that delivered value into the vault in a whitelisted
+    /// asset — one entry per (signature, asset) pair, so a transaction that
+    /// pays SOL *and* an SPL mint in one shot reports both legs.
+    pub credited: Vec<ScannedTransfer>,
+    /// Whether the walk stopped at `max_signatures` while more signature
+    /// history may exist beyond the bound — `false` when the history ended
+    /// on its own (a short page).
+    pub history_bounded: bool,
 }
 
 /// One on-chain transfer the reconciliation scan surfaced (issue #1149): a
@@ -894,10 +921,12 @@ impl SolanaRailVerifier {
     /// The reconciliation scan (issue #1149): the on-chain half delegated to
     /// the rail's `ChainLookup` — `payTo`'s inbound transfers over the last
     /// `max_signatures` of its signature history, each already filtered to a
-    /// real delivery into the vault in a whitelisted asset. The caller diffs
-    /// the answer against the recorded deposits; the scan itself never
-    /// writes — it reports.
-    pub async fn scan_received(&self, max_signatures: usize) -> Vec<ScannedTransfer> {
+    /// real delivery into the vault in a whitelisted asset. The [`ScanWalk`]
+    /// carries the walk's real coverage (issue #1188): signatures inspected,
+    /// paying transfers found (one per asset leg), and whether the bound cut
+    /// the walk short. The caller diffs the credited signatures against the
+    /// recorded deposits; the scan itself never writes — it reports.
+    pub async fn scan_received(&self, max_signatures: usize) -> ScanWalk {
         self.chain.scan_received(max_signatures).await
     }
 
