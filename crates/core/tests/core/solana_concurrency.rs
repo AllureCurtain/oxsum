@@ -1119,9 +1119,25 @@ async fn the_poll_rescues_an_expired_row_whose_payment_landed_on_time() {
         .unwrap()
         .expect("inserts");
     // The stale-verdict shape: the row is `expired` while its expiresAt is
-    // still recent — inside the rescue pass's 24 h window (block_time 0 is
-    // before any real expiresAt, so the payment is on-time).
+    // past the first-check minute — inside the rescue pass's 24 h window
+    // (block_time 0 is before any real expiresAt, so the payment is on-time).
     db.expire_solana_deposit(deposit_id).await.unwrap();
+    // The first rescue check waits `expiresAt + 1 minute` (issue #1209): an
+    // intent whose TTL only just lapsed is too fresh to rescue — backdate the
+    // deadline so the row is due.
+    sqlx::query(
+        "UPDATE oxsum.deposits SET meta = jsonb_set(meta, '{expiresAt}', $1::jsonb) \
+         WHERE deposit_id = $2",
+    )
+    .bind(serde_json::Value::String(
+        (time::OffsetDateTime::now_utc() - time::Duration::minutes(5))
+            .format(&time::format_description::well_known::Rfc3339)
+            .unwrap(),
+    ))
+    .bind(deposit_id)
+    .execute(db.pool())
+    .await
+    .unwrap();
     let verifier = SolanaRailVerifier::new(
         Arc::new(OneSig {
             signature: "sigPollRescue00000000000000000000000000000000000000000".to_owned(),
@@ -1171,6 +1187,21 @@ async fn a_lookup_failure_defers_the_row_and_the_next_pass_credits() {
         .unwrap()
         .expect("inserts");
     db.expire_solana_deposit(deposit_id).await.unwrap();
+    // Past the first-check minute (issue #1209) — the rescue pass walks the
+    // row on this pass rather than skipping it as too fresh.
+    sqlx::query(
+        "UPDATE oxsum.deposits SET meta = jsonb_set(meta, '{expiresAt}', $1::jsonb) \
+         WHERE deposit_id = $2",
+    )
+    .bind(serde_json::Value::String(
+        (time::OffsetDateTime::now_utc() - time::Duration::minutes(5))
+            .format(&time::format_description::well_known::Rfc3339)
+            .unwrap(),
+    ))
+    .bind(deposit_id)
+    .execute(db.pool())
+    .await
+    .unwrap();
 
     /// The failing half: `find_reference` answers `Err` — an unreachable
     /// endpoint, not a signature list. `validate_transfer` is never reached.
@@ -1984,7 +2015,10 @@ async fn the_rescue_pass_drains_a_flooded_queue_without_rechecking() {
             .expect("inserts");
         refs.insert(id, reference);
         db.expire_solana_deposit(id).await.unwrap();
-        let stamp = (time::OffsetDateTime::now_utc() - time::Duration::minutes(i))
+        // i+5: the freshest row is 5 min past expiry — past the first-check
+        // minute (issue #1209) so every row is due to rescue; the 1-minute
+        // stagger still gives a deterministic DESC ordering.
+        let stamp = (time::OffsetDateTime::now_utc() - time::Duration::minutes(i + 5))
             .format(&time::format_description::well_known::Rfc3339)
             .unwrap();
         sqlx::query(
@@ -2132,6 +2166,21 @@ async fn a_row_inside_its_rescue_backoff_is_not_requeried() {
         .unwrap()
         .expect("inserts");
     db.expire_solana_deposit(deposit_id).await.unwrap();
+    // Past the first-check minute (issue #1209) — the row is due, not too
+    // fresh to rescue.
+    sqlx::query(
+        "UPDATE oxsum.deposits SET meta = jsonb_set(meta, '{expiresAt}', $1::jsonb) \
+         WHERE deposit_id = $2",
+    )
+    .bind(serde_json::Value::String(
+        (time::OffsetDateTime::now_utc() - time::Duration::minutes(5))
+            .format(&time::format_description::well_known::Rfc3339)
+            .unwrap(),
+    ))
+    .bind(deposit_id)
+    .execute(db.pool())
+    .await
+    .unwrap();
     /// Counts `find_reference` calls; finds nothing — the row stays expired.
     struct CountsNothing {
         calls: Mutex<u64>,
@@ -2295,4 +2344,261 @@ async fn a_candidate_error_does_not_mask_a_later_honoring_signature() {
         "the honoring signature behind the erroring one still credits"
     );
     assert_eq!(wallet.available().await.unwrap(), 1000);
+}
+
+/// Issue #1209 follow-up: with no honoring candidate, a `validate_transfer`
+/// `Err` means "could not confirm" — the errored signature may have been the
+/// full payment. A short candidate found on the same walk is only firmer than
+/// silence when the walk was clean; while `had_error` stands, the verdict must
+/// be `Deferred`, never `Short` (underpaid is a terminal queue verdict that
+/// would bury a possibly-paid intent).
+#[tokio::test]
+async fn a_candidate_error_defers_instead_of_marking_underpaid() {
+    let Some(db) = database("solana_err_defer").await else {
+        return;
+    };
+    let terms = terms();
+    let org = organization(&db, "err-defer").await;
+    let wallet = wallet_for(&db, org).await;
+    let deposit_id = Uuid::new_v4();
+    db.open_solana_deposit(org, deposit_id, 1000, &terms, None, &static_rate(&terms))
+        .await
+        .unwrap()
+        .expect("inserts");
+
+    /// Marker indexes two signatures: sig A delivered less than expected
+    /// (short/underpaid), sig B's validate_transfer `Err`s — the RPC was
+    /// unreachable mid-walk.
+    struct ShortThenErr;
+    impl std::fmt::Debug for ShortThenErr {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            f.debug_struct("ShortThenErr").finish_non_exhaustive()
+        }
+    }
+    impl ChainLookup for ShortThenErr {
+        fn find_reference<'a>(
+            &'a self,
+            _reference: &'a str,
+        ) -> std::pin::Pin<
+            Box<dyn std::future::Future<Output = Result<Vec<String>, LookupError>> + Send + 'a>,
+        > {
+            Box::pin(async {
+                Ok(vec![
+                    "sigShortAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA".to_owned(),
+                    "sigErrBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB".to_owned(),
+                ])
+            })
+        }
+        fn validate_transfer<'a>(
+            &'a self,
+            signature: &'a str,
+            expected: &'a ExpectedTransfer,
+        ) -> std::pin::Pin<
+            Box<
+                dyn std::future::Future<Output = Result<Option<ValidatedTransfer>, LookupError>>
+                    + Send
+                    + 'a,
+            >,
+        > {
+            Box::pin(async move {
+                if expected.recipient != "oxsumDepositAddr111111111111111111111111111" {
+                    return Ok(None);
+                }
+                if signature == "sigErrBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB" {
+                    return Err(LookupError("candidate unreachable".into()));
+                }
+                if signature == "sigShortAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA" {
+                    return Ok(Some(ValidatedTransfer {
+                        signature: signature.to_owned(),
+                        delivered: 2_000, // < expected 5_000 lamports for 1000 credits
+                        block_time: Some(0),
+                        payers: Vec::new(),
+                    }));
+                }
+                Ok(None)
+            })
+        }
+    }
+    let verifier = SolanaRailVerifier::new(Arc::new(ShortThenErr), terms.clone());
+    let tenants = oxsum_core::Tenants::new(db.pool().clone());
+    let (_checked, credited, _expired, queued) = db
+        .poll_solana_deposits(&verifier, &tenants, time::Date::MAX)
+        .await
+        .unwrap();
+    assert_eq!(credited, 0, "no honoring transfer — nothing credits");
+    assert_eq!(queued, 0, "an errored walk must not queue underpaid");
+    let status: String =
+        sqlx::query_scalar("SELECT status FROM oxsum.deposits WHERE deposit_id = $1")
+            .bind(deposit_id)
+            .fetch_one(db.pool())
+            .await
+            .unwrap();
+    assert_eq!(
+        status, "pending",
+        "had_error + a short candidate defers — underpaid is terminal and may bury the full payment"
+    );
+
+    // B recovers and honors in full — the next pass credits through the
+    // ordinary walk. Stub now answers B as the full payment.
+    struct Healed;
+    impl std::fmt::Debug for Healed {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            f.debug_struct("Healed").finish_non_exhaustive()
+        }
+    }
+    impl ChainLookup for Healed {
+        fn find_reference<'a>(
+            &'a self,
+            _reference: &'a str,
+        ) -> std::pin::Pin<
+            Box<dyn std::future::Future<Output = Result<Vec<String>, LookupError>> + Send + 'a>,
+        > {
+            Box::pin(async {
+                Ok(vec![
+                    "sigErrBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB".to_owned(),
+                ])
+            })
+        }
+        fn validate_transfer<'a>(
+            &'a self,
+            signature: &'a str,
+            expected: &'a ExpectedTransfer,
+        ) -> std::pin::Pin<
+            Box<
+                dyn std::future::Future<Output = Result<Option<ValidatedTransfer>, LookupError>>
+                    + Send
+                    + 'a,
+            >,
+        > {
+            Box::pin(async move {
+                if signature != "sigErrBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB"
+                    || expected.recipient != "oxsumDepositAddr111111111111111111111111111"
+                {
+                    return Ok(None);
+                }
+                Ok(Some(ValidatedTransfer {
+                    signature: signature.to_owned(),
+                    delivered: 5_000,
+                    block_time: Some(0),
+                    payers: Vec::new(),
+                }))
+            })
+        }
+    }
+    let healed = SolanaRailVerifier::new(Arc::new(Healed), terms);
+    let (_c, credited, _e, _q) = db
+        .poll_solana_deposits(&healed, &tenants, time::Date::MAX)
+        .await
+        .unwrap();
+    assert_eq!(
+        credited, 1,
+        "the recovered full payment credits on the next pass"
+    );
+    assert_eq!(wallet.available().await.unwrap(), 1000);
+}
+
+/// Issue #1209 follow-up: the rescue pass's first check on an `expired` row is
+/// paced — a just-lapsed row (expiresAt inside the last minute) is too fresh
+/// to rescue (its payment may still be finalizing), so the never-checked arm
+/// also requires `expiresAt <= now() - 1 minute`. Asserted through the
+/// `rescueCheckedAt` stamp: untouched while too fresh, stamped once due.
+#[tokio::test]
+async fn the_rescue_first_check_waits_a_minute_after_expiry() {
+    let Some(db) = database("solana_rescue_pace").await else {
+        return;
+    };
+    let terms = terms();
+    let org = organization(&db, "rescue-pace").await;
+    let deposit_id = Uuid::new_v4();
+    db.open_solana_deposit(org, deposit_id, 1000, &terms, None, &static_rate(&terms))
+        .await
+        .unwrap()
+        .expect("inserts");
+    // Already `expired` (the sweep flipped it) with expiresAt 30 s ago —
+    // inside the first-check minute, so the rescue must skip it.
+    db.expire_solana_deposit(deposit_id).await.unwrap();
+    // expiresAt = now - 30 s: too fresh for the first rescue check.
+    sqlx::query(
+        "UPDATE oxsum.deposits \
+         SET meta = jsonb_set(meta, '{expiresAt}', \
+             to_jsonb(to_char(now() - interval '30 seconds', \
+             'YYYY-MM-DD\"T\"HH24:MI:SSZ'))) \
+         WHERE deposit_id = $1",
+    )
+    .bind(deposit_id)
+    .execute(db.pool())
+    .await
+    .unwrap();
+    let tenants = oxsum_core::Tenants::new(db.pool().clone());
+    // A stub that pays nothing — the rescue just walks the row and stamps it.
+    struct NoSigs;
+    impl std::fmt::Debug for NoSigs {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            f.debug_struct("NoSigs").finish_non_exhaustive()
+        }
+    }
+    impl ChainLookup for NoSigs {
+        fn find_reference<'a>(
+            &'a self,
+            _reference: &'a str,
+        ) -> std::pin::Pin<
+            Box<dyn std::future::Future<Output = Result<Vec<String>, LookupError>> + Send + 'a>,
+        > {
+            Box::pin(async { Ok(Vec::new()) })
+        }
+        fn validate_transfer<'a>(
+            &'a self,
+            _signature: &'a str,
+            _expected: &'a ExpectedTransfer,
+        ) -> std::pin::Pin<
+            Box<
+                dyn std::future::Future<Output = Result<Option<ValidatedTransfer>, LookupError>>
+                    + Send
+                    + 'a,
+            >,
+        > {
+            Box::pin(async { Ok(None) })
+        }
+    }
+    let verifier = SolanaRailVerifier::new(Arc::new(NoSigs), terms);
+    db.poll_solana_deposits(&verifier, &tenants, time::Date::MAX)
+        .await
+        .unwrap();
+    let stamped: Option<String> = sqlx::query_scalar(
+        "SELECT meta->>'rescueCheckedAt' FROM oxsum.deposits WHERE deposit_id = $1",
+    )
+    .bind(deposit_id)
+    .fetch_one(db.pool())
+    .await
+    .unwrap();
+    assert!(
+        stamped.is_none(),
+        "an expiresAt only 30 s old must not be rescue-checked yet — got {stamped:?}"
+    );
+    // Now past the first-check minute — the row becomes due and gets stamped.
+    sqlx::query(
+        "UPDATE oxsum.deposits \
+         SET meta = jsonb_set(meta, '{expiresAt}', \
+             to_jsonb(to_char(now() - interval '90 seconds', \
+             'YYYY-MM-DD\"T\"HH24:MI:SSZ'))) \
+         WHERE deposit_id = $1",
+    )
+    .bind(deposit_id)
+    .execute(db.pool())
+    .await
+    .unwrap();
+    db.poll_solana_deposits(&verifier, &tenants, time::Date::MAX)
+        .await
+        .unwrap();
+    let stamped: Option<String> = sqlx::query_scalar(
+        "SELECT meta->>'rescueCheckedAt' FROM oxsum.deposits WHERE deposit_id = $1",
+    )
+    .bind(deposit_id)
+    .fetch_one(db.pool())
+    .await
+    .unwrap();
+    assert!(
+        stamped.is_some(),
+        "once expiresAt is past the first minute the rescue checks and stamps the row"
+    );
 }
