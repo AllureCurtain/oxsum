@@ -1490,11 +1490,13 @@ impl SolanaRailVerifier {
         // payment" — it is "cannot confirm" (a transport failure, or a
         // cross-confirm that disagreed or went unreachable). The walk keeps
         // going past it: a later signature may still honor or fall short, and
-        // either verdict is firmer than the error. Only when the walk ends
-        // with nothing honoring *and* no usable short candidate does the
-        // recorded error make the verify `Deferred` rather than `Unpaid` —
-        // never letting a lookup failure feed the expiry sweep over a
-        // possibly-paid intent (issues #1174, #1209).
+        // either verdict is firmer than the error. When the walk ends with
+        // nothing honoring, the recorded error makes the verdict `Deferred`
+        // regardless of a short candidate — the errored signature may have
+        // been the full payment, and `underpaid` is a terminal verdict that
+        // would bury a possibly-paid intent. Only a clean walk reports `Short`
+        // or `Unpaid` — never letting a lookup failure feed the expiry sweep
+        // over a possibly-paid intent (issues #1174, #1209).
         let mut short: Option<ValidatedTransfer> = None;
         let mut had_error = false;
         for signature in &signatures {
@@ -1541,14 +1543,16 @@ impl SolanaRailVerifier {
                 short = Some(validated);
             }
         }
+        if had_error {
+            // The errored candidate may have been the full payment — a short
+            // delivery on the same walk does not settle the verdict while a
+            // lookup failure stands.
+            return SolanaVerification::Deferred;
+        }
         match short {
             Some(validated) => SolanaVerification::Short(verified_payment(
                 opened, reference, validated, expected, terms,
             )),
-            // A lookup failure with no honoring and no usable short candidate
-            // defers rather than expiring; a clean walk with nothing found is
-            // genuinely unpaid.
-            None if had_error => SolanaVerification::Deferred,
             None => SolanaVerification::Unpaid,
         }
     }
@@ -3602,21 +3606,23 @@ impl Db {
         //
         // Fairness (issue #1209): every checked row records
         // `meta.rescueCheckedAt` and an attempt count, and the due filter
-        // paces re-checks on a backoff — ~1m, 5m, 30m, 2h, 6h, then every 24h
-        // for the window's remainder. Without it a flooded queue re-queries
-        // the same rows every pass while a just-expired row whose payment
-        // landed on-time waits behind them; never-checked rows sort first
-        // (`NULLS FIRST`), then the freshest deadline wins.
+        // paces checks on a backoff — the first one only after `expiresAt`
+        // itself is a minute old (a just-lapsed row's payment may still be
+        // finalizing), then ~5m, 30m, 2h, 6h, then every 24h for the window's
+        // remainder. Without it a flooded queue re-queries the same rows every
+        // pass while a just-expired row whose payment landed on-time waits
+        // behind them; never-checked rows sort first (`NULLS FIRST`), then
+        // the freshest deadline wins.
         let rescue_rows: Vec<(Uuid, Uuid)> = sqlx::query_as(
             "SELECT d.deposit_id, d.organization_id \
              FROM oxsum.deposits d \
              WHERE d.rail = $1 AND d.status = 'expired' \
                AND (d.meta->>'expiresAt')::timestamptz >= now() - interval '24 hours' \
                AND ( \
-                   d.meta->>'rescueCheckedAt' IS NULL \
+                   (d.meta->>'rescueCheckedAt' IS NULL \
+                    AND (d.meta->>'expiresAt')::timestamptz <= now() - interval '1 minute') \
                    OR (d.meta->>'rescueCheckedAt')::timestamptz <= now() - ( \
                        CASE COALESCE((d.meta->>'rescueAttempts')::int, 0) \
-                           WHEN 0 THEN interval '1 minute' \
                            WHEN 1 THEN interval '5 minutes' \
                            WHEN 2 THEN interval '30 minutes' \
                            WHEN 3 THEN interval '2 hours' \
