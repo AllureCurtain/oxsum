@@ -4295,7 +4295,11 @@ poll sweeps unexpired `pending` intents every 15 s and expires lapsed ones, so
 a wallet that pays without confirming still credits; the unleadered job is
 safe because the credit's ledger key is the signature it just validated.
 
-`confirmed` commitment is the default: devnet top-ups are low-value and the
+*Superseded the same day by "Finalized commitment by default; the mint's
+decimals are verified at boot (#1129)" below — the default flipped to
+`finalized`; the trade-off paragraph stays as the reason `confirmed` remains
+available by explicit opt-in.* `confirmed` commitment was the default when
+this entry was written: devnet top-ups are low-value and the
 ~13 s `finalized` wait buys little against the residual reorg window — a
 deployment that cannot accept that window sets
 `OXSUM_SOLANA_COMMITMENT=finalized`, which *is* the mitigation (there is no
@@ -4492,6 +4496,11 @@ customer can hold prepaid balance *and* be billed per call; the top-up
 builds the float the per-call rail draws from, it does not replace it.
 
 ## 2026-11-14 — The rail's payTo is provably a Squads v4 vault, not a hot wallet (#1143)
+
+*Narrowed the same day by "Mainnet refuses an unpinned hot wallet (#1189)"
+below: the pin is optional only on devnet-shaped endpoints — a
+mainnet-shaped endpoint refuses to boot without it unless
+`OXSUM_SOLANA_ALLOW_HOT_WALLET` opts out.*
 
 The server holds no spend key — the custody question is whether `payTo` is
 the account it should receive into, not whether the process can sign.
@@ -5003,3 +5012,42 @@ all moved with it: a mainnet drill lists `SANCTIONS_ENABLED=1` as REQUIRED
 with an API key or a non-empty SDN file, and the `--check-config` suite now
 covers every arm — unset refuses, `=1` passes, `=0` passes under the warn,
 devnet stays silent.
+
+## 2026-11-14 — Mainnet refuses an unpinned hot wallet; the stale `confirmed` comment corrected (#1189)
+
+Two records-versus-code fixes. **The `confirmed` comment was stale.**
+`crates/integrations/src/solana.rs`'s module header and `SolanaConfig`
+field docs still described `confirmed` as the default commitment after #1129
+flipped the code to `finalized` — and the 2026-11-13 #1117 entry above still
+carried the original rationale as if it were current. Comments and field
+docs now match the code (`finalized` default, `confirmed` the explicit
+devnet opt-in), and the old entry is marked superseded in place rather than
+rewritten, per the doc's own rule.
+
+**Multisig is mandatory on mainnet, behind an explicit opt-out.** Until now
+`OXSUM_SOLANA_MULTISIG_ACCOUNT` unset was warn-only on every endpoint: a
+mainnet deployment could boot receiving real customer funds into a single
+hot key, which is exactly the custody failure the Squads vault exists to
+remove. `solana_custody_of` now takes the endpoint's shape — the same
+heuristic the #1144 sanctions warning already used, factored into
+`solana_devnet_shaped` so both gates share it (every URL must read
+devnet/testnet/localhost for the pool to be non-mainnet; a mixed pool is
+mainnet, the safe direction). On a mainnet-shaped endpoint an unset
+`MULTISIG_ACCOUNT` is a startup error naming both the missing pin and the
+escape; on devnet the warn-only posture stands. The escape is
+`OXSUM_SOLANA_ALLOW_HOT_WALLET=1` — `1`/`true` on, unset/`0`/`false` off, a
+malformed value a startup error — the same explicit-opt-out boolean shape
+`SANCTIONS_ENABLED` and `USDT_ENABLED` hold, and it boots under a louder
+warn that names the accepted risk. A flag set beside a configured multisig
+is harmless: the pin wins and the derivation still runs.
+
+The check stays a derivation, honestly: it proves `PAY_TO` equals the
+multisig's `vault index 0` PDA, not that the multisig's threshold or member
+set is the intended 2-of-3 — reading the policy on-chain is the recorded
+follow-up, and docs/self-hosted-solana-multisig.md says so plainly.
+
+Pinned by `solana_custody_gates_the_mainnet_hot_wallet`,
+`the_endpoint_shape_is_devnet_only_when_every_url_is` and the
+`--check-config` arms in `check_config_validates_env_without_a_database`
+(mainnet + no multisig refuses; a matching vault passes; the opt-out passes
+under the warn; devnet + no multisig passes).

@@ -53,7 +53,9 @@ Complete every line before configuring the deployment.
   mismatch refuses startup; see docs/self-hosted-solana-multisig.md). If a
   multisig is not yet in place for the rehearsal,
   a dedicated single-signer address is acceptable **for the rehearsal only** —
-  the boot warns loudly that `payTo` is an unverified hot wallet — treat its
+  a mainnet-shaped endpoint then refuses to boot unless the deliberate
+  `OXSUM_SOLANA_ALLOW_HOT_WALLET=1` opt-out is set (issue #1189; the boot
+  logs a loud warn marking the accepted risk) — treat its
   key like the deployment's cash drawer, and migrate to the multisig before
   any customer traffic.
 - [ ] An authenticated Solana RPC endpoint (Helius or Triton key) — never the
@@ -90,11 +92,14 @@ OXSUM_SOLANA_RPC_URLS=https://mainnet.helius-rpc.com/?api-key=<key>
 
 # The multisig vault every intent pays — and the custody pin that proves it:
 # the boot derives the multisig's `vault index 0` PDA offline and refuses to
-# start unless PAY_TO equals it (issue #1143). Leave MULTISIG_ACCOUNT unset
-# only on the single-signer rehearsal variant — the boot then warns that
-# PAY_TO is an unverified hot wallet.
+# start unless PAY_TO equals it (issue #1143). On a mainnet-shaped endpoint
+# MULTISIG_ACCOUNT is required (issue #1189): unset, the boot refuses. The
+# single-signer rehearsal variant is the only place
+# OXSUM_SOLANA_ALLOW_HOT_WALLET=1 belongs — it boots under a loud warn that
+# PAY_TO is an unverified hot wallet holding real funds.
 OXSUM_SOLANA_PAY_TO=<vault base58 address>
 OXSUM_SOLANA_MULTISIG_ACCOUNT=<multisig account base58>
+# OXSUM_SOLANA_ALLOW_HOT_WALLET=1  # rehearsal-only: unpinned hot wallet
 
 # Mainnet-grade finality. Finalized is the default; state it explicitly so a
 # later reader cannot mistake the posture.
@@ -481,8 +486,9 @@ deposits table.
 - [ ] `OXSUM_SOLANA_MAX_MINOR` ≤ 5 000 000 verified in the running env — no
   intent can demand more than US$5.
 - [ ] `payTo` is the vault, not a hot wallet — `OXSUM_SOLANA_MULTISIG_ACCOUNT`
-  set, so the boot proved it — and the vault's ATA for the USDC mint exists
-  and is primed.
+  set, so the boot proved it (mainnet refuses to boot without it —
+  `OXSUM_SOLANA_ALLOW_HOT_WALLET` is the rehearsal-only opt-out) — and the
+  vault's ATA for the USDC mint exists and is primed.
 - [ ] The test wallet holds ~US$20 and nothing more; the operator knows which
   customer session it will pay as.
 - [ ] `OXSUM_SOLANA_COMMITMENT=finalized` booted; the USDC mint's decimals
