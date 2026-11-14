@@ -22,9 +22,9 @@ use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use http_body_util::BodyExt;
 use oxsum_core::{
-    AssetTerms, ChainLookup, Db, ExpectedTransfer, OracleQuote, PriceOracle, SanctionsScreen,
-    ScannedTransfer, ScreenVerdict, SolanaPricing, SolanaRailVerifier, SolanaTerms,
-    USD_PEGGED_RATE_MICRO, ValidatedTransfer,
+    AssetTerms, ChainLookup, Db, ExpectedTransfer, LookupError, OracleQuote, PriceOracle,
+    SanctionsScreen, ScannedTransfer, ScreenVerdict, SolanaPricing, SolanaRailVerifier,
+    SolanaTerms, USD_PEGGED_RATE_MICRO, ValidatedTransfer,
 };
 use oxsum_server::{Config, Signup};
 use serde_json::{Value, json};
@@ -164,14 +164,17 @@ impl ChainLookup for SolanaStub {
     fn find_reference<'a>(
         &'a self,
         reference: &'a str,
-    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Vec<String>> + Send + 'a>> {
+    ) -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = Result<Vec<String>, LookupError>> + Send + 'a>,
+    > {
         Box::pin(async move {
-            self.located
+            Ok(self
+                .located
                 .lock()
                 .unwrap()
                 .get(reference)
                 .cloned()
-                .unwrap_or_default()
+                .unwrap_or_default())
         })
     }
 
@@ -179,10 +182,18 @@ impl ChainLookup for SolanaStub {
         &'a self,
         signature: &'a str,
         expected: &'a ExpectedTransfer,
-    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Option<ValidatedTransfer>> + Send + 'a>>
-    {
+    ) -> std::pin::Pin<
+        Box<
+            dyn std::future::Future<Output = Result<Option<ValidatedTransfer>, LookupError>>
+                + Send
+                + 'a,
+        >,
+    > {
         Box::pin(async move {
-            let answer = self.validated.lock().unwrap().get(signature).cloned()?;
+            let Some(answer) = self.validated.lock().unwrap().get(signature).cloned() else {
+                // An unarmed signature is "not the payment at all".
+                return Ok(None);
+            };
             // The armed transfer is the intent's payment — the same answer
             // `SolanaRpcClient::validate_transfer` gives once the recipient,
             // mint and marker prove out (issue #1142): the delivered figure
@@ -192,7 +203,7 @@ impl ChainLookup for SolanaStub {
             // only for an unarmed signature — a wrong recipient/mint/marker
             // would dishonor the same way on-chain.
             let _ = expected;
-            Some(answer)
+            Ok(Some(answer))
         })
     }
 
@@ -3592,4 +3603,72 @@ async fn solana_webhook_refuses_an_oversized_body() {
         webhook_call(&app, &body, Some(HELIUS_SECRET)).await,
         StatusCode::PAYLOAD_TOO_LARGE
     );
+}
+
+/// Issue #1174: the confirm route rescues an `expired` row — the sweep may
+/// have flipped the intent ahead of an on-time payment it never saw, and the
+/// customer's own retry is the recovery path that must still reach the
+/// credit walk. `find_solana_deposit` matches `expired` rows and
+/// `credit_solana_deposit` re-verifies them, so the on-chain-before-
+/// `expiresAt` transfer credits through the route the caller already uses.
+#[tokio::test]
+async fn solana_confirm_rescues_an_expired_intent_whose_payment_was_on_time() {
+    let stub = SolanaStub::default();
+    let Some((app, db)) = world(stub.clone()).await else {
+        return;
+    };
+    let key = register_session(&app).await;
+    let (status, intent) = call(
+        &app,
+        "POST",
+        "/api/v1/topups/solana",
+        Some(json!({"amountMinor": 1000})),
+        Some(&key),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{intent}");
+    let reference = intent["data"]["reference"].as_str().unwrap().to_owned();
+    // The stale-verdict shape: the row is `expired` while its payment (armed
+    // below, blockTime long before any real expiresAt) is already on-chain.
+    let deposit_id: Uuid = sqlx::query_scalar(
+        "SELECT deposit_id FROM oxsum.deposits WHERE payment_ref = $1 AND rail = 'solana'",
+    )
+    .bind(&reference)
+    .fetch_one(db.pool())
+    .await
+    .unwrap();
+    db.expire_solana_deposit(deposit_id).await.unwrap();
+    let signature = "sigConfirmRescue0000000000000000000000000000000000000000";
+    stub.located
+        .lock()
+        .unwrap()
+        .insert(reference.clone(), vec![signature.to_owned()]);
+    stub.validated.lock().unwrap().insert(
+        signature.to_owned(),
+        ValidatedTransfer {
+            signature: signature.to_owned(),
+            delivered: 5_000,
+            block_time: Some(0),
+            payers: Vec::new(),
+        },
+    );
+    // The customer's retry credits through the ordinary walk — the expired
+    // row rescues to pending inside the credit's transaction.
+    let (status, receipt) = call(
+        &app,
+        "POST",
+        "/api/v1/topups/solana/confirm",
+        Some(json!({"reference": reference})),
+        Some(&key),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{receipt}");
+    assert_eq!(balance(&app, &key).await, 1000);
+    let status_row: String =
+        sqlx::query_scalar("SELECT status FROM oxsum.deposits WHERE deposit_id = $1")
+            .bind(deposit_id)
+            .fetch_one(db.pool())
+            .await
+            .unwrap();
+    assert_eq!(status_row, "credited");
 }

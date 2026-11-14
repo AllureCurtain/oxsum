@@ -310,8 +310,14 @@ async fn the_solana_pass_refreshes_the_rails_operator_gauges() {
         fn find_reference<'a>(
             &'a self,
             _reference: &'a str,
-        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Vec<String>> + Send + 'a>> {
-            Box::pin(async { Vec::new() })
+        ) -> std::pin::Pin<
+            Box<
+                dyn std::future::Future<Output = Result<Vec<String>, oxsum_core::LookupError>>
+                    + Send
+                    + 'a,
+            >,
+        > {
+            Box::pin(async { Ok(Vec::new()) })
         }
         fn validate_transfer<'a>(
             &'a self,
@@ -319,10 +325,16 @@ async fn the_solana_pass_refreshes_the_rails_operator_gauges() {
             _expected: &'a oxsum_core::ExpectedTransfer,
         ) -> std::pin::Pin<
             Box<
-                dyn std::future::Future<Output = Option<oxsum_core::ValidatedTransfer>> + Send + 'a,
+                dyn std::future::Future<
+                        Output = Result<
+                            Option<oxsum_core::ValidatedTransfer>,
+                            oxsum_core::LookupError,
+                        >,
+                    > + Send
+                    + 'a,
             >,
         > {
-            Box::pin(async { None })
+            Box::pin(async { Ok(None) })
         }
     }
     let verifier = oxsum_core::SolanaRailVerifier::new(

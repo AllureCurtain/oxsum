@@ -1,12 +1,13 @@
 //! The Solana rail's intent bookkeeping against the scratch database
 //! (issue #1117): `open_solana_deposit` inserts `pending` with the declared
-//! terms in `meta`, `expire_solana_deposit` walks `pending`/`confirmed` to
-//! `expired`, and neither misbehaves on a replayed or mis-priced open.
-//! Skips without DATABASE_URL.
+//! terms in `meta`, `expire_solana_deposit` walks `pending` — and only
+//! `pending`, a `confirmed` row holds a verified payment awaiting its credit
+//! (issue #1174) — to `expired`, and neither misbehaves on a replayed or
+//! mis-priced open. Skips without DATABASE_URL.
 use oxsum_core::{
-    AssetTerms, ChainLookup, Db, ExpectedTransfer, LockedRate, NewUser, SanctionsScreen,
-    ScreenVerdict, SolanaCredit, SolanaRailVerifier, SolanaTerms, USD_PEGGED_RATE_MICRO,
-    ValidatedTransfer, WalletError, solana_status,
+    AssetTerms, ChainLookup, Db, ExpectedTransfer, LockedRate, LookupError, NewUser,
+    SanctionsScreen, ScreenVerdict, SolanaCredit, SolanaRailVerifier, SolanaTerms,
+    USD_PEGGED_RATE_MICRO, ValidatedTransfer, WalletError, solana_status,
 };
 use sqlx::Row;
 use std::sync::{Arc, Mutex};
@@ -202,7 +203,7 @@ async fn open_solana_deposit_replays_the_unique_anchor() {
 }
 
 #[tokio::test]
-async fn expire_solana_deposit_walks_pending_and_confirmed_only() {
+async fn expire_solana_deposit_walks_pending_only() {
     let Some(db) = database("solana_expire").await else {
         return;
     };
@@ -229,7 +230,8 @@ async fn expire_solana_deposit_walks_pending_and_confirmed_only() {
             .await
             .unwrap();
     assert_eq!(status, "expired");
-    // A `confirmed` row expires too; a `credited` one is untouched.
+    // Only `pending` expires: `confirmed` holds a verified payment awaiting
+    // its credit — never expirable (issue #1174) — and `credited` is done.
     let confirmed = Uuid::new_v4();
     let credited = Uuid::new_v4();
     for (id, st) in [(confirmed, "confirmed"), (credited, "credited")] {
@@ -252,12 +254,7 @@ async fn expire_solana_deposit_walks_pending_and_confirmed_only() {
                 .fetch_one(db.pool())
                 .await
                 .unwrap();
-        let expected = if st == "confirmed" {
-            "expired"
-        } else {
-            "credited"
-        };
-        assert_eq!(status, expected, "{st} row after expire");
+        assert_eq!(status, st, "a {st} row is untouched by expire");
     }
 }
 
@@ -281,21 +278,28 @@ impl ChainLookup for OneSig {
     fn find_reference<'a>(
         &'a self,
         reference: &'a str,
-    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Vec<String>> + Send + 'a>> {
+    ) -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = Result<Vec<String>, LookupError>> + Send + 'a>,
+    > {
         Box::pin(async move {
             *self.reference.lock().unwrap() = reference.to_owned();
-            vec![self.signature.clone()]
+            Ok(vec![self.signature.clone()])
         })
     }
     fn validate_transfer<'a>(
         &'a self,
         signature: &'a str,
         expected: &'a ExpectedTransfer,
-    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Option<ValidatedTransfer>> + Send + 'a>>
-    {
+    ) -> std::pin::Pin<
+        Box<
+            dyn std::future::Future<Output = Result<Option<ValidatedTransfer>, LookupError>>
+                + Send
+                + 'a,
+        >,
+    > {
         Box::pin(async move {
             if signature != self.signature {
-                return None;
+                return Ok(None);
             }
             // Prove the transfer is the intent's payment — recipient and
             // marker honor — and report what it delivered; the delivered
@@ -303,14 +307,14 @@ impl ChainLookup for OneSig {
             // (issue #1142): `delivered < expected` is underpaid, not
             // "not the payment".
             if expected.recipient != self.pay_to() {
-                return None;
+                return Ok(None);
             }
-            Some(ValidatedTransfer {
+            Ok(Some(ValidatedTransfer {
                 signature: signature.to_owned(),
                 delivered: self.delivered,
                 block_time: Some(self.block_time),
                 payers: Vec::new(),
-            })
+            }))
         })
     }
 }
@@ -336,33 +340,41 @@ impl ChainLookup for ManySigs {
     fn find_reference<'a>(
         &'a self,
         _reference: &'a str,
-    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Vec<String>> + Send + 'a>> {
+    ) -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = Result<Vec<String>, LookupError>> + Send + 'a>,
+    > {
         Box::pin(async move {
             // Newest first: the noise landed after the paying transaction.
-            self.noise
+            Ok(self
+                .noise
                 .iter()
                 .cloned()
                 .chain(std::iter::once(self.paying.clone()))
-                .collect()
+                .collect())
         })
     }
     fn validate_transfer<'a>(
         &'a self,
         signature: &'a str,
         expected: &'a ExpectedTransfer,
-    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Option<ValidatedTransfer>> + Send + 'a>>
-    {
+    ) -> std::pin::Pin<
+        Box<
+            dyn std::future::Future<Output = Result<Option<ValidatedTransfer>, LookupError>>
+                + Send
+                + 'a,
+        >,
+    > {
         Box::pin(async move {
             let _ = expected;
             if signature != self.paying {
-                return None; // every noise signature dishonors
+                return Ok(None); // every noise signature dishonors
             }
-            Some(ValidatedTransfer {
+            Ok(Some(ValidatedTransfer {
                 signature: signature.to_owned(),
                 delivered: self.delivered,
                 block_time: Some(0),
                 payers: Vec::new(),
-            })
+            }))
         })
     }
 }
@@ -836,15 +848,21 @@ async fn verify_locked_honors_the_locked_asset_and_refuses_off_whitelist() {
         fn find_reference<'a>(
             &'a self,
             _reference: &'a str,
-        ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Vec<String>> + Send + 'a>> {
-            Box::pin(async move { vec![self.signature.clone()] })
+        ) -> std::pin::Pin<
+            Box<dyn std::future::Future<Output = Result<Vec<String>, LookupError>> + Send + 'a>,
+        > {
+            Box::pin(async move { Ok(vec![self.signature.clone()]) })
         }
         fn validate_transfer<'a>(
             &'a self,
             signature: &'a str,
             expected: &'a ExpectedTransfer,
         ) -> std::pin::Pin<
-            Box<dyn std::future::Future<Output = Option<ValidatedTransfer>> + Send + 'a>,
+            Box<
+                dyn std::future::Future<Output = Result<Option<ValidatedTransfer>, LookupError>>
+                    + Send
+                    + 'a,
+            >,
         > {
             Box::pin(async move {
                 // Prove the payment — locked mint, located signature — and
@@ -854,14 +872,14 @@ async fn verify_locked_honors_the_locked_asset_and_refuses_off_whitelist() {
                     || expected.spl_token_mint.as_deref()
                         != Some("usdcMint11111111111111111111111111111111")
                 {
-                    return None;
+                    return Ok(None);
                 }
-                Some(ValidatedTransfer {
+                Ok(Some(ValidatedTransfer {
                     signature: signature.to_owned(),
                     delivered: self.delivered,
                     block_time: Some(0),
                     payers: Vec::new(),
-                })
+                }))
             })
         }
     }
@@ -920,8 +938,8 @@ async fn verify_locked_honors_the_locked_asset_and_refuses_off_whitelist() {
         .credit_solana_deposit(&wallet, poisoned, &verifier, time::Date::MAX)
         .await;
     assert!(
-        matches!(refused, Err(WalletError::Forbidden(_))),
-        "an off-whitelist splToken must refuse: {refused:?}"
+        matches!(refused, Ok(SolanaCredit::Unpaid)),
+        "an off-whitelist splToken is unpayable — the unpaid verdict lets the sweep end it: {refused:?}"
     );
     assert_eq!(wallet.available().await.unwrap(), 1000);
 }
@@ -1222,16 +1240,23 @@ impl ChainLookup for PayoutStub {
     fn find_reference<'a>(
         &'a self,
         _reference: &'a str,
-    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Vec<String>> + Send + 'a>> {
-        Box::pin(async { Vec::new() })
+    ) -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = Result<Vec<String>, LookupError>> + Send + 'a>,
+    > {
+        Box::pin(async { Ok(Vec::new()) })
     }
     fn validate_transfer<'a>(
         &'a self,
         _signature: &'a str,
         _expected: &'a ExpectedTransfer,
-    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Option<ValidatedTransfer>> + Send + 'a>>
-    {
-        Box::pin(async { None })
+    ) -> std::pin::Pin<
+        Box<
+            dyn std::future::Future<Output = Result<Option<ValidatedTransfer>, LookupError>>
+                + Send
+                + 'a,
+        >,
+    > {
+        Box::pin(async { Ok(None) })
     }
     fn validate_payout<'a>(
         &'a self,
@@ -1276,31 +1301,38 @@ impl ChainLookup for AttributedSig {
     fn find_reference<'a>(
         &'a self,
         _reference: &'a str,
-    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Vec<String>> + Send + 'a>> {
-        Box::pin(async move { vec![self.signature.clone()] })
+    ) -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = Result<Vec<String>, LookupError>> + Send + 'a>,
+    > {
+        Box::pin(async move { Ok(vec![self.signature.clone()]) })
     }
     fn validate_transfer<'a>(
         &'a self,
         signature: &'a str,
         expected: &'a ExpectedTransfer,
-    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Option<ValidatedTransfer>> + Send + 'a>>
-    {
+    ) -> std::pin::Pin<
+        Box<
+            dyn std::future::Future<Output = Result<Option<ValidatedTransfer>, LookupError>>
+                + Send
+                + 'a,
+        >,
+    > {
         Box::pin(async move {
             if signature != self.signature {
-                return None;
+                return Ok(None);
             }
             // The transfer is the intent's payment; `delivered` rides up
             // unjudged so the verifier classifies an under/over-delivery the
             // way #1142's marks do.
             if expected.recipient != "oxsumDepositAddr111111111111111111111111111" {
-                return None;
+                return Ok(None);
             }
-            Some(ValidatedTransfer {
+            Ok(Some(ValidatedTransfer {
                 signature: signature.to_owned(),
                 delivered: self.delivered,
                 block_time: Some(0),
                 payers: vec![self.payer.clone()],
-            })
+            }))
         })
     }
 }
@@ -1913,25 +1945,32 @@ impl ChainLookup for PayingSig {
     fn find_reference<'a>(
         &'a self,
         _reference: &'a str,
-    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Vec<String>> + Send + 'a>> {
-        Box::pin(async move { vec![self.signature.clone()] })
+    ) -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = Result<Vec<String>, LookupError>> + Send + 'a>,
+    > {
+        Box::pin(async move { Ok(vec![self.signature.clone()]) })
     }
     fn validate_transfer<'a>(
         &'a self,
         signature: &'a str,
         expected: &'a ExpectedTransfer,
-    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Option<ValidatedTransfer>> + Send + 'a>>
-    {
+    ) -> std::pin::Pin<
+        Box<
+            dyn std::future::Future<Output = Result<Option<ValidatedTransfer>, LookupError>>
+                + Send
+                + 'a,
+        >,
+    > {
         Box::pin(async move {
             if signature != self.signature || expected.amount != self.delivered {
-                return None;
+                return Ok(None);
             }
-            Some(ValidatedTransfer {
+            Ok(Some(ValidatedTransfer {
                 signature: signature.to_owned(),
                 delivered: self.delivered,
                 block_time: Some(0),
                 payers: self.payers.clone(),
-            })
+            }))
         })
     }
 }
@@ -2236,7 +2275,7 @@ async fn a_flagged_party_wins_over_an_unavailable_one() {
         .credit_solana_deposit(&wallet, deferred, &deferred_verifier, time::Date::MAX)
         .await;
     assert!(
-        matches!(result, Err(WalletError::Forbidden(_))),
+        matches!(result, Ok(SolanaCredit::Deferred)),
         "an unavailable-only walk defers: {result:?}"
     );
     let status: String =
@@ -2280,14 +2319,15 @@ async fn an_unavailable_screen_leaves_the_deposit_pending() {
     let wallet = oxsum_core::Wallet::open(db.pool().clone(), &tenant_id)
         .await
         .unwrap();
-    // Deny-until-cleared: the deposit refuses Forbidden and stays pending —
-    // the next pass retries the screen rather than crediting unscreened.
+    // Deny-until-cleared: the deposit defers and stays pending — the next
+    // pass retries the screen rather than crediting unscreened money, and a
+    // screening non-answer is never unpaid (issue #1174).
     let result = db
         .credit_solana_deposit(&wallet, deposit_id, &verifier, time::Date::MAX)
         .await;
     assert!(
-        matches!(result, Err(WalletError::Forbidden(_))),
-        "an unavailable screen refuses the credit: {result:?}"
+        matches!(result, Ok(SolanaCredit::Deferred)),
+        "an unavailable screen defers the credit: {result:?}"
     );
     let status: String =
         sqlx::query_scalar("SELECT status FROM oxsum.deposits WHERE deposit_id = $1")
@@ -2297,6 +2337,68 @@ async fn an_unavailable_screen_leaves_the_deposit_pending() {
             .unwrap();
     assert_eq!(status, "pending");
     assert_eq!(wallet.available().await.unwrap(), 0);
+}
+
+/// Issue #1174: the expiry sweep's "unpaid" verdict can go stale — the row
+/// flips `expired` while its payment was already on-chain before
+/// `expiresAt` (the 257th intent past a pass's `LIMIT 256`, a row a second
+/// unleadered instance was mid-verify on, or a transfer that landed between
+/// the verify and the sweep). `credit_solana_deposit` must still see the
+/// row: an on-time payment rescues into the ordinary credit walk, a late one
+/// queues `late`, and a still-unpaid row keeps `expired`.
+#[tokio::test]
+async fn an_expired_row_still_credits_an_on_time_payment() {
+    let Some(db) = database("solana_expired_rescue").await else {
+        return;
+    };
+    let org = organization(&db, "expired-rescue").await;
+    let wallet = wallet_for(&db, org).await;
+    // A lapsed intent (block_time 0 is always before any real expiresAt) the
+    // sweep already expired — the stale-verdict shape.
+    let short = SolanaTerms {
+        intent_ttl_secs: 1,
+        ..terms()
+    };
+    let deposit_id = Uuid::new_v4();
+    db.open_solana_deposit(org, deposit_id, 1000, &short, None, &rate(&short, None))
+        .await
+        .unwrap()
+        .expect("inserts");
+    db.expire_solana_deposit(deposit_id).await.unwrap();
+    let status: String =
+        sqlx::query_scalar("SELECT status FROM oxsum.deposits WHERE deposit_id = $1")
+            .bind(deposit_id)
+            .fetch_one(db.pool())
+            .await
+            .unwrap();
+    assert_eq!(status, "expired");
+    // The paying transaction's blockTime precedes expiresAt — the credit
+    // books through the normal walk, the row lands `credited`.
+    let verifier = SolanaRailVerifier::new(
+        Arc::new(OneSig {
+            reference: Mutex::new(String::new()),
+            signature: "sigRescued00000000000000000000000000000000000000000000".to_owned(),
+            delivered: 5_000,
+            block_time: 0,
+        }),
+        short,
+    );
+    let credit = db
+        .credit_solana_deposit(&wallet, deposit_id, &verifier, time::Date::MAX)
+        .await
+        .unwrap();
+    let SolanaCredit::Credited(receipt) = credit else {
+        panic!("an on-time payment credits out of `expired`: {credit:?}");
+    };
+    assert!(receipt.is_new);
+    assert_eq!(wallet.available().await.unwrap(), 1000);
+    let status: String =
+        sqlx::query_scalar("SELECT status FROM oxsum.deposits WHERE deposit_id = $1")
+            .bind(deposit_id)
+            .fetch_one(db.pool())
+            .await
+            .unwrap();
+    assert_eq!(status, "credited");
 }
 
 /// Issue #1184: the review-then-credit path — a `flagged` deposit the
@@ -2383,6 +2485,109 @@ async fn a_cleared_flagged_deposit_credits_exactly_once() {
     assert_eq!(replay.status, "credited");
     assert_eq!(replay.entry_id, cleared.entry_id);
     assert_eq!(wallet.available().await.unwrap(), 1000);
+}
+
+/// Issue #1184: an over-delivered flagged transfer still lands `overpaid`
+/// The `expired`-row verdicts that do not credit: a payment whose blockTime
+/// is at/after `expiresAt` marks `late` on the exception queue (the verdict
+/// belongs to the chain's clock even out of `expired`), and a still-unpaid
+/// row keeps `expired` — the sweep's verdict stands.
+#[tokio::test]
+async fn an_expired_row_marks_late_and_stays_expired_unpaid() {
+    let Some(db) = database("solana_expired_verdicts").await else {
+        return;
+    };
+    let org = organization(&db, "expired-verdicts").await;
+    let wallet = wallet_for(&db, org).await;
+    let short = SolanaTerms {
+        intent_ttl_secs: 1,
+        ..terms()
+    };
+    // Late payment on an expired row → `late` on the queue, no credit.
+    let late_id = Uuid::new_v4();
+    let (_, _, expires_at) = db
+        .open_solana_deposit(org, late_id, 1000, &short, None, &rate(&short, None))
+        .await
+        .unwrap()
+        .expect("inserts");
+    let expiry =
+        time::OffsetDateTime::parse(&expires_at, &time::format_description::well_known::Rfc3339)
+            .unwrap()
+            .unix_timestamp();
+    db.expire_solana_deposit(late_id).await.unwrap();
+    let late_verifier = SolanaRailVerifier::new(
+        Arc::new(OneSig {
+            reference: Mutex::new(String::new()),
+            signature: "sigLateExpired000000000000000000000000000000000000000".to_owned(),
+            delivered: 5_000,
+            block_time: expiry + 60,
+        }),
+        short.clone(),
+    );
+    let verdict = db
+        .credit_solana_deposit(&wallet, late_id, &late_verifier, time::Date::MAX)
+        .await
+        .unwrap();
+    assert!(
+        matches!(verdict, SolanaCredit::Late),
+        "a late payment on an expired row queues late: {verdict:?}"
+    );
+    let status: String =
+        sqlx::query_scalar("SELECT status FROM oxsum.deposits WHERE deposit_id = $1")
+            .bind(late_id)
+            .fetch_one(db.pool())
+            .await
+            .unwrap();
+    assert_eq!(status, solana_status::LATE);
+    assert_eq!(wallet.available().await.unwrap(), 0);
+    // Still unpaid on an expired row → Forbidden, `expired` stands.
+    let unpaid_id = Uuid::new_v4();
+    db.open_solana_deposit(org, unpaid_id, 1000, &short, None, &rate(&short, None))
+        .await
+        .unwrap()
+        .expect("inserts");
+    db.expire_solana_deposit(unpaid_id).await.unwrap();
+    #[derive(Debug)]
+    struct NoSigs;
+    impl ChainLookup for NoSigs {
+        fn find_reference<'a>(
+            &'a self,
+            _reference: &'a str,
+        ) -> std::pin::Pin<
+            Box<dyn std::future::Future<Output = Result<Vec<String>, LookupError>> + Send + 'a>,
+        > {
+            Box::pin(async { Ok(Vec::new()) })
+        }
+        fn validate_transfer<'a>(
+            &'a self,
+            _signature: &'a str,
+            _expected: &'a ExpectedTransfer,
+        ) -> std::pin::Pin<
+            Box<
+                dyn std::future::Future<Output = Result<Option<ValidatedTransfer>, LookupError>>
+                    + Send
+                    + 'a,
+            >,
+        > {
+            Box::pin(async { Ok(None) })
+        }
+    }
+    let unpaid_verifier = SolanaRailVerifier::new(Arc::new(NoSigs), short);
+    let verdict = db
+        .credit_solana_deposit(&wallet, unpaid_id, &unpaid_verifier, time::Date::MAX)
+        .await
+        .unwrap();
+    assert!(
+        matches!(verdict, SolanaCredit::Unpaid),
+        "a still-unpaid expired row reads Unpaid, the sweep's verdict stands: {verdict:?}"
+    );
+    let status: String =
+        sqlx::query_scalar("SELECT status FROM oxsum.deposits WHERE deposit_id = $1")
+            .bind(unpaid_id)
+            .fetch_one(db.pool())
+            .await
+            .unwrap();
+    assert_eq!(status, "expired", "the sweep's unpaid verdict stands");
 }
 
 /// Issue #1184: an over-delivered flagged transfer still lands `overpaid`

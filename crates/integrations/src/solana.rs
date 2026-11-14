@@ -896,8 +896,10 @@ impl SolanaRpcClient {
     /// evidence the validation reads (a successful transaction carrying the
     /// intent's `reference` and delivering `delivered` to the `recipient` on
     /// the expected mint). A disagreement, or a second endpoint that cannot
-    /// answer at all, keeps the deposit `pending` — reported as `Ok(None)`
-    /// with a `solana_rpc_cross_confirmations_total{outcome}` count — because
+    /// answer at all, keeps the deposit `pending` — reported as `Err` (never
+    /// `Ok(None)`, which would read as "not the payment" and feed the expiry
+    /// sweep — issue #1174) with a
+    /// `solana_rpc_cross_confirmations_total{outcome}` count — because
     /// a lone lagging or lying endpoint is exactly the failure the pool exists
     /// to survive. A single-endpoint pool keeps the original posture: the
     /// first answer stands alone (and `solana_of` warns at boot when that
@@ -1000,15 +1002,19 @@ impl SolanaRpcClient {
         // transaction deliver the same amount to the same recipient on the
         // same mint under the same marker before the answer stands.
         // Anything less — no tx, a different delivered figure, a missing
-        // marker, or no second endpoint able to answer — is not a credit
-        // basis: the deposit stays `pending` (`Ok(None)`) and the next pass
-        // retries.
+        // marker, or no second endpoint able to answer — is NOT "not the
+        // payment": it is *unconfirmable*, so the caller defers (`Err`,
+        // never a flat `Ok(None)` the expiry sweep would read as unpaid —
+        // issue #1174).
         if self.endpoints.len() > 1 {
             let confirmed = self
                 .cross_confirm_transaction(signature, expected, served_by, &params, delivered)
                 .await;
             if !confirmed {
-                return Ok(None);
+                return Err(SolanaError(format!(
+                    "cross-confirmation failed for {signature}: the endpoints disagree \
+                     or no second endpoint could answer"
+                )));
             }
         }
         Ok(Some(ValidatedTransfer {
@@ -1136,9 +1142,11 @@ impl SolanaRpcClient {
     /// land on an endpoint other than the one that served, and its failure
     /// must not fail over onto `served_by` (agreeing with yourself is not a
     /// second opinion). `false` — never `Err` — covers every refusal: the
-    /// caller maps it to `Ok(None)`, so a disagreement or a dark second
-    /// endpoint reads as "not yet verified" exactly like an unpaid intent,
-    /// and `solana_rpc_cross_confirmations_total{endpoint,outcome}` records
+    /// caller maps it to an `Err` of its own, so a disagreement or a dark
+    /// second endpoint reads as "cannot confirm" and defers the verify —
+    /// never `Ok(None)`, which would read as an unpaid verdict the expiry
+    /// sweep could act on (issue #1174).
+    /// `solana_rpc_cross_confirmations_total{endpoint,outcome}` records
     /// which of "agreed"/"disagreed"/"unreachable" the attempt resolved to.
     async fn cross_confirm_transaction(
         &self,
@@ -1321,33 +1329,26 @@ fn mint_decimals_of(bytes: &[u8]) -> Result<u32, SolanaError> {
 }
 
 /// The `core` verifier's `ChainLookup` over this JSON-RPC client: the two
-/// Solana Pay calls on the deployment's configured endpoint pool. `Err` from
-/// the RPC surfaces as `None` at the seam — an unreachable endpoint or an RPC
-/// refusal is indistinguishable from "no matching transfer yet", which is how
-/// the rail treats every non-answer.
+/// Solana Pay calls on the deployment's configured endpoint pool. A
+/// transport/RPC failure propagates as `Err` — never flattened to "not paid"
+/// — so the expiry sweep can tell a sick endpoint apart from a real unpaid
+/// intent (issue #1174). `Ok` empty/None is the only "not paid" a sweep may
+/// act on.
 impl oxsum_core::ChainLookup for SolanaRpcClient {
     fn find_reference<'a>(
         &'a self,
         reference: &'a str,
-    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Vec<String>> + Send + 'a>> {
+    ) -> std::pin::Pin<
+        Box<
+            dyn std::future::Future<Output = Result<Vec<String>, oxsum_core::LookupError>>
+                + Send
+                + 'a,
+        >,
+    > {
         Box::pin(async move {
-            match self.find_reference(reference).await {
-                Ok(signatures) => signatures,
-                // A transport/RPC failure is *not* "not paid yet" — log it as
-                // an error so an unreachable endpoint never masquerades as an
-                // unpaid intent. The per-endpoint count already landed inside
-                // `call` (`solana_rpc_errors_total{call,endpoint}`); the empty
-                // Vec still reads "no matching transfer" upstream, but it is
-                // a loud miss.
-                Err(e) => {
-                    tracing::warn!(
-                        reference,
-                        error = %e.0,
-                        "solana find_reference RPC failed; treating as unlocated"
-                    );
-                    Vec::new()
-                }
-            }
+            self.find_reference(reference)
+                .await
+                .map_err(|e| oxsum_core::LookupError(e.0))
         })
     }
 
@@ -1356,7 +1357,12 @@ impl oxsum_core::ChainLookup for SolanaRpcClient {
         signature: &'a str,
         expected: &'a oxsum_core::ExpectedTransfer,
     ) -> std::pin::Pin<
-        Box<dyn std::future::Future<Output = Option<oxsum_core::ValidatedTransfer>> + Send + 'a>,
+        Box<
+            dyn std::future::Future<
+                    Output = Result<Option<oxsum_core::ValidatedTransfer>, oxsum_core::LookupError>,
+                > + Send
+                + 'a,
+        >,
     > {
         Box::pin(async move {
             self.validate_transfer(
@@ -1369,23 +1375,14 @@ impl oxsum_core::ChainLookup for SolanaRpcClient {
                 },
             )
             .await
-            .inspect_err(|e| {
-                // Same distinction as find_reference: a transport failure is
-                // not "the transfer does not honor" — warn it; the per-endpoint
-                // count already landed inside `call`.
-                tracing::warn!(
-                    signature,
-                    error = %e.0,
-                    "solana validate_transfer RPC failed; treating as unvalidated"
-                );
-            })
-            .ok()
-            .flatten()
-            .map(|v| oxsum_core::ValidatedTransfer {
-                signature: v.signature,
-                delivered: v.delivered,
-                block_time: v.block_time,
-                payers: v.payers,
+            .map_err(|e| oxsum_core::LookupError(e.0))
+            .map(|v| {
+                v.map(|v| oxsum_core::ValidatedTransfer {
+                    signature: v.signature,
+                    delivered: v.delivered,
+                    block_time: v.block_time,
+                    payers: v.payers,
+                })
             })
         })
     }
@@ -2754,35 +2751,46 @@ mod tests {
     }
 
     /// A second endpoint that has not seen the transaction cannot confirm it:
-    /// the answer is not a credit basis and the deposit stays pending.
+    /// the answer is not a credit basis and the deposit stays pending — the
+    /// `Err` the credit path defers on, never an `Ok(None)` "not the payment"
+    /// that would feed the expiry sweep (issue #1174).
     #[tokio::test(flavor = "current_thread")]
     async fn an_endpoint_that_missed_the_tx_keeps_the_deposit_pending() {
         let (url_a, _a) = stub_rpc(transaction_result(0, 5_000, "payTo")).await;
         let (url_b, _b) = stub_rpc(json!({"jsonrpc": "2.0", "id": 1, "result": null})).await;
         let client = client(&[url_a, url_b], None);
-        let validated = client
+        let err = client
             .validate_transfer("sig1", &expected_transfer())
             .await
-            .unwrap();
-        assert!(validated.is_none(), "no single endpoint's word credits");
+            .unwrap_err();
+        assert!(
+            err.0.contains("cross-confirmation"),
+            "no single endpoint's word credits — the refusal defers, it does not expire: {err:?}"
+        );
     }
 
     /// Two endpoints that disagree on the delivered amount cannot both be
-    /// right: the deposit stays pending rather than crediting either figure.
+    /// right: the deposit stays pending rather than crediting either figure —
+    /// `Err`, not `Ok(None)`, so the walk defers instead of calling the intent
+    /// unpaid (issue #1174).
     #[tokio::test(flavor = "current_thread")]
     async fn disagreeing_endpoints_keep_the_deposit_pending() {
         let (url_a, _a) = stub_rpc(transaction_result(0, 5_000, "payTo")).await;
         let (url_b, _b) = stub_rpc(transaction_result(0, 4_000, "payTo")).await;
         let client = client(&[url_a, url_b], None);
-        let validated = client
+        let err = client
             .validate_transfer("sig1", &expected_transfer())
             .await
-            .unwrap();
-        assert!(validated.is_none(), "a disagreement is not a credit basis");
+            .unwrap_err();
+        assert!(
+            err.0.contains("cross-confirmation"),
+            "a disagreement is not a credit basis — nor an unpaid verdict: {err:?}"
+        );
     }
 
     /// A second endpoint that cannot answer at all is not a confirmation: the
-    /// deposit stays pending until a sibling endpoint can vouch.
+    /// deposit stays pending until a sibling endpoint can vouch — `Err`, so
+    /// the credit path defers rather than expiring the intent (issue #1174).
     #[tokio::test(flavor = "current_thread")]
     async fn an_unreachable_second_endpoint_keeps_the_deposit_pending() {
         let (url_a, _a) = stub_rpc(transaction_result(0, 5_000, "payTo")).await;
@@ -2791,11 +2799,14 @@ mod tests {
         }))
         .await;
         let client = client(&[url_a, url_b], None);
-        let validated = client
+        let err = client
             .validate_transfer("sig1", &expected_transfer())
             .await
-            .unwrap();
-        assert!(validated.is_none(), "no second opinion, no credit");
+            .unwrap_err();
+        assert!(
+            err.0.contains("cross-confirmation"),
+            "no second opinion, no credit — nor an unpaid verdict: {err:?}"
+        );
     }
 
     /// The confirmation is an extra read, not a replacement for failover: a

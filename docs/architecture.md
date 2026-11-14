@@ -282,13 +282,16 @@ flowchart TD
     lock --> pending["deposit pending<br/>payment_ref = reference"]
     pending --> wallet["customer wallet pays<br/>reference as read-only marker<br/>(Solana Pay QR, issue #1141)"]
     wallet --> locate["confirm endpoint or<br/>15s solana-deposits poll<br/>findReference + validateTransfer"]
-    locate -->|"no honoring transfer"| pending
+    locate -->|"provably unpaid"| pending
+    locate -->|"lookup failed or<br/>candidate unconfirmable"| defer["deferred — stays pending,<br/>never feeds the sweep"]
+    defer -->|"next pass retries"| pending
     locate --> valid{"the located transfer<br/>judged on locked meta"}
     valid -->|"blockTime ≥ expiresAt"| late["late → exception queue"]
+    valid -->|"blockTime unreported"| defer
     valid -->|"under-delivered"| under["underpaid → exception queue"]
     valid -->|"honoring, exact or over"| screen{"sanctions screen<br/>(issue #1144)"}
     screen -->|"payer hits a source"| flagged["flagged → operator review"]
-    screen -->|"screen unreachable"| pending
+    screen -->|"screen unreachable"| defer
     screen -->|"clear or gate off"| credit["credit opened amount<br/>solana:signature — once ever"]
     credit -->|"delivered > expected"| over["overpaid: credit stands,<br/>surplus on the queue"]
     late --> queue["GET /admin/solana/exceptions<br/>customer: /topups/solana/deposits"]
@@ -296,8 +299,12 @@ flowchart TD
     flagged --> queue
     over --> queue
     queue --> refund["pull-payment refund (issue #1142)<br/>refund → refund-address →<br/>refund-approve → multisig pays →<br/>refund-complete → refunded"]
-    pending -->|"expiresAt lapses unpaid"| expired["expired — a payment that<br/>landed before expiresAt still<br/>credits; blockTime judges lateness"]
+    pending -->|"expiresAt lapses unpaid,<br/>verified unpaid this pass"| expired["expired — a payment that<br/>landed before expiresAt still<br/>credits; blockTime judges lateness"]
+    expired -->|"re-verified: payment<br/>landed before expiresAt"| credit
+    expired -->|"payment landed<br/>after expiresAt"| late
 ```
+
+The poll is unleadered, so expiry is verify-then-expire keyed per row (issue #1174): the pass collects the ids it itself verified `Unpaid` — and only a located, judged answer counts; a lookup `Err` (`find_reference` or `validate_transfer`), a `TemporarilyUnavailable` screen, a missing `blockTime`, or a settle refusal all return the typed `SolanaCredit::Deferred`, which leaves the row `pending` and never enters the sweep list. The sweep also carries a finality grace: an `Unpaid` verdict expires the row only when the pass's verify began at/after `expiresAt + 120 s`, so a payment that landed just before the deadline but is not yet finalized-visible cannot be swept under it. A second instance may still expire a row mid-verify — that instance's verdict is genuine — so an `expired` row also re-verifies: a payment whose `blockTime` precedes `expiresAt` rescues into the ordinary credit walk, and the poll rescans `expired` rows whose `expiresAt` fell inside the last 24 h (capped at 64) through the same credit path, so a sweep that raced ahead of a landed payment can never strand it.
 
 Two branches run beside it: the RPC failover pool (`OXSUM_SOLANA_RPC_URLS`, issue #1145) that `findReference`/`validateTransfer` call through — round-robin, a twice-failing endpoint sitting out a ~30 s cooldown — and the reconciliation pass that reads every `solana` row against `payTo`'s on-chain signature list (issue #1149). The optional Helius webhook (issue #1150) mounts `POST /api/v1/webhooks/solana` — a push only re-runs the matching intent's own verify sooner, the server still credits on its own check; unset, the route is unmounted and polling stays the only confirm path. The wallet-adapter pay button (issue #1147) mounts beside the QR on the dashboard — a convenience the customer may ignore, not a rail change. The local test-validator e2e suite (issue #1152) is the remaining follow-up.
 
