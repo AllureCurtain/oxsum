@@ -10,6 +10,7 @@ Open GitHub issues are the queue. This file is only the index. One row per open 
 
 | Issue | Title |
 | --- | --- |
+| [#1178](https://github.com/AllureCurtain/oxsum/issues/1178) | fix(solana): screen every funding party, not just the SOL relayer / fee payer |
 | [#1182](https://github.com/AllureCurtain/oxsum/issues/1182) | fix(solana): the mint audit must only allow the classic SPL Token program and validate the mint layout |
 | [#1181](https://github.com/AllureCurtain/oxsum/issues/1181) | fix(solana): pin the payment cluster; never silently default to mainnet |
 | [#1179](https://github.com/AllureCurtain/oxsum/issues/1179) | fix(solana): a mainnet-shaped endpoint must explicitly enable (or disable) sanctions screening |

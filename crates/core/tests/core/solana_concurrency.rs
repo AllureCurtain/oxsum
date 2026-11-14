@@ -85,13 +85,13 @@ async fn wallet_for(db: &Db, org: Uuid) -> Arc<oxsum_core::Wallet> {
 
 /// A `ChainLookup` armed with one honoring transfer: `find_reference`
 /// answers the signature for every reference it is asked, `validate_transfer`
-/// reports `delivered`/`block_time`/`payer`. `block_time: 0` is always inside
+/// reports `delivered`/`block_time`/`payers`. `block_time: 0` is always inside
 /// the intent's TTL (the expiry judgment is the transaction's own clock).
 #[derive(Debug)]
 struct OneSig {
     signature: String,
     delivered: i64,
-    payer: Option<String>,
+    payers: Vec<String>,
 }
 
 impl ChainLookup for OneSig {
@@ -120,7 +120,7 @@ impl ChainLookup for OneSig {
                 signature: signature.to_owned(),
                 delivered: self.delivered,
                 block_time: Some(0),
-                payer: self.payer.clone(),
+                payers: self.payers.clone(),
             })
         })
     }
@@ -324,7 +324,7 @@ async fn concurrent_confirms_on_one_deposit_credit_once() {
         Arc::new(OneSig {
             signature: signature.to_owned(),
             delivered: 5_000,
-            payer: None,
+            payers: Vec::new(),
         }),
         terms,
     );
@@ -402,7 +402,7 @@ async fn two_orgs_racing_one_signature_credit_once() {
         Arc::new(OneSig {
             signature: signature.to_owned(),
             delivered: 5_000,
-            payer: None,
+            payers: Vec::new(),
         }),
         terms,
     );
@@ -496,7 +496,7 @@ async fn a_confirm_racing_the_poll_credits_once() {
         Arc::new(OneSig {
             signature: "sigPollRace0000000000000000000000000000000000000000000".to_owned(),
             delivered: 5_000,
-            payer: None,
+            payers: Vec::new(),
         }),
         terms,
     );
@@ -607,7 +607,7 @@ async fn the_chain_rpc_section_holds_no_row_lock() {
                     signature: signature.to_owned(),
                     delivered: self.delivered,
                     block_time: Some(0),
-                    payer: None,
+                    payers: Vec::new(),
                 })
             })
         }
@@ -666,7 +666,7 @@ async fn the_chain_rpc_section_holds_no_row_lock() {
         Arc::new(OneSig {
             signature: "sigFree000000000000000000000000000000000000000000000000".to_owned(),
             delivered: 5_000,
-            payer: None,
+            payers: Vec::new(),
         }),
         terms,
     );

@@ -524,9 +524,9 @@ pub struct SolanaRailVerifier {
     /// `sol` open then refuses rather than falling back (issue #1139).
     oracle: Option<std::sync::Arc<dyn PriceOracle>>,
     /// The sanctions screen the credit path runs on the located transfer's
-    /// payer (issue #1144). `None` — the default — screens nothing: a
-    /// deployment that never enabled `OXSUM_SOLANA_SANCTIONS_*` credits
-    /// exactly as before.
+    /// debited funding parties (issues #1144, #1178). `None` — the default —
+    /// screens nothing: a deployment that never enabled
+    /// `OXSUM_SOLANA_SANCTIONS_*` credits exactly as before.
     sanctions: Option<std::sync::Arc<dyn SanctionsScreen>>,
 }
 
@@ -654,9 +654,10 @@ pub struct ScannedTransfer {
     /// What the transaction delivered to the deposit address, in `asset`'s
     /// base units.
     pub delivered: i64,
-    /// The payer's address when the transaction's shape yields one — the same
-    /// attribution `ValidatedTransfer.payer` makes (the debited signer or
-    /// token-account owner), `None` when it does not.
+    /// The payer's address when the transaction's shape yields one — the
+    /// first of the debited funding parties `ValidatedTransfer.payers` names,
+    /// `None` when it yields none. The report carries one representative;
+    /// screening the whole set is the credit path's job.
     pub payer: Option<String>,
 }
 
@@ -685,11 +686,15 @@ pub struct ValidatedTransfer {
     /// The on-chain `blockTime` — when the chain recorded the transfer.
     /// Expiry is judged against this, not the server's clock.
     pub block_time: Option<i64>,
-    /// The payer's address — the account whose balance was debited to pay the
-    /// recipient (issue #1144). `None` when the transaction's shape does not
-    /// yield one; the screening seam treats `None` as unscreenable and the
-    /// credit path then decides by the deployment's fail policy.
-    pub payer: Option<String>,
+    /// Every debited funding party of the payment (issues #1144, #1178) —
+    /// for native SOL each signer whose lamport balance fell (the funding
+    /// source(s) and the fee payer), for SPL each debited token account's
+    /// owner. Pre-credit screening runs on *every* listed address so a
+    /// sanctioned source cannot hide behind a clean relayer. Empty when the
+    /// transaction's shape yields none; the screening seam treats an empty
+    /// list as unscreenable and the credit path then decides by the
+    /// deployment's fail policy.
+    pub payers: Vec<String>,
 }
 
 /// The verdict a [`SanctionsScreen`] returns for one payer address (issue
@@ -954,10 +959,10 @@ impl SolanaRailVerifier {
         }
     }
 
-    /// Attaches the sanctions screen the credit path runs on every located
-    /// transfer's payer (issue #1144). `SolanaRailVerifier::new` leaves the
-    /// screen off — a deployment that never configures `OXSUM_SOLANA_
-    /// SANCTIONS_*` sees no change at all.
+    /// Attaches the sanctions screen the credit path runs on every debited
+    /// funding party of the located transfer (issues #1144, #1178).
+    /// `SolanaRailVerifier::new` leaves the screen off — a deployment that
+    /// never configures `OXSUM_SOLANA_SANCTIONS_*` sees no change at all.
     #[must_use]
     pub fn with_sanctions(mut self, sanctions: std::sync::Arc<dyn SanctionsScreen>) -> Self {
         self.sanctions = Some(sanctions);
@@ -1324,7 +1329,12 @@ fn verified_payment(
             "delivered": validated.delivered,
             "expected": expected,
             "blockTime": validated.block_time,
-            "payerAddress": validated.payer,
+            // Every debited funding party screening must clear (issue #1178);
+            // `payerAddress` keeps the first — the representative the queue
+            // row and the flag's `screening.address` record — for the readers
+            // that predate the list.
+            "payerAddress": validated.payers.first(),
+            "payerAddresses": validated.payers,
             "receivedCredits": asset_units_to_credits(
                 validated.delivered,
                 terms.rate_micro,
@@ -1335,27 +1345,59 @@ fn verified_payment(
 }
 
 impl SolanaRailVerifier {
-    /// Screens the payer address `verify` recorded in the payment's context
-    /// (issue #1144). With no screen configured — a deployment that never
-    /// enabled `OXSUM_SOLANA_SANCTIONS_*` — the verdict is `Clear` and the
-    /// credit path is exactly as before. When screening *is* on but the
-    /// transfer's shape yielded no payer, the verdict is
+    /// Screens every debited funding party `verify` recorded in the payment's
+    /// context (issues #1144, #1178). With no screen configured — a deployment
+    /// that never enabled `OXSUM_SOLANA_SANCTIONS_*` — the verdict is `Clear`
+    /// and the credit path is exactly as before. When screening *is* on but
+    /// the transfer's shape yielded no payer, the verdict is
     /// `TemporarilyUnavailable`, never `Clear`: an address the rail cannot
     /// name is an address it cannot clear, and deny-until-cleared refuses to
     /// book unscreened money (the row stays `pending` for an operator, the
     /// same posture an unreachable screening API takes).
+    ///
+    /// The walk covers the whole `payerAddresses` list — a transfer funded
+    /// by several wallets (a clean fee-paying relayer plus a second debited
+    /// source) is screened on each, so a sanctioned source cannot launder the
+    /// deposit through the relayer's fee-only debit. The first `Flagged`
+    /// wins outright — one hit parks the deposit whatever the other parties
+    /// answer — and a `TemporarilyUnavailable` on any party with no `Flagged`
+    /// defers the credit the same way an unreachable screen does.
     pub async fn screen_payer(&self, payment: &VerifiedPayment) -> ScreenVerdict {
         let Some(sanctions) = &self.sanctions else {
             return ScreenVerdict::Clear;
         };
-        let Some(payer) = payment.context["payerAddress"].as_str() else {
+        let mut payers: Vec<&str> = payment.context["payerAddresses"]
+            .as_array()
+            .map(|rows| rows.iter().filter_map(serde_json::Value::as_str).collect())
+            .unwrap_or_default();
+        if payers.is_empty()
+            && let Some(payer) = payment.context["payerAddress"].as_str()
+        {
+            // A context written before the list existed carries only the
+            // singular — screen what it names.
+            payers.push(payer);
+        }
+        if payers.is_empty() {
             tracing::warn!(
                 signature = %payment.context["signature"].as_str().unwrap_or_default(),
                 "the validated transfer carried no payer; screening cannot clear it"
             );
             return ScreenVerdict::TemporarilyUnavailable;
-        };
-        sanctions.screen(payer).await
+        }
+        let mut unavailable = false;
+        for payer in payers {
+            match sanctions.screen(payer).await {
+                ScreenVerdict::Flagged { source, reason } => {
+                    return ScreenVerdict::Flagged { source, reason };
+                }
+                ScreenVerdict::TemporarilyUnavailable => unavailable = true,
+                ScreenVerdict::Clear => {}
+            }
+        }
+        if unavailable {
+            return ScreenVerdict::TemporarilyUnavailable;
+        }
+        ScreenVerdict::Clear
     }
 }
 
@@ -1844,17 +1886,20 @@ impl Db {
             .await?;
             return Ok(SolanaCredit::Underpaid);
         }
-        // Pre-credit sanctions screening on the payer (issue #1144): the
-        // transfer's debited address is checked once the payment is otherwise
-        // creditable — a late or mistimed transfer is refused above before the
-        // screen ever runs, so the review queue only ever parks payments that
-        // *would* have credited. `Flagged` parks the row at `flagged` — never
-        // credited, never auto-refunded — with `meta.screening` recording the
-        // verdict. `TemporarilyUnavailable` leaves the row `pending`: a
-        // screening service that cannot answer is not a clear, and
-        // deny-until-cleared refuses to book unscreened money, so the next
-        // pass retries. The screen runs outside any row lock, the same
-        // read-only footing the chain RPCs already take.
+        // Pre-credit sanctions screening on every debited funding party
+        // (issues #1144, #1178): each address the transfer debited — the
+        // funding source(s) and the fee payer, or every debited token
+        // account's owner — is checked once the payment is otherwise
+        // creditable, so a sanctioned source cannot launder through a clean
+        // relayer's fee-only debit. A late or mistimed transfer is refused
+        // above before the screen ever runs, so the review queue only ever
+        // parks payments that *would* have credited. `Flagged` parks the row
+        // at `flagged` — never credited, never auto-refunded — with
+        // `meta.screening` recording the verdict. `TemporarilyUnavailable`
+        // leaves the row `pending`: a screening service that cannot answer
+        // is not a clear, and deny-until-cleared refuses to book unscreened
+        // money, so the next pass retries. The screen runs outside any row
+        // lock, the same read-only footing the chain RPCs already take.
         match verifier.screen_payer(&payment).await {
             ScreenVerdict::Clear => {}
             ScreenVerdict::Flagged { source, reason } => {
@@ -2100,6 +2145,10 @@ impl Db {
     ) -> Result<(), WalletError> {
         let signature = payment.context["signature"].as_str().unwrap_or_default();
         let payer = payment.context["payerAddress"].as_str().unwrap_or_default();
+        // The whole screened set rides beside the representative `address` —
+        // a flag on the second debited party still reads which wallets the
+        // walk covered (issue #1178).
+        let payers = payment.context["payerAddresses"].clone();
         let at = time::OffsetDateTime::now_utc()
             .format(&time::format_description::well_known::Rfc3339)
             .unwrap_or_default();
@@ -2109,6 +2158,7 @@ impl Db {
             "source": source,
             "reason": reason,
             "address": payer,
+            "addresses": payers,
             "at": at,
         });
         flag_meta["signature"] = json!(signature);

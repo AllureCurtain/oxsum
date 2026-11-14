@@ -180,19 +180,19 @@ pub struct ValidatedTransfer {
     /// credits even when it is confirmed after; one that landed after never
     /// does (issue #1128).
     pub block_time: Option<i64>,
-    /// The payer's address — the account the transfer debited to pay the
-    /// recipient (issue #1144), the address pre-credit screening runs on.
-    /// For native SOL this is the signer whose lamport balance decreased
-    /// beyond the fee, falling back to `accountKeys[0]` (the fee payer) when
-    /// the balance arrays do not isolate one — the two are the same wallet in
-    /// the ordinary transfer, so the fallback names the right address in the
-    /// common case and the residual is documented. For an SPL transfer it is
-    /// the `owner` of the token account whose `preTokenBalances` row
+    /// Every debited funding party of the transfer (issues #1144, #1178):
+    /// the addresses pre-credit screening must each clear before the deposit
+    /// credits. For native SOL this is *every* signer whose lamport balance
+    /// decreased — the funding source(s) and the fee payer — so a sanctioned
+    /// wallet cannot launder the payment through a clean relayer; when the
+    /// balance arrays isolate no debited signer the list falls back to the
+    /// first signer (the fee payer, `accountKeys[0]`). For an SPL transfer it
+    /// is the `owner` of each token account whose `preTokenBalances` row
     /// decreased on the paid mint, falling back to the first signer when the
-    /// token rows do not name one. `None` only when the transaction's shape
-    /// carries no usable signal at all; the credit path treats it as
+    /// token rows name none. Empty only when the transaction's shape carries
+    /// no usable signal at all; the credit path treats an empty list as
     /// unscreenable, never as cleared.
-    pub payer: Option<String>,
+    pub payers: Vec<String>,
 }
 
 /// One inbound transfer the reconciliation scan surfaced (issue #1149),
@@ -211,8 +211,10 @@ pub struct ScannedTransfer {
     pub asset: Option<String>,
     /// What the transaction delivered to `payTo`, in `asset`'s base units.
     pub delivered: i64,
-    /// The payer's address — the same attribution `ValidatedTransfer.payer`
-    /// makes — when the transaction's shape yields one.
+    /// The payer's address — the first of the debited funding parties
+    /// `ValidatedTransfer.payers` names — when the transaction's shape yields
+    /// one. The report keeps a single representative; screening is the credit
+    /// path's job.
     pub payer: Option<String>,
 }
 
@@ -806,11 +808,13 @@ impl SolanaRpcClient {
             &self.config.pay_to,
         ) && delta > 0
         {
-            let payer = sol_payer(
+            let payer = sol_payers(
                 account_keys,
                 meta["preBalances"].as_array(),
                 meta["postBalances"].as_array(),
-            );
+            )
+            .into_iter()
+            .next();
             return Ok(Some(ScannedTransfer {
                 signature: signature.to_owned(),
                 block_time: result["blockTime"].as_i64(),
@@ -834,12 +838,14 @@ impl SolanaRpcClient {
                 mint,
             ) && delta > 0
             {
-                let payer = spl_payer(
+                let payer = spl_payers(
                     meta["preTokenBalances"].as_array(),
                     meta["postTokenBalances"].as_array(),
                     account_keys,
                     mint,
-                );
+                )
+                .into_iter()
+                .next();
                 return Ok(Some(ScannedTransfer {
                     signature: signature.to_owned(),
                     block_time: result["blockTime"].as_i64(),
@@ -950,13 +956,13 @@ impl SolanaRpcClient {
         // verifier's comparison, not this proof's — an under-delivery is the
         // intent's paying transfer too, and it is what `underpaid` records
         // (issue #1142).
-        let payer = match expected.spl_token_mint.as_deref() {
-            None => sol_payer(
+        let payers = match expected.spl_token_mint.as_deref() {
+            None => sol_payers(
                 account_keys,
                 meta["preBalances"].as_array(),
                 meta["postBalances"].as_array(),
             ),
-            Some(mint) => spl_payer(
+            Some(mint) => spl_payers(
                 meta["preTokenBalances"].as_array(),
                 meta["postTokenBalances"].as_array(),
                 account_keys,
@@ -967,7 +973,7 @@ impl SolanaRpcClient {
             signature: signature.to_owned(),
             delivered,
             block_time: result["blockTime"].as_i64(),
-            payer,
+            payers,
         }))
     }
 }
@@ -1058,7 +1064,7 @@ impl oxsum_core::ChainLookup for SolanaRpcClient {
                 signature: v.signature,
                 delivered: v.delivered,
                 block_time: v.block_time,
-                payer: v.payer,
+                payers: v.payers,
             })
         })
     }
@@ -1189,98 +1195,116 @@ fn first_signer(account_keys: &[Value]) -> Option<String> {
     None
 }
 
-/// The native-SOL payer (issue #1144): the signer whose lamport balance
-/// *decreased* — the account the transfer debited — rather than blindly
-/// `accountKeys[0]`. The fee payer is ordinarily the same wallet, so when the
-/// balance arrays do not isolate a single debited signer the answer falls
-/// back to the first signer: a fee-payer-distinct-from-source shape (a
-/// relayer paying the fee for another wallet's transfer) is the documented
-/// residual — v1 names the fee payer there, which still names *a* party to
-/// the payment rather than none.
-fn sol_payer(
+/// The native-SOL funding parties (issues #1144, #1178): *every* signer whose
+/// lamport balance *decreased* — the accounts the transfer debited — rather
+/// than blindly `accountKeys[0]`, and rather than stopping at the first hit.
+/// Screening must cover each debited party: a sanctioned source wallet that
+/// hides behind a clean fee-paying relayer would otherwise evade the check,
+/// so the funding source(s) *and* the fee payer all ride the answer in key
+/// order. When the balance arrays isolate no debited signer — an absent or
+/// all-zero delta — the list falls back to the first signer (the fee payer),
+/// which still names *a* party to the payment rather than none.
+fn sol_payers(
     account_keys: &[Value],
     pre_balances: Option<&Vec<Value>>,
     post_balances: Option<&Vec<Value>>,
-) -> Option<String> {
-    let (pre, post) = (pre_balances?, post_balances?);
-    // A signer whose balance fell paid for something — the transfer and/or
-    // the fee. Several can fall (fee payer + a second funding signer); the
-    // first in key order is the fee payer by Solana's own ordering, which is
-    // the strongest single answer the wire gives.
-    for (index, key) in account_keys.iter().enumerate() {
-        let is_signer = key["signer"].as_bool() == Some(true) || (key.is_string() && index == 0);
-        if !is_signer {
-            continue;
-        }
-        let pre = balance_i64(pre.get(index));
-        let post = balance_i64(post.get(index));
-        if post < pre {
-            return key["pubkey"]
-                .as_str()
-                .or_else(|| key.as_str())
-                .map(str::to_owned);
+) -> Vec<String> {
+    let mut payers: Vec<String> = Vec::new();
+    if let (Some(pre), Some(post)) = (pre_balances, post_balances) {
+        // A signer whose balance fell paid for something — the transfer
+        // and/or the fee. Several can fall (fee payer + a second funding
+        // signer); every one is a funding party the screen must clear.
+        for (index, key) in account_keys.iter().enumerate() {
+            let is_signer =
+                key["signer"].as_bool() == Some(true) || (key.is_string() && index == 0);
+            if !is_signer {
+                continue;
+            }
+            let pre = balance_i64(pre.get(index));
+            let post = balance_i64(post.get(index));
+            if post < pre
+                && let Some(pubkey) = key["pubkey"].as_str().or_else(|| key.as_str())
+                && !payers.iter().any(|p| p == pubkey)
+            {
+                payers.push(pubkey.to_owned());
+            }
         }
     }
-    first_signer(account_keys)
+    if payers.is_empty() {
+        payers.extend(first_signer(account_keys));
+    }
+    payers
 }
 
-/// The SPL payer (issue #1144): the `owner` of the token account whose
-/// `preTokenBalances` → `postTokenBalances` figure *decreased* on the paid
-/// mint — the wallet the tokens left. Matching rows by `accountIndex` keeps
-/// the pair on one account. When the token rows carry no usable decrease or
-/// owner — a shape `jsonParsed` does not surface — the answer falls back to
-/// the first signer (the wallet that authorized the transfer), the same
-/// residual the SOL arm documents.
-fn spl_payer(
+/// The SPL funding parties (issues #1144, #1178): the `owner` of *every*
+/// token account whose `preTokenBalances` → `postTokenBalances` figure
+/// *decreased* on the paid mint — each wallet tokens left. Matching rows by
+/// `accountIndex` keeps each pair on one account; a payment funded from two
+/// accounts names both owners so screening covers every debited party, the
+/// same coverage the SOL arm gives. When the token rows carry no usable
+/// decrease or owner — a shape `jsonParsed` does not surface — the answer
+/// falls back to the first signer (the wallet that authorized the transfer),
+/// the same residual the SOL arm documents.
+fn spl_payers(
     pre: Option<&Vec<Value>>,
     post: Option<&Vec<Value>>,
     account_keys: &[Value],
     mint: &str,
-) -> Option<String> {
-    let pre_rows = pre?;
-    for pre_row in pre_rows {
-        if pre_row["mint"].as_str() != Some(mint) {
-            continue;
-        }
-        // A malformed row — no accountIndex, an unparseable amount — skips to
-        // the next rather than ending the walk: the payer may still sit on a
-        // later well-formed row of the same mint.
-        let Some(index) = pre_row["accountIndex"].as_u64() else {
-            continue;
-        };
-        // Pair the row with its post-state on the same accountIndex + mint; a
-        // missing post row means the account closed or drained to zero — the
-        // decrease is the whole pre figure.
-        let post_amount: i64 = post
-            .and_then(|rows| {
-                rows.iter().find(|p| {
-                    p["accountIndex"].as_u64() == Some(index) && p["mint"].as_str() == Some(mint)
-                })
-            })
-            .and_then(|p| p["uiTokenAmount"]["amount"].as_str())
-            .and_then(|s| s.parse().ok())
-            .unwrap_or(0);
-        let Some(pre_amount) = pre_row["uiTokenAmount"]["amount"]
-            .as_str()
-            .and_then(|s| s.parse::<i64>().ok())
-        else {
-            continue;
-        };
-        if post_amount < pre_amount {
-            // The debited token account's owner is the payer — the wallet the
-            // funds left, not the ATA address itself.
-            if let Some(owner) = pre_row["owner"].as_str() {
-                return Some(owner.to_owned());
+) -> Vec<String> {
+    let mut payers: Vec<String> = Vec::new();
+    if let Some(pre_rows) = pre {
+        for pre_row in pre_rows {
+            if pre_row["mint"].as_str() != Some(mint) {
+                continue;
             }
-            // No owner on the row: fall back to the account's own address —
-            // still a party to the payment, and the shape some RPCs return.
-            return account_keys
-                .get(index as usize)
-                .and_then(|k| k["pubkey"].as_str().or_else(|| k.as_str()))
-                .map(str::to_owned);
+            // A malformed row — no accountIndex, an unparseable amount — skips
+            // to the next rather than ending the walk: a payer may still sit
+            // on a later well-formed row of the same mint.
+            let Some(index) = pre_row["accountIndex"].as_u64() else {
+                continue;
+            };
+            // Pair the row with its post-state on the same accountIndex +
+            // mint; a missing post row means the account closed or drained to
+            // zero — the decrease is the whole pre figure.
+            let post_amount: i64 = post
+                .and_then(|rows| {
+                    rows.iter().find(|p| {
+                        p["accountIndex"].as_u64() == Some(index)
+                            && p["mint"].as_str() == Some(mint)
+                    })
+                })
+                .and_then(|p| p["uiTokenAmount"]["amount"].as_str())
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(0);
+            let Some(pre_amount) = pre_row["uiTokenAmount"]["amount"]
+                .as_str()
+                .and_then(|s| s.parse::<i64>().ok())
+            else {
+                continue;
+            };
+            if post_amount >= pre_amount {
+                continue;
+            }
+            // The debited token account's owner is the funding party — the
+            // wallet the tokens left, not the ATA address itself. No owner on
+            // the row: fall back to the account's own address — still a party
+            // to the payment, and the shape some RPCs return.
+            let payer = pre_row["owner"].as_str().or_else(|| {
+                account_keys
+                    .get(index as usize)
+                    .and_then(|k| k["pubkey"].as_str().or_else(|| k.as_str()))
+            });
+            if let Some(payer) = payer
+                && !payers.iter().any(|p| p == payer)
+            {
+                payers.push(payer.to_owned());
+            }
         }
     }
-    first_signer(account_keys)
+    if payers.is_empty() {
+        payers.extend(first_signer(account_keys));
+    }
+    payers
 }
 
 /// The SPL-token counterpart of the native-balance delta: the difference
@@ -1587,26 +1611,26 @@ mod tests {
     /// signer whose lamport balance fell — the wallet the transfer debited —
     /// which in the ordinary transfer is the fee payer at `accountKeys[0]`.
     #[test]
-    fn sol_payer_names_the_debited_signer() {
+    fn sol_payers_names_the_debited_signer() {
         let tx = sol_tx(0, 5_000, "payToAddr");
         let keys = tx["transaction"]["message"]["accountKeys"]
             .as_array()
             .unwrap();
-        let payer = sol_payer(
+        let payers = sol_payers(
             keys,
             tx["meta"]["preBalances"].as_array(),
             tx["meta"]["postBalances"].as_array(),
         );
-        assert_eq!(payer.as_deref(), Some("PAYER_WALLET"));
+        assert_eq!(payers, vec!["PAYER_WALLET".to_owned()]);
     }
 
-    /// A fee payer distinct from the source: a relayer at index 0 pays only
-    /// the fee while a second signer's balance drops by the transfer amount.
-    /// The first *decreased* signer is the answer — still the fee payer here
-    /// (its balance fell too), the documented v1 residual: the wallet named
-    /// is a party to the payment, never the recipient.
+    /// Issue #1178: a fee payer distinct from the source — a relayer at index
+    /// 0 pays only the fee while a second signer's balance drops by the
+    /// transfer amount — names *both* debited signers, in key order. Screening
+    /// every funding party is the point: a sanctioned source can no longer
+    /// hide behind a clean relayer's fee-only debit.
     #[test]
-    fn sol_payer_falls_back_to_the_first_debited_signer() {
+    fn sol_payers_names_every_debited_signer() {
         let tx = json!({
             "meta": {
                 "err": null,
@@ -1628,20 +1652,52 @@ mod tests {
         let keys = tx["transaction"]["message"]["accountKeys"]
             .as_array()
             .unwrap();
-        let payer = sol_payer(
+        let payers = sol_payers(
             keys,
             tx["meta"]["preBalances"].as_array(),
             tx["meta"]["postBalances"].as_array(),
         );
-        // Both signers' balances fell; the first in key order (the fee payer)
-        // is the documented answer.
-        assert_eq!(payer.as_deref(), Some("RELAYER"));
+        // Both signers' balances fell — the fee payer and the funding source —
+        // and the answer carries both in key order.
+        assert_eq!(payers, vec!["RELAYER".to_owned(), "SOURCE".to_owned()]);
     }
 
-    /// For an SPL transfer the payer is the `owner` of the token account that
-    /// decreased on the paid mint — the wallet the tokens left.
+    /// When the balance arrays isolate no debited signer the answer falls
+    /// back to the first signer — the fee payer, still a party to the
+    /// payment rather than none.
     #[test]
-    fn spl_payer_names_the_debited_owner() {
+    fn sol_payers_falls_back_to_the_first_signer() {
+        let tx = json!({
+            "meta": {
+                "err": null,
+                // No signer's balance fell — an empty-delta shape.
+                "preBalances":  [5_000_000_000_i64, 0],
+                "postBalances": [5_000_000_000_i64, 0],
+            },
+            "transaction": {
+                "message": {
+                    "accountKeys": [
+                        {"pubkey": "FEE_PAYER", "signer": true, "writable": true, "source": "transaction"},
+                        {"pubkey": "RECIPIENT", "signer": false, "writable": true, "source": "transaction"}
+                    ]
+                }
+            }
+        });
+        let keys = tx["transaction"]["message"]["accountKeys"]
+            .as_array()
+            .unwrap();
+        let payers = sol_payers(
+            keys,
+            tx["meta"]["preBalances"].as_array(),
+            tx["meta"]["postBalances"].as_array(),
+        );
+        assert_eq!(payers, vec!["FEE_PAYER".to_owned()]);
+    }
+
+    /// For an SPL transfer the payers are the `owner`s of the token accounts
+    /// that decreased on the paid mint — the wallets the tokens left.
+    #[test]
+    fn spl_payers_names_the_debited_owner() {
         // Index 1 is the sender's ATA (decreased), index 3 the recipient's
         // (increased); both rows ride the same mint.
         let mut tx = spl_tx("5000000", None, "usdcMint", "payToAddr");
@@ -1668,19 +1724,64 @@ mod tests {
         let keys = tx["transaction"]["message"]["accountKeys"]
             .as_array()
             .unwrap();
-        let payer = spl_payer(
+        let payers = spl_payers(
             tx["meta"]["preTokenBalances"].as_array(),
             tx["meta"]["postTokenBalances"].as_array(),
             keys,
             "usdcMint",
         );
-        assert_eq!(payer.as_deref(), Some("PAYER_WALLET"));
+        assert_eq!(payers, vec!["PAYER_WALLET".to_owned()]);
+    }
+
+    /// Issue #1178: a payment funded from two token accounts on the paid mint
+    /// names both debited owners — screening must clear each, not just the
+    /// first the rows happened to list.
+    #[test]
+    fn spl_payers_names_every_debited_owner() {
+        let mut tx = spl_tx("5000000", None, "usdcMint", "payToAddr");
+        tx["meta"]["preTokenBalances"] = json!([
+            {
+                "accountIndex": 1, "mint": "usdcMint", "owner": "FIRST_OWNER",
+                "uiTokenAmount": {"amount": "9000000", "decimals": 6, "uiAmountString": "9"}
+            },
+            {
+                "accountIndex": 2, "mint": "usdcMint", "owner": "SECOND_OWNER",
+                "uiTokenAmount": {"amount": "500000", "decimals": 6, "uiAmountString": "0.5"}
+            }
+        ]);
+        tx["meta"]["postTokenBalances"] = json!([
+            {
+                "accountIndex": 1, "mint": "usdcMint", "owner": "FIRST_OWNER",
+                "uiTokenAmount": {"amount": "4500000", "decimals": 6, "uiAmountString": "4.5"}
+            },
+            {
+                "accountIndex": 2, "mint": "usdcMint", "owner": "SECOND_OWNER",
+                "uiTokenAmount": {"amount": "0", "decimals": 6, "uiAmountString": "0"}
+            },
+            {
+                "accountIndex": 3, "mint": "usdcMint", "owner": "payToAddr",
+                "uiTokenAmount": {"amount": "5000000", "decimals": 6, "uiAmountString": "5"}
+            }
+        ]);
+        let keys = tx["transaction"]["message"]["accountKeys"]
+            .as_array()
+            .unwrap();
+        let payers = spl_payers(
+            tx["meta"]["preTokenBalances"].as_array(),
+            tx["meta"]["postTokenBalances"].as_array(),
+            keys,
+            "usdcMint",
+        );
+        assert_eq!(
+            payers,
+            vec!["FIRST_OWNER".to_owned(), "SECOND_OWNER".to_owned()]
+        );
     }
 
     /// A preTokenBalances row on a *different* mint decreasing does not name
-    /// the payer — the screen keys on the paid mint's own debit.
+    /// a payer — the screen keys on the paid mint's own debit.
     #[test]
-    fn spl_payer_ignores_a_decrease_on_another_mint() {
+    fn spl_payers_ignores_a_decrease_on_another_mint() {
         let mut tx = spl_tx("5000000", None, "usdcMint", "payToAddr");
         tx["meta"]["preTokenBalances"] = json!([
             {
@@ -1701,7 +1802,7 @@ mod tests {
         let keys = tx["transaction"]["message"]["accountKeys"]
             .as_array()
             .unwrap();
-        let payer = spl_payer(
+        let payers = spl_payers(
             tx["meta"]["preTokenBalances"].as_array(),
             tx["meta"]["postTokenBalances"].as_array(),
             keys,
@@ -1709,7 +1810,7 @@ mod tests {
         );
         // No paid-mint decrease: the fallback names the first signer, the
         // wallet that authorized the transfer — PAYER_WALLET at index 0.
-        assert_eq!(payer.as_deref(), Some("PAYER_WALLET"));
+        assert_eq!(payers, vec!["PAYER_WALLET".to_owned()]);
     }
 
     #[test]
