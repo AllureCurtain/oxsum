@@ -5084,3 +5084,19 @@ rather than guessing at either side:
   usually a private provider or a local validator the public cluster cannot
   see — a silent public-devnet send would land on a network the verifier
   never reads.
+
+## 2026-11-14 — The mint audit is an owner allowlist plus a layout check (#1182)
+
+`verify_mints` only denied Token-2022, so a mint account owned by the System
+program or any other program passed the audit, and `mint_decimals` read byte
+44 off whatever buffer `getAccountInfo` returned — a truncated or
+uninitialized account still yielded a figure. The audit now refuses in both
+directions: the owner must equal the classic SPL Token program id
+(`Tokenkeg…`, exported as `SPL_TOKEN_PROGRAM_ID` beside the Token-2022
+constant — Token-2022 keeps its own named refusal so an operator knows *why*
+that program in particular was rejected), and the account data must be the
+exact 82-byte classic mint layout with `isInitialized` set before byte 44 is
+ever read. The integrations client reads the account once (`mint_account`
+returns owner + raw data off one `getAccountInfo`) so the owner check and
+the layout parse can never observe different accounts; `mint_decimals`
+parses the layout itself rather than trusting the length.

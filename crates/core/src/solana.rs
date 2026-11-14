@@ -88,6 +88,14 @@ const DEFAULT_INTENT_TTL_SECS: i64 = 900;
 /// mis-credit a deposit.
 pub const TOKEN_2022_PROGRAM_ID: &str = "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb";
 
+/// The classic SPL Token program id — the *only* owner a whitelisted mint
+/// may carry (issue #1182). The audit's refusal is a positive allowlist, not
+/// a Token-2022 denylist: an account owned by the System program or any
+/// other program is not a classic SPL mint and fails startup with the actual
+/// owner named. Duplicated from `integrations::solana::SPL_TOKEN_PROGRAM_ID`
+/// so core stays HTTP-free — the two are the same well-known program id.
+pub const SPL_TOKEN_PROGRAM_ID: &str = "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA";
+
 /// How a `sol` intent prices its `rate_micro` at open (issue #1139). A
 /// USD-pegged asset never consults this policy — its rate is the fixed
 /// `USD_PEGGED_RATE_MICRO` conversion either way.
@@ -576,9 +584,12 @@ pub trait ChainLookup: std::fmt::Debug + Send + Sync {
     /// read once per mint at boot so a declared figure that disagrees with
     /// the real mint refuses startup (issue #1129); with the multi-asset
     /// whitelist the figure is authoritative, never operator-declared
-    /// (issue #1140). `None` when the lookup cannot answer; never called for
-    /// native SOL (there is no mint to read). It is never on the per-request
-    /// path.
+    /// (issue #1140). The lookup validates the classic SPL mint layout
+    /// before answering — exact 82-byte data, `isInitialized` set — so a
+    /// truncated or uninitialized mint answers `None` and refuses the boot
+    /// (issue #1182). `None` when the lookup cannot answer or the account is
+    /// not a well-formed mint; never called for native SOL (there is no mint
+    /// to read). It is never on the per-request path.
     fn mint_decimals<'a>(
         &'a self,
         _mint: &'a str,
@@ -1062,16 +1073,20 @@ impl SolanaRailVerifier {
         }
     }
 
-    /// The boot-time mint audit (issues #1129, #1140): every whitelisted SPL
-    /// mint is read on-chain once — its `decimals` replaces the config's
-    /// placeholder so the mint's own figure prices deposits, and its `owner`
-    /// program must be the classic SPL Token program, never Token-2022
-    /// (whose transfer-fee and hook extensions the rail does not model). A
-    /// native-SOL-only whitelist reads nothing. `Err` names the mint and the
-    /// fault — the boot refuses to start rather than misprice or accept an
-    /// extension-laden mint. `Ok(false)` would mean a mint read failed and
-    /// the caller should refuse too; the function returns `Err` in that case
-    /// so there is only one refusal shape.
+    /// The boot-time mint audit (issues #1129, #1140, #1182): every
+    /// whitelisted SPL mint is read on-chain once — its `decimals` replaces
+    /// the config's placeholder so the mint's own figure prices deposits, its
+    /// `owner` program must be the classic SPL Token program
+    /// ([`SPL_TOKEN_PROGRAM_ID`]) and nothing else, and its account data must
+    /// parse as the classic mint layout (the `mint_decimals` read refuses a
+    /// truncated or uninitialized mint, so the decimals byte is never read
+    /// off data that is not a mint). Token-2022 is still named explicitly —
+    /// its transfer-fee and hook extensions are the known wrong shape —
+    /// while every other owner names itself: an account owned by the System
+    /// program or a custom program is not a mint at all. A native-SOL-only
+    /// whitelist reads nothing. `Err` names the mint and the fault — the
+    /// boot refuses to start rather than misprice or accept an
+    /// extension-laden mint.
     pub async fn verify_mints(&mut self) -> Result<(), String> {
         for asset in &mut self.terms.assets {
             let Some(mint) = asset.spl_token_mint.clone() else {
@@ -1086,6 +1101,13 @@ impl SolanaRailVerifier {
                     "the {key:?} mint {mint} is owned by Token-2022 — the rail only \
                      accepts classic SPL Token mints (its transfer-fee and hook \
                      extensions are not modelled)"
+                ));
+            }
+            if owner != SPL_TOKEN_PROGRAM_ID {
+                return Err(format!(
+                    "the {key:?} mint {mint} is owned by {owner}, not the classic SPL \
+                     Token program {SPL_TOKEN_PROGRAM_ID} — the account is not a \
+                     classic SPL mint"
                 ));
             }
             let decimals =
@@ -3011,12 +3033,17 @@ mod tests {
         }
     }
 
-    /// The Token-2022 program id is the audit's refusal key.
+    /// The Token-2022 program id is the audit's named refusal; the classic
+    /// SPL Token program id is the positive allowlist (issue #1182).
     #[test]
-    fn token_2022_is_the_refused_owner() {
+    fn the_token_program_ids_are_pinned() {
         assert_eq!(
             TOKEN_2022_PROGRAM_ID, "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
             "the pinned Token-2022 program id"
+        );
+        assert_eq!(
+            SPL_TOKEN_PROGRAM_ID, "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+            "the pinned classic SPL Token program id"
         );
     }
 
@@ -3033,6 +3060,41 @@ mod tests {
         let err = verifier.verify_mints().await.unwrap_err();
         assert!(err.contains("Token-2022"), "{err}");
         assert!(err.contains("usdc"), "{err}");
+    }
+
+    /// Issue #1182: the owner check is an allowlist, not a Token-2022
+    /// denylist — a mint owned by the System program (or any other program)
+    /// is refused too, with the actual owner named so an operator sees what
+    /// the account really is.
+    #[tokio::test]
+    async fn verify_mints_refuses_any_owner_but_classic_spl() {
+        for owner in [
+            // The System program — a wallet or nonce account pasted as a mint.
+            "11111111111111111111111111111111",
+            // Any other program — a token-lookalike the rail never modelled.
+            "MetaKeeptheChange9dQjGcdj5zqV9MWNJeBJd7Uf3v4z4p3",
+        ] {
+            let mut verifier = SolanaRailVerifier::new(
+                std::sync::Arc::new(MintAudit {
+                    owner: Some(owner.to_owned()),
+                    decimals: Some(6),
+                }),
+                terms(),
+            );
+            let err = verifier.verify_mints().await.unwrap_err();
+            assert!(
+                err.contains(owner),
+                "the refusal names the actual owner {owner}: {err}"
+            );
+            assert!(
+                err.contains(SPL_TOKEN_PROGRAM_ID),
+                "the refusal names the required owner: {err}"
+            );
+            assert!(
+                !err.contains("Token-2022"),
+                "a non-Token-2022 owner is not mislabelled: {err}"
+            );
+        }
     }
 
     #[tokio::test]
