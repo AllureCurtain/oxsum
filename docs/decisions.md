@@ -4295,7 +4295,11 @@ poll sweeps unexpired `pending` intents every 15 s and expires lapsed ones, so
 a wallet that pays without confirming still credits; the unleadered job is
 safe because the credit's ledger key is the signature it just validated.
 
-`confirmed` commitment is the default: devnet top-ups are low-value and the
+*Superseded the same day by "Finalized commitment by default; the mint's
+decimals are verified at boot (#1129)" below — the default flipped to
+`finalized`; the trade-off paragraph stays as the reason `confirmed` remains
+available by explicit opt-in.* `confirmed` commitment was the default when
+this entry was written: devnet top-ups are low-value and the
 ~13 s `finalized` wait buys little against the residual reorg window — a
 deployment that cannot accept that window sets
 `OXSUM_SOLANA_COMMITMENT=finalized`, which *is* the mitigation (there is no
@@ -4445,8 +4449,11 @@ the intent is created, sampled from Pyth Hermes' HTTP endpoint
 reads only the locked `meta`, never a live price. A SOL intent refuses to
 open when the freshest Pyth quote is older than 60 seconds or quotes a
 confidence interval wider than 1% of the price — a stale or diffuse oracle
-is not a price. The `expiresAt` stays the intent's own deadline (default
-`OXSUM_SOLANA_INTENT_TTL_SECS`, recommended 900 s on mainnet); the locked
+is not a price. The `expiresAt` stays the intent's own deadline — the
+15-minute window this decision recorded is the rail's default
+(`OXSUM_SOLANA_INTENT_TTL_SECS` unset → 900 s; the code and env templates
+drifted to 600 s under it until #1185 reconciled them, an explicit value
+always stands); the locked
 rate is not a floating quote that expires with the price feed, it is the
 fixed term the intent was opened under. USDC needs no oracle — its rate is
 the fixed unit conversion. `OXSUM_SOLANA_RATE_MICRO` survives only as a
@@ -4489,6 +4496,11 @@ customer can hold prepaid balance *and* be billed per call; the top-up
 builds the float the per-call rail draws from, it does not replace it.
 
 ## 2026-11-14 — The rail's payTo is provably a Squads v4 vault, not a hot wallet (#1143)
+
+*Narrowed the same day by "Mainnet refuses an unpinned hot wallet (#1189)"
+below: the pin is optional only on devnet-shaped endpoints — a
+mainnet-shaped endpoint refuses to boot without it unless
+`OXSUM_SOLANA_ALLOW_HOT_WALLET` opts out.*
 
 The server holds no spend key — the custody question is whether `payTo` is
 the account it should receive into, not whether the process can sign.
@@ -4968,6 +4980,110 @@ spurious `BlockhashNotFound`) and a fresh-account transfer needs the
 rent-exempt minimum (noise transfers self-pay instead). If the suite ever
 needs instructions past that set, revisiting an SDK dev-dep is a one-line
 change — the wire builder is deliberately test-only, never library code.
+
+## 2026-11-14 — The Solana sanctions gate is a required choice on mainnet (#1179)
+
+`OXSUM_SOLANA_SANCTIONS_ENABLED` defaulted off and a mainnet-shaped RPC
+endpoint merely warned — real money could credit unscreened because an
+operator never saw the variable. The flag is now a tri-state
+(`sanctions_enabled_of` answers `Some(on)`, `Some(off)` or `None`), and
+`solana_sanctions_gate` applies the endpoint shape to the unset arm:
+
+- **Mainnet-shaped + unset → startup error.** The boot refuses, naming both
+  arms of the required choice — `=1` (recommended) or `=0` to run unscreened
+  by explicit decision. The heuristic is the same one the warn used
+  (extracted as `solana_mainnet_shaped`): an endpoint naming neither
+  `devnet`, `testnet`, `localhost` nor `127.0.0.1` is production-shaped, and
+  one mainnet-looking entry marks a mixed pool — the screening posture
+  follows the most production-like endpoint, never the most forgiving.
+- **Mainnet-shaped + explicit `=0` → boots, loudly.** Off stays legal only
+  because the operator typed it; the startup warn keeps the posture
+  observable instead of silent.
+- **Devnet/testnet/localhost + unset → off, quietly.** A local loop screens
+  nothing and errors nothing — the default's only safe home.
+- **`=1` composes with the SDN floor (#1176, its own change).** The gate
+  decides whether the `CompositeSanctions` screen is built at all; which
+  sources an enabled screen applies — the embedded list always, the
+  configured file, the API key — stays that fix's rule. This change only
+  guarantees a mainnet deployment makes the on/off call deliberately.
+
+The env examples, the development table and the mainnet-rehearsal runbook
+all moved with it: a mainnet drill lists `SANCTIONS_ENABLED=1` as REQUIRED
+with an API key or a non-empty SDN file, and the `--check-config` suite now
+covers every arm — unset refuses, `=1` passes, `=0` passes under the warn,
+devnet stays silent.
+
+## 2026-11-14 — Mainnet refuses an unpinned hot wallet; the stale `confirmed` comment corrected (#1189)
+
+Two records-versus-code fixes. **The `confirmed` comment was stale.**
+`crates/integrations/src/solana.rs`'s module header and `SolanaConfig`
+field docs still described `confirmed` as the default commitment after #1129
+flipped the code to `finalized` — and the 2026-11-13 #1117 entry above still
+carried the original rationale as if it were current. Comments and field
+docs now match the code (`finalized` default, `confirmed` the explicit
+devnet opt-in), and the old entry is marked superseded in place rather than
+rewritten, per the doc's own rule.
+
+**Multisig is mandatory on mainnet, behind an explicit opt-out.** Until now
+`OXSUM_SOLANA_MULTISIG_ACCOUNT` unset was warn-only on every endpoint: a
+mainnet deployment could boot receiving real customer funds into a single
+hot key, which is exactly the custody failure the Squads vault exists to
+remove. `solana_custody_of` now takes the endpoint's shape — the same
+heuristic the #1144 sanctions warning already used, factored into
+`solana_devnet_shaped` so both gates share it (every URL must read
+devnet/testnet/localhost for the pool to be non-mainnet; a mixed pool is
+mainnet, the safe direction). On a mainnet-shaped endpoint an unset
+`MULTISIG_ACCOUNT` is a startup error naming both the missing pin and the
+escape; on devnet the warn-only posture stands. The escape is
+`OXSUM_SOLANA_ALLOW_HOT_WALLET=1` — `1`/`true` on, unset/`0`/`false` off, a
+malformed value a startup error — the same explicit-opt-out boolean shape
+`SANCTIONS_ENABLED` and `USDT_ENABLED` hold, and it boots under a louder
+warn that names the accepted risk. A flag set beside a configured multisig
+is harmless: the pin wins and the derivation still runs.
+
+The check stays a derivation, honestly: it proves `PAY_TO` equals the
+multisig's `vault index 0` PDA, not that the multisig's threshold or member
+set is the intended 2-of-3 — reading the policy on-chain is the recorded
+follow-up, and docs/self-hosted-solana-multisig.md says so plainly.
+
+Pinned by `solana_custody_gates_the_mainnet_hot_wallet`,
+`the_endpoint_shape_is_devnet_only_when_every_url_is` and the
+`--check-config` arms in `check_config_validates_env_without_a_database`
+(mainnet + no multisig refuses; a matching vault passes; the opt-out passes
+under the warn; devnet + no multisig passes).
+
+## 2026-11-14 — The intent declares its cluster; every send path pins it (#1181)
+
+Solana addresses are identical across clusters — a devnet `payTo` and a
+mainnet one are indistinguishable on-chain — so an `open` intent that never
+named its network let a devnet server + a default-built frontend send real
+mainnet money to the same address. The fix pins the cluster end to end
+rather than guessing at either side:
+
+- **One declaration, validated at boot.** `OXSUM_SOLANA_CLUSTER`
+  (`mainnet-beta`/`devnet`/`testnet`) is the explicit word; unset, the boot
+  derives it from the RPC endpoints' shape — `devnet`/`testnet` URLs and
+  localhost-style validators are non-mainnet, everything else is mainnet
+  because production is the dangerous assumption. A declaration that
+  disagrees with the shape is a startup error, never a warn-and-serve: the
+  intent's `cluster` is the page's only network hint, so a wrong value would
+  direct wallets to a different network than the verifier reads. A mixed
+  endpoint pool is refused outright — no declaration can pin a cluster half
+  the failover contradicts.
+- **The contract carries it.** `SolanaTopupResponse.cluster` is required
+  (`openapi.yaml` first, then the implementation): the Solana Pay URL
+  writes `cluster=` whenever the intent is not `mainnet-beta` (the spec's
+  own omission rule), the page names the network beside the terms, and the
+  wallet adapter resolves its `Connection` against it.
+- **The browser refuses rather than assume.** `VITE_SOLANA_RPC_URL` whose
+  shape disagrees with the intent's cluster refuses the send outright —
+  sending through it would move money on the wrong network while the rail
+  waits for a transfer that never lands. Unset, only `mainnet-beta` keeps
+  the public endpoint it always had; a `devnet`/`testnet` intent prompts
+  for configuration and falls back to the QR, because a non-mainnet rail is
+  usually a private provider or a local validator the public cluster cannot
+  see — a silent public-devnet send would land on a network the verifier
+  never reads.
 
 ## 2026-11-14 — The mint audit is an owner allowlist plus a layout check (#1182)
 

@@ -77,8 +77,9 @@ pub const USD_PEGGED_RATE_MICRO: i64 = 1_000_000;
 /// One Solana deposit-intent `open` may quote an intent this many seconds
 /// before the poll expires it (default when the config omits it): Solana
 /// Pay's own unbounded-poll guard, so a never-paid intent does not poll
-/// forever.
-const DEFAULT_INTENT_TTL_SECS: i64 = 600;
+/// forever. The 15-minute window the mainnet-readiness decision recorded
+/// (issue #1117) — a customer paying by hand needs the time.
+const DEFAULT_INTENT_TTL_SECS: i64 = 900;
 
 /// The SPL Token-2022 program id: a mint whose owner is this program is
 /// refused at boot (issue #1140). Token-2022 mints carry extensions —
@@ -288,6 +289,57 @@ impl AssetTerms {
     }
 }
 
+/// The Solana cluster the rail pays on (issue #1181). Solana addresses are
+/// identical across clusters — a devnet deposit address and a mainnet one
+/// are indistinguishable — so the intent's own `cluster` is what a wallet or
+/// page reads to know which network the payment must land on. The deployment
+/// declares it once: `OXSUM_SOLANA_CLUSTER` when set, else the config derives
+/// it from the RPC endpoints' shape and refuses the boot when an explicit
+/// value disagrees with them — a `devnet` declaration over mainnet-shaped
+/// endpoints would send the page's `cluster=devnet` while the rail's own
+/// verifier reads mainnet, which is the misdirection this field exists to
+/// prevent.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SolanaCluster {
+    /// The production cluster (`mainnet-beta`) — the default an
+    /// unannotated endpoint resolves to, matching Solana Pay's own
+    /// omission of `cluster` on mainnet URLs.
+    MainnetBeta,
+    /// The public devnet — local test-validators included (their RPC is a
+    /// localhost endpoint, which the config reads as non-mainnet-shaped).
+    Devnet,
+    /// The public testnet.
+    Testnet,
+}
+
+impl SolanaCluster {
+    /// The lowercase name the API and the Solana Pay `cluster` parameter
+    /// carry: `mainnet-beta`, `devnet`, `testnet`.
+    #[must_use]
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::MainnetBeta => "mainnet-beta",
+            Self::Devnet => "devnet",
+            Self::Testnet => "testnet",
+        }
+    }
+
+    /// Parses the `OXSUM_SOLANA_CLUSTER` spelling — `mainnet-beta`,
+    /// `devnet` or `testnet`, `mainnet`/`beta`/`main` tolerated as the
+    /// common shorthand for the production cluster. `None` on anything
+    /// else: the caller names the variable in its startup error, and this
+    /// keeps the list of accepted spellings in exactly one place.
+    #[must_use]
+    pub fn parse(raw: &str) -> Option<Self> {
+        match raw.trim().to_ascii_lowercase().as_str() {
+            "mainnet-beta" | "mainnet" | "main" | "beta" => Some(Self::MainnetBeta),
+            "devnet" | "dev" => Some(Self::Devnet),
+            "testnet" | "test" => Some(Self::Testnet),
+            _ => None,
+        }
+    }
+}
+
 /// The rail's deployment: everything `verify` needs to decide whether a
 /// transaction honors an intent, and everything `open_solana_deposit` needs
 /// to write the intent's `meta`. Mirrors `SolanaConfig` in integrations so
@@ -305,6 +357,11 @@ pub struct SolanaTerms {
     /// vault receives every asset; an SPL top-up lands in its ATA for the
     /// intent's mint.
     pub pay_to: String,
+    /// The cluster the rail pays on (issue #1181) — what the `open` intent
+    /// response answers so the wallet sends on the same network the rail's
+    /// RPC pool verifies against. `MainnetBeta` by default; the config
+    /// layer fills the validated figure, never a guessed one.
+    pub cluster: SolanaCluster,
     /// The default asset's SPL mint — `None` when the default is native SOL.
     /// Kept for intents opened before the whitelist existed; new code reads
     /// [`SolanaTerms::terms_for_asset`].
@@ -410,6 +467,7 @@ impl SolanaTerms {
             .clone();
         Self {
             pay_to,
+            cluster: SolanaCluster::MainnetBeta,
             spl_token_mint: default.spl_token_mint.clone(),
             asset_decimals: default.asset_decimals,
             rate_micro: default.rate_micro,
@@ -423,6 +481,16 @@ impl SolanaTerms {
             max_amount_minor,
             opens_per_minute,
         }
+    }
+
+    /// Sets the cluster the rail pays on (issue #1181). `SolanaTerms::new`
+    /// defaults to `MainnetBeta` — the production posture a devnet
+    /// deployment overrides explicitly, never implicitly from a hint the
+    /// config layer could not validate.
+    #[must_use]
+    pub fn with_cluster(mut self, cluster: SolanaCluster) -> Self {
+        self.cluster = cluster;
+        self
     }
 }
 
@@ -1418,6 +1486,12 @@ impl Db {
     /// for the resolved asset — the caller resolves it first because an
     /// oracle sample must not ride inside the open's insert path (issue
     /// #1139).
+    ///
+    /// `opens_per_minute` is enforced inside the insert's own transaction
+    /// under a per-(rail, organization) `pg_advisory_xact_lock` (issue
+    /// #1169): count and insert serialize against every other open on the
+    /// organization, so a concurrent burst cannot read one stale count and
+    /// all land past the cap. `0` stays unlimited — that path takes no lock.
     pub async fn open_solana_deposit(
         &self,
         organization_id: Uuid,
@@ -1440,27 +1514,6 @@ impl Db {
                 "a deposit's amount must be between {} and {} minor-credits",
                 terms.min_amount_minor, terms.max_amount_minor
             )));
-        }
-        // Per-organization open rate (issue #1130): bound how many pending
-        // intents one organization may mint inside a minute — intent spam is
-        // a marker-address and poll-work exhaustion vector, not free.
-        if terms.opens_per_minute > 0 {
-            let recent: i64 = sqlx::query_scalar(
-                "SELECT count(*) FROM oxsum.deposits \
-                 WHERE rail = $1 AND organization_id = $2 \
-                   AND created_at > now() - interval '60 seconds'",
-            )
-            .bind(RAIL_SOLANA)
-            .bind(organization_id)
-            .fetch_one(self.pool())
-            .await?;
-            if recent >= terms.opens_per_minute {
-                return Err(WalletError::Forbidden(format!(
-                    "the organization opened too many solana intents; try again shortly \
-                     (limit {}/min)",
-                    terms.opens_per_minute
-                )));
-            }
         }
         // The asset the customer picked — `None` resolves the deployment's
         // default; a key off the whitelist is a 400, never a silent re-price
@@ -1505,7 +1558,7 @@ impl Db {
                 dst.insert(k.clone(), v.clone());
             }
         }
-        let inserted = sqlx::query(
+        let insert = sqlx::query(
             "INSERT INTO oxsum.deposits \
                  (deposit_id, organization_id, rail, payment_ref, amount_minor, status, meta) \
              VALUES ($1, $2, $3, $4, $5, 'pending', $6) \
@@ -1516,10 +1569,50 @@ impl Db {
         .bind(RAIL_SOLANA)
         .bind(&reference)
         .bind(amount_minor)
-        .bind(meta)
-        .execute(self.pool())
-        .await?
-        .rows_affected();
+        .bind(meta);
+        // Per-organization open rate (issue #1130): bound how many pending
+        // intents one organization may mint inside a minute — intent spam is
+        // a marker-address and poll-work exhaustion vector, not free. The
+        // count and the insert run inside ONE transaction under a per-
+        // (rail, organization) advisory lock (issue #1169): an unserialized
+        // `SELECT count(*)` then `INSERT` on separate pool checkouts is a
+        // TOCTOU — a concurrent burst all reads the same pre-burst count and
+        // lands past the cap. `pg_advisory_xact_lock` serializes the pair so
+        // every open judges the minute against what already committed, and
+        // the lock releases with the transaction. The uncapped path keeps
+        // the bare insert — no lock, no transaction, no extra round-trip.
+        let inserted = if terms.opens_per_minute > 0 {
+            let mut tx = self.pool().begin().await?;
+            sqlx::query(
+                "SELECT pg_advisory_xact_lock(\
+                     hashtextextended('oxsum/solana-open/v1:' || $1::text, 0))",
+            )
+            .bind(organization_id.to_string())
+            .execute(&mut *tx)
+            .await?;
+            let recent: i64 = sqlx::query_scalar(
+                "SELECT count(*) FROM oxsum.deposits \
+                 WHERE rail = $1 AND organization_id = $2 \
+                   AND created_at > now() - interval '60 seconds'",
+            )
+            .bind(RAIL_SOLANA)
+            .bind(organization_id)
+            .fetch_one(&mut *tx)
+            .await?;
+            if recent >= terms.opens_per_minute {
+                tx.rollback().await?;
+                return Err(WalletError::Forbidden(format!(
+                    "the organization opened too many solana intents; try again shortly \
+                     (limit {}/min)",
+                    terms.opens_per_minute
+                )));
+            }
+            let inserted = insert.execute(&mut *tx).await?.rows_affected();
+            tx.commit().await?;
+            inserted
+        } else {
+            insert.execute(self.pool()).await?.rows_affected()
+        };
         if inserted == 0 {
             return Ok(None);
         }
@@ -2775,6 +2868,33 @@ mod tests {
         assert_eq!(terms.spl_token_mint.as_deref(), Some("usdcMint"));
         assert_eq!(terms.asset_decimals, 6);
         assert_eq!(terms.rate_micro, USD_PEGGED_RATE_MICRO);
+    }
+
+    /// The deployment default (issue #1185): an unset/non-positive
+    /// `intent_ttl_secs` resolves the 15-minute window the decision recorded;
+    /// a positive figure is the deployment's own and stands.
+    #[test]
+    fn the_intent_ttl_defaults_to_fifteen_minutes() {
+        let unset = SolanaTerms::new(
+            "payTo".to_owned(),
+            vec![AssetTerms {
+                key: "sol".to_owned(),
+                spl_token_mint: None,
+                asset_decimals: 9,
+                rate_micro: 200_000_000,
+            }],
+            "sol".to_owned(),
+            0,
+            1,
+            i64::MAX,
+            0,
+        );
+        assert_eq!(unset.ttl(), 900);
+        assert_eq!(
+            terms().ttl(),
+            600,
+            "an explicit TTL is the deployment's own"
+        );
     }
 
     /// `mint_accepted`: native SOL always stands; a whitelisted mint stands;

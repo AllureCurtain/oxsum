@@ -344,6 +344,15 @@ async fn solana_intent_pays_once() {
         36,
         "{intent}"
     );
+    // The intent declares the network it pays on (issue #1181): a wallet
+    // reads `cluster` because Solana addresses are identical across
+    // clusters — `SolanaTerms` defaults to `mainnet-beta` and the test's
+    // terms carry it.
+    assert_eq!(
+        intent["data"]["cluster"].as_str().unwrap(),
+        "mainnet-beta",
+        "{intent}"
+    );
     // Arm the stub: the paying transaction lands, delivering exactly the
     // asked lamports.
     let signature = "sig1111111111111111111111111111111111111111111111111111111111111111";
@@ -383,6 +392,31 @@ async fn solana_intent_pays_once() {
     // The deposit is already credited — the replay is a no-op the rail
     // surfaces as a second, harmless answer rather than a second credit.
     assert_eq!(balance(&app, &key).await, 1000, "{replay}");
+}
+
+/// Issue #1181: the open intent answers the rail's declared cluster — a
+/// devnet deployment's intents say `devnet`, so a wallet or a Solana Pay
+/// URL built from the response knows the payment lands on the same network
+/// the rail's verifier reads (Solana addresses are identical across
+/// clusters; the name is the only honest hint).
+#[tokio::test]
+async fn solana_intent_declares_its_cluster() {
+    let stub = SolanaStub::default();
+    let devnet_terms = terms().with_cluster(oxsum_core::SolanaCluster::Devnet);
+    let Some((app, _db)) = world_with_terms(stub, devnet_terms).await else {
+        return;
+    };
+    let key = register_session(&app).await;
+    let (status, intent) = call(
+        &app,
+        "POST",
+        "/api/v1/topups/solana",
+        Some(json!({"amountMinor": 1000})),
+        Some(&key),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{intent}");
+    assert_eq!(intent["data"]["cluster"].as_str().unwrap(), "devnet");
 }
 
 /// Issue #1142: a located transfer that delivers under the asked amount is
@@ -2467,4 +2501,75 @@ async fn solana_webhook_matches_a_raw_envelope() {
         StatusCode::OK
     );
     assert_eq!(balance(&app, &key).await, 1000);
+}
+
+/// The `jsonParsed` raw envelope spells the same account list differently:
+/// each `transaction.message.accountKeys` entry is a `{pubkey, signer,
+/// writable}` object rather than a bare string (issue #1187). The marker
+/// still resolves — a shape the extractor missed would dedup the signature
+/// while resolving nothing, losing the intent for good.
+#[tokio::test]
+async fn solana_webhook_matches_a_jsonparsed_envelope() {
+    let stub = SolanaStub::default();
+    let Some((app, _db)) = world_with_webhook(stub.clone()).await else {
+        return;
+    };
+    let key = register_session(&app).await;
+    let (status, intent) = call(
+        &app,
+        "POST",
+        "/api/v1/topups/solana",
+        Some(json!({"amountMinor": 1000})),
+        Some(&key),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{intent}");
+    let reference = intent["data"]["reference"].as_str().unwrap().to_owned();
+    let signature = "sigParsed444444444444444444444444444444444444444444444444";
+    stub.located
+        .lock()
+        .unwrap()
+        .insert(reference.clone(), vec![signature.to_owned()]);
+    stub.validated.lock().unwrap().insert(
+        signature.to_owned(),
+        ValidatedTransfer {
+            signature: signature.to_owned(),
+            delivered: 5_000,
+            block_time: Some(0),
+            payer: None,
+        },
+    );
+    // The object-shaped key entry: `pubkey` carries the account the string
+    // form spells bare.
+    let payload = json!([{
+        "signature": signature,
+        "blockTime": 1_700_000_000i64,
+        "transaction": {"message": {"accountKeys": [
+            {"pubkey": reference, "signer": false, "writable": false},
+            {"pubkey": "payerAddr", "signer": true, "writable": true},
+        ]}},
+    }]);
+    assert_eq!(
+        webhook_call(&app, &payload.to_string(), Some(HELIUS_SECRET)).await,
+        StatusCode::OK
+    );
+    assert_eq!(balance(&app, &key).await, 1000);
+}
+
+/// A delivery past the body's 2 MiB cap is a `413` — the open surface refuses
+/// an unbounded buffer rather than parsing it (issue #1187). The cap sits on
+/// the route, so even a correctly-authorized oversized push is refused.
+#[tokio::test]
+async fn solana_webhook_refuses_an_oversized_body() {
+    let stub = SolanaStub::default();
+    let Some((app, _db)) = world_with_webhook(stub.clone()).await else {
+        return;
+    };
+    let mut body = String::from("[{\"signature\":\"x\",\"padding\":\"");
+    body.push_str(&"a".repeat(2 * 1024 * 1024));
+    body.push_str("\"}]");
+    assert_eq!(
+        webhook_call(&app, &body, Some(HELIUS_SECRET)).await,
+        StatusCode::PAYLOAD_TOO_LARGE
+    );
 }

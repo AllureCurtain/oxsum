@@ -15,7 +15,8 @@
 //!   `X-API-Key` header Chainalysis issues from its public signup
 //!   (`OXSUM_SOLANA_SANCTIONS_API_KEY`). A `200` whose `identifications`
 //!   array is non-empty flags the address; an empty array clears it; any
-//!   transport failure, non-200 or unreadable body is
+//!   transport failure, non-200, unreadable body, or a `200` whose body is
+//!   not an object carrying an `identifications` array is
 //!   [`ScreenVerdict::TemporarilyUnavailable`] — never cached as clear.
 //!
 //! The combination is fail-asymmetric: a local-list hit flags without ever
@@ -141,15 +142,56 @@ impl CompositeSanctions {
     /// # Errors
     ///
     /// `Err` when the configured list path cannot be read — a startup error,
-    /// because a deployment that named a file expects it in force.
+    /// because a deployment that named a file expects it in force — and `Err`
+    /// when the combined list is empty *and* no Chainalysis key is configured:
+    /// screening enabled against an empty floor would `Clear` every payer,
+    /// which is a silently disabled screen, not a screening deployment. An
+    /// empty local floor beside a configured key may start — the API still
+    /// screens — but warns loudly that coverage is fully API-dependent.
     pub fn try_new(
         http: reqwest::Client,
         api_key: Option<String>,
         sdn_list_path: Option<&str>,
     ) -> Result<Self, String> {
+        Self::assemble(http, api_key, SdnList::load(sdn_list_path)?)
+    }
+
+    /// The build's guard half, split from `try_new` so a test can hand in an
+    /// artificially empty list (the embedded floor keeps production's
+    /// non-empty). An empty `sdn` with no usable key is a startup error —
+    /// screening enabled against zero entries would `Clear` every payer,
+    /// which is a silently disabled screen, not a screening deployment. An
+    /// empty floor beside a configured key may build — the API still screens
+    /// — but warns loudly that coverage is fully API-dependent.
+    fn assemble(
+        http: reqwest::Client,
+        api_key: Option<String>,
+        sdn: SdnList,
+    ) -> Result<Self, String> {
+        let api_key = api_key.filter(|k| !k.is_empty());
+        if sdn.addresses.is_empty() {
+            match &api_key {
+                None => {
+                    return Err("the solana sanctions screen is enabled but the local SDN \
+                         list (embedded + OXSUM_SOLANA_SDN_LIST_PATH) holds zero \
+                         addresses and no OXSUM_SOLANA_SANCTIONS_API_KEY is \
+                         configured — every payer would screen Clear; populate \
+                         the list or set a key"
+                        .to_owned());
+                }
+                Some(_) => {
+                    tracing::warn!(
+                        "the solana sanctions screen's local SDN list is empty — \
+                         payer screening is fully dependent on the Chainalysis \
+                         API; an outage answers TemporarilyUnavailable, not a \
+                         local check"
+                    );
+                }
+            }
+        }
         Ok(Self {
-            sdn: SdnList::load(sdn_list_path)?,
-            api_key: api_key.filter(|k| !k.is_empty()),
+            sdn,
+            api_key,
             chainalysis_url: CHAINALYSIS_URL.to_owned(),
             http,
             cache: Mutex::new(HashMap::new()),
@@ -201,7 +243,11 @@ impl CompositeSanctions {
     /// The Chainalysis leg: `200` + a non-empty `identifications` flags, a
     /// `200` with an empty one clears, anything else is
     /// `TemporarilyUnavailable` — a non-200 (rate limit, a bad key's 401, a
-    /// 5xx) and a transport error are the same "cannot answer" at the seam.
+    /// 5xx), a transport error, and a `200` whose body is not an object with
+    /// an `identifications` array are the same "cannot answer" at the seam.
+    /// The leg fails closed: only a present, empty array clears, so a
+    /// malformed or contract-breaking `200` can never pass a payer the API
+    /// did not actually clear.
     async fn chainalysis(&self, address: &str) -> ScreenVerdict {
         let Some(key) = &self.api_key else {
             // No key configured: the API leg simply has nothing to add — the
@@ -242,10 +288,11 @@ impl CompositeSanctions {
                 return ScreenVerdict::TemporarilyUnavailable;
             }
         };
-        // { "identifications": [ {...}, ... ] } — non-empty flags; an absent
-        // or empty array clears. A body without the field is treated as
-        // clear-by-contract (the free API answers the key with an empty list
-        // for an unlisted address).
+        // { "identifications": [ {...}, ... ] } — non-empty flags; an empty
+        // array clears. Anything else — a missing field, a non-array value,
+        // or a non-object body — is a `200` the API did not answer by
+        // contract, so the leg fails closed into `TemporarilyUnavailable`
+        // rather than clearing a payer it never screened.
         let identifications = body["identifications"].as_array();
         match identifications {
             Some(list) if !list.is_empty() => ScreenVerdict::Flagged {
@@ -256,7 +303,16 @@ impl CompositeSanctions {
                     if list.len() == 1 { "" } else { "s" }
                 ),
             },
-            _ => ScreenVerdict::Clear,
+            Some(_) => ScreenVerdict::Clear,
+            None => {
+                tracing::warn!(
+                    body = %body,
+                    "the chainalysis 200 body carried no identifications array; answering unavailable"
+                );
+                metrics::counter!("solana_sanctions_errors_total", "leg" => "chainalysis")
+                    .increment(1);
+                ScreenVerdict::TemporarilyUnavailable
+            }
         }
     }
 }
@@ -311,6 +367,23 @@ mod tests {
         assert!(!list.contains("OtherAddr"));
     }
 
+    /// The embedded list is non-empty — issue #1176's defect was a shipped
+    /// file of comments only, which screened every payer `Clear` against a
+    /// zero-entry floor. The known entries pin one real OFAC "Digital
+    /// Currency Address - SOL" listing so a regeneration that dropped the
+    /// payload fails here, not in production.
+    #[test]
+    fn embedded_sdn_list_is_populated() {
+        let list = SdnList::load(None).unwrap();
+        assert!(
+            !list.addresses.is_empty(),
+            "the embedded SDN list parsed to zero entries"
+        );
+        // A real OFAC SOL listing (SOKOLOVSKI, Rolan) — the test pins the
+        // shipped file's content, not just its size.
+        assert!(list.contains("42RLPACwZPx3vYYmxSueqsogfynBDqXK298EDsNoyoHi"));
+    }
+
     /// A configured file extends (not replaces) the embedded floor, and `#`
     /// comment / blank lines parse out.
     #[test]
@@ -325,8 +398,27 @@ mod tests {
         .unwrap();
         let list = SdnList::load(Some(path.to_str().unwrap())).unwrap();
         assert!(list.contains("FileListedAddr000000000000000000000000000000"));
+        // The embedded entries survive alongside the file's — the file adds
+        // coverage, it does not replace the floor.
+        assert!(list.contains("42RLPACwZPx3vYYmxSueqsogfynBDqXK298EDsNoyoHi"));
         let _ = std::fs::remove_file(&path);
         let _ = std::fs::remove_dir(&dir);
+    }
+
+    /// Screening enabled against a zero-entry local floor with no Chainalysis
+    /// key is a startup error — never a silent screen that `Clear`s every
+    /// payer. With a key configured the same empty floor may build, because
+    /// the API still answers; the loud warn is the observable half.
+    #[test]
+    fn empty_floor_without_a_key_fails_to_build() {
+        let empty = SdnList::default();
+        let result = CompositeSanctions::assemble(reqwest::Client::new(), None, empty);
+        assert!(result.is_err(), "{result:?}");
+        // The same empty floor beside a key builds — API-only coverage is a
+        // deliberate (if fragile) posture, not a contradiction.
+        let empty = SdnList::default();
+        CompositeSanctions::assemble(reqwest::Client::new(), Some("test-key".to_owned()), empty)
+            .unwrap();
     }
 
     /// An unreadable configured path is a hard error — never a silent
@@ -405,16 +497,32 @@ mod tests {
         let _ = std::fs::remove_dir(&dir);
     }
 
-    /// A stub Chainalysis endpoint on `127.0.0.1` answering one canned body —
-    /// the seam `with_chainalysis_url` opens. Returns the base URL and the
-    /// spawned server task.
+    /// A stub Chainalysis endpoint on `127.0.0.1` answering one canned JSON
+    /// body — the seam `with_chainalysis_url` opens. Returns the base URL and
+    /// the spawned server task.
     async fn stub_api(
         body: serde_json::Value,
         status: axum::http::StatusCode,
     ) -> (String, tokio::task::JoinHandle<()>) {
+        stub_api_raw(body.to_string(), status, "application/json").await
+    }
+
+    /// A stub answering one raw body with the given content type — the same
+    /// seam for a `200` whose payload is not JSON at all.
+    async fn stub_api_raw(
+        body: String,
+        status: axum::http::StatusCode,
+        content_type: &'static str,
+    ) -> (String, tokio::task::JoinHandle<()>) {
         let app = axum::Router::new().fallback(axum::routing::get(move || {
             let body = body.clone();
-            async move { (status, axum::Json(body)) }
+            async move {
+                (
+                    status,
+                    [(axum::http::header::CONTENT_TYPE, content_type)],
+                    body,
+                )
+            }
         }));
         let socket = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let base = format!("http://{}/api/v1/address", socket.local_addr().unwrap());
@@ -458,6 +566,151 @@ mod tests {
                 .with_chainalysis_url(base);
         let verdict = SanctionsScreen::screen(&screen, "PayerAddrY").await;
         assert_eq!(verdict, ScreenVerdict::Clear);
+        handle.abort();
+    }
+
+    /// A `200` carrying an empty object — no `identifications` field at all —
+    /// is a non-answer, so the leg fails closed into `TemporarilyUnavailable`
+    /// instead of clearing a payer the API never screened.
+    #[tokio::test]
+    async fn chainalysis_200_without_identifications_is_unavailable() {
+        let (base, handle) = stub_api(serde_json::json!({}), axum::http::StatusCode::OK).await;
+        let screen =
+            CompositeSanctions::try_new(reqwest::Client::new(), Some("test-key".to_owned()), None)
+                .unwrap()
+                .with_chainalysis_url(base);
+        let verdict = SanctionsScreen::screen(&screen, "PayerAddrNoField").await;
+        assert_eq!(verdict, ScreenVerdict::TemporarilyUnavailable);
+        assert_eq!(screen.cached("PayerAddrNoField"), None);
+        handle.abort();
+    }
+
+    /// A `200` whose `identifications` is `null` — the wrong JSON type — is
+    /// unavailable the same way: the field's presence does not stand in for
+    /// an answer.
+    #[tokio::test]
+    async fn chainalysis_200_null_identifications_is_unavailable() {
+        let (base, handle) = stub_api(
+            serde_json::json!({"identifications": null}),
+            axum::http::StatusCode::OK,
+        )
+        .await;
+        let screen =
+            CompositeSanctions::try_new(reqwest::Client::new(), Some("test-key".to_owned()), None)
+                .unwrap()
+                .with_chainalysis_url(base);
+        let verdict = SanctionsScreen::screen(&screen, "PayerAddrNull").await;
+        assert_eq!(verdict, ScreenVerdict::TemporarilyUnavailable);
+        assert_eq!(screen.cached("PayerAddrNull"), None);
+        handle.abort();
+    }
+
+    /// A `200` answering an error-shaped body (`{"error": "..."}` — no
+    /// `identifications` array) is unavailable, not a clear.
+    #[tokio::test]
+    async fn chainalysis_200_error_body_is_unavailable() {
+        let (base, handle) = stub_api(
+            serde_json::json!({"error": "upstream temporarily broken"}),
+            axum::http::StatusCode::OK,
+        )
+        .await;
+        let screen =
+            CompositeSanctions::try_new(reqwest::Client::new(), Some("test-key".to_owned()), None)
+                .unwrap()
+                .with_chainalysis_url(base);
+        let verdict = SanctionsScreen::screen(&screen, "PayerAddrErr").await;
+        assert_eq!(verdict, ScreenVerdict::TemporarilyUnavailable);
+        assert_eq!(screen.cached("PayerAddrErr"), None);
+        handle.abort();
+    }
+
+    /// A `200` whose body is not JSON at all fails the parse one layer up and
+    /// is `TemporarilyUnavailable` — same fail-closed rule.
+    #[tokio::test]
+    async fn chainalysis_200_non_json_body_is_unavailable() {
+        let (base, handle) = stub_api_raw(
+            "this is not json".to_owned(),
+            axum::http::StatusCode::OK,
+            "text/plain",
+        )
+        .await;
+        let screen =
+            CompositeSanctions::try_new(reqwest::Client::new(), Some("test-key".to_owned()), None)
+                .unwrap()
+                .with_chainalysis_url(base);
+        let verdict = SanctionsScreen::screen(&screen, "PayerAddrPlain").await;
+        assert_eq!(verdict, ScreenVerdict::TemporarilyUnavailable);
+        assert_eq!(screen.cached("PayerAddrPlain"), None);
+        handle.abort();
+    }
+
+    /// A `200` whose `identifications` is a non-empty array flags — unchanged
+    /// behavior, pinned beside the new fail-closed cases.
+    #[tokio::test]
+    async fn chainalysis_200_identifications_wrong_type_is_unavailable() {
+        let (base, handle) = stub_api(
+            serde_json::json!({"identifications": "sanctioned"}),
+            axum::http::StatusCode::OK,
+        )
+        .await;
+        let screen =
+            CompositeSanctions::try_new(reqwest::Client::new(), Some("test-key".to_owned()), None)
+                .unwrap()
+                .with_chainalysis_url(base);
+        let verdict = SanctionsScreen::screen(&screen, "PayerAddrWrongType").await;
+        assert_eq!(verdict, ScreenVerdict::TemporarilyUnavailable);
+        assert_eq!(screen.cached("PayerAddrWrongType"), None);
+        handle.abort();
+    }
+
+    /// A stub endpoint that counts its hits: the retry-after-unavailable
+    /// assertion needs to prove the second screen reached the endpoint again
+    /// rather than serving a cached answer.
+    async fn stub_api_counting(
+        body: serde_json::Value,
+        status: axum::http::StatusCode,
+    ) -> (
+        String,
+        tokio::task::JoinHandle<()>,
+        std::sync::Arc<std::sync::atomic::AtomicUsize>,
+    ) {
+        let hits = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let counter = hits.clone();
+        let app = axum::Router::new().fallback(axum::routing::get(move || {
+            let body = body.clone();
+            let counter = counter.clone();
+            async move {
+                counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                (status, axum::Json(body))
+            }
+        }));
+        let socket = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let base = format!("http://{}/api/v1/address", socket.local_addr().unwrap());
+        let handle = tokio::spawn(async move {
+            axum::serve(socket, app).await.unwrap();
+        });
+        (base, handle, hits)
+    }
+
+    /// A malformed `200` must not be cached: a second screen of the same
+    /// address goes back to the endpoint, which the hit counter proves.
+    #[tokio::test]
+    async fn chainalysis_unavailable_is_never_cached() {
+        let (base, handle, hits) =
+            stub_api_counting(serde_json::json!({}), axum::http::StatusCode::OK).await;
+        let screen =
+            CompositeSanctions::try_new(reqwest::Client::new(), Some("test-key".to_owned()), None)
+                .unwrap()
+                .with_chainalysis_url(base);
+        let first = SanctionsScreen::screen(&screen, "PayerAddrRetry").await;
+        let second = SanctionsScreen::screen(&screen, "PayerAddrRetry").await;
+        assert_eq!(first, ScreenVerdict::TemporarilyUnavailable);
+        assert_eq!(second, ScreenVerdict::TemporarilyUnavailable);
+        assert_eq!(
+            hits.load(std::sync::atomic::Ordering::SeqCst),
+            2,
+            "an unavailable verdict must not be cached — the retry re-hit the endpoint"
+        );
         handle.abort();
     }
 
