@@ -2026,6 +2026,7 @@ async fn a_flagged_payer_parks_the_deposit_for_review() {
         verdict: ScreenVerdict::Flagged {
             source: "ofac-sdn".to_owned(),
             reason: "the payer is on the OFAC SDN list".to_owned(),
+            address: "sanctionedPayerAddr444444444444444444444444".to_owned(),
         },
     }));
     let tenant_id: String =
@@ -2154,6 +2155,7 @@ async fn a_flagged_funding_source_parks_the_deposit() {
             ScreenVerdict::Flagged {
                 source: "ofac-sdn".to_owned(),
                 reason: "the funding source is on the OFAC SDN list".to_owned(),
+                address: "sdnSourceAddr7777777777777777777777777777".to_owned(),
             },
         )]
         .into_iter()
@@ -2200,8 +2202,18 @@ async fn a_flagged_funding_source_parks_the_deposit() {
     assert_eq!(row.get::<String, _>("status"), "flagged");
     let meta = row.get::<serde_json::Value, _>("meta");
     assert_eq!(meta["screening"]["verdict"].as_str().unwrap(), "flagged");
-    // `screening.address` keeps the representative (the fee payer — first in
-    // key order); `screening.addresses` carries the whole screened set.
+    // `screening.address` names the party the screen actually flagged — the
+    // SDN-listed source, not the representative fee payer the old record
+    // would have shown (issue #1204). `screening.payerAddress` keeps the
+    // representative (first in key order) and `addresses` the whole set.
+    assert_eq!(
+        meta["screening"]["address"].as_str().unwrap(),
+        "sdnSourceAddr7777777777777777777777777777"
+    );
+    assert_eq!(
+        meta["screening"]["payerAddress"].as_str().unwrap(),
+        "cleanRelayerAddr6666666666666666666666666"
+    );
     assert_eq!(
         meta["screening"]["addresses"][1].as_str().unwrap(),
         "sdnSourceAddr7777777777777777777777777777"
@@ -2236,6 +2248,7 @@ async fn a_flagged_party_wins_over_an_unavailable_one() {
                 ScreenVerdict::Flagged {
                     source: "chainalysis".to_owned(),
                     reason: "chainalysis listed the address".to_owned(),
+                    address: "flaggedSourceAddr9999999999999999999999999".to_owned(),
                 },
             ),
         ]

@@ -302,6 +302,7 @@ impl CompositeSanctions {
                     list.len(),
                     if list.len() == 1 { "" } else { "s" }
                 ),
+                address: address.to_owned(),
             },
             Some(_) => ScreenVerdict::Clear,
             None => {
@@ -335,6 +336,7 @@ impl SanctionsScreen for CompositeSanctions {
                 return ScreenVerdict::Flagged {
                     source: "ofac-sdn".to_owned(),
                     reason: "the payer is on the OFAC SDN list".to_owned(),
+                    address: address.to_owned(),
                 };
             }
             // A cached verdict stands — flags for a day, clears for the
@@ -353,8 +355,8 @@ impl SanctionsScreen for CompositeSanctions {
 mod tests {
     use super::*;
 
-    /// The SDN list's embedded entries match exactly — Solana addresses are
-    /// case-sensitive base58, so no case-folding is safe.
+    /// `SdnList::contains` matches exactly — Solana addresses are
+    /// case-sensitive base58, so no case-folding is safe (issue #1191).
     #[test]
     fn sdn_list_matches_exactly() {
         let list = SdnList {
@@ -439,13 +441,15 @@ mod tests {
             ScreenVerdict::Flagged {
                 source: "ofac-sdn".into(),
                 reason: "test".into(),
+                address: "Addr1".into(),
             },
         );
         assert_eq!(
             screen.cached("Addr1"),
             Some(ScreenVerdict::Flagged {
                 source: "ofac-sdn".into(),
-                reason: "test".into()
+                reason: "test".into(),
+                address: "Addr1".into()
             })
         );
         // An unavailable is never stored — a retry always re-runs the source.
@@ -760,6 +764,7 @@ mod tests {
             ScreenVerdict::Flagged {
                 source: "test".into(),
                 reason: "test".into(),
+                address: "FlagAddr".into(),
             },
         );
         let cache = screen.cache.lock().unwrap();

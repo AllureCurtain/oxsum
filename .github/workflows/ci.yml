@@ -356,6 +356,15 @@ jobs:
           npm --prefix web ci
           npm --prefix web run codegen
           git diff --exit-code web/src/api/schema.d.ts
+      # The Solana rail's client units (issue #1207): the Solana Pay URL
+      # builder, the wallet-adapter send path and the intent status mapper —
+      # pure logic the stage build never exercises. Runs after `npm ci`
+      # because `solana-wallet.test.ts` imports the wallet-adapter/web3.js
+      # packages the bare `node --test` steps above never need. The glob keeps
+      # every future `solana-*.test.ts` under the same step.
+      - name: Test the Solana rail client units
+        if: steps.filter.outputs.stages == 'true'
+        run: node --experimental-strip-types --test web/tests/solana-*.test.ts
       - uses: docker/setup-buildx-action@v4
         if: steps.filter.outputs.stages == 'true' || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
       - name: Build the frontend stage

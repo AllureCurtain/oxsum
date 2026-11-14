@@ -15274,9 +15274,11 @@ export interface paths {
          *     review.
          *
          *     `meta.screening` on each row records `{verdict, source, reason,
-         *     address, at}` — which source flagged, the screened payer address and
-         *     when — and `facilitator_tx_hash` names the held transaction, so a
-         *     reviewer reads the whole case from the row. Read-only: the review
+         *     address, payerAddress, addresses, at}` — which source flagged, the
+         *     flagged party `address`, the representative `payerAddress`, every
+         *     screened `addresses` and when — and `facilitator_tx_hash` names the
+         *     held transaction, so a reviewer reads the whole case from the row.
+         *     Read-only: the review
          *     action that resolves a flagged deposit is #1142's exception-queue
          *     work, which lands on this same `flagged` status.
          */
@@ -22186,9 +22188,11 @@ export interface components {
             disputedAt?: string | null;
             /**
              * @description The screening verdict a `flagged` solana deposit parked on
-             *     (issue #1144): `{verdict, source, reason, address, at}` — which
-             *     source flagged (`ofac-sdn` or `chainalysis`), the screened payer
-             *     address and when the screen ran. `null` on every other row.
+             *     (issues #1144, #1204): `{verdict, source, reason, address,
+             *     payerAddress, addresses, at}` — `address` names the party the
+             *     source flagged, `addresses` every debited party the walk
+             *     screened, `payerAddress` the representative the queue shows, and
+             *     `at` when the screen ran. `null` on every other row.
              */
             screening?: Record<string, never> | null;
             /** Format: date-time */
