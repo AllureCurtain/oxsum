@@ -142,15 +142,56 @@ impl CompositeSanctions {
     /// # Errors
     ///
     /// `Err` when the configured list path cannot be read — a startup error,
-    /// because a deployment that named a file expects it in force.
+    /// because a deployment that named a file expects it in force — and `Err`
+    /// when the combined list is empty *and* no Chainalysis key is configured:
+    /// screening enabled against an empty floor would `Clear` every payer,
+    /// which is a silently disabled screen, not a screening deployment. An
+    /// empty local floor beside a configured key may start — the API still
+    /// screens — but warns loudly that coverage is fully API-dependent.
     pub fn try_new(
         http: reqwest::Client,
         api_key: Option<String>,
         sdn_list_path: Option<&str>,
     ) -> Result<Self, String> {
+        Self::assemble(http, api_key, SdnList::load(sdn_list_path)?)
+    }
+
+    /// The build's guard half, split from `try_new` so a test can hand in an
+    /// artificially empty list (the embedded floor keeps production's
+    /// non-empty). An empty `sdn` with no usable key is a startup error —
+    /// screening enabled against zero entries would `Clear` every payer,
+    /// which is a silently disabled screen, not a screening deployment. An
+    /// empty floor beside a configured key may build — the API still screens
+    /// — but warns loudly that coverage is fully API-dependent.
+    fn assemble(
+        http: reqwest::Client,
+        api_key: Option<String>,
+        sdn: SdnList,
+    ) -> Result<Self, String> {
+        let api_key = api_key.filter(|k| !k.is_empty());
+        if sdn.addresses.is_empty() {
+            match &api_key {
+                None => {
+                    return Err("the solana sanctions screen is enabled but the local SDN \
+                         list (embedded + OXSUM_SOLANA_SDN_LIST_PATH) holds zero \
+                         addresses and no OXSUM_SOLANA_SANCTIONS_API_KEY is \
+                         configured — every payer would screen Clear; populate \
+                         the list or set a key"
+                        .to_owned());
+                }
+                Some(_) => {
+                    tracing::warn!(
+                        "the solana sanctions screen's local SDN list is empty — \
+                         payer screening is fully dependent on the Chainalysis \
+                         API; an outage answers TemporarilyUnavailable, not a \
+                         local check"
+                    );
+                }
+            }
+        }
         Ok(Self {
-            sdn: SdnList::load(sdn_list_path)?,
-            api_key: api_key.filter(|k| !k.is_empty()),
+            sdn,
+            api_key,
             chainalysis_url: CHAINALYSIS_URL.to_owned(),
             http,
             cache: Mutex::new(HashMap::new()),
@@ -326,6 +367,23 @@ mod tests {
         assert!(!list.contains("OtherAddr"));
     }
 
+    /// The embedded list is non-empty — issue #1176's defect was a shipped
+    /// file of comments only, which screened every payer `Clear` against a
+    /// zero-entry floor. The known entries pin one real OFAC "Digital
+    /// Currency Address - SOL" listing so a regeneration that dropped the
+    /// payload fails here, not in production.
+    #[test]
+    fn embedded_sdn_list_is_populated() {
+        let list = SdnList::load(None).unwrap();
+        assert!(
+            !list.addresses.is_empty(),
+            "the embedded SDN list parsed to zero entries"
+        );
+        // A real OFAC SOL listing (SOKOLOVSKI, Rolan) — the test pins the
+        // shipped file's content, not just its size.
+        assert!(list.contains("42RLPACwZPx3vYYmxSueqsogfynBDqXK298EDsNoyoHi"));
+    }
+
     /// A configured file extends (not replaces) the embedded floor, and `#`
     /// comment / blank lines parse out.
     #[test]
@@ -340,8 +398,27 @@ mod tests {
         .unwrap();
         let list = SdnList::load(Some(path.to_str().unwrap())).unwrap();
         assert!(list.contains("FileListedAddr000000000000000000000000000000"));
+        // The embedded entries survive alongside the file's — the file adds
+        // coverage, it does not replace the floor.
+        assert!(list.contains("42RLPACwZPx3vYYmxSueqsogfynBDqXK298EDsNoyoHi"));
         let _ = std::fs::remove_file(&path);
         let _ = std::fs::remove_dir(&dir);
+    }
+
+    /// Screening enabled against a zero-entry local floor with no Chainalysis
+    /// key is a startup error — never a silent screen that `Clear`s every
+    /// payer. With a key configured the same empty floor may build, because
+    /// the API still answers; the loud warn is the observable half.
+    #[test]
+    fn empty_floor_without_a_key_fails_to_build() {
+        let empty = SdnList::default();
+        let result = CompositeSanctions::assemble(reqwest::Client::new(), None, empty);
+        assert!(result.is_err(), "{result:?}");
+        // The same empty floor beside a key builds — API-only coverage is a
+        // deliberate (if fragile) posture, not a contradiction.
+        let empty = SdnList::default();
+        CompositeSanctions::assemble(reqwest::Client::new(), Some("test-key".to_owned()), empty)
+            .unwrap();
     }
 
     /// An unreadable configured path is a hard error — never a silent
