@@ -1397,6 +1397,12 @@ impl Db {
     /// for the resolved asset — the caller resolves it first because an
     /// oracle sample must not ride inside the open's insert path (issue
     /// #1139).
+    ///
+    /// `opens_per_minute` is enforced inside the insert's own transaction
+    /// under a per-(rail, organization) `pg_advisory_xact_lock` (issue
+    /// #1169): count and insert serialize against every other open on the
+    /// organization, so a concurrent burst cannot read one stale count and
+    /// all land past the cap. `0` stays unlimited — that path takes no lock.
     pub async fn open_solana_deposit(
         &self,
         organization_id: Uuid,
@@ -1419,27 +1425,6 @@ impl Db {
                 "a deposit's amount must be between {} and {} minor-credits",
                 terms.min_amount_minor, terms.max_amount_minor
             )));
-        }
-        // Per-organization open rate (issue #1130): bound how many pending
-        // intents one organization may mint inside a minute — intent spam is
-        // a marker-address and poll-work exhaustion vector, not free.
-        if terms.opens_per_minute > 0 {
-            let recent: i64 = sqlx::query_scalar(
-                "SELECT count(*) FROM oxsum.deposits \
-                 WHERE rail = $1 AND organization_id = $2 \
-                   AND created_at > now() - interval '60 seconds'",
-            )
-            .bind(RAIL_SOLANA)
-            .bind(organization_id)
-            .fetch_one(self.pool())
-            .await?;
-            if recent >= terms.opens_per_minute {
-                return Err(WalletError::Forbidden(format!(
-                    "the organization opened too many solana intents; try again shortly \
-                     (limit {}/min)",
-                    terms.opens_per_minute
-                )));
-            }
         }
         // The asset the customer picked — `None` resolves the deployment's
         // default; a key off the whitelist is a 400, never a silent re-price
@@ -1484,7 +1469,7 @@ impl Db {
                 dst.insert(k.clone(), v.clone());
             }
         }
-        let inserted = sqlx::query(
+        let insert = sqlx::query(
             "INSERT INTO oxsum.deposits \
                  (deposit_id, organization_id, rail, payment_ref, amount_minor, status, meta) \
              VALUES ($1, $2, $3, $4, $5, 'pending', $6) \
@@ -1495,10 +1480,50 @@ impl Db {
         .bind(RAIL_SOLANA)
         .bind(&reference)
         .bind(amount_minor)
-        .bind(meta)
-        .execute(self.pool())
-        .await?
-        .rows_affected();
+        .bind(meta);
+        // Per-organization open rate (issue #1130): bound how many pending
+        // intents one organization may mint inside a minute — intent spam is
+        // a marker-address and poll-work exhaustion vector, not free. The
+        // count and the insert run inside ONE transaction under a per-
+        // (rail, organization) advisory lock (issue #1169): an unserialized
+        // `SELECT count(*)` then `INSERT` on separate pool checkouts is a
+        // TOCTOU — a concurrent burst all reads the same pre-burst count and
+        // lands past the cap. `pg_advisory_xact_lock` serializes the pair so
+        // every open judges the minute against what already committed, and
+        // the lock releases with the transaction. The uncapped path keeps
+        // the bare insert — no lock, no transaction, no extra round-trip.
+        let inserted = if terms.opens_per_minute > 0 {
+            let mut tx = self.pool().begin().await?;
+            sqlx::query(
+                "SELECT pg_advisory_xact_lock(\
+                     hashtextextended('oxsum/solana-open/v1:' || $1::text, 0))",
+            )
+            .bind(organization_id.to_string())
+            .execute(&mut *tx)
+            .await?;
+            let recent: i64 = sqlx::query_scalar(
+                "SELECT count(*) FROM oxsum.deposits \
+                 WHERE rail = $1 AND organization_id = $2 \
+                   AND created_at > now() - interval '60 seconds'",
+            )
+            .bind(RAIL_SOLANA)
+            .bind(organization_id)
+            .fetch_one(&mut *tx)
+            .await?;
+            if recent >= terms.opens_per_minute {
+                tx.rollback().await?;
+                return Err(WalletError::Forbidden(format!(
+                    "the organization opened too many solana intents; try again shortly \
+                     (limit {}/min)",
+                    terms.opens_per_minute
+                )));
+            }
+            let inserted = insert.execute(&mut *tx).await?.rows_affected();
+            tx.commit().await?;
+            inserted
+        } else {
+            insert.execute(self.pool()).await?.rows_affected()
+        };
         if inserted == 0 {
             return Ok(None);
         }

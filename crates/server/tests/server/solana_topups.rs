@@ -2468,3 +2468,74 @@ async fn solana_webhook_matches_a_raw_envelope() {
     );
     assert_eq!(balance(&app, &key).await, 1000);
 }
+
+/// The `jsonParsed` raw envelope spells the same account list differently:
+/// each `transaction.message.accountKeys` entry is a `{pubkey, signer,
+/// writable}` object rather than a bare string (issue #1187). The marker
+/// still resolves — a shape the extractor missed would dedup the signature
+/// while resolving nothing, losing the intent for good.
+#[tokio::test]
+async fn solana_webhook_matches_a_jsonparsed_envelope() {
+    let stub = SolanaStub::default();
+    let Some((app, _db)) = world_with_webhook(stub.clone()).await else {
+        return;
+    };
+    let key = register_session(&app).await;
+    let (status, intent) = call(
+        &app,
+        "POST",
+        "/api/v1/topups/solana",
+        Some(json!({"amountMinor": 1000})),
+        Some(&key),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{intent}");
+    let reference = intent["data"]["reference"].as_str().unwrap().to_owned();
+    let signature = "sigParsed444444444444444444444444444444444444444444444444";
+    stub.located
+        .lock()
+        .unwrap()
+        .insert(reference.clone(), vec![signature.to_owned()]);
+    stub.validated.lock().unwrap().insert(
+        signature.to_owned(),
+        ValidatedTransfer {
+            signature: signature.to_owned(),
+            delivered: 5_000,
+            block_time: Some(0),
+            payer: None,
+        },
+    );
+    // The object-shaped key entry: `pubkey` carries the account the string
+    // form spells bare.
+    let payload = json!([{
+        "signature": signature,
+        "blockTime": 1_700_000_000i64,
+        "transaction": {"message": {"accountKeys": [
+            {"pubkey": reference, "signer": false, "writable": false},
+            {"pubkey": "payerAddr", "signer": true, "writable": true},
+        ]}},
+    }]);
+    assert_eq!(
+        webhook_call(&app, &payload.to_string(), Some(HELIUS_SECRET)).await,
+        StatusCode::OK
+    );
+    assert_eq!(balance(&app, &key).await, 1000);
+}
+
+/// A delivery past the body's 2 MiB cap is a `413` — the open surface refuses
+/// an unbounded buffer rather than parsing it (issue #1187). The cap sits on
+/// the route, so even a correctly-authorized oversized push is refused.
+#[tokio::test]
+async fn solana_webhook_refuses_an_oversized_body() {
+    let stub = SolanaStub::default();
+    let Some((app, _db)) = world_with_webhook(stub.clone()).await else {
+        return;
+    };
+    let mut body = String::from("[{\"signature\":\"x\",\"padding\":\"");
+    body.push_str(&"a".repeat(2 * 1024 * 1024));
+    body.push_str("\"}]");
+    assert_eq!(
+        webhook_call(&app, &body, Some(HELIUS_SECRET)).await,
+        StatusCode::PAYLOAD_TOO_LARGE
+    );
+}
