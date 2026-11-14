@@ -203,6 +203,19 @@ ordered) suite than the gate. The only `cargo test` survivors are the
 process-shared modules below — they are excluded from the aggregate's nextest
 profile on purpose.
 
+**Waiting for off-path work and flaky tests** (issue #1216). A test that
+polls for something the server finishes off the request path (a settlement,
+an idempotency record leaving `in_flight`, a cache row) loops until
+`oxsum_testkit::settle_deadline()` — a 30-second wall-clock deadline — rather
+than a fixed iteration count. The old `250 × 20 ms` budget, about five seconds,
+was shorter than one connection wait can take on a loaded shard (test pools
+keep sqlx's 30-second acquire timeout). A passing test
+returns on the first probe that sees the row, so it is no slower. There are no nextest retries. If a test has to be quarantined,
+add a `[[profile.default.overrides]]` entry with `retries` to
+`.config/nextest.toml` that names that single test exactly, and link a tracking
+issue. Never add a blanket retry: most suites guard money, refunds, migrations
+or concurrency, and a retry hides a real race just as well as a slow runner.
+
 The process-shared modules use the ordinary test harness:
 `cargo test -p oxsum-core --test core generative:: -- --test-threads=4`
 (and separately `seed::` and `jobs::`), plus

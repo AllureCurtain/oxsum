@@ -765,7 +765,8 @@ impl World {
 
     /// Waits for a settlement that happens off the request path, like a cancelled turn's.
     async fn settlement_within(&self, request_id: &str) -> Value {
-        for _ in 0..250 {
+        let deadline = oxsum_testkit::settle_deadline();
+        while std::time::Instant::now() < deadline {
             if let Some(record) = self.settlement(request_id).await {
                 return record;
             }
@@ -779,7 +780,8 @@ impl World {
     /// against the record update, so `settlement_within` alone can race a
     /// retry into `IDEMPOTENCY_IN_FLIGHT` (the flake CI kept surfacing).
     async fn idempotency_within(&self, request_id: &str) {
-        for _ in 0..250 {
+        let deadline = oxsum_testkit::settle_deadline();
+        while std::time::Instant::now() < deadline {
             let status: Option<String> = sqlx::query_scalar(
                 "SELECT status FROM oxsum.idempotency_records WHERE request_id = $1",
             )

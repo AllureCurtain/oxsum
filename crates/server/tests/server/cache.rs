@@ -177,7 +177,8 @@ impl World {
 
     /// Waits for a settlement that happens off the response path.
     async fn settlement_within(&self, request_id: &str) -> Value {
-        for _ in 0..250 {
+        let deadline = oxsum_testkit::settle_deadline();
+        while std::time::Instant::now() < deadline {
             if let Some(record) = self.settlement(request_id).await {
                 return record;
             }
@@ -438,7 +439,8 @@ fn ask(model: &str, text: &str) -> Value {
 /// after the settle, so a fast test would otherwise miss on a row still in
 /// flight.
 async fn row_within(pool: &PgPool, organization_id: &str) -> Value {
-    for _ in 0..250 {
+    let deadline = oxsum_testkit::settle_deadline();
+    while std::time::Instant::now() < deadline {
         let row = sqlx::query(
             "SELECT hit_count, ttl_seconds FROM oxsum.cached_responses \
              WHERE organization_id = $1",
@@ -474,7 +476,8 @@ async fn cached_source_within(world: &World, request_id: &str) {
         "req-{request_id}:hold"
     )))
     .as_uuid();
-    for _ in 0..250 {
+    let deadline = oxsum_testkit::settle_deadline();
+    while std::time::Instant::now() < deadline {
         let stored: bool = sqlx::query_scalar(
             "SELECT EXISTS(SELECT 1 FROM oxsum.cached_responses WHERE source_entry_id=$1)",
         )
