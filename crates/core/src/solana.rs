@@ -2275,7 +2275,10 @@ impl Db {
             SolanaVerification::Unpaid => return Ok(SolanaCredit::Unpaid),
             // The walk could not reach a verdict (a lookup failure or an
             // unconfirmable candidate) — defer, never expire (issue #1174).
-            SolanaVerification::Deferred => return Ok(SolanaCredit::Deferred),
+            SolanaVerification::Deferred => {
+                self.record_solana_defer(deposit_id).await;
+                return Ok(SolanaCredit::Deferred);
+            }
         };
         // The under/over verdict is in the locked asset's base units —
         // lamports for `sol`, the mint's units for SPL (issue #1142).
@@ -2303,6 +2306,7 @@ impl Db {
                     %deposit_id,
                     "the chain did not report a blockTime; the verify defers"
                 );
+                self.record_solana_defer(deposit_id).await;
                 return Ok(SolanaCredit::Deferred);
             }
             _ => false,
@@ -2356,6 +2360,7 @@ impl Db {
                 // A screening non-answer is NOT unpaid — defer so the row
                 // stays pending for the next pass and never feeds the expiry
                 // sweep (issue #1174).
+                self.record_solana_defer(deposit_id).await;
                 return Ok(SolanaCredit::Deferred);
             }
         }
@@ -2371,6 +2376,7 @@ impl Db {
                     reason = %refusal.reason,
                     "the settle refused; the deposit stays pending"
                 );
+                self.record_solana_defer(deposit_id).await;
                 return Ok(SolanaCredit::Deferred);
             }
         };
@@ -2781,10 +2787,13 @@ impl Db {
     /// `paid_uncredited_oldest_secs` the age in seconds since the oldest
     /// one's `updated_at` — the row's own clock, the closest durable figure
     /// to the chain's `blockTime` the table records — `None` when there is
-    /// none.
+    /// none. `long_deferred` is the `pending` rows whose defer signal crossed
+    /// the concern line: `deferCount` ≥ 20, or a `firstDeferredAt` older than
+    /// 24 h (issue #1209 follow-up) — a deferred verdict is a signal, not a
+    /// status, so the count is the only place a stuck verify surfaces.
     pub async fn solana_deposit_health(
         &self,
-    ) -> Result<(Vec<(String, i64)>, i64, Option<i64>), WalletError> {
+    ) -> Result<(Vec<(String, i64)>, i64, Option<i64>, i64), WalletError> {
         let status_counts: Vec<(String, i64)> = sqlx::query_as(
             "SELECT status, count(*) FROM oxsum.deposits \
              WHERE rail = $1 GROUP BY status",
@@ -2801,7 +2810,43 @@ impl Db {
         .bind(RAIL_SOLANA)
         .fetch_one(self.pool())
         .await?;
-        Ok((status_counts, paid_uncredited, oldest))
+        let long_deferred: i64 = sqlx::query_scalar(
+            "SELECT count(*) FROM oxsum.deposits \
+             WHERE rail = $1 AND status = 'pending' \
+               AND (COALESCE((meta->>'deferCount')::int, 0) >= 20 \
+                    OR (meta->>'firstDeferredAt')::timestamptz <= now() - interval '24 hours')",
+        )
+        .bind(RAIL_SOLANA)
+        .fetch_one(self.pool())
+        .await?;
+        Ok((status_counts, paid_uncredited, oldest, long_deferred))
+    }
+
+    /// Records a deferred verify against a still-`pending` row: bumps
+    /// `meta.deferCount` and stamps `meta.lastDeferredAt`. A long-deferred
+    /// intent is a signal, not a verdict — the counter lets
+    /// [`solana_deposit_health`](Self::solana_deposit_health) surface a row
+    /// the chain keeps failing to answer for without the sweep ever touching
+    /// it. No status changes here (issue #1209 follow-up).
+    async fn record_solana_defer(&self, deposit_id: Uuid) {
+        if let Err(error) = sqlx::query(
+            "UPDATE oxsum.deposits \
+             SET meta = meta || jsonb_build_object( \
+                     'deferCount', COALESCE((meta->>'deferCount')::int, 0) + 1, \
+                     'lastDeferredAt', now(), \
+                     'firstDeferredAt', COALESCE(meta->>'firstDeferredAt', \
+                                                to_char(now(), 'YYYY-MM-DD\"T\"HH24:MI:SSZ'))) \
+             WHERE deposit_id = $1 AND rail = $2 AND status = 'pending'",
+        )
+        .bind(deposit_id)
+        .bind(RAIL_SOLANA)
+        .execute(self.pool())
+        .await
+        {
+            // The signal must never break the credit walk — a failed stamp is
+            // noise in the log, not a changed verdict.
+            tracing::warn!(%deposit_id, error = %error, "could not stamp the solana defer");
+        }
     }
 
     /// Moves a Solana deposit to `expired` — the poll's outcome once
@@ -2812,7 +2857,9 @@ impl Db {
     /// exception surface exists to recover (issue #1174).
     pub async fn expire_solana_deposit(&self, deposit_id: Uuid) -> Result<(), WalletError> {
         sqlx::query(
-            "UPDATE oxsum.deposits SET status = 'expired', updated_at = now() \
+            "UPDATE oxsum.deposits \
+             SET status = 'expired', updated_at = now(), \
+                 meta = meta || jsonb_build_object('expiredAt', now()) \
              WHERE deposit_id = $1 AND rail = $2 AND status = 'pending'",
         )
         .bind(deposit_id)
@@ -3719,12 +3766,14 @@ impl Db {
             0
         } else {
             sqlx::query(
-                "UPDATE oxsum.deposits SET status = 'expired', updated_at = now() \
+                "UPDATE oxsum.deposits \
+                 SET status = 'expired', updated_at = now(), \
+                     meta = meta || jsonb_build_object('expiredAt', now()) \
                  WHERE rail = $1 AND status = 'pending' AND deposit_id = ANY($2) \
                    AND (meta->>'expiresAt')::timestamptz <= $3",
             )
             .bind(RAIL_SOLANA)
-            .bind(unpaid)
+            .bind(&unpaid)
             .bind(expire_after)
             .execute(self.pool())
             .await?
@@ -3741,21 +3790,25 @@ impl Db {
         //
         // Fairness (issue #1209): every checked row records
         // `meta.rescueCheckedAt` and an attempt count, and the due filter
-        // paces checks on a backoff — the first one only after `expiresAt`
-        // itself is a minute old (a just-lapsed row's payment may still be
-        // finalizing), then ~5m, 30m, 2h, 6h, then every 24h for the window's
-        // remainder. Without it a flooded queue re-queries the same rows every
-        // pass while a just-expired row whose payment landed on-time waits
-        // behind them; never-checked rows sort first (`NULLS FIRST`), then
-        // the freshest deadline wins.
+        // paces checks on a backoff — the first one only a minute after the
+        // row was *written* `expired` (`meta.expiredAt`, falling back to
+        // `expiresAt` for rows predating the stamp), a just-lapsed payment may
+        // still be finalizing, then ~5m, 30m, 2h, 6h, then every 24h for the
+        // window's remainder. The `NOT ... ANY($2)` guard keeps the rows this
+        // pass itself just expired out of the same pass's rescue — expiring
+        // and immediately re-verifying a row is a wasted look. Never-checked
+        // rows sort first (`NULLS FIRST`), then the freshest deadline wins.
         let rescue_rows: Vec<(Uuid, Uuid)> = sqlx::query_as(
             "SELECT d.deposit_id, d.organization_id \
              FROM oxsum.deposits d \
              WHERE d.rail = $1 AND d.status = 'expired' \
                AND (d.meta->>'expiresAt')::timestamptz >= now() - interval '24 hours' \
+               AND NOT (d.deposit_id = ANY($2)) \
                AND ( \
                    (d.meta->>'rescueCheckedAt' IS NULL \
-                    AND (d.meta->>'expiresAt')::timestamptz <= now() - interval '1 minute') \
+                    AND COALESCE((d.meta->>'expiredAt')::timestamptz, \
+                                 (d.meta->>'expiresAt')::timestamptz) \
+                        <= now() - interval '1 minute') \
                    OR (d.meta->>'rescueCheckedAt')::timestamptz <= now() - ( \
                        CASE COALESCE((d.meta->>'rescueAttempts')::int, 0) \
                            WHEN 1 THEN interval '5 minutes' \
@@ -3771,6 +3824,7 @@ impl Db {
              LIMIT 64",
         )
         .bind(RAIL_SOLANA)
+        .bind(&unpaid)
         .fetch_all(self.pool())
         .await?;
         let mut rescued: u64 = 0;
