@@ -2100,6 +2100,18 @@ fn solana_usdt_gate(enabled: bool, declared: bool, whitelisted: bool) -> Result<
     Ok(())
 }
 
+/// The `OXSUM_SOLANA_INTENT_TTL_SECS` parse: seconds a `pending` intent stays
+/// payable before the poll expires it. Unset defaults to 900 — the 15-minute
+/// window the mainnet-readiness decision (issue #1117) recorded; the code
+/// and `.env.example` long drifted to 600 under it (issue #1185). An explicit
+/// value passes through — deployments that pinned a TTL keep it.
+fn solana_intent_ttl_secs_of(raw: Option<String>) -> Result<i64, String> {
+    raw.map(|v| v.parse::<i64>())
+        .transpose()
+        .map_err(|_| "OXSUM_SOLANA_INTENT_TTL_SECS must be an integer".to_owned())
+        .map(|parsed| parsed.unwrap_or(900))
+}
+
 /// The endpoint list `solana_of` builds the client pool from (issue #1145):
 /// `OXSUM_SOLANA_RPC_URLS` wins when both variables are set — a deployment
 /// migrating to the plural name must not silently double its pool — and
@@ -2326,11 +2338,7 @@ fn solana_of() -> Result<Option<Arc<oxsum_core::SolanaRailVerifier>>, String> {
             .key
             .clone(),
     };
-    let intent_ttl_secs = var("OXSUM_SOLANA_INTENT_TTL_SECS")
-        .map(|v| v.parse::<i64>())
-        .transpose()
-        .map_err(|_| "OXSUM_SOLANA_INTENT_TTL_SECS must be an integer".to_owned())?
-        .unwrap_or(600);
+    let intent_ttl_secs = solana_intent_ttl_secs_of(var("OXSUM_SOLANA_INTENT_TTL_SECS"))?;
     // The open-intent surface's bounds (issue #1130): per-call amount limits
     // and a per-organization opens-per-minute cap. Defaults keep today's
     // behavior (min 1, unbounded max, unbounded rate) — a deployment tightens
@@ -2473,14 +2481,14 @@ fn solana_of() -> Result<Option<Arc<oxsum_core::SolanaRailVerifier>>, String> {
     };
     let mut verifier =
         oxsum_core::SolanaRailVerifier::with_pricing(Arc::new(client), terms, pricing, oracle);
-    // Pre-credit sanctions screening (issue #1144): `OXSUM_SOLANA_SANCTIONS_
-    // ENABLED=1` turns the gate on — the local SDN list always, Chainalysis
-    // when `OXSUM_SOLANA_SANCTIONS_API_KEY` is set, and a verdict the credit
-    // path honors (`flagged` parks, an API outage stays `pending`). On a
-    // mainnet-shaped RPC endpoint with the gate off, warn: screening is the
-    // documented mainnet posture and its absence is a deliberate choice, not
-    // a silent default. Devnet stays quiet.
-    if sanctions_enabled(&rpc_urls)? {
+    // Pre-credit sanctions screening (issues #1144, #1179): the gate parses
+    // the flag and then applies the mainnet-shaped-endpoint posture — on
+    // mainnet the operator must choose screening on or explicitly off, never
+    // inherit the off default.
+    if solana_sanctions_gate(
+        sanctions_enabled_of(var("OXSUM_SOLANA_SANCTIONS_ENABLED"))?,
+        &rpc_urls,
+    )? {
         let screen = oxsum_integrations::sanctions::CompositeSanctions::try_new(
             crate::jobs::http_client(),
             var("OXSUM_SOLANA_SANCTIONS_API_KEY"),
@@ -2528,33 +2536,77 @@ fn solana_helius_webhook_secret_of(rail: bool) -> Result<Option<String>, String>
     }
 }
 
-/// The `OXSUM_SOLANA_SANCTIONS_*` gate (issue #1144). `ENABLED` is the
-/// boolean: `1`/`true` turns the payer screen on, `0`/`false`/unset off —
-/// off is the default so a devnet loop screens nothing, and an unparseable
-/// value is a startup error rather than a silent off (the operator meant
-/// *something* by setting it). A mainnet-shaped endpoint —
-/// `solana_devnet_shaped`'s inverse — with the gate off warns that screening
-/// is not running: the recommended mainnet posture is on, and the warning is
-/// how the operator knows it was never a silent skip.
-fn sanctions_enabled(rpc_urls: &[String]) -> Result<bool, String> {
-    let enabled = match var("OXSUM_SOLANA_SANCTIONS_ENABLED").as_deref() {
-        Some("1") | Some("true") => true,
-        None | Some("0") | Some("false") => false,
-        Some(_) => {
-            return Err("OXSUM_SOLANA_SANCTIONS_ENABLED must be 1/true or 0/false".into());
+/// The `OXSUM_SOLANA_SANCTIONS_ENABLED` flag's raw value → the choice the
+/// operator made (issue #1144). `1`/`true` is on, `0`/`false` is explicitly
+/// off, unset is `None` — a tri-state, not a boolean, because on a
+/// mainnet-shaped endpoint unset is a startup error (issue #1179): screening
+/// real money must be a deliberate posture, not a default the operator never
+/// saw. An unparseable value is a startup error rather than a silent off —
+/// the operator meant *something* by setting it, the same parse shape
+/// `OXSUM_SOLANA_USDT_ENABLED` holds.
+fn sanctions_enabled_of(raw: Option<String>) -> Result<Option<bool>, String> {
+    match raw.as_deref() {
+        Some("1") | Some("true") => Ok(Some(true)),
+        Some("0") | Some("false") => Ok(Some(false)),
+        None => Ok(None),
+        Some(_) => Err("OXSUM_SOLANA_SANCTIONS_ENABLED must be 1/true or 0/false".into()),
+    }
+}
+
+/// Whether the rail's endpoint set is mainnet-shaped: an endpoint that names
+/// none of `devnet`, `testnet` or a localhost-style host counts, and a single
+/// mainnet-looking entry marks a mixed pool — the screening posture follows
+/// the most production-like endpoint, never the most forgiving.
+fn solana_mainnet_shaped(rpc_urls: &[String]) -> bool {
+    !rpc_urls.is_empty()
+        && rpc_urls.iter().any(|rpc_url| {
+            !(rpc_url.contains("devnet")
+                || rpc_url.contains("testnet")
+                || rpc_url.contains("localhost")
+                || rpc_url.contains("127.0.0.1"))
+        })
+}
+
+/// The `OXSUM_SOLANA_SANCTIONS_*` gate (issues #1144, #1179). `enabled` is
+/// `sanctions_enabled_of`'s tri-state; the endpoint set decides what unset
+/// means:
+///
+/// - `Some(true)` → screening on, everywhere — the local SDN list always,
+///   Chainalysis when `SANCTIONS_API_KEY` is set (that composition is the
+///   SDN-floor rule, issue #1176: mainnet-enabled applies list+API rules —
+///   this gate only decides whether the screen is built at all);
+/// - `Some(false)` → explicitly off. On a mainnet-shaped endpoint the boot
+///   warns loudly that payer screening is not running — the operator chose
+///   it, and the warn is how that choice stays observable; on devnet/testnet/
+///   localhost it stays quiet;
+/// - `None` + mainnet-shaped → a startup error naming the required choice:
+///   `1` (recommended) or an explicit `0`. Real money must never credit
+///   unscreened because the variable was left out;
+/// - `None` + devnet-shaped → off, silently — a local loop screens nothing.
+fn solana_sanctions_gate(enabled: Option<bool>, rpc_urls: &[String]) -> Result<bool, String> {
+    match enabled {
+        Some(true) => Ok(true),
+        Some(false) => {
+            if solana_mainnet_shaped(rpc_urls) {
+                tracing::warn!(
+                    "the solana rail points at a mainnet-shaped endpoint and \
+                     OXSUM_SOLANA_SANCTIONS_ENABLED=0 — payer screening is off \
+                     by explicit choice (recommended on mainnet: =1)"
+                );
+            }
+            Ok(false)
         }
-    };
-    if enabled {
-        return Ok(true);
+        None => {
+            if solana_mainnet_shaped(rpc_urls) {
+                return Err("the solana rail points at a mainnet-shaped endpoint but \
+                     OXSUM_SOLANA_SANCTIONS_ENABLED is unset — set =1 to screen \
+                     payer addresses before credit (recommended on mainnet), or \
+                     =0 to run unscreened by explicit choice"
+                    .into());
+            }
+            Ok(false)
+        }
     }
-    if !solana_devnet_shaped(rpc_urls) {
-        tracing::warn!(
-            "the solana rail points at a mainnet-shaped endpoint but \
-             OXSUM_SOLANA_SANCTIONS_ENABLED is off — payer screening is not \
-             running (recommended on mainnet)"
-        );
-    }
-    Ok(false)
 }
 
 /// Cross-checks `OXSUM_RAILS` (issue #619): the comma-separated deposit rails
@@ -2930,6 +2982,25 @@ mod tests {
         );
     }
 
+    /// Issue #1185: the intent-TTL default is the 15-minute window the
+    /// mainnet-readiness decision recorded — unset resolves 900, an explicit
+    /// value stands, a non-integer is a startup error.
+    #[test]
+    fn the_solana_intent_ttl_defaults_to_fifteen_minutes() {
+        assert_eq!(super::solana_intent_ttl_secs_of(None).unwrap(), 900);
+        // An explicit deployment figure is its own — only the default moved.
+        assert_eq!(
+            super::solana_intent_ttl_secs_of(Some("600".to_owned())).unwrap(),
+            600
+        );
+        assert_eq!(
+            super::solana_intent_ttl_secs_of(Some("1800".to_owned())).unwrap(),
+            1800
+        );
+        let err = super::solana_intent_ttl_secs_of(Some("soon".to_owned())).unwrap_err();
+        assert!(err.contains("OXSUM_SOLANA_INTENT_TTL_SECS"), "{err}");
+    }
+
     /// The Squads v4 multisig/vault pair `getVaultPda` pins (issue #1143):
     /// multisig `C46NEXuBLRJjJhfAsKBUxUYdxSBQUPc3SXQFRBTXfupC` derives vault
     /// index 0 = `65kaU3KWZJCEz11vrCQfUZMc5AWSTzkFybwKD5BckLH8`.
@@ -3046,6 +3117,75 @@ mod tests {
         let err = super::usdt_enabled_of(Some("yes".to_owned())).unwrap_err();
         assert!(err.contains("OXSUM_SOLANA_USDT_ENABLED"), "{err}");
         assert!(super::usdt_enabled_of(Some("2".to_owned())).is_err());
+    }
+
+    /// Issue #1179: the sanctions flag parses to a tri-state — `1`/`true` on,
+    /// `0`/`false` explicitly off, unset `None` — and garbage is a startup
+    /// error rather than a silent off.
+    #[test]
+    fn the_sanctions_flag_parses_a_tri_state_and_refuses_garbage() {
+        assert_eq!(super::sanctions_enabled_of(None), Ok(None));
+        assert_eq!(
+            super::sanctions_enabled_of(Some("0".to_owned())),
+            Ok(Some(false))
+        );
+        assert_eq!(
+            super::sanctions_enabled_of(Some("false".to_owned())),
+            Ok(Some(false))
+        );
+        assert_eq!(
+            super::sanctions_enabled_of(Some("1".to_owned())),
+            Ok(Some(true))
+        );
+        assert_eq!(
+            super::sanctions_enabled_of(Some("true".to_owned())),
+            Ok(Some(true))
+        );
+        let err = super::sanctions_enabled_of(Some("yes".to_owned())).unwrap_err();
+        assert!(err.contains("OXSUM_SOLANA_SANCTIONS_ENABLED"), "{err}");
+        assert!(super::sanctions_enabled_of(Some("2".to_owned())).is_err());
+    }
+
+    /// Issue #1179: on a mainnet-shaped endpoint unset is a startup error
+    /// naming the required choice — `1` recommended, `0` the explicit off —
+    /// while `1` and an explicit `0` both boot (the explicit off's observability
+    /// is its boot warn, asserted at the binary level in the `--check-config`
+    /// test). Devnet/testnet/localhost keep the off default silently.
+    #[test]
+    fn the_sanctions_gate_requires_a_choice_on_mainnet() {
+        let mainnet = vec!["https://mainnet.helius-rpc.com/?api-key=x".to_owned()];
+        let devnet = vec!["https://api.devnet.solana.com".to_owned()];
+        // Unset on mainnet refuses — the error names the flag and both arms
+        // of the required choice.
+        let err = super::solana_sanctions_gate(None, &mainnet).unwrap_err();
+        assert!(err.contains("OXSUM_SOLANA_SANCTIONS_ENABLED"), "{err}");
+        assert!(err.contains("=1"), "{err}");
+        assert!(err.contains("=0"), "{err}");
+        // `1` screens on; an explicit `0` boots (and warns — the deliberate
+        // off must stay observable, but it must not refuse the boot).
+        assert_eq!(super::solana_sanctions_gate(Some(true), &mainnet), Ok(true));
+        assert_eq!(
+            super::solana_sanctions_gate(Some(false), &mainnet),
+            Ok(false)
+        );
+        // Unset on devnet stays the silent off default.
+        assert_eq!(super::solana_sanctions_gate(None, &devnet), Ok(false));
+        // One devnet-looking entry does not launder a mainnet pool — a mixed
+        // endpoint set is mainnet-shaped like the warn heuristic always held.
+        let mixed = vec![
+            "https://api.devnet.solana.com".to_owned(),
+            "https://mainnet.helius-rpc.com/?api-key=x".to_owned(),
+        ];
+        assert!(super::solana_sanctions_gate(None, &mixed).is_err());
+        // localhost and 127.0.0.1 keep the devnet posture; an empty endpoint
+        // set never reaches the gate as mainnet-shaped.
+        for url in ["http://localhost:8899", "http://127.0.0.1:8899"] {
+            assert_eq!(
+                super::solana_sanctions_gate(None, &[url.to_owned()]),
+                Ok(false)
+            );
+        }
+        assert_eq!(super::solana_sanctions_gate(None, &[]), Ok(false));
     }
 
     /// Issue #1151: `usdt` is "declared" by either a whitelist entry or the

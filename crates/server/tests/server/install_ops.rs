@@ -438,7 +438,8 @@ async fn check_config_validates_env_without_a_database() {
     // The singular still configures the rail, comma-separated entries
     // included; a full trio passes the check. Both endpoints stay
     // devnet-shaped — a mainnet entry would now require the custody pin or
-    // the hot-wallet opt-out (issue #1189), covered below.
+    // the hot-wallet opt-out (issue #1189) and the sanctions choice (issue
+    // #1179), both covered below.
     let ok = run(&[
         (
             "OXSUM_SOLANA_RPC_URL",
@@ -489,6 +490,71 @@ async fn check_config_validates_env_without_a_database() {
         String::from_utf8_lossy(&bad.stdout)
     );
     assert!(err.contains("OXSUM_SOLANA_RPC_AUTH_HEADER"), "{err}");
+    // The sanctions gate on a mainnet-shaped endpoint (issue #1179): unset
+    // is a startup error naming the required choice — screening real money is
+    // a deliberate posture, never an inherited default. `=1` passes (the
+    // embedded SDN list is the screen's floor — no API key needed), an
+    // explicit `=0` passes but warns observably on stderr, and a devnet
+    // endpoint keeps the unset default with no error.
+    let mainnet_rail = |extra: &[(&str, &str)]| {
+        let mut vars = vec![
+            (
+                "OXSUM_SOLANA_RPC_URL",
+                "https://mainnet.helius-rpc.com/?api-key=x",
+            ),
+            (
+                "OXSUM_SOLANA_PAY_TO",
+                "payToExample111111111111111111111111111",
+            ),
+            ("OXSUM_SOLANA_RATE_MICRO", "200000000"),
+            // The custody gate (issue #1189) is its own mainnet arm, opted
+            // out here so these assertions isolate the sanctions choice.
+            ("OXSUM_SOLANA_ALLOW_HOT_WALLET", "1"),
+        ];
+        vars.extend_from_slice(extra);
+        run(&vars)
+    };
+    let bad = mainnet_rail(&[]);
+    assert!(!bad.status.success());
+    let err = format!(
+        "{}{}",
+        String::from_utf8_lossy(&bad.stderr),
+        String::from_utf8_lossy(&bad.stdout)
+    );
+    assert!(err.contains("OXSUM_SOLANA_SANCTIONS_ENABLED"), "{err}");
+    let ok = mainnet_rail(&[("OXSUM_SOLANA_SANCTIONS_ENABLED", "1")]);
+    assert!(
+        ok.status.success(),
+        "sanctions enabled on mainnet must pass: {}",
+        String::from_utf8_lossy(&ok.stderr)
+    );
+    let ok = mainnet_rail(&[("OXSUM_SOLANA_SANCTIONS_ENABLED", "0")]);
+    assert!(
+        ok.status.success(),
+        "an explicit off boots: {}",
+        String::from_utf8_lossy(&ok.stderr)
+    );
+    // The deliberate off stays observable: the boot's warn names the flag in
+    // the process's own log output (fmt writes warns to stdout).
+    let log = format!(
+        "{}{}",
+        String::from_utf8_lossy(&ok.stdout),
+        String::from_utf8_lossy(&ok.stderr)
+    );
+    assert!(
+        log.contains("WARN") && log.contains("OXSUM_SOLANA_SANCTIONS_ENABLED"),
+        "the explicit off warns observably: {log}"
+    );
+    // A malformed value names itself — never a silent off.
+    let bad = mainnet_rail(&[("OXSUM_SOLANA_SANCTIONS_ENABLED", "yes")]);
+    assert!(!bad.status.success());
+    let err = format!(
+        "{}{}",
+        String::from_utf8_lossy(&bad.stderr),
+        String::from_utf8_lossy(&bad.stdout)
+    );
+    assert!(err.contains("OXSUM_SOLANA_SANCTIONS_ENABLED"), "{err}");
+
     // The optional Helius webhook (issue #1150): the shared secret parses
     // beside a configured rail, and a lone secret beside no rail is a warn
     // (the receiver mounts nothing), never a startup error — `--check-config`
@@ -531,6 +597,9 @@ async fn check_config_validates_env_without_a_database() {
                 "payToExample111111111111111111111111111",
             ),
             ("OXSUM_SOLANA_RATE_MICRO", "200000000"),
+            // The sanctions choice (issue #1179) is its own mainnet arm, made
+            // here so these assertions isolate the custody gate.
+            ("OXSUM_SOLANA_SANCTIONS_ENABLED", "1"),
         ];
         vars.extend_from_slice(extra);
         run(&vars)
@@ -560,6 +629,7 @@ async fn check_config_validates_env_without_a_database() {
             "OXSUM_SOLANA_MULTISIG_ACCOUNT",
             "C46NEXuBLRJjJhfAsKBUxUYdxSBQUPc3SXQFRBTXfupC",
         ),
+        ("OXSUM_SOLANA_SANCTIONS_ENABLED", "1"),
     ]);
     assert!(
         ok.status.success(),
