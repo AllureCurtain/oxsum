@@ -518,13 +518,23 @@ async fn run_one(
             // failed health read logs and is skipped — the pass itself
             // already ran; a metric must never fail the job.
             match db.solana_deposit_health().await {
-                Ok((status_counts, paid_uncredited, oldest_secs)) => {
-                    ctx.metrics
-                        .solana_deposit_health(&status_counts, paid_uncredited, oldest_secs);
+                Ok((status_counts, paid_uncredited, oldest_secs, long_deferred)) => {
+                    ctx.metrics.solana_deposit_health(
+                        &status_counts,
+                        paid_uncredited,
+                        oldest_secs,
+                        long_deferred,
+                    );
                     if paid_uncredited > 0 {
                         warn!(
                             paid_uncredited,
                             oldest_secs, "solana deposits verified on-chain await their credit"
+                        );
+                    }
+                    if long_deferred > 0 {
+                        warn!(
+                            long_deferred,
+                            "solana deposits deferred too long to be routine"
                         );
                     }
                 }

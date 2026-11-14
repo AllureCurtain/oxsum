@@ -1,11 +1,25 @@
 openapi: 3.1.0
 info:
   title: oxsum API
-  version: 0.129.0
+  version: 0.130.0
   x-consumption-cache: Response cache v2 binds the exact complete request, concrete endpoint and semantic headers, customer/key permissions, selected experiment/mandate, alias targets, and every admitted route's price, destination, settings and credential configuration. A primary route without an available credential cannot serve a cache hit. Text case and whitespace are significant; old digests miss. Legacy excludeSystem is accepted but ignored.
   x-ledger-description: Ledger descriptions contain at most 16384 Unicode scalar values (at most 65536 UTF-8 bytes before JSON escaping). Settlement v14 and canonical hashes are unchanged; full subscription/cache provenance is retained. Writers and offline/browser verifiers must support this bound. Older 512-character readers cannot read longer new entries even with the same database schema. Arbitrary guardrail-output budgeting remains issue 875.
   description: |
     Common conventions (auth, idempotency, error format, money units) are documented in docs/api.md.
+
+    0.130.0 tightens the solana verify's error handling and the rescue pass's
+    pacing: when a candidate's `validate_transfer` fails mid-walk, a shortfall
+    found on another signature no longer marks the deposit `underpaid` — the
+    errored candidate may have been the full payment, so the row defers
+    instead of reaching a terminal verdict. The rescue never re-walks a row
+    the same pass just expired (`NOT ANY` on the pass's own `unpaid` list),
+    and the first check waits one minute after the row was *written* `expired`
+    — `meta.expiredAt`, `expiresAt` as the pre-stamp fallback — not the
+    intent's deadline, then on the 5m/30m/2h/6h/24h backoff. A deferred
+    verdict is now a durable signal: each one bumps `meta.deferCount` and
+    stamps `firstDeferredAt`/`lastDeferredAt` (no status change), and the
+    `solana_deposits_long_deferred` gauge reports `pending` rows with
+    `deferCount` ≥ 20 or a first defer over 24 h, which the job warns on.
 
     0.129.0 pins the solana rail's network record and boot confirmation
     (issue #1207): `meta.screening.address` now names the wallet the
@@ -23,11 +37,12 @@ info:
     payout signature closes one refund, ever: the
     `deposits_solana_refund_signature` unique index refuses a raced second
     close the in-lock recheck could miss. The expired-deposit rescue pass
-    paces its re-checks on a stamped backoff (`rescueCheckedAt`), so a
-    flooded queue stops re-querying the same rows while a just-expired paid
-    row waits; and the deposit verify keeps walking a marker's other
-    signatures when one candidate cannot be confirmed, deferring only when
-    nothing honoring and nothing short remains.
+    paces its checks on a stamped backoff (`rescueCheckedAt`), so a flooded
+    queue stops re-querying the same rows while a just-expired paid row
+    waits; and the deposit verify keeps walking a marker's other signatures
+    when one candidate cannot be confirmed, deferring only when nothing
+    honoring and nothing short remains; the short-wins-over-error rule was
+    reversed in 0.130.0.
 
     0.127.0 verifies the solana refund's recorded payout on-chain (issue
     #1175): a refund now freezes its amount/asset/mint at open

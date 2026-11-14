@@ -82,6 +82,11 @@ const SOLANA_EXCEPTION_QUEUE: &str = "solana_exception_queue_depth";
 /// Emitted here — the counter's series exists so the screening work (#1144)
 /// increments the same name rather than minting a second spelling.
 const SOLANA_SCREENING_HITS: &str = "solana_screening_hits_total";
+/// Solana `pending` deposits deferred long enough to worry about — a
+/// `deferCount` ≥ 20, or a first defer older than 24 h (issue #1209
+/// follow-up). A deferred verdict is a signal, never a status change, so this
+/// gauge is the only surface a stuck verify reaches.
+const SOLANA_LONG_DEFERRED: &str = "solana_deposits_long_deferred";
 
 /// The per-app metric registry: a Prometheus recorder plus the handle that renders it.
 ///
@@ -199,6 +204,7 @@ impl Metrics {
         status_counts: &[(String, i64)],
         paid_uncredited: i64,
         paid_uncredited_oldest_secs: Option<i64>,
+        long_deferred: i64,
     ) {
         // The exception statuses an operator works — emitted at 0 whenever no
         // row carries them, so the alert's `>0` always has a series. #1142's
@@ -239,6 +245,7 @@ impl Metrics {
             paid_uncredited_oldest_secs.unwrap_or(0) as f64,
             &[],
         );
+        self.set_gauge(SOLANA_LONG_DEFERRED, long_deferred as f64, &[]);
     }
 
     /// One sanctions-screening hit on the Solana rail — the counter #1144's
