@@ -449,13 +449,21 @@ pub(crate) async fn solana_refund_address(
         .await?)
 }
 
+/// The largest Helius delivery the receiver accepts: 2 MiB covers a batch of
+/// full transaction envelopes with headroom — a bigger push is a 413, not an
+/// unbounded buffer on the open surface (issue #1187).
+pub(crate) const SOLANA_WEBHOOK_BODY_LIMIT: usize = 2 * 1024 * 1024;
+
 /// Extracts the candidate `reference` marker accounts a Helius webhook entry
 /// carries — the account keys the paying transaction touched, so a pushed
 /// transaction narrows which `pending` intents are worth re-verifying (issue
 /// #1150). Both documented payload shapes are read: the *enhanced* entry's
 /// `accountData[].account`, and the *raw* entry's
-/// `transaction.message.accountKeys[]`. An entry carrying neither yields no
-/// keys — it is still acknowledged, but resolves no intent.
+/// `transaction.message.accountKeys[]` — whose entries are a plain base58
+/// string under the default encoding or a `{"pubkey": ..., "signer": ...,
+/// "writable": ...}` object under `jsonParsed` (issue #1187). An entry
+/// carrying neither yields no keys — it is still acknowledged, but resolves
+/// no intent.
 fn solana_webhook_references(entry: &serde_json::Value) -> Vec<String> {
     let mut keys = Vec::new();
     let mut push = |v: &serde_json::Value| {
@@ -475,6 +483,8 @@ fn solana_webhook_references(entry: &serde_json::Value) -> Vec<String> {
         }
     }
     // Raw: the getTransaction-shaped envelope keys the message's account list.
+    // An element is the key itself as a string, or an object carrying it in
+    // `pubkey` — both encodings Helius may deliver.
     if let Some(keys_arr) = entry
         .get("transaction")
         .and_then(|t| t.get("message"))
@@ -483,6 +493,11 @@ fn solana_webhook_references(entry: &serde_json::Value) -> Vec<String> {
     {
         for v in keys_arr {
             push(v);
+            if v.is_object()
+                && let Some(pubkey) = v.get("pubkey")
+            {
+                push(pubkey);
+            }
         }
     }
     keys

@@ -121,8 +121,9 @@ OXSUM_SOLANA_MIN_MINOR=1000
 OXSUM_SOLANA_MAX_MINOR=5000000
 OXSUM_SOLANA_OPENS_PER_MINUTE=3
 
-# A mainnet rehearsal wants a longer payable window than devnet's 600 s so the
-# expired-then-paid scenario can be staged deliberately. 900 s recommended.
+# The rail's 900 s default is already the 15-minute window a mainnet rehearsal
+# wants; pinning it here keeps the expired-then-paid scenario staging intact
+# whichever way a future default moves.
 OXSUM_SOLANA_INTENT_TTL_SECS=900
 
 # REQUIRED on a mainnet-shaped endpoint (issue #1179): the boot refuses to
