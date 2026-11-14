@@ -1611,10 +1611,17 @@ impl Db {
         Ok(inserted > 0)
     }
 
-    /// Verifies and credits a `pending` solana deposit: the poll pass and the
-    /// confirm route share this walk. The deposit row is read unlocked, the
-    /// `reference` in `meta` drives `verifier.verify_locked`, and the verdict
-    /// writes inside a short transaction that re-claims the row `FOR UPDATE`:
+    /// Verifies and credits a `pending` solana deposit — or an `expired` one
+    /// the expiry sweep may have flipped ahead of an on-time payment it never
+    /// verified (issue #1174): an `expired` row still runs the verify, and a
+    /// payment whose `blockTime` precedes `expiresAt` rescues `expired →
+    /// pending` inside the credit's own `FOR UPDATE` transaction — atomically
+    /// covering both a row read `expired` and one the sweep flipped while the
+    /// verify was in flight — while a still-unpaid row keeps `expired` and a
+    /// late one re-marks `late`. The poll pass and the confirm route share
+    /// this walk. The deposit row is read unlocked, the `reference` in `meta`
+    /// drives `verifier.verify_locked`, and the verdict writes inside a short
+    /// transaction that re-claims the row `FOR UPDATE`:
     ///
     /// - **Honoring** — the located transaction's signature is recorded in
     ///   `facilitator_tx_hash`, the ledger credit runs under
@@ -1668,13 +1675,18 @@ impl Db {
         let status: String = row.try_get("status")?;
         let payment_ref: String = row.try_get("payment_ref")?;
         let meta: serde_json::Value = row.try_get("meta")?;
-        // Only a `pending` intent proceeds — `confirmed`/`credited` is done,
-        // `expired` lapsed, the exception statuses are terminal queue markers.
-        // The expiry is *not* gated on server `now()` here: whether the intent
-        // lapsed is judged on the paying transaction's own `blockTime` after
-        // verify, so a payment that landed on-chain before `expiresAt` still
-        // credits even when it is confirmed after.
-        if status != "pending" {
+        // `pending` and `expired` proceed — `confirmed`/`credited` is done and
+        // the exception statuses are terminal queue markers. `expired` still
+        // verifies because the sweep may have flipped the row ahead of an
+        // on-time payment it never saw — the 257th intent past a pass's
+        // `LIMIT 256`, a row a second unleadered instance expired mid-verify,
+        // or the same gap inside this walk between the unlocked read and the
+        // `FOR UPDATE` re-check below (issue #1174). The expiry verdict is the
+        // paying transaction's own `blockTime`, judged after verify: a payment
+        // on-chain before `expiresAt` credits even from `expired`, a late one
+        // re-marks `late`, and a still-unpaid row keeps its `expired` — the
+        // sweep's original verdict stands.
+        if status != "pending" && status != "expired" {
             return Ok(SolanaCredit::Settled);
         }
         // Verify under the terms this intent locked in `meta` — its own
@@ -1763,21 +1775,36 @@ impl Db {
             .settle(&payment)
             .await
             .map_err(|refusal| WalletError::Forbidden(refusal.reason.clone()))?;
-        // The write half: a short transaction re-claims the row FOR UPDATE,
-        // re-checks it is still `pending` (a raced poll or confirm may have
-        // settled it while the RPC ran), and walks pending → confirmed →
-        // credited.
+        // The write half: a short transaction re-claims the row FOR UPDATE
+        // and re-checks where it landed while the RPC ran. `pending` proceeds;
+        // `expired` rescues to `pending` — a sweep may have flipped the row
+        // between this walk's unlocked read and now, and the verdict already
+        // computed above proved the payment on-time, honoring and screened,
+        // so the rescue and the credit are one atomic step (issue #1174);
+        // anything else means a raced pass settled or walked it — `Settled`.
         let mut tx = self.pool().begin().await?;
-        let still_pending: bool = sqlx::query_scalar(
-            "SELECT status = 'pending' FROM oxsum.deposits \
+        let current: String = sqlx::query_scalar(
+            "SELECT status FROM oxsum.deposits \
              WHERE deposit_id = $1 FOR UPDATE",
         )
         .bind(deposit_id)
         .fetch_one(&mut *tx)
         .await?;
-        if !still_pending {
-            tx.commit().await?;
-            return Ok(SolanaCredit::Settled);
+        match current.as_str() {
+            "pending" => {}
+            "expired" => {
+                sqlx::query(
+                    "UPDATE oxsum.deposits SET status = 'pending', updated_at = now() \
+                     WHERE deposit_id = $1 AND status = 'expired'",
+                )
+                .bind(deposit_id)
+                .execute(&mut *tx)
+                .await?;
+            }
+            _ => {
+                tx.commit().await?;
+                return Ok(SolanaCredit::Settled);
+            }
         }
         // One signature credits one deposit ever: a transaction carrying two
         // references pays once, so a second intent naming an already-used
@@ -1888,10 +1915,13 @@ impl Db {
     /// `late`): records the located signature as spent — the same
     /// `deposits_solana_tx_hash` dedup the credit path relies on, so the
     /// paying transaction cannot be claimed by a second intent — and merges
-    /// the verification facts into `meta` for the queue row. The write is
-    /// status-guarded so a raced pass that already settled the row simply
-    /// no-ops, and a signature already claimed elsewhere is the same
-    /// `Forbidden` double-spend refusal the credit path answers.
+    /// the verification facts into `meta` for the queue row. An `expired` row
+    /// accepts the mark too: the sweep may have flipped the row before this
+    /// pass's verify located the transfer, and a late or short payment that
+    /// *did* land belongs on the queue, not silently dropped (issue #1174).
+    /// The write is status-guarded so a raced pass that already settled the
+    /// row simply no-ops, and a signature already claimed elsewhere is the
+    /// same `Forbidden` double-spend refusal the credit path answers.
     async fn mark_solana_exception(
         &self,
         deposit_id: Uuid,
@@ -1900,14 +1930,14 @@ impl Db {
         context: &serde_json::Value,
     ) -> Result<(), WalletError> {
         let mut tx = self.pool().begin().await?;
-        let still_pending: bool = sqlx::query_scalar(
-            "SELECT status = 'pending' FROM oxsum.deposits \
+        let still_open: bool = sqlx::query_scalar(
+            "SELECT status IN ('pending', 'expired') FROM oxsum.deposits \
              WHERE deposit_id = $1 FOR UPDATE",
         )
         .bind(deposit_id)
         .fetch_one(&mut *tx)
         .await?;
-        if !still_pending {
+        if !still_open {
             // A raced pass already walked the row — the mark is a no-op, the
             // deposit is where the other verdict left it.
             tx.commit().await?;
@@ -1938,7 +1968,7 @@ impl Db {
                      'blockTime', $7::bigint, \
                      'exception', $1::text), \
                  updated_at = now() \
-             WHERE deposit_id = $8 AND status = 'pending'",
+             WHERE deposit_id = $8 AND status IN ('pending', 'expired')",
         )
         .bind(marker)
         .bind(signature)
@@ -1973,8 +2003,11 @@ impl Db {
     /// the located `signature`) so a reviewer reads why the row is parked
     /// without re-deriving it; `facilitator_tx_hash` takes the signature too,
     /// so the flag and the double-spend index agree on which transaction is
-    /// held. The write is status-guarded `pending`-only — a raced credit that
-    /// already landed keeps its row, and a second flagging pass is a no-op.
+    /// held. The row is re-claimed `FOR UPDATE` inside a short transaction —
+    /// a raced credit that already landed or a second flagging pass is a
+    /// no-op — and an `expired` row whose payment verified on-time rescues
+    /// into the flag the same way (the sweep's unpaid verdict went stale,
+    /// issue #1174).
     async fn flag_solana_deposit(
         &self,
         deposit_id: Uuid,
@@ -1997,17 +2030,31 @@ impl Db {
             "at": at,
         });
         flag_meta["signature"] = json!(signature);
+        let mut tx = self.pool().begin().await?;
+        let still_open: bool = sqlx::query_scalar(
+            "SELECT status IN ('pending', 'expired') FROM oxsum.deposits \
+             WHERE deposit_id = $1 FOR UPDATE",
+        )
+        .bind(deposit_id)
+        .fetch_one(&mut *tx)
+        .await?;
+        if !still_open {
+            // A raced pass already walked the row — the flag is a no-op, the
+            // deposit is where the other verdict left it.
+            tx.commit().await?;
+            return Ok(());
+        }
         sqlx::query(
             "UPDATE oxsum.deposits \
              SET status = 'flagged', facilitator_tx_hash = $1, meta = $2, \
                  updated_at = now() \
-             WHERE deposit_id = $3 AND rail = $4 AND status = 'pending'",
+             WHERE deposit_id = $3 AND rail = $4 AND status IN ('pending', 'expired')",
         )
         .bind(signature)
         .bind(&flag_meta)
         .bind(deposit_id)
         .bind(RAIL_SOLANA)
-        .execute(self.pool())
+        .execute(&mut *tx)
         .await
         .map_err(|e| {
             // The signature may already sit on another deposit — flagged or
@@ -2024,6 +2071,7 @@ impl Db {
             }
             WalletError::from(e)
         })?;
+        tx.commit().await?;
         Ok(())
     }
 
@@ -2116,11 +2164,14 @@ impl Db {
 
     /// Moves a Solana deposit to `expired` — the poll's outcome once
     /// `meta.expiresAt` has passed without a matching transfer, a no-op on a
-    /// deposit that already ended its walk.
+    /// deposit that already ended its walk. Only a `pending` row expires:
+    /// `confirmed` means the chain validated a paying transaction whose
+    /// credit has not landed yet — expiring it would bury real money the
+    /// exception surface exists to recover (issue #1174).
     pub async fn expire_solana_deposit(&self, deposit_id: Uuid) -> Result<(), WalletError> {
         sqlx::query(
             "UPDATE oxsum.deposits SET status = 'expired', updated_at = now() \
-             WHERE deposit_id = $1 AND rail = $2 AND status IN ('pending', 'confirmed')",
+             WHERE deposit_id = $1 AND rail = $2 AND status = 'pending'",
         )
         .bind(deposit_id)
         .bind(RAIL_SOLANA)
@@ -2559,20 +2610,24 @@ impl Db {
             .ok_or_else(|| WalletError::NotFound("the deposit is not known".into()))
     }
 
-    /// The periodic pass: walks every `pending` solana deposit, runs
-    /// `credit_solana_deposit` — whose verdict marks `underpaid`/`late`/
-    /// `overpaid` exceptions instead of silently refusing (issue #1142) — and
-    /// expires the intents that verified nothing by their `expiresAt`.
-    /// Unleadered — each row serializes on its own lock and the
-    /// `solana:<signature>` credit key makes a raced pass a replay, never a
-    /// double credit.
+    /// The periodic pass: walks up to 256 `pending` solana deposits, oldest
+    /// first, runs `credit_solana_deposit` — whose verdict marks
+    /// `underpaid`/`late`/`overpaid` exceptions instead of silently refusing
+    /// (issue #1142) — and expires the intents this pass verified unpaid past
+    /// their `expiresAt`. Unleadered — each row serializes on its own lock
+    /// and the `solana:<signature>` credit key makes a raced pass a replay,
+    /// never a double credit.
     ///
-    /// The credit runs *before* the expiry sweep: an intent past its
-    /// `expiresAt` still gets one verify, because the lapse verdict belongs
-    /// to the paying transaction's `blockTime` — a payment on-chain before
-    /// the TTL credits, one after marks `late`, and only an intent that
-    /// located nothing expires (issue #1128). Sweeping first would expire a
-    /// paid-on-time intent before its credit could run.
+    /// The sweep expires *only the rows this pass verified `Unpaid`*, keyed
+    /// per row — never a `pending` row it did not verify (issue #1174). Two
+    /// unverified-pending shapes exist: the intents a `LIMIT 256` work list
+    /// left behind, and the rows a second unleadered instance is mid-verify
+    /// on — the old blanket `UPDATE ... expiresAt <= now()` expired both,
+    /// burying a payment that had already landed on-chain. Even a wrongly
+    /// expired row is not lost: `credit_solana_deposit` re-verifies `expired`
+    /// rows and rescues an on-time payment through the ordinary walk, so the
+    /// invariant "a payment on-chain before `expiresAt` still credits" holds
+    /// whichever side of a race the row lands on.
     ///
     /// Returns `(checked, credited, expired, queued)` counts for the job's
     /// log line — `queued` is the deposits this pass moved onto the exception
@@ -2588,6 +2643,12 @@ impl Db {
         // backlog drains in order — every one a candidate, including those
         // past their meta.expiresAt, because the expiry verdict belongs to
         // the paying transaction's blockTime inside credit_solana_deposit.
+        // The list is deliberately unlocked: the verify's chain RPCs must
+        // never run under row locks (issue #1128), and holding a claim across
+        // the whole walk would also deadlock — the credit path re-locks each
+        // row on a *different* pooled connection. Multi-instance safety comes
+        // from the keyed sweep below plus the `expired`-rescue in
+        // credit_solana_deposit, not from exclusion (issue #1174).
         let rows: Vec<(Uuid, Uuid)> = sqlx::query_as(
             "SELECT d.deposit_id, d.organization_id \
              FROM oxsum.deposits d \
@@ -2601,6 +2662,9 @@ impl Db {
 
         let mut credited: u64 = 0;
         let mut queued: u64 = 0;
+        // Rows this pass verified unpaid — the only ones its expiry sweep may
+        // touch (issue #1174).
+        let mut unpaid: Vec<Uuid> = Vec::new();
         for (deposit_id, organization_id) in &rows {
             // Resolve the organization to its wallet — same lookup the route
             // layer runs per request.
@@ -2618,13 +2682,14 @@ impl Db {
                 Ok(SolanaCredit::Credited(_)) => credited += 1,
                 Ok(SolanaCredit::Underpaid | SolanaCredit::Late) => queued += 1,
                 Ok(SolanaCredit::Settled) => {}
-                // A verification refusal is "not paid yet" — the row stays
-                // pending for the next pass (or for the expiry sweep below
-                // when its own TTL has lapsed).
-                Err(WalletError::Forbidden(_)) => {}
+                // A verification refusal is "not paid yet" — the row is a
+                // sweep candidate when its own TTL has lapsed. A refuse that
+                // raced the row into another status writes nothing, so the
+                // sweep's pending-guarded UPDATE is a no-op either way.
+                Err(WalletError::Forbidden(_)) => unpaid.push(*deposit_id),
                 // Any other failure logs and moves to the next intent: one
                 // bad row must not stall every intent behind it for another
-                // whole pass.
+                // whole pass — and an unverified row is never expired.
                 Err(error) => {
                     tracing::warn!(
                         deposit_id = %deposit_id,
@@ -2634,20 +2699,29 @@ impl Db {
                 }
             }
         }
-        // Expire lapsed intents in one statement — after the credit walk, so
-        // an intent whose payment landed before the TTL credited above and
-        // one that located nothing is the only `pending` left for the sweep.
-        // The status guard skips a row mid-credit, which lands its own
-        // status under its own lock, so the sweep races safely.
-        let expired_count = sqlx::query(
-            "UPDATE oxsum.deposits SET status = 'expired', updated_at = now() \
-             WHERE rail = $1 AND status = 'pending' \
-               AND (meta->>'expiresAt')::timestamptz <= now()",
-        )
-        .bind(RAIL_SOLANA)
-        .execute(self.pool())
-        .await?
-        .rows_affected();
+        // Expire only the intents this pass itself verified unpaid, keyed per
+        // row — never a `pending` row it did not walk: an intent past the 256
+        // bound, or one a raced verdict left `pending`, keeps its row for the
+        // next pass instead of expiring unseen (issue #1174). A second
+        // instance may expire a row this pass is mid-verify on — its own
+        // verify is genuine — but an on-time payment still lands: the
+        // `expired`-rescue inside `credit_solana_deposit` re-walks the row and
+        // credits it. A confirm that credits first turns the status-guarded
+        // UPDATE into a no-op.
+        let expired_count = if unpaid.is_empty() {
+            0
+        } else {
+            sqlx::query(
+                "UPDATE oxsum.deposits SET status = 'expired', updated_at = now() \
+                 WHERE rail = $1 AND status = 'pending' AND deposit_id = ANY($2) \
+                   AND (meta->>'expiresAt')::timestamptz <= now()",
+            )
+            .bind(RAIL_SOLANA)
+            .bind(unpaid)
+            .execute(self.pool())
+            .await?
+            .rows_affected()
+        };
         Ok((rows.len() as u64, credited, expired_count, queued))
     }
 }
