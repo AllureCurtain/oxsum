@@ -1,6 +1,28 @@
 # Operator launch execution ledger
 
-## Current checkpoint (2026-11-12)
+## Current checkpoint (2026-11-15)
+
+Main is [`8cca80a2`](https://github.com/AllureCurtain/oxsum/commit/8cca80a2efcbfd9f2b5ad809a7d0f536dbc0fd9a) (merge of [#1219](https://github.com/AllureCurtain/oxsum/pull/1219), 2026-11-14). This supersedes the 2026-11-12 checkpoint below, which recorded main at `d4232c7d`.
+
+**Software queue.** There are no open pull requests. [CI](https://github.com/AllureCurtain/oxsum/actions/runs/43610120866) and [Release image](https://github.com/AllureCurtain/oxsum/actions/runs/43610120822) on `8cca80a2` completed successfully. The Solana top-up rail ([#1117](https://github.com/AllureCurtain/oxsum/issues/1117) Option A) and its hardening follow-ups are on main, including #1127–#1131, #1139–#1154, #1174–#1189, [#1207](https://github.com/AllureCurtain/oxsum/issues/1207)/[#1208](https://github.com/AllureCurtain/oxsum/pull/1208), [#1209](https://github.com/AllureCurtain/oxsum/issues/1209)/[#1210](https://github.com/AllureCurtain/oxsum/pull/1210), [#1211](https://github.com/AllureCurtain/oxsum/pull/1211), and [#1212](https://github.com/AllureCurtain/oxsum/issues/1212)/[#1213](https://github.com/AllureCurtain/oxsum/pull/1213). CI improvements [#1217](https://github.com/AllureCurtain/oxsum/pull/1217), [#1218](https://github.com/AllureCurtain/oxsum/pull/1218) and [#1219](https://github.com/AllureCurtain/oxsum/pull/1219) are also on main: locale and schema-inventory checks run pre-merge; `scripts/setup-dev.sh` installs the pinned nightly rustfmt and enables `.githooks`; mold/sccache downloads retry; `.dockerignore` excludes `**/node_modules`; intermittent settlement tests wait on a wall-clock deadline; the heavy tier runs pre-merge on pull requests that touch crates, migrations, Cargo files, toolchain/nextest config or `ci.yml` (or that carry the `ci:heavy` label), and a `heavy-tier` roll-up job reports on every event, including when the tier is skipped.
+
+**Correction to the 2026-11-12 text.** Conservation umbrellas [#768](https://github.com/AllureCurtain/oxsum/issues/768), [#779](https://github.com/AllureCurtain/oxsum/issues/779) and [#829](https://github.com/AllureCurtain/oxsum/issues/829) were closed as completed on 2026-11-12; they are not open.
+
+**Remaining owner issues are external or directional, not pending software integration.**
+
+- [#744](https://github.com/AllureCurtain/oxsum/issues/744) N18 final candidate acceptance — J15 (declared-hardware capacity + 8h soak), J17 (two independent pilots) and a reviewable manifest for the exact candidate remain. The frozen candidate `cc16bb8f` (2026-11-11, schema 0131) is stale relative to current main (schema through 0139, OpenAPI 0.131.0, Solana rail and CI changes). Completing N18 needs a new freeze or an explicit decision to ship `cc16bb8f`.
+- [#742](https://github.com/AllureCurtain/oxsum/issues/742) N16 — a local darwin-arm64 rehearsal exists; it is uncertified on the declared 4-vCPU/8-GiB Linux environment. The 82.* host measured 3.6 GiB RAM ([#1048](https://github.com/AllureCurtain/oxsum/issues/1048)).
+- [#745](https://github.com/AllureCurtain/oxsum/issues/745) N19 — kits are integrated; two external participants are absent.
+- [#746](https://github.com/AllureCurtain/oxsum/issues/746) N20 — publication and deployment remain unselected and unauthorised. The last `deploy.yml` run was 2026-11-01 on `bc34ea6c`, not current main.
+- [#740](https://github.com/AllureCurtain/oxsum/issues/740) N14 — DeepSeek whole/SSE certified on `cc16bb8f`; the 2026-11-12 ledger recorded the budget at 4/5 attempts (not re-verified since); other matrix rows remain.
+- [#741](https://github.com/AllureCurtain/oxsum/issues/741) N15 — Stripe test-mode top-up was certified 2026-11-11; Airwallex remains blocked on the provider side; live payment is excluded.
+- [#725](https://github.com/AllureCurtain/oxsum/issues/725) is the program umbrella; [#622](https://github.com/AllureCurtain/oxsum/issues/622) T31 holds the same external gates.
+- [#1048](https://github.com/AllureCurtain/oxsum/issues/1048) Hyperswitch on 82.* is deferred (RAM).
+- [#1117](https://github.com/AllureCurtain/oxsum/issues/1117) remains open as the direction record: Option A is implemented; Option B (full on-chain vault) is not started.
+
+Issue closure alone does not certify journeys or release artifacts. No launch-complete or publication claim follows from this checkpoint.
+
+## Previous checkpoint (2026-11-12)
 
 [Verified integration and acceptance checkpoint](evidence/acceptance-checkpoint.md)
 supersedes pending-integration and provider-budget statements in the historical
@@ -29,7 +51,7 @@ unperformed. The checkpoint retains their requirements.
 
 Thirteen merged worktrees and nine superseded local branches were removed on
 2026-11-12; the journal records their identities. Conservation umbrellas
-#768/#779/#829 remain open only for their explicit acceptance audits.
+#768/#779/#829 were closed as completed on 2026-11-12; they are not open. (Corrected 2026-11-15.)
 
 ## Historical execution log
 

@@ -1,6 +1,6 @@
 # TODO
 
-Updated: 2026-11-14
+Updated: 2026-11-15
 
 Open GitHub issues are the queue. This file is only the index. One row per open issue, title copied from the issue. Do not append test transcripts, evidence paths, or a second row for the same issue. The narrative log that used to grow here is frozen at [docs/history/TODO-log.md](docs/history/TODO-log.md).
 
@@ -10,7 +10,6 @@ Open GitHub issues are the queue. This file is only the index. One row per open 
 
 | Issue | Title |
 | --- | --- |
-| [#1207](https://github.com/AllureCurtain/oxsum/issues/1207) | refactor(solana): unify mainnet detection on the resolved cluster |
 | [#1117](https://github.com/AllureCurtain/oxsum/issues/1117) | direction: crypto top-up rail first, full on-chain vault later (Solana) |
 | [#1048](https://github.com/AllureCurtain/oxsum/issues/1048) | Self-hosted Hyperswitch on the 82.* server — feasibility and deployment |
 | [#746](https://github.com/AllureCurtain/oxsum/issues/746) | ci: Publication and deployment, if selected (N20) |
