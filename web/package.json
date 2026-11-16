@@ -32,7 +32,7 @@
     "@solana/spl-token": "^0.4.15",
     "@solana/wallet-adapter-base": "^0.9.28",
     "@solana/wallet-standard-wallet-adapter-react": "^1.1.8",
-    "@solana/web3.js": "^1.99.0",
+    "@solana/web3.js": "^3.2.1",
     "@tanstack/react-query": "^5.107.1",
     "buffer": "^6.0.3",
     "class-variance-authority": "^0.7.1",
