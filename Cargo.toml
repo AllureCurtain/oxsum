@@ -36,8 +36,10 @@ bs58 = "0.5"
 # SHA-256 digest that does *not* decompress to a curve point. Pulled in
 # directly (rather than through ed25519-dalek's private re-export) so the
 # Squads vault-PDA derivation is explicit about the curve check it relies on
-# (issue #1143). Version-locked to the line ed25519-dalek already resolves.
-curve25519-dalek = { version = "4", default-features = false, features = ["alloc"] }
+# (issue #1143). On 5.x while ed25519-dalek still resolves the 4.x line — the
+# derivation only reads `CompressedEdwardsY::decompress`, identical across the
+# major, so the duplicate is the cheap side of the split.
+curve25519-dalek = { version = "5", default-features = false, features = ["alloc"] }
 # Signed spend mandates (issue #262): Ed25519 over the mandate's canonical body.
 # Same crate doubleentry's witness feature already resolves; no `rand_core`, so
 # seeds stay caller-supplied and the signing path deterministic.
