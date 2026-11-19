@@ -179,9 +179,14 @@ mod correction_setup;
 #[tokio::test]
 async fn posting_period_correction_capture_contains_both_ledger_sources() {
     let _guard = TEST_LOCK.lock().await;
+    if std::env::var("DATABASE_URL").is_err() {
+        // The database-free CI lib tier runs this binary; heavy shards and
+        // local acceptance provide DATABASE_URL and must actually connect.
+        return;
+    }
     let (db, wallet, org) = fixture()
         .await
-        .expect("correction evidence acceptance requires PostgreSQL");
+        .expect("configured correction evidence acceptance requires reachable PostgreSQL");
     let owner = correction_setup::owner(&db).await;
     let day = OffsetDateTime::now_utc().date();
     wallet
