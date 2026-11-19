@@ -6907,6 +6907,314 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/business/supplier-statements/choices": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List redacted canonical OpenAI channels for statement mapping
+         * @description Requires ReportsRead; protocol compatibility alone is not provider identity.
+         */
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Channel choices */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            data: components["schemas"]["SupplierChannelChoice"][];
+                        };
+                    };
+                };
+                401: components["responses"]["Error"];
+                403: components["responses"]["Error"];
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/business/supplier-statements/preview": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Validate a raw OpenAI Costs day without saving
+         * @description Requires ReportsRead. Amounts retain exact decimal precision; organization and channel mapping remain uploader assertions.
+         */
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": components["schemas"]["SupplierStatementImport"];
+                };
+            };
+            responses: {
+                /** @description Validated source scope, exact USD amounts and limitations */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["SupplierPreviewEnvelope"];
+                    };
+                };
+                400: components["responses"]["Error"];
+                401: components["responses"]["Error"];
+                403: components["responses"]["Error"];
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/business/supplier-statements": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List immutable imported supplier statement versions
+         * @description Requires ReportsRead. Newest first; pass last sourceId as before. Includes source metadata; comparison metadata has a separate paginated endpoint.
+         */
+        get: {
+            parameters: {
+                query?: {
+                    before?: string;
+                };
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Up to 50 source summaries */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["SupplierHistoryEnvelope"];
+                    };
+                };
+                401: components["responses"]["Error"];
+                403: components["responses"]["Error"];
+            };
+        };
+        put?: never;
+        /**
+         * Append a source version and its frozen comparison
+         * @description Requires FundsWrite and current personal Business context, including on exact replay. Daily aggregate comparison never changes customer balances or establishes request matching. Raw pages are retained exactly.
+         */
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": components["schemas"]["SupplierStatementImport"];
+                };
+            };
+            responses: {
+                /** @description Immutable source and captured comparison */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["SupplierDetailEnvelope"];
+                    };
+                };
+                400: components["responses"]["Error"];
+                401: components["responses"]["Error"];
+                403: components["responses"]["Error"];
+                409: components["responses"]["Error"];
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/business/supplier-statements/{sourceId}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Read an exact source version and one frozen comparison
+         * @description Requires ReportsRead. Also serves the export document; download the response without replacing previous versions.
+         */
+        get: {
+            parameters: {
+                query?: {
+                    /** @description Exact frozen comparison; absent returns the original import comparison */
+                    comparisonId?: string;
+                };
+                header?: never;
+                path: {
+                    sourceId: string;
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Raw source, asserted mapping, digests and exact comparison */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["SupplierDetailEnvelope"];
+                    };
+                };
+                401: components["responses"]["Error"];
+                403: components["responses"]["Error"];
+                404: components["responses"]["Error"];
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/business/supplier-statements/{sourceId}/comparisons": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List frozen comparison metadata in pages of 50
+         * @description Requires ReportsRead. Select comparisonId on the source detail endpoint for exact evidence/export. Newest captured metadata first.
+         */
+        get: {
+            parameters: {
+                query?: {
+                    before?: string;
+                };
+                header?: never;
+                path: {
+                    sourceId: string;
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Comparison metadata only */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["SupplierComparisonHistoryEnvelope"];
+                    };
+                };
+                401: components["responses"]["Error"];
+                403: components["responses"]["Error"];
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/business/supplier-statements/{sourceId}/compare": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Append another comparison without modifying the imported source
+         * @description Requires FundsWrite. Reuses the original day, channel mapping and cost-unit conversion. Exact retries retain the original capture; later evidence requires a new key.
+         */
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    sourceId: string;
+                };
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": {
+                        idempotencyKey: string;
+                        reason: string;
+                    };
+                };
+            };
+            responses: {
+                /** @description New immutable comparison or exact previous result */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": components["schemas"]["SupplierComparisonEnvelope"];
+                    };
+                };
+                400: components["responses"]["Error"];
+                401: components["responses"]["Error"];
+                403: components["responses"]["Error"];
+                404: components["responses"]["Error"];
+                409: components["responses"]["Error"];
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/business/charge-receipt": {
         parameters: {
             query?: never;
@@ -21565,6 +21873,196 @@ export interface components {
             };
             waived: string[];
             supplierCostKnown: boolean;
+        };
+        SupplierChannelChoice: {
+            /** Format: uuid */
+            channelId: string;
+            name: string;
+        };
+        SupplierStatementImport: {
+            idempotencyKey: string;
+            reason: string;
+            /** @description Operator assertion; page contents do not prove identity */
+            providerOrganizationId: string;
+            /** Format: date */
+            billDate: string;
+            /** Format: date-time */
+            fetchedAt: string;
+            /** @enum {string} */
+            scopeKind: "organization" | "projects";
+            projectIds: string[];
+            channelIds: string[];
+            /** @description Positive exact USD per local supplier-cost credit */
+            usdPerCredit: string;
+            /** @description Attestation that the selected channels covered this organization/project scope throughout the UTC day and justification for cost-unit conversion */
+            mappingEvidence: string;
+            query: {
+                /** Format: int64 */
+                startTime: number;
+                /** Format: int64 */
+                endTime: number;
+                /** @constant */
+                bucketWidth: "1d";
+                groupBy: "project_id"[];
+                projectIds: string[];
+                limit: number;
+            };
+            pages: {
+                requestPage: string | null;
+                /** @description Original raw JSON page text */
+                body: string;
+            }[];
+        };
+        SupplierStatementPreview: {
+            /** Format: int64 */
+            schemaVersion: number;
+            algorithmVersion: string;
+            provider: string;
+            providerOrganizationId: string;
+            billDate: string;
+            fetchedAt: string;
+            scopeKind: string;
+            projectIds: string[];
+            amountUsd: string;
+            microUsd: string;
+            residualUsd: string;
+            quantization: string;
+            lines: {
+                projectId: string | null;
+                amountUsd: string;
+                rawAmount: string;
+            }[];
+            identityBasis: string;
+            matchingGrain: string;
+            limitations: string[];
+        };
+        SupplierStatementSummary: {
+            /** Format: uuid */
+            sourceId: string;
+            /** Format: int64 */
+            sourceVersion: number;
+            parsed: components["schemas"]["SupplierStatementPreview"];
+            capturedAt: string;
+            digest: string;
+        };
+        SupplierStatementCoverage: {
+            /** Format: int64 */
+            knownAttempts: number;
+            /** Format: int64 */
+            unknownAttempts: number;
+            /** Format: int64 */
+            legacyAttempts: number;
+            /** Format: int64 */
+            pendingAttempts: number;
+            /** Format: int64 */
+            failedOrCancelledAttempts: number;
+            /** Format: int64 */
+            diagnosticRowsMissingAttempts: number;
+            /** Format: int64 */
+            diagnosticCacheRows: number;
+            /** Format: int64 */
+            retryAttempts: number;
+            /** Format: int64 */
+            operationsWithoutAttempts: number;
+            /** Format: int64 */
+            diagnosticUnrecordedAttempts: number;
+            complete: boolean;
+            scopeBasis: string;
+            limitations: string[];
+        };
+        SupplierAttemptEvidence: {
+            /** Format: uuid */
+            attemptId: string;
+            /** Format: uuid */
+            operationId: string;
+            /** Format: uuid */
+            channelId: string;
+            startedAt: string;
+            costMinor: string | null;
+            basis: string;
+            state: string;
+        };
+        SupplierComparisonDocument: {
+            /** Format: int64 */
+            schemaVersion: number;
+            algorithmVersion: string;
+            /** Format: uuid */
+            comparisonId: string;
+            /** Format: uuid */
+            sourceId: string;
+            /** Format: uuid */
+            mutationId: string;
+            /** Format: uuid */
+            actorId: string;
+            reason: string;
+            capturedAt: string;
+            billDate: string;
+            providerAmountUsd: string;
+            knownLocalCostMinor: string;
+            usdPerCredit: string;
+            knownLocalCostUsd: string;
+            conversionRemainderNumerator: string;
+            conversionRemainderDenominator: string;
+            deltaResidualNumerator: string;
+            deltaAgainstKnownUsd: string;
+            amountRelation: string;
+            coverage: components["schemas"]["SupplierStatementCoverage"];
+            attempts: components["schemas"]["SupplierAttemptEvidence"][];
+        };
+        SupplierComparison: {
+            /** Format: uuid */
+            comparisonId: string;
+            document: components["schemas"]["SupplierComparisonDocument"];
+            digest: string;
+            canonical: string;
+        };
+        SupplierComparisonSummary: {
+            /** Format: uuid */
+            comparisonId: string;
+            capturedAt: string;
+            /** Format: uuid */
+            actorId: string;
+            reason: string;
+            digest: string;
+        };
+        SupplierStatementDetail: {
+            /** Format: int64 */
+            schemaVersion: number;
+            /** Format: uuid */
+            sourceId: string;
+            /** Format: int64 */
+            sourceVersion: number;
+            /** Format: uuid */
+            importedBy: string;
+            capturedAt: string;
+            digest: string;
+            canonical: string;
+            digestDomain: string;
+            source: components["schemas"]["SupplierStatementImport"];
+            parsed: components["schemas"]["SupplierStatementPreview"];
+            channelSnapshot: {
+                /** Format: uuid */
+                channelId: string;
+                name: string;
+                baseUrl: string;
+                configurationUpdatedAt: string;
+            }[];
+            comparison: components["schemas"]["SupplierComparison"];
+        };
+        SupplierPreviewEnvelope: {
+            data: components["schemas"]["SupplierStatementPreview"];
+        };
+        SupplierHistoryEnvelope: {
+            data: components["schemas"]["SupplierStatementSummary"][];
+        };
+        SupplierDetailEnvelope: {
+            data: components["schemas"]["SupplierStatementDetail"];
+        };
+        SupplierComparisonEnvelope: {
+            data: components["schemas"]["SupplierComparison"];
+        };
+        SupplierComparisonHistoryEnvelope: {
+            data: components["schemas"]["SupplierComparisonSummary"][];
         };
         ChargeReceipt: {
             requestId: string;

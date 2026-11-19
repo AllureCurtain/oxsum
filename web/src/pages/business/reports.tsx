@@ -1,4 +1,5 @@
 import { UsageRecoveryQueue } from "./usage-recovery";
+import { SupplierStatements } from "./supplier-statements";
 import { useState } from "react";
 import { useTranslation } from "react-i18next";
 import { ChartColumn, Wrench } from "lucide-react";
@@ -319,6 +320,7 @@ export function BusinessReports() {
   return (
     <div className="flex flex-col gap-6">
       <h2 className="text-xl font-bold">{t("biz.reports.title")}</h2>
+      <SupplierStatements />
       <FactsDashboard />
       <Coverage />
       <Runs />
