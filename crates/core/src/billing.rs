@@ -243,7 +243,7 @@ impl PriceSet {
     /// a cache dimension with no configured rate is billed at the input rate,
     /// which is what "no cache discount" means. `billable` is whether the
     /// request ran: a failed or swept turn owes no flat fee.
-    fn lines(&self, usage: &UsageRecord, billable: bool) -> Vec<BillLine> {
+    pub(crate) fn lines(&self, usage: &UsageRecord, billable: bool) -> Vec<BillLine> {
         let mut input_units = usage.input_tokens;
         let mut lines = Vec::with_capacity(6);
         for (units, rate, item) in [
@@ -583,6 +583,26 @@ impl ItemizedCharge {
         )
     }
 
+    /// Discount and cap before narrowing to i64, so a hostile report cannot strand a hold.
+    pub(crate) fn capped_minor(
+        &self,
+        discount: i64,
+        ceiling: i64,
+    ) -> Result<(i64, bool), WalletError> {
+        if !(0..=100).contains(&discount) || ceiling < 0 {
+            return Err(Self::overflow());
+        }
+        let numerator = self
+            .numerator()?
+            .checked_mul(i128::from(100 - discount))
+            .ok_or_else(Self::overflow)?;
+        let divisor = i128::from(PER_MILLION) * 100;
+        let amount = numerator / divisor + i128::from(numerator % divisor != 0);
+        Ok((
+            i64::try_from(amount.min(i128::from(ceiling))).map_err(|_| Self::overflow())?,
+            amount > i128::from(ceiling),
+        ))
+    }
     /// One ceiling division, by hand: both sides are non-negative, and
     /// `i128::div_ceil` is still unstable.
     fn ceiling(numerator: i128, denominator: i128) -> Result<i64, WalletError> {
@@ -779,7 +799,7 @@ impl Price {
 
     /// The set that bills this usage, and the rule that chose it — the most
     /// specific match, which [`validate`](Self::validate) guarantees is unique.
-    fn resolve(&self, usage: &UsageRecord) -> (PriceSet, Option<RuleMatch>) {
+    pub(crate) fn resolve(&self, usage: &UsageRecord) -> (PriceSet, Option<RuleMatch>) {
         let best = self
             .rules
             .iter()

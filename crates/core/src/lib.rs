@@ -445,3 +445,6 @@ pub use billing_policies::{
     BillingPolicyAccept, BillingPolicyAcceptance, BillingPolicyPublish, BillingPolicyVersion,
     BillingRouteTerms, CustomerBillingPolicy, GatewayBillingTerms, PolicySelection,
 };
+
+/// Bounded provider-reported evidence recovery.
+pub mod usage_recovery;

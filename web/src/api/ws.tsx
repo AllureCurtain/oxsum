@@ -122,7 +122,8 @@ export function useBillingSocket(enabled = true) {
       });
       // A settled turn is the settled lists' signal to re-read: billing records,
       // balance and holds all move with it.
-      if (message.type === "turnSettled") {
+      if (message.type === "turnSettled" || message.type === "snapshot") {
+        clientRef.current.invalidateQueries({ queryKey: ["request-log"] });
         clientRef.current.invalidateQueries({ queryKey: ["billing-records"] });
         clientRef.current.invalidateQueries({ queryKey: ["balance"] });
         clientRef.current.invalidateQueries({ queryKey: ["holds"] });

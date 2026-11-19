@@ -136,3 +136,21 @@ async fn require_ledger(state: &AppState, tenant: &str) -> Result<(), ApiError> 
         Err(ApiError::not_found())
     }
 }
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(crate) struct RecoveryQuery {
+    #[serde(default)]
+    closed_unknown: bool,
+    before: Option<Uuid>,
+}
+pub(crate) async fn recovery_queue(
+    State(state): State<AppState>,
+    Extension(token): Extension<crate::auth::PersonalToken>,
+    ApiQuery(query): ApiQuery<RecoveryQuery>,
+) -> ApiResult<Vec<oxsum_core::usage_recovery::UsageRecoveryQueueRow>> {
+    ok(state
+        .db
+        .business_usage_recovery(&token, query.closed_unknown, query.before)
+        .await?)
+}

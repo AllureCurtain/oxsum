@@ -1,3 +1,4 @@
+import { UsageRecoveryQueue } from "./usage-recovery";
 import { useState } from "react";
 import { useTranslation } from "react-i18next";
 import { ChartColumn, Wrench } from "lucide-react";
@@ -413,6 +414,7 @@ export function BusinessExceptions() {
           {t("biz.exceptions.openOnly")}
         </label>
       </div>
+      <UsageRecoveryQueue />
       <Card title={t("biz.exceptions.listTitle")}>
         {exceptions.isError ? (
           <Banner tone="error">{t("biz.loadError")}</Banner>

@@ -17,6 +17,7 @@ export function receiptText(r: Receipt): string {
     `Financial outcome: ${r.financialState}; kind: ${r.settlementKind ?? "Not recorded"}; operation lifecycle: ${r.operationState ?? "Not recorded"}`, `Requested / served model: ${r.requestedModel} / ${r.servedModel ?? "Not recorded"}`,
     `Admission / terminal: ${r.createdAt ?? "Not recorded"} / ${r.completedAt ?? "Not recorded"}`,
     `Policy: ${r.policy}`, `Usage basis: ${r.usageBasis}`,
+    ...(r.recovery ? [`Evidence state: ${r.recovery.state}; execution observation: ${r.recovery.terminalObservation ?? "Executing"}`, `Evidence deadline: ${r.recovery.deadline ?? "Starts after terminal observation"}; financial close: ${r.recovery.closedAt ?? "Pending"}`, `Provider quantities: input=${r.recovery.observed.input ?? "Unknown"}; output=${r.recovery.observed.output ?? "Unknown"}; cached=${r.recovery.observed.cached ?? "Unknown"}; reasoning=${r.recovery.observed.reasoning ?? "Unknown"}`, `Waived: ${r.recovery.waived.map(value => value.replaceAll("_", " ")).join(", ") || "None recorded"}; closure: ${r.recovery.closeReason ?? "Pending"}`, `Supplier cost: ${r.recovery.supplierCostKnown ? "Historical estimate available" : "Unknown; zero customer charge does not establish zero consumption"}`] : []),
     `Price version: ${r.priceVersion ?? "Not recorded"}; sale version: ${r.saleVersion ?? "Not recorded"}; sale digest: ${r.saleDigest ?? "Not recorded"}`,
     `Ceiling: ${credits(r.ceilingMinor)}`, `Charge: ${credits(r.chargedMinor)}`,
     `Wallet pools: ${credits(r.walletChargedMinor)}; subscription: ${credits(r.subscriptionChargedMinor)}`,
@@ -35,7 +36,7 @@ export function ChargeReceiptLookup({ customerId, business = false }: { customer
   const [identifier, setIdentifier] = useState("");
   const [active, setActive] = useState("");
   const endpoint = business ? "/business/charge-receipt" : customerId ? `/business/customers/${customerId}/charge-receipt` : "/charge-receipt";
-  const query = useQuery({ queryKey: ["charge-receipt", endpoint, active], enabled: active !== "", retry: false,
+  const query = useQuery({ queryKey: ["charge-receipt", endpoint, active], enabled: active !== "", retry: false, refetchInterval: q => q.state.data?.receipt.recovery && q.state.data.receipt.recovery.state !== "closed" ? 5_000 : false,
     queryFn: async () => {
       if (business) return api<{ organizationId: string; customerName: string; receipt: Receipt }>(`${endpoint}?identifier=${encodeURIComponent(active)}`);
       return { organizationId: customerId, customerName: undefined, receipt: await api<Receipt>(`${endpoint}?identifier=${encodeURIComponent(active)}`) };
@@ -82,6 +83,7 @@ export function ChargeReceiptLookup({ customerId, business = false }: { customer
         {r.corrections.map(c => <tr key={c.id}><Td mono>{c.entryId}</Td><td>{c.createdAt}</td><Td mono align="right">{credits(c.amountMinor)}</Td><td>{c.reason}</td><Td mono>{c.contentHash}</Td></tr>)}
       </TableShell> : null}
       {resolvedCustomer && r.entryId ? <RequestCorrection key={`${resolvedCustomer}:${r.entryId}`} customerId={resolvedCustomer} sourceEntryId={r.entryId} onApplied={() => void query.refetch()} /> : null}
+      {r.recovery ? <section className="flex flex-col gap-2" aria-label="Provider evidence recovery"><h3 className="font-semibold">Provider evidence recovery · {r.recovery.state}</h3><p>Execution observation: {r.recovery.terminalObservation ?? "Executing"}. Financial close: {r.recovery.closedAt ?? "Pending"}.</p><p>Evidence deadline: {r.recovery.deadline ?? "Starts after terminal observation"}. {r.recovery.closeReason?.replaceAll("_", " ")}</p><p>Observed input: {r.recovery.observed.input ?? "Unknown"}; output: {r.recovery.observed.output ?? "Unknown"}; cached: {r.recovery.observed.cached ?? "Unknown"}; reasoning: {r.recovery.observed.reasoning ?? "Unknown"}.</p><p>Waived components: {r.recovery.waived.map(value => value.replaceAll("_", " ")).join(", ") || "None recorded"}. Invalid or conflicting evidence: {r.recovery.observed.invalid.map(value => value.replaceAll("_", " ")).join(", ") || "None recorded"}.</p><p>{r.recovery.supplierCostKnown ? "A historical supplier cost estimate is available to the Business." : "Supplier cost is unknown. Waived customer usage is not evidence of zero supplier consumption."}</p></section> : null}
       <p>{r.policy}</p>
       <p className="break-all">Historical price version: {r.priceVersion ?? "Not recorded"}; sale version: {r.saleVersion ?? "Not recorded"}. Sale digest: {r.saleDigest ?? "Not recorded"}.</p>
       <TableShell head={["Dimension", { label: "Units", align: "right" }, { label: "Minor units / million", align: "right" }]}>

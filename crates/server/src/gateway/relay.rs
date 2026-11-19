@@ -220,6 +220,8 @@ struct Plan {
     /// until the attempt loop records one — and stays `None` when the
     /// operation never bound.
     winning_attempt: Option<uuid::Uuid>,
+    provider_reported: bool,
+    observed: oxsum_core::usage_recovery::ObservedTextUsage,
 }
 
 /// What a turn carries from the operation layer into its settlement: the
@@ -402,6 +404,8 @@ impl Turn {
                 span,
                 operation,
                 winning_attempt: None,
+                provider_reported: false,
+                observed: Default::default(),
             }),
             heartbeat: None,
         }
@@ -487,6 +491,19 @@ impl Turn {
     /// exit — or aborted in `Drop`/`settle` when the plan is given up. A
     /// failed heartbeat is logged, never fatal: the turn's billing is the
     /// ledger's, not the row's.
+    /// Select the admission-bound policy before dispatch; cancellation uses the same path.
+    pub(crate) fn enable_provider_recovery(&mut self) {
+        if let Some(plan) = self.plan.as_mut() {
+            plan.provider_reported = true;
+        }
+        self.start_heartbeat();
+    }
+    /// Preserve only allowlisted raw usage evidence, never completion text.
+    pub(crate) fn note_provider_evidence(&mut self, value: &Value) {
+        if let Some(plan) = self.plan.as_mut() {
+            plan.observed = oxsum_core::usage_recovery::ObservedTextUsage::parse(value);
+        }
+    }
     pub(crate) fn start_heartbeat(&mut self) {
         let (Some(operation), Some(db)) = (
             self.operation().cloned(),
@@ -731,7 +748,7 @@ impl Turn {
         let request = plan.request.clone();
         let reason = reason.map(str::to_owned);
         match tokio::spawn(async move { plan.write(kind, charge, reason).await }).await {
-            Ok(Ok(charged)) => Some(charged),
+            Ok(Ok(charged)) => charged,
             Ok(Err(error)) => {
                 tracing::error!(%error, %request, "settling a gateway turn failed");
                 None
@@ -796,7 +813,66 @@ impl Plan {
         kind: SettlementKind,
         charge: Charge,
         reason: Option<String>,
-    ) -> Result<i64, WalletError> {
+    ) -> Result<Option<i64>, WalletError> {
+        if self.provider_reported {
+            let operation = self.operation.as_ref().ok_or_else(|| {
+                WalletError::Misconfigured("provider policy has no operation".into())
+            })?;
+            let terminal = if matches!(charge, Charge::Nothing) && self.observed.eligible {
+                "withheld"
+            } else if kind == SettlementKind::ClientCancelled {
+                "cancelled"
+            } else if self.finished && self.observed.eligible {
+                "answered"
+            } else {
+                "upstream_error"
+            };
+            self.db
+                .observe_recovery_terminal(
+                    operation.operation_id,
+                    &operation.lease_owner,
+                    terminal,
+                    &self.observed,
+                    &self.guardrails,
+                )
+                .await?;
+            let tenants = oxsum_core::Tenants::new(self.db.pool().clone());
+            let charged = crate::usage_recovery::recover_one(
+                &self.db,
+                &tenants,
+                operation.operation_id,
+                None,
+            )
+            .await?;
+            if let Some(charged) = charged {
+                let terminal = self
+                    .db
+                    .operation(self.organization_id, operation.operation_id)
+                    .await?;
+                let kind = terminal
+                    .and_then(|o| o.outcome_kind)
+                    .and_then(|s| serde_json::from_value::<SettlementKind>(Value::String(s)).ok())
+                    .unwrap_or(SettlementKind::Usage);
+                crate::metrics::settled(
+                    &self.metrics,
+                    kind,
+                    charged,
+                    self.observed.input.unwrap_or(0),
+                    self.observed.output.unwrap_or(0),
+                    self.started.elapsed().as_secs_f64(),
+                );
+                let _ = self.billing.send(BillingEvent::TurnSettled {
+                    key_id: self.key_id,
+                    tenant_id: self.tenant_id.clone(),
+                    request_id: self.request.clone(),
+                    charged_minor: charged,
+                    kind,
+                    input_tokens: self.observed.input.unwrap_or(0),
+                    output_tokens: self.observed.output.unwrap_or(0),
+                });
+            }
+            return Ok(charged);
+        }
         // Complete reason bytes survive in the usage transaction. The canonical
         // encoder uses an explicit commitment when inline JSON would be large.
         // A cache hit's provenance: the source entry id has to outlive the
@@ -1396,7 +1472,7 @@ impl Plan {
             output_tokens: usage.output_tokens,
         });
         match outcome {
-            Ok(Outcome::Settled) => Ok(charged),
+            Ok(Outcome::Settled) => Ok(Some(charged)),
             Ok(Outcome::Replay) => Err(WalletError::Conflict("hold already settled".into())),
             Err(error) => Err(error),
         }

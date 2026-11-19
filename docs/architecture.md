@@ -1257,3 +1257,26 @@ identifies each retained route for subsequent attempt correlation. It deliberate
 outlives diagnostic-operation retention. It contains no prompts, response bodies,
 provider credentials or wholesale rates. Existing sale/settlement encodings are
 unchanged. Recovery's exact attempt binding remains the next stage.
+
+### Provider-reported recovery ownership
+
+`usage_recovery` is created with gateway admission, sharing the reservation and
+immutable `operation_billing_terms`. `usage_recovery_attempts` retains one
+append-only restricted dispatch context before the paid POST, including the
+supplier rate snapshot, original configuration/credential generation and lookup
+capability. It stores no plaintext secret or prompt/response. Raw response usage
+is reduced to allowlisted presence-aware components; cumulative reports merge
+without summing and contradictory components stay invalid.
+
+Generic stale-hold and operation sweepers exclude these reservations, including
+an under-lock recheck. Terminal handoff fixes the deadline. The regular hold job
+processes at most sixteen due recoveries, each lookup bounded to ten seconds and
+4 MiB. Fresh 45-second claim generations fence stale workers. Closure locks
+key → recovery → subscription → ledger and commits funding, ledger, usage,
+operation ownership CAS, attempt evidence and watch removal together. Diagnostic
+request-log writes follow commit; receipt discovery uses durable financial data.
+Supplier-cost failure cannot prevent customer closure. A failed transaction can
+retry; a completed financial outcome cannot accept late extra debit. In-process
+gateway settlement counters do not count every deferred recovery; use the durable
+recovery queue and usage ledger for completeness. WebSocket snapshots reconcile
+live UI from PostgreSQL across worker processes.

@@ -1300,3 +1300,20 @@ digest, expectedAcceptanceId and idempotencyKey. The customer ID is only an
 equality precondition, never authority. Stale context, selection or unsupported
 runtime returns 409; exact replay remains subject to current authority. No API
 key can accept, and no staff mutation can manufacture customer consent.
+
+### Bounded usage recovery (#1236)
+
+`GET /api/v1/business/usage-recovery` requires personal Business ReportsRead.
+Default results are executing/pending operations; `closedUnknown=true` lists
+closed records with unknown supplier cost. Up to 50 operation IDs descend;
+pass the last ID as `before` for the next page. No supplier credentials, raw
+content or wholesale prices are returned. Diagnostic retention does not remove
+these records. Current authority is checked on every read.
+
+Charge receipts optionally include `recovery`: safe nullable observed components,
+terminal observation/deadline, closure reason, waived components and supplier
+cost coverage. Pending responses omit `x-oxsum-charged-minor`; zero is only a
+closed financial result. Replaying an accepted HTTP intent never resubmits the
+paid call. Legacy response and settlement encodings remain unchanged. The
+billing WebSocket refreshes an authorized durable hold snapshot every 15 seconds,
+so background/cross-process closure clears live state and refreshes billing reads.

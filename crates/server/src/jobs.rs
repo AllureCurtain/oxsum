@@ -256,6 +256,12 @@ async fn run_one(
     let tenants = Tenants::new(db.pool().clone());
     match job.kind.as_str() {
         kinds::SWEEP_HOLDS => {
+            crate::usage_recovery::recover_due(
+                db,
+                &tenants,
+                ctx.webhook.as_ref().map(|(_, key)| key),
+            )
+            .await?;
             let older_than = OffsetDateTime::now_utc() - ctx.hold_timeout;
             let on = OffsetDateTime::now_utc().date();
             let report = sweep_stale_holds(db, &tenants, older_than, on).await?;

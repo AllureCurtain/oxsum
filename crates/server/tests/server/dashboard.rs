@@ -252,6 +252,13 @@ async fn billing_socket_sends_a_snapshot_then_live_events() {
         nothing.is_err(),
         "another organization's event must not arrive"
     );
+    // A different process can close a hold without sending this process an event.
+    db.clear_open_hold(&hold_key).await.unwrap();
+    let refreshed = tokio::time::timeout(Duration::from_secs(20), next_json(&mut ws))
+        .await
+        .unwrap();
+    assert_eq!(refreshed["type"], "snapshot");
+    assert!(refreshed["holds"].as_array().unwrap().is_empty());
 }
 
 /// The next text message on the socket, parsed as JSON.

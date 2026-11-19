@@ -621,6 +621,7 @@ pub fn router(state: AppState) -> Router {
             "/business/customers/{organization_id}",
             patch(business::update_customer),
         )
+        .route("/business/usage-recovery", get(charge_receipts::recovery_queue))
         .route("/business/charge-receipt", get(charge_receipts::discover))
         .route("/business/customers/{organization_id}/charge-receipt/proof", get(charge_receipts::proof))
         .route("/business/customers/{organization_id}/charge-receipt", get(charge_receipts::business))

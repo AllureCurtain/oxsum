@@ -307,7 +307,17 @@ pub(super) async fn gateway(
     )
     .await;
     if let Err(error) = &outcome {
-        record_refusal(&state, &organization, &key, &request_id, &model, error).await;
+        let admitted = match Uuid::parse_str(&request_id) {
+            Ok(id) => state
+                .db
+                .operation(organization.id, id)
+                .await
+                .map(|o| o.is_some()),
+            Err(_) => Ok(false),
+        };
+        if matches!(admitted, Ok(false)) {
+            record_refusal(&state, &organization, &key, &request_id, &model, error).await;
+        }
     }
     let response = settle_claim(&state, &organization, claim, outcome, surface).await;
     with_request_id(response, &request_id)
@@ -447,7 +457,7 @@ async fn settle_claim(
     outcome: Result<Response, GatewayError>,
     surface: Surface,
 ) -> Response {
-    let Some((key, _)) = claim else {
+    let Some((key, request_id)) = claim else {
         return match outcome {
             Ok(response) => response,
             Err(error) => error_response(error, surface),
@@ -462,6 +472,19 @@ async fn settle_claim(
             complete_claim(state, organization, &key, error_response(error, surface)).await
         }
         Err(error) => {
+            // A committed admission may already have dispatched; never turn its key into a new inference.
+            let admitted = match Uuid::parse_str(&request_id) {
+                Ok(id) => state
+                    .db
+                    .operation(organization.id, id)
+                    .await
+                    .map(|o| o.is_some()),
+                Err(_) => Ok(false),
+            };
+            if !matches!(admitted, Ok(false)) {
+                return complete_claim(state, organization, &key, error_response(error, surface))
+                    .await;
+            }
             if let Err(error) = state.db.release_request(organization.id, &key).await {
                 tracing::error!(%error, "releasing an idempotency claim failed");
             }
@@ -1060,6 +1083,9 @@ async fn run(
         })).collect(),
         arithmetic: "integer-credit-1e6; sum dimensions then discount, one ceiling division, cap at admission ceiling".into(),
     };
+    if billing_terms.provider_reported() {
+        request.validate_provider_text()?;
+    }
     // The token-window allowance is judged at admission, after the bounds that
     // price the turn are known but before any hold is taken (issue #203): the
     // check is `window-actual + this estimate`, where the estimate is the same
@@ -1229,7 +1255,7 @@ async fn run(
     // rotates to the same channel's next credential before the turn leaves the
     // route, and a route's last credential still falls to the next route —
     // only now "the next route" may belong to the next model.
-    let attempts_list: Vec<(usize, usize, oxsum_core::PoolCredential)> = model_routes
+    let mut attempts_list: Vec<(usize, usize, oxsum_core::PoolCredential)> = model_routes
         .iter()
         .enumerate()
         .flat_map(|(model_index, routes)| {
@@ -1246,6 +1272,9 @@ async fn run(
         })
         .collect();
 
+    if billing_terms.provider_reported() {
+        attempts_list.truncate(1);
+    }
     // The semantic cache (issue #497): the primary route's channel is the one
     // a miss would be written under, so its `settings.semanticCache` decides
     // whether this request reads the store at all. A hit is served — and
@@ -1426,6 +1455,9 @@ async fn run(
         guardrails.clone(),
         operation_ctx,
     );
+    if billing_terms.provider_reported() {
+        turn.enable_provider_recovery();
+    }
     turn.note_requested_model(&requested_model);
     turn.note_input_count(request.counted_input);
     // The pre_call flags the pipeline collected land on the settlement — the
@@ -1437,8 +1469,8 @@ async fn run(
     // The experiment binding rides the turn to its settlement and usage row
     // (issue #509): `{id, variant}` on the v13 description and the row's
     // `usage_details`, so a report groups spend by variant.
-    if let Some(binding) = experiment {
-        turn.note_experiment(binding);
+    if let Some(binding) = &experiment {
+        turn.note_experiment(binding.clone());
     }
     // The dashboard's live section sees the turn from here: the hold is taken, upstream is
     // next. Best-effort — a missed event is a missed live update, not lost state.
@@ -1494,23 +1526,62 @@ async fn run(
         // row that cannot write only means the operation's failover detail
         // is thinner, never a failed turn. `external_id` patches in later
         // when the body's `id` names it.
-        let attempt_id = match &operation {
-            Some((operation, _)) => state
+        let attempt_id = if billing_terms.provider_reported() {
+            let route_index = model_routes
+                .iter()
+                .take(*model_index)
+                .map(|r| r.ordered.len())
+                .sum::<usize>()
+                + *route_index;
+            let secret = state.config.secret().ok_or_else(|| {
+                GatewayError::Forbidden("provider recovery requires configured credentials".into())
+            })?;
+            let dispatch = state
                 .db
-                .record_attempt(
-                    operation.operation_id,
-                    &candidate.channel,
-                    Some(credential.credential_id),
-                    None,
+                .begin_recovery_attempt(
+                    billing_terms.operation_id,
+                    &state.instance_id,
+                    &oxsum_core::usage_recovery::RecoveryDispatch {
+                        route_index,
+                        serving: candidate,
+                        credential_id: credential.credential_id,
+                        stored: request.stored_completion(),
+                        experiment: experiment.as_ref(),
+                    },
+                    secret,
                 )
-                .await
-                .map_err(|error| {
-                    tracing::warn!(%error, request = %request_id,
+                .await;
+            match dispatch {
+                Ok(id) => Some(id),
+                Err(error) => {
+                    turn.settle(
+                        SettlementKind::UpstreamError,
+                        Charge::Nothing,
+                        Some("dispatch context could not be committed"),
+                    )
+                    .await;
+                    return Err(error.into());
+                }
+            }
+        } else {
+            match &operation {
+                Some((operation, _)) => state
+                    .db
+                    .record_attempt(
+                        operation.operation_id,
+                        &candidate.channel,
+                        Some(credential.credential_id),
+                        None,
+                    )
+                    .await
+                    .map_err(|error| {
+                        tracing::warn!(%error, request = %request_id,
                         "recording the operation's attempt failed");
-                    error
-                })
-                .ok(),
-            None => None,
+                        error
+                    })
+                    .ok(),
+                None => None,
+            }
         };
         let attempt_started = Instant::now();
         // The body is rebuilt per attempt: the `model` it names is the serving
@@ -1584,6 +1655,9 @@ async fn run(
             }
             Surface::Gemini { .. } => call.header("x-goog-api-key", &credential.api_key),
         };
+        if billing_terms.provider_reported() {
+            call = call.timeout(Duration::from_secs(300));
+        }
         match call.send().await {
             Ok(response) if response.status().is_success() => {
                 crate::metrics::upstream_response(
@@ -1683,6 +1757,7 @@ async fn run(
                 // and nothing else remains, so the wait is honored once.
                 let retry_after = retry_after(&response);
                 if status == StatusCode::TOO_MANY_REQUESTS
+                    && !billing_terms.provider_reported()
                     && !retried_429
                     && retry_after.is_some_and(|delay| delay <= RETRY_AFTER_MAX)
                 {
@@ -1848,15 +1923,22 @@ async fn run(
                 turn.note_upstream_end();
                 match serde_json::from_str::<Value>(&text) {
                     Ok(value) => {
+                        if billing_terms.provider_reported() {
+                            turn.note_provider_evidence(&value);
+                        }
                         // A whole body is not a stream, but its usage report is read the same
                         // way.
-                        if let Some(usage) = adapter.usage(&value) {
+                        if !billing_terms.provider_reported()
+                            && let Some(usage) = adapter.usage(&value)
+                        {
                             turn.note_usage(usage);
                         }
                         // The attempt's external id (issue #601): upstream's
                         // own request id, when the body's `id` names one —
                         // the row the bill names "which call answered".
-                        if let Some(id) = value.get("id").and_then(Value::as_str) {
+                        if !billing_terms.provider_reported()
+                            && let Some(id) = value.get("id").and_then(Value::as_str)
+                        {
                             turn.note_attempt_external(id.to_owned());
                         }
                         turn.note_text(&adapter.answer_text(&value));

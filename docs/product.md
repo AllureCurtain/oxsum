@@ -1076,3 +1076,42 @@ is configurable from 1 through 900 seconds after terminal observation (default
 partial/cancelled usage may be billed, unresolved components waived, with no
 automatic additional customer debit after closure. Other surfaces keep legacy
 terms. Runtime readiness is separate from immutable policy publication.
+
+### Provider-reported text recovery
+
+Explicitly accepted `provider-reported-text-v1` now runs for synchronous,
+nonstreaming, single-choice plain-text OpenAI-compatible chat. Other surfaces
+retain legacy terms. Unsupported tool/media request shapes refuse before
+admission. Each new-policy operation permits one paid POST, with a 300-second
+request timeout and a continuing execution heartbeat; no failover or 429 retry
+can multiply its exposure. A configured output bound and admission ceiling still
+apply. These limits do not guarantee exactly-once external execution or cap the
+supplier's bill.
+
+Admission reserves funding and pins retail terms and the evidence window
+(1–900 seconds, default offer 900). The window begins at terminal observation,
+not while execution remains alive. Valid independently priceable provider
+components are billed within the ceiling, including eligible cancellation.
+Missing, contradictory or unsupported components are waived, never estimated
+or interpreted as observed zero. Counts must be integer quantities from 0 to
+1,000,000,000; contradictory totals and missing differently priced subsets
+prevent pricing the affected components. A justified fixed request fee can
+remain priceable without token quantities. Withheld responses remain free.
+
+Only a caller's explicit `store:true`, the canonical OpenAI origin and a
+retained exact completion ID permit a read-only stored-completion lookup.
+Storage is never enabled implicitly. Original provider configuration and
+credential generation must still match. Missing capability or permanent lookup
+failure closes early; transient failures retry within the original deadline.
+No recovery inference POST is sent. Financial closure atomically settles quota,
+wallet/debt and usage, releases the unused hold and cannot reopen for late
+supplier evidence. Previous-period subscription release affects that original
+period, not the new period's quota. A sealed posting date leaves closure pending
+until an allowed current UTC date; execution time remains recorded.
+
+Business → Exceptions → Usage recovery lists live reservations and closed
+unknown supplier exposure with pagination. ReportsRead can inspect this queue;
+CustomersRead can open the corresponding charge receipt. Customer receipts and
+exports show execution observation, evidence deadline, actual nullable usage,
+waived components and financial closure independently. Neither a completed
+provider response nor a financial close proves full delivery to the customer.

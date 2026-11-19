@@ -165,6 +165,14 @@ impl Db {
     ///
     /// Storage failures surface as [`WalletError`].
     pub async fn open_hold(&self, hold_key: &str) -> Result<Option<OpenHold>, WalletError> {
+        let mut tx = self.pool().begin().await?;
+        self.open_hold_in(&mut tx, hold_key).await
+    }
+    pub(crate) async fn open_hold_in(
+        &self,
+        tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+        hold_key: &str,
+    ) -> Result<Option<OpenHold>, WalletError> {
         let row = sqlx::query(
             "SELECT hold_key, tenant_id, request_id, model, channel, \
              price_version, input_price, output_price, freeze_minor, key_id, mandate_id, \
@@ -172,7 +180,7 @@ impl Db {
              FROM oxsum.open_holds WHERE hold_key = $1",
         )
         .bind(hold_key)
-        .fetch_optional(self.pool())
+        .fetch_optional(&mut **tx)
         .await?;
         row.as_ref().map(open_hold_from_row).transpose()
     }
@@ -265,7 +273,7 @@ impl Db {
              price_version, input_price, output_price, freeze_minor, key_id, mandate_id, \
              end_user, service_tier, tags, sweep_attempts, last_error, dead_at \
              FROM oxsum.open_holds \
-             WHERE opened_at < $1 \
+             WHERE opened_at < $1 AND NOT EXISTS(SELECT 1 FROM oxsum.usage_recovery r WHERE r.hold_key=open_holds.hold_key) \
                AND (dead_at IS NULL OR last_attempt_at < now() - interval '1 hour') \
              ORDER BY opened_at",
         )
@@ -684,6 +692,14 @@ async fn sweep_admitted_hold(
     })?;
     let mut tx = db.pool().begin().await?;
     wallet.lock_key_settlement_in(&mut tx, key).await?;
+    let protected: bool =
+        sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM oxsum.usage_recovery WHERE hold_key=$1)")
+            .bind(&hold.hold_key)
+            .fetch_one(&mut *tx)
+            .await?;
+    if protected {
+        return Ok(());
+    }
     let wallet_minor: Option<i64> =
         sqlx::query_scalar("SELECT wallet_minor FROM oxsum.open_holds WHERE hold_key=$1")
             .bind(&hold.hold_key)
