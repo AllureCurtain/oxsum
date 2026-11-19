@@ -119,8 +119,9 @@ impl Db {
         let business = authority::lock_business(&mut tx).await?;
         authority::require_capability(&mut tx, business, token, BusinessCapability::ReportsRead)
             .await?;
-        Ok(channels(&mut tx, business, None)
-            .await?
+        let result = channels(&mut tx, business, None).await;
+        tx.rollback().await?;
+        Ok(result?
             .into_iter()
             .map(|v| json!({"channelId":v["channelId"],"name":v["name"]}))
             .collect())
@@ -135,7 +136,9 @@ impl Db {
         let business = authority::lock_business(&mut tx).await?;
         authority::require_capability(&mut tx, business, token, BusinessCapability::ReportsRead)
             .await?;
-        channels(&mut tx, business, Some(&request.channel_ids)).await?;
+        let result = channels(&mut tx, business, Some(&request.channel_ids)).await;
+        tx.rollback().await?;
+        result?;
         Ok(parser::parse(request)?.document)
     }
     /// Commit an immutable source and first frozen comparison, atomically with audit.
@@ -204,7 +207,11 @@ impl Db {
         let business = authority::lock_business(&mut tx).await?;
         authority::require_capability(&mut tx, business, token, BusinessCapability::ReportsRead)
             .await?;
-        source_in(&mut tx, business, id, comparison).await
+        let result = source_in(&mut tx, business, id, comparison).await;
+        // Release the authority lock before returning even on a missing source.
+        // Drop only queues rollback; a following nonwaiting writer may run first.
+        tx.rollback().await?;
+        result
     }
     /// Bounded comparison metadata; exact detail takes a comparison ID.
     pub async fn supplier_statement_comparisons(
@@ -218,6 +225,7 @@ impl Db {
         authority::require_capability(&mut tx, business, token, BusinessCapability::ReportsRead)
             .await?;
         let rows=sqlx::query("SELECT c.comparison_id,c.captured_at,c.document->>'actorId' AS actor,c.document->>'reason' AS reason,c.digest FROM oxsum.supplier_statement_comparisons c JOIN oxsum.supplier_statement_sources s USING(source_id) WHERE s.business_id=$1 AND c.source_id=$2 AND ($3::uuid IS NULL OR (c.captured_at,c.comparison_id)<(SELECT captured_at,comparison_id FROM oxsum.supplier_statement_comparisons WHERE source_id=$2 AND comparison_id=$3)) ORDER BY c.captured_at DESC,c.comparison_id DESC LIMIT 50").bind(business).bind(source).bind(before).fetch_all(&mut *tx).await?;
+        tx.rollback().await?;
         rows.into_iter().map(|r|Ok(json!({"comparisonId":r.try_get::<Uuid,_>("comparison_id")?,"capturedAt":r.try_get::<time::OffsetDateTime,_>("captured_at")?.to_string(),"actorId":r.try_get::<String,_>("actor")?,"reason":r.try_get::<String,_>("reason")?,"digest":r.try_get::<String,_>("digest")?}))).collect()
     }
     /// Capture current evidence under the original asserted day, mapping and conversion.
@@ -249,6 +257,7 @@ impl Db {
         .await?
         {
             let row=sqlx::query("SELECT comparison_id,document,digest,canonical FROM oxsum.supplier_statement_comparisons WHERE mutation_id=$1").bind(mutation).fetch_one(&mut *tx).await?;
+            tx.rollback().await?;
             return Ok(
                 json!({"comparisonId":row.try_get::<Uuid,_>("comparison_id")?,"document":row.try_get::<Value,_>("document")?,"digest":row.try_get::<String,_>("digest")?,"canonical":row.try_get::<String,_>("canonical")?}),
             );
@@ -282,6 +291,7 @@ impl Db {
         authority::require_capability(&mut tx, business, token, BusinessCapability::ReportsRead)
             .await?;
         let rows=sqlx::query("SELECT source_id,source_version,parsed,captured_at,digest FROM oxsum.supplier_statement_sources WHERE business_id=$1 AND ($2::uuid IS NULL OR (captured_at,source_id)<(SELECT captured_at,source_id FROM oxsum.supplier_statement_sources WHERE business_id=$1 AND source_id=$2)) ORDER BY captured_at DESC,source_id DESC LIMIT 50").bind(business).bind(before).fetch_all(&mut *tx).await?;
+        tx.rollback().await?;
         rows.into_iter().map(|r|Ok(json!({"sourceId":r.try_get::<Uuid,_>("source_id")?,"sourceVersion":r.try_get::<i64,_>("source_version")?,"parsed":r.try_get::<Value,_>("parsed")?,"capturedAt":r.try_get::<time::OffsetDateTime,_>("captured_at")?.to_string(),"digest":r.try_get::<String,_>("digest")?}))).collect()
     }
 }
