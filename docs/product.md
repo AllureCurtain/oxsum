@@ -1115,3 +1115,40 @@ CustomersRead can open the corresponding charge receipt. Customer receipts and
 exports show execution observation, evidence deadline, actual nullable usage,
 waived components and financial closure independently. Neither a completed
 provider response nor a financial close proves full delivery to the customer.
+
+### Scoped OpenAI supplier statements
+
+Business Reports imports original OpenAI Costs JSON for one complete UTC day,
+under an explicit organization or selected-project scope. This is a supplier
+observation, which may later be revised, not necessarily a final invoice.
+Operators attest the organization identity, channel mapping for that entire day
+and exact USD-per-credit conversion for local supplier-cost estimates. Customer
+display currency is not a conversion source. Canonical OpenAI channels are
+required; a compatible protocol alone does not prove supplier identity.
+
+The supported query is `bucket_width=1d`, an explicit UTC start/end, no grouping
+for organization scope or exactly `project_id` with matching selected project
+filters. Other filters/grouping refuse. Preserve raw JSON pages and complete
+cursor chains; no browser numeric round trip. Strict USD numeric values retain
+signed decimal precision up to 18 places, including exponents. Missing buckets,
+invalid amounts, incomplete chains or duplicate day buckets refuse; only an
+explicit empty day bucket is zero. Exact totals are summed before microUSD
+quantization, with residual retained.
+
+Import and recompare require current personal FundsWrite. Sources and comparisons
+are immutable, audited and idempotent; new material creates another source
+version, new local evidence another comparison. ReportsRead can inspect choices,
+preview, history and exact exports. A comparison captures a repeatable database
+snapshot of attempts by UTC dispatch day and the pinned channel set. Known
+new-policy supplier estimates use retained historical rates/evidence. Legacy,
+failed, pending and missing-cost attempts remain explicitly unknown; retries
+within the selected cohort do not multiply a winning cost. Cache has no new
+supplier attempt. Missing diagnostic attempt counts use a separately disclosed
+settlement-day cohort. Deletion gaps, traffic outside oxsum and asserted scope
+cannot be proven complete, even when the known amounts agree. No customer debit
+or `provider_reconciled` usage classification is written.
+
+Old unscoped OpenAI automatic cost attribution is disabled, preserving existing
+`upstream_bills` observations unchanged. Use the new import journey for explicitly
+scoped comparisons. Anthropic's existing adapter remains available; its shared
+decimal parser now rejects malformed values and correctly handles negative signs.

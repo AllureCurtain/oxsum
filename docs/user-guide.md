@@ -2221,3 +2221,39 @@ waived quantities explain the final charge. Export the readable receipt after
 closure. Staff can inspect Business → Exceptions → Usage recovery, switch to
 closed unknown supplier cost, and use the operation/customer IDs in Customers →
 Charge receipt. Supplier costs reported later never trigger another customer debit.
+
+### Import and compare an OpenAI Costs day
+
+After upgrading through migration 0143, open **Business → Reports → OpenAI
+supplier statements**. Configure canonical `https://api.openai.com/v1` channels
+first. Finance staff can read redacted choices and import without access to
+provider secrets. Acquire an original, complete response export from
+`GET /v1/organization/costs` using your authorized OpenAI admin access. This
+portal does not request or store that admin key.
+
+Choose a fully elapsed UTC day and the original fetch time. For whole-organization
+scope use no grouping/filter. For selected projects use exactly `group_by=project_id`
+and those `project_ids`; other filters are unsupported. Set daily buckets and
+limit 7 for the portal's documented query. Upload original JSON pages in request
+order and enter each continuation request cursor. Do not parse/reserialize money
+through spreadsheet or JavaScript floating-point tools. Files must total at most
+2 MiB and 16 pages. A day split across duplicate buckets is currently unsupported.
+
+Enter the asserted organization ID, complete channel set for that day, USD per
+local supplier-cost credit and a reason/evidence for both scope and conversion.
+Preview displays the exact provider observation and reviewed mapping. Confirm
+import only after checking those facts. A network failure retains the original
+request for exact retry across reload; discarding it never undoes a committed
+import, so inspect history or retry first if the outcome is uncertain.
+
+Select an immutable source version to inspect the provider total, known local
+estimate, difference, fractional residual and unknown/failed/pending/missing
+attempt coverage. Equal known amounts still do not establish complete matching.
+**Capture another comparison** saves updated local evidence under original terms;
+revised supplier material must be imported as a new source version. Select any
+retained comparison and **Export exact source and comparison**. Keep this export
+and its digest outside the server if you need later independent checks.
+
+Old OpenAI automatic unscoped comparisons stop after upgrade; historical rows
+remain unchanged. No reconciliation action charges a customer. Actual provider
+account mapping and authentic report certification remain an operator task.

@@ -1280,3 +1280,23 @@ retry; a completed financial outcome cannot accept late extra debit. In-process
 gateway settlement counters do not count every deferred recovery; use the durable
 recovery queue and usage ledger for completeness. WebSocket snapshots reconcile
 live UI from PostgreSQL across worker processes.
+
+### Supplier source and comparison records
+
+Migration0143 adds append-only `supplier_statement_sources` and
+`supplier_statement_comparisons`. Raw JSON strings preserve numeric lexemes;
+`RawValue` parses exact signed base10 amounts into checked i128 units at10^-18.
+Source canonical bytes bind identity/version/actor, request, parsed facts and
+channel configuration snapshot. Comparison canonical bytes bind its identity,
+source, actor/reason and captured coverage/evidence. These are ordinary financial
+application records, not changes to vendored ledger tables or customer money.
+
+Repeatable-read writes take a nonwaiting Business row lock and version that row,
+then authenticate the live session and lock staff membership. Stale snapshots or
+competing ownership fail retryably. Source, first comparison and existing Business
+audit commit together. Comparison history reads are bounded metadata; exact
+source reads select one comparison, avoiding unbounded history exports. New-policy
+attempts use durable execution context; legacy estimates lack that complete
+provenance and remain unknown. Diagnostic missing/cache coverage uses explicit
+UTC timestamp bounds, independently from the attempt-start cohort. Never multiply
+winning usage by retry count or reconstruct historical costs from current rates.

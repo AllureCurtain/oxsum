@@ -5253,3 +5253,21 @@ return unused quota to its original period, updating the live mirror only when
 that period remains current. Closed finance is final; append on a permitted
 current posting day and never rewrite a sealed execution day. Authenticated
 periodic WebSocket snapshots reconcile background closure across processes.
+
+## 2026-11-20 — Immutable scoped OpenAI Costs import (#1237)
+
+Use the real OpenAI Costs JSON format with raw numeric lexemes, explicit USD and
+one complete UTC day. Reference the official OpenAPI snapshot
+`fa361566ec236d24fad012d24d8aec352cab0cc0`. Restrict initial grouping/filtering to
+organization or selected projects. Preserve exact18 decimals, aggregate before
+microUSD quantization and retain conversion remainders; reject unsupported
+precision/overflow instead of guessing. No new numeric dependency is needed.
+
+Require operator assertions for provider identity, whole-day channel scope and
+supplier cost-unit conversion. Freeze source and comparison versions separately;
+compare attempt-start UTC cohorts, preserving unknown evidence rather than
+backfilling current rates. Read-only preview and explicit audited import support
+finance staff without exposing credentials. Canonical export bytes make hash
+recomputation independent of a consumer's JSON serializer. Disable unsafe legacy
+whole-organization OpenAI attribution while retaining its old rows. These records
+never post customer money or claim complete request matching.

@@ -160,3 +160,11 @@ response delivery, external execution uniqueness or complete supplier cost.
 A pending recovery has no final settlement proof. Later cost evidence cannot
 rewrite a closed customer charge. Diagnostic analytics are not the authority for
 recovery state or receipt existence.
+
+Supplier statement exports commit exact imported pages, uploader assertions and a
+frozen local comparison with reproducible canonical SHA-256 input. A hash matches
+only relative to the digest you independently retained. It does not verify file
+origin, organization ownership, completeness of provider usage or invoice finality.
+Daily Costs aggregates cannot prove request-by-request correspondence. Unknown
+attempt costs and mapping gaps remain outside completeness claims, including when
+totals agree. These documents do not modify or extend customer bill-proof scope.
