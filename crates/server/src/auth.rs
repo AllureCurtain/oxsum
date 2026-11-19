@@ -241,6 +241,7 @@ fn customer_route_capability(method: &str, path: &str) -> oxsum_core::CustomerCa
             | "/entries"
             | "/usage"
             | "/billing-records"
+            | "/charge-receipt"
             | "/requests"
             | "/operations"
             | "/operations/{operation_id}"

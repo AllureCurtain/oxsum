@@ -1,3 +1,4 @@
+import { ChargeReceiptLookup } from "../components/ChargeReceipt";
 import { useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { ArrowLeftRight, Search } from "lucide-react";
@@ -221,6 +222,7 @@ export function Requests() {
         )}
       </div>
 
+      <ChargeReceiptLookup />
       <RequestSearch />
 
       <div className="flex flex-wrap gap-x-10 gap-y-4 rounded-xl border border-line bg-surface px-5 py-4 shadow-[0_1px_3px_rgba(20,34,64,.05)]">

@@ -1,3 +1,4 @@
+import { ChargeReceiptLookup } from "../../components/ChargeReceipt";
 import { CustomerCreditCard } from "./customer-credit";
 import { CustomerMonthlyStatements } from "./monthly-statements";
 import { CustomerPlanBinding } from "./customer-plan-binding";
@@ -51,7 +52,7 @@ function CustomerList({ onPick }: { onPick: (c: BusinessCustomer) => void }) {
   const page = customers.data;
 
   return (
-    <Card title={t("biz.customers.listTitle")}>
+    <><ChargeReceiptLookup business /><Card title={t("biz.customers.listTitle")}>
       {customers.isError ? (
         <Banner tone="error">{t("biz.loadError")}</Banner>
       ) : (
@@ -95,7 +96,7 @@ function CustomerList({ onPick }: { onPick: (c: BusinessCustomer) => void }) {
           {t("common.loadMore")}
         </Button>
       ) : null}
-    </Card>
+    </Card></>
   );
 }
 
@@ -198,6 +199,8 @@ function CustomerDetail({ customer, onBack }: { customer: BusinessCustomer; onBa
         </div>
         {stateBadge(c.state)}
       </div>
+
+      <ChargeReceiptLookup key={c.organizationId} customerId={c.organizationId} />
 
       {/* profile */}
       <Card title={t("biz.customers.profile")}>

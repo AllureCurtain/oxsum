@@ -5059,6 +5059,138 @@ paths:
         "400": { $ref: "#/components/responses/Error" }
         "401": { $ref: "#/components/responses/Error" }
         "500": { $ref: "#/components/responses/Error" }
+  /api/v1/business/charge-receipt:
+    get:
+      security: [{ sessionCookie: [] }]
+      x-consumption-key-access: denied
+      summary: Find a charge across the Business's customers by exact ID
+      description: Requires CustomersRead. Searches durable operation and ledger identities within the Business. Reused provider IDs refuse with 409; no current prices or request analytics are needed.
+      parameters:
+        - name: identifier
+          in: query
+          required: true
+          schema: { type: string, minLength: 1, maxLength: 256 }
+      responses:
+        "200":
+          description: The owning customer and readable receipt
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    type: object
+                    required: [organizationId, customerName, receipt]
+                    properties:
+                      organizationId: { type: string, format: uuid }
+                      customerName: { type: string }
+                      receipt: { $ref: "#/components/schemas/ChargeReceipt" }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "409": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
+  /api/v1/business/customers/{organizationId}/charge-receipt/proof:
+    get:
+      security: [{ sessionCookie: [] }]
+      x-consumption-key-access: denied
+      summary: Export the original charge proof for the existing verifier
+      description: Requires CustomersRead and customer ownership. Returns original immutable entry evidence, separately from the redacted readable receipt. Paste the bundle and independently retained hash into /verify. A supplied head does not independently establish trust.
+      parameters:
+        - name: organizationId
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+        - name: identifier
+          in: query
+          required: true
+          schema: { type: string, minLength: 1, maxLength: 256 }
+      responses:
+        "200":
+          description: Existing verifier bundle, original immutable entry plus inclusion path and optional price/sale bindings
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    type: object
+                    required: [entry, head, proof]
+                    properties:
+                      entry: { type: object }
+                      head: { type: object }
+                      proof: { type: object }
+                      price: { $ref: "#/components/schemas/PriceLink" }
+                      sale: { $ref: "#/components/schemas/SaleLink" }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "409": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
+  /api/v1/charge-receipt:
+    get:
+      security: [{ bearer: [] }, { apiKeyHeader: [] }, { googApiKeyHeader: [] }, { sessionCookie: [] }]
+      x-consumption-key-access: own-records
+      summary: Read a customer-safe charge receipt by exact identifier
+      description: Reads durable ledger facts, never current prices or best-effort request analytics. Business reads require CustomersRead and an owned customer. Ambiguous upstream identifiers return 409. No raw payloads, supplier credentials or wholesale costs are returned. Ledger indices show ordering, not isolated account balances.
+      parameters:
+        - name: identifier
+          in: query
+          required: true
+          description: Exact request/operation UUID, hold/settlement entry UUID, or recorded upstream ID.
+          schema: { type: string, minLength: 1, maxLength: 256 }
+      responses:
+        "200":
+          description: Durable customer-safe receipt, including explicitly absent historical diagnostics
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data: { $ref: "#/components/schemas/ChargeReceipt" }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "409": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
+  /api/v1/business/customers/{organizationId}/charge-receipt:
+    get:
+      security: [{ sessionCookie: [] }]
+      x-consumption-key-access: denied
+      summary: Read a customer-safe charge receipt by exact identifier
+      description: Reads durable ledger facts, never current prices or best-effort request analytics. Business reads require CustomersRead and an owned customer. Ambiguous upstream identifiers return 409. No raw payloads, supplier credentials or wholesale costs are returned. Ledger indices show ordering, not isolated account balances.
+      parameters:
+        - name: organizationId
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+        - name: identifier
+          in: query
+          required: true
+          description: Exact request/operation UUID, hold/settlement entry UUID, or recorded upstream ID.
+          schema: { type: string, minLength: 1, maxLength: 256 }
+      responses:
+        "200":
+          description: Durable customer-safe receipt, including explicitly absent historical diagnostics
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data: { $ref: "#/components/schemas/ChargeReceipt" }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "409": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
   /api/v1/operations:
     get:
       security: [{ bearer: [] }, { apiKeyHeader: [] }, { googApiKeyHeader: [] }, { sessionCookie: [] }]
@@ -15861,6 +15993,70 @@ components:
           type: string
           format: date-time
           description: when the operation went terminal; absent while it is open
+    ChargeReceipt:
+      type: object
+      required: [requestId, operationId, executionState, operationState, settlementKind, financialState, requestedModel, servedModel, createdAt, completedAt, entryId, contentHash, priceVersion, saleDigest, saleVersion, policy, usageBasis, ceilingMinor, chargedMinor, walletChargedMinor, subscriptionChargedMinor, releasedMinor, lines, discountPercent, rounding, ledger, attempts, diagnostics]
+      properties:
+        requestId: { type: string }
+        operationId: { type: [string, "null"], format: uuid }
+        executionState: { type: string }
+        operationState: { type: [string, "null"] }
+        settlementKind: { type: [string, "null"] }
+        financialState: { type: string, enum: [pending, settled] }
+        requestedModel: { type: string }
+        servedModel: { type: [string, "null"] }
+        createdAt: { type: [string, "null"] }
+        completedAt: { type: [string, "null"] }
+        entryId: { type: [string, "null"] }
+        contentHash: { type: [string, "null"] }
+        priceVersion: { type: [integer, "null"], format: int64 }
+        saleDigest: { type: [string, "null"] }
+        saleVersion: { type: [integer, "null"], format: int64 }
+        policy: { type: string }
+        usageBasis: { type: string }
+        ceilingMinor: { type: integer, format: int64 }
+        chargedMinor: { type: [integer, "null"], format: int64 }
+        walletChargedMinor: { type: [integer, "null"], format: int64 }
+        subscriptionChargedMinor: { type: [integer, "null"], format: int64 }
+        releasedMinor: { type: [integer, "null"], format: int64 }
+        discountPercent: { type: [integer, "null"], format: int64 }
+        rounding: { type: string }
+        lines:
+          type: array
+          items:
+            type: object
+            required: [item, units, pricePerMillion]
+            properties:
+              item: { type: string }
+              units: { type: integer, format: int64 }
+              pricePerMillion: { type: integer, format: int64 }
+        ledger:
+          type: array
+          items:
+            type: object
+            required: [entryId, index, bookedOn, pool, reservedMinor, releasedMinor, settledEffectMinor]
+            properties:
+              entryId: { type: string }
+              index: { type: integer, format: int64 }
+              bookedOn: { type: string }
+              pool: { type: string }
+              reservedMinor: { type: integer, format: int64 }
+              releasedMinor: { type: integer, format: int64 }
+              settledEffectMinor: { type: integer, format: int64 }
+        attempts:
+          type: array
+          items:
+            type: object
+            required: [attemptId, externalId, status, startedAt, completedAt]
+            properties:
+              attemptId: { type: string, format: uuid }
+              externalId: { type: [string, "null"] }
+              status: { type: string }
+              startedAt: { type: string }
+              completedAt: { type: [string, "null"] }
+        diagnostics:
+          type: array
+          items: { type: string }
     OperationAttempt:
       type: object
       description: >

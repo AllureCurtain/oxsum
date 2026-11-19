@@ -6709,6 +6709,219 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/business/charge-receipt": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Find a charge across the Business's customers by exact ID
+         * @description Requires CustomersRead. Searches durable operation and ledger identities within the Business. Reused provider IDs refuse with 409; no current prices or request analytics are needed.
+         */
+        get: {
+            parameters: {
+                query: {
+                    identifier: string;
+                };
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description The owning customer and readable receipt */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            data: {
+                                /** Format: uuid */
+                                organizationId: string;
+                                customerName: string;
+                                receipt: components["schemas"]["ChargeReceipt"];
+                            };
+                        };
+                    };
+                };
+                400: components["responses"]["Error"];
+                401: components["responses"]["Error"];
+                403: components["responses"]["Error"];
+                404: components["responses"]["Error"];
+                409: components["responses"]["Error"];
+                500: components["responses"]["Error"];
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/business/customers/{organizationId}/charge-receipt/proof": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Export the original charge proof for the existing verifier
+         * @description Requires CustomersRead and customer ownership. Returns original immutable entry evidence, separately from the redacted readable receipt. Paste the bundle and independently retained hash into /verify. A supplied head does not independently establish trust.
+         */
+        get: {
+            parameters: {
+                query: {
+                    identifier: string;
+                };
+                header?: never;
+                path: {
+                    organizationId: string;
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Existing verifier bundle, original immutable entry plus inclusion path and optional price/sale bindings */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            data: {
+                                entry: Record<string, never>;
+                                head: Record<string, never>;
+                                proof: Record<string, never>;
+                                price?: components["schemas"]["PriceLink"];
+                                sale?: components["schemas"]["SaleLink"];
+                            };
+                        };
+                    };
+                };
+                400: components["responses"]["Error"];
+                401: components["responses"]["Error"];
+                403: components["responses"]["Error"];
+                404: components["responses"]["Error"];
+                409: components["responses"]["Error"];
+                500: components["responses"]["Error"];
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/charge-receipt": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Read a customer-safe charge receipt by exact identifier
+         * @description Reads durable ledger facts, never current prices or best-effort request analytics. Business reads require CustomersRead and an owned customer. Ambiguous upstream identifiers return 409. No raw payloads, supplier credentials or wholesale costs are returned. Ledger indices show ordering, not isolated account balances.
+         */
+        get: {
+            parameters: {
+                query: {
+                    /** @description Exact request/operation UUID, hold/settlement entry UUID, or recorded upstream ID. */
+                    identifier: string;
+                };
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Durable customer-safe receipt, including explicitly absent historical diagnostics */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            data: components["schemas"]["ChargeReceipt"];
+                        };
+                    };
+                };
+                400: components["responses"]["Error"];
+                401: components["responses"]["Error"];
+                403: components["responses"]["Error"];
+                404: components["responses"]["Error"];
+                409: components["responses"]["Error"];
+                500: components["responses"]["Error"];
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/business/customers/{organizationId}/charge-receipt": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Read a customer-safe charge receipt by exact identifier
+         * @description Reads durable ledger facts, never current prices or best-effort request analytics. Business reads require CustomersRead and an owned customer. Ambiguous upstream identifiers return 409. No raw payloads, supplier credentials or wholesale costs are returned. Ledger indices show ordering, not isolated account balances.
+         */
+        get: {
+            parameters: {
+                query: {
+                    /** @description Exact request/operation UUID, hold/settlement entry UUID, or recorded upstream ID. */
+                    identifier: string;
+                };
+                header?: never;
+                path: {
+                    organizationId: string;
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Durable customer-safe receipt, including explicitly absent historical diagnostics */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            data: components["schemas"]["ChargeReceipt"];
+                        };
+                    };
+                };
+                400: components["responses"]["Error"];
+                401: components["responses"]["Error"];
+                403: components["responses"]["Error"];
+                404: components["responses"]["Error"];
+                409: components["responses"]["Error"];
+                500: components["responses"]["Error"];
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/operations": {
         parameters: {
             query?: never;
@@ -20954,6 +21167,71 @@ export interface components {
              * @description when the operation went terminal; absent while it is open
              */
             completedAt?: string;
+        };
+        ChargeReceipt: {
+            requestId: string;
+            /** Format: uuid */
+            operationId: string | null;
+            executionState: string;
+            operationState: string | null;
+            settlementKind: string | null;
+            /** @enum {string} */
+            financialState: "pending" | "settled";
+            requestedModel: string;
+            servedModel: string | null;
+            createdAt: string | null;
+            completedAt: string | null;
+            entryId: string | null;
+            contentHash: string | null;
+            /** Format: int64 */
+            priceVersion: number | null;
+            saleDigest: string | null;
+            /** Format: int64 */
+            saleVersion: number | null;
+            policy: string;
+            usageBasis: string;
+            /** Format: int64 */
+            ceilingMinor: number;
+            /** Format: int64 */
+            chargedMinor: number | null;
+            /** Format: int64 */
+            walletChargedMinor: number | null;
+            /** Format: int64 */
+            subscriptionChargedMinor: number | null;
+            /** Format: int64 */
+            releasedMinor: number | null;
+            /** Format: int64 */
+            discountPercent: number | null;
+            rounding: string;
+            lines: {
+                item: string;
+                /** Format: int64 */
+                units: number;
+                /** Format: int64 */
+                pricePerMillion: number;
+            }[];
+            ledger: {
+                entryId: string;
+                /** Format: int64 */
+                index: number;
+                bookedOn: string;
+                pool: string;
+                /** Format: int64 */
+                reservedMinor: number;
+                /** Format: int64 */
+                releasedMinor: number;
+                /** Format: int64 */
+                settledEffectMinor: number;
+            }[];
+            attempts: {
+                /** Format: uuid */
+                attemptId: string;
+                externalId: string | null;
+                status: string;
+                startedAt: string;
+                completedAt: string | null;
+            }[];
+            diagnostics: string[];
         };
         /** @description One upstream try inside an operation (issue #601): a failover or fallback makes several — one `answered` attempt carries the usage the settlement charged, the `refused`/`unreachable` ones are the audit of what was tried first. */
         OperationAttempt: {

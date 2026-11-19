@@ -19,6 +19,8 @@ mod anchors;
 mod append;
 #[path = "wallet/balances.rs"]
 mod balances;
+#[path = "wallet/charge_receipt.rs"]
+mod charge_receipt;
 #[path = "wallet/credit.rs"]
 mod credit;
 #[path = "wallet/funding.rs"]
@@ -41,6 +43,9 @@ mod settle;
 mod transaction_reads;
 
 pub use admission::GatewayAdmission;
+pub use charge_receipt::{
+    BusinessChargeReceipt, ChargeReceipt, ReceiptAttempt, ReceiptLine, ReceiptMovement,
+};
 pub use funding_preview::GatewayFundingPreview;
 pub use reads::{
     LogEntry, RequestEntry, SettledEntry, SettledTurn, TransactionEntry, TransactionKind,

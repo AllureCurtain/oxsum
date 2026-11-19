@@ -2140,3 +2140,23 @@ and key. Closing the dialog or reloading the same browser tab retains that
 intent. A definitive refusal requires a fresh preview. Personal Finance authority
 is checked again on recovery; a revoked role cannot execute or recover a write.
 Original and successor documents link in both directions.
+
+### Explain an individual charge
+
+Open **Requests → Charge receipt**, paste the request/operation ID, ledger entry
+ID or a recorded provider ID, then choose **Find charge**. Staff use the same
+control in **Business → Customers → customer detail**. A reused provider ID can
+match several requests; use the operation ID in that case.
+
+Read execution observation and financial outcome separately. Compare historical
+quantities and rates, the ceiling, discount and usage basis. The ledger table
+shows each pool's reservation, release and settled effect in actual log order;
+unrelated calls may fall between those positions. Subscription entitlement is
+separate. **Export readable receipt** saves these customer-safe facts as text.
+Customers can open **Verify recorded evidence** for the existing verifier; retain
+the entry hash and independently trusted log heads. Verification does not prove
+provider usage truth or delivery. Missing historical diagnostics are labelled.
+
+The Business customer list also offers lookup before selecting a customer.
+Staff can **Export proof bundle** and **Open verifier**, then paste the bundle
+and their retained hash. Repeating **Find charge** refreshes an in-flight result.
