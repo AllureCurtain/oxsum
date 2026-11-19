@@ -33,6 +33,18 @@ query/cursor chain and operator mapping/conversion assertions are retained.
 Full workspace: **2642 passed, 6 skipped**, 526.303 seconds
 (`supplier-workspace.log`, `cargo nextest run --workspace --no-fail-fast`).
 
+The first PR CI shard exposed an actual lock-lifecycle issue in the new history
+suite: returning from a read queued sqlx rollback asynchronously, so the next
+nonwaiting writer could see its still-held Business lock and return `PoolBusy`.
+Read results now await transaction rollback (including missing detail results)
+and exact comparison replay does likewise. The original test remains unchanged;
+the seven focused suites and an additional unchanged history-test run passed
+(`supplier-lock-tests.log`, `supplier-lock-history-repeat.log`), along with
+strict core Clippy and pinned formatting. Subsequent exact-head CI is the merge
+gate for this fix. The earlier
+2642-test full run covers the implementation before this narrow fix; it is not
+misrepresented as testing the later commit.
+
 ## Browser acceptance
 
 Ego Chromium exercised the real React portal and rebuilt server with migration
