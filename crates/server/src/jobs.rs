@@ -991,7 +991,7 @@ async fn sync_upstream_bills(
     secret: &SecretKey,
 ) -> Result<BillSyncReport, oxsum_core::WalletError> {
     let channels = db.billable_channels(secret).await?;
-    // Yesterday's closed day — the day a provider cost API has fully rolled up.
+    // Yesterday's observation window; provider reports may still be revised.
     let date = (OffsetDateTime::now_utc() - time::Duration::days(1)).date();
     let mut report = BillSyncReport {
         channels: channels.len(),
@@ -999,6 +999,11 @@ async fn sync_upstream_bills(
         flagged: 0,
     };
     for channel in channels {
+        // OpenAI Costs is organization scoped, so the immutable scoped import
+        // owns new observations. Preserve any old unscoped row without upsert.
+        if channel.protocol == oxsum_core::OPENAI {
+            continue;
+        }
         let bill = provider.daily_cost(&channel, date).await;
         if bill.is_some() {
             report.billed += 1;

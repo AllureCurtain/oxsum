@@ -446,5 +446,7 @@ pub use billing_policies::{
     BillingRouteTerms, CustomerBillingPolicy, GatewayBillingTerms, PolicySelection,
 };
 
+/// Immutable scoped supplier statement import and comparison.
+pub mod supplier_statements;
 /// Bounded provider-reported evidence recovery.
 pub mod usage_recovery;

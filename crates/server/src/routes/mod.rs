@@ -56,6 +56,7 @@ mod request_corrections;
 pub(crate) mod requests;
 mod staff_invitations;
 mod statements;
+mod supplier_statements;
 pub(crate) mod usage;
 mod usage_reports;
 mod webhooks;
@@ -622,6 +623,12 @@ pub fn router(state: AppState) -> Router {
             patch(business::update_customer),
         )
         .route("/business/usage-recovery", get(charge_receipts::recovery_queue))
+         .route("/business/supplier-statements/choices",get(supplier_statements::choices))
+        .route("/business/supplier-statements/preview",post(supplier_statements::preview).layer(DefaultBodyLimit::max(4*1024*1024)))
+        .route("/business/supplier-statements",get(supplier_statements::list).post(supplier_statements::import).layer(DefaultBodyLimit::max(4*1024*1024)))
+        .route("/business/supplier-statements/{source_id}",get(supplier_statements::detail))
+        .route("/business/supplier-statements/{source_id}/comparisons",get(supplier_statements::comparisons))
+        .route("/business/supplier-statements/{source_id}/compare",post(supplier_statements::compare))
         .route("/business/charge-receipt", get(charge_receipts::discover))
         .route("/business/customers/{organization_id}/charge-receipt/proof", get(charge_receipts::proof))
         .route("/business/customers/{organization_id}/charge-receipt", get(charge_receipts::business))

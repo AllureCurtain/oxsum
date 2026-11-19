@@ -546,7 +546,7 @@ async fn billable_channel(world: &World, secret: &SecretKey, name: &str) -> uuid
             name,
             "http://provider.invalid",
             "sk-metering",
-            "openai",
+            "anthropic",
             secret,
         )
         .await
@@ -762,4 +762,53 @@ async fn upstream_bill_sync_no_provider_answer_records_a_gap() {
         "an unanswered day is a coverage gap, not a zero"
     );
     assert_eq!(drift_minor, None);
+}
+
+#[tokio::test]
+async fn disabled_openai_sync_preserves_prior_unscoped_observation() {
+    let _guard = JOBS_LOCK.lock().await;
+    let url = oxsum_testkit::suite_url!().expect("supplier sync regression requires PostgreSQL");
+    let world = world(&url).await;
+    let secret = SecretKey::from_bytes([7; 32]);
+    let name = fresh("openai-preserved");
+    let id = billable_channel(&world, &secret, &name).await;
+    sqlx::query("UPDATE oxsum.channels SET protocol='openai' WHERE channel_id=$1")
+        .bind(id)
+        .execute(world.db.pool())
+        .await
+        .unwrap();
+    let day = (OffsetDateTime::now_utc() - time::Duration::days(1)).date();
+    let channel = world
+        .db
+        .billable_channels(&secret)
+        .await
+        .unwrap()
+        .into_iter()
+        .find(|c| c.channel_id == id)
+        .unwrap();
+    world
+        .db
+        .record_bill(
+            &channel,
+            day,
+            Some(oxsum_core::DailyBill {
+                provider_billed_minor: 123,
+            }),
+        )
+        .await
+        .unwrap();
+    let context = JobContext {
+        bill_provider: Some((
+            Arc::new(StubBillProvider {
+                billed: None,
+                calls: Mutex::new(0),
+            }),
+            secret,
+        )),
+        ..ctx()
+    };
+    enqueue(&world.db, kinds::UPSTREAM_BILL_SYNC).await;
+    run_due(&world.db, &context).await;
+    let amount:Option<i64>=sqlx::query_scalar("SELECT provider_billed_minor FROM oxsum.upstream_bills WHERE channel_id=$1 AND bill_date=$2").bind(id).bind(day).fetch_one(world.db.pool()).await.unwrap();
+    assert_eq!(amount, Some(123));
 }

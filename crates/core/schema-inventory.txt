@@ -140,6 +140,8 @@ statements
 subscription_draws
 subscription_periods
 subscription_plans
+supplier_statement_comparisons
+supplier_statement_sources
 tasks
 teams
 tier_profiles
