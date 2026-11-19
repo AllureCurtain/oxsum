@@ -56,6 +56,24 @@ pub struct ReceiptAttempt {
     pub completed_at: Option<String>,
 }
 
+/// Customer-safe correction facts authorized through their original charge.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ReceiptCorrection {
+    /// Immutable correction identity.
+    pub id: Uuid,
+    /// Credited entry, separate from the original.
+    pub entry_id: Uuid,
+    /// Verified credited entry hash.
+    pub content_hash: String,
+    /// Purchased wallet credit.
+    pub amount_minor: i64,
+    /// Customer-visible explanation supplied by staff.
+    pub reason: String,
+    /// UTC correction time.
+    pub created_at: String,
+}
+
 /// A readable receipt. Financial facts come from verified ledger entries;
 /// operation diagnostics are explicitly separate and may be absent.
 #[derive(Debug, Serialize)]
@@ -105,6 +123,12 @@ pub struct ChargeReceipt {
     pub subscription_charged_minor: Option<i64>,
     /// Unused original ceiling, not a refund of an earlier settled debit.
     pub released_minor: Option<i64>,
+    /// Purchased credit returned by source-linked corrections.
+    pub corrected_minor: i64,
+    /// Original charge less source-linked credits.
+    pub net_charged_minor: Option<i64>,
+    /// Safe linked facts; scoped callers do not gain access to whole credit entries.
+    pub corrections: Vec<ReceiptCorrection>,
     /// Exact historical priced dimensions.
     pub lines: Vec<ReceiptLine>,
     /// Recorded discount, applied before the customer ceiling.
@@ -241,6 +265,62 @@ impl Wallet {
             ledger.extend(self.receipt_movements(burn)?);
             diagnostics.push("Unused promotional reservation was released and then expired; see the separate promotion debit. It did not become spendable purchased credit.".into());
         }
+        let mut corrections = Vec::new();
+        let mut corrected_minor = 0_i64;
+        if let Some(source) = &settled {
+            let rows = sqlx::query("SELECT * FROM oxsum.request_corrections WHERE organization_id=$1 AND source_entry_id=$2 ORDER BY created_at,correction_id LIMIT 1001")
+                .bind(organization_id).bind(source.entry.id().as_uuid()).fetch_all(db.pool()).await?;
+            if rows.len() > 1000 {
+                return Err(WalletError::InvalidInput(
+                    "receipt correction detail limit exceeded; use period evidence".into(),
+                ));
+            }
+            for row in rows {
+                let id: Uuid = row.try_get("correction_id")?;
+                let entry_id: Uuid = row.try_get("entry_id")?;
+                let content_hash: String = row.try_get("content_hash")?;
+                let amount: i64 = row.try_get("amount_minor")?;
+                let credit = self
+                    .store
+                    .get(EntryId::from_uuid(entry_id))
+                    .await?
+                    .ok_or_else(|| WalletError::Misconfigured("correction entry missing".into()))?;
+                let key = format!("request-correction:{id}");
+                if credit.content_hash.to_hex() != content_hash
+                    || row.try_get::<String, _>("source_hash")? != source.content_hash.to_hex()
+                    || credit.entry.id() != wallet::entry_id_for(&key)
+                    || credit.entry.idempotency_key().as_bytes() != key.as_bytes()
+                {
+                    return Err(WalletError::Misconfigured(
+                        "correction source integrity mismatch".into(),
+                    ));
+                }
+                let movement = self.receipt_movements(&credit)?;
+                if movement.len() != 1
+                    || movement[0].pool != "purchased_credit"
+                    || movement[0].settled_effect_minor != amount
+                    || amount <= 0
+                {
+                    return Err(WalletError::Misconfigured(
+                        "correction effect mismatch".into(),
+                    ));
+                }
+                corrected_minor = corrected_minor
+                    .checked_add(amount)
+                    .ok_or_else(|| WalletError::Misconfigured("correction sum overflow".into()))?;
+                ledger.extend(movement);
+                corrections.push(ReceiptCorrection {
+                    id,
+                    entry_id,
+                    content_hash,
+                    amount_minor: amount,
+                    reason: row.try_get("reason")?,
+                    created_at: row
+                        .try_get::<time::OffsetDateTime, _>("created_at")?
+                        .to_string(),
+                });
+            }
+        }
         ledger.sort_by_key(|m| m.index);
         let wallet_charged = settled.as_ref().map(|s| {
             -ledger
@@ -358,6 +438,9 @@ impl Wallet {
             usage_basis: usage_basis.into(),
             ceiling_minor: ceiling,
             charged_minor: charged,
+            corrected_minor,
+            net_charged_minor: charged.map(|c| c - corrected_minor),
+            corrections,
             wallet_charged_minor: wallet_charged,
             subscription_charged_minor: record.as_ref().map(|r| r.subscription.as_ref().map_or(0, |s| s.charged_minor)),
             released_minor: charged.map(|c| ceiling - c),

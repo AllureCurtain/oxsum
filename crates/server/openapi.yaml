@@ -7607,6 +7607,69 @@ paths:
         "403": { $ref: "#/components/responses/Error" }
         "404": { $ref: "#/components/responses/Error" }
         "409": { $ref: "#/components/responses/Error" }
+  /api/v1/business/customers/{organizationId}/request-corrections/preview:
+    get:
+      security: [{ sessionCookie: [] }]
+      x-consumption-key-access: denied
+      summary: Preview source-linked purchased-credit correction
+      description: Requires current personal Business FundsWrite authority. Only a pure purchased-credit gateway charge is eligible; mixed funding, subscriptions, promotions and debt refuse. Credits append against the original source and never create a cash refund or restore key budgets. Apply rechecks the source hash and cumulative credit under a lock; exact retries return the original effect.
+      parameters:
+        - name: organizationId
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+        - name: sourceEntryId
+          in: query
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        "200":
+          description: Verified source and remaining correction bound, or immutable applied correction
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data: { $ref: "#/components/schemas/RequestCorrectionPreview" }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "409": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
+  /api/v1/business/customers/{organizationId}/request-corrections:
+    post:
+      security: [{ sessionCookie: [] }]
+      x-consumption-key-access: denied
+      summary: Apply a bounded purchased-credit correction
+      description: Requires current personal Business FundsWrite authority. Only a pure purchased-credit gateway charge is eligible; mixed funding, subscriptions, promotions and debt refuse. Credits append against the original source and never create a cash refund or restore key budgets. Apply rechecks the source hash and cumulative credit under a lock; exact retries return the original effect.
+      parameters:
+        - name: organizationId
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/RequestCorrectionInput" }
+      responses:
+        "200":
+          description: Verified source and remaining correction bound, or immutable applied correction
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data: { $ref: "#/components/schemas/RequestCorrection" }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "409": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
   /api/v1/business/customers/{organizationId}/credit-terms:
     get:
       operationId: getBusinessCustomerCreditTerms
@@ -15995,7 +16058,7 @@ components:
           description: when the operation went terminal; absent while it is open
     ChargeReceipt:
       type: object
-      required: [requestId, operationId, executionState, operationState, settlementKind, financialState, requestedModel, servedModel, createdAt, completedAt, entryId, contentHash, priceVersion, saleDigest, saleVersion, policy, usageBasis, ceilingMinor, chargedMinor, walletChargedMinor, subscriptionChargedMinor, releasedMinor, lines, discountPercent, rounding, ledger, attempts, diagnostics]
+      required: [requestId, operationId, executionState, operationState, settlementKind, financialState, requestedModel, servedModel, createdAt, completedAt, entryId, contentHash, priceVersion, saleDigest, saleVersion, policy, usageBasis, ceilingMinor, chargedMinor, walletChargedMinor, subscriptionChargedMinor, releasedMinor, correctedMinor, netChargedMinor, corrections, lines, discountPercent, rounding, ledger, attempts, diagnostics]
       properties:
         requestId: { type: string }
         operationId: { type: [string, "null"], format: uuid }
@@ -16019,6 +16082,21 @@ components:
         walletChargedMinor: { type: [integer, "null"], format: int64 }
         subscriptionChargedMinor: { type: [integer, "null"], format: int64 }
         releasedMinor: { type: [integer, "null"], format: int64 }
+        correctedMinor: { type: integer, format: int64, description: Source-linked purchased credit returned after original settlement }
+        netChargedMinor: { type: [integer, "null"], format: int64, description: Original total charge minus source-linked corrections }
+        corrections:
+          type: array
+          items:
+            type: object
+            required: [id, entryId, contentHash, amountMinor, reason, createdAt]
+            properties:
+              id: { type: string, format: uuid }
+              entryId: { type: string, format: uuid }
+              contentHash: { type: string }
+              amountMinor: { type: integer, format: int64 }
+              reason: { type: string, description: Customer-visible correction explanation }
+              createdAt: { type: string }
+
         discountPercent: { type: [integer, "null"], format: int64 }
         rounding: { type: string }
         lines:
@@ -16057,6 +16135,41 @@ components:
         diagnostics:
           type: array
           items: { type: string }
+    RequestCorrectionInput:
+      type: object
+      additionalProperties: false
+      required: [idempotencyKey, sourceEntryId, sourceHash, expectedCorrectedMinor, amountMinor, reason]
+      properties:
+        idempotencyKey: { type: string, minLength: 1, maxLength: 200 }
+        sourceEntryId: { type: string, format: uuid }
+        sourceHash: { type: string }
+        expectedCorrectedMinor: { type: integer, format: int64, minimum: 0 }
+        amountMinor: { type: integer, format: int64, minimum: 1, maximum: 9007199254740991 }
+        reason: { type: string, minLength: 1, maxLength: 500 }
+    RequestCorrectionPreview:
+      type: object
+      required: [sourceEntryId, sourceHash, requestId, chargedMinor, correctedMinor, remainingMinor, effect]
+      properties:
+        sourceEntryId: { type: string, format: uuid }
+        sourceHash: { type: string }
+        requestId: { type: string }
+        chargedMinor: { type: integer, format: int64 }
+        correctedMinor: { type: integer, format: int64 }
+        remainingMinor: { type: integer, format: int64 }
+        effect: { type: string }
+    RequestCorrection:
+      type: object
+      required: [id, sourceEntryId, sourceHash, entryId, contentHash, amountMinor, reason, actorId, createdAt]
+      properties:
+        id: { type: string, format: uuid }
+        sourceEntryId: { type: string, format: uuid }
+        sourceHash: { type: string }
+        entryId: { type: string, format: uuid }
+        contentHash: { type: string }
+        amountMinor: { type: integer, format: int64 }
+        reason: { type: string }
+        actorId: { type: string, format: uuid }
+        createdAt: { type: string }
     OperationAttempt:
       type: object
       description: >
@@ -18213,10 +18326,11 @@ components:
         paidUnfulfilled: { type: array, items: { type: string, format: uuid }, description: the paid orders the recovery sweep still owes a fulfillment }
     FinancialFacts:
       type: object
-      required: [usageMinor, ratedMinor, entitlementMinor, fundingMinor, earnedMinor, collectedMinor, refundMinor, receivableMinor, billedMinor, deferredMinor, discountMinor]
+      required: [usageMinor, requestCreditsMinor, ratedMinor, entitlementMinor, fundingMinor, earnedMinor, collectedMinor, refundMinor, receivableMinor, billedMinor, deferredMinor, discountMinor]
       description: The source-derived financial figures a period's books answer, all integer minor units — the customer's `/api/v1/org/usage-report` and the staff's `/api/v1/business/financial-facts` derive from the same source rows, so the filtered view is a projection, never a second total.
       properties:
-        usageMinor: { type: integer, format: int64, description: "Σ settled `charged_minor` — what the turns cost the customer" }
+        usageMinor: { type: integer, format: int64, description: "Gross settled usage before separate request credits" }
+        requestCreditsMinor: { type: integer, format: int64, description: "Purchased wallet credits posted in the UTC period. Like other money categories, ignores model/channel and timeBasis; never cash refunds, plan discounts or debt reductions. Excluded from plan-fee reconciliation." }
         ratedMinor: { type: integer, format: int64, description: the same turns at catalog rate before discount — `rated − usage` is the granted discount }
         entitlementMinor: { type: integer, format: int64, description: subscription draws plus plan-period quota consumed — what the plan covered }
         fundingMinor: { type: integer, format: int64, description: paid orders plus credited deposits — cash in }
@@ -18582,7 +18696,7 @@ components:
         actorUserId: { type: string, format: uuid, description: the staff user who authorized the action }
         action:
           type: string
-          enum: [refund.approve, refund.decline, refund.release, dispute.resolve, journal.void, statement.release, reconciliation.resolve, reconciliation.waive, reconciliation.repair, plan_refund.recover, plan_usage.correct, nonplan_refund.recover, nonplan_chargeback.recover]
+          enum: [refund.approve, refund.decline, refund.release, dispute.resolve, journal.void, statement.release, reconciliation.resolve, reconciliation.waive, reconciliation.repair, plan_refund.recover, plan_usage.correct, nonplan_refund.recover, nonplan_chargeback.recover, statement.refund, request.correct]
           description: the audited financial action — the same vocabulary `finance_audit`'s check constraint bounds
         target: { type: string, description: the entity the action corrected — a refund, dispute, journal, statement or exception id }
         detail: { type: object, additionalProperties: true, description: the action's safe fields — reason, decision, repair patch; never a credential }

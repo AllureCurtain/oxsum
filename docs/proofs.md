@@ -135,3 +135,12 @@ new proof protocol. Its text export is unsigned; retain the linked entry hash
 and use the existing entry verifier and independently trusted heads. Diagnostic
 operation/attempt times and execution status are not established by ledger
 inclusion and do not prove delivery. Missing historical fields stay absent.
+
+Request-credit corrections retain both original and credited entry hashes. The
+original proof remains byte-for-byte unchanged; its arithmetic still describes
+the original gross charge. A readable receipt's net amount is application
+composition, not a new assertion by the original proof. Period bundles include
+credits posted within the selected period and their original source entries as
+linked context (the source can predate the period). Inclusion verifies the
+committed records, not the staff reason's truth or a cash refund. Previously
+frozen period bundles remain unchanged.

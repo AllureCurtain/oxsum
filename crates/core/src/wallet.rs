@@ -37,6 +37,8 @@ mod plan;
 mod promo;
 #[path = "wallet/reads.rs"]
 mod reads;
+#[path = "wallet/request_correction.rs"]
+mod request_correction;
 #[path = "wallet/settle.rs"]
 mod settle;
 #[path = "wallet/transaction_reads.rs"]
@@ -44,7 +46,8 @@ mod transaction_reads;
 
 pub use admission::GatewayAdmission;
 pub use charge_receipt::{
-    BusinessChargeReceipt, ChargeReceipt, ReceiptAttempt, ReceiptLine, ReceiptMovement,
+    BusinessChargeReceipt, ChargeReceipt, ReceiptAttempt, ReceiptCorrection, ReceiptLine,
+    ReceiptMovement,
 };
 pub use funding_preview::GatewayFundingPreview;
 pub use reads::{

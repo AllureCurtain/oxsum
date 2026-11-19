@@ -10,7 +10,6 @@ Open GitHub issues are the queue. This file is only the index. One row per open 
 
 | Issue | Title |
 | --- | --- |
-| [#1234](https://github.com/AllureCurtain/oxsum/issues/1234) | feat: bounded source-linked request credit corrections |
 | [#1235](https://github.com/AllureCurtain/oxsum/issues/1235) | feat: prospectively accepted versioned billing policies |
 | [#1236](https://github.com/AllureCurtain/oxsum/issues/1236) | feat: bounded provider usage evidence recovery |
 | [#1237](https://github.com/AllureCurtain/oxsum/issues/1237) | feat: scoped OpenAI supplier statement reconciliation |

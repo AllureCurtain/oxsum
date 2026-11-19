@@ -2160,3 +2160,20 @@ provider usage truth or delivery. Missing historical diagnostics are labelled.
 The Business customer list also offers lookup before selecting a customer.
 Staff can **Export proof bundle** and **Open verifier**, then paste the bundle
 and their retained hash. Repeating **Find charge** refreshes an in-flight result.
+
+### Correct a purchased-credit charge
+
+In **Business → Customers → Charge receipt**, find the exact request or entry.
+Choose **Preview request credit correction**. Check the original amount, earlier
+credits, remaining capacity and stated effect. Enter an integer minor-unit
+amount (1 credit = 1,000,000 minor units), choose **Review credit**, and give a
+customer-visible explanation before confirming. A pending intent is saved in this browser tab before sending. After a lost
+response or reload, choose **Recover pending request credit** to replay its exact
+body and key. Authorization failures retain the intent until access is restored.
+On a definitive stale-preview conflict, close and preview again. Unsupported funding refuses with an explanation.
+
+The refreshed receipt shows the original charge, returned purchased credit and
+net charge. Bills includes the appended adjustment; the Finance audit names the
+source and actor. This workflow does not send a cash refund, change plan debt or
+restore key spending limits. An already sealed current posting day refuses;
+retry with a fresh preview on an allowed day, without changing historical dates.

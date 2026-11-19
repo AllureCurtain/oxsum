@@ -73,7 +73,7 @@ impl Db {
             self.collect_usage_records(&mut collector, wallet.tenant_id(), from, to)
                 .await?;
             self.collect_plan_statements(&mut collector, org).await?;
-            self.collect_orders_and_adjustments(&mut collector, org)
+            self.collect_orders_and_adjustments(&mut collector, org, from, to)
                 .await?;
             self.collect_day_seals(&mut collector, org, wallet.tenant_id(), from, to)
                 .await?;

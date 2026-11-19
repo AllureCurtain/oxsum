@@ -1025,3 +1025,125 @@ async fn charge_receipt_refuses_ambiguous_provider_identity() {
     .await;
     assert_eq!(status, StatusCode::CONFLICT);
 }
+
+#[tokio::test]
+async fn request_credit_preview_apply_retry_and_scoped_exports() {
+    let url = oxsum_testkit::suite_url!().expect("correction acceptance requires PostgreSQL");
+    let world = world(&url, 10_000).await;
+    assert_eq!(call(&world.app,"POST","/v1/chat/completions",Some(json!({"model":"chat-model","messages":[{"role":"user","content":"hello"}],"max_tokens":8,"stream":false})),Some(&world.key)).await.0,StatusCode::OK);
+    let (_, operations) = call(
+        &world.app,
+        "GET",
+        "/api/v1/operations",
+        None,
+        Some(&world.key),
+    )
+    .await;
+    let id = operations["data"]["operations"][0]["operationId"]
+        .as_str()
+        .unwrap();
+    let receipt_path = format!("/api/v1/charge-receipt?identifier={id}");
+    let (_, before) = call(&world.app, "GET", &receipt_path, None, Some(&world.key)).await;
+    let source = before["data"]["entryId"].as_str().unwrap();
+    let base = format!(
+        "/api/v1/business/customers/{}/request-corrections",
+        world.organization_id
+    );
+    let preview_path = format!("{base}/preview?sourceEntryId={source}");
+    assert_eq!(
+        call(&world.app, "GET", &preview_path, None, Some(&world.key))
+            .await
+            .0,
+        StatusCode::FORBIDDEN
+    );
+    let owner = receipt_owner(&world).await;
+    let staff_call = |method: &str, path: &str, body: Option<Value>| {
+        let mut r = Request::builder()
+            .method(method)
+            .uri(path)
+            .header("cookie", format!("oxsum_session={owner}"));
+        if body.is_some() {
+            r = r.header("content-type", "application/json");
+        }
+        world.app.clone().oneshot(
+            r.body(body.map_or_else(Body::empty, |v| Body::from(v.to_string())))
+                .unwrap(),
+        )
+    };
+    let response = staff_call("GET", &preview_path, None).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let p: Value =
+        serde_json::from_slice(&response.into_body().collect().await.unwrap().to_bytes()).unwrap();
+    assert_eq!(p["data"]["remainingMinor"], 18);
+    let intent = json!({"idempotencyKey":"request-credit-http","sourceEntryId":source,"sourceHash":p["data"]["sourceHash"],"expectedCorrectedMinor":0,"amountMinor":7,"reason":"Confirmed duplicate component"});
+    let mut credit = Value::Null;
+    for _ in 0..2 {
+        let response = staff_call("POST", &base, Some(intent.clone()))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body: Value =
+            serde_json::from_slice(&response.into_body().collect().await.unwrap().to_bytes())
+                .unwrap();
+        if credit.is_null() {
+            credit = body;
+        } else {
+            assert_eq!(credit, body);
+        }
+    }
+    let (_, after) = call(&world.app, "GET", &receipt_path, None, Some(&world.key)).await;
+    assert_eq!(after["data"]["chargedMinor"], 18);
+    assert_eq!(after["data"]["correctedMinor"], 7);
+    assert_eq!(after["data"]["netChargedMinor"], 11);
+    assert_eq!(
+        after["data"]["corrections"][0]["reason"],
+        "Confirmed duplicate component"
+    );
+    let credit_id = credit["data"]["entryId"].as_str().unwrap();
+    for secret in [
+        &world.key,
+        &world
+            .db
+            .create_key(
+                world.organization_id,
+                Some("sibling correction".into()),
+                None,
+                None,
+                oxsum_core::KeyConstraints::default(),
+            )
+            .await
+            .unwrap()
+            .secret,
+    ] {
+        assert_eq!(
+            call(
+                &world.app,
+                "GET",
+                &format!("/api/v1/entries/{credit_id}/proof"),
+                None,
+                Some(secret)
+            )
+            .await
+            .0,
+            StatusCode::NOT_FOUND
+        );
+    }
+    let mut changed = intent.clone();
+    changed["amountMinor"] = json!(8);
+    assert_eq!(
+        staff_call("POST", &base, Some(changed))
+            .await
+            .unwrap()
+            .status(),
+        StatusCode::CONFLICT
+    );
+    // Authority is checked even on a successful financial replay.
+    world.db.logout(&owner).await.unwrap();
+    assert_eq!(
+        staff_call("POST", &base, Some(intent))
+            .await
+            .unwrap()
+            .status(),
+        StatusCode::UNAUTHORIZED
+    );
+}

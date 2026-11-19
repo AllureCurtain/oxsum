@@ -1270,3 +1270,16 @@ proof bytes for `/verify` paste mode. That original evidence is separate from
 the redacted readable receipt. Operation lifecycle and settlement kind are
 reported separately from usage provenance; `succeeded` alone never establishes
 response completeness or delivery.
+
+## Request-credit correction
+
+Personal Business `fundsWrite` authority is required for
+`GET /api/v1/business/customers/{organizationId}/request-corrections/preview?sourceEntryId=...`
+and `POST /api/v1/business/customers/{organizationId}/request-corrections`.
+The preview returns the verified source hash, original debit, prior credits and
+remaining amount. Apply binds that hash and `expectedCorrectedMinor` together
+with a positive exact integer `amountMinor`, customer-visible `reason` and
+`idempotencyKey`. Source or remaining-capacity changes return 409. Retrying an
+identical successful intent returns its original credit under current authority.
+No client financial date is accepted. Ledger, immutable correction, Business
+audit and finance audit (`request.correct`) commit together.

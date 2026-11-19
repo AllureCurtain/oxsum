@@ -1,5 +1,6 @@
 //! Controlled same-scope descriptor races on the actual PostgreSQL indexes.
-#![allow(clippy::unwrap_used, clippy::expect_used)]
+// This suite owns its isolated database and setup OnceCell.
+#![allow(clippy::duplicate_mod, clippy::unwrap_used, clippy::expect_used)]
 
 use std::time::Duration;
 
@@ -170,4 +171,86 @@ async fn a_different_marker_identity_is_not_adopted_after_publication() {
     assert!(result.is_err());
     assert!(db.evidence_bundle(org, foreign).await.unwrap().is_some());
     sqlx::raw_sql("DROP TRIGGER replace_evidence_id ON oxsum.evidence_bundles; DROP FUNCTION oxsum.replace_evidence_id();").execute(db.pool()).await.unwrap();
+}
+
+#[path = "../../tests/support/integration.rs"]
+mod correction_setup;
+
+#[tokio::test]
+async fn posting_period_correction_capture_contains_both_ledger_sources() {
+    let _guard = TEST_LOCK.lock().await;
+    let (db, wallet, org) = fixture()
+        .await
+        .expect("correction evidence acceptance requires PostgreSQL");
+    let owner = correction_setup::owner(&db).await;
+    let day = OffsetDateTime::now_utc().date();
+    wallet
+        .top_up("credit-evidence-fund", 100, day)
+        .await
+        .unwrap();
+    let request = Uuid::new_v4();
+    let key = format!("req-{request}:hold");
+    wallet
+        .hold(
+            &key,
+            &crate::hold_description(&request.to_string(), "model", 100).unwrap(),
+            100,
+            day,
+        )
+        .await
+        .unwrap();
+    let description=serde_json::json!({"v":3,"request":request.to_string(),"channel":"fixture","model":"model","priceVersion":1,"kind":"usage","usage":{"inputTokens":100},"lines":[["input",100,1000000],["output",0,1000000]],"charged":100,"freeze":100}).to_string();
+    let source = wallet.settle(&key, &description, 100, day).await.unwrap();
+    let preview = db
+        .preview_request_correction(&owner, org, *source.entry_id.as_uuid())
+        .await
+        .unwrap();
+    let credit = db
+        .apply_request_correction(
+            &owner,
+            org,
+            &crate::RequestCorrectionInput {
+                idempotency_key: "evidence-credit".into(),
+                source_entry_id: *source.entry_id.as_uuid(),
+                source_hash: preview.source_hash,
+                expected_corrected_minor: 0,
+                amount_minor: 30,
+                reason: "Evidence fixture adjustment".into(),
+            },
+        )
+        .await
+        .unwrap();
+    let mut collector = Collector::new(org, false);
+    collector.bounded = true;
+    // Exercise the same capture/publication boundary with today's fixture; the
+    // public mint API separately refuses periods whose end has not closed.
+    db.collect_orders_and_adjustments(&mut collector, org, day, day)
+        .await
+        .unwrap();
+    assert_eq!(
+        collector.artifacts["requestCorrection"][credit.id.to_string()]["row"]["amountMinor"],
+        30
+    );
+    let bundle = db
+        .commit_bundle(
+            &wallet,
+            collector,
+            EvidenceKind::Period,
+            Some(day),
+            Some(day),
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+    let value: serde_json::Value = serde_json::from_slice(
+        &db.evidence_bundle_json(bundle.bundle_id)
+            .await
+            .unwrap()
+            .unwrap(),
+    )
+    .unwrap();
+    let serialized = value["entries"].to_string();
+    assert!(serialized.contains(&source.entry_id.to_string()));
+    assert!(serialized.contains(&credit.entry_id.to_string()));
 }

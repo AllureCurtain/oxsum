@@ -98,6 +98,7 @@ const SCOPE_COVERED: &[&str] = &[
     "refunds",
     "disputes",
     "creditNotes",
+    "requestCorrections",
     "daySeals",
     "ledgerEntries",
 ];
@@ -442,7 +443,7 @@ impl Db {
             .await?;
         self.collect_plan_statements(&mut collector, organization_id)
             .await?;
-        self.collect_orders_and_adjustments(&mut collector, organization_id)
+        self.collect_orders_and_adjustments(&mut collector, organization_id, from, to)
             .await?;
         self.collect_day_seals(&mut collector, organization_id, tenant_id, from, to)
             .await?;
@@ -779,6 +780,8 @@ impl Db {
         &self,
         collector: &mut Collector,
         organization_id: Uuid,
+        from: time::Date,
+        to: time::Date,
     ) -> Result<(), WalletError> {
         let order_ids: Vec<Uuid> = sqlx::query_scalar(
             "SELECT order_id FROM oxsum.payment_orders \
@@ -816,6 +819,31 @@ impl Db {
         collector.check_rows(notes.len())?;
         for row in &notes {
             self.collect_credit_note_row(collector, row)?;
+        }
+        let mut tx = self.pool().begin().await?;
+        sqlx::query("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY")
+            .execute(&mut *tx)
+            .await?;
+        if collector.bounded {
+            let sizes: Vec<i64> = sqlx::query_scalar("SELECT octet_length(to_jsonb(r)::text)::bigint FROM oxsum.request_corrections r WHERE organization_id=$1 AND booked_on BETWEEN $2 AND $3 ORDER BY created_at,correction_id LIMIT 1001").bind(organization_id).bind(from).bind(to).fetch_all(&mut *tx).await?;
+            application_publication::check_sizes(&sizes)?;
+        }
+        let rows = sqlx::query("SELECT * FROM oxsum.request_corrections WHERE organization_id=$1 AND booked_on BETWEEN $2 AND $3 ORDER BY created_at,correction_id LIMIT $4")
+            .bind(organization_id).bind(from).bind(to).bind(collector.row_limit()).fetch_all(&mut *tx).await?;
+        tx.commit().await?;
+        collector.check_rows(rows.len())?;
+        for row in rows {
+            let id: Uuid = row.try_get("correction_id")?;
+            let source: Uuid = row.try_get("source_entry_id")?;
+            let entry: Uuid = row.try_get("entry_id")?;
+            let artifact = serde_json::json!({"v":1,"row":{"correctionId":id,"organizationId":organization_id,"sourceEntryId":source,"sourceHash":row.try_get::<String,_>("source_hash")?,"entryId":entry,"contentHash":row.try_get::<String,_>("content_hash")?,"amountMinor":row.try_get::<i64,_>("amount_minor")?,"bookedOn":row.try_get::<time::Date,_>("booked_on")?.to_string(),"reason":row.try_get::<String,_>("reason")?,"actorId":row.try_get::<Uuid,_>("actor_id")?,"createdAt":row.try_get::<OffsetDateTime,_>("created_at")?.to_string()},"entryIds":[source.to_string(),entry.to_string()]});
+            collector.add(
+                "requestCorrection",
+                id.to_string(),
+                artifact.clone(),
+                canonicalize(&artifact)?,
+                vec![source, entry],
+            )?;
         }
         Ok(())
     }

@@ -51,6 +51,7 @@ mod org;
 mod plans;
 mod refunds;
 mod report_links;
+mod request_corrections;
 pub(crate) mod requests;
 mod staff_invitations;
 mod statements;
@@ -619,6 +620,8 @@ pub fn router(state: AppState) -> Router {
         .route("/business/charge-receipt", get(charge_receipts::discover))
         .route("/business/customers/{organization_id}/charge-receipt/proof", get(charge_receipts::proof))
         .route("/business/customers/{organization_id}/charge-receipt", get(charge_receipts::business))
+        .route("/business/customers/{organization_id}/request-corrections/preview", get(request_corrections::preview))
+        .route("/business/customers/{organization_id}/request-corrections", post(request_corrections::apply))
         .route("/business/customers/{organization_id}/monthly-statements", get(business::monthly_statements))
         .route("/business/customers/{organization_id}/monthly-statements/{statement_id}/payments", post(business::monthly_payment))
         .route("/business/customers/{organization_id}/monthly-statements/actions", post(business::monthly_statement_action))

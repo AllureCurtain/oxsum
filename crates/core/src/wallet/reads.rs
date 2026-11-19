@@ -407,6 +407,23 @@ impl Wallet {
         if adjustments || facility {
             return Some(TransactionKind::Adjustment);
         }
+        // A source correction has a staff actor distinct from consumption-key
+        // budgets and the exact Revenue -> Wallet posting shape.
+        if stored
+            .entry
+            .provenance()
+            .actor
+            .as_ref()
+            .is_some_and(|a| a.as_str().starts_with("correction:"))
+            && stored.entry.postings().len() == 2
+            && stored.entry.postings().iter().all(|p| {
+                p.layer == Layer::Settled
+                    && ((p.account == self.wallet && p.direction == Direction::Credit)
+                        || (p.account == self.revenue && p.direction == Direction::Debit))
+            })
+        {
+            return Some(TransactionKind::Adjustment);
+        }
         None
     }
     /// The entry's effect on the pools' combined settled balance, signed: credits

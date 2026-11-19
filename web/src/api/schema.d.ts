@@ -9953,6 +9953,110 @@ export interface paths {
         patch: operations["updateBusinessCustomer"];
         trace?: never;
     };
+    "/api/v1/business/customers/{organizationId}/request-corrections/preview": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Preview source-linked purchased-credit correction
+         * @description Requires current personal Business FundsWrite authority. Only a pure purchased-credit gateway charge is eligible; mixed funding, subscriptions, promotions and debt refuse. Credits append against the original source and never create a cash refund or restore key budgets. Apply rechecks the source hash and cumulative credit under a lock; exact retries return the original effect.
+         */
+        get: {
+            parameters: {
+                query: {
+                    sourceEntryId: string;
+                };
+                header?: never;
+                path: {
+                    organizationId: string;
+                };
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Verified source and remaining correction bound, or immutable applied correction */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            data: components["schemas"]["RequestCorrectionPreview"];
+                        };
+                    };
+                };
+                400: components["responses"]["Error"];
+                401: components["responses"]["Error"];
+                403: components["responses"]["Error"];
+                404: components["responses"]["Error"];
+                409: components["responses"]["Error"];
+                500: components["responses"]["Error"];
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/business/customers/{organizationId}/request-corrections": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Apply a bounded purchased-credit correction
+         * @description Requires current personal Business FundsWrite authority. Only a pure purchased-credit gateway charge is eligible; mixed funding, subscriptions, promotions and debt refuse. Credits append against the original source and never create a cash refund or restore key budgets. Apply rechecks the source hash and cumulative credit under a lock; exact retries return the original effect.
+         */
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    organizationId: string;
+                };
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": components["schemas"]["RequestCorrectionInput"];
+                };
+            };
+            responses: {
+                /** @description Verified source and remaining correction bound, or immutable applied correction */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            data: components["schemas"]["RequestCorrection"];
+                        };
+                    };
+                };
+                400: components["responses"]["Error"];
+                401: components["responses"]["Error"];
+                403: components["responses"]["Error"];
+                404: components["responses"]["Error"];
+                409: components["responses"]["Error"];
+                500: components["responses"]["Error"];
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/business/customers/{organizationId}/credit-terms": {
         parameters: {
             query?: never;
@@ -21200,6 +21304,28 @@ export interface components {
             subscriptionChargedMinor: number | null;
             /** Format: int64 */
             releasedMinor: number | null;
+            /**
+             * Format: int64
+             * @description Source-linked purchased credit returned after original settlement
+             */
+            correctedMinor: number;
+            /**
+             * Format: int64
+             * @description Original total charge minus source-linked corrections
+             */
+            netChargedMinor: number | null;
+            corrections: {
+                /** Format: uuid */
+                id: string;
+                /** Format: uuid */
+                entryId: string;
+                contentHash: string;
+                /** Format: int64 */
+                amountMinor: number;
+                /** @description Customer-visible correction explanation */
+                reason: string;
+                createdAt: string;
+            }[];
             /** Format: int64 */
             discountPercent: number | null;
             rounding: string;
@@ -21232,6 +21358,46 @@ export interface components {
                 completedAt: string | null;
             }[];
             diagnostics: string[];
+        };
+        RequestCorrectionInput: {
+            idempotencyKey: string;
+            /** Format: uuid */
+            sourceEntryId: string;
+            sourceHash: string;
+            /** Format: int64 */
+            expectedCorrectedMinor: number;
+            /** Format: int64 */
+            amountMinor: number;
+            reason: string;
+        };
+        RequestCorrectionPreview: {
+            /** Format: uuid */
+            sourceEntryId: string;
+            sourceHash: string;
+            requestId: string;
+            /** Format: int64 */
+            chargedMinor: number;
+            /** Format: int64 */
+            correctedMinor: number;
+            /** Format: int64 */
+            remainingMinor: number;
+            effect: string;
+        };
+        RequestCorrection: {
+            /** Format: uuid */
+            id: string;
+            /** Format: uuid */
+            sourceEntryId: string;
+            sourceHash: string;
+            /** Format: uuid */
+            entryId: string;
+            contentHash: string;
+            /** Format: int64 */
+            amountMinor: number;
+            reason: string;
+            /** Format: uuid */
+            actorId: string;
+            createdAt: string;
         };
         /** @description One upstream try inside an operation (issue #601): a failover or fallback makes several — one `answered` attempt carries the usage the settlement charged, the `refused`/`unreachable` ones are the audit of what was tried first. */
         OperationAttempt: {
@@ -23629,9 +23795,14 @@ export interface components {
         FinancialFacts: {
             /**
              * Format: int64
-             * @description Σ settled `charged_minor` — what the turns cost the customer
+             * @description Gross settled usage before separate request credits
              */
             usageMinor: number;
+            /**
+             * Format: int64
+             * @description Purchased wallet credits posted in the UTC period. Like other money categories, ignores model/channel and timeBasis; never cash refunds, plan discounts or debt reductions. Excluded from plan-fee reconciliation.
+             */
+            requestCreditsMinor: number;
             /**
              * Format: int64
              * @description the same turns at catalog rate before discount — `rated − usage` is the granted discount
@@ -24157,7 +24328,7 @@ export interface components {
              * @description the audited financial action — the same vocabulary `finance_audit`'s check constraint bounds
              * @enum {string}
              */
-            action: "refund.approve" | "refund.decline" | "refund.release" | "dispute.resolve" | "journal.void" | "statement.release" | "reconciliation.resolve" | "reconciliation.waive" | "reconciliation.repair" | "plan_refund.recover" | "plan_usage.correct" | "nonplan_refund.recover" | "nonplan_chargeback.recover";
+            action: "refund.approve" | "refund.decline" | "refund.release" | "dispute.resolve" | "journal.void" | "statement.release" | "reconciliation.resolve" | "reconciliation.waive" | "reconciliation.repair" | "plan_refund.recover" | "plan_usage.correct" | "nonplan_refund.recover" | "nonplan_chargeback.recover" | "statement.refund" | "request.correct";
             /** @description the entity the action corrected — a refund */
             target: string;
             /** @description the action's safe fields — reason */

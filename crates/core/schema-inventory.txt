@@ -113,6 +113,7 @@ redemption_codes
 refunds
 report_links
 request_attempts
+request_corrections
 request_log
 request_operations
 sale_books

@@ -225,3 +225,6 @@ mod customer_statements;
 
 #[path = "core/monthly_repayment_upgrade.rs"]
 mod monthly_repayment_upgrade;
+
+#[path = "core/request_corrections.rs"]
+mod request_corrections;

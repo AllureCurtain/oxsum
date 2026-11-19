@@ -90,6 +90,7 @@ mod ratelimit;
 mod reconcile;
 mod refunds;
 mod report_links;
+mod request_corrections;
 mod request_log;
 mod routing;
 mod sale_books;
@@ -430,6 +431,10 @@ pub use monthly_statement_actions::{
 /// Verified staff monthly payment intent and immutable receipt.
 pub use monthly_repayments::{BusinessMonthlyPaymentRequest, BusinessMonthlyPaymentResult};
 
+pub use request_corrections::{
+    RequestCorrection, RequestCorrectionInput, RequestCorrectionPreview,
+};
 pub use wallet::{
-    BusinessChargeReceipt, ChargeReceipt, ReceiptAttempt, ReceiptLine, ReceiptMovement,
+    BusinessChargeReceipt, ChargeReceipt, ReceiptAttempt, ReceiptCorrection, ReceiptLine,
+    ReceiptMovement,
 };
