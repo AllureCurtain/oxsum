@@ -16,6 +16,8 @@ application_link_invitations
 application_link_resolutions
 application_notification_deliveries
 application_notification_endpoints
+billing_policy_acceptances
+billing_policy_versions
 budget_threshold_fires
 bundle_offer_mutations
 bundle_offers
@@ -82,6 +84,7 @@ nonplan_refund_effects
 oauth_accounts
 oauth_states
 open_holds
+operation_billing_terms
 org_subscriptions
 organizations
 payment_events

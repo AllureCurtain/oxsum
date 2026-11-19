@@ -1283,3 +1283,20 @@ with a positive exact integer `amountMinor`, customer-visible `reason` and
 identical successful intent returns its original credit under current authority.
 No client financial date is accepted. Ledger, immutable correction, Business
 audit and finance audit (`request.correct`) commit together.
+
+## Exception-policy versions and acceptance
+
+`GET/POST /api/v1/business/billing-policies` list under ReportsRead and publish
+under CatalogWrite. Publication carries expectedVersion, implementation,
+evidenceWindowSecs, reason and idempotencyKey. The response returns exact
+canonical bytes; digest is SHA-256 over UTF-8 `oxsum/exception-policy/v1`, one
+NUL byte, then those bytes. No reserialization is needed to recompute it.
+
+`GET /api/v1/org/billing-policy` requires a live customer owner/admin personal
+session and returns current acceptance, currentPolicy even beyond the newest
+100 history entries, and reviewed organization ID/name.
+`POST /api/v1/org/billing-policy/accept` requires expectedOrganizationId, version,
+digest, expectedAcceptanceId and idempotencyKey. The customer ID is only an
+equality precondition, never authority. Stale context, selection or unsupported
+runtime returns 409; exact replay remains subject to current authority. No API
+key can accept, and no staff mutation can manufacture customer consent.

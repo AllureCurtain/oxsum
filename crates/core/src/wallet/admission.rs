@@ -53,9 +53,8 @@ impl Wallet {
         Ok(())
     }
 
-    /// Reserve the quota, monetary share, concurrency slot and operation together.
-    /// The caller supplies authenticated coordinates and a server-priced bound.
-    /// A rejected admission leaves none of those writes behind.
+    /// Legacy callers retain the same admission API; policy-aware gateway callers
+    /// provide the complete durable terms through `admit_gateway_with_terms`.
     #[allow(clippy::too_many_arguments)]
     pub async fn admit_gateway(
         &self,
@@ -68,6 +67,38 @@ impl Wallet {
         lease_owner: &str,
         on: Date,
         mandate: Option<&PresentedMandate>,
+    ) -> Result<GatewayAdmission, WalletError> {
+        self.admit_gateway_with_terms(
+            db,
+            key,
+            watch,
+            operation,
+            access,
+            description,
+            lease_owner,
+            on,
+            mandate,
+            None,
+        )
+        .await
+    }
+
+    /// Reserve the quota, monetary share, concurrency slot and operation together.
+    /// The caller supplies authenticated coordinates and a server-priced bound.
+    /// A rejected admission leaves none of those writes behind.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn admit_gateway_with_terms(
+        &self,
+        db: &Db,
+        key: &ActingKey,
+        watch: &OpenHold,
+        operation: &NewOperation,
+        access: &ServingAccess,
+        description: &str,
+        lease_owner: &str,
+        on: Date,
+        mandate: Option<&PresentedMandate>,
+        terms: Option<&crate::GatewayBillingTerms>,
     ) -> Result<GatewayAdmission, WalletError> {
         if watch.freeze_minor < 0
             || watch.tenant_id != self.tenant_id
@@ -127,6 +158,18 @@ impl Wallet {
             // attempt must not execute an already reserved or completed parent.
             return Err(WalletError::Conflict(
                 "the request operation already exists".into(),
+            ));
+        }
+        if let Some(terms) = terms {
+            db.bind_billing_terms_in(&mut tx, operation, terms).await?;
+        } else if db
+            .billing_policy_selection_in(&mut tx, operation.organization_id)
+            .await?
+            .acceptance
+            .is_some()
+        {
+            return Err(WalletError::Conflict(
+                "explicit policy requires durable admission terms".into(),
             ));
         }
         let occupied: bool =

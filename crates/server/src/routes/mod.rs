@@ -25,6 +25,7 @@ mod application_checkout;
 mod application_notifications;
 mod auth;
 pub(crate) mod billing;
+mod billing_policies;
 mod bundles;
 mod business;
 mod business_invitations;
@@ -457,6 +458,9 @@ pub fn router(state: AppState) -> Router {
     // and a missing cookie a 401 before the handler sees the request. Dual-auth
     // and service-only business reads stay on `open` above.
     let personal = Router::new()
+        .route("/business/billing-policies",get(billing_policies::list).post(billing_policies::publish))
+        .route("/org/billing-policy",get(billing_policies::customer))
+        .route("/org/billing-policy/accept",post(billing_policies::accept))
         .route("/auth/totp/disable", post(auth::totp_disable))
         .route("/auth/totp/confirm", post(auth::totp_confirm))
         .route("/auth/totp/enroll", post(auth::totp_enroll))

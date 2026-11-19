@@ -571,6 +571,7 @@ async fn reserve_turn(
     freeze: i64,
     description: &str,
     mandate: Option<&oxsum_core::PresentedMandate>,
+    billing_terms: &oxsum_core::GatewayBillingTerms,
 ) -> Result<oxsum_core::GatewayAdmission, GatewayError> {
     let watch = OpenHold {
         hold_key: format!("req-{request_id}:hold"),
@@ -608,7 +609,7 @@ async fn reserve_turn(
         terms_version: Some(primary.version),
     };
     match wallet
-        .admit_gateway(
+        .admit_gateway_with_terms(
             &state.db,
             key,
             &watch,
@@ -618,6 +619,7 @@ async fn reserve_turn(
             &state.instance_id,
             crate::today(),
             mandate,
+            Some(billing_terms),
         )
         .await
     {
@@ -665,6 +667,7 @@ async fn run(
         gen_ai.usage.output_tokens = tracing::field::Empty,
     );
     let requested_model = request.model.clone();
+    let policy_selection = state.db.billing_policy_selection(organization.id).await?;
     let access = state
         .db
         .serving_access(organization.id, Some(key.key_id))
@@ -1031,6 +1034,32 @@ async fn run(
         .into_iter()
         .min()
         .unwrap_or(0);
+    let billing_terms = oxsum_core::GatewayBillingTerms {
+        business_id:access.business_id,
+        organization_id:organization.id,
+        operation_id:Uuid::parse_str(request_id).map_err(|_| oxsum_core::WalletError::InvalidInput("invalid request identity".into()))?,
+        key_id:key.key_id,
+        hold_key:format!("req-{request_id}:hold"),
+        estimator:"oxsum-o200k-text-v1/tiktoken-rs-0.12.1".into(),
+        version: 1,
+        surface: surface.upstream_path().into(),
+        stream: request.stream,
+        arithmetic_version: "credit-1e6-ceil-discount-cap-v1".into(),
+        policy_applies: surface == Surface::OpenAi && !request.stream,
+        selection: policy_selection,
+        sale_digest: sale.as_ref().map(|s| s.digest.clone()),
+        discount_percent: sale.as_ref().map_or(discount_percent, |s| Some(s.discount_percent)),
+        requested_model: requested_model.clone(),
+        output_bound,
+        ceiling_minor: freeze,
+        routes: model_routes.iter().flat_map(|model| model.ordered.iter().map(|route| {
+            let mut price = sale.as_ref().map_or(&route.price,|s| &s.price).clone();
+            price.upstream = None;
+            for rule in &mut price.rules { rule.price.upstream = None; }
+            oxsum_core::BillingRouteTerms { channel_id: route.channel_id, channel: route.channel.clone(), price_version: route.version, model: model.model.clone(), upstream_model: model.upstream_model.clone(), price }
+        })).collect(),
+        arithmetic: "integer-credit-1e6; sum dimensions then discount, one ceiling division, cap at admission ceiling".into(),
+    };
     // The token-window allowance is judged at admission, after the bounds that
     // price the turn are known but before any hold is taken (issue #203): the
     // check is `window-actual + this estimate`, where the estimate is the same
@@ -1244,7 +1273,7 @@ async fn run(
             )
         })?
     };
-    let cache_key = if cache_policy.enabled {
+    let cache_key = if cache_policy.enabled && !billing_terms.provider_reported() {
         state.config.secret().and_then(|secret| {
             let request_body = request.cache_body();
             let forwarded_body = {
@@ -1326,6 +1355,7 @@ async fn run(
             &requested_model,
             bound_fingerprint,
             &access,
+            &billing_terms,
         )
         .await;
     }
@@ -1348,6 +1378,7 @@ async fn run(
         freeze,
         &description,
         mandate.as_ref(),
+        &billing_terms,
     )
     .await?;
     let wallet_held = admission.wallet_minor > 0;
@@ -2019,6 +2050,7 @@ async fn serve_cache_hit(
     requested_model: &str,
     bound_fingerprint: &str,
     access: &oxsum_core::ServingAccess,
+    billing_terms: &oxsum_core::GatewayBillingTerms,
 ) -> Result<Response, GatewayError> {
     let wallet = state.tenants.get(&organization.tenant_id).await?;
     // The reservation is the stored usage priced under the terms the turn
@@ -2031,6 +2063,8 @@ async fn serve_cache_hit(
         .map_or(&primary.price, |s| &s.price)
         .itemize(&hit.usage, true)?
         .total_minor()?;
+    let mut billing_terms = billing_terms.clone();
+    billing_terms.ceiling_minor = freeze;
     let description = hold_description(request_id, &request.model, freeze)?;
     // Authority, quota, wallet and recovery identity are one admission commit.
     let admission = reserve_turn(
@@ -2047,6 +2081,7 @@ async fn serve_cache_hit(
         freeze,
         &description,
         mandate.as_ref(),
+        &billing_terms,
     )
     .await?;
     let wallet_held = admission.wallet_minor > 0;

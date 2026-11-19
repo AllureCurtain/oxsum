@@ -1056,3 +1056,23 @@ original charge, without gaining access to the full correction entry. Gross
 usage reports remain gross. `requestCreditsMinor` separately reports purchased
 credits by their UTC posting date, ignoring model/channel/time-basis filters;
 plan-fee reconciliation explicitly excludes them.
+
+## Prospective exception billing policies
+
+The Business can publish immutable exception-policy offers under CatalogWrite.
+Publication never changes a customer's selection. A current customer owner or
+admin, in customer context, reviews and accepts one exact version/digest for
+future successful admissions; staff authority and consumption keys cannot
+accept on behalf of a customer. An account with no acceptance keeps legacy
+behavior and historical records never acquire fabricated consent.
+
+The initial offer scope is OpenAI-compatible nonstreaming chat text. Explicit
+legacy estimation identifies its tokenizer, normalized text slices, byte-bound
+fallback and forwarded-prefix limit; accepting it preserves existing cache and
+billing behavior. Provider-reported-text-v1 is published for review but cannot
+be accepted until its recovery implementation is enabled. Its evidence window
+is configurable from 1 through 900 seconds after terminal observation (default
+900), never measured from admission while execution is still active. Valid
+partial/cancelled usage may be billed, unresolved components waived, with no
+automatic additional customer debit after closure. Other surfaces keep legacy
+terms. Runtime readiness is separate from immutable policy publication.

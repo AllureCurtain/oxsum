@@ -1,3 +1,4 @@
+import { CustomerBillingPolicies } from "../components/BillingPolicies";
 import { PlanPastDueLabel, PlanStandingNotices } from "../components/plan-standing-notices";
 import { useState } from "react";
 import { Link, useParams } from "react-router-dom";
@@ -200,6 +201,7 @@ export function Billing() {
         <p className="text-sm text-muted">{t("billing.intro")}</p>
       </div>
       <PlanStanding />
+      <CustomerBillingPolicies />
       <Card title={t("billing.statements")}>
         <StatementRows />
       </Card>

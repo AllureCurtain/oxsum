@@ -5218,3 +5218,18 @@ transaction-start timestamps; a transaction can wait across UTC midnight.
 Report credits separately from gross usage, plan revenue, debt and cash returns.
 New corrections enter only their posting period's evidence, with the original
 source as explicitly linked context; old frozen exports are not regenerated.
+
+## 2026-11-20 — Separate immutable exception policy and admission terms (#1235)
+
+Keep SaleTerms and SaleSnapshotV1 serialization unchanged. Exception offers use
+a separate canonical SHA-256 domain and explicit customer acceptance; a new
+publication cannot rewrite earlier selection. Monotonic acceptance revisions
+avoid wall-clock ordering ambiguity. Customer-context equality prevents a modal
+review for one organization from accepting another after a context switch.
+
+Commit a complete sanitized retail context at gateway admission, and retain it
+independently of diagnostic operation deletion. No credentials/prompts are in
+this record. New provider-reported behavior stays unavailable until its recovery
+writer is implemented; explicit legacy acceptance preserves cache, pricing and
+existing configurations. Policy applicability, runtime capability and acceptance
+are separate facts. Existing bill proofs do not gain an implied consent claim.

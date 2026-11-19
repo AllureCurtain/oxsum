@@ -3340,6 +3340,57 @@ paths:
         "404": { $ref: "#/components/responses/Error" }
         "409": { $ref: "#/components/responses/Error" }
         "500": { $ref: "#/components/responses/Error" }
+  /api/v1/business/billing-policies:
+    get:
+      summary: Published immutable exception-policy versions
+      security: [{ sessionCookie: [] }]
+      responses:
+        '200':
+          description: Current Business policy history; reportsRead
+          content:
+            application/json:
+              schema: { type: object, required: [data], properties: { data: { type: array, items: { $ref: '#/components/schemas/BillingPolicyVersion' } } } }
+    post:
+      summary: Publish a prospective exception-policy version
+      description: CatalogWrite. Publication does not accept terms for a customer. Provider-reported implementation cannot be accepted until runtimeReady is true.
+      security: [{ sessionCookie: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/BillingPolicyPublish' }
+      responses:
+        '200':
+          description: Immutable version, exact replay
+          content:
+            application/json:
+              schema: { type: object, required: [data], properties: { data: { $ref: '#/components/schemas/BillingPolicyVersion' } } }
+  /api/v1/org/billing-policy:
+    get:
+      summary: Current customer acceptance and available policies
+      security: [{ sessionCookie: [] }]
+      responses:
+        '200':
+          description: Live customer owner/admin session
+          content:
+            application/json:
+              schema: { type: object, required: [data], properties: { data: { $ref: '#/components/schemas/CustomerBillingPolicy' } } }
+  /api/v1/org/billing-policy/accept:
+    post:
+      summary: Explicitly accept one immutable policy for future admissions
+      description: Live customer owner/admin personal session only. Exact revision/digest and expected current acceptance are checked under the organization admission lock. Publication and Business staff authority never imply acceptance. Existing requests retain their bound terms.
+      security: [{ sessionCookie: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/BillingPolicyAccept' }
+      responses:
+        '200':
+          description: Retained acceptance under current authority
+          content:
+            application/json:
+              schema: { type: object, required: [data], properties: { data: { $ref: '#/components/schemas/BillingPolicyAcceptance' } } }
   /api/v1/business/financial-facts:
     get:
       summary: Eight-category financial facts
@@ -16056,6 +16107,58 @@ components:
           type: string
           format: date-time
           description: when the operation went terminal; absent while it is open
+    BillingPolicyPublish:
+      type: object
+      additionalProperties: false
+      required: [idempotencyKey, expectedVersion, implementation, evidenceWindowSecs, reason]
+      properties:
+        idempotencyKey: { type: string, minLength: 1, maxLength: 200 }
+        expectedVersion: { type: integer, format: int64, minimum: 0 }
+        implementation: { type: string, enum: [legacy-estimation-v1, provider-reported-text-v1] }
+        evidenceWindowSecs: { type: integer, format: int64, minimum: 1, maximum: 900, default: 900 }
+        reason: { type: string, minLength: 1, maxLength: 500 }
+    BillingPolicyVersion:
+      type: object
+      required: [version, digest, canonical, implementation, evidenceWindowSecs, scope, disclosure, runtimeReady, publishedAt]
+      properties:
+        version: { type: integer, format: int64 }
+        digest: { type: string, description: SHA-256 of UTF-8 "oxsum/exception-policy/v1" followed by a NUL byte and the exact canonical bytes }
+        canonical: { type: string, description: Exact immutable JSON payload including Business and version; readiness and timestamps are outside the hashed payload }
+        implementation: { type: string }
+        evidenceWindowSecs: { type: integer, format: int64 }
+        scope: { type: string }
+        disclosure: { type: string }
+        runtimeReady: { type: boolean }
+        publishedAt: { type: string }
+    BillingPolicyAcceptance:
+      type: object
+      required: [id, version, digest, acceptedBy, acceptedAt]
+      properties:
+        id: { type: string, format: uuid }
+        version: { type: integer, format: int64 }
+        digest: { type: string }
+        acceptedBy: { type: string, format: uuid }
+        acceptedAt: { type: string }
+    BillingPolicyAccept:
+      type: object
+      additionalProperties: false
+      required: [idempotencyKey, expectedOrganizationId, version, digest, expectedAcceptanceId]
+      properties:
+        expectedOrganizationId: { type: string, format: uuid, description: Reviewed customer identity; equality precondition only, never authority }
+        idempotencyKey: { type: string, minLength: 1, maxLength: 200 }
+        version: { type: integer, format: int64 }
+        digest: { type: string }
+        expectedAcceptanceId: { type: [string, 'null'], format: uuid }
+    CustomerBillingPolicy:
+      type: object
+      required: [organizationId, organizationName, acceptance, currentPolicy, versions, legacyDisclosure]
+      properties:
+        organizationId: { type: string, format: uuid }
+        organizationName: { type: string }
+        acceptance: { oneOf: [{ $ref: '#/components/schemas/BillingPolicyAcceptance' }, { type: 'null' }] }
+        versions: { type: array, items: { $ref: '#/components/schemas/BillingPolicyVersion' } }
+        currentPolicy: { oneOf: [{ $ref: '#/components/schemas/BillingPolicyVersion' }, { type: 'null' }] }
+        legacyDisclosure: { type: string }
     ChargeReceipt:
       type: object
       required: [requestId, operationId, executionState, operationState, settlementKind, financialState, requestedModel, servedModel, createdAt, completedAt, entryId, contentHash, priceVersion, saleDigest, saleVersion, policy, usageBasis, ceilingMinor, chargedMinor, walletChargedMinor, subscriptionChargedMinor, releasedMinor, correctedMinor, netChargedMinor, corrections, lines, discountPercent, rounding, ledger, attempts, diagnostics]

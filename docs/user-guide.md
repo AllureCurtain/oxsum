@@ -2177,3 +2177,22 @@ net charge. Bills includes the appended adjustment; the Finance audit names the
 source and actor. This workflow does not send a cash refund, change plan debt or
 restore key spending limits. An already sealed current posting day refuses;
 retry with a fresh preview on an allowed day, without changing historical dates.
+
+### Publish and accept exception terms
+
+In **Business → Prices → Exception billing policies**, review a known
+implementation, the maximum terminal evidence window and publication reason.
+Publishing creates a new immutable offer; it does not migrate customers.
+History displays the exact digest and disclosure.
+
+In the customer **Billing → Exception billing terms** card, an owner/admin sees
+the current selection and offers. Choose **Review and accept version**, check
+the named customer, scope, missing-usage/cancellation treatment and digest, then
+confirm deliberately. It affects only subsequent admissions. A stale selection
+requires a fresh review; an unavailable implementation cannot be accepted.
+Accounts without acceptance continue legacy behavior. Historical receipts show
+their bound policy, or explicitly state that no acceptance was recorded.
+
+The provider-reported offer is review-only until the bounded recovery runtime
+is included; do not interpret publication as activation. The schema migration
+is additive and needs no historical billing rewrite or customer backfill.

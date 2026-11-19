@@ -1241,3 +1241,19 @@ adjustment with a document marker, so consumption scopes cannot read it as
 unattributed history or accidentally recover spending budgets. Period evidence
 collects corrections by posting day and includes their original source as
 linked supporting evidence even when that source predates the period.
+
+Policy publication, customer acceptance and admission use separate records.
+`billing_policy_versions` hashes an immutable canonical offer including Business
+identity; readiness and timestamps are metadata. Acceptance takes the Business,
+current session and organization admission locks in existing authority order,
+checks live owner/admin membership and advances a per-customer monotonic revision.
+An expected customer ID prevents a reviewed intent following a switched session.
+
+`operation_billing_terms` commits with operation, hold, watch and quota. Its own
+canonical digest binds Business/customer/operation/key/hold, exact protocol and
+stream mode, accepted policy, sale digest, complete sanitized retail route prices,
+discount, output bound, ceiling and arithmetic/estimator versions. Array position
+identifies each retained route for subsequent attempt correlation. It deliberately
+outlives diagnostic-operation retention. It contains no prompts, response bodies,
+provider credentials or wholesale rates. Existing sale/settlement encodings are
+unchanged. Recovery's exact attempt binding remains the next stage.

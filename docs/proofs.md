@@ -144,3 +144,9 @@ credits posted within the selected period and their original source entries as
 linked context (the source can predate the period). Inclusion verifies the
 committed records, not the staff reason's truth or a cash refund. Previously
 frozen period bundles remain unchanged.
+
+Admission policy evidence uses a separate SHA-256 domain and immutable
+application record. The existing settlement/sale verifier still checks the
+original entry and arithmetic; it does not independently establish customer
+consent or authenticate the new policy record. The receipt labels this limit.
+Existing sale snapshot and settlement bytes remain compatible.

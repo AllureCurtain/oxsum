@@ -1240,3 +1240,86 @@ async fn cached_response_does_not_cross_sibling_keys_or_legacy_digests() {
     assert!(headers.get("x-oxsum-cache").is_none());
     assert_eq!(world.script.seen().len(), 3);
 }
+
+#[tokio::test]
+async fn explicit_legacy_policy_acceptance_preserves_existing_cache_hit() {
+    let url = oxsum_testkit::suite_url!().expect("policy cache acceptance requires PostgreSQL");
+    let world = build_world(&url).await;
+    world.semantic_cache(json!({"enabled":true})).await;
+    assert_eq!(
+        chat(&world.app, &world.key, ask(&world.model, "policy cache"))
+            .await
+            .0,
+        StatusCode::OK
+    );
+    let _ = row_within(&world.pool, &world.organization_id).await;
+    let db = Db::from_pool(world.pool.clone());
+    let org = uuid::Uuid::parse_str(&world.organization_id).unwrap();
+    let email:String=sqlx::query_scalar("SELECT u.email FROM oxsum.users u JOIN oxsum.memberships m USING(user_id) WHERE m.organization_id=$1 AND m.role='owner'").bind(org).fetch_one(&world.pool).await.unwrap();
+    let staff = db
+        .register(oxsum_core::NewUser {
+            email: format!("policy-staff-{}@example.com", uuid::Uuid::new_v4()),
+            password: "policy cache staff password".into(),
+            organization_name: None,
+        })
+        .await
+        .unwrap();
+    sqlx::query("INSERT INTO oxsum.business_staff(business_id,user_id,role) SELECT business_id,$1,'owner' FROM oxsum.businesses WHERE singleton").bind(staff.user.id).execute(&world.pool).await.unwrap();
+    sqlx::query("UPDATE oxsum.businesses SET initialized_at=now() WHERE singleton")
+        .execute(&world.pool)
+        .await
+        .unwrap();
+    let owner = db
+        .login(&staff.user.email, "policy cache staff password")
+        .await
+        .unwrap()
+        .into_session();
+    db.switch_session_context(
+        &owner.token,
+        &oxsum_core::SessionContextRequest {
+            idempotency_key: "staff-context".into(),
+            context: oxsum_core::SessionContext::Business,
+            organization_id: None,
+        },
+    )
+    .await
+    .unwrap();
+    let policy = db
+        .publish_billing_policy(
+            &owner.token,
+            &oxsum_core::BillingPolicyPublish {
+                idempotency_key: "legacy-cache".into(),
+                expected_version: 0,
+                implementation: "legacy-estimation-v1".into(),
+                evidence_window_secs: 900,
+                reason: "Explicit unchanged legacy offer".into(),
+            },
+        )
+        .await
+        .unwrap();
+    let customer = db
+        .login(&email, "correct horse battery")
+        .await
+        .unwrap()
+        .into_session();
+    db.accept_billing_policy(
+        &customer.token,
+        &oxsum_core::BillingPolicyAccept {
+            expected_organization_id: org,
+            idempotency_key: "accept-cache".into(),
+            version: policy.version,
+            digest: policy.digest,
+            expected_acceptance_id: None,
+        },
+    )
+    .await
+    .unwrap();
+    let (status, headers, body) =
+        chat(&world.app, &world.key, ask(&world.model, "policy cache")).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(
+        headers.get("x-oxsum-cache").and_then(|v| v.to_str().ok()),
+        Some("hit")
+    );
+    assert_eq!(world.script.seen().len(), 1);
+}
