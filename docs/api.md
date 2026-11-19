@@ -1317,3 +1317,30 @@ closed financial result. Replaying an accepted HTTP intent never resubmits the
 paid call. Legacy response and settlement encodings remain unchanged. The
 billing WebSocket refreshes an authorized durable hold snapshot every 15 seconds,
 so background/cross-process closure clears live state and refreshes billing reads.
+
+### Supplier statement imports (#1237)
+
+Personal Business `/supplier-statements` routes require ReportsRead for choices,
+preview, source/history and comparison/history reads, FundsWrite for import and
+recompare. Consumption/service credentials cannot inherit personal authority.
+Preview and import share `SupplierStatementImport`: raw pages are strings, all
+supplier amounts/results are decimal strings and original source text is retained.
+Bodies are bounded to 4 MiB; raw pages to 2 MiB/16 pages. Unsupported formats or
+more than 10,000 attempt evidence rows refuse instead of truncating.
+
+`GET /business/supplier-statements/{sourceId}` returns the original comparison;
+`comparisonId` selects one exact retained comparison. The `/comparisons` route
+paginates metadata only (50 rows, `before` cursor). Download the selected detail
+for a stable export, including original pages, uploader assertions, actor/reason,
+source version, captured attempt facts and canonical strings. Recompute a digest
+as SHA-256 over UTF-8 `oxsum/supplier-statement/v1`, one NUL byte, then the exact
+UTF-8 canonical string. The local hash detects modification relative to a trusted
+retained digest; it does not authenticate provider authorship. Source history
+is paged separately. New comparisons never alter earlier detail exports.
+
+`POST /{sourceId}/compare` reuses original scope/conversion. Exact retries return
+the original result after current authority checks; busy snapshot/authority locks
+return the existing retryable PoolBusy mapping. CapturedAt is the transaction
+start bound, not proof that every change committed later in that transaction's
+wall-clock duration is covered. Delta is against known estimates; its signed
+residual numerator/denominator must be retained alongside displayed decimal USD.

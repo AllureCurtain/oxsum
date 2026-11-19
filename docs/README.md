@@ -9,6 +9,7 @@ Use this page to pick a document. Longer pages disagree with themselves in place
 | Install an image | [Self-hosted install](self-hosted-install.md), then [upgrade and restore](self-hosted-upgrade.md) |
 | Run a checkout | The repository [README](../README.md) ("process is up", then "become the owner") and [development](development.md) |
 | Check a bill | [Verify your bill](verify-your-bill.md), then the boundary in [proofs](proofs.md) |
+| Billing workflow delivery and external pilots | [Implementation evidence](billing-workflow-program.md) and [two-operator pilot protocol](roadmap/operator-launch/billing-workflow-pilots.md) |
 | See an interface | [API](api.md) and `crates/server/openapi.yaml`. Refusals are [unsupported](unsupported.md) |
 | Embed gateway or metering | [Integrations](integrations.md) and `examples/` |
 | Payments | [Rails](rails.md). A local fixture is not a live-money certification |
