@@ -1232,3 +1232,12 @@ entries. It does not depend on `request_log` or reprice through the current
 catalog. Operation/attempt diagnostics are a separate bounded, allowlisted
 projection; missing diagnostics do not erase ledger evidence. The reader opens
 only an existing ledger and makes no financial/bootstrap writes.
+
+Request corrections use the Business lock for actor-scoped mutation replay and
+the tenant append lock for source verification, cumulative bounds and append.
+`request_corrections` retains source/credit hashes, actor, reason and the exact
+ledger posting day. Revenue debit / purchased Wallet credit is a distinct
+adjustment with a document marker, so consumption scopes cannot read it as
+unattributed history or accidentally recover spending budgets. Period evidence
+collects corrections by posting day and includes their original source as
+linked supporting evidence even when that source predates the period.

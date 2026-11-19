@@ -60,6 +60,9 @@ pub struct FinancialFacts {
     /// Σ `usage_records.charged_minor` over settled turns: what the customer
     /// was billed for usage in the period.
     pub usage_minor: i64,
+    /// Purchased wallet corrections posted in the UTC period, independent of
+    /// model/channel/time basis. Separate from gross usage, cash and plan fees.
+    pub request_credits_minor: i64,
     /// The same turns re-priced at their recorded `price_version`'s catalog
     /// rate — before any discount — so `rated − usage` is the discount the
     /// period's sale terms granted. A row whose price version no longer
@@ -904,8 +907,11 @@ impl Db {
         let receivable_minor = receivable_minor
             .checked_add(daily.receivable)
             .ok_or_else(|| error::invalid("receivable total overflows"))?;
+        let request_credits_minor: i64 = sqlx::query_scalar("SELECT COALESCE(sum(amount_minor),0)::bigint FROM oxsum.request_corrections WHERE ($1::uuid IS NULL OR organization_id=$1) AND ($2::date IS NULL OR booked_on >= $2) AND ($3::date IS NULL OR booked_on <= $3)")
+            .bind(filter.organization_id).bind(filter.from).bind(filter.to).fetch_one(self.pool()).await?;
         Ok(FinancialFacts {
             usage_minor,
+            request_credits_minor,
             rated_minor,
             entitlement_minor,
             funding_minor,

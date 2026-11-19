@@ -1988,7 +1988,8 @@
       "colCost": "成本",
       "colUntracked": "未跟踪",
       "fact": {
-        "usageMinor": "用量",
+        "usageMinor": "Gross usage",
+        "requestCreditsMinor": "Request credits (UTC posting)",
         "ratedMinor": "费率价",
         "entitlementMinor": "权益",
         "fundingMinor": "入金",

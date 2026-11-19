@@ -57,6 +57,7 @@ impl ReconciliationCoverage {
             compared_fields: FIELDS.iter().map(|v| (*v).into()).collect(),
             not_compared: [
                 "usageMinor",
+                "requestCreditsMinor",
                 "ratedMinor",
                 "entitlementMinor",
                 "fundingMinor",

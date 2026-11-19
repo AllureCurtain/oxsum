@@ -1037,3 +1037,22 @@ not a cash refund. A readable text export excludes supplier credentials, raw
 provider usage/error payloads and wholesale costs. Older missing diagnostics
 remain explicit; current prices never fill historical gaps. Verification retains
 the limitations in [proofs](proofs.md).
+
+## Source-linked request credits
+
+Business staff with `fundsWrite` can preview and append a purchased-wallet credit
+against one committed gateway charge. Eligibility requires a hash-verified,
+sequenced, unreversed gateway settlement funded entirely from purchased credit.
+Mixed funding, subscription charges, promotional/bonus credit, credit-line debt
+and non-gateway sources refuse. The original entry and usage remain unchanged.
+Concurrent credits are bounded by its actual settled debit; a stale preview or
+changed idempotent intent conflicts. These credits do not return cash, change
+plan invoices or debt, or restore consumption-key/mandate budgets.
+
+Receipts show original charge, linked credits, net charge and actual ledger
+movements. Reasons are explicitly customer-visible; staff identity stays in
+account-wide evidence. Members and keys read safe facts through the authorized
+original charge, without gaining access to the full correction entry. Gross
+usage reports remain gross. `requestCreditsMinor` separately reports purchased
+credits by their UTC posting date, ignoring model/channel/time-basis filters;
+plan-fee reconciliation explicitly excludes them.

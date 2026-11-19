@@ -5201,3 +5201,20 @@ record. Ledger positions and separate pool effects replace misleading isolated
 before/after balances under concurrency. The reader opens existing ledgers only.
 No historical entry or pricing serialization changes and no financial writer is
 introduced. Versioned exception policy and corrections remain separate issues.
+
+## 2026-11-20 — Bounded purchased-wallet request corrections (#1234)
+
+Append Revenue-to-Wallet credits rather than rewrite settlements, generic
+refunds or invoice discount lines. Bound cumulative credits under the ledger
+append lock against the actual verified purchased debit, without requiring the
+original price arithmetic to be correct. Authenticate current staff even for
+replay, and commit both audit trails with the money. Dedicated document markers
+keep scoped entry/proof reads private; safe correction facts are composed only
+after the original receipt passes authorization. Never attribute the credit to
+the original consumption key, which would restore its spending budget.
+
+Persist the exact append date instead of deriving accounting periods from
+transaction-start timestamps; a transaction can wait across UTC midnight.
+Report credits separately from gross usage, plan revenue, debt and cash returns.
+New corrections enter only their posting period's evidence, with the original
+source as explicitly linked context; old frozen exports are not regenerated.

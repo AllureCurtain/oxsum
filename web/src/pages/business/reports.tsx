@@ -44,6 +44,7 @@ import { AuditAction, DetailGrid, Field2, stateBadge } from "./biz";
 
 const FACT_KEYS = [
   "usageMinor",
+  "requestCreditsMinor",
   "ratedMinor",
   "entitlementMinor",
   "fundingMinor",

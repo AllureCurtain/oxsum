@@ -1988,7 +1988,8 @@
       "colCost": "Cost",
       "colUntracked": "Untracked",
       "fact": {
-        "usageMinor": "Usage",
+        "usageMinor": "Gross usage",
+        "requestCreditsMinor": "Request credits (UTC posting)",
         "ratedMinor": "Rated",
         "entitlementMinor": "Entitlement",
         "fundingMinor": "Funding",

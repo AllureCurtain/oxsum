@@ -4,6 +4,8 @@ import { api } from "../api/client";
 import type { components } from "../api/schema";
 import { Banner, Button, Card, Field, Skeleton, TableShell, Td, TextInput } from "./ui";
 
+import { RequestCorrection } from "./RequestCorrection";
+
 type Receipt = components["schemas"]["ChargeReceipt"];
 const credits = (n: number | null) => n == null ? "Not recorded" : `${(n / 1_000_000).toFixed(6)} credits`;
 
@@ -18,6 +20,8 @@ export function receiptText(r: Receipt): string {
     `Price version: ${r.priceVersion ?? "Not recorded"}; sale version: ${r.saleVersion ?? "Not recorded"}; sale digest: ${r.saleDigest ?? "Not recorded"}`,
     `Ceiling: ${credits(r.ceilingMinor)}`, `Charge: ${credits(r.chargedMinor)}`,
     `Wallet pools: ${credits(r.walletChargedMinor)}; subscription: ${credits(r.subscriptionChargedMinor)}`,
+    `Source-linked credits: ${credits(r.correctedMinor)}; net charge: ${credits(r.netChargedMinor)}`,
+    ...r.corrections.map(c => `Correction ${c.id}: ${credits(c.amountMinor)}; ${c.reason}; credit ${c.entryId} hash ${c.contentHash}; ${c.createdAt}`),
     `Unused ceiling released: ${credits(r.releasedMinor)}`, `Discount: ${r.discountPercent ?? 0}%`, r.rounding,
     ...r.lines.map(l => `${l.item}: ${l.units} units × ${l.pricePerMillion} credit minor units / million`),
     "Ledger order (other operations can occur between these entries):",
@@ -72,8 +76,12 @@ export function ChargeReceiptLookup({ customerId, business = false }: { customer
       {resolvedCustomer && r.entryId ? <p className="text-sm">Paste the exported proof bundle into the verifier with the retained hash: <span className="break-all font-mono">{r.contentHash}</span>. The original evidence export is separate from the redacted readable receipt.</p> : null}
       {proofError ? <Banner tone="error">{proofError}</Banner> : null}
       <dl className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-        {[["Request", r.requestId], ["Execution observation", r.executionState], ["Operation lifecycle", r.operationState ?? "Not recorded"], ["Settlement kind", r.settlementKind ?? "Not recorded"], ["Financial outcome", r.financialState], ["Requested / served", `${r.requestedModel} / ${r.servedModel ?? "Not recorded"}`], ["Admission", r.createdAt ?? "Not recorded"], ["Terminal observation", r.completedAt ?? "Not recorded"], ["Ceiling", credits(r.ceilingMinor)], ["Total charge", credits(r.chargedMinor)], ["Wallet pool charge", credits(r.walletChargedMinor)], ["Subscription charge", credits(r.subscriptionChargedMinor)], ["Unused ceiling released", credits(r.releasedMinor)], ["Usage basis", r.usageBasis]].map(([label, value]) => <div key={label}><dt className="text-sm text-ink-secondary">{label}</dt><dd className="break-all font-mono">{value}</dd></div>)}
+        {[["Request", r.requestId], ["Execution observation", r.executionState], ["Operation lifecycle", r.operationState ?? "Not recorded"], ["Settlement kind", r.settlementKind ?? "Not recorded"], ["Financial outcome", r.financialState], ["Requested / served", `${r.requestedModel} / ${r.servedModel ?? "Not recorded"}`], ["Admission", r.createdAt ?? "Not recorded"], ["Terminal observation", r.completedAt ?? "Not recorded"], ["Ceiling", credits(r.ceilingMinor)], ["Total charge", credits(r.chargedMinor)], ["Source-linked credits", credits(r.correctedMinor)], ["Net charge after credits", credits(r.netChargedMinor)], ["Wallet pool charge", credits(r.walletChargedMinor)], ["Subscription charge", credits(r.subscriptionChargedMinor)], ["Unused ceiling released", credits(r.releasedMinor)], ["Usage basis", r.usageBasis]].map(([label, value]) => <div key={label}><dt className="text-sm text-ink-secondary">{label}</dt><dd className="break-all font-mono">{value}</dd></div>)}
       </dl>
+      {r.corrections.length ? <TableShell head={["Correction", "Recorded at", "Purchased credit", "Reason", "Entry hash"]}>
+        {r.corrections.map(c => <tr key={c.id}><Td mono>{c.entryId}</Td><td>{c.createdAt}</td><Td mono align="right">{credits(c.amountMinor)}</Td><td>{c.reason}</td><Td mono>{c.contentHash}</Td></tr>)}
+      </TableShell> : null}
+      {resolvedCustomer && r.entryId ? <RequestCorrection key={`${resolvedCustomer}:${r.entryId}`} customerId={resolvedCustomer} sourceEntryId={r.entryId} onApplied={() => void query.refetch()} /> : null}
       <p>{r.policy}</p>
       <p className="break-all">Historical price version: {r.priceVersion ?? "Not recorded"}; sale version: {r.saleVersion ?? "Not recorded"}. Sale digest: {r.saleDigest ?? "Not recorded"}.</p>
       <TableShell head={["Dimension", { label: "Units", align: "right" }, { label: "Minor units / million", align: "right" }]}>
