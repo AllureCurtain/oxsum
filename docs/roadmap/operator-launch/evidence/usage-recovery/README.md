@@ -22,7 +22,8 @@ fixtures. No live OpenAI credential, stored completion or supplier bill was used
 The first workspace pass stopped after two `sale_heads` fixture timing failures
 (`no active sale price` at immediate current-time resolution). No production code
 was changed to mask these: all three sale-head tests passed on focused retry.
-The complete no-fail-fast workspace rerun is recorded in the PR checks.
+The complete no-fail-fast workspace rerun passed: **2629 passed, 6 skipped**
+in574.327 seconds (`recovery-workspace2.log`).
 Raw local logs are retained in `/tmp/oxsum-billing-program/` for this execution;
 required GitHub CI and independent review are linked from the PR.
 
