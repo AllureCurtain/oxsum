@@ -152,6 +152,8 @@ usage_anchors
 usage_daily
 usage_day_log
 usage_records
+usage_recovery
+usage_recovery_attempts
 usage_report_rows
 usage_reports
 user_totp

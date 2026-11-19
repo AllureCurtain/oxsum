@@ -2193,6 +2193,31 @@ requires a fresh review; an unavailable implementation cannot be accepted.
 Accounts without acceptance continue legacy behavior. Historical receipts show
 their bound policy, or explicitly state that no acceptance was recorded.
 
-The provider-reported offer is review-only until the bounded recovery runtime
-is included; do not interpret publication as activation. The schema migration
-is additive and needs no historical billing rewrite or customer backfill.
+The provider-reported runtime is available for the supported text scope;
+publication alone still does not activate a customer. The schema migrations
+are additive and need no historical billing rewrite or customer backfill.
+
+### Enable provider-reported text billing
+
+After upgrading the binary and applying migrations through 0142, an operator
+with CatalogWrite publishes `provider-reported-text-v1` in Business billing
+policies. Choose an evidence window no longer than 900 seconds. Publication
+never migrates a customer. The customer owner/admin reviews and explicitly
+accepts the exact version and digest in Billing; new eligible calls bind that
+acceptance at admission. Existing requests, historical bills and customers
+without that acceptance keep their terms. Returning to legacy behavior requires
+an explicit accepted legacy offer, not editing a published policy.
+
+Use one nonstreaming plain-text chat completion, at most one choice, within the
+configured output ceiling. If using OpenAI stored-completion recovery, the caller
+must deliberately send `store:true`; only exact stored IDs at
+`https://api.openai.com/v1` can be retrieved with the original still-current
+credential. Do not enable storage merely to make a test green. Other compatible
+providers without a supported lookup close early using valid observed components.
+
+In Requests, look up the operation ID and keep the receipt open: it refreshes
+while executing or awaiting evidence. Unknown input/output is distinct from zero;
+waived quantities explain the final charge. Export the readable receipt after
+closure. Staff can inspect Business → Exceptions → Usage recovery, switch to
+closed unknown supplier cost, and use the operation/customer IDs in Customers →
+Charge receipt. Supplier costs reported later never trigger another customer debit.

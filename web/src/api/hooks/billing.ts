@@ -73,6 +73,7 @@ export function useRequestLog(query: RequestLogQuery) {
   const qs = params.toString();
   return useQuery({
     queryKey: ["request-log", qs],
+    refetchInterval: 15_000,
     queryFn: () => api<{ rows: RequestLogRow[]; nextCursor?: string }>(`/requests?${qs}`),
   });
 }

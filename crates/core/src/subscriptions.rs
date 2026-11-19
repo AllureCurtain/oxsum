@@ -988,16 +988,21 @@ impl Db {
         .execute(&mut **tx)
         .await?;
         // Give back what the draw reserved but the charge did not use — the
-        // period's counter and the subscription's live one move together.
+        // original period always moves. Its live mirror moves only while that
+        // same period is current: delayed settlement must not free a new quota.
         let released = drawn - actual_minor;
         if released > 0 {
             sqlx::query(
                 "UPDATE oxsum.org_subscriptions \
                  SET consumed_minor = consumed_minor - $2, updated_at = now() \
-                 WHERE subscription_id = $1",
+                 WHERE subscription_id = $1 AND EXISTS ( \
+                    SELECT 1 FROM oxsum.subscription_periods p WHERE p.period_id=$3 \
+                    AND p.subscription_id=$1 AND p.outcome='open' \
+                    AND p.period_start=oxsum.org_subscriptions.current_period_start)",
             )
             .bind(subscription_id)
             .bind(released)
+            .bind(period_id)
             .execute(&mut **tx)
             .await?;
             sqlx::query(

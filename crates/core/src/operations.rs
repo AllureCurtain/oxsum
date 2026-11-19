@@ -923,7 +923,7 @@ impl Db {
     ) -> Result<Vec<RequestOperation>, WalletError> {
         let rows = sqlx::query(&format!(
             "SELECT {OPERATION_COLS} FROM oxsum.request_operations \
-             WHERE surface <> $3 \
+             WHERE surface <> $3 AND NOT EXISTS(SELECT 1 FROM oxsum.usage_recovery r WHERE r.operation_id=request_operations.operation_id) \
                AND ((state IN ('leased', 'running') AND leased_until < now()) \
                 OR (state = 'created' AND created_at < now() - ($1 || ' seconds')::interval)) \
              ORDER BY created_at LIMIT $2"

@@ -49,6 +49,9 @@ enum PollAnswer {
 struct Script {
     submits: Arc<Mutex<HashMap<String, SubmitAnswer>>>,
     polls: Arc<Mutex<HashMap<String, PollAnswer>>>,
+    chat: Arc<Mutex<Option<(u16, Value)>>>,
+    chat_calls: Arc<std::sync::atomic::AtomicUsize>,
+    chat_delay_ms: Arc<std::sync::atomic::AtomicU64>,
 }
 
 impl Script {
@@ -118,7 +121,24 @@ async fn poll_upstream(
 }
 
 /// A fixed chat answer with a usage report — the settle's priced counts.
-async fn chat_upstream() -> Response {
+async fn chat_upstream(State(script): State<Script>) -> Response {
+    script
+        .chat_calls
+        .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    tokio::time::sleep(Duration::from_millis(
+        script
+            .chat_delay_ms
+            .load(std::sync::atomic::Ordering::SeqCst),
+    ))
+    .await;
+    if let Some((status, body)) = script.chat.lock().unwrap().clone() {
+        return (
+            StatusCode::from_u16(status).unwrap(),
+            [("retry-after", "0")],
+            axum::Json(body),
+        )
+            .into_response();
+    }
     axum::Json(json!({
         "id": "chatcmpl-fixture-9",
         "object": "chat.completion",
@@ -1318,4 +1338,446 @@ async fn billing_policy_http_consent_and_durable_admission_survive_publication_a
             .unwrap()
             .contains(terms.selection.policy.as_ref().unwrap().digest.as_str())
     );
+}
+
+async fn enable_provider_policy(world: &World) {
+    let owner = receipt_owner(world).await;
+    let versions = world.db.business_billing_policies(&owner).await.unwrap();
+    let p = world
+        .db
+        .publish_billing_policy(
+            &owner,
+            &oxsum_core::BillingPolicyPublish {
+                idempotency_key: Uuid::new_v4().to_string(),
+                expected_version: versions.first().map_or(0, |v| v.version),
+                implementation: "provider-reported-text-v1".into(),
+                evidence_window_secs: 900,
+                reason: "Synthetic recovery acceptance".into(),
+            },
+        )
+        .await
+        .unwrap();
+    world
+        .db
+        .accept_billing_policy(
+            &world.session,
+            &oxsum_core::BillingPolicyAccept {
+                expected_organization_id: world.organization_id,
+                idempotency_key: Uuid::new_v4().to_string(),
+                version: p.version,
+                digest: p.digest,
+                expected_acceptance_id: None,
+            },
+        )
+        .await
+        .unwrap();
+}
+async fn policy_call(
+    world: &World,
+    body: Value,
+    idempotency: &str,
+) -> (StatusCode, HeaderMap, Value) {
+    let response = world
+        .app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/chat/completions")
+                .header("authorization", format!("Bearer {}", world.key))
+                .header("content-type", "application/json")
+                .header("idempotency-key", idempotency)
+                .body(Body::from(body.to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let status = response.status();
+    let headers = response.headers().clone();
+    let body =
+        serde_json::from_slice(&response.into_body().collect().await.unwrap().to_bytes()).unwrap();
+    (status, headers, body)
+}
+#[tokio::test]
+async fn provider_policy_gateway_preserves_receipt_requests_replay_and_single_attempt() {
+    let url = oxsum_testkit::suite_url!().expect("provider policy requires PostgreSQL");
+    let world = world(&url, 10000).await;
+    enable_provider_policy(&world).await;
+    let body = json!({"model":"chat-model","messages":[{"role":"user","content":"hello"}],"max_tokens":8,"stream":false});
+    let (status, headers, first) = policy_call(&world, body.clone(), "policy-valid").await;
+    assert_eq!(status, StatusCode::OK);
+    let id = headers["x-oxsum-request-id"].to_str().unwrap();
+    let (_, receipt) = call(
+        &world.app,
+        "GET",
+        &format!("/api/v1/charge-receipt?identifier={id}"),
+        None,
+        Some(&world.key),
+    )
+    .await;
+    assert_eq!(receipt["data"]["chargedMinor"], 18);
+    assert_eq!(receipt["data"]["recovery"]["state"], "closed");
+    assert_eq!(
+        receipt["data"]["usageBasis"],
+        "provider_reported_components"
+    );
+    let log:i64=sqlx::query_scalar("SELECT count(*) FROM oxsum.request_log WHERE request_id=$1 AND admission_outcome='admitted'").bind(id).fetch_one(&world.pool).await.unwrap();
+    assert_eq!(log, 1);
+    assert_eq!(
+        policy_call(&world, body.clone(), "policy-valid").await.2,
+        first
+    );
+    assert_eq!(
+        world
+            .script
+            .chat_calls
+            .load(std::sync::atomic::Ordering::SeqCst),
+        1
+    );
+    *world.script.chat.lock().unwrap() = Some((429, json!({"error":{"message":"slow down"}})));
+    assert_eq!(
+        policy_call(&world, body.clone(), "policy-429").await.0,
+        StatusCode::BAD_GATEWAY
+    );
+    assert_eq!(
+        world
+            .script
+            .chat_calls
+            .load(std::sync::atomic::Ordering::SeqCst),
+        2
+    );
+    let mut unsupported = body;
+    unsupported["tools"] = json!([]);
+    assert_eq!(
+        policy_call(&world, unsupported, "policy-tools").await.0,
+        StatusCode::BAD_REQUEST
+    );
+    assert_eq!(
+        world
+            .script
+            .chat_calls
+            .load(std::sync::atomic::Ordering::SeqCst),
+        2
+    );
+}
+#[tokio::test]
+async fn provider_policy_missing_usage_closes_unknown_and_dispatch_failure_keeps_replay() {
+    let url = oxsum_testkit::suite_url!().expect("provider policy requires PostgreSQL");
+    let world = world(&url, 10000).await;
+    enable_provider_policy(&world).await;
+    *world.script.chat.lock().unwrap() = Some((
+        200,
+        json!({"id":"chatcmpl-missing","object":"chat.completion","choices":[{"index":0,"message":{"content":"ok"},"finish_reason":"stop"}]}),
+    ));
+    let body = json!({"model":"chat-model","messages":[{"role":"user","content":"hello"}],"max_tokens":8,"stream":false,"store":true});
+    let (status, headers, _) = policy_call(&world, body.clone(), "policy-missing").await;
+    assert_eq!(status, StatusCode::OK);
+    let id = headers["x-oxsum-request-id"].to_str().unwrap();
+    let (_, receipt) = call(
+        &world.app,
+        "GET",
+        &format!("/api/v1/charge-receipt?identifier={id}"),
+        None,
+        Some(&world.key),
+    )
+    .await;
+    assert_eq!(receipt["data"]["chargedMinor"], 0);
+    assert_eq!(
+        receipt["data"]["recovery"]["observed"]["input"],
+        Value::Null
+    );
+    assert_eq!(receipt["data"]["recovery"]["supplierCostKnown"], false);
+    sqlx::raw_sql("CREATE FUNCTION oxsum.fail_recovery_dispatch() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'synthetic dispatch persistence failure'; END $$; CREATE TRIGGER fail_recovery_dispatch BEFORE INSERT ON oxsum.usage_recovery_attempts FOR EACH ROW EXECUTE FUNCTION oxsum.fail_recovery_dispatch();").execute(&world.pool).await.unwrap();
+    let (status, headers, _) = policy_call(&world, body.clone(), "policy-dispatch-failure").await;
+    assert!(status.is_server_error());
+    let id = headers["x-oxsum-request-id"].to_str().unwrap();
+    let deadline = oxsum_testkit::settle_deadline();
+    loop {
+        let closed: bool = sqlx::query_scalar(
+            "SELECT closed_at IS NOT NULL FROM oxsum.usage_recovery WHERE operation_id=$1",
+        )
+        .bind(Uuid::parse_str(id).unwrap())
+        .fetch_one(&world.pool)
+        .await
+        .unwrap();
+        if closed {
+            break;
+        }
+        assert!(std::time::Instant::now() < deadline);
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    let kinds: Vec<String> =
+        sqlx::query_scalar("SELECT kind FROM oxsum.usage_records WHERE request_id=$1")
+            .bind(id)
+            .fetch_all(&world.pool)
+            .await
+            .unwrap();
+    assert_eq!(kinds, vec!["released"]);
+    assert_eq!(
+        policy_call(&world, body, "policy-dispatch-failure").await.0,
+        status
+    );
+    assert_eq!(
+        world
+            .script
+            .chat_calls
+            .load(std::sync::atomic::Ordering::SeqCst),
+        1
+    );
+}
+
+#[tokio::test]
+async fn provider_policy_pending_http_replay_never_claims_zero_before_closure() {
+    let url = oxsum_testkit::suite_url!().expect("provider recovery requires PostgreSQL");
+    let world = world(&url, 10000).await;
+    enable_provider_policy(&world).await;
+    // Fault fixture exercises pending gateway semantics without enabling live OpenAI credentials.
+    // Production capability is derived exclusively from canonical OpenAI + caller store:true.
+    sqlx::raw_sql("CREATE FUNCTION oxsum.fixture_lookup_capability() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN NEW.lookup_supported=true; RETURN NEW; END $$; CREATE TRIGGER fixture_lookup_capability BEFORE INSERT ON oxsum.usage_recovery_attempts FOR EACH ROW EXECUTE FUNCTION oxsum.fixture_lookup_capability();").execute(&world.pool).await.unwrap();
+    *world.script.chat.lock().unwrap() = Some((
+        200,
+        json!({"id":"chatcmpl-pending","object":"chat.completion","choices":[{"index":0,"message":{"content":"ok"},"finish_reason":"stop"}]}),
+    ));
+    let body = json!({"model":"chat-model","messages":[{"role":"user","content":"hello"}],"max_tokens":8,"store":true});
+    let (status, headers, first) = policy_call(&world, body.clone(), "pending-response").await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(!headers.contains_key("x-oxsum-charged-minor"));
+    let id = headers["x-oxsum-request-id"].to_str().unwrap();
+    let (_, receipt) = call(
+        &world.app,
+        "GET",
+        &format!("/api/v1/charge-receipt?identifier={id}"),
+        None,
+        Some(&world.key),
+    )
+    .await;
+    assert_eq!(receipt["data"]["financialState"], "pending");
+    assert_eq!(receipt["data"]["chargedMinor"], Value::Null);
+    assert_eq!(receipt["data"]["recovery"]["state"], "pending");
+    assert_eq!(policy_call(&world, body, "pending-response").await.2, first);
+    assert_eq!(
+        world
+            .script
+            .chat_calls
+            .load(std::sync::atomic::Ordering::SeqCst),
+        1
+    );
+    sqlx::query("UPDATE oxsum.usage_recovery SET deadline=clock_timestamp()-interval '1 second' WHERE operation_id=$1").bind(Uuid::parse_str(id).unwrap()).execute(&world.pool).await.unwrap();
+    let tenants = oxsum_core::Tenants::new(world.pool.clone());
+    oxsum_server::usage_recovery::recover_one(
+        &world.db,
+        &tenants,
+        Uuid::parse_str(id).unwrap(),
+        None,
+    )
+    .await
+    .unwrap();
+    let (_, closed) = call(
+        &world.app,
+        "GET",
+        &format!("/api/v1/charge-receipt?identifier={id}"),
+        None,
+        Some(&world.key),
+    )
+    .await;
+    assert_eq!(closed["data"]["chargedMinor"], 0);
+    assert_eq!(closed["data"]["recovery"]["state"], "closed");
+}
+#[tokio::test]
+async fn provider_policy_synchronous_heartbeat_and_cancellation_keep_one_financial_outcome() {
+    let url = oxsum_testkit::suite_url!().expect("provider recovery requires PostgreSQL");
+    let world = world(&url, 10000).await;
+    enable_provider_policy(&world).await;
+    world
+        .script
+        .chat_delay_ms
+        .store(19000, std::sync::atomic::Ordering::SeqCst);
+    let body = json!({"model":"chat-model","messages":[{"role":"user","content":"long synchronous"}],"max_tokens":8});
+    let app = world.app.clone();
+    let key = world.key.clone();
+    let task = tokio::spawn(async move {
+        app.oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/chat/completions")
+                .header("authorization", format!("Bearer {key}"))
+                .header("content-type", "application/json")
+                .body(Body::from(body.to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap()
+    });
+    tokio::time::sleep(Duration::from_secs(17)).await;
+    let (id,updated,created):(Uuid,time::OffsetDateTime,time::OffsetDateTime)=sqlx::query_as("SELECT operation_id,updated_at,created_at FROM oxsum.request_operations WHERE organization_id=$1 ORDER BY created_at DESC LIMIT 1").bind(world.organization_id).fetch_one(&world.pool).await.unwrap();
+    assert!(updated - created > time::Duration::seconds(10));
+    let tenants = oxsum_core::Tenants::new(world.pool.clone());
+    oxsum_core::sweep_stale_holds(
+        &world.db,
+        &tenants,
+        time::OffsetDateTime::now_utc() + time::Duration::days(1),
+        time::OffsetDateTime::now_utc().date(),
+    )
+    .await
+    .unwrap();
+    assert!(world.db.claim_usage_recovery(id).await.unwrap().is_none());
+    task.abort();
+    let deadline = oxsum_testkit::settle_deadline();
+    loop {
+        if world
+            .db
+            .usage_recovery_receipt(world.organization_id, id)
+            .await
+            .unwrap()
+            .unwrap()
+            .state
+            == "closed"
+        {
+            break;
+        }
+        assert!(std::time::Instant::now() < deadline);
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    let (count, charge): (i64, i64) = sqlx::query_as(
+        "SELECT count(*),sum(charged_minor)::bigint FROM oxsum.usage_records WHERE request_id=$1",
+    )
+    .bind(id.to_string())
+    .fetch_one(&world.pool)
+    .await
+    .unwrap();
+    assert_eq!((count, charge), (1, 0));
+    assert_eq!(
+        world
+            .script
+            .chat_calls
+            .load(std::sync::atomic::Ordering::SeqCst),
+        1
+    );
+}
+
+#[tokio::test]
+async fn provider_policy_cancellation_during_post_call_preserves_observed_charge() {
+    let url = oxsum_testkit::suite_url!().expect("provider recovery requires PostgreSQL");
+    let world = world(&url, 10000).await;
+    enable_provider_policy(&world).await;
+    let seen = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let seen_handler = seen.clone();
+    let moderation = Router::new().route(
+        "/moderate",
+        post(move || {
+            let seen = seen_handler.clone();
+            async move {
+                if seen.fetch_add(1, std::sync::atomic::Ordering::SeqCst) > 0 {
+                    tokio::time::sleep(Duration::from_secs(4)).await;
+                }
+                axum::Json(json!({"verdict":"allow"}))
+            }
+        }),
+    );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let endpoint = format!("http://{}/moderate", listener.local_addr().unwrap());
+    let moderation_task =
+        tokio::spawn(async move { axum::serve(listener, moderation).await.unwrap() });
+    let policy = format!("cancel-{}", &Uuid::new_v4().simple().to_string()[..8]);
+    let (status,result)=call(&world.app,"PUT",&format!("/api/v1/admin/guardrail-policies/{policy}"),Some(json!({"kind":"moderation","config":{"endpoint":endpoint,"timeoutMs":5000},"apiKey":"fixture"})),Some(OPERATOR_TOKEN)).await;
+    assert_eq!(status, StatusCode::OK, "{result}");
+    let channel: String = sqlx::query_scalar("SELECT c.name FROM oxsum.channel_prices p JOIN oxsum.channels c USING(channel_id) WHERE p.model='chat-model' ORDER BY p.created_at DESC LIMIT 1").fetch_one(&world.pool).await.unwrap();
+    let (status, result) = call(
+        &world.app,
+        "PUT",
+        &format!("/api/v1/admin/guardrail-bindings/channel/{channel}"),
+        Some(json!({"policies":[policy]})),
+        Some(OPERATOR_TOKEN),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{result}");
+    let app = world.app.clone();
+    let key = world.key.clone();
+    let task = tokio::spawn(async move {
+        app.oneshot(Request::builder().method("POST").uri("/v1/chat/completions").header("authorization",format!("Bearer {key}")).header("content-type","application/json").body(Body::from(json!({"model":"chat-model","messages":[{"role":"user","content":"hello"}],"max_tokens":8}).to_string())).unwrap()).await.unwrap()
+    });
+    let deadline = oxsum_testkit::settle_deadline();
+    while seen.load(std::sync::atomic::Ordering::SeqCst) < 2 {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "post-call moderation starts"
+        );
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    task.abort();
+    loop {
+        let charge:Option<i64>=sqlx::query_scalar("SELECT charged_minor FROM oxsum.request_operations WHERE organization_id=$1 AND completed_at IS NOT NULL").bind(world.organization_id).fetch_optional(&world.pool).await.unwrap().flatten();
+        if let Some(charge) = charge {
+            assert_eq!(charge, 18);
+            break;
+        }
+        assert!(std::time::Instant::now() < deadline);
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    moderation_task.abort();
+}
+
+#[tokio::test]
+async fn provider_policy_business_queue_is_durable_scoped_and_redacted() {
+    let url = oxsum_testkit::suite_url!().expect("recovery queue requires PostgreSQL");
+    let world = world(&url, 10000).await;
+    enable_provider_policy(&world).await;
+    let owner = receipt_owner(&world).await;
+    let (_,headers,_)=policy_call(&world,json!({"model":"chat-model","messages":[{"role":"user","content":"private prompt"}],"max_tokens":8}),"queue-fixture").await;
+    let id = Uuid::parse_str(headers["x-oxsum-request-id"].to_str().unwrap()).unwrap();
+    sqlx::query("DELETE FROM oxsum.request_attempts WHERE operation_id=$1")
+        .bind(id)
+        .execute(&world.pool)
+        .await
+        .unwrap();
+    sqlx::query("DELETE FROM oxsum.request_operations WHERE operation_id=$1")
+        .bind(id)
+        .execute(&world.pool)
+        .await
+        .unwrap();
+    let path = "/api/v1/business/usage-recovery?closedUnknown=true";
+    assert_eq!(
+        call(&world.app, "GET", path, None, Some(&world.key))
+            .await
+            .0,
+        StatusCode::FORBIDDEN
+    );
+    for (token, expected) in [
+        (&world.session, StatusCode::FORBIDDEN),
+        (&owner, StatusCode::OK),
+    ] {
+        let response = world
+            .app
+            .clone()
+            .oneshot(
+                Request::get(path)
+                    .header("cookie", format!("oxsum_session={token}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), expected);
+        if expected == StatusCode::OK {
+            let bytes = response.into_body().collect().await.unwrap().to_bytes();
+            let data: Value = serde_json::from_slice(&bytes).unwrap();
+            let row = data["data"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|r| r["operationId"] == id.to_string())
+                .unwrap();
+            assert_eq!(row["organizationId"], world.organization_id.to_string());
+            assert_eq!(row["recovery"]["state"], "closed");
+            let text = String::from_utf8(bytes.to_vec()).unwrap();
+            for secret in [
+                "upstream-secret",
+                "private prompt",
+                "supplier_price",
+                "credential",
+            ] {
+                assert!(!text.contains(secret));
+            }
+        }
+    }
 }

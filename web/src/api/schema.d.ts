@@ -6859,6 +6859,54 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/business/usage-recovery": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Inspect pending usage recovery and unresolved supplier exposure
+         * @description Requires ReportsRead. A bounded durable Business queue, including operations whose diagnostic rows were removed. No credentials, prompts or wholesale rates. Closed unknown supplier cost never authorizes another customer debit.
+         */
+        get: {
+            parameters: {
+                query?: {
+                    closedUnknown?: boolean;
+                    before?: string;
+                };
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Up to 50 rows ordered by operation ID descending; use the last ID as before for the next page */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            data: components["schemas"]["UsageRecoveryQueueRow"][];
+                        };
+                    };
+                };
+                400: components["responses"]["Error"];
+                401: components["responses"]["Error"];
+                403: components["responses"]["Error"];
+                500: components["responses"]["Error"];
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/business/charge-receipt": {
         parameters: {
             query?: never;
@@ -21482,6 +21530,42 @@ export interface components {
             currentPolicy: components["schemas"]["BillingPolicyVersion"] | null;
             legacyDisclosure: string;
         };
+        UsageRecoveryQueueRow: {
+            /** Format: uuid */
+            operationId: string;
+            /** Format: uuid */
+            organizationId: string;
+            model: string;
+            /** Format: int64 */
+            ceilingMinor: number;
+            recovery: components["schemas"]["UsageRecoveryReceipt"];
+        };
+        UsageRecoveryReceipt: {
+            /** @enum {string} */
+            state: "executing" | "pending" | "closed";
+            terminalObservation: string | null;
+            terminalAt: string | null;
+            deadline: string | null;
+            closedAt: string | null;
+            closeReason: string | null;
+            observed: {
+                /** Format: int64 */
+                input: number | null;
+                /** Format: int64 */
+                output: number | null;
+                /** Format: int64 */
+                total: number | null;
+                /** Format: int64 */
+                cached: number | null;
+                /** Format: int64 */
+                reasoning: number | null;
+                invalid: string[];
+                eligible: boolean;
+                completionId: string | null;
+            };
+            waived: string[];
+            supplierCostKnown: boolean;
+        };
         ChargeReceipt: {
             requestId: string;
             /** Format: uuid */
@@ -21491,6 +21575,7 @@ export interface components {
             settlementKind: string | null;
             /** @enum {string} */
             financialState: "pending" | "settled";
+            recovery: components["schemas"]["UsageRecoveryReceipt"] | null;
             requestedModel: string;
             servedModel: string | null;
             createdAt: string | null;

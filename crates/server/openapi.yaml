@@ -5110,6 +5110,35 @@ paths:
         "400": { $ref: "#/components/responses/Error" }
         "401": { $ref: "#/components/responses/Error" }
         "500": { $ref: "#/components/responses/Error" }
+  /api/v1/business/usage-recovery:
+    get:
+      security: [{ sessionCookie: [] }]
+      x-consumption-key-access: denied
+      summary: Inspect pending usage recovery and unresolved supplier exposure
+      description: Requires ReportsRead. A bounded durable Business queue, including operations whose diagnostic rows were removed. No credentials, prompts or wholesale rates. Closed unknown supplier cost never authorizes another customer debit.
+      parameters:
+        - name: closedUnknown
+          in: query
+          schema: { type: boolean, default: false }
+        - name: before
+          in: query
+          schema: { type: string, format: uuid }
+      responses:
+        "200":
+          description: Up to 50 rows ordered by operation ID descending; use the last ID as before for the next page
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    type: array
+                    items: { $ref: '#/components/schemas/UsageRecoveryQueueRow' }
+        "400": { $ref: '#/components/responses/Error' }
+        "401": { $ref: '#/components/responses/Error' }
+        "403": { $ref: '#/components/responses/Error' }
+        "500": { $ref: '#/components/responses/Error' }
   /api/v1/business/charge-receipt:
     get:
       security: [{ sessionCookie: [] }]
@@ -16159,9 +16188,42 @@ components:
         versions: { type: array, items: { $ref: '#/components/schemas/BillingPolicyVersion' } }
         currentPolicy: { oneOf: [{ $ref: '#/components/schemas/BillingPolicyVersion' }, { type: 'null' }] }
         legacyDisclosure: { type: string }
+    UsageRecoveryQueueRow:
+      type: object
+      required: [operationId, organizationId, model, ceilingMinor, recovery]
+      properties:
+        operationId: { type: string, format: uuid }
+        organizationId: { type: string, format: uuid }
+        model: { type: string }
+        ceilingMinor: { type: integer, format: int64 }
+        recovery: { $ref: '#/components/schemas/UsageRecoveryReceipt' }
+    UsageRecoveryReceipt:
+      type: object
+      required: [state, terminalObservation, terminalAt, deadline, closedAt, closeReason, observed, waived, supplierCostKnown]
+      properties:
+        state: { type: string, enum: [executing, pending, closed] }
+        terminalObservation: { type: [string, 'null'] }
+        terminalAt: { type: [string, 'null'] }
+        deadline: { type: [string, 'null'] }
+        closedAt: { type: [string, 'null'] }
+        closeReason: { type: [string, 'null'] }
+        observed:
+          type: object
+          required: [input, output, total, cached, reasoning, invalid, eligible, completionId]
+          properties:
+            input: { type: [integer, 'null'], format: int64 }
+            output: { type: [integer, 'null'], format: int64 }
+            total: { type: [integer, 'null'], format: int64 }
+            cached: { type: [integer, 'null'], format: int64 }
+            reasoning: { type: [integer, 'null'], format: int64 }
+            invalid: { type: array, items: { type: string } }
+            eligible: { type: boolean }
+            completionId: { type: [string, 'null'] }
+        waived: { type: array, items: { type: string } }
+        supplierCostKnown: { type: boolean }
     ChargeReceipt:
       type: object
-      required: [requestId, operationId, executionState, operationState, settlementKind, financialState, requestedModel, servedModel, createdAt, completedAt, entryId, contentHash, priceVersion, saleDigest, saleVersion, policy, usageBasis, ceilingMinor, chargedMinor, walletChargedMinor, subscriptionChargedMinor, releasedMinor, correctedMinor, netChargedMinor, corrections, lines, discountPercent, rounding, ledger, attempts, diagnostics]
+      required: [requestId, operationId, executionState, operationState, settlementKind, financialState, requestedModel, servedModel, createdAt, completedAt, entryId, contentHash, priceVersion, saleDigest, saleVersion, policy, usageBasis, ceilingMinor, chargedMinor, walletChargedMinor, subscriptionChargedMinor, releasedMinor, correctedMinor, netChargedMinor, corrections, lines, discountPercent, rounding, ledger, attempts, diagnostics, recovery]
       properties:
         requestId: { type: string }
         operationId: { type: [string, "null"], format: uuid }
@@ -16169,6 +16231,7 @@ components:
         operationState: { type: [string, "null"] }
         settlementKind: { type: [string, "null"] }
         financialState: { type: string, enum: [pending, settled] }
+        recovery: { oneOf: [{ $ref: '#/components/schemas/UsageRecoveryReceipt' }, { type: 'null' }] }
         requestedModel: { type: string }
         servedModel: { type: [string, "null"] }
         createdAt: { type: [string, "null"] }

@@ -164,6 +164,60 @@ pub struct GatewayRequest {
 }
 
 impl GatewayRequest {
+    /// Initial provider-reported policy only supports a single plain-text completion.
+    pub fn validate_provider_text(&self) -> Result<(), GatewayError> {
+        let allowed = [
+            "model",
+            "messages",
+            "stream",
+            "max_tokens",
+            "max_completion_tokens",
+            "temperature",
+            "top_p",
+            "stop",
+            "seed",
+            "frequency_penalty",
+            "presence_penalty",
+            "logprobs",
+            "top_logprobs",
+            "logit_bias",
+            "user",
+            "metadata",
+            "service_tier",
+            "store",
+            "n",
+        ];
+        let valid = self.body.keys().all(|k| allowed.contains(&k.as_str()))
+            && self.body.get("n").is_none_or(|v| v.as_i64() == Some(1))
+            && self.body.get("store").is_none_or(Value::is_boolean)
+            && self
+                .body
+                .get("messages")
+                .and_then(Value::as_array)
+                .is_some_and(|m| {
+                    !m.is_empty()
+                        && m.iter().all(|m| {
+                            m.as_object().is_some_and(|m| {
+                                m.keys()
+                                    .all(|k| ["role", "content", "name"].contains(&k.as_str()))
+                                    && matches!(
+                                        m.get("role").and_then(Value::as_str),
+                                        Some("system" | "developer" | "user" | "assistant")
+                                    )
+                                    && m.get("content").is_some_and(Value::is_string)
+                            })
+                        })
+                });
+        if valid {
+            Ok(())
+        } else {
+            Err(GatewayError::Invalid{message:"provider-reported-text-v1 requires one nonstream plain-text completion; tools, media, prediction and unknown request fields are unsupported".into(),param:None})
+        }
+    }
+    /// Storage is enabled only by the caller's exact boolean opt-in.
+    pub fn stored_completion(&self) -> bool {
+        self.body.get("store").and_then(Value::as_bool) == Some(true)
+    }
     /// Exact parsed request before routing or output-bound rewriting.
     pub fn cache_body(&self) -> Value {
         Value::Object(self.body.clone())

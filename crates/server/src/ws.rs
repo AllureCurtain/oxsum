@@ -106,7 +106,7 @@ async fn push_billing(
             return;
         }
     }
-    let mut validity = tokio::time::interval(Duration::from_secs(30));
+    let mut validity = tokio::time::interval(Duration::from_secs(15));
     validity.tick().await;
     loop {
         tokio::select! {
@@ -119,6 +119,17 @@ async fn push_billing(
                 match current_scope(&state, &token, organization_id).await {
                     Ok(resolved) => scope = resolved,
                     Err(_) => break,
+                }
+                // Durable holds reconcile completions on other processes and
+                // recovery workers that have no connection to this broadcast.
+                match state.db.open_holds_for_tenant(&tenant_id).await {
+                    Ok(holds) => {
+                        let holds: Vec<_> = holds.into_iter().filter(|hold|
+                            scope.allows(hold.key_id.map(|id| id.simple().to_string()).as_deref())
+                        ).collect();
+                        if !send_json(&mut socket, &Snapshot::new(&holds)).await { break; }
+                    }
+                    Err(error) => tracing::warn!(%error, "billing snapshot refresh failed"),
                 }
             }
             event = events.recv() => {

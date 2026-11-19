@@ -17,7 +17,7 @@ pub const POLICY_SCOPE: &str =
 /// Historical behavior without fabricated consent.
 pub const LEGACY_DISCLOSURE: &str = "Legacy estimation: missing completion usage may charge locally estimated input; cancellation may charge a bounded forwarded prefix. No explicit exception-policy acceptance was recorded.";
 /// The provider-reported implementation is enabled only when its recovery writer exists.
-pub const PROVIDER_REPORTED_READY: bool = false;
+pub const PROVIDER_REPORTED_READY: bool = true;
 
 fn disclosure(implementation: &str, window: i64) -> Result<String, WalletError> {
     match implementation {

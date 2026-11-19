@@ -150,3 +150,13 @@ application record. The existing settlement/sale verifier still checks the
 original entry and arithmetic; it does not independently establish customer
 consent or authenticate the new policy record. The receipt labels this limit.
 Existing sale snapshot and settlement bytes remain compatible.
+
+Provider-reported recovery preserves existing settlement encodings. Billed zero
+quantities for waived components express a financial exclusion, not observed
+zero use; the receipt's presence-aware recovery facts retain unknown quantities.
+Verification establishes the recorded ledger commitment/arithmetic within the
+existing proof scope. It does not authenticate supplier token truth, consent,
+response delivery, external execution uniqueness or complete supplier cost.
+A pending recovery has no final settlement proof. Later cost evidence cannot
+rewrite a closed customer charge. Diagnostic analytics are not the authority for
+recovery state or receipt existence.

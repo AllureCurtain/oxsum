@@ -149,7 +149,17 @@ impl Db {
         organization: Uuid,
         operation: Uuid,
     ) -> Result<Option<GatewayBillingTerms>, WalletError> {
-        let row=sqlx::query("SELECT canonical,digest FROM oxsum.operation_billing_terms WHERE organization_id=$1 AND operation_id=$2").bind(organization).bind(operation).fetch_optional(self.pool()).await?;
+        let mut tx = self.pool().begin().await?;
+        self.operation_billing_terms_in(&mut tx, organization, operation)
+            .await
+    }
+    pub(crate) async fn operation_billing_terms_in(
+        &self,
+        tx: &mut Transaction<'_, Postgres>,
+        organization: Uuid,
+        operation: Uuid,
+    ) -> Result<Option<GatewayBillingTerms>, WalletError> {
+        let row=sqlx::query("SELECT canonical,digest FROM oxsum.operation_billing_terms WHERE organization_id=$1 AND operation_id=$2").bind(organization).bind(operation).fetch_optional(&mut **tx).await?;
         row.map(|row| {
             let text: String = row.try_get("canonical")?;
             if digest("oxsum/operation-billing-terms/v1", &text)

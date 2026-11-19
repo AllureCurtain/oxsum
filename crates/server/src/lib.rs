@@ -18,6 +18,8 @@ mod routes;
 mod spa;
 mod tasks;
 pub mod telemetry;
+/// Bounded provider usage recovery worker.
+pub mod usage_recovery;
 mod web;
 pub mod webhooks;
 mod ws;

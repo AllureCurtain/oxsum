@@ -5233,3 +5233,23 @@ this record. New provider-reported behavior stays unavailable until its recovery
 writer is implemented; explicit legacy acceptance preserves cache, pricing and
 existing configurations. Policy applicability, runtime capability and acceptance
 are separate facts. Existing bill proofs do not gain an implied consent claim.
+
+## 2026-11-20 — Bounded provider evidence recovery (#1236)
+
+Enable the previously published prospective provider-reported offer through a
+separate presence-aware settlement path. Limit the initial request shape and
+one paid POST rather than retry uncertain external execution. Preserve all
+legacy adapter estimation and settlement encodings. Strict reported components
+can be priced only under pinned rates; never derive missing input from totals or
+infer hidden subset quantities. Keep independently unknown supplier cost separate.
+
+Durable pre-dispatch context and unique recovery claims fence worker replacement.
+A terminal-relative maximum 900-second window does not time out a live job.
+Only explicitly stored canonical OpenAI completions permit correlated GET lookup;
+configuration/credential changes disable lookup. The atomic finalizer preserves
+subscription, promotional funding, wallet/debt, mandate, experiment and guardrail
+evidence. Fix previous-period quota release in the shared subscription primitive:
+return unused quota to its original period, updating the live mirror only when
+that period remains current. Closed finance is final; append on a permitted
+current posting day and never rewrite a sealed execution day. Authenticated
+periodic WebSocket snapshots reconcile background closure across processes.

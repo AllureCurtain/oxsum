@@ -68,7 +68,7 @@ async fn publication_is_not_consent_and_versions_do_not_replace_acceptance() {
         )
         .await
         .unwrap();
-    assert!(!v2.runtime_ready);
+    assert!(v2.runtime_ready);
     assert_eq!(
         db.billing_policy_selection(org)
             .await
@@ -77,20 +77,20 @@ async fn publication_is_not_consent_and_versions_do_not_replace_acceptance() {
             .unwrap(),
         accepted
     );
-    assert!(matches!(
+    assert!(
         db.accept_billing_policy(
             &customer,
             &BillingPolicyAccept {
                 expected_organization_id: org,
-                idempotency_key: "not-ready".into(),
+                idempotency_key: "provider-ready".into(),
                 version: v2.version,
                 digest: v2.digest,
                 expected_acceptance_id: Some(accepted.id)
             }
         )
-        .await,
-        Err(WalletError::Conflict(_))
-    ));
+        .await
+        .is_ok()
+    );
     assert_eq!(
         db.publish_billing_policy(&staff, &publish("legacy", 0, "legacy-estimation-v1"))
             .await

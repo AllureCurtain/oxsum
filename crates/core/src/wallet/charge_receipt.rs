@@ -91,6 +91,8 @@ pub struct ChargeReceipt {
     pub settlement_kind: Option<String>,
     /// Whether an immutable settlement exists.
     pub financial_state: String,
+    /// Dedicated provider evidence and financial closure, when applicable.
+    pub recovery: Option<crate::usage_recovery::UsageRecoveryReceipt>,
     /// Requested public model.
     pub requested_model: String,
     /// Served public model, unknown before settlement.
@@ -427,6 +429,11 @@ impl Wallet {
         let policy = bound_terms.as_ref().and_then(|t| t.selection.policy.as_ref().map(|p| {
             format!("{}; version {}; digest {}; acceptance {}; applies to this request: {}. {} Application evidence; the existing entry verifier does not independently verify authenticated consent.",p.implementation,p.version,p.digest,t.selection.acceptance.as_ref().map(|a|a.id.to_string()).unwrap_or_default(),t.policy_applies,p.disclosure)
         })).unwrap_or_else(|| crate::billing_policies::LEGACY_DISCLOSURE.into());
+        let recovery = if let Ok(id) = Uuid::parse_str(&request) {
+            db.usage_recovery_receipt(organization_id, id).await?
+        } else {
+            None
+        };
         Ok(Some(ChargeReceipt {
             request_id: request,
             operation_id: operation.as_ref().map(|o| o.operation_id),
@@ -443,7 +450,7 @@ impl Wallet {
             price_version: record.as_ref().map(|r| r.price_version),
             sale_digest, sale_version,
             policy,
-            usage_basis: usage_basis.into(),
+            usage_basis: if recovery.is_some() {"provider_reported_components".into()} else {usage_basis.into()},
             ceiling_minor: ceiling,
             charged_minor: charged,
             corrected_minor,
@@ -455,7 +462,7 @@ impl Wallet {
             lines: record.as_ref().map(|r| r.lines.iter().map(|l| ReceiptLine { item: l.item.clone(), units: l.units, price_per_million: l.price_per_m }).collect()).unwrap_or_default(),
             discount_percent: record.as_ref().and_then(|r| r.discount_percent),
             rounding: "Sum quantity × historical rate; apply recorded discount to that numerator; divide by 1,000,000 (and 100 for a discount) with one rounding up; cap at original ceiling. The verifier checks the supported recorded schema.".into(),
-            ledger, attempts, diagnostics,
+            ledger, attempts, diagnostics, recovery,
         }))
     }
 

@@ -162,6 +162,8 @@ impl Wallet {
         }
         if let Some(terms) = terms {
             db.bind_billing_terms_in(&mut tx, operation, terms).await?;
+            db.reserve_usage_recovery_in(&mut tx, terms, lease_owner, mandate)
+                .await?;
         } else if db
             .billing_policy_selection_in(&mut tx, operation.organization_id)
             .await?
