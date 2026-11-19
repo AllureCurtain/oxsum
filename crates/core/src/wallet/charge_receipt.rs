@@ -419,6 +419,14 @@ impl Wallet {
             .or(historical_freeze)
             .unwrap_or_else(|| ledger.iter().map(|l| l.reserved_minor).sum());
         let charged = record.as_ref().map(|r| r.charged);
+        let bound_terms = if let Ok(id) = Uuid::parse_str(&request) {
+            db.operation_billing_terms(organization_id, id).await?
+        } else {
+            None
+        };
+        let policy = bound_terms.as_ref().and_then(|t| t.selection.policy.as_ref().map(|p| {
+            format!("{}; version {}; digest {}; acceptance {}; applies to this request: {}. {} Application evidence; the existing entry verifier does not independently verify authenticated consent.",p.implementation,p.version,p.digest,t.selection.acceptance.as_ref().map(|a|a.id.to_string()).unwrap_or_default(),t.policy_applies,p.disclosure)
+        })).unwrap_or_else(|| crate::billing_policies::LEGACY_DISCLOSURE.into());
         Ok(Some(ChargeReceipt {
             request_id: request,
             operation_id: operation.as_ref().map(|o| o.operation_id),
@@ -434,7 +442,7 @@ impl Wallet {
             content_hash: settled.as_ref().map(|s| s.content_hash.to_hex()),
             price_version: record.as_ref().map(|r| r.price_version),
             sale_digest, sale_version,
-            policy: "legacy: recorded estimates and cancellation rules; no versioned acceptance was recorded".into(),
+            policy,
             usage_basis: usage_basis.into(),
             ceiling_minor: ceiling,
             charged_minor: charged,

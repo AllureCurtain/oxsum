@@ -1147,3 +1147,175 @@ async fn request_credit_preview_apply_retry_and_scoped_exports() {
         StatusCode::UNAUTHORIZED
     );
 }
+
+#[tokio::test]
+async fn billing_policy_http_consent_and_durable_admission_survive_publication_and_analytics_loss()
+{
+    let url = oxsum_testkit::suite_url!().expect("policy HTTP acceptance requires PostgreSQL");
+    let world = world(&url, 10_000).await;
+    let owner = receipt_owner(&world).await;
+    let personal = |method: &str, path: &str, body: Option<Value>, token: &str| {
+        let mut request = Request::builder()
+            .method(method)
+            .uri(path)
+            .header("cookie", format!("oxsum_session={token}"));
+        if body.is_some() {
+            request = request.header("content-type", "application/json");
+        }
+        world.app.clone().oneshot(
+            request
+                .body(body.map_or_else(Body::empty, |v| Body::from(v.to_string())))
+                .unwrap(),
+        )
+    };
+    let publish = json!({"idempotencyKey":"policy-http","expectedVersion":0,"implementation":"legacy-estimation-v1","evidenceWindowSecs":900,"reason":"Prospective disclosed policy"});
+    let response = personal(
+        "POST",
+        "/api/v1/business/billing-policies",
+        Some(publish),
+        &owner,
+    )
+    .await
+    .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let body: Value =
+        serde_json::from_slice(&response.into_body().collect().await.unwrap().to_bytes()).unwrap();
+    let intent = json!({"idempotencyKey":"accept-http","expectedOrganizationId":world.organization_id,"version":body["data"]["version"],"digest":body["data"]["digest"],"expectedAcceptanceId":null});
+    assert_eq!(
+        call(
+            &world.app,
+            "POST",
+            "/api/v1/org/billing-policy/accept",
+            Some(intent.clone()),
+            Some(&world.key)
+        )
+        .await
+        .0,
+        StatusCode::FORBIDDEN
+    );
+    assert_eq!(
+        personal(
+            "POST",
+            "/api/v1/org/billing-policy/accept",
+            Some(intent.clone()),
+            &owner
+        )
+        .await
+        .unwrap()
+        .status(),
+        StatusCode::FORBIDDEN
+    );
+    assert_eq!(
+        personal("GET", "/api/v1/org/billing-policy", None, &world.session)
+            .await
+            .unwrap()
+            .status(),
+        StatusCode::OK
+    );
+    let response = personal(
+        "POST",
+        "/api/v1/org/billing-policy/accept",
+        Some(intent),
+        &world.session,
+    )
+    .await
+    .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let acceptance: Value =
+        serde_json::from_slice(&response.into_body().collect().await.unwrap().to_bytes()).unwrap();
+    assert_eq!(
+        personal("GET", "/api/v1/business/billing-policies", None, &owner)
+            .await
+            .unwrap()
+            .status(),
+        StatusCode::OK
+    );
+    assert_eq!(call(&world.app,"POST","/v1/chat/completions",Some(json!({"model":"chat-model","messages":[{"role":"user","content":"hello"}],"max_tokens":8,"stream":false})),Some(&world.key)).await.0,StatusCode::OK);
+    let (_, operations) = call(
+        &world.app,
+        "GET",
+        "/api/v1/operations",
+        None,
+        Some(&world.key),
+    )
+    .await;
+    let id = Uuid::parse_str(
+        operations["data"]["operations"][0]["operationId"]
+            .as_str()
+            .unwrap(),
+    )
+    .unwrap();
+    let terms = world
+        .db
+        .operation_billing_terms(world.organization_id, id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        terms.selection.acceptance.as_ref().unwrap().id.to_string(),
+        acceptance["data"]["id"]
+    );
+    assert!(terms.policy_applies);
+    assert!(terms.routes.iter().all(|r| r.price.upstream.is_none()));
+    assert_eq!(terms.output_bound, 8);
+    assert_eq!(terms.requested_model, "chat-model");
+    world
+        .db
+        .publish_billing_policy(
+            &owner,
+            &oxsum_core::BillingPolicyPublish {
+                idempotency_key: "v2".into(),
+                expected_version: 1,
+                implementation: "legacy-estimation-v1".into(),
+                evidence_window_secs: 100,
+                reason: "Next disclosed version".into(),
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        world
+            .db
+            .operation_billing_terms(world.organization_id, id)
+            .await
+            .unwrap()
+            .unwrap(),
+        terms
+    );
+    sqlx::query("DELETE FROM oxsum.usage_records WHERE request_id=$1")
+        .bind(id.to_string())
+        .execute(&world.pool)
+        .await
+        .unwrap();
+    sqlx::query("DELETE FROM oxsum.request_attempts WHERE operation_id=$1")
+        .bind(id)
+        .execute(&world.pool)
+        .await
+        .unwrap();
+    sqlx::query("DELETE FROM oxsum.request_operations WHERE operation_id=$1")
+        .bind(id)
+        .execute(&world.pool)
+        .await
+        .unwrap();
+    let (status, receipt) = call(
+        &world.app,
+        "GET",
+        &format!("/api/v1/charge-receipt?identifier={id}"),
+        None,
+        Some(&world.key),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(
+        receipt["data"]["policy"]
+            .as_str()
+            .unwrap()
+            .contains("version 1")
+    );
+    assert!(
+        receipt["data"]["policy"]
+            .as_str()
+            .unwrap()
+            .contains(terms.selection.policy.as_ref().unwrap().digest.as_str())
+    );
+}

@@ -228,3 +228,6 @@ mod monthly_repayment_upgrade;
 
 #[path = "core/request_corrections.rs"]
 mod request_corrections;
+
+#[path = "core/billing_policies.rs"]
+mod billing_policies;

@@ -14,6 +14,8 @@ mod adapters;
 mod anomaly;
 mod audit;
 mod billing;
+/// Prospective exception-policy consent and immutable admission contracts.
+pub mod billing_policies;
 mod bundles;
 mod business;
 mod business_profile;
@@ -437,4 +439,9 @@ pub use request_corrections::{
 pub use wallet::{
     BusinessChargeReceipt, ChargeReceipt, ReceiptAttempt, ReceiptCorrection, ReceiptLine,
     ReceiptMovement,
+};
+
+pub use billing_policies::{
+    BillingPolicyAccept, BillingPolicyAcceptance, BillingPolicyPublish, BillingPolicyVersion,
+    BillingRouteTerms, CustomerBillingPolicy, GatewayBillingTerms, PolicySelection,
 };

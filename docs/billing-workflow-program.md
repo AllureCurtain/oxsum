@@ -6,8 +6,8 @@ production deployment or claim live provider certification or operator acceptanc
 | Area | Existing foundation | Verified gap / issue | Acceptance evidence |
 | --- | --- | --- | --- |
 | Readable receipt | Immutable settlements, sale snapshots, operations and verifier | Durable exact-ID lookup and safe portal composition, #1233 | [Local checks, browser evidence and independent review](roadmap/operator-launch/evidence/charge-receipts/README.md); merged PR #1238 |
-| Request correction | Transactional append and Business authority | Source-bound purchased-credit append and portal, #1234 | [Concurrency, recovery, evidence and browser acceptance](roadmap/operator-launch/evidence/request-corrections/README.md); independent review approved, CI pending |
-| Versioned policy | Sale-book publication and admission transaction | No exception-policy acceptance or restart binding, #1235 | Pending |
+| Request correction | Transactional append and Business authority | Source-bound purchased-credit append and portal, #1234 | [Concurrency, recovery, evidence and browser acceptance](roadmap/operator-launch/evidence/request-corrections/README.md); independent review approved; merged PR #1239 |
+| Versioned policy | Sale-book publication and admission transaction | Immutable offers, explicit consent and admission binding, #1235 | [Consent, admission, cache and browser evidence](roadmap/operator-launch/evidence/billing-policies/README.md); independent review approved; CI pending |
 | Missing usage | Atomic settlement and crash sweeper | Legacy estimation has no finite evidence window, #1236 | Pending |
 | Supplier reconciliation | Provider clients and cost observations | OpenAI parsing/scope/pagination and immutable statement history, #1237 | Pending; authentic supplier statement not yet available |
 

@@ -3854,6 +3854,156 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/business/billing-policies": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Published immutable exception-policy versions */
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Current Business policy history; reportsRead */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            data: components["schemas"]["BillingPolicyVersion"][];
+                        };
+                    };
+                };
+            };
+        };
+        put?: never;
+        /**
+         * Publish a prospective exception-policy version
+         * @description CatalogWrite. Publication does not accept terms for a customer. Provider-reported implementation cannot be accepted until runtimeReady is true.
+         */
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": components["schemas"]["BillingPolicyPublish"];
+                };
+            };
+            responses: {
+                /** @description Immutable version, exact replay */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            data: components["schemas"]["BillingPolicyVersion"];
+                        };
+                    };
+                };
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/org/billing-policy": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Current customer acceptance and available policies */
+        get: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody?: never;
+            responses: {
+                /** @description Live customer owner/admin session */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            data: components["schemas"]["CustomerBillingPolicy"];
+                        };
+                    };
+                };
+            };
+        };
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/org/billing-policy/accept": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Explicitly accept one immutable policy for future admissions
+         * @description Live customer owner/admin personal session only. Exact revision/digest and expected current acceptance are checked under the organization admission lock. Publication and Business staff authority never imply acceptance. Existing requests retain their bound terms.
+         */
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path?: never;
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": components["schemas"]["BillingPolicyAccept"];
+                };
+            };
+            responses: {
+                /** @description Retained acceptance under current authority */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            data: components["schemas"]["BillingPolicyAcceptance"];
+                        };
+                    };
+                };
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/business/financial-facts": {
         parameters: {
             query?: never;
@@ -21271,6 +21421,66 @@ export interface components {
              * @description when the operation went terminal; absent while it is open
              */
             completedAt?: string;
+        };
+        BillingPolicyPublish: {
+            idempotencyKey: string;
+            /** Format: int64 */
+            expectedVersion: number;
+            /** @enum {string} */
+            implementation: "legacy-estimation-v1" | "provider-reported-text-v1";
+            /**
+             * Format: int64
+             * @default 900
+             */
+            evidenceWindowSecs: number;
+            reason: string;
+        };
+        BillingPolicyVersion: {
+            /** Format: int64 */
+            version: number;
+            /** @description SHA-256 of UTF-8 "oxsum/exception-policy/v1" followed by a NUL byte and the exact canonical bytes */
+            digest: string;
+            /** @description Exact immutable JSON payload including Business and version; readiness and timestamps are outside the hashed payload */
+            canonical: string;
+            implementation: string;
+            /** Format: int64 */
+            evidenceWindowSecs: number;
+            scope: string;
+            disclosure: string;
+            runtimeReady: boolean;
+            publishedAt: string;
+        };
+        BillingPolicyAcceptance: {
+            /** Format: uuid */
+            id: string;
+            /** Format: int64 */
+            version: number;
+            digest: string;
+            /** Format: uuid */
+            acceptedBy: string;
+            acceptedAt: string;
+        };
+        BillingPolicyAccept: {
+            /**
+             * Format: uuid
+             * @description Reviewed customer identity; equality precondition only
+             */
+            expectedOrganizationId: string;
+            idempotencyKey: string;
+            /** Format: int64 */
+            version: number;
+            digest: string;
+            /** Format: uuid */
+            expectedAcceptanceId: string | null;
+        };
+        CustomerBillingPolicy: {
+            /** Format: uuid */
+            organizationId: string;
+            organizationName: string;
+            acceptance: components["schemas"]["BillingPolicyAcceptance"] | null;
+            versions: components["schemas"]["BillingPolicyVersion"][];
+            currentPolicy: components["schemas"]["BillingPolicyVersion"] | null;
+            legacyDisclosure: string;
         };
         ChargeReceipt: {
             requestId: string;

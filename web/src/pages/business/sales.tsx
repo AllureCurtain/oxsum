@@ -1,3 +1,4 @@
+import { BusinessBillingPolicies } from "../../components/BillingPolicies";
 import { useTranslation } from "react-i18next";
 import { saleError, saleLabel } from "../../lib/sale-text";
 import { SaleInputError } from "../../lib/sale-input-error";
@@ -123,5 +124,6 @@ export function BusinessPrices() {
     {books.isLoading ? <PageState>{t("sale.loadingBooks")}</PageState> : books.isError ? <Banner tone="error">{t("sale.loadDirectoryError")} <Button tone="ghost" onClick={() => books.refetch()}>{t("sale.retry")}</Button></Banner> : <Field label={t("sale.book")}><NativeSelect value={selected} onChange={(e) => setSelected(e.target.value)}><option value="">{t("sale.selectBook")}</option>{books.data?.map((b) => <option key={b.id} value={b.id}>{b.name}</option>)}</NativeSelect></Field>}
     {!books.isLoading && !books.isError && !books.data?.length ? <PageState>{t("sale.noBooks")}</PageState> : null}
     {selected ? <SelectedBook key={selected} id={selected} /> : null}
+    <BusinessBillingPolicies />
   </div>;
 }
