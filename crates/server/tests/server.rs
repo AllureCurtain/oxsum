@@ -235,3 +235,6 @@ mod x402;
 
 #[path = "server/customer_statements.rs"]
 mod customer_statements;
+
+#[path = "server/supplier_statements.rs"]
+mod supplier_statements;

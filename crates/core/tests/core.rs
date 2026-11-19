@@ -232,5 +232,7 @@ mod request_corrections;
 #[path = "core/billing_policies.rs"]
 mod billing_policies;
 
+#[path = "core/supplier_statements.rs"]
+mod supplier_statements;
 #[path = "core/usage_recovery.rs"]
 mod usage_recovery;

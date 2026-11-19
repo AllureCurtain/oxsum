@@ -5139,6 +5139,145 @@ paths:
         "401": { $ref: '#/components/responses/Error' }
         "403": { $ref: '#/components/responses/Error' }
         "500": { $ref: '#/components/responses/Error' }
+  /api/v1/business/supplier-statements/choices:
+    get:
+      security: [{ sessionCookie: [] }]
+      x-consumption-key-access: denied
+      summary: List redacted canonical OpenAI channels for statement mapping
+      description: Requires ReportsRead; protocol compatibility alone is not provider identity.
+      responses:
+        "200":
+          description: Channel choices
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data: { type: array, items: { $ref: '#/components/schemas/SupplierChannelChoice' } }
+        "401": { $ref: '#/components/responses/Error' }
+        "403": { $ref: '#/components/responses/Error' }
+  /api/v1/business/supplier-statements/preview:
+    post:
+      security: [{ sessionCookie: [] }]
+      x-consumption-key-access: denied
+      summary: Validate a raw OpenAI Costs day without saving
+      description: Requires ReportsRead. Amounts retain exact decimal precision; organization and channel mapping remain uploader assertions.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/SupplierStatementImport' }
+      responses:
+        "200":
+          description: Validated source scope, exact USD amounts and limitations
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/SupplierPreviewEnvelope' }
+        "400": { $ref: '#/components/responses/Error' }
+        "401": { $ref: '#/components/responses/Error' }
+        "403": { $ref: '#/components/responses/Error' }
+  /api/v1/business/supplier-statements:
+    get:
+      security: [{ sessionCookie: [] }]
+      x-consumption-key-access: denied
+      summary: List immutable imported supplier statement versions
+      description: Requires ReportsRead. Newest first; pass last sourceId as before. Includes source metadata; comparison metadata has a separate paginated endpoint.
+      parameters:
+        - { name: before, in: query, schema: { type: string, format: uuid } }
+      responses:
+        "200":
+          description: Up to 50 source summaries
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/SupplierHistoryEnvelope' }
+        "401": { $ref: '#/components/responses/Error' }
+        "403": { $ref: '#/components/responses/Error' }
+    post:
+      security: [{ sessionCookie: [] }]
+      x-consumption-key-access: denied
+      summary: Append a source version and its frozen comparison
+      description: Requires FundsWrite and current personal Business context, including on exact replay. Daily aggregate comparison never changes customer balances or establishes request matching. Raw pages are retained exactly.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/SupplierStatementImport' }
+      responses:
+        "200":
+          description: Immutable source and captured comparison
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/SupplierDetailEnvelope' }
+        "400": { $ref: '#/components/responses/Error' }
+        "401": { $ref: '#/components/responses/Error' }
+        "403": { $ref: '#/components/responses/Error' }
+        "409": { $ref: '#/components/responses/Error' }
+  /api/v1/business/supplier-statements/{sourceId}:
+    get:
+      security: [{ sessionCookie: [] }]
+      x-consumption-key-access: denied
+      summary: Read an exact source version and one frozen comparison
+      description: Requires ReportsRead. Also serves the export document; download the response without replacing previous versions.
+      parameters:
+        - { name: sourceId, in: path, required: true, schema: { type: string, format: uuid } }
+        - { name: comparisonId, in: query, schema: { type: string, format: uuid }, description: Exact frozen comparison; absent returns the original import comparison }
+      responses:
+        "200":
+          description: Raw source, asserted mapping, digests and exact comparison
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/SupplierDetailEnvelope' }
+        "401": { $ref: '#/components/responses/Error' }
+        "403": { $ref: '#/components/responses/Error' }
+        "404": { $ref: '#/components/responses/Error' }
+  /api/v1/business/supplier-statements/{sourceId}/comparisons:
+    get:
+      security: [{ sessionCookie: [] }]
+      x-consumption-key-access: denied
+      summary: List frozen comparison metadata in pages of 50
+      description: Requires ReportsRead. Select comparisonId on the source detail endpoint for exact evidence/export. Newest captured metadata first.
+      parameters:
+        - { name: sourceId, in: path, required: true, schema: { type: string, format: uuid } }
+        - { name: before, in: query, schema: { type: string, format: uuid } }
+      responses:
+        "200":
+          description: Comparison metadata only
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/SupplierComparisonHistoryEnvelope' }
+        "401": { $ref: '#/components/responses/Error' }
+        "403": { $ref: '#/components/responses/Error' }
+  /api/v1/business/supplier-statements/{sourceId}/compare:
+    post:
+      security: [{ sessionCookie: [] }]
+      x-consumption-key-access: denied
+      summary: Append another comparison without modifying the imported source
+      description: Requires FundsWrite. Reuses the original day, channel mapping and cost-unit conversion. Exact retries retain the original capture; later evidence requires a new key.
+      parameters:
+        - { name: sourceId, in: path, required: true, schema: { type: string, format: uuid } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [idempotencyKey, reason]
+              properties:
+                idempotencyKey: { type: string, minLength: 1, maxLength: 200 }
+                reason: { type: string, minLength: 1, maxLength: 500 }
+      responses:
+        "200":
+          description: New immutable comparison or exact previous result
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/SupplierComparisonEnvelope' }
+        "400": { $ref: '#/components/responses/Error' }
+        "401": { $ref: '#/components/responses/Error' }
+        "403": { $ref: '#/components/responses/Error' }
+        "404": { $ref: '#/components/responses/Error' }
+        "409": { $ref: '#/components/responses/Error' }
   /api/v1/business/charge-receipt:
     get:
       security: [{ sessionCookie: [] }]
@@ -16221,6 +16360,62 @@ components:
             completionId: { type: [string, 'null'] }
         waived: { type: array, items: { type: string } }
         supplierCostKnown: { type: boolean }
+    SupplierChannelChoice:
+      type: object
+      required: [channelId, name]
+      properties:
+        channelId: { type: string, format: uuid }
+        name: { type: string }
+    SupplierStatementImport:
+      type: object
+      additionalProperties: false
+      required: [idempotencyKey, reason, providerOrganizationId, billDate, fetchedAt, scopeKind, projectIds, channelIds, usdPerCredit, mappingEvidence, query, pages]
+      properties:
+        idempotencyKey: { type: string, minLength: 1, maxLength: 200 }
+        reason: { type: string, minLength: 1, maxLength: 500 }
+        providerOrganizationId: { type: string, minLength: 1, maxLength: 200, description: Operator assertion; page contents do not prove identity }
+        billDate: { type: string, format: date }
+        fetchedAt: { type: string, format: date-time }
+        scopeKind: { type: string, enum: [organization, projects] }
+        projectIds: { type: array, maxItems: 100, uniqueItems: true, items: { type: string } }
+        channelIds: { type: array, minItems: 1, maxItems: 100, uniqueItems: true, items: { type: string, format: uuid } }
+        usdPerCredit: { type: string, description: Positive exact USD per local supplier-cost credit, at most 18 fractional decimal places; never inferred from display currency }
+        mappingEvidence: { type: string, minLength: 1, maxLength: 2000, description: Attestation that the selected channels covered this organization/project scope throughout the UTC day and justification for cost-unit conversion }
+        query:
+          type: object
+          additionalProperties: false
+          required: [startTime, endTime, bucketWidth, groupBy, projectIds, limit]
+          properties:
+            startTime: { type: integer, format: int64 }
+            endTime: { type: integer, format: int64 }
+            bucketWidth: { type: string, const: 1d }
+            groupBy: { type: array, items: { type: string, enum: [project_id] }, maxItems: 1 }
+            projectIds: { type: array, items: { type: string }, maxItems: 100 }
+            limit: { type: integer, minimum: 1, maximum: 180 }
+        pages:
+          type: array
+          minItems: 1
+          maxItems: 16
+          items:
+            type: object
+            additionalProperties: false
+            required: [requestPage, body]
+            properties:
+              requestPage: { type: [string, 'null'] }
+              body: { type: string, description: Original raw JSON page text, never parsed and reserialized through JavaScript Number; total 2 MiB }
+    SupplierStatementPreview: {"type": "object", "required": ["schemaVersion", "algorithmVersion", "provider", "providerOrganizationId", "billDate", "fetchedAt", "scopeKind", "projectIds", "amountUsd", "microUsd", "residualUsd", "quantization", "lines", "identityBasis", "matchingGrain", "limitations"], "properties": {"schemaVersion": {"type": "integer", "format": "int64"}, "algorithmVersion": {"type": "string"}, "provider": {"type": "string"}, "providerOrganizationId": {"type": "string"}, "billDate": {"type": "string"}, "fetchedAt": {"type": "string"}, "scopeKind": {"type": "string"}, "projectIds": {"type": "array", "items": {"type": "string"}}, "amountUsd": {"type": "string"}, "microUsd": {"type": "string"}, "residualUsd": {"type": "string"}, "quantization": {"type": "string"}, "lines": {"type": "array", "items": {"type": "object", "required": ["projectId", "amountUsd", "rawAmount"], "properties": {"projectId": {"type": ["string", "null"]}, "amountUsd": {"type": "string"}, "rawAmount": {"type": "string"}}}}, "identityBasis": {"type": "string"}, "matchingGrain": {"type": "string"}, "limitations": {"type": "array", "items": {"type": "string"}}}}
+    SupplierStatementSummary: {"type": "object", "required": ["sourceId", "sourceVersion", "parsed", "capturedAt", "digest"], "properties": {"sourceId": {"type": "string", "format": "uuid"}, "sourceVersion": {"type": "integer", "format": "int64"}, "parsed": {"$ref": "#/components/schemas/SupplierStatementPreview"}, "capturedAt": {"type": "string"}, "digest": {"type": "string"}}}
+    SupplierStatementCoverage: {"type": "object", "required": ["knownAttempts", "unknownAttempts", "legacyAttempts", "pendingAttempts", "failedOrCancelledAttempts", "diagnosticRowsMissingAttempts", "diagnosticCacheRows", "retryAttempts", "operationsWithoutAttempts", "diagnosticUnrecordedAttempts", "complete", "scopeBasis", "limitations"], "properties": {"knownAttempts": {"type": "integer", "format": "int64"}, "unknownAttempts": {"type": "integer", "format": "int64"}, "legacyAttempts": {"type": "integer", "format": "int64"}, "pendingAttempts": {"type": "integer", "format": "int64"}, "failedOrCancelledAttempts": {"type": "integer", "format": "int64"}, "diagnosticRowsMissingAttempts": {"type": "integer", "format": "int64"}, "diagnosticCacheRows": {"type": "integer", "format": "int64"}, "retryAttempts": {"type": "integer", "format": "int64"}, "operationsWithoutAttempts": {"type": "integer", "format": "int64"}, "diagnosticUnrecordedAttempts": {"type": "integer", "format": "int64"}, "complete": {"type": "boolean"}, "scopeBasis": {"type": "string"}, "limitations": {"type": "array", "items": {"type": "string"}}}}
+    SupplierAttemptEvidence: {"type": "object", "required": ["attemptId", "operationId", "channelId", "startedAt", "costMinor", "basis", "state"], "properties": {"attemptId": {"type": "string", "format": "uuid"}, "operationId": {"type": "string", "format": "uuid"}, "channelId": {"type": "string", "format": "uuid"}, "startedAt": {"type": "string"}, "costMinor": {"type": ["string", "null"]}, "basis": {"type": "string"}, "state": {"type": "string"}}}
+    SupplierComparisonDocument: {"type": "object", "required": ["schemaVersion", "algorithmVersion", "comparisonId", "sourceId", "mutationId", "actorId", "reason", "capturedAt", "billDate", "providerAmountUsd", "knownLocalCostMinor", "usdPerCredit", "knownLocalCostUsd", "conversionRemainderNumerator", "conversionRemainderDenominator", "deltaResidualNumerator", "deltaAgainstKnownUsd", "amountRelation", "coverage", "attempts"], "properties": {"schemaVersion": {"type": "integer", "format": "int64"}, "algorithmVersion": {"type": "string"}, "comparisonId": {"type": "string", "format": "uuid"}, "sourceId": {"type": "string", "format": "uuid"}, "mutationId": {"type": "string", "format": "uuid"}, "actorId": {"type": "string", "format": "uuid"}, "reason": {"type": "string"}, "capturedAt": {"type": "string"}, "billDate": {"type": "string"}, "providerAmountUsd": {"type": "string"}, "knownLocalCostMinor": {"type": "string"}, "usdPerCredit": {"type": "string"}, "knownLocalCostUsd": {"type": "string"}, "conversionRemainderNumerator": {"type": "string"}, "conversionRemainderDenominator": {"type": "string"}, "deltaResidualNumerator": {"type": "string"}, "deltaAgainstKnownUsd": {"type": "string"}, "amountRelation": {"type": "string"}, "coverage": {"$ref": "#/components/schemas/SupplierStatementCoverage"}, "attempts": {"type": "array", "items": {"$ref": "#/components/schemas/SupplierAttemptEvidence"}}}}
+    SupplierComparison: {"type": "object", "required": ["comparisonId", "document", "digest", "canonical"], "properties": {"comparisonId": {"type": "string", "format": "uuid"}, "document": {"$ref": "#/components/schemas/SupplierComparisonDocument"}, "digest": {"type": "string"}, "canonical": {"type": "string"}}}
+    SupplierComparisonSummary: {"type": "object", "required": ["comparisonId", "capturedAt", "actorId", "reason", "digest"], "properties": {"comparisonId": {"type": "string", "format": "uuid"}, "capturedAt": {"type": "string"}, "actorId": {"type": "string", "format": "uuid"}, "reason": {"type": "string"}, "digest": {"type": "string"}}}
+    SupplierStatementDetail: {"type": "object", "required": ["schemaVersion", "sourceId", "sourceVersion", "importedBy", "capturedAt", "digest", "canonical", "digestDomain", "source", "parsed", "channelSnapshot", "comparison"], "properties": {"schemaVersion": {"type": "integer", "format": "int64"}, "sourceId": {"type": "string", "format": "uuid"}, "sourceVersion": {"type": "integer", "format": "int64"}, "importedBy": {"type": "string", "format": "uuid"}, "capturedAt": {"type": "string"}, "digest": {"type": "string"}, "canonical": {"type": "string"}, "digestDomain": {"type": "string"}, "source": {"$ref": "#/components/schemas/SupplierStatementImport"}, "parsed": {"$ref": "#/components/schemas/SupplierStatementPreview"}, "channelSnapshot": {"type": "array", "items": {"type": "object", "required": ["channelId", "name", "baseUrl", "configurationUpdatedAt"], "properties": {"channelId": {"type": "string", "format": "uuid"}, "name": {"type": "string"}, "baseUrl": {"type": "string"}, "configurationUpdatedAt": {"type": "string"}}}}, "comparison": {"$ref": "#/components/schemas/SupplierComparison"}}}
+    SupplierPreviewEnvelope: {"type": "object", "required": ["data"], "properties": {"data": {"$ref": "#/components/schemas/SupplierStatementPreview"}}}
+    SupplierHistoryEnvelope: {"type": "object", "required": ["data"], "properties": {"data": {"type": "array", "items": {"$ref": "#/components/schemas/SupplierStatementSummary"}}}}
+    SupplierDetailEnvelope: {"type": "object", "required": ["data"], "properties": {"data": {"$ref": "#/components/schemas/SupplierStatementDetail"}}}
+    SupplierComparisonEnvelope: {"type": "object", "required": ["data"], "properties": {"data": {"$ref": "#/components/schemas/SupplierComparison"}}}
+    SupplierComparisonHistoryEnvelope: {"type": "object", "required": ["data"], "properties": {"data": {"type": "array", "items": {"$ref": "#/components/schemas/SupplierComparisonSummary"}}}}
     ChargeReceipt:
       type: object
       required: [requestId, operationId, executionState, operationState, settlementKind, financialState, requestedModel, servedModel, createdAt, completedAt, entryId, contentHash, priceVersion, saleDigest, saleVersion, policy, usageBasis, ceilingMinor, chargedMinor, walletChargedMinor, subscriptionChargedMinor, releasedMinor, correctedMinor, netChargedMinor, corrections, lines, discountPercent, rounding, ledger, attempts, diagnostics, recovery]
