@@ -32,6 +32,7 @@ mod business_prices;
 mod business_profile;
 mod business_providers;
 mod business_readiness;
+mod charge_receipts;
 mod customer_readiness;
 mod device;
 mod evidence;
@@ -235,6 +236,7 @@ pub fn router(state: AppState) -> Router {
         .route("/budget", get(usage::budget))
         .route("/billing-records", get(usage::billing_records))
         .route("/requests", get(requests::requests))
+        .route("/charge-receipt", get(charge_receipts::customer))
         .route("/operations", get(operations::operations))
         .route("/operations/{operation_id}", get(operations::operation))
         .route(
@@ -614,6 +616,9 @@ pub fn router(state: AppState) -> Router {
             "/business/customers/{organization_id}",
             patch(business::update_customer),
         )
+        .route("/business/charge-receipt", get(charge_receipts::discover))
+        .route("/business/customers/{organization_id}/charge-receipt/proof", get(charge_receipts::proof))
+        .route("/business/customers/{organization_id}/charge-receipt", get(charge_receipts::business))
         .route("/business/customers/{organization_id}/monthly-statements", get(business::monthly_statements))
         .route("/business/customers/{organization_id}/monthly-statements/{statement_id}/payments", post(business::monthly_payment))
         .route("/business/customers/{organization_id}/monthly-statements/actions", post(business::monthly_statement_action))

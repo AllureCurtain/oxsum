@@ -129,3 +129,9 @@ artifact integrity and entry inclusion within the stated scope; it does not
 prove actual service delivery, every earlier generation, subsequent payments or
 independent compliance with an accounting policy. The runtime source comparator
 performs those supported accounting/source checks separately.
+
+The readable charge receipt is a presentation of recorded financial facts, not a
+new proof protocol. Its text export is unsigned; retain the linked entry hash
+and use the existing entry verifier and independently trusted heads. Diagnostic
+operation/attempt times and execution status are not established by ledger
+inclusion and do not prove delivery. Missing historical fields stay absent.

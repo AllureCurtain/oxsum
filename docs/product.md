@@ -1020,3 +1020,20 @@ refuse. Exact actor-scoped retries return the accepted immutable result even
 after subsequent payments or another correction. The portal retains unknown
 outcomes across dialog closure/reload and links both document generations.
 See [the specification](invoice-corrections.md) for supported accounting scope.
+
+### Readable charge receipts
+
+Customers open **Requests → Charge receipt**; authorized Business staff open a
+customer's detail and use the same exact-ID lookup. Request/operation UUIDs,
+ledger entry UUIDs and recorded provider IDs resolve within that customer's
+record scope. Ambiguous provider IDs require the operation ID. Financial facts
+come from immutable ledger entries even when request analytics are missing.
+
+The receipt shows historical priced lines, the committed sale reference, usage
+basis, execution observation separately from settlement, original ceiling,
+subscription coverage and actual pool movements in ledger order. It does not
+invent before/after balances when other calls overlap. Reservation release is
+not a cash refund. A readable text export excludes supplier credentials, raw
+provider usage/error payloads and wholesale costs. Older missing diagnostics
+remain explicit; current prices never fill historical gaps. Verification retains
+the limitations in [proofs](proofs.md).

@@ -1250,3 +1250,23 @@ conflict. Exact retries return the original correction and successor IDs after
 later activity; current authority still applies. A client with an unknown
 response retains the exact request/key for recovery. Optional
 `successorJournalId`/`successorStatementId` detail fields navigate replacements.
+
+### Exact charge receipt lookup
+
+`GET /api/v1/charge-receipt?identifier=...` applies immutable customer record
+scope (a consumption key sees its own records). The personal Business variant is
+`GET /api/v1/business/customers/{organizationId}/charge-receipt?identifier=...`,
+requiring current `CustomersRead` authority and customer ownership. Both return
+the same allowlisted customer-safe shape. Identifier ambiguity is `409`; absent
+or foreign records are `404`. There are no financial mutations. Amounts are
+integer credit minor units; `ledger.index` is real ordering, not an account
+balance. OpenAPI defines fields and absent-value semantics.
+
+Staff who do not know the customer can use
+`GET /api/v1/business/charge-receipt?identifier=...`; this discovers the owning
+customer within the selected Business and refuses ambiguous matches. The
+customer-specific `/charge-receipt/proof` suffix exports original immutable
+proof bytes for `/verify` paste mode. That original evidence is separate from
+the redacted readable receipt. Operation lifecycle and settlement kind are
+reported separately from usage provenance; `succeeded` alone never establishes
+response completeness or delivery.

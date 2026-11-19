@@ -1225,3 +1225,10 @@ the immutable receipt. Reports trace copied credits back through original line
 links so a cash refund is never relabeled as a noncash discount. Evidence
 captures a bounded immediate predecessor and actual void/accrual entries,
 including gross legacy void entries whose net amount is zero.
+
+The charge receipt reader resolves exact identifiers through scoped operations
+and immutable ledger identities, then reads financial facts from hash-verified
+entries. It does not depend on `request_log` or reprice through the current
+catalog. Operation/attempt diagnostics are a separate bounded, allowlisted
+projection; missing diagnostics do not erase ledger evidence. The reader opens
+only an existing ledger and makes no financial/bootstrap writes.

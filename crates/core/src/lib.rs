@@ -429,3 +429,7 @@ pub use monthly_statement_actions::{
 
 /// Verified staff monthly payment intent and immutable receipt.
 pub use monthly_repayments::{BusinessMonthlyPaymentRequest, BusinessMonthlyPaymentResult};
+
+pub use wallet::{
+    BusinessChargeReceipt, ChargeReceipt, ReceiptAttempt, ReceiptLine, ReceiptMovement,
+};

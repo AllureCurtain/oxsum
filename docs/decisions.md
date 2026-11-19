@@ -5188,3 +5188,16 @@ marks what it supersedes.
 - **A candidate error no longer masks the marker's other signatures.** `verify_with`'s `validate_transfer` `Err` now records `had_error` and continues the walk — a later signature can still honor or fall short, both firmer than the error. When the walk ends with nothing honoring, the recorded error makes the verdict `Deferred` regardless of a short candidate — the errored signature may have been the full payment, and `underpaid` is a terminal verdict that would bury a possibly-paid intent — keeping the #1174 rule that a lookup failure never feeds the expiry sweep.
 
 Follow-up (same issue, later commits): the rescue walk no longer re-verifies the rows the *same* pass just expired — `NOT (deposit_id = ANY(unpaid))` excludes the pass's own `unpaid` list, and the first-check "one minute" now keys off `meta.expiredAt` (stamped when a row is written `expired`; `expire_solana_deposit` stamps it too) with `expiresAt` as the `COALESCE` fallback for rows predating the stamp. A row just expired is not re-walked in the same pass, and a row that sat `pending` long past its deadline waits only a minute after expiring, not a minute measured from the deadline. Separately, a `Deferred` verdict now leaves a durable signal — `record_solana_defer` bumps `meta.deferCount` and stamps `firstDeferredAt`/`lastDeferredAt` without touching the status — and `solana_deposit_health` reports `long_deferred` (`pending` with `deferCount` ≥ 20 or a first defer over 24 h), which the job warns on when nonzero and the `solana_deposits_long_deferred` gauge carries to the scrape. Issue #1212 then made the count noise-robust: the 15 s poll and every repeated confirm each defer the same row, so a per-verdict count let a ~5-minute screening outage reach 20 and alert. `deferCount` now grows at most once per `SOLANA_DEFER_COUNT_WINDOW_SECS` (300 s; the bump stamps `meta.deferCountedAt`, a row without the stamp restarts at 1), and `long_deferred` is `deferCount` ≥ `SOLANA_LONG_DEFER_WINDOWS` (12 windows, ≈ an hour of sustained deferral) or a `firstDeferredAt` older than `SOLANA_LONG_DEFER_AGE_HOURS` (6 h — an intent lives 15 minutes, so a row still deferring that long is stuck). Rejected: dropping the count for age alone (a sustained outage would surface only after hours) and debouncing on `lastDeferredAt` (refreshed every 15 s, it would never let the count grow). Still a signal only: no status or `updated_at` change.
+
+## 2026-11-20 — Durable readable charge receipts (#1233)
+
+Exact-ID support lookup reads financial facts from immutable hash-verified
+entries, with operations/attempts used only for identity and diagnostics. The
+customer and personal Business surfaces share an allowlisted response; provider
+raw usage, errors, credentials and wholesale costs are excluded. Legacy
+request-derived hold/settlement identities retain lookup when diagnostic rows
+are absent. Customer attribution is checked before returning either kind of
+record. Ledger positions and separate pool effects replace misleading isolated
+before/after balances under concurrency. The reader opens existing ledgers only.
+No historical entry or pricing serialization changes and no financial writer is
+introduced. Versioned exception policy and corrections remain separate issues.

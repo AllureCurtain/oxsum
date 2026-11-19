@@ -189,7 +189,10 @@ async fn world(url: &str, top_up: i64) -> World {
                 cache_write_1h_price_per_million: None,
                 reasoning_price_per_million: None,
                 cost_per_request: None,
-                upstream: None,
+                upstream: Some(oxsum_core::UpstreamPrices {
+                    input_price_per_million: Some(777777),
+                    ..Default::default()
+                }),
                 mode: oxsum_core::BillingMode::Chat,
                 rules: Vec::new(),
             },
@@ -214,7 +217,8 @@ async fn world(url: &str, top_up: i64) -> World {
     }
     let config = Config::new(Signup::Open, None)
         .with_secret(secret)
-        .with_admin_token(OPERATOR_TOKEN);
+        .with_admin_token(OPERATOR_TOKEN)
+        .with_head_signing_seed([8; 32]);
     oxsum_server::prepare(&db, &config)
         .await
         .expect("the deployment is prepared");
@@ -642,4 +646,382 @@ async fn the_member_operations_list_reads_back() {
     assert_eq!(status, StatusCode::OK);
     assert_eq!(detail["data"]["operationId"], operation_id);
     assert_eq!(detail["data"]["attempts"].as_array().unwrap().len(), 1);
+}
+
+/// Receipt lookup survives analytics loss and applies the same immutable key
+/// scope for every identifier. Export fields never copy provider raw metadata.
+#[tokio::test]
+async fn charge_receipt_is_durable_scoped_and_customer_safe() {
+    let url =
+        oxsum_testkit::suite_url!().expect("receipt acceptance requires a reachable PostgreSQL");
+    let world = world(&url, 10_000).await;
+    let (status, _) = call(&world.app, "POST", "/v1/chat/completions", Some(json!({
+        "model":"chat-model", "messages":[{"role":"user","content":"hello"}], "max_tokens":8, "stream":false
+    })), Some(&world.key)).await;
+    assert_eq!(status, StatusCode::OK);
+    let id: Uuid = sqlx::query_scalar(
+        "SELECT operation_id FROM oxsum.request_operations WHERE organization_id=$1",
+    )
+    .bind(world.organization_id)
+    .fetch_one(&world.pool)
+    .await
+    .unwrap();
+    sqlx::query("DELETE FROM oxsum.request_log WHERE organization_id=$1")
+        .bind(world.organization_id)
+        .execute(&world.pool)
+        .await
+        .unwrap();
+    sqlx::query("UPDATE oxsum.request_attempts SET usage_json=$2, error=$3 WHERE operation_id=$1")
+        .bind(id)
+        .bind(json!({"prompt":"PRIVATE-PROMPT","cost":999999,"secret":"PRIVATE-KEY"}))
+        .bind("PRIVATE-ERROR")
+        .execute(&world.pool)
+        .await
+        .unwrap();
+    let path = format!("/api/v1/charge-receipt?identifier={id}");
+    let (status, receipt) = call(&world.app, "GET", &path, None, Some(&world.key)).await;
+    assert_eq!(status, StatusCode::OK, "{receipt}");
+    let r = &receipt["data"];
+    assert_eq!(r["chargedMinor"], 18);
+    assert_eq!(r["walletChargedMinor"], 18);
+    assert_eq!(r["financialState"], "settled");
+    assert_eq!(r["lines"][0]["pricePerMillion"], 1_000_000);
+    let wire = receipt.to_string();
+    for forbidden in [
+        "PRIVATE",
+        "credentialId",
+        "usageJson",
+        "upstreamCost",
+        "upstream-secret",
+    ] {
+        assert!(!wire.contains(forbidden), "{wire}");
+    }
+    let entry = r["entryId"].as_str().unwrap();
+    for identifier in [entry, "chatcmpl-fixture-9"] {
+        let (status, found) = call(
+            &world.app,
+            "GET",
+            &format!("/api/v1/charge-receipt?identifier={identifier}"),
+            None,
+            Some(&world.key),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{found}");
+        assert_eq!(found["data"]["entryId"], entry);
+    }
+    let foreign = world
+        .db
+        .register(oxsum_core::NewUser {
+            email: format!("receipt-{}@example.com", Uuid::new_v4()),
+            password: "receipt foreign password".into(),
+            organization_name: None,
+        })
+        .await
+        .unwrap();
+    assert_eq!(
+        call(
+            &world.app,
+            "GET",
+            &path,
+            None,
+            Some(&foreign.api_key.secret)
+        )
+        .await
+        .0,
+        StatusCode::NOT_FOUND
+    );
+    assert_eq!(
+        call(&world.app, "GET", &path, None, None).await.0,
+        StatusCode::UNAUTHORIZED
+    );
+    let sibling = world
+        .db
+        .create_key(
+            world.organization_id,
+            Some("sibling".into()),
+            None,
+            None,
+            oxsum_core::KeyConstraints::default(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        call(&world.app, "GET", &path, None, Some(&sibling.secret))
+            .await
+            .0,
+        StatusCode::NOT_FOUND
+    );
+    assert_eq!(r["usageBasis"], "provider_reported");
+    assert_eq!(r["settlementKind"], "usage");
+    let owner = receipt_owner(&world).await;
+    for staff_path in [
+        format!("/api/v1/business/charge-receipt?identifier={id}"),
+        format!(
+            "/api/v1/business/customers/{}/charge-receipt?identifier={id}",
+            world.organization_id
+        ),
+        format!(
+            "/api/v1/business/customers/{}/charge-receipt/proof?identifier={id}",
+            world.organization_id
+        ),
+    ] {
+        let response = world
+            .app
+            .clone()
+            .oneshot(
+                Request::get(&staff_path)
+                    .header("cookie", format!("oxsum_session={owner}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        if staff_path.contains("/proof?") {
+            let body: Value =
+                serde_json::from_slice(&response.into_body().collect().await.unwrap().to_bytes())
+                    .unwrap();
+            assert!(
+                body["data"].get("price").is_none(),
+                "supplier price binding is omitted"
+            );
+            assert!(!body.to_string().contains("777777"));
+        }
+    }
+    // Historical fallback uses immutable source, even without operation or usage projections.
+    sqlx::query("DELETE FROM oxsum.usage_records WHERE request_id=$1")
+        .bind(id.to_string())
+        .execute(&world.pool)
+        .await
+        .unwrap();
+    sqlx::query("DELETE FROM oxsum.request_attempts WHERE operation_id=$1")
+        .bind(id)
+        .execute(&world.pool)
+        .await
+        .unwrap();
+    sqlx::query("DELETE FROM oxsum.request_operations WHERE operation_id=$1")
+        .bind(id)
+        .execute(&world.pool)
+        .await
+        .unwrap();
+    let (status, historical) = call(
+        &world.app,
+        "GET",
+        &format!("/api/v1/charge-receipt?identifier={entry}"),
+        None,
+        Some(&world.key),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{historical}");
+    assert_eq!(historical["data"]["chargedMinor"], 18);
+    assert_eq!(
+        historical["data"]["executionState"],
+        "diagnostics_unavailable"
+    );
+}
+
+async fn receipt_owner(world: &World) -> String {
+    // This suite intentionally bootstraps registration without owner setup;
+    // grant a distinct fixture staff identity, then use production context checks.
+    let user = world
+        .db
+        .register(oxsum_core::NewUser {
+            email: format!("owner-{}@example.com", Uuid::new_v4()),
+            password: "receipt staff password".into(),
+            organization_name: None,
+        })
+        .await
+        .unwrap();
+    sqlx::query("INSERT INTO oxsum.business_staff (business_id,user_id,role) SELECT business_id,$1,'owner' FROM oxsum.businesses WHERE singleton")
+        .bind(user.user.id).execute(&world.pool).await.unwrap();
+    let session = world
+        .db
+        .login(&user.user.email, "receipt staff password")
+        .await
+        .unwrap()
+        .into_session();
+    world
+        .db
+        .switch_session_context(
+            &session.token,
+            &oxsum_core::SessionContextRequest {
+                idempotency_key: Uuid::new_v4().to_string(),
+                context: oxsum_core::SessionContext::Business,
+                organization_id: None,
+            },
+        )
+        .await
+        .unwrap();
+    session.token
+}
+
+#[tokio::test]
+async fn business_charge_receipt_requires_personal_staff_authority() {
+    let url =
+        oxsum_testkit::suite_url!().expect("receipt acceptance requires a reachable PostgreSQL");
+    let world = world(&url, 10_000).await;
+    let owner = receipt_owner(&world).await;
+    let path = format!(
+        "/api/v1/business/customers/{}/charge-receipt?identifier={}",
+        world.organization_id,
+        Uuid::new_v4()
+    );
+    assert_eq!(
+        call(&world.app, "GET", &path, None, Some(&world.key))
+            .await
+            .0,
+        StatusCode::FORBIDDEN
+    );
+    let response = world
+        .app
+        .clone()
+        .oneshot(
+            Request::get(&path)
+                .header("cookie", format!("oxsum_session={owner}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    let response = world
+        .app
+        .clone()
+        .oneshot(
+            Request::get(&path)
+                .header("cookie", format!("oxsum_session={}", world.session))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::FORBIDDEN);
+}
+
+#[tokio::test]
+async fn charge_receipt_preserves_outstanding_historical_hold_terms() {
+    let url = oxsum_testkit::suite_url!().expect("receipt acceptance requires PostgreSQL");
+    let world = world(&url, 10_000).await;
+    let org = world
+        .db
+        .organization_by_id(world.organization_id)
+        .await
+        .unwrap();
+    let wallet = oxsum_core::Wallet::open_existing(world.pool.clone(), &org.tenant_id)
+        .await
+        .unwrap();
+    let request = Uuid::new_v4();
+    let key = format!("req-{request}:hold");
+    let receipt = wallet
+        .hold(
+            &key,
+            &oxsum_core::hold_description(&request.to_string(), "historical-model", 123).unwrap(),
+            123,
+            time::OffsetDateTime::now_utc().date(),
+        )
+        .await
+        .unwrap();
+    let scope = oxsum_core::CustomerRecordScope {
+        key_ids: None,
+        include_unattributed: true,
+    };
+    let found = wallet
+        .charge_receipt(
+            &world.db,
+            world.organization_id,
+            &receipt.entry_id.to_string(),
+            &scope,
+        )
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(found.ceiling_minor, 123);
+    assert_eq!(found.requested_model, "historical-model");
+    assert_eq!(found.financial_state, "pending");
+    assert_eq!(found.charged_minor, None);
+}
+
+#[tokio::test]
+async fn charge_receipt_shows_expired_promo_and_unknown_provenance() {
+    let url = oxsum_testkit::suite_url!().expect("receipt acceptance requires PostgreSQL");
+    let world = world(&url, 10_000).await;
+    let org = world
+        .db
+        .organization_by_id(world.organization_id)
+        .await
+        .unwrap();
+    let wallet = oxsum_core::Wallet::open_existing(world.pool.clone(), &org.tenant_id)
+        .await
+        .unwrap();
+    let day = time::OffsetDateTime::now_utc().date();
+    world
+        .db
+        .grant_promo_lot(
+            &wallet,
+            world.organization_id,
+            "admin",
+            "receipt-expired",
+            500,
+            Some(time::OffsetDateTime::now_utc() - time::Duration::seconds(1)),
+            day,
+        )
+        .await
+        .unwrap();
+    let id = Uuid::new_v4();
+    let key = format!("req-{id}:hold");
+    wallet
+        .hold(
+            &key,
+            &oxsum_core::hold_description(&id.to_string(), "historical", 500).unwrap(),
+            500,
+            day,
+        )
+        .await
+        .unwrap();
+    world
+        .db
+        .expire_due_promo_lots(&oxsum_core::Tenants::new(world.pool.clone()), 100, day)
+        .await
+        .unwrap();
+    let description = json!({"v": 3, "request":id.to_string(), "channel":"legacy", "model":"historical", "priceVersion":1, "kind":"client_cancelled", "usage":{"inputTokens":300}, "lines":[["input",300,1000000],["output",0,1000000]], "charged":300, "freeze":500}).to_string();
+    wallet.settle(&key, &description, 300, day).await.unwrap();
+    let scope = oxsum_core::CustomerRecordScope {
+        key_ids: None,
+        include_unattributed: true,
+    };
+    let receipt = wallet
+        .charge_receipt(&world.db, world.organization_id, &id.to_string(), &scope)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(receipt.usage_basis, "unknown");
+    assert_eq!(receipt.wallet_charged_minor, Some(300));
+    assert_eq!(
+        receipt
+            .ledger
+            .iter()
+            .map(|l| l.settled_effect_minor)
+            .sum::<i64>(),
+        -500
+    );
+    assert!(receipt.diagnostics.iter().any(|d| d.contains("expired")));
+}
+
+#[tokio::test]
+async fn charge_receipt_refuses_ambiguous_provider_identity() {
+    let url = oxsum_testkit::suite_url!().expect("receipt acceptance requires PostgreSQL");
+    let world = world(&url, 10_000).await;
+    for _ in 0..2 {
+        let (status, _) = call(&world.app, "POST", "/v1/chat/completions", Some(json!({"model":"chat-model","messages":[{"role":"user","content":"hello"}],"max_tokens":8,"stream":false})), Some(&world.key)).await;
+        assert_eq!(status, StatusCode::OK);
+    }
+    let (status, _) = call(
+        &world.app,
+        "GET",
+        "/api/v1/charge-receipt?identifier=chatcmpl-fixture-9",
+        None,
+        Some(&world.key),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CONFLICT);
 }
