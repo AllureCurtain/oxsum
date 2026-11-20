@@ -97,6 +97,19 @@ pub struct PolicySelection {
     /// Matching immutable policy.
     pub policy: Option<BillingPolicyVersion>,
 }
+impl PolicySelection {
+    /// Scope of this immutable accepted implementation, preserving v1 nonstream semantics.
+    #[must_use]
+    pub fn applies_to(&self, surface: &str, stream: bool) -> bool {
+        surface == "chat/completions"
+            && (!stream
+                || self
+                    .policy
+                    .as_ref()
+                    .is_some_and(|p| p.implementation == "provider-reported-text-v2"))
+    }
+}
+
 /// Complete retail terms for one permitted route, with no credentials or wholesale costs.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
@@ -163,10 +176,25 @@ impl GatewayBillingTerms {
     #[must_use]
     pub fn provider_reported(&self) -> bool {
         self.policy_applies
+            && self.selection.policy.as_ref().is_some_and(|p| {
+                matches!(
+                    p.implementation.as_str(),
+                    "provider-reported-text-v1" | "provider-reported-text-v2"
+                )
+            })
+    }
+}
+
+impl GatewayBillingTerms {
+    /// Whether interrupted streamed evidence follows the explicitly accepted v2 contract.
+    #[must_use]
+    pub fn provider_stream(&self) -> bool {
+        self.provider_reported()
+            && self.stream
             && self
                 .selection
                 .policy
                 .as_ref()
-                .is_some_and(|p| p.implementation == "provider-reported-text-v1")
+                .is_some_and(|p| p.implementation == "provider-reported-text-v2")
     }
 }

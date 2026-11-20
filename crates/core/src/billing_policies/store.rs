@@ -22,6 +22,7 @@ pub const PROVIDER_REPORTED_READY: bool = true;
 fn disclosure(implementation: &str, window: i64) -> Result<String, WalletError> {
     match implementation {
         "legacy-estimation-v1" => Ok("Explicit legacy estimation: method oxsum-o200k-text-v1 (tiktoken-rs 0.12.1 o200k_base encode_ordinary over each normalized message text slice). If tokenizer construction fails, use UTF-8 byte count plus 16 units per slice. Completed responses without usage use input only; cancellation may additionally estimate the first 256 KiB of forwarded visible text, within the pinned retail rates, discount and admission ceiling. Hidden reasoning/cache/media/tool quantities are never inferred. This offer does not change historical charges.".into()),
+        "provider-reported-text-v2" => Ok(format!("Bill valid correlated provider-reported single-choice text usage for nonstream and SSE requests, including partial output after interruption, timeout, cancellation or worker loss, under pinned rates and the admission ceiling. Only exact disabled thinking is supported. Identical usage reports count once; conflicting reports remain unresolved. Normal streams require a finish frame and DONE; interrupted streams do not manufacture success. Recover evidence for at most {window} seconds after terminal observation, closing earlier without lookup. Waive unresolved components, release unused reservations, preserve unknown supplier consumption, and never add customer debits after closure. Other surfaces retain legacy terms.")),
         "provider-reported-text-v1" => Ok(format!("Bill valid request-correlated provider-reported text usage, including eligible partial or cancelled usage, under pinned rates and the admission ceiling. Recover evidence for at most {window} seconds after terminal observation; close earlier when lookup is unavailable. Waive unresolved components and release unused reservation. Supplier consumption may remain unknown. No automatic additional customer debit after closure. Other surfaces retain legacy terms.")),
         _ => Err(WalletError::InvalidInput("unknown exception-policy implementation".into())),
     }
@@ -61,7 +62,10 @@ fn version_row(row: &sqlx::postgres::PgRow) -> Result<BillingPolicyVersion, Wall
         ));
     }
     let runtime_ready = document.implementation == "legacy-estimation-v1"
-        || (document.implementation == "provider-reported-text-v1" && PROVIDER_REPORTED_READY);
+        || (matches!(
+            document.implementation.as_str(),
+            "provider-reported-text-v1" | "provider-reported-text-v2"
+        ) && PROVIDER_REPORTED_READY);
     Ok(BillingPolicyVersion {
         version: document.version,
         digest: expected,
@@ -206,7 +210,11 @@ impl Db {
             version,
             implementation: request.implementation.clone(),
             evidence_window_secs: request.evidence_window_secs,
-            scope: POLICY_SCOPE.into(),
+            scope: if request.implementation == "provider-reported-text-v2" {
+                "OpenAI-compatible single-choice plain-text chat, nonstream and SSE; other surfaces retain legacy terms".into()
+            } else {
+                POLICY_SCOPE.into()
+            },
             disclosure: text,
         };
         let canonical = canonical(&row)?;

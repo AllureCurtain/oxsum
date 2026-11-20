@@ -52,7 +52,7 @@ impl Db {
             || terms.hold_key != format!("req-{}:hold", operation.operation_id)
             || terms.version != 1
             || terms.arithmetic_version != "credit-1e6-ceil-discount-cap-v1"
-            || terms.policy_applies != (terms.surface == "chat/completions" && !terms.stream)
+            || terms.policy_applies != terms.selection.applies_to(&terms.surface, terms.stream)
             || terms.ceiling_minor != operation.bound_minor
             || terms.routes.is_empty()
             || (terms.provider_reported() && terms.routes.len() > 128)
