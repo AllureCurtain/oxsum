@@ -66,13 +66,17 @@ async fn status_of(db: &Db, job_id: Uuid) -> String {
         .expect("the job row reads back")
 }
 
+/// Immediate eligibility uses the same database clock as the due-job query.
+async fn database_now(db: &Db) -> OffsetDateTime {
+    sqlx::query_scalar("SELECT clock_timestamp()")
+        .fetch_one(db.pool())
+        .await
+        .expect("reads the database clock")
+}
+
 /// One pending run of `kind`, due now; the row's id.
 async fn enqueued(db: &Db, kind: &str) -> Uuid {
-    assert!(
-        db.enqueue_job(kind, OffsetDateTime::now_utc())
-            .await
-            .unwrap()
-    );
+    assert!(db.enqueue_job(kind, database_now(db).await).await.unwrap());
     sqlx::query_scalar("SELECT job_id FROM oxsum.jobs WHERE kind = $1 AND status = 'pending'")
         .bind(kind)
         .fetch_one(db.pool())
@@ -86,7 +90,7 @@ async fn enqueue_is_idempotent_while_a_run_is_outstanding() {
     let url = db_or_skip!();
     let (db, _, _) = world(&url).await;
     let kind = kind();
-    let now = OffsetDateTime::now_utc();
+    let now = database_now(&db).await;
 
     assert!(db.enqueue_job(&kind, now).await.unwrap());
     // A pending row of the kind means one is already scheduled.
@@ -495,7 +499,7 @@ async fn an_enqueued_row_inherits_the_kinds_leader_flag() {
         .await
         .unwrap();
     assert!(
-        db.enqueue_job(kinds::RECONCILE, OffsetDateTime::now_utc())
+        db.enqueue_job(kinds::RECONCILE, database_now(&db).await)
             .await
             .unwrap()
     );
@@ -618,7 +622,7 @@ async fn a_reclaimed_leader_row_yields_while_the_lock_is_held() {
         .await
         .unwrap();
     assert!(
-        db.enqueue_job(kinds::RETENTION, OffsetDateTime::now_utc())
+        db.enqueue_job(kinds::RETENTION, database_now(&db).await)
             .await
             .unwrap()
     );

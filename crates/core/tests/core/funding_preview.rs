@@ -126,6 +126,34 @@ async fn free_and_fully_funded_calls_need_no_wallet_and_preview_writes_nothing()
 }
 
 #[tokio::test]
+async fn newly_bound_quota_is_ready_immediately_but_future_periods_remain_refused() {
+    let Some(f) = fixture().await else { return };
+    let subscription = quota(&f, Some(20), true).await;
+    let ready = preview(&f, 20).await;
+    assert!(ready.allowed, "{ready:?}");
+    assert_eq!(ready.quota_minor, 20);
+    assert_eq!(ready.wallet_minor, 0);
+
+    sqlx::query(
+        "UPDATE oxsum.org_subscriptions \
+         SET current_period_start=clock_timestamp()+interval '1 day', \
+             current_period_end=clock_timestamp()+interval '2 days' \
+         WHERE subscription_id=$1",
+    )
+    .bind(subscription)
+    .execute(f.db.pool())
+    .await
+    .unwrap();
+    let before = facts(&f).await;
+    let future = preview(&f, 20).await;
+    assert!(!future.allowed, "{future:?}");
+    assert_eq!(future.reason, Some("quotaTransitionRequired"));
+    assert_eq!(future.quota_state, "notStarted");
+    assert_eq!(future.quota_minor, 0);
+    assert_eq!(before, facts(&f).await);
+}
+
+#[tokio::test]
 async fn overflow_exhaustion_cancel_and_pending_boundary_are_explicit() {
     let Some(f) = fixture().await else { return };
     let subscription = quota(&f, Some(5), false).await;
