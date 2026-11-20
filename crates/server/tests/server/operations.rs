@@ -13,7 +13,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use axum::Router;
-use axum::body::Body;
+use axum::body::{Body, Bytes};
 use axum::extract::State;
 use axum::http::{HeaderMap, Request, StatusCode};
 use axum::response::{IntoResponse, Response};
@@ -44,12 +44,27 @@ enum PollAnswer {
     Succeeded { result: Value, usage: Option<Value> },
 }
 
+/// How the provider transport ends after its scripted SSE bytes.
+#[derive(Clone, Copy)]
+enum StreamEnd {
+    Eof,
+    Disconnect,
+    Pending,
+}
+
+#[derive(Clone)]
+struct StreamAnswer {
+    chunks: Vec<Vec<u8>>,
+    end: StreamEnd,
+}
+
 /// The upstream's state: what to answer, and what it saw.
 #[derive(Clone, Default)]
 struct Script {
     submits: Arc<Mutex<HashMap<String, SubmitAnswer>>>,
     polls: Arc<Mutex<HashMap<String, PollAnswer>>>,
     chat: Arc<Mutex<Option<(u16, Value)>>>,
+    chat_stream: Arc<Mutex<Option<StreamAnswer>>>,
     chat_calls: Arc<std::sync::atomic::AtomicUsize>,
     chat_delay_ms: Arc<std::sync::atomic::AtomicU64>,
     chat_requests: Arc<Mutex<Vec<Value>>>,
@@ -136,6 +151,32 @@ async fn chat_upstream(
             .load(std::sync::atomic::Ordering::SeqCst),
     ))
     .await;
+    let stream_answer = script.chat_stream.lock().unwrap().clone();
+    if let Some(answer) = stream_answer {
+        let stream = async_stream::stream! {
+            for chunk in answer.chunks {
+                yield Ok::<Bytes, std::io::Error>(Bytes::from(chunk));
+                tokio::task::yield_now().await;
+            }
+            match answer.end {
+                StreamEnd::Eof => {}
+                StreamEnd::Disconnect => {
+                    // Let the response head and preceding bytes reach the gateway before
+                    // Hyper tears down the incomplete chunked response.
+                    tokio::time::sleep(Duration::from_millis(30)).await;
+                    yield Err(std::io::Error::new(
+                        std::io::ErrorKind::ConnectionReset,
+                        "scripted upstream transport failure",
+                    ));
+                }
+                StreamEnd::Pending => std::future::pending::<()>().await,
+            }
+        };
+        return Response::builder()
+            .header("content-type", "text/event-stream")
+            .body(Body::from_stream(stream))
+            .unwrap();
+    }
     if let Some((status, body)) = script.chat.lock().unwrap().clone() {
         return (
             StatusCode::from_u16(status).unwrap(),
@@ -1346,20 +1387,36 @@ async fn billing_policy_http_consent_and_durable_admission_survive_publication_a
 }
 
 async fn enable_provider_policy(world: &World) {
+    let policy = publish_provider_policy(world, "provider-reported-text-v1").await;
+    accept_provider_policy(world, &policy).await;
+}
+
+async fn publish_provider_policy(
+    world: &World,
+    implementation: &str,
+) -> oxsum_core::BillingPolicyVersion {
     let owner = receipt_owner(world).await;
     let versions = world.db.business_billing_policies(&owner).await.unwrap();
-    let p = world
+    world
         .db
         .publish_billing_policy(
             &owner,
             &oxsum_core::BillingPolicyPublish {
                 idempotency_key: Uuid::new_v4().to_string(),
                 expected_version: versions.first().map_or(0, |v| v.version),
-                implementation: "provider-reported-text-v1".into(),
+                implementation: implementation.into(),
                 evidence_window_secs: 900,
                 reason: "Synthetic recovery acceptance".into(),
             },
         )
+        .await
+        .unwrap()
+}
+
+async fn accept_provider_policy(world: &World, policy: &oxsum_core::BillingPolicyVersion) {
+    let current = world
+        .db
+        .customer_billing_policy(&world.session)
         .await
         .unwrap();
     world
@@ -1369,9 +1426,9 @@ async fn enable_provider_policy(world: &World) {
             &oxsum_core::BillingPolicyAccept {
                 expected_organization_id: world.organization_id,
                 idempotency_key: Uuid::new_v4().to_string(),
-                version: p.version,
-                digest: p.digest,
-                expected_acceptance_id: None,
+                version: policy.version,
+                digest: policy.digest.clone(),
+                expected_acceptance_id: current.acceptance.map(|acceptance| acceptance.id),
             },
         )
         .await
@@ -1785,6 +1842,501 @@ async fn provider_policy_business_queue_is_durable_scoped_and_redacted() {
             }
         }
     }
+}
+
+// ── explicitly accepted provider-reported SSE billing (issue #1244) ───────
+
+const STREAM_COMPLETION_ID: &str = "a468bc05-1a3d-4f80-8aef-c430e4ee9444";
+
+fn provider_sse_frame(id: &str, choices: Value, usage: Value) -> Vec<u8> {
+    format!(
+        "data: {}\r\n\r\n",
+        json!({"id":id,"object":"chat.completion.chunk","model":"chat-model","choices":choices,"usage":usage})
+    )
+    .into_bytes()
+}
+
+fn provider_sse_frames(usage: Option<Value>, done: bool) -> Vec<Vec<u8>> {
+    let mut frames = vec![
+        provider_sse_frame(
+            STREAM_COMPLETION_ID,
+            json!([{"index":0,"delta":{"role":"assistant","content":"你好"},"finish_reason":null}]),
+            Value::Null,
+        ),
+        provider_sse_frame(
+            STREAM_COMPLETION_ID,
+            json!([{"index":0,"delta":{},"finish_reason":"stop"}]),
+            Value::Null,
+        ),
+    ];
+    if let Some(usage) = usage {
+        frames.push(provider_sse_frame(STREAM_COMPLETION_ID, json!([]), usage));
+    }
+    if done {
+        frames.push(b"data: [DONE]\r\n\r\n".to_vec());
+    }
+    frames
+}
+
+fn provider_final_usage() -> Value {
+    json!({"prompt_tokens":11,"completion_tokens":7,"total_tokens":18})
+}
+
+fn provider_stream_body() -> Value {
+    json!({"model":"chat-model","messages":[{"role":"user","content":"hello"}],"max_tokens":32,"stream":true})
+}
+
+async fn enable_provider_stream_policy(world: &World) {
+    let policy = publish_provider_policy(world, "provider-reported-text-v2").await;
+    accept_provider_policy(world, &policy).await;
+}
+
+async fn provider_stream_call(world: &World, idempotency: &str) -> Response {
+    world
+        .app
+        .clone()
+        .oneshot(
+            Request::post("/v1/chat/completions")
+                .header("authorization", format!("Bearer {}", world.key))
+                .header("content-type", "application/json")
+                .header("idempotency-key", idempotency)
+                .body(Body::from(provider_stream_body().to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap()
+}
+
+fn stream_request_id(response: &Response) -> Uuid {
+    Uuid::parse_str(response.headers()["x-oxsum-request-id"].to_str().unwrap()).unwrap()
+}
+
+async fn collect_provider_stream(response: Response) -> (String, Option<HeaderMap>) {
+    assert_eq!(response.status(), StatusCode::OK);
+    let collected = tokio::time::timeout(Duration::from_secs(15), response.into_body().collect())
+        .await
+        .expect("the stream closes without waiting for provider EOF after DONE")
+        .unwrap();
+    let trailers = collected.trailers().cloned();
+    let text = String::from_utf8(collected.to_bytes().to_vec()).unwrap();
+    (text, trailers)
+}
+
+async fn closed_stream_receipt(world: &World, id: Uuid, expected_charge: i64) -> Value {
+    let deadline = oxsum_testkit::settle_deadline();
+    loop {
+        let closed = world
+            .db
+            .usage_recovery_receipt(world.organization_id, id)
+            .await
+            .unwrap()
+            .is_some_and(|receipt| receipt.state == "closed");
+        if closed {
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the reservation closes"
+        );
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    let (status, body) = call(
+        &world.app,
+        "GET",
+        &format!("/api/v1/charge-receipt?identifier={id}"),
+        None,
+        Some(&world.key),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let receipt = &body["data"];
+    assert_eq!(receipt["chargedMinor"], expected_charge, "{receipt}");
+    assert_eq!(receipt["financialState"], "settled");
+    assert_eq!(receipt["usageBasis"], "provider_reported_components");
+    assert_eq!(
+        receipt["releasedMinor"].as_i64().unwrap() + expected_charge,
+        receipt["ceilingMinor"].as_i64().unwrap()
+    );
+    let (count, charge): (i64, i64) = sqlx::query_as(
+        "SELECT count(*),sum(charged_minor)::bigint FROM oxsum.usage_records WHERE request_id=$1",
+    )
+    .bind(id.to_string())
+    .fetch_one(&world.pool)
+    .await
+    .unwrap();
+    assert_eq!((count, charge), (1, expected_charge));
+    let held: bool =
+        sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM oxsum.open_holds WHERE request_id=$1)")
+            .bind(id.to_string())
+            .fetch_one(&world.pool)
+            .await
+            .unwrap();
+    assert!(!held, "financial closure releases the entire reservation");
+    receipt.clone()
+}
+
+async fn assert_stream_replay(world: &World, key: &str, id: Uuid, charge: i64) {
+    let response = provider_stream_call(world, key).await;
+    assert_eq!(response.status(), StatusCode::OK);
+    assert!(response.headers().contains_key("idempotent-replayed"));
+    assert_eq!(stream_request_id(&response), id);
+    let replay: Value =
+        serde_json::from_slice(&response.into_body().collect().await.unwrap().to_bytes()).unwrap();
+    assert_eq!(replay["object"], "oxsum.receipt");
+    assert_eq!(replay["chargedMinor"], charge);
+    assert_eq!(replay["requestId"], id.to_string());
+}
+
+#[tokio::test]
+async fn provider_stream_split_duplicate_usage_done_and_replay_settle_once() {
+    let url = oxsum_testkit::suite_url!().expect("provider stream acceptance requires PostgreSQL");
+    let world = world(&url, 10000).await;
+    enable_provider_stream_policy(&world).await;
+    let mut frames = provider_sse_frames(Some(provider_final_usage()), false);
+    frames.push(provider_sse_frame(
+        STREAM_COMPLETION_ID,
+        json!([]),
+        provider_final_usage(),
+    ));
+    frames.push(b"data: [DONE]\r\n\r\n".to_vec());
+    let wire = frames.concat();
+    *world.script.chat_stream.lock().unwrap() = Some(StreamAnswer {
+        // This splits SSE boundaries, JSON and the multibyte UTF-8 text.
+        chunks: wire.chunks(1).map(<[u8]>::to_vec).collect(),
+        // A valid protocol terminal must close us even if the provider body never ends.
+        end: StreamEnd::Pending,
+    });
+    let response = provider_stream_call(&world, "stream-duplicate").await;
+    let id = stream_request_id(&response);
+    assert_eq!(
+        provider_stream_call(&world, "stream-duplicate")
+            .await
+            .status(),
+        StatusCode::CONFLICT,
+        "a retry during execution cannot issue another paid request"
+    );
+    let (text, trailers) = collect_provider_stream(response).await;
+    assert_eq!(text.as_bytes(), wire);
+    assert_eq!(text.matches("[DONE]").count(), 1);
+    assert_eq!(trailers.unwrap()["x-oxsum-charged-minor"], "18");
+    let receipt = closed_stream_receipt(&world, id, 18).await;
+    assert_eq!(receipt["operationState"], "succeeded");
+    assert_eq!(receipt["recovery"]["terminalObservation"], "answered");
+    assert_eq!(receipt["recovery"]["observed"]["input"], 11);
+    assert_eq!(receipt["recovery"]["observed"]["output"], 7);
+    assert_eq!(
+        receipt["recovery"]["observed"]["completionId"],
+        STREAM_COMPLETION_ID
+    );
+    assert_stream_replay(&world, "stream-duplicate", id, 18).await;
+    assert_eq!(
+        world
+            .script
+            .chat_calls
+            .load(std::sync::atomic::Ordering::SeqCst),
+        1
+    );
+    closed_stream_receipt(&world, id, 18).await;
+}
+
+#[tokio::test]
+async fn provider_stream_missing_usage_waives_unknown_components_and_releases_hold() {
+    let url = oxsum_testkit::suite_url!().expect("provider stream acceptance requires PostgreSQL");
+    let world = world(&url, 10000).await;
+    enable_provider_stream_policy(&world).await;
+    *world.script.chat_stream.lock().unwrap() = Some(StreamAnswer {
+        chunks: provider_sse_frames(None, true),
+        end: StreamEnd::Eof,
+    });
+    let response = provider_stream_call(&world, "stream-missing").await;
+    let id = stream_request_id(&response);
+    let (text, trailers) = collect_provider_stream(response).await;
+    assert!(text.contains("[DONE]"));
+    assert_eq!(trailers.unwrap()["x-oxsum-charged-minor"], "0");
+    let receipt = closed_stream_receipt(&world, id, 0).await;
+    for dimension in ["input", "output", "total", "cached", "reasoning"] {
+        assert_eq!(receipt["recovery"]["observed"][dimension], Value::Null);
+    }
+    assert_eq!(receipt["recovery"]["supplierCostKnown"], false);
+    assert_eq!(
+        receipt["recovery"]["closeReason"],
+        "lookup_unavailable_unresolved_waived"
+    );
+    assert_stream_replay(&world, "stream-missing", id, 0).await;
+    assert_eq!(
+        world
+            .script
+            .chat_calls
+            .load(std::sync::atomic::Ordering::SeqCst),
+        1
+    );
+}
+
+#[tokio::test]
+async fn provider_stream_eof_and_transport_failure_do_not_manufacture_completion() {
+    let url = oxsum_testkit::suite_url!().expect("provider stream acceptance requires PostgreSQL");
+    let world = world(&url, 10000).await;
+    enable_provider_stream_policy(&world).await;
+    for (key, end, reported) in [
+        ("stream-eof-before-usage", StreamEnd::Eof, false),
+        ("stream-eof-after-usage", StreamEnd::Eof, true),
+        (
+            "stream-disconnect-before-usage",
+            StreamEnd::Disconnect,
+            false,
+        ),
+        ("stream-disconnect-after-usage", StreamEnd::Disconnect, true),
+    ] {
+        *world.script.chat_stream.lock().unwrap() = Some(StreamAnswer {
+            chunks: provider_sse_frames(reported.then(provider_final_usage), false),
+            end,
+        });
+        let response = provider_stream_call(&world, key).await;
+        let id = stream_request_id(&response);
+        let (text, _) = collect_provider_stream(response).await;
+        assert!(!text.contains("[DONE]"), "{text}");
+        assert!(text.contains("\"code\":\"stream_incomplete\""), "{text}");
+        let charge = if reported { 18 } else { 0 };
+        let receipt = closed_stream_receipt(&world, id, charge).await;
+        assert_eq!(receipt["operationState"], "failed");
+        assert_eq!(receipt["settlementKind"], "upstream_error");
+        assert_eq!(
+            receipt["recovery"]["terminalObservation"],
+            "stream_incomplete"
+        );
+        assert_eq!(
+            receipt["recovery"]["observed"]["input"],
+            if reported { json!(11) } else { Value::Null }
+        );
+        assert_stream_replay(&world, key, id, charge).await;
+        closed_stream_receipt(&world, id, charge).await;
+    }
+    assert_eq!(
+        world
+            .script
+            .chat_calls
+            .load(std::sync::atomic::Ordering::SeqCst),
+        4
+    );
+}
+
+#[tokio::test]
+async fn provider_stream_client_drop_preserves_only_checkpointed_usage_and_closes_once() {
+    let url = oxsum_testkit::suite_url!().expect("provider stream acceptance requires PostgreSQL");
+    let world = world(&url, 10000).await;
+    enable_provider_stream_policy(&world).await;
+    for reported in [false, true] {
+        let key = if reported {
+            "stream-drop-after-usage"
+        } else {
+            "stream-drop-before-usage"
+        };
+        *world.script.chat_stream.lock().unwrap() = Some(StreamAnswer {
+            chunks: provider_sse_frames(reported.then(provider_final_usage), false),
+            end: StreamEnd::Pending,
+        });
+        let response = provider_stream_call(&world, key).await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let id = stream_request_id(&response);
+        let mut body = response.into_body();
+        loop {
+            let frame = tokio::time::timeout(Duration::from_secs(15), body.frame())
+                .await
+                .unwrap()
+                .unwrap()
+                .unwrap();
+            if let Some(bytes) = frame.data_ref() {
+                let text = String::from_utf8_lossy(bytes);
+                if !reported || text.contains("prompt_tokens") {
+                    break;
+                }
+            }
+        }
+        // Evidence must be durable before the corresponding event reaches a caller.
+        let observed: Value =
+            sqlx::query_scalar("SELECT observed FROM oxsum.usage_recovery WHERE operation_id=$1")
+                .bind(id)
+                .fetch_one(&world.pool)
+                .await
+                .unwrap();
+        assert_eq!(
+            observed["input"],
+            if reported { json!(11) } else { Value::Null }
+        );
+        drop(body);
+        let charge = if reported { 18 } else { 0 };
+        let receipt = closed_stream_receipt(&world, id, charge).await;
+        assert_eq!(receipt["operationState"], "cancelled");
+        assert_eq!(receipt["recovery"]["terminalObservation"], "cancelled");
+        assert_stream_replay(&world, key, id, charge).await;
+        closed_stream_receipt(&world, id, charge).await;
+    }
+    assert_eq!(
+        world
+            .script
+            .chat_calls
+            .load(std::sync::atomic::Ordering::SeqCst),
+        2
+    );
+}
+
+#[tokio::test]
+async fn provider_stream_conflicting_identity_invalidates_previously_observed_usage() {
+    let url = oxsum_testkit::suite_url!().expect("provider stream acceptance requires PostgreSQL");
+    let world = world(&url, 10000).await;
+    enable_provider_stream_policy(&world).await;
+    let mut chunks = provider_sse_frames(Some(provider_final_usage()), false);
+    chunks.push(provider_sse_frame(
+        "another-completion",
+        json!([]),
+        provider_final_usage(),
+    ));
+    chunks.push(b"data: [DONE]\n\n".to_vec());
+    *world.script.chat_stream.lock().unwrap() = Some(StreamAnswer {
+        chunks,
+        end: StreamEnd::Eof,
+    });
+    let response = provider_stream_call(&world, "stream-conflicting-id").await;
+    let id = stream_request_id(&response);
+    let (text, _) = collect_provider_stream(response).await;
+    assert!(text.contains("\"code\":\"stream_invalid\""), "{text}");
+    assert!(!text.contains("another-completion"));
+    assert!(!text.contains("[DONE]"));
+    let receipt = closed_stream_receipt(&world, id, 0).await;
+    assert_eq!(receipt["operationState"], "failed");
+    assert_eq!(receipt["recovery"]["terminalObservation"], "stream_invalid");
+    assert_eq!(receipt["recovery"]["observed"]["input"], Value::Null);
+    assert_eq!(receipt["recovery"]["observed"]["output"], Value::Null);
+    assert!(
+        receipt["recovery"]["observed"]["invalid"]
+            .as_array()
+            .unwrap()
+            .contains(&json!("conflicting_provider_completion_id"))
+    );
+}
+
+#[tokio::test]
+async fn provider_stream_conflicting_component_stays_unknown_after_repeated_report() {
+    let url = oxsum_testkit::suite_url!().expect("provider stream acceptance requires PostgreSQL");
+    let world = world(&url, 10000).await;
+    enable_provider_stream_policy(&world).await;
+    let original = json!({"prompt_tokens":11,"completion_tokens":7});
+    let mut chunks = provider_sse_frames(Some(original.clone()), false);
+    chunks.push(provider_sse_frame(
+        STREAM_COMPLETION_ID,
+        json!([]),
+        json!({"prompt_tokens":12,"completion_tokens":7}),
+    ));
+    chunks.push(provider_sse_frame(
+        STREAM_COMPLETION_ID,
+        json!([]),
+        original,
+    ));
+    chunks.push(b"data: [DONE]\n\n".to_vec());
+    *world.script.chat_stream.lock().unwrap() = Some(StreamAnswer {
+        chunks,
+        end: StreamEnd::Eof,
+    });
+    let response = provider_stream_call(&world, "stream-conflicting-count").await;
+    let id = stream_request_id(&response);
+    let (text, _) = collect_provider_stream(response).await;
+    assert!(text.contains("[DONE]"));
+    let receipt = closed_stream_receipt(&world, id, 7).await;
+    assert_eq!(receipt["recovery"]["observed"]["input"], Value::Null);
+    assert_eq!(receipt["recovery"]["observed"]["output"], 7);
+    assert!(
+        receipt["recovery"]["observed"]["invalid"]
+            .as_array()
+            .unwrap()
+            .contains(&json!("conflicting_input"))
+    );
+}
+
+#[tokio::test]
+async fn provider_stream_v1_stays_legacy_until_explicit_v2_acceptance() {
+    let url = oxsum_testkit::suite_url!().expect("provider stream acceptance requires PostgreSQL");
+    let world = world(&url, 10000).await;
+    enable_provider_policy(&world).await;
+    *world.script.chat_stream.lock().unwrap() = Some(StreamAnswer {
+        chunks: provider_sse_frames(None, true),
+        end: StreamEnd::Eof,
+    });
+    let first = provider_stream_call(&world, "stream-v1-before-publication").await;
+    let first_id = stream_request_id(&first);
+    collect_provider_stream(first).await;
+    let first_terms = world
+        .db
+        .operation_billing_terms(world.organization_id, first_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(!first_terms.policy_applies);
+    assert!(!first_terms.provider_reported());
+    let v2 = publish_provider_policy(&world, "provider-reported-text-v2").await;
+    let offered = provider_stream_call(&world, "stream-v1-after-publication").await;
+    let offered_id = stream_request_id(&offered);
+    collect_provider_stream(offered).await;
+    for id in [first_id, offered_id] {
+        let terms = world
+            .db
+            .operation_billing_terms(world.organization_id, id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(!terms.policy_applies);
+        assert_eq!(
+            terms.selection.policy.unwrap().implementation,
+            "provider-reported-text-v1"
+        );
+        assert!(
+            world
+                .db
+                .usage_recovery_receipt(world.organization_id, id)
+                .await
+                .unwrap()
+                .is_none()
+        );
+        let (_, receipt) = call(
+            &world.app,
+            "GET",
+            &format!("/api/v1/charge-receipt?identifier={id}"),
+            None,
+            Some(&world.key),
+        )
+        .await;
+        assert_eq!(receipt["data"]["usageBasis"], "local_estimate");
+        assert!(receipt["data"]["chargedMinor"].as_i64().unwrap() > 0);
+    }
+    accept_provider_policy(&world, &v2).await;
+    let accepted = provider_stream_call(&world, "stream-v2-accepted").await;
+    let accepted_id = stream_request_id(&accepted);
+    collect_provider_stream(accepted).await;
+    closed_stream_receipt(&world, accepted_id, 0).await;
+    assert!(
+        world
+            .db
+            .operation_billing_terms(world.organization_id, accepted_id)
+            .await
+            .unwrap()
+            .unwrap()
+            .provider_stream()
+    );
+    assert_eq!(
+        world
+            .db
+            .operation_billing_terms(world.organization_id, first_id)
+            .await
+            .unwrap()
+            .unwrap(),
+        first_terms
+    );
+    assert_eq!(
+        world
+            .script
+            .chat_calls
+            .load(std::sync::atomic::Ordering::SeqCst),
+        3
+    );
 }
 
 #[tokio::test]

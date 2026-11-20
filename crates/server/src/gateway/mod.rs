@@ -18,6 +18,7 @@ mod messages;
 mod models;
 mod pipeline;
 mod relay;
+mod reported_stream;
 mod request;
 mod rerank;
 mod responses;

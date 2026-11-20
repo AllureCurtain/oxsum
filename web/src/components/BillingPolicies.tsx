@@ -17,7 +17,7 @@ function PolicyTerms({ policy }: { policy: Policy }) {
 export function BusinessBillingPolicies() {
   const principal = useBusiness().data;
   const history = useQuery({ queryKey: ["business-billing-policies"], queryFn: () => api<Policy[]>("/business/billing-policies"), enabled: !!principal });
-  const [implementation, setImplementation] = useState("provider-reported-text-v1");
+  const [implementation, setImplementation] = useState("provider-reported-text-v2");
   const [windowSecs, setWindowSecs] = useState("900");
   const [reason, setReason] = useState("");
   const [open, setOpen] = useState(false);
@@ -28,10 +28,10 @@ export function BusinessBillingPolicies() {
     <p className="mb-4">Existing customers retain their terms. Publishing makes an immutable offer; only a customer owner or admin can accept it for subsequent admissions.</p>
     {history.isLoading ? <Skeleton className="h-24" /> : history.error ? <Banner tone="error">{history.error.message}</Banner> : null}
     {principal?.capabilities.includes("catalogWrite") ? <div className="flex flex-col gap-4">
-      <Field label="Implementation"><NativeSelect value={implementation} onChange={e => setImplementation(e.target.value)}><option value="provider-reported-text-v1">Provider-reported text v1</option><option value="legacy-estimation-v1">Explicit legacy estimation v1</option></NativeSelect></Field>
+      <Field label="Implementation"><NativeSelect value={implementation} onChange={e => setImplementation(e.target.value)}><option value="provider-reported-text-v2">Provider-reported text v2 (including streams)</option><option value="provider-reported-text-v1">Provider-reported text v1</option><option value="legacy-estimation-v1">Explicit legacy estimation v1</option></NativeSelect></Field>
       <Field label="Maximum evidence window after terminal observation (seconds)"><TextInput inputMode="numeric" value={windowSecs} onChange={e => setWindowSecs(e.target.value)} /></Field>
       <Field label="Publication reason"><TextInput maxLength={500} value={reason} onChange={e => setReason(e.target.value)} /></Field>
-      <Button disabled={!valid || !history.data} onClick={() => { setRequest({ idempotencyKey: crypto.randomUUID(), expectedVersion: history.data?.[0]?.version ?? 0, implementation: implementation as "provider-reported-text-v1" | "legacy-estimation-v1", evidenceWindowSecs: Number(windowSecs), reason }); setOpen(true); }}>Review publication</Button>
+      <Button disabled={!valid || !history.data} onClick={() => { setRequest({ idempotencyKey: crypto.randomUUID(), expectedVersion: history.data?.[0]?.version ?? 0, implementation: implementation as "provider-reported-text-v1" | "provider-reported-text-v2" | "legacy-estimation-v1", evidenceWindowSecs: Number(windowSecs), reason }); setOpen(true); }}>Review publication</Button>
     </div> : null}
     <div className="mt-4 flex flex-col gap-4">{history.data?.length === 0 ? <p>No explicit exception policies. Legacy terms remain in effect.</p> : null}{history.data?.map(p => <details key={p.version}><summary className="cursor-pointer text-primary">Version {p.version} · {p.publishedAt}</summary><PolicyTerms policy={p} /></details>)}</div>
     <AlertDialog open={open} onOpenChange={v => { if (!publish.isPending) setOpen(v); }}><AlertDialogContent><AlertDialogHeader><AlertDialogTitle>Publish immutable policy</AlertDialogTitle><AlertDialogDescription>Publish {request?.implementation} with a maximum {request?.evidenceWindowSecs}-second terminal evidence window. No customer selection or active request will change. The full fixed disclosure appears in the published history.</AlertDialogDescription></AlertDialogHeader>
