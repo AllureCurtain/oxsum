@@ -10,7 +10,6 @@ Open GitHub issues are the queue. This file is only the index. One row per open 
 
 | Issue | Title |
 | --- | --- |
-| [#1244](https://github.com/AllureCurtain/oxsum/issues/1244) | feat: prospectively accepted streaming usage billing |
 | [#1117](https://github.com/AllureCurtain/oxsum/issues/1117) | direction: crypto top-up rail first, full on-chain vault later (Solana) |
 | [#1048](https://github.com/AllureCurtain/oxsum/issues/1048) | Self-hosted Hyperswitch on the 82.* server — feasibility and deployment |
 | [#746](https://github.com/AllureCurtain/oxsum/issues/746) | ci: Publication and deployment, if selected (N20) |

@@ -1300,3 +1300,22 @@ attempts use durable execution context; legacy estimates lack that complete
 provenance and remain unknown. Diagnostic missing/cache coverage uses explicit
 UTC timestamp bounds, independently from the attempt-start cohort. Never multiply
 winning usage by retry count or reconstruct historical costs from current rates.
+
+### Streaming evidence checkpoints
+
+The v2 policy opts SSE chat into `usage_recovery`; v1 canonical policy documents
+and nonstream scope remain unchanged. `gateway/reported_stream.rs` is a strict
+bounded event decoder, separate from permissive legacy adapters: each event is
+at most 64 KiB, at most one million events, with stable safe completion identity
+and only the supported text shape. Repeated final reports merge as constraints,
+never sums. `checkpoint_recovery_observation` locks recovery, verifies the live
+execution owner/lease and saves allowlisted usage and attempt identity before
+forwarding that event. It stores neither prompt nor output text. Terminal transfer
+or lease loss fences further writes; worker-loss closure reads the last checkpoint.
+
+Normal finish plus DONE, interrupted transport, timeout, cancellation, invalid
+structure and worker loss remain distinct observations. The existing finalizer
+closes each funding source and usage once; v2 permits known components on an
+interrupted stream while retaining a failed operation. Generic compatible-provider
+IDs are evidence identifiers, not lookup authorization: only safe `chatcmpl-` IDs
+with explicit storage and pinned canonical OpenAI capability can be retrieved.

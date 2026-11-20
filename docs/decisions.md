@@ -5279,3 +5279,16 @@ under the existing provider-reported text validator. Forward it unchanged. This
 permits explicitly non-thinking DeepSeek requests without authorizing reasoning
 or weakening the unknown-field gate. Do not rewrite v1's immutable disclosure,
 scope, acceptance or historical bytes; streaming requires a separate policy.
+
+## 2026-11-20: Prospectively accepted reported-usage SSE billing (issue #1244)
+
+Add `provider-reported-text-v2` rather than widening immutable v1 consent. A
+separate bounded SSE decoder validates identity, text shape, final usage and
+finish/DONE. Owner-fenced PostgreSQL checkpoints precede forwarding evidence;
+existing atomic recovery/funding closure handles interrupted execution and lost
+workers. Valid reported components can be billed after interruption under v2,
+while the operation remains failed/cancelled. Conflicts are sticky, unknowns are
+waived, retries never sum usage, and closure never reopens for a late debit.
+DeepSeek UUID IDs and raw cache-hit/miss constraints are supported without granting
+OpenAI stored-completion lookup capability. No new ledger table or blockchain is
+needed; durable evidence records what was observed, not upstream truth or delivery.
