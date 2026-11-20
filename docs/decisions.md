@@ -5271,3 +5271,11 @@ finance staff without exposing credentials. Canonical export bytes make hash
 recomputation independent of a consumer's JSON serializer. Disable unsafe legacy
 whole-organization OpenAI attribution while retaining its old rows. These records
 never post customer money or claim complete request matching.
+
+## 2026-11-20 — Exact disabled-thinking compatibility (#1243)
+
+Allow only the exact optional `thinking: {"type":"disabled"}` request setting
+under the existing provider-reported text validator. Forward it unchanged. This
+permits explicitly non-thinking DeepSeek requests without authorizing reasoning
+or weakening the unknown-field gate. Do not rewrite v1's immutable disclosure,
+scope, acceptance or historical bytes; streaming requires a separate policy.

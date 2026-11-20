@@ -52,6 +52,7 @@ struct Script {
     chat: Arc<Mutex<Option<(u16, Value)>>>,
     chat_calls: Arc<std::sync::atomic::AtomicUsize>,
     chat_delay_ms: Arc<std::sync::atomic::AtomicU64>,
+    chat_requests: Arc<Mutex<Vec<Value>>>,
 }
 
 impl Script {
@@ -121,7 +122,11 @@ async fn poll_upstream(
 }
 
 /// A fixed chat answer with a usage report — the settle's priced counts.
-async fn chat_upstream(State(script): State<Script>) -> Response {
+async fn chat_upstream(
+    State(script): State<Script>,
+    axum::Json(request): axum::Json<Value>,
+) -> Response {
+    script.chat_requests.lock().unwrap().push(request);
     script
         .chat_calls
         .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
@@ -1780,4 +1785,97 @@ async fn provider_policy_business_queue_is_durable_scoped_and_redacted() {
             }
         }
     }
+}
+
+#[tokio::test]
+async fn provider_policy_disabled_thinking_is_exact_forwarded_and_rejected_before_admission() {
+    let url =
+        oxsum_testkit::suite_url!().expect("disabled-thinking acceptance requires PostgreSQL");
+    let world = world(&url, 10_000).await;
+    enable_provider_policy(&world).await;
+    let base = json!({"model":"chat-model","messages":[{"role":"user","content":"hello"}],"max_tokens":8,"stream":false});
+    let before = call(
+        &world.app,
+        "GET",
+        "/api/v1/balance",
+        None,
+        Some(&world.session),
+    )
+    .await;
+    for (i, thinking) in [
+        json!({"type":"enabled"}),
+        json!({"type":"disabled","budget_tokens":1}),
+        json!({}),
+        json!(null),
+        json!("disabled"),
+        json!({"type":false}),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let mut body = base.clone();
+        body["thinking"] = thinking;
+        assert_eq!(
+            policy_call(&world, body, &format!("invalid-thinking-{i}"))
+                .await
+                .0,
+            StatusCode::BAD_REQUEST
+        );
+    }
+    assert_eq!(
+        world
+            .script
+            .chat_calls
+            .load(std::sync::atomic::Ordering::SeqCst),
+        0
+    );
+    let holds: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM oxsum.request_operations WHERE organization_id=$1",
+    )
+    .bind(world.organization_id)
+    .fetch_one(&world.pool)
+    .await
+    .unwrap();
+    assert_eq!(holds, 0);
+    assert_eq!(
+        call(
+            &world.app,
+            "GET",
+            "/api/v1/balance",
+            None,
+            Some(&world.session)
+        )
+        .await,
+        before
+    );
+    let mut body = base;
+    body["thinking"] = json!({"type":"disabled"});
+    let (status, headers, _) = policy_call(&world, body, "disabled-thinking").await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        world
+            .script
+            .chat_calls
+            .load(std::sync::atomic::Ordering::SeqCst),
+        1
+    );
+    assert_eq!(
+        world.script.chat_requests.lock().unwrap()[0]["thinking"],
+        json!({"type":"disabled"})
+    );
+    let id = headers["x-oxsum-request-id"].to_str().unwrap();
+    let (_, receipt) = call(
+        &world.app,
+        "GET",
+        &format!("/api/v1/charge-receipt?identifier={id}"),
+        None,
+        Some(&world.key),
+    )
+    .await;
+    assert_eq!(receipt["data"]["chargedMinor"], 18);
+    assert_eq!(
+        receipt["data"]["usageBasis"],
+        "provider_reported_components"
+    );
+    assert_eq!(receipt["data"]["recovery"]["state"], "closed");
 }

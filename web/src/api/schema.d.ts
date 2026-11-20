@@ -18035,6 +18035,11 @@ export interface paths {
          *     cannot return more than the freeze was computed for and its usage arrives in the final chunk.
          *     The request settles against that usage, capped at the freeze.
          *
+         *     Under explicitly accepted provider-reported text terms, the optional
+         *     `thinking` field must be exactly `{"type":"disabled"}` and is forwarded
+         *     unchanged. Enabled, malformed or extended thinking settings are refused
+         *     before admission; this exception does not enable reasoning billing.
+         *
          *     Normal and cache-hit calls enforce current key state, model access,
          *     organization manual/dunning/archive restrictions, mandate validity and
          *     concurrent-request limits even when prepaid quota covers the complete
@@ -25924,6 +25929,8 @@ export interface components {
              * @default false
              */
             stream: boolean | null;
+            /** @description Provider-specific option forwarded unchanged under legacy terms. Provider-reported text terms accept only the exact object {"type":"disabled"}; other forms return 400 before admission. */
+            thinking?: unknown;
             /**
              * Format: int64
              * @description the output upper bound the freeze uses; absent or null means the model's configured maximum, and a value below 1 is 400
