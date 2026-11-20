@@ -1152,3 +1152,12 @@ Old unscoped OpenAI automatic cost attribution is disabled, preserving existing
 `upstream_bills` observations unchanged. Use the new import journey for explicitly
 scoped comparisons. Anthropic's existing adapter remains available; its shared
 decimal parser now rejects malformed values and correctly handles negative signs.
+
+### Explicit non-thinking provider requests
+
+Provider-reported text billing accepts an optional `thinking` field only when it
+is exactly `{"type":"disabled"}`. The gateway forwards it unchanged, allowing
+DeepSeek callers to explicitly disable thinking. Enabled, null, malformed or
+extended settings refuse with 400 before admission or upstream dispatch. This
+compatibility option does not enable reasoning, change the nonstreaming v1
+scope, or alter previously published policy documents and historical charges.

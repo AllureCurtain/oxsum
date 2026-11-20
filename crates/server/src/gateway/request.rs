@@ -186,10 +186,15 @@ impl GatewayRequest {
             "service_tier",
             "store",
             "n",
+            "thinking",
         ];
         let valid = self.body.keys().all(|k| allowed.contains(&k.as_str()))
             && self.body.get("n").is_none_or(|v| v.as_i64() == Some(1))
             && self.body.get("store").is_none_or(Value::is_boolean)
+            && self
+                .body
+                .get("thinking")
+                .is_none_or(|value| *value == json!({"type": "disabled"}))
             && self
                 .body
                 .get("messages")
@@ -1081,6 +1086,30 @@ mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used)]
 
     use super::*;
+
+    #[test]
+    fn provider_text_allows_only_exact_disabled_thinking_without_changing_legacy_forwarding() {
+        let base = json!({"model":"deepseek-flash","messages":[{"role":"user","content":"OK"}],"max_tokens":32});
+        for value in [
+            json!({"type":"enabled"}),
+            json!({"type":"disabled","extra":true}),
+            json!(null),
+            json!({}),
+            json!(false),
+            json!("disabled"),
+        ] {
+            let mut body = base.clone();
+            body["thinking"] = value.clone();
+            let parsed = request(body).unwrap();
+            assert!(parsed.validate_provider_text().is_err());
+            assert_eq!(parsed.forwarded(32)["thinking"], value);
+        }
+        let mut body = base;
+        body["thinking"] = json!({"type":"disabled"});
+        let parsed = request(body).unwrap();
+        parsed.validate_provider_text().unwrap();
+        assert_eq!(parsed.forwarded(32)["thinking"], json!({"type":"disabled"}));
+    }
 
     fn request(body: Value) -> Result<GatewayRequest, GatewayError> {
         GatewayRequest::parse(body, Surface::OpenAi)

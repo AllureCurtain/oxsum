@@ -2257,3 +2257,12 @@ and its digest outside the server if you need later independent checks.
 Old OpenAI automatic unscoped comparisons stop after upgrade; historical rows
 remain unchanged. No reconciliation action charges a customer. Actual provider
 account mapping and authentic report certification remain an operator task.
+
+### Explicit non-thinking provider requests
+
+Provider-reported text billing accepts an optional `thinking` field only when it
+is exactly `{"type":"disabled"}`. The gateway forwards it unchanged, allowing
+DeepSeek callers to explicitly disable thinking. Enabled, null, malformed or
+extended settings refuse with 400 before admission or upstream dispatch. This
+compatibility option does not enable reasoning, change the nonstreaming v1
+scope, or alter previously published policy documents and historical charges.

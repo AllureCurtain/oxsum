@@ -12866,6 +12866,11 @@ paths:
         cannot return more than the freeze was computed for and its usage arrives in the final chunk.
         The request settles against that usage, capped at the freeze.
 
+        Under explicitly accepted provider-reported text terms, the optional
+        `thinking` field must be exactly `{"type":"disabled"}` and is forwarded
+        unchanged. Enabled, malformed or extended thinking settings are refused
+        before admission; this exception does not enable reasoning billing.
+
         Normal and cache-hit calls enforce current key state, model access,
         organization manual/dunning/archive restrictions, mandate validity and
         concurrent-request limits even when prepaid quota covers the complete
@@ -19778,6 +19783,11 @@ components:
           minItems: 1
           items: { $ref: "#/components/schemas/ChatMessage" }
         stream: { type: [boolean, "null"], default: false, description: "absent or null counts as false; a stream is terminated by `data: [DONE]`" }
+        thinking:
+          description: >-
+            Provider-specific option forwarded unchanged under legacy terms.
+            Provider-reported text terms accept only the exact object
+            {"type":"disabled"}; other forms return 400 before admission.
         max_tokens: { type: [integer, "null"], format: int64, minimum: 1, description: "the output upper bound the freeze uses; absent or null means the model's configured maximum, and a value below 1 is 400" }
         max_completion_tokens: { type: [integer, "null"], format: int64, minimum: 1, description: "newer spelling of max_tokens; when both are present this one wins, and null counts as absent" }
         user: { type: [string, "null"], maxLength: 128, description: "the caller's own end-user id, recorded on the turn's usage record for attribution; never priced on and never shown to other organizations. Longer than 128 characters is 400" }

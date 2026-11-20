@@ -95,3 +95,7 @@ historical receipt retrieval and explicit revocation under current authority.
 Management-key rotation cannot recover an issued key's plaintext secret or replace
 its original provenance. No funds, provider secrets or staff authority accompany
 this scope.
+
+Under provider-reported text terms, `thinking` is optional but, if present, must
+be exactly `{"type":"disabled"}`. Enabled or extended objects, null and other
+shapes return 400 before a hold or provider call. Legacy forwarding is unchanged.
