@@ -1068,7 +1068,7 @@ async fn run(
         surface: surface.upstream_path().into(),
         stream: request.stream,
         arithmetic_version: "credit-1e6-ceil-discount-cap-v1".into(),
-        policy_applies: surface == Surface::OpenAi && !request.stream,
+        policy_applies: policy_selection.applies_to(surface.upstream_path(), request.stream),
         selection: policy_selection,
         sale_digest: sale.as_ref().map(|s| s.digest.clone()),
         discount_percent: sale.as_ref().map_or(discount_percent, |s| Some(s.discount_percent)),
@@ -1456,7 +1456,7 @@ async fn run(
         operation_ctx,
     );
     if billing_terms.provider_reported() {
-        turn.enable_provider_recovery();
+        turn.enable_provider_recovery(billing_terms.provider_stream());
     }
     turn.note_requested_model(&requested_model);
     turn.note_input_count(request.counted_input);

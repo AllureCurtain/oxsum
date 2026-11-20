@@ -221,6 +221,8 @@ struct Plan {
     /// operation never bound.
     winning_attempt: Option<uuid::Uuid>,
     provider_reported: bool,
+    provider_stream: bool,
+    provider_terminal: Option<&'static str>,
     observed: oxsum_core::usage_recovery::ObservedTextUsage,
 }
 
@@ -405,6 +407,8 @@ impl Turn {
                 operation,
                 winning_attempt: None,
                 provider_reported: false,
+                provider_stream: false,
+                provider_terminal: None,
                 observed: Default::default(),
             }),
             heartbeat: None,
@@ -492,9 +496,10 @@ impl Turn {
     /// failed heartbeat is logged, never fatal: the turn's billing is the
     /// ledger's, not the row's.
     /// Select the admission-bound policy before dispatch; cancellation uses the same path.
-    pub(crate) fn enable_provider_recovery(&mut self) {
+    pub(crate) fn enable_provider_recovery(&mut self, stream: bool) {
         if let Some(plan) = self.plan.as_mut() {
             plan.provider_reported = true;
+            plan.provider_stream = stream;
         }
         self.start_heartbeat();
     }
@@ -505,6 +510,9 @@ impl Turn {
         }
     }
     pub(crate) fn start_heartbeat(&mut self) {
+        if self.heartbeat.is_some() {
+            return;
+        }
         let (Some(operation), Some(db)) = (
             self.operation().cloned(),
             self.plan.as_ref().map(|plan| plan.db.clone()),
@@ -535,6 +543,43 @@ impl Turn {
                 }
             }
         }));
+    }
+
+    fn is_provider_stream(&self) -> bool {
+        self.plan.as_ref().is_some_and(|plan| plan.provider_stream)
+    }
+
+    fn provider_terminal(&mut self, terminal: &'static str) {
+        if let Some(plan) = self.plan.as_mut() {
+            plan.provider_terminal = Some(terminal);
+            plan.finished = terminal == "answered";
+        }
+    }
+
+    async fn checkpoint_provider_stream(
+        &mut self,
+        observed: &oxsum_core::usage_recovery::ObservedTextUsage,
+    ) -> Result<(), WalletError> {
+        let plan = self
+            .plan
+            .as_mut()
+            .ok_or_else(|| WalletError::Misconfigured("missing stream plan".into()))?;
+        if plan.observed == *observed {
+            return Ok(());
+        }
+        let operation = plan
+            .operation
+            .as_ref()
+            .ok_or_else(|| WalletError::Misconfigured("missing stream operation".into()))?;
+        // Retain the observation in Drop too if this future is cancelled mid-write.
+        plan.observed = observed.clone();
+        plan.db
+            .checkpoint_recovery_observation(
+                operation.operation_id,
+                &operation.lease_owner,
+                observed,
+            )
+            .await
     }
 
     /// Stamps upstream's own request id onto the winning attempt row — the
@@ -651,6 +696,22 @@ impl Turn {
         }
     }
 
+    fn note_stream_progress(&mut self) {
+        let Some(plan) = self.plan.as_mut() else {
+            return;
+        };
+        let output_chars = plan.frames.output.len();
+        if output_chars >= plan.progress_chars + PROGRESS_EVERY_CHARS {
+            plan.progress_chars = output_chars;
+            let _ = plan.billing.send(BillingEvent::TurnProgress {
+                key_id: plan.key_id,
+                tenant_id: plan.tenant_id.clone(),
+                request_id: plan.request.clone(),
+                output_chars,
+            });
+        }
+    }
+
     /// The exact input count a token-array request already carried — the
     /// estimate for a reportless turn prices it instead of the texts.
     pub fn note_input_count(&mut self, tokens: Option<i64>) {
@@ -690,16 +751,7 @@ impl Turn {
         }
         // Best-effort: a dashboard that is not listening misses a progress tick, and the
         // settlement at the end still carries the final charge.
-        let output_chars = plan.frames.output.len();
-        if output_chars >= plan.progress_chars + PROGRESS_EVERY_CHARS {
-            plan.progress_chars = output_chars;
-            let _ = plan.billing.send(BillingEvent::TurnProgress {
-                key_id: plan.key_id,
-                tenant_id: plan.tenant_id.clone(),
-                request_id: plan.request.clone(),
-                output_chars,
-            });
-        }
+        self.note_stream_progress();
         terminated
     }
 
@@ -818,7 +870,9 @@ impl Plan {
             let operation = self.operation.as_ref().ok_or_else(|| {
                 WalletError::Misconfigured("provider policy has no operation".into())
             })?;
-            let terminal = if matches!(charge, Charge::Nothing) && self.observed.eligible {
+            let terminal = if let Some(terminal) = self.provider_terminal {
+                terminal
+            } else if matches!(charge, Charge::Nothing) && self.observed.eligible {
                 "withheld"
             } else if kind == SettlementKind::ClientCancelled {
                 "cancelled"
@@ -1497,6 +1551,13 @@ pub fn stream(
     // the loop's own exit, and `Drop` aborts it for the client-hung-up case.
     turn.start_heartbeat();
     async_stream::stream! {
+        if turn.is_provider_stream() {
+            use futures_util::StreamExt as _;
+            let strict = reported_stream(turn, upstream);
+            tokio::pin!(strict);
+            while let Some(frame) = strict.next().await { yield frame; }
+            return;
+        }
         let mut terminated = false;
         loop {
             match upstream.chunk().await {
@@ -1541,12 +1602,94 @@ pub fn stream(
     }
 }
 
+/// Strict stream transport: validate and retain evidence before exposing each event.
+fn reported_stream(
+    mut turn: Turn,
+    mut upstream: reqwest::Response,
+) -> impl Stream<Item = Result<Frame<Bytes>, std::io::Error>> + Send + 'static {
+    async_stream::stream! {
+        let mut decoder = super::reported_stream::Decoder::default();
+        let failure;
+        'read: loop {
+            match upstream.chunk().await {
+                Ok(Some(chunk)) => {
+                    if let Some(plan) = turn.plan.as_mut() {
+                        plan.first_byte.get_or_insert_with(Instant::now);
+                    }
+                    let mut remaining = chunk.as_ref();
+                    while !remaining.is_empty() {
+                        let event = match decoder.next(&mut remaining) {
+                            Ok(Some(event)) => event,
+                            Ok(None) => continue,
+                            Err(reason) => {
+                                decoder.invalidate(reason);
+                                turn.provider_terminal("stream_invalid");
+                                let _ = turn.checkpoint_provider_stream(&decoder.observed).await;
+                                failure = "stream_invalid";
+                                break 'read;
+                            }
+                        };
+                        if turn.checkpoint_provider_stream(&decoder.observed).await.is_err() {
+                            turn.provider_terminal("stream_invalid");
+                            failure = "stream_evidence_unavailable";
+                            break 'read;
+                        }
+                        if let Some(text) = &event.text { turn.note_text(text); }
+                        turn.note_stream_progress();
+                        if event.done {
+                            turn.provider_terminal("answered");
+                            turn.evaluate_response_guardrails().await;
+                            let charged = turn.settle(SettlementKind::Usage, Charge::Estimated, None).await;
+                            // Never wait for provider EOF after its final protocol marker.
+                            drop(upstream);
+                            yield Ok(Frame::data(event.bytes));
+                            if let Some(trailers) = charge_trailers(charged) { yield Ok(Frame::trailers(trailers)); }
+                            return;
+                        }
+                        yield Ok(Frame::data(event.bytes));
+                    }
+                }
+                Ok(None) => { failure = "stream_incomplete"; break; }
+                Err(error) => {
+                    failure = stream_failure(&error);
+                    break;
+                }
+            }
+        }
+        turn.provider_terminal(if failure == "stream_evidence_unavailable" { "stream_invalid" } else { failure });
+        turn.evaluate_response_guardrails().await;
+        let charged = turn.settle(SettlementKind::UpstreamError, Charge::Estimated, Some(failure)).await;
+        drop(upstream);
+        let error = serde_json::json!({"error":{"type":"upstream_error","code":failure,"message":"The provider stream did not complete. Check the charge receipt for recorded usage and released funds."}});
+        yield Ok(Frame::data(Bytes::from(format!("data: {error}\n\n"))));
+        if let Some(trailers) = charge_trailers(charged) { yield Ok(Frame::trailers(trailers)); }
+    }
+}
+
+/// Preserve a body-read timeout separately from other interrupted transports.
+fn stream_failure(error: &reqwest::Error) -> &'static str {
+    if error.is_timeout() {
+        "stream_timeout"
+    } else {
+        "stream_incomplete"
+    }
+}
+
+fn charge_trailers(charged: Option<i64>) -> Option<HeaderMap> {
+    let value = HeaderValue::from_str(&charged?.to_string()).ok()?;
+    let mut trailers = HeaderMap::new();
+    trailers.insert(crate::gateway::error::CHARGED_MINOR, value);
+    Some(trailers)
+}
+
 #[cfg(test)]
 mod tests {
     // The tests may unwrap: a panic here is a failing test, which is what a test is for.
     #![allow(clippy::unwrap_used, clippy::expect_used)]
 
     use super::*;
+    use axum::body::Body;
+    use axum::{Router, routing};
     use serde_json::json;
 
     fn adapter() -> &'static dyn UsageAdapter {
@@ -1555,6 +1698,48 @@ mod tests {
 
     fn anthropic() -> &'static dyn UsageAdapter {
         oxsum_core::adapter_for(oxsum_core::ANTHROPIC).expect("the Anthropic adapter")
+    }
+
+    #[tokio::test]
+    async fn stream_body_timeout_uses_strict_timeout_classification() {
+        let app = Router::new().route(
+            "/",
+            routing::get(|| async {
+                Body::from_stream(async_stream::stream! {
+                    yield Ok::<Bytes, std::io::Error>(Bytes::from_static(b": ready\n\n"));
+                    std::future::pending::<()>().await;
+                })
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}/", listener.local_addr().unwrap());
+        let server = tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+        let client = reqwest::Client::builder()
+            .no_proxy()
+            .read_timeout(Duration::from_millis(100))
+            .build()
+            .unwrap();
+        // The outer bound fails promptly if body-read timeout handling regresses.
+        let result = tokio::time::timeout(Duration::from_secs(2), async {
+            let mut response = client.get(url).send().await.unwrap();
+            assert_eq!(response.status(), StatusCode::OK);
+            let mut first_event = Vec::new();
+            while first_event.len() < b": ready\n\n".len() {
+                first_event.extend_from_slice(&response.chunk().await.unwrap().unwrap());
+            }
+            assert_eq!(first_event, b": ready\n\n");
+            // Headers and a first chunk arrived; this is a stalled response body,
+            // not a connect timeout or a refused upstream request.
+            let error = response.chunk().await.unwrap_err();
+            assert!(error.is_timeout());
+            assert_eq!(stream_failure(&error), "stream_timeout");
+        })
+        .await;
+        server.abort();
+        let _ = server.await;
+        result.expect("the stalled response body must time out within the test bound");
     }
 
     #[test]

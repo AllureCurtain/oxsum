@@ -170,6 +170,7 @@ impl GatewayRequest {
             "model",
             "messages",
             "stream",
+            "stream_options",
             "max_tokens",
             "max_completion_tokens",
             "temperature",
@@ -189,6 +190,10 @@ impl GatewayRequest {
             "thinking",
         ];
         let valid = self.body.keys().all(|k| allowed.contains(&k.as_str()))
+            && self
+                .body
+                .get("stream_options")
+                .is_none_or(|v| self.stream && *v == json!({"include_usage": true}))
             && self.body.get("n").is_none_or(|v| v.as_i64() == Some(1))
             && self.body.get("store").is_none_or(Value::is_boolean)
             && self
@@ -216,7 +221,7 @@ impl GatewayRequest {
         if valid {
             Ok(())
         } else {
-            Err(GatewayError::Invalid{message:"provider-reported-text-v1 requires one nonstream plain-text completion; tools, media, prediction and unknown request fields are unsupported".into(),param:None})
+            Err(GatewayError::Invalid{message:"provider-reported text requires one plain-text completion and stream_options only with include_usage true; tools, media, prediction and unknown request fields are unsupported".into(),param:None})
         }
     }
     /// Storage is enabled only by the caller's exact boolean opt-in.

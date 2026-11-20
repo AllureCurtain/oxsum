@@ -18072,6 +18072,16 @@ export interface paths {
          *     in the settlement description; if upstream is unreachable or answers with an error before
          *     emitting anything, the whole freeze is released and nothing is charged.
          *
+         *     Explicitly accepted provider-reported-text-v2 covers nonstream and SSE
+         *     single-choice plain-text chat. It uses only valid correlated reported
+         *     usage, including permitted partial/cancelled use; missing or conflicting
+         *     components remain unknown and are waived at bounded closure. No local
+         *     estimate or paid retry is made. V1 and legacy stream terms are unchanged.
+         *     A strict stream requires a valid finish frame and [DONE] for normal
+         *     completion. Premature EOF, timeout or invalid frames emit an SSE error
+         *     without a manufactured [DONE]; use the receipt for the financial result.
+         *     Streaming v2 permits stream_options only as {"include_usage":true}.
+         *
          *     An `Idempotency-Key` header makes a retried request the same turn: the first request
          *     claims the key, and a retry carrying it is answered from the record rather than run
          *     again — a completed non-streamed turn replays its stored response, a completed
@@ -21788,7 +21798,7 @@ export interface components {
             /** Format: int64 */
             expectedVersion: number;
             /** @enum {string} */
-            implementation: "legacy-estimation-v1" | "provider-reported-text-v1";
+            implementation: "legacy-estimation-v1" | "provider-reported-text-v1" | "provider-reported-text-v2";
             /**
              * Format: int64
              * @default 900
@@ -21870,6 +21880,11 @@ export interface components {
                 total: number | null;
                 /** Format: int64 */
                 cached: number | null;
+                /**
+                 * Format: int64
+                 * @description Explicit provider cache-miss quantity retained only as a consistency constraint; never used to infer an absent cached subset.
+                 */
+                cacheMiss?: number | null;
                 /** Format: int64 */
                 reasoning: number | null;
                 invalid: string[];
