@@ -99,3 +99,13 @@ this scope.
 Under provider-reported text terms, `thinking` is optional but, if present, must
 be exactly `{"type":"disabled"}`. Enabled or extended objects, null and other
 shapes return 400 before a hold or provider call. Legacy forwarding is unchanged.
+
+Under explicitly accepted `provider-reported-text-v2`, SSE chat is limited to
+single-choice plain text. Nonempty reasoning, tools/media, invalid or changing
+completion IDs, oversized events and unsupported frame structure terminate with
+`stream_invalid` and no synthetic DONE. EOF/transport loss and timeout use
+`stream_incomplete` and `stream_timeout`. Failed durable evidence writes use
+`stream_evidence_unavailable`. HTTP status remains 200 after streaming has begun;
+read the SSE body and the durable charge receipt. Optional `stream_options` other
+than exact `{"include_usage":true}` refuse with 400 before admission. v1 and
+unaccepted/legacy streams retain their existing behavior.

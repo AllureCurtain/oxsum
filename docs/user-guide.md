@@ -2266,3 +2266,21 @@ DeepSeek callers to explicitly disable thinking. Enabled, null, malformed or
 extended settings refuse with 400 before admission or upstream dispatch. This
 compatibility option does not enable reasoning, change the nonstreaming v1
 scope, or alter previously published policy documents and historical charges.
+
+### Opt in to reported-usage streaming
+
+To extend reported-usage billing to streamed chat, publish
+`provider-reported-text-v2` and have each customer owner/admin explicitly review
+and accept its version and digest. Existing v1 acceptance continues its original
+nonstream scope. No database rewrite or automatic customer migration is needed.
+Send `stream:true` for single-choice plain-text chat; optional `stream_options`
+must be `{"include_usage":true}`. DeepSeek's disabled-thinking object is supported.
+
+A normal stream includes a finish frame and `[DONE]`. An interrupted stream may
+instead contain `stream_incomplete`, `stream_timeout`, `stream_invalid`, or
+`stream_evidence_unavailable` in an SSE error and no synthesized completion marker.
+Inspect its operation ID in Requests: failure does not by itself mean zero usage.
+The receipt lists any valid reported components charged under the accepted policy,
+unknown components waived and unused funds released. A closed receipt cannot gain
+another automatic debit. Retry with the same idempotency key to inspect the same
+operation without starting another paid inference; a new key starts a new call.

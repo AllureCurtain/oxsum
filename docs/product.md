@@ -1069,8 +1069,8 @@ behavior and historical records never acquire fabricated consent.
 The initial offer scope is OpenAI-compatible nonstreaming chat text. Explicit
 legacy estimation identifies its tokenizer, normalized text slices, byte-bound
 fallback and forwarded-prefix limit; accepting it preserves existing cache and
-billing behavior. Provider-reported-text-v1 is published for review but cannot
-be accepted until its recovery implementation is enabled. Its evidence window
+billing behavior. Provider-reported-text-v1 and v2 can be explicitly accepted
+when the corresponding runtime is available. Their evidence window
 is configurable from 1 through 900 seconds after terminal observation (default
 900), never measured from admission while execution is still active. Valid
 partial/cancelled usage may be billed, unresolved components waived, with no
@@ -1161,3 +1161,25 @@ DeepSeek callers to explicitly disable thinking. Enabled, null, malformed or
 extended settings refuse with 400 before admission or upstream dispatch. This
 compatibility option does not enable reasoning, change the nonstreaming v1
 scope, or alter previously published policy documents and historical charges.
+
+### Explicitly accepted provider-reported streams
+
+`provider-reported-text-v2` adds single-choice plain-text SSE chat to the reported
+usage policy. Publication alone does not change a customer's selection, and v1
+keeps its nonstream scope. The caller may send exact `thinking:{"type":"disabled"}`;
+streaming `stream_options`, when present, must be exactly `{"include_usage":true}`.
+The gateway requests final usage. Reasoning output, tools and media remain outside
+this scope. DeepSeek's explicit cache-hit count is supported; cache-miss counts
+are retained as consistency constraints and never infer an absent cached subset.
+
+One provider attempt uses the pinned rates and ceiling. The bounded SSE decoder
+validates stable completion identity, single-choice text frames, finish and DONE.
+Sanitized evidence is saved before the associated event is forwarded. Duplicate
+usage is not added; malformed or conflicting components stay unresolved. A
+successful finish and DONE end the response without waiting for socket EOF.
+An interrupted, timed-out or cancelled stream, or a lost worker, may settle valid
+independently priceable reported components under the accepted v2 terms, but its
+operation remains failed or cancelled. Structural invalidity waives the charge.
+Failures emit a named SSE error when the customer is still connected and never
+manufacture DONE. Receipts explain charged interrupted streams separately from
+financial closure. No receipt or protocol marker proves complete client delivery.
