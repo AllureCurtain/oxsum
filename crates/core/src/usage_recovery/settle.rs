@@ -54,7 +54,13 @@ impl Db {
                     "recovered completion identity mismatch".into(),
                 ));
             }
-            if report.eligible {
+            if !report.eligible && terms.provider_stream() {
+                observed = ObservedTextUsage {
+                    completion_id: observed.completion_id,
+                    invalid: vec!["unsupported_recovered_completion_shape".into()],
+                    ..ObservedTextUsage::default()
+                };
+            } else if report.eligible {
                 observed.merge(report);
             }
         }
@@ -65,7 +71,13 @@ impl Db {
             .await?
             .ok_or_else(conflict)?;
         let terminal: String = row.try_get("terminal_observation")?;
-        let billable = matches!(terminal.as_str(), "answered" | "cancelled") && observed.eligible;
+        let billable = (matches!(terminal.as_str(), "answered" | "cancelled")
+            || (terms.provider_stream()
+                && matches!(
+                    terminal.as_str(),
+                    "stream_incomplete" | "stream_timeout" | "worker_lost"
+                )))
+            && observed.eligible;
         let (mut usage, itemized, waived) = price_observed_text(
             &route.price,
             &observed,
@@ -83,6 +95,8 @@ impl Db {
             SettlementKind::Capped
         } else if terminal == "cancelled" {
             SettlementKind::ClientCancelled
+        } else if terms.provider_stream() && terminal != "answered" && terminal != "withheld" {
+            SettlementKind::UpstreamError
         } else if billable {
             SettlementKind::Usage
         } else {
@@ -115,7 +129,13 @@ impl Db {
             .await?;
         let request = claim.operation_id.to_string();
         let reason = format!(
-            "provider-reported-text-v1: {close_reason}; unresolved components are waived, not observed zero usage"
+            "{}: {close_reason}; terminal={terminal}; unresolved components are waived, not observed zero usage",
+            terms
+                .selection
+                .policy
+                .as_ref()
+                .ok_or_else(conflict)?
+                .implementation
         );
         let attempt_id: Option<uuid::Uuid> = row.try_get("attempt_id")?;
         let mandate_hash: Option<String> = row.try_get("mandate_hash")?;
@@ -256,7 +276,7 @@ impl Db {
                 )
                 .await?;
         }
-        let closed=sqlx::query("UPDATE oxsum.request_operations SET state=$3,charged_minor=$4,outcome_kind=$5,completed_at=$6,updated_at=$6,leased_until=NULL WHERE operation_id=$1 AND lease_owner=$2 AND state IN ('leased','running')").bind(claim.operation_id).bind(claim.token.to_string()).bind(if terminal=="cancelled" {"cancelled"}else if billable{"succeeded"}else{"failed"}).bind(charged).bind(kind.as_str()).bind(now).execute(&mut *tx).await?;
+        let closed=sqlx::query("UPDATE oxsum.request_operations SET state=$3,charged_minor=$4,outcome_kind=$5,completed_at=$6,updated_at=$6,leased_until=NULL WHERE operation_id=$1 AND lease_owner=$2 AND state IN ('leased','running')").bind(claim.operation_id).bind(claim.token.to_string()).bind(if terminal=="cancelled" {"cancelled"}else if terminal=="answered" && billable{"succeeded"}else{"failed"}).bind(charged).bind(kind.as_str()).bind(now).execute(&mut *tx).await?;
         if closed.rows_affected() != 1 {
             return Err(conflict());
         }

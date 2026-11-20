@@ -434,6 +434,17 @@ impl Wallet {
         } else {
             None
         };
+        if bound_terms.as_ref().is_some_and(|t| t.provider_stream())
+            && charged.is_some_and(|amount| amount > 0)
+            && recovery.as_ref().is_some_and(|r| {
+                matches!(
+                    r.terminal_observation.as_deref(),
+                    Some("stream_incomplete" | "stream_timeout" | "cancelled" | "worker_lost")
+                )
+            })
+        {
+            diagnostics.push("The stream did not complete normally. The accepted policy charged only valid provider-reported components within the reserved ceiling; unresolved components were waived and unused funds released. This does not establish full delivery to the customer.".into());
+        }
         Ok(Some(ChargeReceipt {
             request_id: request,
             operation_id: operation.as_ref().map(|o| o.operation_id),

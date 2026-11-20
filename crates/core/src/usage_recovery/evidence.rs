@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 /// Allowlisted observations; absent and invalid quantities are never observed zeroes.
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default, rename_all = "camelCase")]
 pub struct ObservedTextUsage {
     /// Total input, including cached tokens.
@@ -15,6 +15,8 @@ pub struct ObservedTextUsage {
     pub total: Option<i64>,
     /// Explicit cached subset.
     pub cached: Option<i64>,
+    /// Explicit cache-miss constraint; never used to derive an absent cached subset.
+    pub cache_miss: Option<i64>,
     /// Explicit reasoning subset.
     pub reasoning: Option<i64>,
     /// Rejected component names, without raw provider content.
@@ -53,10 +55,23 @@ impl ObservedTextUsage {
                 _ => {}
             }
         }
+        if self
+            .invalid
+            .iter()
+            .any(|i| i == "unsupported_recovered_completion_shape")
+        {
+            return;
+        }
         combine(&mut self.input, other.input, "input", &mut self.invalid);
         combine(&mut self.output, other.output, "output", &mut self.invalid);
         combine(&mut self.total, other.total, "total", &mut self.invalid);
         combine(&mut self.cached, other.cached, "cached", &mut self.invalid);
+        combine(
+            &mut self.cache_miss,
+            other.cache_miss,
+            "cache_miss",
+            &mut self.invalid,
+        );
         combine(
             &mut self.reasoning,
             other.reasoning,
@@ -68,6 +83,9 @@ impl ObservedTextUsage {
                 self.invalid.push(issue.clone());
             }
         }
+        // Invalid values are evidence too: a later malformed report must not
+        // leave an earlier chargeable quantity behind or rehabilitate a conflict.
+        self.reject_invalid_components();
         if self.invalid.iter().any(|s| s == "conflicting_total")
             || self.total.is_some_and(|t| {
                 self.input.is_some_and(|i| i > t)
@@ -83,6 +101,17 @@ impl ObservedTextUsage {
             self.invalid.push("conflicting_input".into());
             self.invalid.push("conflicting_output".into());
         }
+        if self.cache_miss.zip(self.input).is_some_and(|(m, i)| m > i)
+            || self
+                .cache_miss
+                .zip(self.cached)
+                .zip(self.input)
+                .is_some_and(|((m, c), i)| m.checked_add(c) != Some(i))
+        {
+            self.input = None;
+            self.cached = None;
+            self.invalid.push("invalid_cache_breakdown".into());
+        }
         if self.cached.zip(self.input).is_some_and(|(c, i)| c > i) {
             self.input = None;
             self.cached = None;
@@ -93,6 +122,38 @@ impl ObservedTextUsage {
             self.reasoning = None;
             self.invalid.push("conflicting_output".into());
         }
+        self.invalid.sort_unstable();
+        self.invalid.dedup();
+    }
+    fn reject_invalid_components(&mut self) {
+        for issue in &self.invalid {
+            match issue.as_str() {
+                "total" | "conflicting_total" | "contradictory_total" => {
+                    self.total = None;
+                    self.input = None;
+                    self.output = None;
+                }
+                "input"
+                | "conflicting_input"
+                | "unsupported_input_details"
+                | "cached_exceeds_input"
+                | "invalid_cache_breakdown"
+                | "conflicting_cache_miss" => {
+                    self.input = None;
+                    self.cached = None;
+                }
+                "output"
+                | "conflicting_output"
+                | "unsupported_output_details"
+                | "reasoning_exceeds_output" => {
+                    self.output = None;
+                    self.reasoning = None;
+                }
+                "cached" | "conflicting_cached" => self.cached = None,
+                "reasoning" | "conflicting_reasoning" => self.reasoning = None,
+                _ => {}
+            }
+        }
     }
     /// Parse one complete nonstream response. Never derive or clamp provider counts.
     #[must_use]
@@ -101,7 +162,7 @@ impl ObservedTextUsage {
             .get("id")
             .and_then(Value::as_str)
             .filter(|id| {
-                id.starts_with("chatcmpl-")
+                !id.is_empty()
                     && id.len() <= 200
                     && id
                         .bytes()
@@ -121,7 +182,9 @@ impl ObservedTextUsage {
                         )
                         && c[0].get("message").is_some_and(|m| {
                             m.get("content").is_some_and(Value::is_string)
-                                && ["tool_calls", "function_call", "audio"]
+                                && m.get("reasoning_content")
+                                    .is_none_or(|v| v.is_null() || v.as_str() == Some(""))
+                                && ["tool_calls", "function_call", "audio", "refusal"]
                                     .iter()
                                     .all(|k| m.get(k).is_none_or(Value::is_null))
                         })
@@ -136,6 +199,9 @@ impl ObservedTextUsage {
             return out;
         }
         let Some(u) = value.get("usage").and_then(Value::as_object) else {
+            if value.get("usage").is_some_and(|u| !u.is_null()) {
+                out.invalid.extend(["input".into(), "output".into()]);
+            }
             return out;
         };
         out.input = quantity(u.get("prompt_tokens"), "input", &mut out.invalid);
@@ -170,6 +236,30 @@ impl ObservedTextUsage {
             "cached",
             &mut out.invalid,
         );
+        // DeepSeek exposes the cached subset at the usage root. Read the raw
+        // field; never infer a cache hit count from an absent hit or miss field.
+        let hit = quantity(u.get("prompt_cache_hit_tokens"), "cached", &mut out.invalid);
+        match (out.cached, hit) {
+            (Some(a), Some(b)) if a != b => {
+                out.invalid.push("invalid_cache_breakdown".into());
+            }
+            (None, Some(b)) => out.cached = Some(b),
+            _ => {}
+        }
+        let miss = quantity(
+            u.get("prompt_cache_miss_tokens"),
+            "invalid_cache_breakdown",
+            &mut out.invalid,
+        );
+        out.cache_miss = miss;
+        if miss.zip(out.input).is_some_and(|(m, i)| m > i)
+            || miss
+                .zip(out.cached)
+                .zip(out.input)
+                .is_some_and(|((m, c), i)| m.checked_add(c) != Some(i))
+        {
+            out.invalid.push("invalid_cache_breakdown".into());
+        }
         out.reasoning = quantity(
             output.and_then(|v| v.get("reasoning_tokens")),
             "reasoning",
@@ -217,6 +307,7 @@ impl ObservedTextUsage {
             out.reasoning = None;
             out.invalid.push("reasoning_exceeds_output".into());
         }
+        out.reject_invalid_components();
         out
     }
 }

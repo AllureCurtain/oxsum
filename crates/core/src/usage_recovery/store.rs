@@ -111,6 +111,50 @@ impl Db {
         tx.commit().await?;
         Ok(attempt)
     }
+    /// Persist sanitized streamed evidence before exposing its event to the customer.
+    /// Execution ownership is fenced; terminal transfer or another worker forbids writes.
+    pub async fn checkpoint_recovery_observation(
+        &self,
+        operation: Uuid,
+        owner: &str,
+        observed: &ObservedTextUsage,
+    ) -> Result<(), WalletError> {
+        let mut tx = self.pool().begin().await?;
+        let row =
+            sqlx::query("SELECT * FROM oxsum.usage_recovery WHERE operation_id=$1 FOR UPDATE")
+                .bind(operation)
+                .fetch_one(&mut *tx)
+                .await?;
+        if row.try_get::<String, _>("execution_owner")? != owner
+            || row
+                .try_get::<Option<OffsetDateTime>, _>("terminal_at")?
+                .is_some()
+            || row.try_get::<Option<Uuid>, _>("claim_token")?.is_some()
+        {
+            return Err(conflict());
+        }
+        let live: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM oxsum.request_operations WHERE operation_id=$1 AND lease_owner=$2 AND state IN ('leased','running') AND leased_until>clock_timestamp())")
+            .bind(operation).bind(owner).fetch_one(&mut *tx).await?;
+        if !live {
+            return Err(conflict());
+        }
+        sqlx::query("UPDATE oxsum.usage_recovery SET observed=$2 WHERE operation_id=$1")
+            .bind(operation)
+            .bind(serde_json::to_value(observed).map_err(crate::error::invalid)?)
+            .execute(&mut *tx)
+            .await?;
+        sqlx::query(
+            "UPDATE oxsum.request_attempts SET external_id=$2,usage_json=$3 WHERE attempt_id=$1",
+        )
+        .bind(row.try_get::<Option<Uuid>, _>("attempt_id")?)
+        .bind(&observed.completion_id)
+        .bind(serde_json::to_value(observed).map_err(crate::error::invalid)?)
+        .execute(&mut *tx)
+        .await?;
+        tx.commit().await?;
+        Ok(())
+    }
+
     /// First terminal observation transfers execution to durable financial recovery.
     /// Repeated observations cannot move the deadline or replace earlier evidence.
     pub async fn observe_recovery_terminal(
@@ -127,6 +171,9 @@ impl Db {
             "upstream_error",
             "withheld",
             "worker_lost",
+            "stream_incomplete",
+            "stream_timeout",
+            "stream_invalid",
         ]
         .contains(&kind)
         {
@@ -216,7 +263,12 @@ impl Db {
             organization_id: row.try_get("organization_id")?,
             token,
             deadline,
-            needs_lookup: supported && observed.completion_id.is_some() && now < deadline,
+            needs_lookup: supported
+                && observed
+                    .completion_id
+                    .as_deref()
+                    .is_some_and(|id| id.starts_with("chatcmpl-"))
+                && now < deadline,
             observed,
         };
         tx.commit().await?;
@@ -228,7 +280,15 @@ impl Db {
         claim: &RecoveryClaim,
         secret: &SecretKey,
     ) -> Result<Option<RecoveryLookup>, WalletError> {
-        if !claim.needs_lookup {
+        if !claim.needs_lookup
+            || claim.observed.completion_id.as_deref().is_none_or(|id| {
+                !id.starts_with("chatcmpl-")
+                    || id.len() > 200
+                    || !id
+                        .bytes()
+                        .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+            })
+        {
             return Ok(None);
         }
         let mut tx = self.pool().begin().await?;

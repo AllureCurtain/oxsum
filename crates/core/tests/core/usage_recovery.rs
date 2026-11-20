@@ -100,6 +100,9 @@ async fn world(discount: Option<i64>) -> World {
     funded_world(discount, false).await
 }
 async fn funded_world(discount: Option<i64>, subscription: bool) -> World {
+    policy_world(discount, subscription, false).await
+}
+async fn policy_world(discount: Option<i64>, subscription: bool, stream: bool) -> World {
     let url = oxsum_testkit::suite_url!().expect("usage recovery acceptance requires PostgreSQL");
     let db = Db::connect(&url, 1).await.unwrap();
     db.migrate().await.unwrap();
@@ -125,7 +128,12 @@ async fn funded_world(discount: Option<i64>, subscription: bool) -> World {
             &BillingPolicyPublish {
                 idempotency_key: Uuid::new_v4().to_string(),
                 expected_version: versions.first().map_or(0, |p| p.version),
-                implementation: "provider-reported-text-v1".into(),
+                implementation: if stream {
+                    "provider-reported-text-v2"
+                } else {
+                    "provider-reported-text-v1"
+                }
+                .into(),
                 evidence_window_secs: 900,
                 reason: "Fixture policy acceptance".into(),
             },
@@ -237,7 +245,7 @@ async fn funded_world(discount: Option<i64>, subscription: bool) -> World {
         estimator: "unused".into(),
         version: 1,
         surface: "chat/completions".into(),
-        stream: false,
+        stream,
         arithmetic_version: "credit-1e6-ceil-discount-cap-v1".into(),
         policy_applies: true,
         selection: db.billing_policy_selection(org).await.unwrap(),
@@ -834,4 +842,269 @@ async fn deferred_subscription_closure_releases_only_its_original_period() {
             .unwrap()
             .is_empty()
     );
+}
+
+#[test]
+fn malformed_reports_remain_unresolved_and_deepseek_cache_is_explicit() {
+    for bad in [
+        json!({"prompt_tokens":-1}),
+        json!({"prompt_tokens":10,"total_tokens":4}),
+        json!({"prompt_tokens_details":[]}),
+    ] {
+        let mut observed = report(json!({"prompt_tokens":10,"completion_tokens":4}));
+        observed.merge(&report(bad));
+        assert_eq!(observed.input, None);
+        observed.merge(&report(json!({"prompt_tokens":10,"completion_tokens":4})));
+        assert_eq!(observed.input, None);
+    }
+    let observed = report(
+        json!({"prompt_tokens":10,"completion_tokens":4,"prompt_cache_hit_tokens":6,"prompt_cache_miss_tokens":4}),
+    );
+    assert_eq!(observed.cached, Some(6));
+    let mut p = price();
+    p.cache_read_price_per_million = Some(500000);
+    assert_eq!(
+        price_observed_text(&p, &observed, None, true)
+            .unwrap()
+            .1
+            .total_minor()
+            .unwrap(),
+        15
+    );
+    for bad in [
+        json!({"prompt_cache_hit_tokens":11}),
+        json!({"prompt_cache_hit_tokens":6,"prompt_cache_miss_tokens":5}),
+        json!({"prompt_cache_hit_tokens":6,"prompt_tokens_details":{"cached_tokens":5}}),
+    ] {
+        let mut usage = bad;
+        usage["prompt_tokens"] = json!(10);
+        assert_eq!(report(usage).input, None);
+    }
+    let observed = report(json!({"prompt_tokens":10,"prompt_cache_miss_tokens":4}));
+    assert_eq!(observed.cached, None);
+    let response = json!({"object":"chat.completion","choices":[{"index":0,"message":{"content":"ok","reasoning_content":"hidden"},"finish_reason":"stop"}],"usage":{"prompt_tokens":10,"completion_tokens":4}});
+    assert!(!ObservedTextUsage::parse(&response).eligible);
+}
+
+#[tokio::test]
+async fn streamed_checkpoint_survives_worker_loss_and_fences_late_writes() {
+    let w = policy_world(None, false, true).await;
+    let dispatch = oxsum_core::usage_recovery::RecoveryDispatch {
+        route_index: 0,
+        serving: &w.serving,
+        credential_id: w.serving.credentials[0].credential_id,
+        stored: true,
+        experiment: None,
+    };
+    let attempt =
+        w.db.begin_recovery_attempt(w.operation, "worker", &dispatch, &w.secret)
+            .await
+            .unwrap();
+    let mut observed = report(json!({"prompt_tokens":10,"completion_tokens":4}));
+    observed.completion_id = Some("550e8400-e29b-41d4-a716-446655440000".into());
+    assert!(
+        w.db.checkpoint_recovery_observation(w.operation, "other", &observed)
+            .await
+            .is_err()
+    );
+    w.db.checkpoint_recovery_observation(w.operation, "worker", &observed)
+        .await
+        .unwrap();
+    let receipt =
+        w.db.usage_recovery_receipt(w.org, w.operation)
+            .await
+            .unwrap()
+            .unwrap();
+    assert_eq!(receipt.state, "executing");
+    assert!(receipt.deadline.is_none());
+    assert_eq!(receipt.observed, observed);
+    let external: String =
+        sqlx::query_scalar("SELECT external_id FROM oxsum.request_attempts WHERE attempt_id=$1")
+            .bind(attempt)
+            .fetch_one(w.db.pool())
+            .await
+            .unwrap();
+    assert_eq!(Some(external), observed.completion_id);
+    sqlx::query("UPDATE oxsum.request_operations SET leased_until=clock_timestamp()-interval '1 second' WHERE operation_id=$1").bind(w.operation).execute(w.db.pool()).await.unwrap();
+    assert!(
+        w.db.checkpoint_recovery_observation(w.operation, "worker", &observed)
+            .await
+            .is_err()
+    );
+    let claim =
+        w.db.claim_usage_recovery(w.operation)
+            .await
+            .unwrap()
+            .unwrap();
+    assert!(
+        !claim.needs_lookup,
+        "UUID completion IDs must not enable OpenAI stored-completion GET"
+    );
+    let mut forged = claim.clone();
+    forged.needs_lookup = true;
+    assert!(
+        w.db.recovery_lookup(&forged, &w.secret)
+            .await
+            .unwrap()
+            .is_none()
+    );
+    assert!(
+        w.db.checkpoint_recovery_observation(w.operation, "worker", &ObservedTextUsage::default())
+            .await
+            .is_err()
+    );
+    assert_eq!(
+        w.db.finish_usage_recovery(&w.tenants, &claim, None, true)
+            .await
+            .unwrap(),
+        Some(18)
+    );
+    let operation = w.db.operation(w.org, w.operation).await.unwrap().unwrap();
+    assert_eq!(operation.state, oxsum_core::OperationState::Failed);
+    assert_eq!(operation.outcome_kind.as_deref(), Some("upstream_error"));
+    assert_eq!(w.wallet.reserved().await.unwrap(), 0);
+    assert_eq!(w.wallet.settled().await.unwrap(), 982);
+}
+
+#[tokio::test]
+async fn stream_interruption_closes_valid_components_without_claiming_success() {
+    for terminal in [
+        "stream_incomplete",
+        "stream_timeout",
+        "stream_invalid",
+        "cancelled",
+    ] {
+        let w = policy_world(None, true, true).await;
+        let observed = report(json!({"completion_tokens":4}));
+        w.db.checkpoint_recovery_observation(w.operation, "worker", &observed)
+            .await
+            .unwrap();
+        w.db.observe_recovery_terminal(w.operation, "worker", terminal, &observed, &[])
+            .await
+            .unwrap();
+        assert!(
+            w.db.checkpoint_recovery_observation(w.operation, "worker", &observed)
+                .await
+                .is_err()
+        );
+        let claim =
+            w.db.claim_usage_recovery(w.operation)
+                .await
+                .unwrap()
+                .unwrap();
+        let expected = if terminal == "stream_invalid" { 0 } else { 8 };
+        assert_eq!(
+            w.db.finish_usage_recovery(&w.tenants, &claim, None, true)
+                .await
+                .unwrap(),
+            Some(expected)
+        );
+        let operation = w.db.operation(w.org, w.operation).await.unwrap().unwrap();
+        assert_eq!(
+            operation.state,
+            if terminal == "cancelled" {
+                oxsum_core::OperationState::Cancelled
+            } else {
+                oxsum_core::OperationState::Failed
+            }
+        );
+        assert_eq!(w.wallet.reserved().await.unwrap(), 0);
+        let receipt =
+            w.db.usage_recovery_receipt(w.org, w.operation)
+                .await
+                .unwrap()
+                .unwrap();
+        assert_eq!(receipt.terminal_observation.as_deref(), Some(terminal));
+        assert!(!receipt.supplier_cost_known);
+    }
+}
+
+#[test]
+fn cache_miss_constraints_survive_split_and_conflicting_reports() {
+    for reverse in [false, true] {
+        let mut first = report(
+            json!({"prompt_tokens":10,"completion_tokens":4,"prompt_cache_hit_tokens":6,"prompt_cache_miss_tokens":4}),
+        );
+        let mut second = report(json!({"prompt_cache_miss_tokens":5}));
+        if reverse {
+            std::mem::swap(&mut first, &mut second);
+        }
+        first.merge(&second);
+        assert_eq!(first.input, None);
+        first.merge(&report(
+            json!({"prompt_tokens":10,"prompt_cache_hit_tokens":6,"prompt_cache_miss_tokens":4}),
+        ));
+        assert_eq!(first.input, None);
+        assert_eq!(first.output, Some(4));
+    }
+    let mut first = report(json!({"prompt_cache_miss_tokens":5}));
+    first.merge(&report(
+        json!({"prompt_tokens":10,"prompt_cache_hit_tokens":6}),
+    ));
+    assert_eq!(first.input, None);
+}
+
+#[test]
+fn repeated_total_conflicts_do_not_grow_durable_evidence() {
+    let mut observed = report(json!({"prompt_tokens":10,"completion_tokens":4,"total_tokens":14}));
+    let conflict = report(json!({"total_tokens":20}));
+    observed.merge(&conflict);
+    let retained = observed.clone();
+    for _ in 0..100 {
+        observed.merge(&conflict);
+    }
+    assert_eq!(observed, retained);
+}
+
+#[tokio::test]
+async fn unsupported_correlated_lookup_invalidates_streamed_partial_usage() {
+    let w = policy_world(None, false, true).await;
+    let dispatch = oxsum_core::usage_recovery::RecoveryDispatch {
+        route_index: 0,
+        serving: &w.serving,
+        credential_id: w.serving.credentials[0].credential_id,
+        stored: true,
+        experiment: None,
+    };
+    w.db.begin_recovery_attempt(w.operation, "worker", &dispatch, &w.secret)
+        .await
+        .unwrap();
+    let partial = report(json!({"prompt_tokens":10}));
+    w.db.checkpoint_recovery_observation(w.operation, "worker", &partial)
+        .await
+        .unwrap();
+    w.db.observe_recovery_terminal(w.operation, "worker", "stream_incomplete", &partial, &[])
+        .await
+        .unwrap();
+    let claim =
+        w.db.claim_usage_recovery(w.operation)
+            .await
+            .unwrap()
+            .unwrap();
+    assert!(claim.needs_lookup);
+    let recovered = ObservedTextUsage::parse(
+        &json!({"id":"chatcmpl-evidence","object":"chat.completion","choices":[{"index":0,"message":{"content":"ok","reasoning_content":"hidden"},"finish_reason":"stop"}],"usage":{"prompt_tokens":10,"completion_tokens":4}}),
+    );
+    assert_eq!(
+        w.db.finish_usage_recovery(&w.tenants, &claim, Some(&recovered), false)
+            .await
+            .unwrap(),
+        Some(0)
+    );
+    let receipt =
+        w.db.usage_recovery_receipt(w.org, w.operation)
+            .await
+            .unwrap()
+            .unwrap();
+    assert!(!receipt.observed.eligible);
+    assert_eq!(receipt.observed.input, None);
+    assert!(
+        receipt
+            .observed
+            .invalid
+            .iter()
+            .any(|i| i == "unsupported_recovered_completion_shape")
+    );
+    assert_eq!(w.wallet.reserved().await.unwrap(), 0);
+    assert_eq!(w.wallet.settled().await.unwrap(), 1000);
 }
