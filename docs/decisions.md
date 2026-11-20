@@ -5292,3 +5292,18 @@ waived, retries never sum usage, and closure never reopens for a late debit.
 DeepSeek UUID IDs and raw cache-hit/miss constraints are supported without granting
 OpenAI stored-completion lookup capability. No new ledger table or blockchain is
 needed; durable evidence records what was observed, not upstream truth or delivery.
+
+## 2026-11-20 — Database-clock immediate eligibility (#1247)
+
+Sample PostgreSQL `clock_timestamp()` inside `bind_subscription` after acquiring
+the organization serialization lock and closing any replaced period. Use that
+one instant for the new subscription start, its UTC reset boundary, and its
+open audit period. Funding preview already compares starts with PostgreSQL time;
+mixing in the application host clock could mark a freshly committed subscription
+as not started. Transaction-start `now()` would instead backdate a binding that
+waited on the lock, potentially placing it in an already-ended reset window.
+Existing future-period checks, reset cadences, and historical records stay intact.
+
+Due-now job test fixtures also sample database time before explicitly enqueueing
+their timestamps. Production job scheduling still honors the supplied instant;
+tests must not assume the application and database clocks are synchronized.

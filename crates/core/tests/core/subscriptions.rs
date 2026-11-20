@@ -208,19 +208,36 @@ async fn binding_writes_the_subscription_and_its_open_period() {
         1,
     )
     .await;
+    let before: OffsetDateTime = sqlx::query_scalar("SELECT clock_timestamp()")
+        .fetch_one(&world.pool)
+        .await
+        .expect("reads the database clock before binding");
     let sub = world
         .db
         .bind_subscription(world.organization_id, plan.plan_id, "admin", None)
         .await
         .expect("binds");
+    let after: OffsetDateTime = sqlx::query_scalar("SELECT clock_timestamp()")
+        .fetch_one(&world.pool)
+        .await
+        .expect("reads the database clock after binding");
     assert_eq!(sub.state, "active");
     assert_eq!(sub.plan_id, plan.plan_id);
     assert_eq!(sub.consumed_minor, 0);
     assert!(
-        sub.current_period_end.is_some(),
-        "a monthly plan ends at the boundary"
+        (before..=after).contains(&sub.current_period_start),
+        "subscription start {} must lie between database samples {before} and {after}",
+        sub.current_period_start
     );
-    assert!(sub.current_period_end.unwrap() > OffsetDateTime::now_utc());
+    let expected_end: OffsetDateTime = sqlx::query_scalar(
+        "SELECT (date_trunc('month', $1::timestamptz AT TIME ZONE 'UTC') \
+         + interval '1 month') AT TIME ZONE 'UTC'",
+    )
+    .bind(sub.current_period_start)
+    .fetch_one(&world.pool)
+    .await
+    .expect("calculates the next UTC month boundary");
+    assert_eq!(sub.current_period_end, Some(expected_end));
 
     let periods = world
         .db
@@ -230,6 +247,8 @@ async fn binding_writes_the_subscription_and_its_open_period() {
     assert_eq!(periods.len(), 1);
     assert_eq!(periods[0].outcome, "open");
     assert_eq!(periods[0].quota_minor, Some(10 * ONE));
+    assert_eq!(periods[0].period_start, sub.current_period_start);
+    assert_eq!(periods[0].period_end, sub.current_period_end);
 }
 
 #[tokio::test]

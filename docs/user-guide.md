@@ -1012,6 +1012,12 @@ draw in full and the wallet never sees that traffic.
 against the snapshotted `quotaMinor`, the `currentPeriodEnd` it rolls at, and
 whether it may overflow), or `data: null` while none is bound.
 
+New operator-bound subscriptions are eligible in the first funding preview
+after binding commits, subject to the existing account and budget constraints.
+Their period starts use database time, so a small clock difference between the
+application host and database does not report a pending period transition.
+A recorded future period still waits until its start.
+
 When the period's quota is exhausted, the plan's `allowWalletOverflow` decides:
 `true` holds the overflow against the wallet as usual, `false` refuses the
 request with `402`. The quota resets on the plan's `resetPeriod` — daily at the

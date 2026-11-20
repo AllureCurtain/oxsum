@@ -398,7 +398,12 @@ impl Db {
             .execute(&mut *tx)
             .await?;
         }
-        let now = OffsetDateTime::now_utc();
+        // Funding previews compare against database time. Sample after the
+        // serialization lock so a wait cannot backdate the new period to the
+        // transaction's start or mix the application host's clock with it.
+        let now: OffsetDateTime = sqlx::query_scalar("SELECT clock_timestamp()")
+            .fetch_one(&mut *tx)
+            .await?;
         // `Never` binds with no end: there is no boundary to roll and no
         // lapse to expire — only a cancel or the rail's `deleted` event ends
         // it. `NULL` keeps both due scans away rather than inventing an
