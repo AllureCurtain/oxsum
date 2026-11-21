@@ -83,6 +83,14 @@ The axum API, the core, doubleentry and the gateway exist today, with oxsum's ow
 
 `Db::diagnostic_snapshot` reads only fixed schema/queue/configuration aggregates in a repeatable-read, read-only transaction. The operator-guarded HTTP endpoint adds parsed configuration presence and a six-second deadline; `scripts/operator-diagnostics.py` accepts only allowlisted response fields and optional explicit local env presence. It never reads ledger amounts, copies error bodies, claims jobs or probes external providers. [Diagnostics](operator-diagnostics.md) documents the boundaries.
 
+Business model discovery commits a pending receipt and audit with owner authority
+and captures the channel's endpoint, policy and active credential under the
+configuration lock. The HTTP handler then calls the fixed model-list path via
+`ProviderHttp` after releasing database locks. Only the classified result and
+validated candidate IDs are retained in `oxsum.provider_model_discoveries`.
+Replay reads that receipt; the serving catalogue still comes from configured
+model price versions and customer access rules.
+
 ## Modules
 
 | Module | Location | Responsibility |

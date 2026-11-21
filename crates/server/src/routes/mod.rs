@@ -568,6 +568,10 @@ pub fn router(state: AppState) -> Router {
             post(business_providers::connection_check),
         )
         .route(
+            "/business/channels/{channel}/model-discovery",
+            post(business_providers::discover_models),
+        )
+        .route(
             "/business/channels",
             get(business_providers::channels).post(business_providers::set_channel),
         )

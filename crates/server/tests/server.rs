@@ -175,6 +175,8 @@ mod plans;
 mod promo_lots;
 #[path = "server/provider_destinations.rs"]
 mod provider_destinations;
+#[path = "server/provider_model_discovery.rs"]
+mod provider_model_discovery;
 #[path = "server/rate_limit_backend.rs"]
 mod rate_limit_backend;
 #[path = "server/real_upstream.rs"]

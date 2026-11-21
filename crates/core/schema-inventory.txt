@@ -105,6 +105,7 @@ pricing_discounts
 promo_draws
 promo_lots
 provider_connection_checks
+provider_model_discoveries
 provider_mutation_results
 rate_windows
 reconciliation_exceptions

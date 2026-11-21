@@ -5307,3 +5307,15 @@ Existing future-period checks, reset cadences, and historical records stay intac
 Due-now job test fixtures also sample database time before explicitly enqueueing
 their timestamps. Production job scheduling still honors the supplied instant;
 tests must not assume the application and database clocks are synchronized.
+
+## 2026-11-21 — Discover provider models without changing the serving catalogue (#1249)
+
+Treat discovery as an explicit owner-authorized provider probe, separate from
+HEAD reachability and from inference. Reuse the saved channel snapshot, serving
+credential and destination policy. Capture a single response page with fixed
+time, byte and model-count limits; report known omissions rather than chasing
+provider-controlled links or treating failure as an empty list. Retain a small
+immutable receipt for replay without repeating provider I/O. The portal uses a
+selected ID to start the existing model editor with blank rates and output
+limit; saving a version and configuring customer sale and access remain
+separate operator decisions.

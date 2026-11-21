@@ -9304,6 +9304,41 @@ paths:
         "403": { $ref: "#/components/responses/Error" }
         "404": { $ref: "#/components/responses/Error" }
         "409": { $ref: "#/components/responses/Error" }
+  /api/v1/business/channels/{channelName}/model-discovery:
+    post:
+      summary: Discover model IDs on an owned provider connection
+      description: >-
+        Current business owner only. Records intent and audit before one authenticated GET
+        to the saved channel's models path using its first active serving credential and destination policy.
+        OpenAI-compatible, Anthropic and Gemini channels are supported; task channels return unsupported.
+        Fetches at most one page, with a ten second total deadline, a 1 MiB body limit and up to 500 IDs.
+        Exact replay returns the same receipt without another upstream request, even while pending.
+        Discovery sends no inference and changes no prices, routes, or customer permissions.
+      security: [{ sessionCookie: [] }]
+      x-consumption-key-access: denied
+      parameters:
+        - { name: channelName, in: path, required: true, schema: { type: string } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/BusinessProviderRemoveRequest" }
+      responses:
+        "200":
+          description: Durable discovery result. Only listed returns model IDs; an empty listed result is distinct from a failure.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data: { $ref: "#/components/schemas/ProviderModelDiscovery" }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "409": { $ref: "#/components/responses/Error" }
+        "503": { $ref: "#/components/responses/Error" }
   /api/v1/business/channels/{channelName}/credentials:
     post:
       summary: Add an owned provider credential
@@ -19122,6 +19157,25 @@ components:
         channelId: { type: string, format: uuid }
         state: { type: string, enum: [pending, reachable, authenticationFailed, httpError, blocked, unreachable] }
         httpStatus: { type: [integer, "null"], minimum: 100, maximum: 599 }
+    ProviderModelDiscovery:
+      type: object
+      required: [id, channelId, state, httpStatus, models, partial]
+      properties:
+        id: { type: string, format: uuid }
+        channelId: { type: string, format: uuid }
+        state:
+          type: string
+          enum: [pending, listed, unsupported, authenticationFailed, httpError, invalidCatalog, blocked, unreachable]
+        httpStatus: { type: [integer, "null"], minimum: 100, maximum: 599 }
+        models:
+          type: array
+          maxItems: 500
+          uniqueItems: true
+          description: Sorted upstream model IDs. These are candidates, without guarantees of inference support, pricing, or customer access.
+          items: { type: string, minLength: 1, maxLength: 200 }
+        partial:
+          type: boolean
+          description: The provider indicated another page, or model entries were omitted because they were invalid or exceeded the result limit.
     BusinessChannelRequest:
       type: object
       additionalProperties: false

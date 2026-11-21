@@ -149,8 +149,9 @@ pub use business_profile::{
 pub use business_providers::{
     BusinessChannelPage, ProviderAliasInput, ProviderBillKeyInput, ProviderCacheInput,
     ProviderChange, ProviderCheckStart, ProviderConnection, ProviderConnectionCheck,
-    ProviderCredentialInput, ProviderFallbackInput, ProviderMutationResult, ProviderPriceInput,
-    ProviderRemoveInput, ProviderRequest, ProviderStatusInput,
+    ProviderCredentialInput, ProviderFallbackInput, ProviderModelDiscovery,
+    ProviderModelDiscoveryStart, ProviderMutationResult, ProviderPriceInput, ProviderRemoveInput,
+    ProviderRequest, ProviderStatusInput,
 };
 pub use business_readiness::{BusinessReadiness, BusinessReadinessStep};
 pub use business_setup::{

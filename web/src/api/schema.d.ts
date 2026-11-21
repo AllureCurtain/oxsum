@@ -12848,6 +12848,59 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/business/channels/{channelName}/model-discovery": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Discover model IDs on an owned provider connection
+         * @description Current business owner only. Records intent and audit before one authenticated GET to the saved channel's models path using its first active serving credential and destination policy. OpenAI-compatible, Anthropic and Gemini channels are supported; task channels return unsupported. Fetches at most one page, with a ten second total deadline, a 1 MiB body limit and up to 500 IDs. Exact replay returns the same receipt without another upstream request, even while pending. Discovery sends no inference and changes no prices, routes, or customer permissions.
+         */
+        post: {
+            parameters: {
+                query?: never;
+                header?: never;
+                path: {
+                    channelName: string;
+                };
+                cookie?: never;
+            };
+            requestBody: {
+                content: {
+                    "application/json": components["schemas"]["BusinessProviderRemoveRequest"];
+                };
+            };
+            responses: {
+                /** @description Durable discovery result. Only listed returns model IDs; an empty listed result is distinct from a failure. */
+                200: {
+                    headers: {
+                        [name: string]: unknown;
+                    };
+                    content: {
+                        "application/json": {
+                            data: components["schemas"]["ProviderModelDiscovery"];
+                        };
+                    };
+                };
+                400: components["responses"]["Error"];
+                401: components["responses"]["Error"];
+                403: components["responses"]["Error"];
+                404: components["responses"]["Error"];
+                409: components["responses"]["Error"];
+                503: components["responses"]["Error"];
+            };
+        };
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/business/channels/{channelName}/credentials": {
         parameters: {
             query?: never;
@@ -25189,6 +25242,19 @@ export interface components {
             /** @enum {string} */
             state: "pending" | "reachable" | "authenticationFailed" | "httpError" | "blocked" | "unreachable";
             httpStatus: number | null;
+        };
+        ProviderModelDiscovery: {
+            /** Format: uuid */
+            id: string;
+            /** Format: uuid */
+            channelId: string;
+            /** @enum {string} */
+            state: "pending" | "listed" | "unsupported" | "authenticationFailed" | "httpError" | "invalidCatalog" | "blocked" | "unreachable";
+            httpStatus: number | null;
+            /** @description Sorted upstream model IDs. These are candidates, without guarantees of inference support, pricing, or customer access. */
+            models: string[];
+            /** @description The provider indicated another page, or model entries were omitted because they were invalid or exceeded the result limit. */
+            partial: boolean;
         };
         BusinessChannelRequest: {
             idempotencyKey: string;

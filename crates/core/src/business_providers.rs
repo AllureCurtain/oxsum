@@ -13,6 +13,9 @@ use uuid::Uuid;
 
 use crate::cache::SETTINGS_KEY;
 
+mod model_discovery;
+pub use model_discovery::{ProviderModelDiscovery, ProviderModelDiscoveryStart};
+
 /// A provider mutation request wrapping a typed change under `config`.
 #[derive(Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -363,6 +366,21 @@ async fn owned_channel(
     .await?
     .ok_or_else(unknown)
 }
+async fn probe_endpoint(
+    tx: &mut Transaction<'_, Postgres>,
+    channel_id: Uuid,
+) -> Result<crate::TaskProviderEndpoint, WalletError> {
+    let row = sqlx::query("SELECT base_url,protocol,settings,(SELECT api_key_sealed FROM oxsum.channel_credentials WHERE channel_id=$1 AND status='active' ORDER BY position LIMIT 1) AS sealed FROM oxsum.channels WHERE channel_id=$1")
+        .bind(channel_id).fetch_one(&mut **tx).await?;
+    Ok(crate::TaskProviderEndpoint {
+        base_url: row.try_get("base_url")?,
+        protocol: row.try_get("protocol")?,
+        destination_policy: crate::ProviderDestinationPolicy::from_settings(
+            &row.try_get::<Value, _>("settings")?,
+        )?,
+        api_key_sealed: row.try_get("sealed")?,
+    })
+}
 async fn result(
     tx: &mut Transaction<'_, Postgres>,
     id: Uuid,
@@ -426,16 +444,7 @@ impl Db {
             });
         }
         let channel_id = owned_channel(&mut tx, business, channel).await?;
-        let row = sqlx::query("SELECT base_url,protocol,settings,(SELECT api_key_sealed FROM oxsum.channel_credentials WHERE channel_id=$1 AND status='active' ORDER BY position LIMIT 1) AS sealed FROM oxsum.channels WHERE channel_id=$1")
-            .bind(channel_id).fetch_one(&mut *tx).await?;
-        let endpoint = crate::TaskProviderEndpoint {
-            base_url: row.try_get("base_url")?,
-            protocol: row.try_get("protocol")?,
-            destination_policy: crate::ProviderDestinationPolicy::from_settings(
-                &row.try_get::<Value, _>("settings")?,
-            )?,
-            api_key_sealed: row.try_get("sealed")?,
-        };
+        let endpoint = probe_endpoint(&mut tx, channel_id).await?;
         let receipt =
             authority::record(&mut tx, business, actor.user_id, key, action, &detail).await?;
         sqlx::query(
