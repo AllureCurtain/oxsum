@@ -633,6 +633,17 @@ export function useChannelConnectionCheck() {
   });
 }
 
+export function useChannelModelDiscovery() {
+  return useMutation({
+    retry: false,
+    mutationFn: (v: { channelName: string; idempotencyKey: string; reason: string }) =>
+      api<components["schemas"]["ProviderModelDiscovery"]>(`/business/channels/${encodeURIComponent(v.channelName)}/model-discovery`, {
+        method: "POST",
+        body: { idempotencyKey: v.idempotencyKey, reason: v.reason, config: {} } satisfies components["schemas"]["BusinessProviderRemoveRequest"],
+      }),
+  });
+}
+
 export function useSaleBooks(after?: string) {
   return useQuery({
     queryKey: ["biz-sale-books", after ?? null],

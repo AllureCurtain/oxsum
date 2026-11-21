@@ -279,7 +279,7 @@ function ChannelDetail({ channel, canWrite, canCatalog, canRoute, onBack, onActi
           {channel.billKeyLast4 ? <Button tone="danger" onClick={() => onAction({ kind: "clearBilling", channel })}>{t("biz.provider.clearBilling")}</Button> : null}
         </div> : null}
       </Card>
-      <ProviderModels key={channel.id} channel={channel} canCatalog={canCatalog} canRoute={canRoute} />
+      <ProviderModels key={channel.id} channel={channel} canDiscover={canWrite} canCatalog={canCatalog} canRoute={canRoute} />
     </div>
   );
 }

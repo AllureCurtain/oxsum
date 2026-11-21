@@ -2249,6 +2249,7 @@
     "providerModels": {
       "titles": {
         "price": "Publish model version",
+        "discover": "Discover upstream models",
         "alias": "Add model alias",
         "removeAlias": "Remove model alias",
         "fallbacks": "Edit fallback order",
@@ -2257,6 +2258,28 @@
       },
       "changeHelp": "Manage {{channel}} through your business session. Configuration saves make no model request.",
       "addModel": "Add model",
+      "discovery": {
+        "help": "Ask {{channel}} for its model list. This sends no inference request. Choosing a model fills its ID in a draft; you still set the rates and save it yourself.",
+        "fetch": "Fetch model list",
+        "checkResult": "Check result",
+        "requestFailed": "Could not read the discovery result. Check the same request again, or close and add a model manually.",
+        "partial": "The list is incomplete. You can enter a missing model ID manually.",
+        "empty": "The provider returned an empty model list.",
+        "configured": "All returned models are already configured on this channel.",
+        "model": "Upstream model ID",
+        "choose": "Choose a model",
+        "configuredModel": "{{model}} (already configured)",
+        "useModel": "Configure selected model",
+        "states": {
+          "pending": "The request is still pending or was interrupted. Checking again will not send another upstream request.",
+          "unsupported": "This channel did not provide a supported model list. Add the model ID manually.",
+          "authenticationFailed": "The model list could not be authenticated. Check the channel's serving credentials.",
+          "httpError": "The provider did not return a successful model list response.",
+          "invalidCatalog": "The provider returned an unreadable or oversized model list.",
+          "blocked": "The channel's destination policy blocked the request.",
+          "unreachable": "The model list could not be reached or finished in time."
+        }
+      },
       "append": "Append version",
       "history": "Version history",
       "mode": "Billing mode",

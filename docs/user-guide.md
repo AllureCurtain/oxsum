@@ -151,6 +151,18 @@ preference among channels serving that model. Saving appends a new immutable
 version and never sends inference. Previously admitted calls retain their
 pinned version. **Version history** reads complete retained versions.
 
+On an OpenAI-compatible, Anthropic or Gemini channel, the owner can choose
+**Discover upstream models**, supply a reason, and fetch the first page of the
+provider's model list using the saved serving credential. Choose an unconfigured
+model to open the existing price form with its ID filled in. Enter the billing
+mode and rates and review the output limit before saving. Customer sale books
+and access permissions are still managed separately. A listed ID does not
+establish that inference works or that the model supports a billing mode.
+Partial results, an empty list and provider errors are shown separately. **Add
+model** remains available when the list is missing the model or the provider does
+not serve a catalogue. Checking the same discovery result does not send another
+upstream request; reopen the dialog for a deliberate new attempt.
+
 Base channel rates and supplier cost are distinct. Customer sale books take
 precedence over legacy channel billing rates. Every base and conditional set
 can contain cache-read/write, reasoning and per-request prices plus a separate

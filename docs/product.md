@@ -58,6 +58,12 @@ Deployment operators can read a sanitized diagnostic snapshot under the operator
 5. For a closed UTC period, export the appropriate report, statement or evidence
    bundle. These formats verify different claims; see [proofs.md](proofs.md).
 
+While setting up supply, the owner can request candidate model IDs from a saved
+OpenAI-compatible, Anthropic or Gemini channel. Selecting an ID starts a model
+configuration draft. The operator still enters the billing terms and explicitly
+saves the route; discovery alone neither enables a model nor changes customer
+permissions.
+
 The `/app/getting-started` checklist uses personal customer authority (#901):
 live visible keys, permitted chat models, effective customer sale terms and a
 sample funding snapshot. Actual first-call receipt evidence completes its final

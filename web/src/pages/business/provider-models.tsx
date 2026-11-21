@@ -1,13 +1,15 @@
-import { useRef, useState, type FormEvent } from "react";
+import { useEffect, useRef, useState, type FormEvent } from "react";
 import { useTranslation } from "react-i18next";
 import { useProviderAliases, useProviderFallbacks, useProviderPrices, useProviderWrite, type Channel, type ProviderIntent } from "../../api/hooks";
 import { AlertDialog, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle,
   Banner, Button, Card, EmptyRows, Field, NativeSelect, Skeleton, TableShell, Td, TextInput, Textarea } from "../../components/ui";
-import { cacheValue, fallbackValue, modelName, providerDraft, providerValue, type ModelPrice, type ProviderDraft } from "../../lib/provider-draft";
+import { cacheValue, fallbackValue, modelName, providerDraft, providerValue, rateDraft, type ModelPrice, type ProviderDraft } from "../../lib/provider-draft";
+import { ProviderDiscovery } from "./provider-discovery";
 import { ProviderFields } from "./provider-fields";
 
 type Action =
-  | { kind: "price"; price?: ModelPrice; draft: ProviderDraft }
+  | { kind: "price"; price?: ModelPrice; draft: ProviderDraft; discovered?: boolean }
+  | { kind: "discover" }
   | { kind: "alias" }
   | { kind: "removeAlias"; alias: string }
   | { kind: "fallbacks"; model: string }
@@ -32,7 +34,7 @@ function PriceHistory({ channel }: { channel: Channel }) {
 }
 
 function ConfigurationForm({ channel, action, fallbacks, onClose, onSaved, onPending }: {
-  channel: Channel; action: Exclude<Action, { kind: "history" }>; fallbacks?: string[]; onClose: () => void; onSaved: () => void; onPending: (pending: boolean) => void;
+  channel: Channel; action: Exclude<Action, { kind: "history" | "discover" }>; fallbacks?: string[]; onClose: () => void; onSaved: () => void; onPending: (pending: boolean) => void;
 }) {
   const { t } = useTranslation();
   const [draft, setDraft] = useState<ProviderDraft | null>(action.kind === "price" ? action.draft : null);
@@ -118,17 +120,23 @@ function ConfigurationForm({ channel, action, fallbacks, onClose, onSaved, onPen
   </form>;
 }
 
-function ConfigurationDialog({ channel, action, onClose, onSaved }: { channel: Channel; action: Action; onClose: () => void; onSaved: () => void }) {
+function ConfigurationDialog({ channel, action, onClose, onSaved, onChoose }: {
+  channel: Channel; action: Action; onClose: () => void; onSaved: () => void; onChoose: (model: string) => void;
+}) {
   const { t } = useTranslation();
   const focus = useRef(document.activeElement as HTMLElement | null);
+  const title = useRef<HTMLHeadingElement>(null);
   const [pending, setPending] = useState(false);
   const fallbacks = useProviderFallbacks(action.kind === "fallbacks" ? action.model : null);
   const ready = action.kind !== "fallbacks" || fallbacks.data !== undefined;
+  const fromDiscovery = action.kind === "price" && action.discovered;
+  useEffect(() => { if (fromDiscovery) title.current?.focus(); }, [fromDiscovery]);
   return <AlertDialog open onOpenChange={(open) => { if (!open && !pending) onClose(); }}>
     <AlertDialogContent className="max-h-[calc(100dvh-2rem)] overflow-y-auto sm:max-w-2xl" onCloseAutoFocus={(e) => { e.preventDefault(); focus.current?.focus(); }}>
-      <AlertDialogHeader><AlertDialogTitle>{t(`biz.providerModels.titles.${action.kind}`)}</AlertDialogTitle>
-        <AlertDialogDescription>{t("biz.providerModels.changeHelp", { channel: channel.name })}</AlertDialogDescription></AlertDialogHeader>
+      <AlertDialogHeader><AlertDialogTitle ref={title} tabIndex={-1}>{t(`biz.providerModels.titles.${action.kind}`)}</AlertDialogTitle>
+        <AlertDialogDescription>{t(action.kind === "discover" ? "biz.providerModels.discovery.help" : "biz.providerModels.changeHelp", { channel: channel.name })}</AlertDialogDescription></AlertDialogHeader>
       {action.kind === "history" ? <><PriceHistory channel={channel} /><Button tone="ghost" onClick={onClose}>{t("biz.provider.close")}</Button></>
+        : action.kind === "discover" ? <ProviderDiscovery channel={channel} onChoose={onChoose} onClose={onClose} onPending={setPending} />
         : ready ? <ConfigurationForm channel={channel} action={action} fallbacks={fallbacks.data?.fallbacks} onClose={onClose} onSaved={onSaved} onPending={setPending} />
         : <>{fallbacks.isError ? <Banner tone="error">{t("biz.loadError")} <Button tone="ghost" onClick={() => void fallbacks.refetch()}>{t("biz.provider.reload")}</Button></Banner>
           : <Skeleton className="h-32 w-full" />}<Button tone="ghost" onClick={onClose}>{t("common.cancel")}</Button></>}
@@ -136,7 +144,7 @@ function ConfigurationDialog({ channel, action, onClose, onSaved }: { channel: C
   </AlertDialog>;
 }
 
-export function ProviderModels({ channel, canCatalog, canRoute }: { channel: Channel; canCatalog: boolean; canRoute: boolean }) {
+export function ProviderModels({ channel, canDiscover, canCatalog, canRoute }: { channel: Channel; canDiscover: boolean; canCatalog: boolean; canRoute: boolean }) {
   const { t } = useTranslation();
   const aliases = useProviderAliases(channel.name);
   const [action, setAction] = useState<Action | null>(null);
@@ -146,10 +154,18 @@ export function ProviderModels({ channel, canCatalog, canRoute }: { channel: Cha
   function editPrice(price?: ModelPrice) {
     try { open({ kind: "price", price, draft: providerDraft(price) }); } catch { setError(true); }
   }
+  function useDiscoveredModel(model: string) {
+    const draft = providerDraft();
+    draft.model = model;
+    draft.price.rates = rateDraft();
+    draft.price.maxOutputTokens = "";
+    open({ kind: "price", draft, discovered: true });
+  }
   return <>
     {saved ? <div role="status"><Banner tone="success">{t("biz.provider.saved")}</Banner></div> : null}
     {error ? <Banner tone="error">{t("biz.providerModels.errors.storedRange")}</Banner> : null}
     <Card title={t("biz.channels.models")} actions={<div className="flex flex-wrap gap-2"><Button tone="ghost" onClick={() => open({ kind: "history" })}>{t("biz.providerModels.history")}</Button>
+      {canDiscover && canCatalog && channel.protocol !== "tasks" ? <Button tone="ghost" onClick={() => open({ kind: "discover" })}>{t("biz.providerModels.titles.discover")}</Button> : null}
       {canCatalog ? <Button onClick={() => editPrice()}>{t("biz.providerModels.addModel")}</Button> : null}</div>}>
       <p className="mb-4 text-sm text-ink-secondary">{t("biz.providerModels.priceHelp")}</p>
       <TableShell head={[t("common.model"), t("biz.channels.colVersion"), t("biz.channels.colMode"), t("biz.providerModels.weight"), t("biz.provider.actions")]}>
@@ -173,6 +189,6 @@ export function ProviderModels({ channel, canCatalog, canRoute }: { channel: Cha
       <p className="text-sm text-ink-secondary">{t("biz.providerModels.cacheHelp")}</p>
       <p className="mt-4 text-sm">{t(`biz.providerModels.cacheStates.${!channel.settings.semanticCache ? "default" : (channel.settings.semanticCache as { enabled?: boolean }).enabled ? "enabled" : "disabled"}`)}</p>
     </Card>
-    {action ? <ConfigurationDialog channel={channel} action={action} onClose={() => setAction(null)} onSaved={() => setSaved(true)} /> : null}
+    {action ? <ConfigurationDialog channel={channel} action={action} onClose={() => setAction(null)} onSaved={() => setSaved(true)} onChoose={useDiscoveredModel} /> : null}
   </>;
 }

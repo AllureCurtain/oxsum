@@ -1,5 +1,8 @@
 //! Business provider transport. Authority and all mutation rules live in core.
 
+mod model_discovery;
+pub(crate) use model_discovery::discover_models;
+
 use std::time::Duration;
 
 use crate::AppState;
@@ -62,13 +65,7 @@ pub(crate) async fn connection_check(
             }
             Err(_) => return ("unreachable", None),
         };
-        let call = match endpoint.protocol.as_str() {
-            "anthropic" => call
-                .header("x-api-key", key)
-                .header("anthropic-version", "2023-06-01"),
-            "gemini" => call.header("x-goog-api-key", key),
-            _ => call.bearer_auth(key),
-        };
+        let call = provider_auth(call, &endpoint.protocol, &key);
         match call.timeout(Duration::from_secs(10)).send().await {
             Ok(response) => {
                 let status = response.status();
@@ -90,6 +87,21 @@ pub(crate) async fn connection_check(
         .finish_provider_check(started.result.id, result.0, result.1)
         .await?)
 }
+
+fn provider_auth(
+    call: reqwest::RequestBuilder,
+    protocol: &str,
+    key: &str,
+) -> reqwest::RequestBuilder {
+    match protocol {
+        "anthropic" => call
+            .header("x-api-key", key)
+            .header("anthropic-version", "2023-06-01"),
+        "gemini" => call.header("x-goog-api-key", key),
+        _ => call.bearer_auth(key),
+    }
+}
+
 pub(crate) async fn channels(
     State(state): State<AppState>,
     axum::Extension(token): axum::Extension<crate::auth::PersonalToken>,

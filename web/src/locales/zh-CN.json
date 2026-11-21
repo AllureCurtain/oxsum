@@ -2249,6 +2249,7 @@
     "providerModels": {
       "titles": {
         "price": "发布模型版本",
+        "discover": "发现上游模型",
         "alias": "添加模型别名",
         "removeAlias": "删除模型别名",
         "fallbacks": "编辑备用模型顺序",
@@ -2257,6 +2258,28 @@
       },
       "changeHelp": "通过业务会话管理 {{channel}}。保存配置不会发起模型请求。",
       "addModel": "添加模型",
+      "discovery": {
+        "help": "向 {{channel}} 获取模型列表，不发送推理请求。选择模型只会把 ID 填入草稿，费率仍需手动填写并保存。",
+        "fetch": "获取模型列表",
+        "checkResult": "查看结果",
+        "requestFailed": "无法读取发现结果。可以再次查看同一次请求，或关闭窗口并手动添加模型。",
+        "partial": "列表不完整。未列出的模型可以手动输入 ID。",
+        "empty": "上游返回了空的模型列表。",
+        "configured": "返回的模型均已在此渠道配置。",
+        "model": "上游模型 ID",
+        "choose": "选择模型",
+        "configuredModel": "{{model}}（已配置）",
+        "useModel": "配置所选模型",
+        "states": {
+          "pending": "请求仍在处理，或已中断。再次查看结果不会向上游重发请求。",
+          "unsupported": "此渠道未提供受支持的模型列表。请手动添加模型 ID。",
+          "authenticationFailed": "获取模型列表时未能通过认证。请检查渠道的服务凭据。",
+          "httpError": "上游未成功返回模型列表。",
+          "invalidCatalog": "上游模型列表无法读取或超过大小限制。",
+          "blocked": "渠道的目标地址策略阻止了这次请求。",
+          "unreachable": "无法连接上游以获取模型列表，或请求超时。"
+        }
+      },
       "append": "追加版本",
       "history": "版本历史",
       "mode": "计费模式",
