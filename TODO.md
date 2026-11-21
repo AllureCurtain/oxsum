@@ -20,3 +20,4 @@ Open GitHub issues are the queue. This file is only the index. One row per open 
 | [#740](https://github.com/AllureCurtain/oxsum/issues/740) | test: Real-provider certification for the selected matrix (N14) |
 | [#725](https://github.com/AllureCurtain/oxsum/issues/725) | feat: complete operator launch across portal and embedded adoption |
 | [#622](https://github.com/AllureCurtain/oxsum/issues/622) | test: external certification and promotion gates (T31) |
+| [#1251](https://github.com/AllureCurtain/oxsum/issues/1251) | docs: clarify the gateway model onboarding workflow |

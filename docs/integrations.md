@@ -18,6 +18,8 @@ or a newly changed build. HEAD reachability is not an inference result.
 
 ## LLM gateway
 
+For setup and a first billed call, follow [Gateway model onboarding](gateway-model-onboarding.md).
+
 Every surface runs the same pipeline — freeze an upper bound before upstream is
 contacted, settle against actual usage after it answers (`crates/server/src/gateway/mod.rs`).
 Each surface is protocol-native: a channel declares one `protocol` and serves only the

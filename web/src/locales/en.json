@@ -1777,7 +1777,7 @@
       "colName": "Name",
       "colProtocol": "Protocol",
       "colUrl": "Base URL",
-      "colModels": "Models",
+      "colModels": "Configured routes",
       "colKeys": "Keys",
       "colKeyTail": "Key",
       "colCooldown": "Cooldown",
@@ -1792,8 +1792,8 @@
       "cooling": "cooling",
       "billKey": "Billing key",
       "check": "Run connection check",
-      "models": "Model routes",
-      "noModels": "No model routes.",
+      "models": "Configured model routes",
+      "noModels": "No configured model routes.",
       "empty": "No channels.",
       "back": "← All channels"
     },
@@ -2126,7 +2126,7 @@
       "empty": "No audit entries."
     },
     "provider": {
-      "intro": "Provider connections and credentials are managed by the business owner. Saving configuration makes no upstream request.",
+      "intro": "Connect a provider, then configure the models this gateway will serve. The business owner manages connections and credentials.",
       "create": "Create or replace connection",
       "import": "Import account",
       "importTitle": "Import {{provider}} credential",
@@ -2166,7 +2166,7 @@
       "removeHelp": "Permanently remove {{name}} from the pool? The last active credential cannot be removed. Add a replacement first, or disable credentials to stop service.",
       "clearHelp": "Clear the provider billing credential for {{name}}? Billing queries that require it will stop until a new credential is supplied.",
       "checkHelp": "Send one authenticated HEAD request for {{name}} to {{url}}. This generates no model tokens. Redirects and unapproved destinations are refused.",
-      "checkLimit": "A HEAD result checks reachability only. It does not certify inference, provider billing, or customer sale terms.",
+      "checkLimit": "Checks endpoint reachability with a HEAD request.",
       "checkReceipt": "Check {{id}} · HTTP {{status}}",
       "checkOnce": "This result belongs to one audited attempt. A pending result is not retried automatically. Close this dialog and deliberately start another check only if needed.",
       "checkState": {
@@ -2263,7 +2263,7 @@
       "modeHelp": "Chat needs a positive output limit. Other modes need zero; embeddings and rerank also need zero output rate.",
       "weight": "Route weight",
       "weightHelp": "1–1000. Relative preference among channels serving the same model. Saving appends a complete model version.",
-      "priceHelp": "Base rates are retained channel billing rates used when a customer has no sale terms. Supplier cost belongs in the upstream cost fields. Published customer sale books are managed separately.",
+      "priceHelp": "A saved route can serve eligible customers immediately. Customer sale terms take precedence over channel base rates. Supplier costs are optional and recorded separately.",
       "appendHelp": "Start from {{model}} v{{version}}. Save a complete new version; the current version at save time determines the next number. Existing admitted calls retain their pinned version.",
       "maximum": "Maximum output tokens",
       "rates": {

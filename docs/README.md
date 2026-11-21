@@ -12,6 +12,7 @@ Use this page to pick a document. Longer pages disagree with themselves in place
 | Billing workflow delivery and external pilots | [Implementation evidence](billing-workflow-program.md) and [two-operator pilot protocol](roadmap/operator-launch/billing-workflow-pilots.md) |
 | See an interface | [API](api.md) and `crates/server/openapi.yaml`. Refusals are [unsupported](unsupported.md) |
 | Embed gateway or metering | [Integrations](integrations.md) and `examples/` |
+| Connect a provider and serve the first model | [Gateway model onboarding](gateway-model-onboarding.md) |
 | Payments | [Rails](rails.md). A local fixture is not a live-money certification |
 | Why a technical choice was made | [Decisions](decisions.md). The **Status** line on an entry wins. Superseded entries stay as history and are not current instructions |
 | Operator launch status | [Operator launch](roadmap/operator-launch/README.md). Screenshot and JSON captures are indexed in [EVIDENCE.md](roadmap/EVIDENCE.md) once that note is on the branch you have; the markdown conclusions are the part to read |
