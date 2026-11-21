@@ -103,6 +103,9 @@ the expected hash and trusted key/head with the export for independent checking.
 
 ## Business provider connections
 
+For the complete sequence from a new channel to a customer receipt, see
+[Gateway model onboarding](gateway-model-onboarding.md).
+
 Sign in as the business owner, enter **Business → Channels**, and use **Create
 or replace connection**. Choose a stable channel name, protocol and base URL.
 This operation sets the connection by name: an existing name replaces its
